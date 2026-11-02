@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Mock } from 'vitest';
+import { reloadHeld } from '@/lib/reloadHolds';
 
 vi.mock('@/api/client', () => {
   const mockGet = vi.fn().mockResolvedValue({ data: {} });
@@ -292,12 +293,16 @@ describe('ChatAgent API utilities', () => {
       expect(body.fast_mode).toBe(true);
     });
 
-    it('invokes onRunIdResolved with the run_id from Content-Location BEFORE reading the body', async () => {
-      // Track ordering: did onRunIdResolved fire before any reader.read() call?
+    it('names the run from Content-Location with the first frame, not the headers or a keepalive', async () => {
+      // The server beats through setup, so its headers precede admission and the
+      // run they name may never start.
+      const encoder = new TextEncoder();
+      const chunks = [':keepalive\n\n', 'event: metadata\ndata: {"run_id": "abc-123"}\n\n'];
       const callOrder: string[] = [];
       const readMock = vi.fn().mockImplementation(() => {
-        callOrder.push('body-read');
-        return Promise.resolve({ done: true, value: undefined });
+        const next = chunks.shift();
+        callOrder.push(next ? `read:${next.slice(0, 6)}` : 'read:end');
+        return Promise.resolve(next ? { done: false, value: encoder.encode(next) } : { done: true, value: undefined });
       });
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
@@ -313,19 +318,78 @@ describe('ChatAgent API utilities', () => {
       const onRunIdResolved = vi.fn().mockImplementation((rid: string) => {
         callOrder.push(`run-id:${rid}`);
       });
+      const onEvent = vi.fn().mockImplementation(() => {
+        callOrder.push('event');
+      });
 
       await sendHitlResponse(
         { int1: { decisions: [{ type: 'approve' }] } },
         'ws-1', 't-1',
-        { onEvent: () => {}, onRunIdResolved },
+        { onEvent, onRunIdResolved },
       );
 
       expect(onRunIdResolved).toHaveBeenCalledTimes(1);
-      // Now also carries the server-assigned thread_id parsed from the same
+      // Carries the server-assigned thread_id parsed from the same
       // Content-Location path, so an early stop can hard-cancel the run.
       expect(onRunIdResolved).toHaveBeenCalledWith('abc-123', 't-1');
-      // The run_id MUST be latched before any body byte is read.
-      expect(callOrder[0]).toBe('run-id:abc-123');
+      expect(callOrder).toEqual(['read::keepa', 'read:event:', 'run-id:abc-123', 'event', 'read:end']);
+    });
+
+    it.each([
+      ['a hold, which comes ahead of the run row', 'turn_held', false],
+      ['a cold start, which comes after it', 'workspace_status', true],
+    ])('names the run or not on %s', async (_case, event, named) => {
+      const encoder = new TextEncoder();
+      const chunks = [`id: 0\nevent: ${event}\ndata: {"status": "x"}\n\n`];
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          'Content-Location': '/api/v1/threads/t-1/messages/stream?run_id=abc-123',
+        }),
+        body: {
+          getReader: () => ({
+            read: () => {
+              const next = chunks.shift();
+              return Promise.resolve(next ? { done: false, value: encoder.encode(next) } : { done: true, value: undefined });
+            },
+          }),
+        },
+      });
+
+      const onRunIdResolved = vi.fn();
+      await sendHitlResponse({ int1: { decisions: [{ type: 'approve' }] } }, 'ws-1', 't-1', { onEvent: () => {}, onRunIdResolved });
+
+      expect(onRunIdResolved).toHaveBeenCalledTimes(named ? 1 : 0);
+    });
+
+    it('holds the stale-build reload through setup frames until the run speaks', async () => {
+      const encoder = new TextEncoder();
+      const chunks = [
+        ':keepalive\n\n',
+        'id: 0\nevent: turn_held\ndata: {"status": "held"}\n\n',
+        'id: 1\nevent: metadata\ndata: {"run_id": "abc-123"}\n\n',
+      ];
+      const heldAtEachRead: boolean[] = [];
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: {
+          getReader: () => ({
+            read: () => {
+              heldAtEachRead.push(reloadHeld());
+              const next = chunks.shift();
+              return Promise.resolve(next ? { done: false, value: encoder.encode(next) } : { done: true, value: undefined });
+            },
+          }),
+        },
+      });
+
+      await sendHitlResponse({ int1: { decisions: [{ type: 'approve' }] } }, 'ws-1', 't-1', { onEvent: () => {} });
+
+      expect(heldAtEachRead).toEqual([true, true, true, false]);
+      expect(reloadHeld()).toBe(false);
     });
 
     it('does NOT invoke onRunIdResolved when Content-Location lacks run_id', async () => {

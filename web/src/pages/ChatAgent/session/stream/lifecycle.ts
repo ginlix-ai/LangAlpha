@@ -74,6 +74,9 @@ export interface ReconnectOptions {
   /** Set by the same loop: the bubbles its earlier attempts wrote to, which
    *  this one settles with its own when it ends the turn. */
   owned?: ReadonlySet<string>;
+  /** A stream that ends with nothing heard goes to `onDrop` as gone, not as the
+   *  run's end: the loop has someone to ask what became of it. */
+  unheardEndIsDrop?: boolean;
 }
 
 /** A retry loop's reconnect that dropped, or failed, before its run ended. */
@@ -100,6 +103,10 @@ export interface RetryOptions {
   owned?: Iterable<string>;
   /** Whether the dropped stream rendered anything. */
   rendered?: boolean;
+  /** The run is over and the loop heard nothing of it, so it may never have
+   *  begun. The caller says what became of the reply: it goes again, or it
+   *  failed where it stands, which a reload would erase. */
+  ifNothingHeard?: (bubbleId: string) => 'resending' | 'failed';
 }
 
 export interface RecoveryDeps {
@@ -162,7 +169,7 @@ export const releaseStreamOwnership = (rt: RecoveryRuntime) => {
 export const reconnectToStream = async (
   rt: RecoveryRuntime,
   deps: RecoveryDeps,
-  { activeTasks = [], runId, resetCursor = false, idleAbortMs, snapshotAtMs, resetSubagentProjection = true, onDrop, owned }: ReconnectOptions = {},
+  { activeTasks = [], runId, resetCursor = false, idleAbortMs, snapshotAtMs, resetSubagentProjection = true, onDrop, owned, unheardEndIsDrop = false }: ReconnectOptions = {},
 ) => {
   // Reconnect targets the LATCHED thread, not the threadId prop. A brand-new
   // chat keeps the prop at '__default__' until the first SSE event updates the
@@ -545,6 +552,10 @@ export const reconnectToStream = async (
       }
       throw new Error('Reconnection stream disconnected');
     }
+    if (unheardEndIsDrop && !receivedEvent) {
+      handOff(true);
+      return;
+    }
 
     // Mark this reader's bubbles complete. A steer's continuation is the
     // turn's tail; failing that, a reconnect that brings no more text leaves
@@ -743,7 +754,7 @@ export const attemptReconnectAfterDisconnect = async (
   rt: RecoveryRuntime,
   deps: RecoveryDeps,
   assistantMessageId: string,
-  { idleAbortMs, owned: droppedOwned = [], rendered: droppedRendered = true }: RetryOptions = {},
+  { idleAbortMs, owned: droppedOwned = [], rendered: droppedRendered = true, ifNothingHeard }: RetryOptions = {},
 ) => {
   // Long, because the cost of waiting is a spinner while the cost of giving up
   // is a truncated answer for a turn that is still running server-side.
@@ -937,7 +948,7 @@ export const attemptReconnectAfterDisconnect = async (
       const dropped: { current: ReconnectDrop | null } = { current: null };
       await reconnectToStream(rt, deps, {
         activeTasks: status.active_tasks || [], snapshotAtMs, resetSubagentProjection: false, idleAbortMs,
-        onDrop: (drop) => { dropped.current = drop; }, owned,
+        onDrop: (drop) => { dropped.current = drop; }, owned, unheardEndIsDrop: !!ifNothingHeard,
       });
       const drop = dropped.current;
       if (drop) {
@@ -984,6 +995,8 @@ export const attemptReconnectAfterDisconnect = async (
   // a reconnect, where a stop or a newer turn can land unseen.
   if (abandoned()) return;
   rt.setIsReconnecting(false);
+  const unheard = runOver && !rendered ? ifNothingHeard?.(rt.currentMessageRef.current ?? assistantMessageId) : undefined;
+  if (unheard === 'resending') return;
 
   // Settle the bubble we gave up on, and the ones the reconnects that dropped
   // too were writing. Nothing else does: cleanupAfterStreamEnd resets the
@@ -1003,6 +1016,7 @@ export const attemptReconnectAfterDisconnect = async (
   if (!rendered && rt.currentRunIdRef.current === latchedRunId) rt.currentRunIdRef.current = null;
 
   cleanupAfterStreamEnd(rt, deps, owned);
+  if (unheard === 'failed') return;
   // The reload rebuilds the turn from the server, from its checkpoint once the
   // run is over and from the run's stream while it is not, so the bubbles on
   // screen would be a second copy. The replay clears only bubbles marked as

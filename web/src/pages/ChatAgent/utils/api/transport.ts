@@ -72,12 +72,6 @@ export interface StreamResult {
 
 export interface KeptAlive {
   beatMs: number;
-  /**
-   * Not until the run's first frame. A send's setup (a computer starting can
-   * take minutes) sends no keepalives, and a disconnect then cancels the turn,
-   * so going quiet proves nothing there and cutting the stream would end it.
-   */
-  fromRunStart?: boolean;
 }
 
 export async function streamFetch(
@@ -166,22 +160,16 @@ export async function streamFetch(
   let ev: { id?: string; event?: string } = {};
   let silent = false;
   let silentOnReturn = false;
-  let silence: StreamSilenceWatch | null = null;
-  const watchSilence = () => {
-    if (!keptAlive || silence) return;
-    silence = watchStreamSilence(keptAlive.beatMs, (onReturn) => {
-      silent = true;
-      silentOnReturn = onReturn;
-      void reader.cancel().catch(() => undefined);
-    });
-  };
-  if (!keptAlive?.fromRunStart) watchSilence();
+  const silence: StreamSilenceWatch | null = keptAlive
+    ? watchStreamSilence(keptAlive.beatMs, (onReturn) => {
+        silent = true;
+        silentOnReturn = onReturn;
+        void reader.cancel().catch(() => undefined);
+      })
+    : null;
   const processLine = (line: string) => {
-    if (line.startsWith('id: ')) {
-      ev.id = line.slice(4).trim();
-      // Setup's frames are all numbered 0; the run's start from 1.
-      if (ev.id !== '0') watchSilence();
-    } else if (line.startsWith('event: ')) ev.event = line.slice(7).trim();
+    if (line.startsWith('id: ')) ev.id = line.slice(4).trim();
+    else if (line.startsWith('event: ')) ev.event = line.slice(7).trim();
     else if (line.startsWith('data: ')) {
       try {
         const d = JSON.parse(line.slice(6));
@@ -201,7 +189,7 @@ export async function streamFetch(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      (silence as StreamSilenceWatch | null)?.heard();
+      silence?.heard();
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
@@ -231,7 +219,7 @@ export async function streamFetch(
       throw error;
     }
   } finally {
-    (silence as StreamSilenceWatch | null)?.stop();
+    silence?.stop();
   }
   if (silent) return { disconnected: true, aborted, contentLocation, silentOnReturn };
   return { disconnected, aborted, contentLocation };
@@ -240,8 +228,8 @@ export async function streamFetch(
 /**
  * Shared POST→SSE plumbing for the three send paths (new/continue, retry, HITL
  * resume): attaches auth headers, streams the response, and latches the run/thread
- * id out of the `Content-Location` header before the first SSE event. The three
- * callers differ only in path + body.
+ * id out of the `Content-Location` header with its first frame past a hold. The three callers
+ * differ only in path + body.
  */
 export async function postSSEStream(
   path: string,
@@ -254,9 +242,14 @@ export async function postSSEStream(
 ): Promise<StreamResult> {
   const { onRunIdResolved, signal } = opts;
   // A send holds the stale-build reload until the server has the message, a
-  // token refresh before it included; from its headers on, the turn runs there
-  // and a reload reattaches to it.
+  // token refresh before it included. Its headers say nothing of that, since
+  // the server beats through setup and they come ahead of admission, and nor do
+  // setup's own frames: a reload then would cancel the send. So the reload waits
+  // for the run's first frame or a steer's receipt. The run the headers name may
+  // never start, so the caller learns of it only with the first frame past a
+  // hold, which is the one setup frame sent ahead of the run's row.
   const release = holdReload();
+  let runLocation: string | null = null;
   try {
     const authHeaders = await getAuthHeaders();
     // A retransmit that raced past the route's duplicate check is refused in
@@ -265,6 +258,12 @@ export async function postSSEStream(
     // the copy that arrived, not a failure of this one.
     let duplicate: Record<string, unknown> | null = null;
     const onEvent = (event: Record<string, unknown>) => {
+      if (event.event === 'metadata' || event.event === 'steering_accepted') release();
+      if (event.event !== 'turn_held') {
+        const runId = parseRunIdFromContentLocation(runLocation);
+        if (runId && onRunIdResolved) onRunIdResolved(runId, parseThreadIdFromContentLocation(runLocation));
+        runLocation = null;
+      }
       if (event.event === 'error' && event.code === 'duplicate_request') {
         duplicate = event;
         return;
@@ -285,11 +284,9 @@ export async function postSSEStream(
       },
       onEvent,
       (contentLocation) => {
-        release();
-        const runId = parseRunIdFromContentLocation(contentLocation);
-        if (runId && onRunIdResolved) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
+        runLocation = contentLocation;
       },
-      { beatMs: RUN_STREAM_BEAT_MS, fromRunStart: true },
+      { beatMs: RUN_STREAM_BEAT_MS },
     );
     if (duplicate && !result.aborted) throw duplicateRequestError(duplicate);
     return result;
@@ -307,6 +304,7 @@ function duplicateRequestError(frame: Record<string, unknown>): Error & { status
   if (typeof frame.run_id === 'string' && frame.run_id) {
     errorInfo.run_id = frame.run_id;
     errorInfo.run_status = frame.run_status;
+    errorInfo.retryable = frame.retryable;
     errorInfo.thread_id = frame.run_thread_id || frame.thread_id;
     if (frame.steered === true) errorInfo.steered = true;
   }
