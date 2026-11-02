@@ -292,9 +292,10 @@ def _is_service_request(raw_request: Request | None) -> bool:
 
 # Fields only the server's own requests set. A user's copy would post a system
 # message, label their message as a report-back or a wakeup (whose turn may end
-# without a reply), forge a report-back watch's cleanup, or settle a parked
-# steer as its own turn; ``surface_rules`` is a channel gateway's, whose text
-# rides the operator role on providers with a native channel.
+# without a reply) or as file comments it does not carry, forge a report-back
+# watch's cleanup, or settle a parked steer as its own turn; ``surface_rules``
+# is a channel gateway's, whose text rides the operator role on providers with
+# a native channel.
 _SERVER_ONLY_FIELDS = (
     "query_type",
     *ANNOUNCED_KEYS,
@@ -306,6 +307,7 @@ _SERVER_ONLY_FIELDS = (
     "disable_subagents",
     "surface_rules",
     "steer_job_id",
+    "artifact_comments",
 )
 
 

@@ -2,9 +2,10 @@
 
 A second call for the same item must hand back the same code, since the
 first one may already be a URL in someone's hands. An app described afresh
-moves its title and entry path onto that code in one upsert; a file link's
-path is the item's identity and is never rewritten. Sharing is a
-compare-and-set, so a Stop that lands mid-share holds.
+moves its title and entry path onto that code in one upsert. A file's row is
+its artifact record, written by ``database/artifacts``; read here, it carries
+that record, and an app's row, which has an id from the column default too,
+carries none.
 """
 
 from __future__ import annotations
@@ -18,18 +19,17 @@ from unittest.mock import patch
 import pytest
 
 from src.server.database import share_links
-from src.server.database.share_codes import is_share_code
 from src.server.database.share_links import (
     KIND_APP,
     KIND_FILE,
     describe_app_link,
     ensure_app_link,
-    ensure_file_link,
+    get_link,
     set_private,
-    set_shared,
 )
 
 WORKSPACE_ID = "22222222-2222-4222-8222-222222222222"
+ARTIFACT_ID = "33333333-3333-4333-8333-333333333333"
 
 
 def _row(**overrides) -> dict[str, Any]:
@@ -44,6 +44,12 @@ def _row(**overrides) -> dict[str, Any]:
         "shared_at": None,
         "created_at": datetime.now(timezone.utc),
         "revision": 0,
+        "artifact_id": ARTIFACT_ID,
+        "created_thread_id": None,
+        "bound_thread_id": None,
+        "keep_updated": False,
+        "latest_seq": 3,
+        "legacy_refused": None,
     }
     row.update(overrides)
     return row
@@ -88,30 +94,19 @@ def _script(answers):
 
 
 @pytest.mark.asyncio
-async def test_a_first_sight_file_is_inserted_private_on_its_partial_index():
-    cur, db = _script([_row()])
+async def test_a_file_link_names_its_artifact_and_an_app_link_none():
+    cur, db = _script([_row(), _app_row()])
     with db:
-        link = await ensure_file_link(WORKSPACE_ID, "out/report.html")
+        file_link = await get_link("AbCdEfGh1234")
+        app_link = await get_link("AppCode12345")
 
-    (sql, params), = cur.statements
-    assert sql.startswith("INSERT INTO share_links (code, workspace_id, kind, path)")
-    assert "ON CONFLICT (workspace_id, path) WHERE kind = 'file' DO NOTHING" in sql
-    assert is_share_code(params[0])
-    assert params[1:] == (WORKSPACE_ID, "out/report.html")
-    assert not link.shared
-    assert link.display_title == "report.html"
-
-
-@pytest.mark.asyncio
-async def test_a_racing_writer_reads_back_the_winners_row():
-    cur, db = _script([None, _row(code="WinnerCode01")])
-    with db:
-        link = await ensure_file_link(WORKSPACE_ID, "out/report.html")
-
-    assert link.code == "WinnerCode01"
-    (_, _), (select_sql, select_params) = cur.statements
-    assert select_sql.startswith("SELECT")
-    assert select_params == (WORKSPACE_ID, "out/report.html")
+    assert "l.artifact_id::text" in cur.statements[0][0]
+    assert "l.latest_seq" in cur.statements[0][0]
+    assert file_link.artifact_id == ARTIFACT_ID
+    assert file_link.artifact.latest_seq == 3
+    assert file_link.display_title == "report.html"
+    assert app_link.artifact is None
+    assert app_link.artifact_id is None
 
 
 @pytest.mark.asyncio
@@ -142,21 +137,6 @@ async def test_describing_an_app_is_one_upsert_that_replaces_title_and_path():
 
 
 @pytest.mark.asyncio
-async def test_sharing_is_a_compare_and_set_on_the_revision_read_first():
-    cur, db = _script([None])
-    with db:
-        result = await set_shared(
-            "AbCdEfGh1234", ["out/report.html"], expected_revision=3
-        )
-
-    assert result is None
-    (sql, params), = cur.statements
-    assert "revision = revision + 1" in sql
-    assert "AND revision = %s" in sql
-    assert params == (["out/report.html"], "AbCdEfGh1234", 3)
-
-
-@pytest.mark.asyncio
 async def test_a_stop_moves_the_revision_so_an_older_share_cannot_land():
     """A stop clears shared_at to what a slow share read; the revision never returns."""
     cur, db = _script([_row(revision=4)])
@@ -164,5 +144,5 @@ async def test_a_stop_moves_the_revision_so_an_older_share_cannot_land():
         link = await set_private("AbCdEfGh1234")
 
     (sql, _), = cur.statements
-    assert "SET shared_at = NULL, files = NULL, revision = revision + 1" in sql
+    assert "SET shared_at = NULL, files = NULL, revision = l.revision + 1" in sql
     assert link.revision == 4

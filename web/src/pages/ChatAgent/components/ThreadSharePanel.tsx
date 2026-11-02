@@ -6,37 +6,36 @@ import { copyText } from '@/lib/clipboard';
 import { shortMonthDay } from '@/lib/format';
 import { useCopyShareLink } from '@/hooks/useCopyShareLink';
 import { useLocale } from '@/hooks/useLocale';
+import { useArtifactPublishing } from '@/hooks/useArtifact';
 import { useSharedLinks, useShareLinkMutations } from '@/hooks/useShareLink';
 import { useQueryClient } from '@tanstack/react-query';
 import { saveThreadSharing, useThreadShareStatus } from '../hooks/useThreadShareStatus';
-import { shareConflictIn } from '../utils/api/shareLinks';
 import type { ShareLink, ThreadShareStatus, ThreadSharePermissions } from '../../../types/api';
 
 function sharedLinkName(link: ShareLink): string {
   return link.title || link.path?.split('/').pop() || link.code;
 }
 
-/** Every file link the workspace has made public, each with Copy and Stop. */
+/** Every link the workspace has made public, each with Copy and Stop. */
 function SharedInWorkspace({ workspaceId }: { workspaceId: string }) {
   const { t } = useTranslation();
   const locale = useLocale();
   const { data: links } = useSharedLinks(workspaceId);
   const { patch } = useShareLinkMutations(workspaceId);
+  const { unshare } = useArtifactPublishing();
   const { copy, copiedCode } = useCopyShareLink();
 
   if (!links?.length) return null;
 
+  const failed = (err: unknown) => {
+    console.error('[ShareButton] Stop sharing failed:', err);
+    toast({ description: t('shareLink.shareFailed'), variant: 'destructive' });
+  };
+  // A file's link is its artifact's, whose unshare also refreshes the record
+  // a file tab or the Publish dialog shows.
   const stopSharing = (link: ShareLink) => {
-    patch.mutate({ code: link.code, patch: { shared: false } }, {
-      onError: (err) => {
-        if (shareConflictIn(err) === 'link_changed') {
-          toast({ description: t('shareLink.linkChanged') });
-          return;
-        }
-        console.error('[ShareButton] Stop sharing failed:', err);
-        toast({ description: t('shareLink.shareFailed'), variant: 'destructive' });
-      },
-    });
+    if (link.kind === 'file' && link.artifact_id) unshare.mutate(link.artifact_id, { onError: failed });
+    else patch.mutate({ code: link.code, patch: { shared: false } }, { onError: failed });
   };
 
   return (
@@ -74,7 +73,7 @@ function SharedInWorkspace({ workspaceId }: { workspaceId: string }) {
             <button
               type="button"
               onClick={() => stopSharing(link)}
-              disabled={patch.isPending}
+              disabled={patch.isPending || unshare.isPending}
               className="text-xs px-1.5 py-0.5 rounded-md shrink-0 disabled:opacity-50 hover:underline"
               style={{ color: 'var(--color-text-secondary)' }}
             >

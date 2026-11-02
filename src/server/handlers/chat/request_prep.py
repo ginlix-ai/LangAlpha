@@ -475,36 +475,27 @@ async def ensure_thread(
     workspace_id: str,
     user_id: str,
     initial_query: str = "",
+    row_ensured: bool = False,
 ) -> PriorThread:
     """Ensure a thread record exists in the database, optionally with external linkage.
 
     Returns the prior turn as it stood on entry, read here so the ordering
     against the ensure below (which stamps the thread row) stays off the
     callers.
+
+    ``row_ensured``: ``make_thread`` already found or made the row, which is
+    then the only call that applies creation-time fields, so this one has the
+    status to resume and nothing to create or title.
     """
     prior = await _read_prior_thread(
         thread_id, before_turn=_fork_predecessor_turn(request)
     )
-
-    ensure_kwargs = dict(
-        workspace_id=workspace_id,
-        conversation_thread_id=thread_id,
-        user_id=user_id,
-        initial_query=initial_query,
-        initial_status="in_progress",
+    if row_ensured:
+        await qr_db.update_thread_status(thread_id, "in_progress")
+        return prior
+    created = await _ensure_thread_row(
+        request, thread_id, workspace_id, user_id, initial_query=initial_query
     )
-    if request.platform:
-        ensure_kwargs["platform"] = request.platform
-    if request.external_thread_id:
-        ensure_kwargs["external_id"] = request.external_thread_id
-    if request.origin:
-        ensure_kwargs["metadata"] = {
-            "origin": request.origin.model_dump(exclude_none=True)
-        }
-    # Applied only if this send creates the thread; PATCH owns it after.
-    if request.subagents_allowed is not None:
-        ensure_kwargs["subagents_allowed"] = request.subagents_allowed
-    created = await qr_db.ensure_thread_exists(**ensure_kwargs)
 
     # Threads born here (automations, channel gateways, legacy clients) never
     # pass through POST /threads, so this is their only shot at an LLM title.
@@ -521,6 +512,49 @@ async def ensure_thread(
         )
 
     return prior
+
+
+async def make_thread(
+    request: ChatRequest, thread_id: str, workspace_id: str, user_id: str
+) -> bool:
+    """Make the thread a send needs before its admission, untitled. Whether
+    this call made it; a thread it finds keeps its status, since the send
+    may yet be refused. A thread this call made has no prior turn."""
+    return await _ensure_thread_row(
+        request, thread_id, workspace_id, user_id, initial_query="", resume=False
+    )
+
+
+async def _ensure_thread_row(
+    request: ChatRequest,
+    thread_id: str,
+    workspace_id: str,
+    user_id: str,
+    *,
+    initial_query: str,
+    resume: bool = True,
+) -> bool:
+    ensure_kwargs = dict(
+        workspace_id=workspace_id,
+        conversation_thread_id=thread_id,
+        user_id=user_id,
+        initial_query=initial_query,
+        initial_status="in_progress",
+    )
+    if not resume:
+        ensure_kwargs["resume"] = False
+    if request.platform:
+        ensure_kwargs["platform"] = request.platform
+    if request.external_thread_id:
+        ensure_kwargs["external_id"] = request.external_thread_id
+    if request.origin:
+        ensure_kwargs["metadata"] = {
+            "origin": request.origin.model_dump(exclude_none=True)
+        }
+    # Applied only if this send creates the thread; PATCH owns it after.
+    if request.subagents_allowed is not None:
+        ensure_kwargs["subagents_allowed"] = request.subagents_allowed
+    return await qr_db.ensure_thread_exists(**ensure_kwargs)
 
 
 async def keep_named_model(thread_id: str, named_model: NamedModel | None) -> None:

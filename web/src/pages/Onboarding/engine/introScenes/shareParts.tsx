@@ -7,9 +7,9 @@ import { Appear, Loader, Scrim } from './kit';
 
 /* The share controls, as the share scene draws them: the chat header's
    popover that shares a conversation (`ShareButton`), the dialog that shares
-   one file on its own link (`ShareLinkDialog`), and the bar over a shared
-   file as a visitor opens it (`ShareTopBar`). Sizes are the app's at the
-   scenes' scale, about half; the labels are the app's own keys. */
+   one file on its own link (the Publish dialog, `PublishDialog`), and the
+   bar over a shared file as a visitor opens it (`ShareTopBar`). Sizes are the
+   app's at the scenes' scale, about half; the labels are the app's own keys. */
 
 /** The popover's width: the app's w-80 at the scenes' scale. */
 export const POPOVER_W = 160;
@@ -207,11 +207,12 @@ const COVERED: Covered[] = [
 ];
 
 /**
- * One file's share dialog (`ShareLinkDialog`) over the dimmed page, from
- * `at`: its link, minted private; the switch that opens it to anyone with
- * it, flipped at `on`; and the files the link covers, listed once the check
- * of what the page references comes back at `listed`. `copied` is the copy
- * button's press. Shared, the footer offers the visitor's view.
+ * One file's Publish dialog (`PublishDialog`) over the dimmed page, from `at`:
+ * its link, minted private; the Publish press at `on`, after which the
+ * status card reads Published v1 with Unshare beside it; and the files the
+ * link covers, listed once the check of what the page references comes back
+ * at `listed`. `copied` is the copy button's press. Published, the footer
+ * offers the visitor's view.
  */
 export function ShareDialog({
   at,
@@ -249,10 +250,10 @@ export function ShareDialog({
           className="truncate pr-[12px] text-[8px] font-semibold leading-none"
           style={{ color: 'var(--color-text-primary)' }}
         >
-          {tr('shareLink.title', { file: 'capex-tracker.html' })}
+          {tr('publish.title', { file: 'capex-tracker.html' })}
         </span>
         <span className={cn(xs, 'leading-[1.35]')} style={{ color: 'var(--color-text-secondary)' }}>
-          {tr('shareLink.chatStaysPrivate')}
+          {tr('publish.description')}
         </span>
         <div className="flex flex-col gap-[8px] pt-[1px]">
           {/* the link, and its copy button */}
@@ -264,39 +265,55 @@ export function ShareDialog({
               ) : (
                 <Copy className="h-[7px] w-[7px]" />
               )}
-              {done ? tr('shareLink.copied') : tr('shareLink.copy')}
+              {done ? tr('publish.copied') : tr('publish.copy')}
             </OutlineButton>
           </div>
-          {/* the switch */}
+          {/* where it stands, and keep updated */}
           <div
-            className="flex items-center justify-between gap-[6px] rounded-[4px] border px-[6px] py-[5px]"
+            className="flex flex-col divide-y rounded-[4px] border"
             style={{ background: 'var(--color-bg-card)', borderColor: 'var(--color-border-muted)' }}
           >
-            <span className="flex min-w-0 items-center gap-[4px]">
-              {shared ? (
-                <Link2
-                  className="h-2 w-2 shrink-0"
-                  style={{ color: 'var(--color-accent-primary)' }}
-                />
-              ) : (
-                <Lock
-                  className="h-2 w-2 shrink-0"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                />
-              )}
-              <span className="flex min-w-0 flex-col gap-[2.5px]">
-                <span
-                  className={cn(sm, 'font-medium')}
-                  style={{ color: 'var(--color-text-primary)' }}
-                >
-                  {tr('shareLink.anyoneWithLink')}
-                </span>
-                <span className={xs} style={{ color: 'var(--color-text-tertiary)' }}>
-                  {shared ? tr('shareLink.sharedHint') : tr('shareLink.privateHint')}
+            <div className="flex items-center justify-between gap-[6px] px-[6px] py-[5px]">
+              <span className="flex min-w-0 items-center gap-[4px]">
+                {shared ? (
+                  <Link2
+                    className="h-2 w-2 shrink-0"
+                    style={{ color: 'var(--color-accent-primary)' }}
+                  />
+                ) : (
+                  <Lock
+                    className="h-2 w-2 shrink-0"
+                    style={{ color: 'var(--color-text-tertiary)' }}
+                  />
+                )}
+                <span className="flex min-w-0 flex-col gap-[2.5px]">
+                  <span
+                    className={cn(sm, 'font-medium')}
+                    style={{ color: 'var(--color-text-primary)' }}
+                  >
+                    {shared ? tr('publish.publishedAt', { seq: 1 }) : tr('publish.private')}
+                  </span>
+                  <span className={xs} style={{ color: 'var(--color-text-tertiary)' }}>
+                    {shared ? tr('publish.sharedHint') : tr('publish.privateHint')}
+                  </span>
                 </span>
               </span>
-            </span>
-            <Switch on={shared} offFill="var(--color-bg-elevated)" />
+              {shared && <OutlineButton>{tr('publish.unshare')}</OutlineButton>}
+            </div>
+            <div
+              className="flex items-center justify-between gap-[6px] px-[6px] py-[5px]"
+              style={{ borderColor: 'var(--color-border-muted)' }}
+            >
+              <span className="flex min-w-0 flex-col gap-[2.5px]">
+                <span className={sm} style={{ color: 'var(--color-text-primary)' }}>
+                  {tr('publish.keepUpdated')}
+                </span>
+                <span className={xs} style={{ color: 'var(--color-text-tertiary)' }}>
+                  {tr('publish.keepUpdatedHint')}
+                </span>
+              </span>
+              <Switch on={false} offFill="var(--color-bg-elevated)" />
+            </div>
           </div>
           {/* the files the link covers */}
           <div className="flex flex-col gap-[3px]">
@@ -305,8 +322,8 @@ export function ShareDialog({
               style={{ color: 'var(--color-text-secondary)' }}
             >
               {ready
-                ? tr('shareLink.linkCovers', { count: COVERED.length })
-                : tr('shareLink.listingFiles')}
+                ? tr('publish.filesPublish', { count: COVERED.length })
+                : tr('publish.listing')}
             </span>
             <div
               className="flex flex-col divide-y overflow-hidden rounded-[4px] border"
@@ -347,7 +364,26 @@ export function ShareDialog({
               ))}
             </div>
           </div>
-          {/* the footer: the visitor's view once shared, and done */}
+          {/* the version's note */}
+          <div className="flex flex-col gap-[3px]">
+            <span
+              className={cn(xs, 'font-medium')}
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              {tr('publish.label')}
+            </span>
+            <span
+              className={cn('flex h-[16px] items-center rounded-[3px] border px-[6px]', xs)}
+              style={{
+                background: 'var(--color-bg-input)',
+                borderColor: 'var(--color-border-muted)',
+                color: 'var(--color-text-tertiary)',
+              }}
+            >
+              {tr('publish.labelPlaceholder')}
+            </span>
+          </div>
+          {/* the footer: the visitor's view once published, then close and publish */}
           <div className="flex items-center justify-between pt-[2px]">
             {shared ? (
               <span
@@ -355,12 +391,26 @@ export function ShareDialog({
                 style={{ color: 'var(--color-text-secondary)' }}
               >
                 <ExternalLink className="h-[7px] w-[7px]" />
-                {tr('shareLink.viewAsVisitor')}
+                {tr('publish.viewAsVisitor')}
               </span>
             ) : (
               <span />
             )}
-            <OutlineButton>{tr('common.done')}</OutlineButton>
+            <span className="flex items-center gap-[4px]">
+              <OutlineButton>{tr('common.close')}</OutlineButton>
+              <span
+                className={cn(
+                  'flex h-[17px] items-center rounded-[3px] px-[6px] font-medium',
+                  xs
+                )}
+                style={{
+                  background: 'var(--color-accent-primary)',
+                  color: 'var(--color-text-on-accent)',
+                }}
+              >
+                {tr('publish.publish')}
+              </span>
+            </span>
           </div>
         </div>
       </div>

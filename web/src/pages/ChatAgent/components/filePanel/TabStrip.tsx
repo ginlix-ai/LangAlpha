@@ -5,6 +5,7 @@ import type { TFunction } from 'i18next';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { fileGlyph } from './fileMeta';
+import { isHtmlFile } from '../../utils/filePaths';
 import { getCompletedRowTitle, getCompletedSummary, getToolIcon, isTaskTool } from '../toolDisplayConfig';
 import { isOnLoan, type FileTab } from './useFileTabs';
 import { isToolCallFailed } from './toolCallFailure';
@@ -12,9 +13,12 @@ import type { ToolCallProcessRecord } from '../ToolCallDetailView';
 import { appFaviconGlyph } from '../messaging/appGlyph';
 import { messagingAppName, platformOf, readMessageDelivery } from '../messaging/messageDelivery';
 import { countDedupedSources, type ProvenanceRecord } from '@/types/chat';
+import { useArtifactByPath } from '@/hooks/useArtifact';
+import { AnimatePresence, motion } from '@/lib/framer';
+import { TWEEN } from '@/lib/motion';
 import { useTranscriptReads, type TranscriptReader } from './useTranscript';
 import { focusToggleWhenRendered } from './panelToggleFocus';
-import { useWorkspaceFolders } from '../../contexts/WorkspaceContext';
+import { useWorkspaceFolders, useWorkspaceId } from '../../contexts/WorkspaceContext';
 import type { NewTabMenu, PanelLauncher } from './panelLaunchers';
 import './TabStrip.css';
 
@@ -149,6 +153,38 @@ function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | 
     case 'sources':
       return { name: t('filePanel.sourcesTab', { count: countDedupedSources(source as Record<string, ProvenanceRecord> | undefined) }), Glyph: BookOpen, detail: null };
   }
+}
+
+/**
+ * An HTML file's tab carries the dot while anything the agent posted on the
+ * file's comments is unread, so a reply that lands while another tab is in
+ * front is found from the strip. Only the owner reads them, and a dot already
+ * there when the record is read is drawn rather than played in.
+ */
+function ArtifactUnreadDot({ path }: { path: string }): React.ReactElement | null {
+  const { t } = useTranslation();
+  const workspaceId = useWorkspaceId();
+  const root = useWorkspaceFolders()?.rootDir;
+  const { data: artifact } = useArtifactByPath(workspaceId, path, { root });
+  if (!artifact) return null;
+  const label = t('filePanel.pageUnread', { count: artifact.unread });
+  return (
+    <AnimatePresence initial={false}>
+      {artifact.unread > 0 && (
+        <motion.span
+          key="dot"
+          className="file-panel-tab-dot is-unread"
+          role="img"
+          title={label}
+          aria-label={label}
+          initial={{ opacity: 0, scale: 0.6 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.6, transition: TWEEN.exit }}
+          transition={TWEEN.quick}
+        />
+      )}
+    </AnimatePresence>
+  );
 }
 
 function launcherItem({ key, label, icon: Icon, open }: PanelLauncher): React.ReactElement {
@@ -335,6 +371,7 @@ export function TabStrip({
               {tab.kind === 'file' && hasChanged(tab.path) && (
                 <span className="file-panel-tab-dot" title={t('filePanel.changedSinceRead')} aria-hidden="true" />
               )}
+              {tab.kind === 'file' && isHtmlFile(tab.path) && <ArtifactUnreadDot path={tab.path} />}
               <button
                 type="button"
                 className="file-panel-tab-close"

@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.services import file_grants
+from src.server.services import file_grants, signed_grants
 from src.server.services.file_grants import (
     DEFAULT_TTL_SECONDS,
     FileGrantError,
@@ -33,12 +33,12 @@ NOW = 1_800_000_000
 
 @pytest.fixture(autouse=True)
 def signing_key():
-    file_grants._key = None
+    file_grants._CODEC._key = None
     with patch.object(
-        file_grants, "get_server_key", AsyncMock(return_value=KEY)
+        signed_grants, "get_server_key", AsyncMock(return_value=KEY)
     ) as loader:
         yield loader
-    file_grants._key = None
+    file_grants._CODEC._key = None
 
 
 @pytest.mark.asyncio
@@ -101,7 +101,7 @@ async def test_another_key_cannot_mint_one(signing_key):
     signing_key.return_value = OTHER_KEY
     foreign = await mint_file_grant(WORKSPACE_ID, now=NOW)
 
-    file_grants._key = None
+    file_grants._CODEC._key = None
     signing_key.return_value = KEY
     with pytest.raises(FileGrantError):
         await verify_file_grant(foreign.token, now=NOW)

@@ -12,6 +12,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from src.server.models.chat import ShownSend
+
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
 logger = logging.getLogger("src.server.handlers.chat_handler")
 
@@ -81,12 +83,17 @@ def steer_payload(
     platform: str | None = None,
     request_key: str | None = None,
     origin: dict | None = None,
+    artifact_comments: ShownSend | None = None,
 ) -> dict[str, Any]:
-    """A main-thread steer job's payload, before any lifecycle key."""
+    """A main-thread steer job's payload, before any lifecycle key.
+
+    ``artifact_comments`` is what a reader is shown for a send carrying file
+    comments, kept with it whichever turn reads it.
+    """
     # Half a surrogate pair gets through the request's JSON parser but cannot
     # be stored as JSONB or encoded for the wire.
     content = content.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
-    return {
+    payload = {
         "target": "thread",
         "sender": sender,
         "content": content,
@@ -98,6 +105,9 @@ def steer_payload(
         "request_key": request_key,
         "origin": origin,
     }
+    if artifact_comments is not None:
+        payload["artifact_comments"] = artifact_comments.model_dump(mode="json")
+    return payload
 
 
 async def _launch_call_id(thread_id: str, task_id: str) -> str:

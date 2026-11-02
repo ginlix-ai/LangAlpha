@@ -110,6 +110,45 @@ def _patch_common(
 
 
 @pytest.mark.asyncio
+async def test_a_stop_publishes_the_comments_its_steers_gave_back():
+    """Only the stamp that returned them: a repeated stop reads the same steers
+    back for its own answer and has nothing new to tell the other tabs."""
+    from src.server.services.cancel_dispatch import cancel_workflow
+
+    patches, _, _, _, _, request_run_cancel = _patch_common(
+        manager_cancel_returns=True, active_run=_active_run()
+    )
+    returned = [{"content": "note"}]
+    request_run_cancel.return_value = {
+        "state": "requested",
+        "run": _active_run(),
+        "returned_steers": returned,
+    }
+    published = AsyncMock()
+    patches.append(
+        patch(
+            "src.server.services.artifacts.comments.publish_returned_comments",
+            new=published,
+        )
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_workflow("t-1")
+        request_run_cancel.return_value = {
+            "state": "already_requested",
+            "run": _active_run(),
+        }
+        await cancel_workflow("t-1")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["returned_steers"] == returned
+    published.assert_awaited_once_with("t-1", returned)
+
+
+@pytest.mark.asyncio
 async def test_cancel_with_active_task_is_signal_only():
     """When a task is active (manager.signal_cancel → True), the handler
     records durable intent and signals the task, but must NOT call

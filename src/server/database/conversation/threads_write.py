@@ -381,6 +381,7 @@ async def ensure_thread_exists(
     platform: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
     subagents_allowed: Optional[bool] = None,
+    resume: bool = True,
 ) -> bool:
     """
     Ensure conversation_threads row exists before workflow starts.
@@ -401,6 +402,9 @@ async def ensure_thread_exists(
             resume never rewrites it.
         subagents_allowed: Applied only when this call creates the row;
             None, or the side the owner's default is on, follows the default.
+        resume: Whether an existing row takes ``initial_status``. False for a
+            send that makes the thread ahead of its admission, which may yet
+            be refused and must leave a thread it found as it was.
 
     Returns:
         True if this call created the thread row, False if it already existed.
@@ -427,12 +431,11 @@ async def ensure_thread_exists(
     # Fast path: both cached and thread exists → just update status, no pool checkout
     # needed for existence checks
     if ws_cached and thread_cached:
-        await update_thread_status(
-            conversation_thread_id, initial_status
-        )
-        logger.debug(
-            f"Resumed thread {conversation_thread_id}, updated status to {initial_status}"
-        )
+        if resume:
+            await update_thread_status(conversation_thread_id, initial_status)
+            logger.debug(
+                f"Resumed thread {conversation_thread_id}, updated status to {initial_status}"
+            )
         return False
 
     # Slow path: at least one cache miss — need a connection.
@@ -496,15 +499,16 @@ async def ensure_thread_exists(
             created = True
         else:
             # Thread exists (resume scenario), update status
-            await update_thread_status(
-                conversation_thread_id, initial_status, conn=conn
-            )
+            if resume:
+                await update_thread_status(
+                    conversation_thread_id, initial_status, conn=conn
+                )
+                logger.debug(
+                    f"Resumed thread {conversation_thread_id}, updated status to {initial_status}"
+                )
             # Cache thread existence on resume too (in case cache was cold)
             if not thread_cached:
                 stamp_exists.append(thread_key)
-            logger.debug(
-                f"Resumed thread {conversation_thread_id}, updated status to {initial_status}"
-            )
 
     if stamp_exists and cache.enabled and cache.client:
         for key in stamp_exists:
@@ -608,6 +612,67 @@ async def delete_thread(conversation_thread_id: str, conn=None) -> bool:
     except Exception as e:
         logger.error(f"Error deleting thread: {e}")
         raise
+
+
+async def delete_unused_thread(conversation_thread_id: str, *, request_key: str) -> bool:
+    """Delete a thread no turn ever started in: the one a refused send made
+    before admission. Whether it was deleted.
+
+    The row lock comes first and the checks after it, in statements of their
+    own: a START that wrote its turn rows has committed by then, and one
+    still to come waits on the lock and then fails on the missing thread,
+    rather than having its rows cascade away under it. A copy of the send
+    under ``request_key`` that another worker admitted keeps the thread too,
+    run or steer, since that copy carries what the refused one claimed.
+    """
+    from src.server.database.runs.lifecycle import request_key_has_run
+    from src.server.database.runs.outbox import steer_key_taken
+
+    async with pool.get_db_connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT 1 FROM conversation_threads
+                     WHERE conversation_thread_id = %s
+                       FOR UPDATE
+                    """,
+                    (conversation_thread_id,),
+                )
+                if await cur.fetchone() is None:
+                    return False
+                if await request_key_has_run(conn, request_key) or (
+                    await steer_key_taken(conn, request_key)
+                ):
+                    return False
+                await cur.execute(
+                    """
+                    DELETE FROM conversation_threads t
+                     WHERE t.conversation_thread_id = %s
+                       AND NOT EXISTS (
+                           SELECT 1 FROM conversation_queries q
+                            WHERE q.conversation_thread_id = t.conversation_thread_id
+                       )
+                       AND NOT EXISTS (
+                           SELECT 1 FROM conversation_responses r
+                            WHERE r.conversation_thread_id = t.conversation_thread_id
+                       )
+                    """,
+                    (conversation_thread_id,),
+                )
+                deleted = cur.rowcount > 0
+    # After the commit, as a retry of the send under this thread id would
+    # otherwise skip making the row it needs.
+    if deleted:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if cache.enabled and cache.client:
+            try:
+                await cache.client.delete(thread_exists_key(conversation_thread_id))
+            except Exception:
+                logger.debug("Evicting a removed thread's existence failed", exc_info=True)
+    return deleted
 
 
 _UNSET = object()

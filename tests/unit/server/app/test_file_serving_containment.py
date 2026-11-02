@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from src.server.app.share_access import ShareScope, shared_path_visible
+from src.server.services.served_paths import ShareScope, shared_path_visible
 from src.server.app.share_files import (
     download_shared_file,
     list_shared_files,
@@ -62,9 +62,9 @@ SIBLING_SECRET = b"a file the share token does not cover"
 CHART_PNG = b"\x89PNG\r\n\x1a\n\x01\x02"
 
 _SERVE_DBWS = "src.server.app.workspace_files.serve.db_get_workspace"
-_SERVE_FP = "src.server.app.workspace_files.serve.FilePersistenceService"
+_SERVE_FP = "src.server.services.warm_files.FilePersistenceService"
 _SERVE_WD = "src.server.app.workspace_files.serve.work_dir_for"
-_SERVE_WSMGR = "src.server.app.workspace_files.serve.WorkspaceManager"
+_SERVE_WSMGR = "src.server.services.warm_files.WorkspaceManager"
 _SERVE_VAULT = "src.server.app.workspace_files.serve.get_vault_secrets_for_redaction"
 _SHARE_WD = "src.server.app.share_access.work_dir_for"
 _SHARE_THREAD = "src.server.app.share_access.get_thread_by_share_token"
@@ -72,7 +72,7 @@ _SHARE_DBWS = "src.server.app.share_access.db_get_workspace"
 _SHARE_SERVE = "src.server.app.share_files.serve_workspace_file"
 _SHARE_FP = "src.server.app.share_files.FilePersistenceService"
 _SHARE_VAULT = "src.server.app.share_files.get_vault_secrets_for_redaction"
-_SHARE_WSMGR = "src.server.app.workspace_files.serve.WorkspaceManager"
+_SHARE_WSMGR = "src.server.services.warm_files.WorkspaceManager"
 _CRUD_DBWS = "src.server.app.workspace_files.crud.db_get_workspace"
 _CRUD_OWNER = "src.server.app.workspace_files.crud.require_workspace_owner"
 _CRUD_ACQUIRE_TO_CHANGE = "src.server.app.workspace_files.crud.acquire_sandbox_to_change"
@@ -441,7 +441,7 @@ async def test_serve_falls_back_to_the_mirror_when_the_probe_cannot_run(tree) ->
         _warm(mgr, tree.sandbox)
         fp.get_file_content = AsyncMock(return_value=record)
         response = await serve_workspace_file(
-            WS_ID, "work/report.html", inject_theme=False
+            WS_ID, "work/report.html"
         )
     assert response.status_code == 200
     assert response.body == b"mirrored"
@@ -476,7 +476,7 @@ async def test_serve_denies_a_symlink_out_of_the_serve_root(tree) -> None:
         fp.get_file_content = AsyncMock(return_value=None)
         with pytest.raises(HTTPException) as exc:
             await serve_workspace_file(
-                WS_ID, "work/escape/secret.txt", inject_theme=False
+                WS_ID, "work/escape/secret.txt"
             )
     assert exc.value.status_code == 404
     assert tree.sandbox.reads == []
@@ -496,7 +496,7 @@ async def test_serve_denies_a_symlink_into_the_reserved_runtime_dir(tree) -> Non
         fp.get_file_content = AsyncMock(return_value=None)
         with pytest.raises(HTTPException) as exc:
             await serve_workspace_file(
-                WS_ID, "work/reserved/secret.txt", inject_theme=False
+                WS_ID, "work/reserved/secret.txt"
             )
     assert exc.value.status_code == 404
     assert tree.sandbox.reads == []
@@ -515,7 +515,7 @@ async def test_serve_returns_a_contained_file(tree) -> None:
         _warm(mgr, tree.sandbox)
         fp.get_file_content = AsyncMock(return_value=None)
         response = await serve_workspace_file(
-            WS_ID, "work/report.html", inject_theme=False
+            WS_ID, "work/report.html"
         )
     assert response.status_code == 200
     assert response.body == REPORT_HTML
@@ -533,7 +533,7 @@ async def test_serve_denies_a_traversal_path_without_touching_the_sandbox(tree) 
         _warm(mgr, tree.sandbox)
         with pytest.raises(HTTPException) as exc:
             await serve_workspace_file(
-                WS_ID, "../outside/secret.txt", inject_theme=False
+                WS_ID, "../outside/secret.txt"
             )
     assert exc.value.status_code == 404
     assert tree.sandbox.runtime.commands == []

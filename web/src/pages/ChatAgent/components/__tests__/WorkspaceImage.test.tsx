@@ -75,6 +75,23 @@ describe('WorkspaceImage — __wsref__ downloader selection', () => {
     await waitFor(() => expect(sharedDownloader).toHaveBeenCalledWith('results/charts/plain.png'));
     expect(downloadWorkspaceFile).not.toHaveBeenCalled();
   });
+
+  it('reads the same path again under another scope: a version or link holds its own bytes', async () => {
+    const first = vi.fn(() => Promise.resolve('blob:v1'));
+    const second = vi.fn(() => Promise.resolve('blob:v2'));
+    const page = (imageScope: string, downloadFile: (p: string) => Promise<string>) => (
+      <WorkspaceProvider workspaceId={null} downloadFile={downloadFile} imageScope={imageScope}>
+        <WorkspaceImage src="scoped/chart.png" alt="chart" />
+      </WorkspaceProvider>
+    );
+
+    const view = render(page('share:c:v1', first));
+    await waitFor(() => expect(screen.getByAltText('chart')).toHaveAttribute('src', 'blob:v1'));
+
+    view.rerender(page('share:c:v2', second));
+    await waitFor(() => expect(screen.getByAltText('chart')).toHaveAttribute('src', 'blob:v2'));
+    expect(second).toHaveBeenCalledWith('scoped/chart.png');
+  });
 });
 
 describe('WorkspaceImage reads a destination the way a link does', () => {

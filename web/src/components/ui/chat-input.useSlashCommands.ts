@@ -159,6 +159,12 @@ export function useSlashCommands({
     setOpen(false);
   }, []);
 
+  /** Pills a send took, back beside any picked since. */
+  const restore = useCallback((commands: readonly SlashCommand[]) => {
+    if (commands.length === 0) return;
+    setSlashCommands((prev) => [...prev, ...commands.filter((cmd) => !prev.some((c) => c.name === cmd.name))]);
+  }, []);
+
   return {
     slashCommands,
     open,
@@ -173,6 +179,7 @@ export function useSlashCommands({
     handleKeyDown,
     close,
     reset,
+    restore,
   };
 }
 

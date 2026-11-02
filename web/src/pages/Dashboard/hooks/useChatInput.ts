@@ -97,9 +97,9 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
   const handleSend = async (
     message: string,
     attachments: ChatAttachment[] = [],
-    // Slash commands are accepted to match ChatInput.onSend's signature but
-    // dropped here — they apply only inside an active chat session, not on
-    // the dashboard handoff.
+    // Slash commands come with the composer's send but are dropped here:
+    // they apply only inside an active chat session, not on the dashboard
+    // handoff.
     _slashCommands: SlashCommand[] = [],
     { model, reasoningEffort, fastMode, widgetSnapshots, subagentsAllowed, reasoningEffortOverride, fastModeOverride }: SendOptions = {},
   ): Promise<void> => {

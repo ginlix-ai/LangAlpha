@@ -27,6 +27,7 @@ if sys.platform == "win32":
 import importlib
 import logging
 import os
+import re
 import certifi
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -1248,8 +1249,31 @@ allowed_origins = get_allowed_origins()
 
 logger.info(f"Allowed origins: {allowed_origins}")
 
+# Routes whose URL is the whole credential (a grant or share code in the path).
+# Their documents run on an opaque origin, so their own reads arrive as
+# Origin: null; any origin may read them, and never with credentials, which
+# the app's CORS below would add by echoing that origin back.
+_URL_CREDENTIAL_ROUTES = re.compile(
+    r"/api/v1/(?:wsfiles/g/|artifacts/g/|public/shared/[^/]+/files/serve/)"
+)
+
+
+class _CORSMiddleware(CORSMiddleware):
+    def __init__(self, app, **options):
+        super().__init__(app, **options)
+        self._url_credential = CORSMiddleware(
+            app, allow_origins=["*"], allow_methods=["GET", "HEAD"]
+        )
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and _URL_CREDENTIAL_ROUTES.match(scope["path"]):
+            await self._url_credential(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 app.add_middleware(
-    CORSMiddleware,
+    _CORSMiddleware,
     allow_origins=allowed_origins,  # Restrict to specific origins
     allow_credentials=True,
     allow_methods=[
@@ -1317,6 +1341,9 @@ from src.server.app.workspace_files import router as workspace_files_router
 from src.server.app.workspace_files import wsfiles_router
 from src.server.app.workspace_sandbox import router as workspace_sandbox_router
 from src.server.app.chart_annotations import router as chart_annotations_router
+from src.server.app.artifact_frames import frame_router as artifact_frame_router
+from src.server.app.artifacts import router as artifacts_router
+from src.server.app.artifacts import workspace_router as artifact_records_router
 from src.server.app.workspace_sandbox import preview_redirect_router
 from src.server.app.market_data import router as market_data_router
 from src.server.app.bars import router as bars_router
@@ -1398,6 +1425,12 @@ app.include_router(
 app.include_router(
     chart_annotations_router
 )  # /api/v1/workspaces/{id}/chart-annotations - Agent-drawn chart annotations
+app.include_router(
+    artifact_records_router
+)  # /api/v1/workspaces/{id}/artifacts - A workspace file's artifact record (owner)
+app.include_router(
+    artifacts_router
+)  # /api/v1/artifacts/{id}/* - Versions, publishing and comments (owner)
 app.include_router(market_data_router)  # /api/v1/market-data/* - Market data proxy
 app.include_router(
     bars_router
@@ -1508,6 +1541,9 @@ app.include_router(
 app.include_router(
     wsfiles_router
 )  # /api/v1/wsfiles/g/{grant}/{path} - Grant-gated path-style file serving
+app.include_router(
+    artifact_frame_router
+)  # /api/v1/artifacts/g/{grant}/v/{seq}/{path} - A version's files, without a preview base
 
 app.include_router(
     market_data_ws_router

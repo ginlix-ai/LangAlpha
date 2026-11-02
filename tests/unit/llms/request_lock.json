@@ -67,6 +67,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -199,6 +200,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -341,6 +343,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -468,6 +471,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -550,6 +554,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -692,6 +697,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -819,6 +825,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -901,6 +908,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1043,6 +1051,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1170,6 +1179,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1252,6 +1262,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1394,6 +1405,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1521,6 +1533,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1658,6 +1671,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1795,6 +1809,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1932,6 +1947,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2063,6 +2079,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2194,6 +2211,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2325,6 +2343,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2456,6 +2475,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2587,6 +2607,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2718,6 +2739,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2848,6 +2870,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2980,6 +3003,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3110,6 +3134,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3242,6 +3267,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3372,6 +3398,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3504,6 +3531,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3634,6 +3662,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3766,6 +3795,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3896,6 +3926,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4029,6 +4060,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4162,6 +4194,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4295,6 +4328,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4428,6 +4462,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4561,6 +4596,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4694,6 +4730,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4827,6 +4864,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4960,6 +4998,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5091,6 +5130,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5222,6 +5262,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5351,6 +5392,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5475,6 +5517,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5604,6 +5647,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5728,6 +5772,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5857,6 +5902,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5981,6 +6027,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6105,6 +6152,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6234,6 +6282,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6363,6 +6412,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6492,6 +6542,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6621,6 +6672,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6750,6 +6802,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]

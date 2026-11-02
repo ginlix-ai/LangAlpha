@@ -56,7 +56,7 @@ describe('ChatInput — locator context', () => {
     act(() => ref.current!.addContext(RANGE));
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
-    const sent = onSend.mock.calls[0][0] as string;
+    const sent = onSend.mock.calls[0][0].message as string;
     expect(sent).toContain('<summary>@models/dcf.xlsx#Model!B4:D9 (18 cells)</summary>');
     expect(sent).toContain('12.4\t13.1\t13.9');
   });
@@ -69,7 +69,7 @@ describe('ChatInput — locator context', () => {
     }));
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
-    const sent = onSend.mock.calls[0][0] as string;
+    const sent = onSend.mock.calls[0][0].message as string;
     expect(sent).toContain('<summary>@models/dcf.xlsx#Model!B:B (column B)</summary>');
     expect(sent).not.toContain('1048576');
   });
@@ -87,7 +87,7 @@ describe('ChatInput — locator context', () => {
     }));
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
-    const sent = onSend.mock.calls[0][0] as string;
+    const sent = onSend.mock.calls[0][0].message as string;
     expect(sent).toContain('<summary>@work/model.py (lines 40-42, 3 lines)</summary>');
     expect(sent).not.toContain('#');
   });

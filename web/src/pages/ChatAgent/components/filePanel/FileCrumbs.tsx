@@ -9,6 +9,10 @@ interface FileCrumbsProps {
   meta: string | null;
   /** The focus chip a reference left behind, when there is one. */
   chip?: React.ReactNode;
+  /** A published HTML file's version and whether it changed since. */
+  artifact?: React.ReactNode;
+  /** An HTML file's comment controls, ahead of the file's own actions. */
+  tools?: React.ReactNode;
   /** Download menu, edit toolbar — the actions that belong to the open file. */
   actions?: React.ReactNode;
   unsaved?: boolean;
@@ -19,7 +23,7 @@ interface FileCrumbsProps {
  * it, and what can be done with it. Each segment points the tree at that
  * directory, which is how a reader gets from a file to its neighbours.
  */
-export function FileCrumbs({ path, onOpenDir, meta, chip, actions, unsaved }: FileCrumbsProps): React.ReactElement {
+export function FileCrumbs({ path, onOpenDir, meta, chip, artifact, tools, actions, unsaved }: FileCrumbsProps): React.ReactElement {
   const segments = path.split('/').filter(Boolean);
   return (
     <div className="file-panel-crumbs">
@@ -44,9 +48,11 @@ export function FileCrumbs({ path, onOpenDir, meta, chip, actions, unsaved }: Fi
           );
         })}
       </nav>
+      {artifact}
       {chip}
       <span className="file-panel-crumb-spacer" />
       {meta && <span className="file-panel-crumb-meta">{meta}</span>}
+      {tools}
       {actions}
     </div>
   );

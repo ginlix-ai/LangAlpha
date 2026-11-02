@@ -15,6 +15,7 @@ import { FileErrorDisplay, type FileError } from './fileErrors';
 import { DocumentErrorFallback, DocumentLoadingFallback } from './fallbacks';
 import type { useFileFocus } from './useFileFocus';
 import type { DownloadState } from '../../utils/downloadNotice';
+import type { HtmlArtifactView } from '../viewers/html/ArtifactFrames';
 
 const PdfViewer = React.lazy(() => import('../viewers/PdfViewer'));
 const CsvViewer = React.lazy(() => import('../viewers/CsvViewer'));
@@ -77,6 +78,8 @@ export interface FileViewerProps {
   onViewerLink?: OpenFileHandler;
   /** The serve prefix a share was handed; omitted, the owner's grant serves HTML. */
   servePrefix?: string;
+  /** The owner's comments and versions on an HTML file. Left out, the file shows alone. */
+  htmlArtifact?: HtmlArtifactView | null;
 }
 
 /** The open file, rendered by whichever viewer its bytes belong to. */
@@ -206,6 +209,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
             anchor={focus.htmlAnchor}
             anchorSeq={focus.seq}
             source={props.htmlSource}
+            artifact={props.htmlArtifact ?? null}
           />
         </DocumentErrorBoundary>
       </Suspense>

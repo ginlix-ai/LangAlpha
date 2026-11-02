@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { authSessionCheck, registerAuthReset } from '@/lib/authResets';
-import { useWorkspaceId, useWorkspaceDownloadFile, useWorkspaceFolders } from '../contexts/WorkspaceContext';
+import { useWorkspaceId, useWorkspaceDownloadFile, useWorkspaceFolders, useWorkspaceImageScope } from '../contexts/WorkspaceContext';
 import { downloadWorkspaceFile } from '../utils/api';
 import { onOtherComputer, parseAgentHref } from '../utils/agentPaths';
 import { normalizeFilePath, parseFolderHref, parseWsPath } from '../utils/filePaths';
@@ -33,6 +33,7 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   const contextWorkspaceId = useWorkspaceId();
   const downloadFileFn = useWorkspaceDownloadFile();
   const folders = useWorkspaceFolders();
+  const imageScope = useWorkspaceImageScope();
 
   // Support __wsref__/{workspaceId}/path for cross-workspace file references,
   // and another workspace's folder (`../NVDA/chart.png`), which names its
@@ -62,7 +63,7 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   // encoded (`.../%E5%9B%BE%E8%A1%A8.png`) reaches the API as raw Unicode;
   // callers hand over the raw destination for that reason.
   const normalizedPath = canFetch ? other?.path ?? normalizeFilePath(src!, folders) : '';
-  const cacheKey = canFetch ? `${workspaceId || 'shared'}:${normalizedPath}` : '';
+  const cacheKey = canFetch ? `${imageScope || workspaceId || 'shared'}:${normalizedPath}` : '';
 
   const [state, setState] = useState<LoadState>(() =>
     cacheKey && blobCache.has(cacheKey) ? 'loaded' : 'idle'

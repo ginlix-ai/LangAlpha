@@ -94,15 +94,48 @@ body > :first-child {
 }`;
 
 /**
+ * `rgba(r, g, b, a)` as the canvas serializes a translucent color, as
+ * `#rrggbbaa`; null for any other form.
+ */
+export function rgbaToHex(serialized: string): string | null {
+  const m = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(serialized);
+  if (!m) return null;
+  const byte = (n: number) => Math.min(255, Math.max(0, n)).toString(16).padStart(2, '0');
+  return `#${byte(+m[1])}${byte(+m[2])}${byte(+m[3])}${byte(Math.round(+m[4] * 255))}`;
+}
+
+/**
+ * A theme color as hex: `#rrggbb`, or `#rrggbbaa` when translucent. The tokens
+ * are written in whatever syntax suits the stylesheet (`hsl(var(--primary))`
+ * reads back as `hsl(28 63% 51%)`), but a document reads them to paint a
+ * canvas, and the report skills present them as hex. Code that derives a
+ * shade by parsing hex gets NaN from any other form, and the canvas paints a
+ * color it rejects black. The canvas's own parser does the conversion; with
+ * none (jsdom), or for a value that is not an sRGB color, it passes through.
+ */
+function hexColor(value: string, painter: CanvasRenderingContext2D | null): string {
+  if (!painter) return value;
+  painter.fillStyle = '#000000';
+  painter.fillStyle = value;
+  const read = painter.fillStyle;
+  painter.fillStyle = '#ffffff';
+  painter.fillStyle = value;
+  // Not a color: each assignment was refused and left its sentinel.
+  if (typeof read !== 'string' || read !== painter.fillStyle) return value;
+  return read.startsWith('#') ? read : (rgbaToHex(read) ?? value);
+}
+
+/**
  * `from` exists for the print path, which needs the light palette rather than
  * the one the document is currently wearing (see widgetPdf.ts). Every other
  * caller wants the live theme and passes nothing.
  */
 export function resolveThemeVars(from: Element = document.documentElement): string {
   const style = getComputedStyle(from);
+  const painter = document.createElement('canvas').getContext('2d');
   const vars = THEME_VARS.map((v) => {
     const val = style.getPropertyValue(v).trim();
-    return val ? `${v}: ${val};` : '';
+    return val ? `${v}: ${hexColor(val, painter)};` : '';
   })
     .filter(Boolean)
     .join('\n  ');
@@ -219,6 +252,13 @@ export function buildHtmlSrcDoc(
 })();
 </script>\n`;
 
+  // A `widget:themeUpdate` push swaps the :root block, then fires `themechange`
+  // on the window, so a widget can repaint what it drew from the variables (a
+  // canvas keeps the colors it was painted with). The first theme fires
+  // nothing: it is the inline :root block below, parsed before any widget
+  // script runs, and the template never applies it later, so there is nothing
+  // a listener could miss. A frame that needs another theme after load (the
+  // fullscreen dialog, the print copy) gets it as a push, which does fire.
   return `<!DOCTYPE html><html><head>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
 <style>
@@ -272,6 +312,7 @@ window.sendPrompt = function(text) {
           /:root\\s*\\{[^}]*\\}/,
           ':root {\\n  ' + e.data.css + '\\n}'
         );
+        try { window.dispatchEvent(new Event('themechange')); } catch (err) {}
       }
     }
   });

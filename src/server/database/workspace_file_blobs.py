@@ -93,6 +93,7 @@ __all__ = [
     "registered_blobs",
     "store_blob",
     "store_blobs",
+    "store_unregistered_blobs",
     "sweep_blob_garbage",
 ]
 
@@ -236,6 +237,22 @@ async def registered_blobs(user_id: str, sha256s: list[str]) -> set[str]:
         async with conn.cursor() as cur:
             await cur.execute(_TOUCH_SQL, (user_id, digests))
             return {row[0] for row in await cur.fetchall() if row[1]}
+
+
+async def store_unregistered_blobs(
+    user_id: str, contents: dict[str, bytes], *, concurrency: int = 8
+) -> None:
+    """``store_blobs`` for the digests the user does not hold yet: what a
+    writer of rows that name blobs calls before inserting them, so the
+    registry touch covers the gap until the rows land."""
+    if not contents:
+        return
+    registered = await registered_blobs(user_id, list(contents))
+    await store_blobs(
+        user_id,
+        {sha: data for sha, data in contents.items() if sha not in registered},
+        concurrency=concurrency,
+    )
 
 
 async def register_blobs(user_id: str, entries: list[tuple[str, int]]) -> None:

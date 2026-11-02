@@ -100,6 +100,7 @@ const baseChatState = () => ({
   returnedEdit: null as string | null,
   clearReturnedEdit: vi.fn(),
   editDrafts: createEditDraftStore(() => 'thread-1'),
+  watchCommentSends: vi.fn(() => () => {}),
   handleSendMessage: vi.fn(),
   stopWorkflow: vi.fn(),
   stopCompaction: vi.fn(),

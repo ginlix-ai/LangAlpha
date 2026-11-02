@@ -409,6 +409,8 @@
     padding: 0.125rem 0.5rem 0.125rem 0.75rem;
     border-bottom: 1px solid var(--color-border-muted);
     flex-shrink: 0;
+    /* What sits in it can fold to the panel's width (CommentTools.css). */
+    container: file-crumbs / inline-size;
   }
   .file-panel-crumb-trail {
     display: flex;
@@ -499,9 +501,11 @@
     .chat-split-divider { display: none; }
 
     /* Add bottom padding to scrollable areas inside the mobile overlay
-       so content doesn't get clipped behind the floating bottom tab bar */
-    .mobile-panel-overlay [class*="overflow-y-auto"],
-    .mobile-panel-overlay [class*="overflow-auto"],
+       so content doesn't get clipped behind the floating bottom tab bar.
+       Not inside the chat's composer docked at a page's foot: nothing runs on
+       under it, and the bar's height only swells its message box and lists. */
+    .mobile-panel-overlay [class*="overflow-y-auto"]:not(.composer-dock *),
+    .mobile-panel-overlay [class*="overflow-auto"]:not(.composer-dock *),
     .mobile-panel-overlay .file-panel-content,
     .mobile-panel-overlay .file-panel-tree-list {
       padding-bottom: var(--bottom-tab-height);
@@ -603,4 +607,70 @@
 }
 .file-focus-chip-close:hover {
   color: var(--color-text-primary);
+}
+
+/* "● changed since · Update" after a published file's version chip: the live
+   file has moved on from what visitors see (or, with the warning dot, a link
+   visitors can't open). Quiet text; the Update is the one act in it, a
+   link-weight button rather than a second chip. */
+.file-panel-artifact-drift {
+  display: inline-flex;
+  min-width: 0;
+  /* The row's first give, before the file's name. */
+  flex-shrink: 1000;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+.file-panel-artifact-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-status-modified);
+}
+.file-panel-artifact-dot[data-tone='warning'] {
+  background-color: var(--color-warning);
+}
+/* The words show whole or not at all: the moment they would clip they drop
+   out (ArtifactCrumbs), still measured, and the dot's title says them. A word
+   cut to its first letter reads as a glitch. */
+.file-panel-artifact-drift-words {
+  min-width: 0;
+  overflow: hidden;
+}
+.file-panel-artifact-drift-words::after {
+  content: '·';
+  margin-left: 4px;
+}
+.file-panel-artifact-drift[data-dropped] {
+  flex-shrink: 0;
+}
+.file-panel-artifact-drift[data-dropped] .file-panel-artifact-drift-words {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* A crowded row keeps some of the file's name: the version and the comment
+   controls beside it are about that file. */
+.file-panel-crumbs:has(.artifact-version-chip, .file-panel-artifact-drift) .file-panel-crumb-trail {
+  min-width: 4.5rem;
+}
+.file-panel-artifact-update {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  border-radius: 3px;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.file-panel-artifact-update:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.file-panel-artifact-update:disabled {
+  cursor: default;
+  opacity: 0.6;
 }

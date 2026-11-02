@@ -21,7 +21,7 @@ import { isImeComposing } from '@/lib/ime';
 import { cn } from '@/lib/utils';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import './chat-input.css';
-import type { ComposerScope, ModelOptions, ReadyAttachment, SlashCommand, ThreadTuning, Workspace } from './chat-input.types';
+import type { ComposerDraft, ComposerScope, ComposerSend, MentionedFile, ModelOptions, ReadyAttachment, SlashCommand, ThreadTuning, Workspace } from './chat-input.types';
 import { isLargePaste, getModelDisplayName } from './chat-input.helpers';
 import { effortLabelFor, resolveEffort } from '@/lib/modelTuning';
 import { ChatInputWidgetDeck, MentionAutocompleteList, SlashCommandList } from './chat-input.parts';
@@ -52,6 +52,19 @@ const MAX_TEXTAREA_HEIGHT = 200;
 /** A thread that follows Settings for both. */
 const FOLLOWS_SETTINGS = { reasoningEffort: null, fastMode: null } as const;
 
+/** The box with `text` put back: into it when empty, else after what is
+ *  typed, a blank line between, and never twice. */
+function withGivenBack(typed: string, text: string): string {
+  const kept = typed.trimEnd();
+  if (!kept) return text;
+  if (kept === text || kept.endsWith(`\n\n${text}`)) return typed;
+  return `${kept}\n\n${text}`;
+}
+
+function sameMention(a: MentionedFile, b: MentionedFile): boolean {
+  return a.path === b.path && a.snippet === b.snippet && a.locator === b.locator && a.source === b.source;
+}
+
 export interface ChatInputHandle {
   getModelOptions: () => ModelOptions;
   addContext: (ctx: { path?: string; snippet?: string; label?: string; locator?: string; lineStart?: number; lineEnd?: number; lineCount?: number; source?: string }) => void;
@@ -64,18 +77,28 @@ export interface ChatInputHandle {
    */
   addWidgetSnapshot: (snapshot: WidgetContextSnapshot) => void;
   setValue: (text: string) => void;
-  /** Puts back text the user wrote elsewhere without losing what is typed
-   *  here: into an empty box, else after it, a blank line between. Files a
-   *  send took come back beside what is attached now. */
-  giveBack: (text: string, files?: ReadyAttachment[]) => void;
+  /**
+   * Puts back what was written elsewhere, or sent and handed back, without
+   * losing what is typed here: the text into an empty box, else after it, a
+   * blank line between, and the files and pills beside what is there now.
+   * `focus: false` leaves focus where it is, for a draft that comes back
+   * while the person may have moved on to something else.
+   */
+  giveBack: (
+    text: string,
+    files?: ReadyAttachment[],
+    rest?: Partial<Pick<ComposerDraft, 'mentions' | 'commands'>> & { focus?: boolean },
+  ) => void;
   /** Sends what is written, as Enter does. Returns whether there was
    *  anything to send. */
   send: () => boolean;
+  focus: () => void;
 }
 
 
 export interface ChatInputProps {
-  onSend: (message: string, attachments: ReadyAttachment[], slashCommands: SlashCommand[], modelOptions: ModelOptions) => void;
+  /** The send is also the box as the person wrote it, for `giveBack` should it fail. */
+  onSend: (send: ComposerSend) => void;
   disabled?: boolean;
   isLoading?: boolean;
   /**
@@ -155,6 +178,13 @@ export interface ChatInputProps {
    * Only once the label is down to its floor does the status cost a slot.
    */
   toolbarStatus?: React.ReactNode;
+  /**
+   * Context the host gathers above the text box, ruled off from it (the chat
+   * view's queued file comments). The host owns what it holds and what a send
+   * does with it; pair it with `hasExternalContext` when it makes an empty box
+   * sendable. A press on it is its own and does not focus the text box.
+   */
+  deck?: React.ReactNode;
 }
 
 /* --- MAIN COMPONENT --- */
@@ -206,6 +236,7 @@ function ChatInput({
   // Minimum visible rows for the textarea (default 1 = compact; pass 2 for roomier non-ChatView callsites)
   minRows = 1,
   toolbarStatus = null,
+  deck = null,
   ref,
 }: ChatInputProps & { ref?: React.Ref<ChatInputHandle> }) {
   const { t } = useTranslation();
@@ -350,7 +381,7 @@ function ChatInput({
   } = mentions;
   const {
     slashCommands, pruneRemoved: pruneSlash, detectTrigger: detectSlash,
-    close: closeSlash, reset: resetSlash, handleKeyDown: slashKeyDown,
+    close: closeSlash, reset: resetSlash, restore: restoreSlash, handleKeyDown: slashKeyDown,
   } = slash;
 
   // Voice input (speech recognition) — see chat-input.useVoiceInput.
@@ -405,22 +436,22 @@ function ChatInput({
       setMessage(text);
       setTimeout(() => textareaRef.current?.focus(), 0);
     },
-    giveBack(text, files = []) {
-      if (text) {
-        setMessage((prev) => {
-          const typed = prev.trimEnd();
-          if (!typed) return text;
-          if (typed === text || typed.endsWith(`\n\n${text}`)) return prev;
-          return `${typed}\n\n${text}`;
-        });
-      }
+    giveBack(text, files = [], { mentions = [], commands = [], focus = true } = {}) {
+      if (text) setMessage((prev) => withGivenBack(prev, text));
       restoreFiles(files);
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      if (mentions.length > 0) {
+        setMentionedFiles((prev) => [...prev, ...mentions.filter((m) => !prev.some((p) => sameMention(p, m)))]);
+      }
+      restoreSlash(commands);
+      if (focus) setTimeout(() => textareaRef.current?.focus(), 0);
     },
     send() {
       return sendRef.current();
     },
-  }), [pillModel, sentEffort, resolvedFastMode, effectiveMarketWatch, draftSubagents, ownOverrides, setMentionedFiles, restoreFiles]);
+    focus() {
+      textareaRef.current?.focus();
+    },
+  }), [pillModel, sentEffort, resolvedFastMode, effectiveMarketWatch, draftSubagents, ownOverrides, setMentionedFiles, restoreFiles, restoreSlash]);
 
   // Subscribe to ContextBus so this input mirrors the global widget-context
   // deck. Multiple chat inputs can be visible simultaneously (hero card +
@@ -574,14 +605,21 @@ function ChatInput({
       const blocks = snippetMentions.map((f) => formatContextBlock(f, t));
       finalMessage = finalMessage.trimEnd() + '\n' + blocks.join('\n');
     }
-    onSend(finalMessage, readyAttachments, slashCommands, {
-      model: pillModel,
-      reasoningEffort: sentEffort,
-      fastMode: resolvedFastMode,
-      marketWatch: effectiveMarketWatch,
-      subagentsAllowed: draftSubagents,
-      ...ownOverrides,
-      widgetSnapshots: widgetSnapshots.length ? widgetSnapshots : undefined,
+    onSend({
+      text: message,
+      files: readyAttachments,
+      mentions: mentionedFiles,
+      commands: slashCommands,
+      message: finalMessage,
+      modelOptions: {
+        model: pillModel,
+        reasoningEffort: sentEffort,
+        fastMode: resolvedFastMode,
+        marketWatch: effectiveMarketWatch,
+        subagentsAllowed: draftSubagents,
+        ...ownOverrides,
+        widgetSnapshots: widgetSnapshots.length ? widgetSnapshots : undefined,
+      },
     });
     setMessage('');
     attachedFiles.forEach(f => { if (f.preview) URL.revokeObjectURL(f.preview); });
@@ -762,10 +800,22 @@ function ChatInput({
       <div
         ref={attachChatContainer}
         className={cn('chat-input-container owns-its-edge flex flex-col items-stretch relative z-10 rounded-[22px] cursor-text border border-(--color-border-input) bg-(--color-bg-card)', isListening && 'recording')}
-        onClick={() => textareaRef.current?.focus()}
+        onClick={(event) => {
+          // A press on a control in the box is that control's, and the deck
+          // above the text is its own surface: focusing the text there would
+          // raise a phone's keyboard over the page the press was about.
+          if (event.target instanceof Element && event.target.closest('button, a, input, select, [role="button"], [data-composer-deck]')) return;
+          textareaRef.current?.focus();
+        }}
       >
         {isListening && <VoiceOverlay />}
         <div className="flex flex-col px-3 pt-3 pb-2 gap-2">
+
+          {/* The deck folds, and the column's gap below it cannot: a gap lands
+              whole the frame the deck mounts and vanishes the frame it hides.
+              The deck carries the gap as its own bottom margin, inside the
+              fold, and this cancels the column's. */}
+          {deck && <div data-composer-deck className="-mb-2">{deck}</div>}
 
           {/* Widget context deck — top card visible, others peek behind */}
           {widgetSnapshots.length > 0 && (

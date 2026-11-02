@@ -113,7 +113,7 @@ export function composerMock() {
     // while it is shut or holds nothing.
     const send = () => {
       if (disabled || (!value.trim() && composerSend.attachments.length === 0)) return false;
-      onSend(value, composerSend.attachments, [], composerSend.options);
+      onSend({ text: value, files: composerSend.attachments, mentions: [], commands: [], message: value, modelOptions: composerSend.options });
       setValue('');
       return true;
     };

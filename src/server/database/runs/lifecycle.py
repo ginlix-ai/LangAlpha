@@ -1466,3 +1466,9 @@ async def find_run_by_request_key(request_key: str) -> Optional[Dict[str, Any]]:
         return await _run_by_request_key(conn, request_key)
 
 
+async def request_key_has_run(conn, request_key: str) -> bool:
+    """Whether a run took ``request_key``, read on the caller's connection so
+    it can follow a lock the caller holds."""
+    return await _run_by_request_key(conn, request_key) is not None
+
+

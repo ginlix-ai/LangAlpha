@@ -7,6 +7,7 @@ import { MIN_LIVE_EXPOSURE_MS } from './liveZoneTiming';
 import { inChunkOrder } from '../../session/stream/textChunks';
 import { preapprovedCardOf, type PreapprovedCard } from '../../utils/preapprovedCards';
 import { isPlanTool, readPastPlan, type PastPlanOutcome } from './pastPlan';
+import { readArtifactCommentReply, type ArtifactCommentReply } from '../artifactComments/artifactCommentReply';
 import type { PTCAgentProposalState } from '@/types/chat';
 import type { ContentSegmentRecord, ToolCallProcessRecord } from './types';
 import type { ActivityItem, ToolActivityItem, LiveState, ToolCallData, ToolCallResultData } from './activityTypes';
@@ -40,20 +41,28 @@ export interface CompactArtifactRenderBlock {
   card: ArtifactCard | null;
 }
 
-/** The card a compact artifact is drawn as, decided once where its block is built. */
-export interface ArtifactCard {
-  /** Its entry in `INLINE_ARTIFACT_MAP`. */
-  type: string;
-  /** `pill`: a one-line pill, in a wrapping row with the pills beside it.
-   *  `call`: its call's own card on a line of its own, which takes the call's
-   *  row over as the call lands (CardArrivals).
-   *  `chart`: a chart annotation's card, which every draw on the chart feeds. */
-  kind: 'pill' | 'call' | 'chart';
-}
+/**
+ * The card a compact artifact is drawn as, decided once where its block is
+ * built. `type` is its entry in `INLINE_ARTIFACT_MAP`.
+ * `pill`: a one-line pill, in a wrapping row with the pills beside it.
+ * `call`: its call's own card on a line of its own, which takes the call's row
+ * over as the call lands (CardArrivals).
+ * `chart`: a chart annotation's card, which every draw on the chart feeds.
+ * `line`: an answer to a file comment, a quiet line said together with the
+ * lines beside it, carrying the reply read off the artifact.
+ */
+export type ArtifactCard =
+  | { type: string; kind: 'pill' | 'call' | 'chart' }
+  | { type: 'artifact_comment'; kind: 'line'; reply: ArtifactCommentReply };
 
 function cardOf(artifact: Record<string, unknown>): ArtifactCard | null {
   const { type } = artifact;
   if (typeof type !== 'string' || !INLINE_ARTIFACT_MAP[type]) return null;
+  if (type === 'artifact_comment') {
+    // One that names no comment draws nothing.
+    const reply = readArtifactCommentReply(artifact);
+    return reply ? { type, kind: 'line', reply } : null;
+  }
   return { type, kind: isPillArtifactType(type) ? 'pill' : type === 'chart_annotation' ? 'chart' : 'call' };
 }
 export interface SubagentTaskRenderBlock {

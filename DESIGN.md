@@ -37,6 +37,7 @@ be declared there (enforced by `web/src/styles/__tests__/tokenRefs.test.ts`).
 | Accent (annotation) | `#E9954A` | `#D07D33` |
 | Primary button | `#ECECEA` bg / `#1A1B1D` text | `#1F1D1A` bg / `#FAF9F7` text |
 | Profit / loss | `#3FB950` / `#F85149` | `#1A7F37` / `#CF222E` |
+| Pick, in a page's comment layer (`--color-info`) | `#6E9EF7` | `#4477D4` |
 | Warning | `#D8B04C` | `#B45309` |
 
 Background roles (`bg-page` → `bg-canvas` → `bg-card`/`bg-tool-card` →
@@ -86,6 +87,14 @@ serves the app from that route once someone is signed in.
 
 Semantic color (profit/loss/warning/danger) is separate from the accent and
 never substitutes for it.
+
+**Blue is the comment layer's pick color**, and only that: on an HTML file in
+comment mode, the outline and the word box showing what a click would
+pick. It is a question, not a mark, so it never stays on anything; once a
+comment exists, what it marks is amber. A neutral grey cannot do the job,
+because the page under the layer keeps its own colors: a grey suited to the
+app's theme vanishes over a page in the other, and passes for one of the
+page's own borders in either.
 
 ## Status & liveness vocabulary
 

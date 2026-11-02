@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type { ReactElement } from 'react';
 
@@ -58,8 +58,19 @@ const defaultProps = {
 };
 
 function getPreviewIframe(): HTMLIFrameElement {
-  const frame = document.querySelector('iframe.html-viewer-frame');
+  const frame = document.querySelector('iframe.bridged-frame-doc');
   return frame as HTMLIFrameElement;
+}
+
+// The document's hello, as the bridge sends it from an opaque origin.
+function sayHello(iframe: HTMLIFrameElement) {
+  act(() => {
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'page:ready', path: 'results/report.html' },
+      origin: 'null',
+      source: iframe.contentWindow,
+    }));
+  });
 }
 
 // HtmlViewer consumes ThemeContext; render under a provider with a control that
@@ -92,12 +103,12 @@ describe('HtmlViewer', () => {
     grant.refetch.mockClear();
   });
 
-  it('renders the Preview iframe pointed at the wsfiles served URL with ?inject=theme', () => {
+  it('renders the Preview iframe pointed at the wsfiles served URL with the view bridge', () => {
     renderViewer(<HtmlViewer {...defaultProps} />);
     const iframe = getPreviewIframe();
     expect(iframe).toBeTruthy();
     expect(iframe.getAttribute('src')).toBe(
-      '/api/v1/wsfiles/g/grant-1/results/report.html?inject=theme',
+      '/api/v1/wsfiles/g/grant-1/results/report.html?inject=view',
     );
   });
 
@@ -132,11 +143,9 @@ describe('HtmlViewer', () => {
         <HtmlViewer {...defaultProps} anchor="risks" anchorSeq={1} />,
       );
       const iframe = getPreviewIframe();
-      const postMessage = vi.fn();
-      Object.defineProperty(iframe, 'contentWindow', {
-        value: { postMessage },
-        configurable: true,
-      });
+      const postMessage = vi.spyOn(iframe.contentWindow!, 'postMessage').mockImplementation(() => {});
+      sayHello(iframe);
+      postMessage.mockClear();
 
       rerenderWith(rerender, { anchor: 'risks', anchorSeq: 2 });
 
@@ -144,9 +153,9 @@ describe('HtmlViewer', () => {
       // the fragment cannot land this open. Without the request the second
       // click moves nothing on screen.
       expect(iframe.getAttribute('src')).toBe(
-        '/api/v1/wsfiles/g/grant-1/results/report.html?inject=theme#risks',
+        '/api/v1/wsfiles/g/grant-1/results/report.html?inject=view#risks',
       );
-      expect(postMessage).toHaveBeenCalledWith({ type: 'widget:scrollTo', id: 'risks' }, '*');
+      expect(postMessage).toHaveBeenCalledWith({ type: 'page:scroll-to', fragment: 'risks' }, '*');
     });
   });
 
@@ -189,12 +198,12 @@ describe('HtmlViewer', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('serves the file under the share page\'s prefix, themed', () => {
+  it('serves the file under the share page\'s prefix, bridged', () => {
     renderViewer(
       <HtmlViewer {...defaultProps} servePrefix="/api/v1/public/shared/tok-1/files/serve/" />,
     );
     expect(getPreviewIframe().getAttribute('src')).toBe(
-      '/api/v1/public/shared/tok-1/files/serve/results/report.html?inject=theme',
+      '/api/v1/public/shared/tok-1/files/serve/results/report.html?inject=view',
     );
   });
 });

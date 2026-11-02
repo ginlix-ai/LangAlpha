@@ -1,7 +1,7 @@
 """The file list behind a shared file link: what a visitor may fetch.
 
 The reference scanners and ``resolve_ref`` are pure and tested directly.
-``build_manifest`` runs against a fake reader standing in for the mirror or
+``walk_manifest`` runs against a fake reader standing in for the mirror or
 the sandbox, so the walk (which files are parsed, how deep, what is listed)
 is locked without a database or a sandbox.
 """
@@ -13,8 +13,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from src.server.app import share_manifest as sm
-from src.server.app.share_manifest import (
+from src.server.services import share_manifest as sm
+from src.server.services.share_manifest import (
     REASON_ENTRY,
     REASON_MARKDOWN,
     REASON_PAGE,
@@ -23,13 +23,15 @@ from src.server.app.share_manifest import (
     ManifestEntry,
     ManifestEntryMissing,
     ManifestTooLarge,
-    build_manifest,
+    ReadMode,
+    Reader,
     css_refs,
     html_refs,
-    manifest_drift,
     markdown_refs,
     resolve_ref,
     script_refs,
+    snapshot_reader,
+    walk_manifest,
 )
 
 WORK_DIR = "/home/workspace/proj"
@@ -38,7 +40,7 @@ WORKSPACE = {"workspace_id": "ws-fake-0001", "user_id": OWNER, "status": "stoppe
 
 
 class FakeReader:
-    """The reader contract ``build_manifest`` needs: sizes for a batch, bytes for one."""
+    """The reader contract ``walk_manifest`` needs: sizes for a batch, bytes for one."""
 
     def __init__(self, files: dict[str, bytes | str]) -> None:
         self.files = {
@@ -55,20 +57,13 @@ class FakeReader:
 
 
 @pytest.fixture
-def reader(monkeypatch):
-    """Install a fake reader; the test fills ``.files`` before building."""
-    fake = FakeReader({})
-
-    @asynccontextmanager
-    async def _reader_for(workspace, user_id, work_dir):
-        yield fake, work_dir, ()
-
-    monkeypatch.setattr(sm, "_reader_for", _reader_for)
-    return fake
+def reader():
+    """A fake reader; the test fills ``.files`` before walking."""
+    return FakeReader({})
 
 
-async def _build(entry: str) -> list[ManifestEntry]:
-    return await build_manifest(WORKSPACE, entry, user_id=OWNER, work_dir=WORK_DIR)
+async def _build(files: FakeReader, entry: str) -> list[ManifestEntry]:
+    return await walk_manifest(Reader(files, WORK_DIR, ()), entry)
 
 
 def _paths(entries: list[ManifestEntry]) -> list[str]:
@@ -145,6 +140,12 @@ def test_markdown_refs_stay_linear_on_unmatched_brackets():
     assert time.monotonic() - started < 2
 
 
+def test_a_quoted_number_in_inlined_data_is_not_a_file():
+    """Each candidate costs a probe, and past the cap the publish is refused."""
+    refs = script_refs("""["12.5", "1.2.5", "0.75", "BRK.B", "model.h5", "a.mp4"]""")
+    assert refs == ["BRK.B", "model.h5", "a.mp4"]
+
+
 def test_script_refs_are_quoted_relative_paths_with_an_extension():
     refs = script_refs(
         """
@@ -187,28 +188,7 @@ def test_resolve_ref(ref, expected):
     assert resolve_ref(ref, "reports/index.html", WORK_DIR) == expected
 
 
-# --- manifest_drift ---------------------------------------------------------
-
-
-def test_manifest_drift_is_none_until_a_list_was_confirmed():
-    current = [ManifestEntry("a.html", 1, REASON_ENTRY)]
-    assert manifest_drift(current, None) is None
-    assert manifest_drift(current, ["a.html"]) is None
-
-
-def test_manifest_drift_names_what_moved_in_sorted_order():
-    current = [
-        ManifestEntry("a.html", 1, REASON_ENTRY),
-        ManifestEntry("z.png", 1, REASON_PAGE),
-        ManifestEntry("b.png", 1, REASON_PAGE),
-    ]
-    assert manifest_drift(current, ["a.html", "old.css"]) == {
-        "added": ["b.png", "z.png"],
-        "removed": ["old.css"],
-    }
-
-
-# --- build_manifest: HTML -------------------------------------------------
+# --- walk_manifest: HTML -------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -236,7 +216,7 @@ async def test_html_entry_lists_its_assets_with_reasons(reader):
             "etc/passwd": "never",
         }
     ).files
-    entries = await _build("reports/index.html")
+    entries = await _build(reader, "reports/index.html")
     assert entries[0] == ManifestEntry("reports/index.html", entries[0].size, REASON_ENTRY)
     assert set(_paths(entries)) == {
         "reports/index.html",
@@ -269,7 +249,7 @@ async def test_a_scripts_strings_resolve_against_its_page_and_itself(reader):
             "reports/images/c.png": b"\x89PNG",
         }
     ).files
-    entries = await _build("reports/index.html")
+    entries = await _build(reader, "reports/index.html")
     assert set(_paths(entries)) == {
         "reports/index.html",
         "reports/js/app.js",
@@ -293,7 +273,7 @@ async def test_sandbox_absolute_and_file_url_references_fold_to_the_workspace(re
             "img/z.png": b"\x89PNG",
         }
     ).files
-    entries = await _build("index.html")
+    entries = await _build(reader, "index.html")
     assert set(_paths(entries)) == {
         "index.html",
         "data/table.csv",
@@ -314,12 +294,12 @@ async def test_a_page_linked_from_the_entry_is_parsed_but_the_next_one_is_not(re
             "c.html": "unreachable",
         }
     ).files
-    entries = await _build("index.html")
+    entries = await _build(reader, "index.html")
     assert set(_paths(entries)) == {"index.html", "a.html", "a.css", "deep.png", "b.html"}
     assert "b.html" not in reader.read_paths
 
 
-# --- build_manifest: Markdown ----------------------------------------------
+# --- walk_manifest: Markdown ----------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -345,7 +325,7 @@ async def test_markdown_entry_lists_only_images_resolved_from_the_workspace_root
             "notes/data.csv": "a,b",
         }
     ).files
-    entries = await _build("notes/a.md")
+    entries = await _build(reader, "notes/a.md")
     assert set(_paths(entries)) == {"notes/a.md", "img/c.png", "img/d.png", "img/e.svg"}
     assert _reasons(entries)["img/e.svg"] == REASON_MARKDOWN
     assert "img/e.svg" not in reader.read_paths
@@ -360,19 +340,19 @@ async def test_markdown_reached_from_a_page_is_listed_but_not_parsed(reader):
             "img/z.png": b"\x89PNG",
         }
     ).files
-    entries = await _build("index.html")
+    entries = await _build(reader, "index.html")
     assert _paths(entries) == ["index.html", "notes.md"]
     assert "notes.md" not in reader.read_paths
 
 
-# --- build_manifest: other kinds, missing and hidden ----------------------
+# --- walk_manifest: other kinds, missing and hidden ----------------------
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["data/table.csv", "report.pdf"])
 async def test_a_plain_file_lists_only_itself(reader, entry):
     reader.files = {entry: b"a,b\n" * 3, "other.png": b"\x89PNG"}
-    entries = await _build(entry)
+    entries = await _build(reader, entry)
     assert entries == [ManifestEntry(entry, len(reader.files[entry]), REASON_ENTRY)]
     assert reader.read_paths == []
 
@@ -394,7 +374,7 @@ async def test_missing_and_hidden_references_are_left_out(reader):
             "here.png": b"\x89PNG",
         }
     ).files
-    entries = await _build("index.html")
+    entries = await _build(reader, "index.html")
     assert _paths(entries) == ["index.html", "here.png"]
 
 
@@ -402,12 +382,43 @@ async def test_missing_and_hidden_references_are_left_out(reader):
 async def test_entry_that_is_absent_or_hidden_is_missing(reader):
     reader.files = {".agents/x.html": "<p>x</p>"}
     with pytest.raises(ManifestEntryMissing):
-        await _build("nope.html")
+        await _build(reader, "nope.html")
     with pytest.raises(ManifestEntryMissing):
-        await _build(".agents/x.html")
+        await _build(reader, ".agents/x.html")
 
 
-# --- build_manifest: caps ---------------------------------------------------
+class LinkedReader(FakeReader):
+    """A live tree's stat: a link reports the file it resolves to."""
+
+    def __init__(self, files: dict[str, bytes | str], links: dict[str, str]) -> None:
+        super().__init__(files)
+        self.links = links
+
+    async def stat(self, paths: list[str]) -> dict[str, tuple[str, int]]:
+        found = await super().stat(paths)
+        return {p: (self.links.get(p, p), size) for p, (_, size) in found.items()}
+
+
+@pytest.mark.asyncio
+async def test_a_link_to_a_hidden_file_is_as_missing_as_no_file():
+    # Listed under its own name, the read would refuse it on what it resolves
+    # to, and every status and publish would fail on a file it cannot read.
+    linked = LinkedReader(
+        {
+            "index.html": '<img src="chart.png"><script src="data.js"></script>',
+            "chart.png": b"\x89PNG",
+            "data.js": "x",
+            "report.html": "<p>r</p>",
+        },
+        {"data.js": ".agents/data.js", "report.html": ".agents/report.html"},
+    )
+
+    assert _paths(await _build(linked, "index.html")) == ["index.html", "chart.png"]
+    with pytest.raises(ManifestEntryMissing):
+        await _build(linked, "report.html")
+
+
+# --- walk_manifest: caps ---------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -420,7 +431,7 @@ async def test_too_many_files_is_refused_not_truncated(reader, monkeypatch):
         }
     ).files
     with pytest.raises(ManifestTooLarge) as exc:
-        await _build("index.html")
+        await _build(reader, "index.html")
     assert (exc.value.code, exc.value.limit) == ("too_many_files", 3)
 
 
@@ -429,11 +440,11 @@ async def test_too_many_bytes_is_refused_not_truncated(reader, monkeypatch):
     monkeypatch.setattr(sm, "MAX_TOTAL_BYTES", 16)
     reader.files = {"index.html": '<img src="big.png">', "big.png": b"\x00" * 32}
     with pytest.raises(ManifestTooLarge) as exc:
-        await _build("index.html")
+        await _build(reader, "index.html")
     assert (exc.value.code, exc.value.limit) == ("too_many_bytes", 16)
 
 
-# --- build_manifest: names --------------------------------------------------
+# --- walk_manifest: names --------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -447,11 +458,11 @@ async def test_cjk_references_resolve_to_the_raw_unicode_path(reader):
             "报告/图表2.png": b"\x89PNG",
         }
     ).files
-    entries = await _build("报告/index.html")
+    entries = await _build(reader, "报告/index.html")
     assert _paths(entries) == ["报告/index.html", "报告/图表.png", "报告/图表2.png"]
 
 
-# --- build_manifest: the live folder ----------------------------------------
+# --- walk_manifest: the live folder ----------------------------------------
 
 
 @pytest.mark.asyncio
@@ -479,14 +490,12 @@ async def test_a_live_walk_holds_the_folder_until_the_list_is_built(monkeypatch)
 
     monkeypatch.setattr(sm, "acquire_sandbox_to_change", acquire)
     monkeypatch.setattr(sm, "owner_work_dir", lambda workspace: WORK_DIR)
+    monkeypatch.setattr(sm, "previous_dir_names_of", lambda workspace: ())
     monkeypatch.setattr(sm, "_SandboxReader", lambda *args: live)
 
-    entries = await build_manifest(
-        {**WORKSPACE, "status": "running"},
-        "index.html",
-        user_id=OWNER,
-        work_dir=WORK_DIR,
-    )
+    running = {**WORKSPACE, "status": "running"}
+    async with snapshot_reader(running, OWNER, ReadMode.OWNER) as held:
+        entries = await walk_manifest(held, "index.html")
 
     assert _paths(entries) == ["index.html", "style.css"]
     assert events == ["held", "stat", "stat", "released"]

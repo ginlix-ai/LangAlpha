@@ -134,7 +134,7 @@ describe('ChatInput scope picker', () => {
     const box = screen.getByRole('textbox');
     fireEvent.change(box, { target: { value: 'hello' } });
     fireEvent.keyDown(box, { key: 'Enter' });
-    expect(onSend.mock.calls[0][3]).toMatchObject({ model: 'model-default' });
+    expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ model: 'model-default' });
 
     rerender(composer({ scope: 'workspace', inHome: true, model: 'claude-x-code', onSend }));
     expect(screen.getByText('pill:model-default')).toBeInTheDocument();

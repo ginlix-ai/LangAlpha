@@ -8,7 +8,7 @@ import StockHeader from './components/StockHeader';
 import MarketChart from './components/MarketChart';
 import type { MarketChartHandle } from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
-import type { ComposerScope } from '../../components/ui/chat-input.types';
+import type { ComposerScope, ComposerSend } from '../../components/ui/chat-input.types';
 import MarketChatPanel from './components/MarketChatPanel';
 import MarketSidebarPanel from './components/MarketSidebarPanel';
 import { INTERVALS } from './utils/chartConstants';
@@ -434,7 +434,7 @@ function MarketViewInner() {
     setChartImageDesc(parts.join('\n'));
   }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice, quote.currency]);
 
-  const handleSendMessage = useCallback(async (message: string, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort, fastMode }: { model?: string; reasoningEffort?: string | null; fastMode?: boolean | null } = {}) => {
+  const handleSendMessage = useCallback(async (message: string, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort, fastMode }: { model?: string | null; reasoningEffort?: string | null; fastMode?: boolean | null } = {}) => {
     // Build additional_context from chart image + file attachments.
     // The drawing tools are always bound; the chart-annotation skill rides
     // every send for its drawing guide and to tell the agent which ticker +
@@ -651,7 +651,7 @@ function MarketViewInner() {
               </div>
             )}
             <ChatInput
-              onSend={(...args: any[]) => { (handleSendMessage as any)(...args); setChatExpanded(false); }}
+              onSend={(send: ComposerSend) => { void handleSendMessage(send.message, send.files as unknown as AttachmentItem[], [], send.modelOptions); setChatExpanded(false); }}
               scope={scope}
               onScopeChange={setScope}
               model={threadModel.model}

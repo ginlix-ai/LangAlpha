@@ -55,12 +55,13 @@ vi.mock('../../utils/api', async (importOriginal) => ({
 
 import { THREAD_ID, WORKSPACE_ID, chatInput, chatState, mountChatView, resetChatState } from './chatViewHarness';
 import ChatView from '../ChatView';
+import type { ComposerSend } from '@/components/ui/chat-input.types';
 
-type OnSend = (message: string, attachments?: unknown[], slashCommands?: unknown[], options?: Record<string, unknown>) => void;
+type OnSend = (send: ComposerSend) => void;
 
 /** The composer's send, as a press of Enter makes it. */
 function send(options: Record<string, unknown> = {}) {
-  act(() => { (chatInput.props!.onSend as OnSend)('hello', [], [], options); });
+  act(() => { (chatInput.props!.onSend as OnSend)({ text: 'hello', files: [], mentions: [], commands: [], message: 'hello', modelOptions: options as unknown as ComposerSend['modelOptions'] }); });
   const calls = chatState.handleSendMessage.mock.calls;
   return calls[calls.length - 1][3] as Record<string, unknown>;
 }

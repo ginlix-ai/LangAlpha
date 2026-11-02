@@ -24,8 +24,10 @@ import { useEditDraft, useEditDraftStore } from '../../hooks/utils/editDrafts';
 import { isSteeringUserMessage } from './messagePredicates';
 import { UserBubble } from './UserBubble';
 import { MessageTime } from './MessageTime';
-import { assistantText } from './messageText';
+import { assistantText, userMessageText } from './messageText';
 import { TurnFileCards } from './TurnFileCards';
+import type { ArtifactCommentsShown } from '@/types/api';
+import { CommentSendBody } from '../artifactComments/CommentSendBody';
 import { InPlaceSwap } from '@/components/ui/crossfade';
 import { CollapseClockContext, isFreshSend, playEntrance, turnEndDelays } from './transcriptMotion';
 import { useMessageTyping, useProseReport } from './proseTyping';
@@ -273,6 +275,8 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   const failure = hasError ? message.structuredError as StructuredError | undefined : undefined;
   const hasBody = !(projection.textCount === 0 && projection.blocks.every((block) => block.type === 'text'));
   const isSteering = isSteeringUserMessage(message);
+  // A send of file comments draws them under its note.
+  const artifactComments = isUser ? message.artifactComments as ArtifactCommentsShown | undefined : undefined;
   // A message shows when it was sent and a reply when its turn ended. A
   // steering bubble shows none: replayed, its time is not history time.
   // It sits on the row's inner side, so the buttons keep their place at the
@@ -328,7 +332,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   }, [isEditing]);
 
   const handleCopy = useStableHandler(() => {
-    const text = assistantText(message);
+    const text = isUser ? userMessageText(message) : assistantText(message);
     // Confirm only after the write lands (it can reject when the document
     // loses focus); rapid re-copies reset the shared timer instead of
     // stacking timers that would cut the newer indicator short.
@@ -402,7 +406,9 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         they're injected mid-turn and have no turn checkpoint of their
         own, so an edit fork would target the NEXT turn and leave the
         original steering text in the agent's context. */}
-    {isUser && onEditMessage && !isSteering && (
+    {/* Nor does a send of file comments: an edit sends text, and the
+        comments it carried are no longer queued to go again. */}
+    {isUser && onEditMessage && !isSteering && !artifactComments && (
       <button
         onClick={handleStartEdit}
         className={ACTION_BUTTON}
@@ -482,64 +488,76 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   </div>
   ) : null;
 
+  // The message's own words: a pending send's shimmer, else its segments or
+  // its text.
+  const words = isPendingDelivery ? (
+    <TextShimmer
+      as="span"
+      className="text-sm [--base-color:var(--color-text-secondary)] [--base-gradient-color:var(--color-text-primary)]"
+      duration={1.5}
+    >
+      {(message.content as string) || ''}
+    </TextShimmer>
+  ) : (
+    <>
+    {/* Render content segments in chronological order. A call streaming
+        before any of them draws too, or the turn's first call would show
+        nothing until it landed. */}
+    {((message.contentSegments as ContentSegmentRecord[] | undefined)?.length ?? 0) > 0 || projection.preparingToolCall !== null ? (
+      <CitationMetadataProvider toolCallProcesses={(message.toolCallProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}>
+      <MessageContentSegments
+        contentProjection={projection}
+        segments={(message.contentSegments as ContentSegmentRecord[] | undefined)?.length ? message.contentSegments as ContentSegmentRecord[] : NO_SEGMENTS}
+        reasoningProcesses={(message.reasoningProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        toolCallProcesses={(message.toolCallProcesses as Record<string, ToolCallProcessRecord>) || EMPTY_OBJ}
+        todoListProcesses={(message.todoListProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        subagentTasks={(message.subagentTasks as Record<string, SubagentTaskRecord>) || EMPTY_OBJ}
+        userQuestions={(message.userQuestions as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        workspaceProposals={(message.workspaceProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        questionProposals={(message.questionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        pendingToolCallChunks={(message.pendingToolCallChunks as Record<string, PendingToolCallChunk> | undefined) ?? EMPTY_OBJ}
+        isStreaming={message.isStreaming as boolean}
+        fold={fold}
+        isTurnTail={isTurnTail}
+        isSubagentView={isSubagentView}
+        ptcAgentProposals={(message.ptcAgentProposals as Record<string, PTCAgentProposalState>) || EMPTY_OBJ}
+        secretaryActionProposals={(message.secretaryActionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        creditPauses={(message.creditPauses as Record<string, CreditPauseState>) || EMPTY_OBJ}
+        toolApprovals={(message.toolApprovals as Record<string, ToolApprovalState>) || EMPTY_OBJ}
+        htmlWidgetProcesses={(message.htmlWidgetProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        readOnly={readOnly}
+        dispatcherContext={dispatcherContext}
+        messageId={replyId}
+      />
+      </CitationMetadataProvider>
+    ) : (
+      // Fallback for messages without segments (backward compatibility) - main chat shows text only
+      ((message.contentType as string) === 'text' || !(message.contentType as string)) && (
+        <SegmentlessText
+          messageId={replyId}
+          content={message.content as string}
+          isStreaming={message.isStreaming as boolean}
+          onOpenFile={onOpenFile}
+        />
+      )
+    )}
+    </>
+  );
+
   // A user's message goes in its bubble, a reply sits on the page itself; the
   // content is the same either way.
   const bubbleContent = (
     <>
       <OverflowCollapse enabled={isUser} maxHeight={USER_MESSAGE_COLLAPSE_PX}>
-      {isPendingDelivery ? (
-        <TextShimmer
-          as="span"
-          className="text-sm [--base-color:var(--color-text-secondary)] [--base-gradient-color:var(--color-text-primary)]"
-          duration={1.5}
+      {artifactComments ? (
+        <CommentSendBody
+          shown={artifactComments}
+          pending={isPendingDelivery}
+          refused={!!message.queueError || !!message.unadmitted}
         >
-          {(message.content as string) || ''}
-        </TextShimmer>
-      ) : (
-      <>
-      {/* Render content segments in chronological order. A call streaming
-          before any of them draws too, or the turn's first call would show
-          nothing until it landed. */}
-      {((message.contentSegments as ContentSegmentRecord[] | undefined)?.length ?? 0) > 0 || projection.preparingToolCall !== null ? (
-        <CitationMetadataProvider toolCallProcesses={(message.toolCallProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}>
-        <MessageContentSegments
-          contentProjection={projection}
-          segments={(message.contentSegments as ContentSegmentRecord[] | undefined)?.length ? message.contentSegments as ContentSegmentRecord[] : NO_SEGMENTS}
-          reasoningProcesses={(message.reasoningProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          toolCallProcesses={(message.toolCallProcesses as Record<string, ToolCallProcessRecord>) || EMPTY_OBJ}
-          todoListProcesses={(message.todoListProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          subagentTasks={(message.subagentTasks as Record<string, SubagentTaskRecord>) || EMPTY_OBJ}
-          userQuestions={(message.userQuestions as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          workspaceProposals={(message.workspaceProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          questionProposals={(message.questionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          pendingToolCallChunks={(message.pendingToolCallChunks as Record<string, PendingToolCallChunk> | undefined) ?? EMPTY_OBJ}
-          isStreaming={message.isStreaming as boolean}
-          fold={fold}
-          isTurnTail={isTurnTail}
-          isSubagentView={isSubagentView}
-          ptcAgentProposals={(message.ptcAgentProposals as Record<string, PTCAgentProposalState>) || EMPTY_OBJ}
-          secretaryActionProposals={(message.secretaryActionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          creditPauses={(message.creditPauses as Record<string, CreditPauseState>) || EMPTY_OBJ}
-          toolApprovals={(message.toolApprovals as Record<string, ToolApprovalState>) || EMPTY_OBJ}
-          htmlWidgetProcesses={(message.htmlWidgetProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          readOnly={readOnly}
-          dispatcherContext={dispatcherContext}
-          messageId={replyId}
-        />
-        </CitationMetadataProvider>
-      ) : (
-        // Fallback for messages without segments (backward compatibility) - main chat shows text only
-        ((message.contentType as string) === 'text' || !(message.contentType as string)) && (
-          <SegmentlessText
-            messageId={replyId}
-            content={message.content as string}
-            isStreaming={message.isStreaming as boolean}
-            onOpenFile={onOpenFile}
-          />
-        )
-      )}
-      </>
-      )}
+          {words}
+        </CommentSendBody>
+      ) : words}
       </OverflowCollapse>
 
       {/* The failure, once, after what the turn produced, which still reads as

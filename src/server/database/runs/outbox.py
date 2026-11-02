@@ -2508,9 +2508,10 @@ async def settle_run_steers(
                 cur, params, _IS_USER_SQL, due=False, claimed_too=True
             )
         elif final_status == "cancelled" and user_cancel:
-            await _end_thread_steers(
+            returned = await _end_thread_steers(
                 cur, params, f"{_IS_USER_SQL} AND NOT ({_KEPT_BY_STOP_SQL})", "returned"
             )
+            await _give_back_comments(conn, returned)
             await _end_thread_steers(cur, params, f"NOT ({_KEPT_BY_STOP_SQL})", "dropped")
             await _repark_thread_steers(cur, params, _KEPT_BY_STOP_SQL, due=False)
         else:
@@ -2608,12 +2609,37 @@ async def stop_hand_off_steers(thread_id: str, run_id: str) -> List[str]:
 
 
 def _returned_entry(row: Dict[str, Any]) -> Dict[str, Any]:
+    """A user's steer as the user reads it. One carrying file comments is the
+    note they typed and the comments' chips, never the block the agent reads."""
     payload = row.get("payload") or {}
-    return {
-        "content": payload.get("content") or "",
+    shown = payload.get("artifact_comments")
+    entry = {
+        "content": (shown.get("note") or "") if shown else payload.get("content") or "",
         "request_key": payload.get("request_key"),
         "timestamp": payload.get("timestamp"),
     }
+    if shown:
+        entry["artifact_comments"] = shown
+    return entry
+
+
+async def _give_back_comments(conn, returned: List[Dict[str, Any]]) -> None:
+    """The file comments of steers that end unread, with the steers' ending:
+    marked ``sent``, they would never go out again."""
+    from src.server.database.artifacts.delivery import release_unread
+
+    carrying = [
+        r["payload"]
+        for r in returned
+        if (r.get("payload") or {}).get("artifact_comments")
+        and r["payload"].get("request_key")
+    ]
+    if carrying:
+        await release_unread(
+            conn,
+            user_id=carrying[0].get("user_id"),
+            request_keys=[p["request_key"] for p in carrying],
+        )
 
 
 # Not held by the run being stopped. A row it holds is already in its
@@ -2643,6 +2669,7 @@ async def cancel_run_steers(
         returned = await _end_thread_steers(
             cur, params, f"{free} AND {_IS_USER_SQL}", "returned"
         )
+        await _give_back_comments(conn, returned)
         await _end_thread_steers(cur, params, free, "dropped")
     returned.sort(key=lambda r: r["created_at"])
     return [

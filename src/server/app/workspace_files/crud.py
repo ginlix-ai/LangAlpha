@@ -69,6 +69,12 @@ from src.server.services.workspace_file_containment import (
     read_contained_sandbox_file,
     read_contained_sandbox_range,
 )
+from src.server.services.served_paths import (
+    is_always_hidden_path,
+    is_hidden_path,
+    is_text_content_type,
+    is_utf8,
+)
 from src.server.services.workspace_files import (
     HOME_NOT_ON_COMPUTER_REASON,
     acquire_sandbox_to_change,
@@ -76,8 +82,10 @@ from src.server.services.workspace_files import (
     not_running_for_upload,
     owned_workspace_on_computer,
     owner_layout,
+    owner_work_dir,
     previous_dir_names_of,
     record_fs_bytes,
+    to_client_path,
 )
 
 from ._shared import (
@@ -85,20 +93,14 @@ from ._shared import (
     streamed_download_budget,
     DEFAULT_READ_LIMIT_LINES,
     TOO_LARGE_DETAIL,
-    _is_text_content_type,
-    _is_utf8,
     MAX_UPLOAD_BYTES,
     _CACHEABLE_IMAGE_TYPES,
     _decode_file_text,
-    owner_work_dir,
     previous_roots_of,
-    _is_always_hidden_path,
     _is_binary,
-    _is_hidden_path,
     _is_system_path,
     _requested_hidden_ok,
     _requested_system_ok,
-    _to_client_path,
     _present_virtual_file,
     _virtual_file,
     _virtual_files_in_scope,
@@ -109,7 +111,7 @@ from ._shared import (
     may_be_utf8,
     requested_byte_range,
 )
-from .serve import warm_sandbox
+from src.server.services.warm_files import warm_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +205,9 @@ async def list_workspace_files(
         files = [
             f["path"]
             for f in file_tree
-            if not _is_always_hidden_path(f["path"])
+            if not is_always_hidden_path(f["path"])
             and (include_system or not _is_system_path(f["path"]))
-            and (allow_hidden or not _is_hidden_path(f["path"]))
+            and (allow_hidden or not is_hidden_path(f["path"]))
             # A row at a virtual path predates the backup skipping its folder;
             # a read answers from the DB, so only the splice may list one.
             and not _virtual_file(f["path"])
@@ -267,14 +269,14 @@ async def _live_listing(
     for absolute_path in absolute_paths:
         if not is_within(work_dir, absolute_path):
             continue
-        client_path = _to_client_path(sandbox, absolute_path, work_dir)
+        client_path = to_client_path(sandbox, absolute_path, work_dir)
 
         # Always hide internal cache/bytecode/bootstrap artifacts.
-        if _is_always_hidden_path(client_path):
+        if is_always_hidden_path(client_path):
             continue
 
         # Hide internal SDK/package directories unless explicitly requested.
-        if not allow_hidden and _is_hidden_path(client_path):
+        if not allow_hidden and is_hidden_path(client_path):
             continue
 
         # Hide system directories unless explicitly requested or include_system=True.
@@ -390,7 +392,7 @@ async def resolve_workspace_file(
                 name_glob(name), path=glob_root
             )
         paths = [
-            _to_client_path(sandbox, p, work_dir)
+            to_client_path(sandbox, p, work_dir)
             for p in absolute_paths
             if is_within(work_dir, p)
         ]
@@ -532,8 +534,8 @@ async def read_workspace_file(
         content = "\n".join(lines[offset : offset + limit])
         truncated = len(lines) > offset + limit
 
-    client_path = _to_client_path(sandbox, normalized, work_dir)
-    if _is_always_hidden_path(client_path):
+    client_path = to_client_path(sandbox, normalized, work_dir)
+    if is_always_hidden_path(client_path):
         raise HTTPException(status_code=404, detail="File not found")
 
     mime = resolve_content_type(client_path, default="text/plain")
@@ -602,7 +604,7 @@ async def write_workspace_file(
         raise HTTPException(status_code=500, detail="Write failed")
 
     # Invalidate agent.md cache when user edits agent.md via UI
-    client_path = _to_client_path(sandbox, normalized, work_dir)
+    client_path = to_client_path(sandbox, normalized, work_dir)
     if client_path == "agent.md":
         try:
             manager = WorkspaceManager.get_instance()
@@ -831,12 +833,12 @@ async def _live_range_response(
         ) from None
     if sliced is None:
         raise HTTPException(status_code=404, detail="File not found")
-    client_path = _to_client_path(sandbox, sliced.canonical, work_dir)
-    if _is_always_hidden_path(client_path):
+    client_path = to_client_path(sandbox, sliced.canonical, work_dir)
+    if is_always_hidden_path(client_path):
         raise HTTPException(status_code=404, detail="File not found")
     filename = client_path.split("/")[-1] if client_path else "download"
     mime = resolve_content_type(filename)
-    if _is_text_content_type(mime):
+    if is_text_content_type(mime):
         return None
     if sliced.content is None:
         raise _unsatisfiable(sliced.size)
@@ -993,7 +995,7 @@ async def download_workspace_file(
         mime = file_record.get("mime_type") or "application/octet-stream"
 
         if byte_range is not None:
-            if not _is_text_content_type(mime):
+            if not is_text_content_type(mime):
                 ranged = await _stored_range_response(
                     file_record,
                     byte_range,
@@ -1008,14 +1010,14 @@ async def download_workspace_file(
 
         content = await http_file_bytes(file_record, user_id=workspace["user_id"])
 
-        if _is_text_content_type(mime) or _is_utf8(content):
+        if is_text_content_type(mime) or is_utf8(content):
             content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
         return _build_download_response(content, filename, mime, request, disposition)
 
     if byte_range is not None:
         candidate = contained_absolute_path(path, work_dir, previous_dirs)
-        if candidate is not None and not _is_text_content_type(
+        if candidate is not None and not is_text_content_type(
             resolve_content_type(candidate.rsplit("/", 1)[-1])
         ):
             settled, ranged = await _warm_range_response(
@@ -1041,7 +1043,7 @@ async def download_workspace_file(
         candidate = contained_absolute_path(path, work_dir, previous_dirs)
         if candidate is None or not sandbox.validate_path(candidate):
             raise HTTPException(status_code=404, detail="File not found")
-        if byte_range is not None and not _is_text_content_type(
+        if byte_range is not None and not is_text_content_type(
             resolve_content_type(candidate.rsplit("/", 1)[-1])
         ):
             ranged = await _live_range_response(
@@ -1060,8 +1062,8 @@ async def download_workspace_file(
             raise HTTPException(status_code=404, detail="File not found")
         normalized, content = resolved
 
-        client_path = _to_client_path(sandbox, normalized, work_dir)
-        if _is_always_hidden_path(client_path):
+        client_path = to_client_path(sandbox, normalized, work_dir)
+        if is_always_hidden_path(client_path):
             raise HTTPException(status_code=404, detail="File not found")
 
         filename = client_path.split("/")[-1] if client_path else "download"
@@ -1072,7 +1074,7 @@ async def download_workspace_file(
                 workspace_id, sandbox, too_large, filename, mime, disposition, folder=folder
             )
 
-        if _is_text_content_type(mime) or _is_utf8(content):
+        if is_text_content_type(mime) or is_utf8(content):
             vault_secrets = await get_vault_secrets_for_redaction(workspace["user_id"])
             content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
@@ -1170,7 +1172,7 @@ async def workspace_file_download_url(
         normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="File path is required")
-        if _is_always_hidden_path(normalized_path):
+        if is_always_hidden_path(normalized_path):
             raise HTTPException(status_code=404, detail="File not found")
         return {"url": await mirror_download_link(workspace, normalized_path)}
 
@@ -1186,8 +1188,8 @@ async def workspace_file_download_url(
             # outside it. /files/download applies the read policy and refuses the
             # rest itself, so it decides, and no answer here says which it was.
             return {"url": None}
-        client_path = _to_client_path(sandbox, canonical, work_dir)
-        if _is_always_hidden_path(client_path):
+        client_path = to_client_path(sandbox, canonical, work_dir)
+        if is_always_hidden_path(client_path):
             raise HTTPException(status_code=404, detail="File not found")
         rel_path = canonical[len(work_dir.rstrip("/")) + 1 :]
         try:
@@ -1249,7 +1251,7 @@ async def upload_workspace_file(
     if not ok:
         raise HTTPException(status_code=500, detail="Upload failed")
 
-    client_path = _to_client_path(sandbox, normalized, work_dir)
+    client_path = to_client_path(sandbox, normalized, work_dir)
     record_fs_bytes("upload", len(content))
     return {
         "workspace_id": workspace_id,
@@ -1478,7 +1480,7 @@ async def delete_workspace_files(
             # A server-held file is refused for what it is, before the probe:
             # with the file mount down its link resolves to nothing, and the
             # file the panel lists would read as not found.
-            virtual = _virtual_file(_to_client_path(sandbox, candidate, work_dir))
+            virtual = _virtual_file(to_client_path(sandbox, candidate, work_dir))
             if virtual:
                 undeletable[index] = virtual.undeletable
                 continue
@@ -1497,7 +1499,7 @@ async def delete_workspace_files(
                 continue
 
             addressed = candidates[slot]
-            client_path = _to_client_path(sandbox, addressed, work_dir)
+            client_path = to_client_path(sandbox, addressed, work_dir)
             if _is_system_path(client_path):
                 errors.append({"path": path, "detail": "Cannot delete system files"})
                 continue

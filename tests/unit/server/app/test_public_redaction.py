@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.server.preview_proxy.page_bridge import bridge_for
 from src.server.utils.secret_redactor import SecretRedactor
 
 pytestmark = pytest.mark.asyncio
@@ -304,7 +305,7 @@ class TestPublicTraversalGuard:
 # ``db_get_workspace`` is deliberately left unpatched: the row arrives as an
 # argument, so reaching that lookup would mean it had been read twice.
 _WS_WORK_DIR = "src.server.app.workspace_files.serve.work_dir_for"
-_WS_FP = "src.server.app.workspace_files.serve.FilePersistenceService"
+_WS_FP = "src.server.services.warm_files.FilePersistenceService"
 _WS_VAULT = "src.server.app.workspace_files.serve.get_vault_secrets_for_redaction"
 _RENDER = "src.server.services.pdf_render.render_workspace_pdf"
 _PDF_BASE = "http://127.0.0.1:8000"
@@ -369,14 +370,21 @@ class TestServeSharedFile:
             )
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "text/html; charset=utf-8"
-        # Keep the sandbox AND cap egress (connect-src 'none'); assert shape, not
-        # the exact string, so directive ordering can change freely.
+        # Keep the sandbox AND cap egress to the token's own prefix; assert
+        # shape, not the exact string, so directive ordering can change freely.
         csp = resp.headers["content-security-policy"]
         assert csp.startswith(
             "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;"
         )
         assert "default-src 'none'" in csp
-        assert "connect-src 'none'" in csp
+        connect = next(
+            d.split()[1:] for d in csp.split(";") if d.strip().startswith("connect-src")
+        )
+        assert connect and all(
+            src.endswith(f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/")
+            for src in connect
+        )
+        assert resp.headers["access-control-allow-origin"] == "*"
         assert "https://fonts.googleapis.com" in csp  # CJK web-font path
         assert "https://fonts.gstatic.com" in csp
         assert b"shared report" in resp.content
@@ -433,9 +441,8 @@ class TestServeSharedFile:
             plain = await public_client.get(
                 f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/report.html"
             )
-        assert b"widget:themeUpdate" in with_theme.content
-        # No inject param → byte-faithful, no theme script.
-        assert b"widget:themeUpdate" not in plain.content
+        assert bridge_for("view").script in with_theme.content
+        # No inject param → byte-faithful, no bridge.
         assert plain.content == html.encode()
 
     async def test_revoked_share_returns_404(self, public_client):
@@ -642,7 +649,7 @@ class TestServeSharedFilePdf:
 # All four file routes reach the manager through ``serve.warm_sandbox``, so
 # that module's reference is the one a test has to displace.
 _FP_TREE = "src.server.app.share_files.FilePersistenceService.get_file_tree"
-_WSMGR = "src.server.app.workspace_files.serve.WorkspaceManager"
+_WSMGR = "src.server.services.warm_files.WorkspaceManager"
 
 
 def _no_warm_manager():

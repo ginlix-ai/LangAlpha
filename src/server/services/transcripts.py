@@ -212,34 +212,26 @@ async def _render_job(job: _Job, *, inline: bool, full: bool = False) -> _Render
     return await asyncio.to_thread(whole.render, inline=inline, full=full)
 
 
-async def _store_blobs(user_id: str, contents: dict[str, bytes]) -> None:
-    from src.server.database.workspace_file_blobs import registered_blobs, store_blobs
-
-    if not contents:
-        return
-    registered = await registered_blobs(user_id, list(contents))
-    await store_blobs(
-        user_id,
-        {sha: data for sha, data in contents.items() if sha not in registered},
-        concurrency=_BLOB_UPLOAD_CONCURRENCY,
-    )
-
-
 async def _save(target: _Target, job: _Job, rendered: _Rendered) -> bool:
     """Store one agent's copy. One that carried files over from rows another
     save has since moved is rendered again in full."""
     from src.server.database.thread_transcripts import StaleCopy, save_stored
+    from src.server.database.workspace_file_blobs import store_unregistered_blobs
 
     agent = job.agent
     try:
-        await _store_blobs(target.user_id, rendered.blobs)
+        await store_unregistered_blobs(
+            target.user_id, rendered.blobs, concurrency=_BLOB_UPLOAD_CONCURRENCY
+        )
         return await save_stored(agent.thread_id, agent.prefix, target.user_id, rendered.copy)
     except StaleCopy:
         if job.previous is None:
             raise
         logger.info(f"Transcript {agent.directory} moved under its render; rendering it in full")
     full = await _render_job(job, inline=target.inline, full=True)
-    await _store_blobs(target.user_id, full.blobs)
+    await store_unregistered_blobs(
+        target.user_id, full.blobs, concurrency=_BLOB_UPLOAD_CONCURRENCY
+    )
     return await save_stored(agent.thread_id, agent.prefix, target.user_id, full.copy)
 
 

@@ -39,8 +39,19 @@ vi.mock('../SharedFileView', () => ({
     <div data-testid="file-view">{code}:{metadata.name}</div>
   ),
 }));
+vi.mock('../OwnerArtifactView', () => ({
+  default: ({ code, metadata }: { code: string; metadata: { name: string } }) => (
+    <div data-testid="owner-view">{code}:{metadata.name}</div>
+  ),
+}));
 vi.mock('../SharedAppView', () => ({
   default: ({ metadata }: { metadata: { title: string } }) => <div data-testid="app-view">{metadata.title}</div>,
+}));
+// Its button stands in for the frame reporting a document that is not the version's.
+vi.mock('../SharedPageView', () => ({
+  default: ({ code, metadata, onStale }: { code: string; metadata: { name: string; seq: number }; onStale: () => void }) => (
+    <button type="button" data-testid="visitor-view" onClick={onStale}>{code}:{metadata.name}:v{metadata.seq}</button>
+  ),
 }));
 
 import { getSharedMetadata } from '../api';
@@ -69,6 +80,15 @@ function notFound() {
   return Object.assign(new Error('Shared link not found (404)'), { response: { status: 404 } });
 }
 
+/** A file link as anyone but its owner reads it: the latest version. */
+function visitor(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'file', access: 'public', artifact_id: 'a1', name: 'report.html', path: 'results/report.html',
+    title: null, seq: 1, frame_base: '/api/v1/artifacts/g/x/', isolated: false, expires_in: 12 * 60 * 60,
+    ...overrides,
+  };
+}
+
 describe('SharePage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -84,13 +104,28 @@ describe('SharePage', () => {
     expect(mockMetadata).toHaveBeenCalledWith(CODE, { asVisitor: false, path: null });
   });
 
-  it('a file opens the file view', async () => {
-    mockMetadata.mockResolvedValue({
-      kind: 'file', name: 'report.html', path: 'results/report.html', access: 'public', frame_base: '/api/v1/wsfiles/s/abc/',
-    });
+  it("a visitor to a file link gets the version view, not the owner's file view", async () => {
+    mockMetadata.mockResolvedValue(visitor());
     renderAt(`/a/${CODE}`);
-    expect(await screen.findByTestId('file-view')).toHaveTextContent(`${CODE}:report.html`);
+    expect(await screen.findByTestId('visitor-view')).toHaveTextContent(`${CODE}:report.html:v1`);
+    expect(screen.queryByTestId('file-view')).not.toBeInTheDocument();
     expect(screen.queryByTestId('chat-view')).not.toBeInTheDocument();
+  });
+
+  it("a visitor's link read again moves to the new version, and a stopped link takes the page away", async () => {
+    mockMetadata.mockResolvedValue(visitor());
+    const user = userEvent.setup();
+    renderAt(`/a/${CODE}`);
+    await screen.findByTestId('visitor-view');
+
+    mockMetadata.mockResolvedValue(visitor({ seq: 2 }));
+    await user.click(screen.getByTestId('visitor-view'));
+    expect(await screen.findByText(`${CODE}:report.html:v2`)).toBeInTheDocument();
+
+    mockMetadata.mockRejectedValue(notFound());
+    await user.click(screen.getByTestId('visitor-view'));
+    expect(await screen.findByText("You don't have access, or this link is unavailable")).toBeInTheDocument();
+    expect(screen.queryByTestId('visitor-view')).not.toBeInTheDocument();
   });
 
   it('an app link opens the app view', async () => {
@@ -103,12 +138,10 @@ describe('SharePage', () => {
 
   it('titles the document after what the link opens, and gives the title back on leaving', async () => {
     document.title = 'LangAlpha';
-    mockMetadata.mockResolvedValue({
-      kind: 'file', name: 'report.html', path: 'results/report.html', access: 'public', frame_base: '/api/v1/wsfiles/s/abc/',
-    });
+    mockMetadata.mockResolvedValue(visitor({ title: 'Q3 report' }));
     const { unmount } = renderAt(`/a/${CODE}`);
-    await screen.findByTestId('file-view');
-    expect(document.title).toBe('report.html');
+    await screen.findByTestId('visitor-view');
+    expect(document.title).toBe('Q3 report');
     unmount();
     expect(document.title).toBe('LangAlpha');
   });
@@ -191,7 +224,8 @@ describe('SharePage', () => {
         <Route path="/a/:shareToken" element={<SharePage />} />
       </Routes>,
     );
-    expect(await screen.findByTestId('file-view')).toHaveTextContent(`${CODE}:report.html`);
+    // The owner's own HTML file opens live, with comments.
+    expect(await screen.findByTestId('owner-view')).toHaveTextContent(`${CODE}:report.html`);
     expect(mockMetadata).toHaveBeenCalledTimes(2);
   });
 
@@ -258,14 +292,13 @@ describe('SharePage', () => {
       expect(await readsAfter(61)).toBe(2);
     });
 
-    it('a public file carries no credential and is read once', async () => {
-      mockMetadata.mockResolvedValue({
-        kind: 'file', name: 'r.html', path: 'r.html', access: 'public', frame_base: '/api/v1/wsfiles/s/abc/',
-      });
+    it("a visitor's 12h grant an hour early too", async () => {
+      mockMetadata.mockImplementation(async () => visitor());
       renderAt(`/a/${CODE}`);
       await act(() => vi.advanceTimersByTimeAsync(0));
 
-      expect(await readsAfter(24 * 60)).toBe(1);
+      expect(await readsAfter(10 * 60)).toBe(1);
+      expect(await readsAfter(61)).toBe(2);
     });
 
     it('an expiry already inside the margin waits a minute rather than looping', async () => {

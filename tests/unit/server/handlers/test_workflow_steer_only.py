@@ -43,6 +43,8 @@ def _make_request(steer_only: bool = True):
     # DB call) and the retry-chain resolution before wait_or_steer.
     req.request_key = None
     req.retry_of_run_id = None
+    req.artifact_comment_ids = None
+    req.artifact_comments = None
     return req
 
 

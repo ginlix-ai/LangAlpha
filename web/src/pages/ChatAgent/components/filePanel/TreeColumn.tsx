@@ -96,7 +96,10 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
   // Docked, the column folds on its width so the viewer reflows with it;
   // floating, it slides in from the edge it hangs off. Exits are shorter.
   // Full, it arrives with its tab as any tab's body does, and a file opened
-  // from it narrows it to the column on the same width the fold uses.
+  // from it narrows it to the column on the same width the fold uses. Full
+  // and going (a page or a result opened over the empty tab), it is a tab
+  // body leaving and fades as one: folding its width wiped it across the tab
+  // that replaced it.
   const enter = TWEEN.fold;
   const overlay = props.overlay && !props.full;
   const columnMotion = overlay
@@ -104,7 +107,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
     : {
       initial: props.full ? false as const : { width: 0 },
       animate: { width: props.full ? '100%' : TREE_WIDTH, transition: enter },
-      exit: { width: 0, transition: TWEEN.exit },
+      exit: props.full ? { opacity: 0, transition: TWEEN.exit } : { width: 0, transition: TWEEN.exit },
     };
 
   return (

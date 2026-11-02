@@ -120,6 +120,7 @@ window.sendPrompt = function(text) {
           /:root\s*\{[^}]*\}/,
           ':root {\n  ' + e.data.css + '\n}'
         );
+        try { window.dispatchEvent(new Event('themechange')); } catch (err) {}
       }
     }
   });

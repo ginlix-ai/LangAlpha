@@ -77,11 +77,54 @@ def is_memo_text_path(file_path: str) -> bool:
 # Type alias for operation callback
 OperationCallback = Callable[[dict[str, Any]], None]
 
+_ARTIFACT_SUFFIXES = (".html", ".htm")
+
+
+async def _record_creator(workspace_dir: str, normalized_path: str) -> None:
+    """Name the turn's thread the creator of an HTML file it wrote in its own
+    workspace folder, where comments on the file go by default.
+
+    Never raises: the write already happened, and a file with no creator only
+    falls through to the next destination.
+    """
+    if not normalized_path.lower().endswith(_ARTIFACT_SUFFIXES):
+        return
+    folder = workspace_dir.rstrip("/") + "/"
+    if not normalized_path.startswith(folder):
+        return
+    path = normalized_path[len(folder):]
+    # Scratch and other hidden folders hold nothing the user opens.
+    if any(part.startswith(".") for part in path.split("/")[:-1]):
+        return
+    try:
+        from src.server.services.served_paths import may_be_artifact
+
+        # A file no link could let out never gets a record, as the routes
+        # that make one refuse it.
+        if not may_be_artifact(path):
+            return
+        from langgraph.config import get_config
+
+        configurable = get_config().get("configurable") or {}
+        workspace_id = configurable.get("workspace_id")
+        thread_id = configurable.get("thread_id")
+        if not workspace_id or not thread_id:
+            return
+        from src.server.database.artifacts import record_creator
+
+        await record_creator(
+            workspace_id=str(workspace_id), path=path, thread_id=str(thread_id)
+        )
+    except Exception as e:
+        logger.debug("Recording the file's creator failed", error=str(e))
+
+
 def create_filesystem_tools(
     backend: FilesystemBackend,
     operation_callback: OperationCallback | None = None,
     *,
     refuse_over_cap: bool = False,
+    record_creators: bool = False,
 ) -> tuple:
     """Create the Read, Write, and Edit tools bound to ``backend``.
 
@@ -89,7 +132,8 @@ def create_filesystem_tools(
     ``CompositeFilesystemBackend`` that adds store-backed memory/memo routing;
     the tools see a uniform interface either way. ``refuse_over_cap`` turns the
     fill note on the capped context files into a hard refusal for a Write that
-    would land past the cap.
+    would land past the cap. ``record_creators`` is for tools on the turn's own
+    computer, whose workspace folder is the turn's.
     """
 
     def _capped(normalized_path: str) -> CappedFile | None:
@@ -343,6 +387,8 @@ def create_filesystem_tools(
                 return f"ERROR: {exc}"
             if not result:
                 return "ERROR: Write operation failed"
+            if record_creators:
+                await _record_creator(backend.workspace_dir, normalized_path)
 
             if operation_callback:
                 try:
@@ -404,6 +450,8 @@ def create_filesystem_tools(
             if not result.get("success", False):
                 error_msg = result.get("error", "Edit operation failed")
                 return f"ERROR: {error_msg}"
+            if record_creators:
+                await _record_creator(backend.workspace_dir, normalized_path)
 
             if operation_callback:
                 try:

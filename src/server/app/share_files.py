@@ -19,18 +19,11 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
-from src.server.app.share_access import (
-    SharedFileTarget,
-    resolve_serve_target,
-    resolve_shared_files,
-)
+from src.server.app.share_access import SharedFileTarget, resolve_shared_files
 from src.server.app.share_pages import unavailable_response
 from src.server.app.workspace_files._shared import (
     DEFAULT_READ_LIMIT_LINES,
     _is_binary,
-    _is_text_content_type,
-    _is_utf8,
-    _to_client_path,
     folder_unmoved,
     previous_roots_of,
 )
@@ -44,12 +37,13 @@ from src.server.app.workspace_files.serve import (
     _has_traversal,
     render_workspace_file_pdf,
     serve_workspace_file,
-    warm_sandbox,
-    warm_sandbox_bytes,
 )
 from src.server.database.home_workspace import is_unbound
+from src.server.preview_proxy.page_bridge import parse_inject
 from src.server.services.persistence.file import FilePersistenceService
 from src.server.services.persistence.resolve import resolve_file_bytes_or_none
+from src.server.services.warm_files import warm_sandbox, warm_sandbox_bytes
+from src.server.services.served_paths import is_text_content_type, is_utf8
 from src.server.services.workspace_file_containment import (
     contained_listing_path,
     contained_relative_path,
@@ -60,6 +54,7 @@ from src.server.services.workspace_file_containment import (
 from src.server.services.workspace_files import (
     HOME_NOT_ON_COMPUTER_REASON,
     previous_dir_names_of,
+    to_client_path,
 )
 from src.server.utils.error_sanitization import single_line
 from src.server.utils.http_headers import content_disposition
@@ -193,7 +188,7 @@ async def _live_listing(
     for absolute in absolute_paths:
         if not is_within(work_dir, absolute):
             continue
-        client_path = _to_client_path(sandbox, absolute, work_dir)
+        client_path = to_client_path(sandbox, absolute, work_dir)
         if target.visible(client_path):
             files.append(client_path)
     return files
@@ -383,7 +378,7 @@ async def download_shared_file(
     content = resolved.content
     # Redact any UTF-8-decodable body, not just declared text types: a secret
     # written to a mis-named file would otherwise leave verbatim.
-    if _is_text_content_type(resolved.mime) or _is_utf8(content):
+    if is_text_content_type(resolved.mime) or is_utf8(content):
         content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
     filename = resolved.path.rsplit("/", 1)[-1] or "download"
@@ -400,7 +395,11 @@ async def serve_shared_file(
     share_token: str,
     path: str = Path(..., description="File path within the shared workspace."),
     inject: str | None = Query(
-        None, description="Set to 'theme' to splice theme-sync into HTML."
+        None,
+        description=(
+            "Set to 'view' to splice the page bridge into HTML (theme, scroll "
+            "and links). 'theme' is accepted as 'view'."
+        ),
     ),
     format: str | None = Query(None, description="Set to 'pdf' to render HTML as a PDF."),
     scale: float | None = Query(
@@ -413,18 +412,18 @@ async def serve_shared_file(
         True, description="PDF only: stamp 'LangAlpha · <date>' in the footer."
     ),
 ) -> Response:
-    """Serve a shared workspace file inline with a sandboxed CSP.
+    """Serve a shared thread's workspace file inline with a sandboxed CSP.
 
     Path-style so a served document's relative subresources (``charts/x.png``)
-    resolve under the same token prefix. Reuses the workspace file-serving core
-    (MIME / traversal / redaction / fallback / theme injection) with the token's
-    own reach as the visibility gate, so the core judges the path a sandbox read
-    resolved to and not the one the URL asked for. The workspace UUID is
-    resolved server-side and never appears in the URL.
+    resolve under the same token prefix. The workspace UUID is resolved
+    server-side and never appears in the URL.
 
     The token is a thread token, which requires ``allow_files`` and opens its
-    subtree, or a file share link, which opens exactly the files the owner
-    confirmed. The only route a file link answers is this one.
+    subtree through the workspace file-serving core (MIME / traversal /
+    redaction / fallback / page bridge), judged on the path a sandbox
+    read resolved to and not the one the URL asked for. A shared file's link
+    is no thread token, so it answers the uniform 404 here: its visitors read
+    a version through the artifact grant its metadata hands them.
 
     ``?format=pdf`` renders HTML through server-side Chromium, and renders it
     through *this* route rather than the workspace one: the browser fetches
@@ -437,8 +436,9 @@ async def serve_shared_file(
     ``allow_download`` gates the explicit download affordance, not raw content
     reachability. So serving (and PDF export) need only ``allow_files``.
     """
+    prefix = f"/api/v1/public/shared/{share_token}/files/serve/"
     try:
-        target = await resolve_serve_target(share_token)
+        target = await resolve_shared_files(share_token, require_files=True)
 
         if format == "pdf":
             return await render_workspace_file_pdf(
@@ -449,15 +449,18 @@ async def serve_shared_file(
                 page_numbers=page_numbers,
                 branding=branding,
                 visible=target.visible,
-                serve_base=f"/api/v1/public/shared/{share_token}/files/serve/",
+                serve_base=prefix,
             )
 
         return await serve_workspace_file(
             target.workspace_id,
             path,
-            inject_theme=(inject == "theme"),
+            # A visitor never comments, so any bridge asked for is the view's.
+            inject="view" if parse_inject(inject) else None,
             workspace=target.workspace,
             visible=target.visible,
+            reach=prefix,
+            host=request.headers.get("host"),
         )
     except (SandboxGoneError, SandboxTransientError):
         # This route is unauthenticated, so it must never distinguish "sandbox

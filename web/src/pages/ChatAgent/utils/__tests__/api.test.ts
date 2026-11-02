@@ -868,6 +868,24 @@ describe('ChatAgent API utilities', () => {
       expect(body).not.toHaveProperty('agent_mode');
     });
 
+    // A send of file comments names them by id, with where the person reads;
+    // the server claims them under the request key, so a retransmit carries
+    // the same ids.
+    it('carries file comment ids and where the person reads, and none when the send has none', async () => {
+      await sendChatMessageStream('', 'ws-1', 't-1', {
+        onEvent: () => {}, artifactComments: { ids: ['c-2', 'c-1'], reading: 'file' }, requestKey: 'rk-1',
+      });
+      const body = bodyOfLastSend();
+      expect(body.artifact_comment_ids).toEqual(['c-2', 'c-1']);
+      expect(body.reading).toBe('file');
+      expect(body.request_key).toBe('rk-1');
+
+      (global.fetch as Mock).mockClear();
+      await sendChatMessageStream('hi', 'ws-1', 't-1', { onEvent: () => {}, artifactComments: { ids: [], reading: 'chat' } });
+      expect(bodyOfLastSend()).not.toHaveProperty('artifact_comment_ids');
+      expect(bodyOfLastSend()).not.toHaveProperty('reading');
+    });
+
     // Watch OFF: no skills item, no market_watch key.
     it('sends no market-watch skill and no market_watch flag when off', async () => {
       await sendChatMessageStream('hi', 'ws-1', 't-1', { onEvent: () => {} });

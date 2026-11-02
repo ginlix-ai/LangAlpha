@@ -1,6 +1,7 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
+import type { ComposerSend } from '../../../components/ui/chat-input.types';
 import { useChatInput } from '../hooks/useChatInput';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileFabChat } from '@/components/ui/mobile-fab-chat';
@@ -39,8 +40,11 @@ function ChatInputCard() {
     [t],
   );
 
-  const handleMobileSend = (...args: Parameters<typeof handleSend>) => {
-    handleSend(...args);
+  const sendComposer = ({ message, files, commands, modelOptions }: ComposerSend) =>
+    handleSend(message, files, commands, modelOptions);
+
+  const handleMobileSend = (send: ComposerSend) => {
+    void sendComposer(send);
     setChatExpanded(false);
   };
 
@@ -108,7 +112,7 @@ function ChatInputCard() {
         >
           <ChatInput
             ref={chatInputRef}
-            onSend={handleSend}
+            onSend={sendComposer}
             disabled={isLoading}
             scope={scope}
             onScopeChange={setScope}

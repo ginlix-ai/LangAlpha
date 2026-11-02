@@ -1,6 +1,7 @@
 /** Core API types — User, Workspace, Thread, and response wrappers */
 
 import type { CommandFailureReason, CommandTool } from './commands';
+import type { ArtifactCommentSendFields } from './artifacts';
 
 // --- User ---
 
@@ -783,8 +784,6 @@ interface ShareLinkBase {
   title: string | null;
   shared: boolean;
   shared_at: string | null;
-  /** The confirmed list while shared, null otherwise. */
-  shared_files: string[] | null;
   created_at: string;
 }
 
@@ -793,6 +792,8 @@ export interface FileShareLink extends ShareLinkBase {
   /** Workspace-relative entry path. */
   path: string;
   port: null;
+  /** The file's artifact record, which this link is the code of. */
+  artifact_id?: string;
 }
 
 export interface AppShareLink extends ShareLinkBase {
@@ -800,6 +801,7 @@ export interface AppShareLink extends ShareLinkBase {
   /** The optional entry path on the served app. */
   path: string | null;
   port: number;
+  artifact_id?: null;
 }
 
 /** One item's stable `/a/<code>` link. Private unless `shared`. */
@@ -808,26 +810,6 @@ export type ShareLink = FileShareLink | AppShareLink;
 export type ShareLinkTarget =
   | { kind: 'file'; path: string }
   | { kind: 'app'; port: number };
-
-export type ShareFileReason = 'entry' | 'page' | 'style' | 'markdown' | 'script';
-
-export interface ShareFileEntry {
-  path: string;
-  size: number;
-  reason: ShareFileReason;
-}
-
-export interface ShareLinkDrift {
-  added: string[];
-  removed: string[];
-}
-
-/** The current file list for a file link, with the drift against what was confirmed. */
-export interface ShareLinkFiles {
-  files: ShareFileEntry[];
-  total_size: number;
-  drift: ShareLinkDrift | null;
-}
 
 export interface SharedLinksResponse {
   links: ShareLink[];
@@ -840,6 +822,10 @@ export interface FileGrant {
   /** Seconds the grant has left when it is answered. */
   expires_in: number;
 }
+
+// --- Artifacts ---
+
+export type * from './artifacts';
 
 // --- Workspace Files ---
 
@@ -998,7 +984,7 @@ export interface SSEEventData {
 
 // --- Chat Message Send Body ---
 
-export interface ChatMessageBody {
+export interface ChatMessageBody extends ArtifactCommentSendFields {
   workspace_id: string;
   messages: Array<{ role: string; content: string }>;
   locale: string;
