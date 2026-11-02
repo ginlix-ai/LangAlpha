@@ -459,12 +459,10 @@ function ThreadTreeRowImpl({
   const activateRow = () => {
     // A touch long-press opens the menu; the tap that ends it is not a navigation.
     if (renaming || menuOpen) return;
-    if (isCurrentThread) {
-      // Toggle agents expand for current thread
-      if (hasSubagents) onToggleThread(tid);
-    } else {
-      onNavigateThread(wsId, tid);
-    }
+    // Toggle agents expand for current thread. Without agents to show it is still
+    // a pick, which the mobile drawer closes on.
+    if (hasSubagents) onToggleThread(tid);
+    else onNavigateThread(wsId, tid);
   };
 
   const copyLink = () => {
