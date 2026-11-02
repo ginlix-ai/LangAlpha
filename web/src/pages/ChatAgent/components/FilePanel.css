@@ -420,7 +420,11 @@
     flex: 0 1 auto;
     overflow: hidden;
   }
+  /* Short on room, the folders give way before the name: it is what the row is
+     there to say, and each folder stays a tap target with an ellipsis. */
   .file-panel-crumb {
+    flex: 0 1000 auto;
+    min-width: 1.5em;
     max-width: 9rem;
     padding: 1px 3px;
     border: 0;
@@ -433,11 +437,26 @@
     text-overflow: ellipsis;
     cursor: pointer;
   }
+  /* The trail clips a .tap-target's box, so a finger gets the row's height and
+     what width a folder can spare. Any wider and a deep path has no room left
+     for the name. */
+  @media (pointer: coarse) {
+    .file-panel-crumb-trail {
+      align-self: stretch;
+    }
+    .file-panel-crumb:not(.is-file) {
+      align-self: stretch;
+      min-width: 2rem;
+    }
+  }
   .file-panel-crumb:hover {
     color: var(--color-text-primary);
     background-color: var(--color-bg-hover);
   }
   .file-panel-crumb.is-file {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: none;
     color: var(--color-text-primary);
     cursor: default;
   }
@@ -500,15 +519,12 @@
     .chat-split-right { min-width: 0; width: 100%; }
     .chat-split-divider { display: none; }
 
-    /* Add bottom padding to scrollable areas inside the mobile overlay
-       so content doesn't get clipped behind the floating bottom tab bar.
-       Not inside the chat's composer docked at a page's foot: nothing runs on
-       under it, and the bar's height only swells its message box and lists. */
-    .mobile-panel-overlay [class*="overflow-y-auto"]:not(.composer-dock *),
-    .mobile-panel-overlay [class*="overflow-auto"]:not(.composer-dock *),
+    /* The overlay ends above the tab bar already (.app-main reserves it), and a
+       thread hides the bar. Only the home indicator can still sit over it, and a
+       viewer that fills its box must not lose height to anything else. */
     .mobile-panel-overlay .file-panel-content,
     .mobile-panel-overlay .file-panel-tree-list {
-      padding-bottom: var(--bottom-tab-height);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
     }
   }
 /* A reference's target inside the open file. The tint is annotation, so it
