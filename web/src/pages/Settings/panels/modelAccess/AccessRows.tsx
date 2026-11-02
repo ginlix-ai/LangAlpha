@@ -87,7 +87,7 @@ export function KeyRow({ p, place, onManage }: { p: ConfiguredProvider; place?: 
 export function Group({ title, children, empty }: { title: string; children: React.ReactNode[]; empty: string }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <h4 className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{title}</h4>
+      <h3 className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{title}</h3>
       {children.length > 0 ? (
         <ul className="divide-y rounded-lg" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)', borderColor: 'var(--color-border-muted)' }}>
           {children}

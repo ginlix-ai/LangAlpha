@@ -1225,13 +1225,17 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   }, [msgSelectionTooltip]);
 
 
+  const scrollThreadToTop = useCallback(() => {
+    if (activeAgentId === 'main') toTop();
+    else subagentToTop();
+  }, [activeAgentId, toTop, subagentToTop]);
+
   // Mobile: tap top bar to scroll chat to top
   const handleTopBarTap = useCallback((e: React.MouseEvent) => {
     if (!isMobile) return;
     if ((e.target as HTMLElement).closest('button, a')) return;
-    if (activeAgentId === 'main') toTop();
-    else subagentToTop();
-  }, [isMobile, activeAgentId, toTop, subagentToTop]);
+    scrollThreadToTop();
+  }, [isMobile, scrollThreadToTop]);
 
 
 
@@ -1521,7 +1525,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               </button>
             )}
             <h1 className="text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
-              {workspaceName || t('thread.workspace')}
+              {/* The bar's tap is a pointer's shortcut, and a bar holding buttons
+                  cannot be one. The title is the same action as a real control,
+                  named by the words on it, with what it does as its description. */}
+              {isMobile ? (
+                <button type="button" className="block max-w-full truncate text-left" title={t('chat.scrollToTop')} onClick={scrollThreadToTop}>
+                  {workspaceName || t('thread.workspace')}
+                </button>
+              ) : (workspaceName || t('thread.workspace'))}
             </h1>
             {isLoadingHistory ? (
               <span className="text-xs whitespace-nowrap" style={{ color: 'var(--color-text-tertiary)' }}>

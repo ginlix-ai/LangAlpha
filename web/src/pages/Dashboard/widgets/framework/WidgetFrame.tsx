@@ -261,11 +261,11 @@ export function WidgetFrame({
               <GripVertical size={12} />
             </span>
           )}
-          <span className="term-card-title">
+          <h2 className="term-card-title">
             <span className="term-bracket" aria-hidden="true">[</span>
             <span className="term-card-title-text">{t(definition.cardTitleKey ?? definition.titleKey)}</span>
             <span className="term-bracket" aria-hidden="true">]</span>
-          </span>
+          </h2>
           <span ref={setSubSlot} className="term-card-sub" />
           <span className="widget-card__actions widget-drag-cancel">
             {editMode && hasSettings && (

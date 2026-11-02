@@ -593,6 +593,7 @@ function MarketViewInner() {
           Page-wide, so the chat and watchlist columns stay draggable too; it
           overlaps the header rather than pushing it down (App.css). */}
       <div className="chrome-drag-strip" aria-hidden="true" />
+      <h1 className="sr-only">{t('marketView.pageHeading', { symbol: selectedStock })}</h1>
       {isMobile ? (
         <div className="market-mobile-layout">
           <StockHeader

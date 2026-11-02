@@ -578,6 +578,7 @@
   },
   "dashboard": {
     "title": "LangAlpha",
+    "searchLabel": "Search stocks by symbol or company name",
     "searchPlaceholder": "Search by symbol or company name...",
     "searching": "Searching...",
     "noResults": "No results found",
@@ -2002,6 +2003,7 @@
     },
     "backToWorkflow": "Back to workflow",
     "backToMain": "Back to main",
+    "scrollToTop": "Scroll to the top of the conversation",
     "reconnecting": "Reconnecting…",
     "offlineHistoryLoad": "You are offline, so this conversation could not be refreshed. It will catch up when your connection returns.",
     "jumpToLatest": {
@@ -2032,6 +2034,7 @@
       "captureChart": "Capture chart",
       "chartAlt": "Chart",
       "send": "Send message",
+      "messageLabel": "Message to the agent",
       "dropFiles": "Drop files to upload",
       "uploading": "Uploading"
     },
@@ -4154,6 +4157,7 @@
     "proxyUnverifiedBody": "This address isn't {{provider}}'s own API or a cloud we recognize (AWS Bedrock, Azure, Google Vertex AI), so it's most likely a proxy, which we can't test. If the proxy doesn't pass prompt caching through, long conversations get slower and costlier; if it sends requests to a different model, or drops thinking or effort settings, you won't get what you picked; and if it's unreliable, requests fail more often."
   },
   "marketView": {
+    "pageHeading": "{{symbol}} market view",
     "companyOverview": "Company Overview",
     "quote": {
       "live": "Live",

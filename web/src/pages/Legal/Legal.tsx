@@ -3,7 +3,7 @@ import { PRIVACY_URL } from '../../config/supportLinks';
 
 function Legal() {
   return (
-    <div
+    <main
       className="h-screen overflow-y-auto py-12 px-4 sm:px-6 lg:px-8"
       style={{ backgroundColor: 'var(--color-bg-page)', color: 'var(--color-text-primary)' }}
     >
@@ -120,7 +120,7 @@ Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/`}</pre>
           </section>
         </div>
       </article>
-    </div>
+    </main>
   );
 }
 

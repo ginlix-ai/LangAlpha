@@ -279,7 +279,7 @@ test.describe('Thread Gallery', () => {
     // card being gone, and by its composer being the one left.
     await expect(page).toHaveURL(/\/chat\/t\/b0000001-0000-4000-8000-000000000001$/, { timeout: 10000 });
     await expect(page.getByRole('heading', { name: 'Second thread', exact: true })).toHaveCount(0, { timeout: 10000 });
-    const composer = page.getByRole('textbox', { name: 'Type / for skills, @ for files' });
+    const composer = page.getByRole('textbox', { name: 'Message to the agent' });
     await expect(composer).toHaveCount(1, { timeout: 10000 });
     await expect(composer).toBeVisible();
   });
