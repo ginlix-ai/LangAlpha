@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://langalpha.ai"><strong>试用 LangAlpha ↗</strong></a> ·
+  <a href="https://docs.langalpha.ai"><strong>文档 ↗</strong></a> ·
   <a href="#快速开始"><strong>快速开始</strong></a> ·
   <a href="#agent-交易"><strong>Agent 交易</strong></a> ·
   <a href="#harness-设计"><strong>Harness 设计</strong></a> ·
@@ -25,6 +26,7 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" alt="许可证：Apache 2.0" />
   <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square" alt="Python 3.13+" />
   <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?style=flat-square&logo=langchain&logoColor=white" alt="LangChain" /></a>
+  <a href="https://docs.langalpha.ai"><img src="https://img.shields.io/badge/docs-docs.langalpha.ai-1c3c3c?style=flat-square" alt="文档" /></a>
   <a href="https://github.com/ginlix-ai/langalpha/releases"><img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-555?style=flat-square" alt="桌面应用" /></a>
 </p>
 
@@ -180,7 +182,9 @@ make config   # wizard: model, data sources, sandbox, web search
 make up       # Postgres, Redis, backend and web app
 ```
 
-打开 [http://localhost:5173](http://localhost:5173)。API 监听 8000 端口，交互式文档位于 `/docs`。
+打开 [http://localhost:5173](http://localhost:5173)。API 监听 8000 端口，交互式文档位于 `/docs`。分步说明见[自托管快速开始](https://docs.langalpha.ai/get-started/self-hosting-quickstart/)（英文）。
+
+**阅读文档**。[LangAlpha 是什么](https://docs.langalpha.ai/get-started/what-is-langalpha/)介绍产品全貌，[CLI 参考](https://docs.langalpha.ai/cli/overview/)说明在终端和脚本里使用的 `langalpha`（简写 `la`）。文档目前为英文。
 
 **自托管有哪些不同**。Agent、工作区、自动化、技能和受控订单的运行方式完全相同，其余部分有差异：
 

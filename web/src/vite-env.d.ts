@@ -15,6 +15,7 @@ interface ImportMetaEnv {
   // integrations. Cross-app links only; never a router target.
   readonly VITE_PLATFORM_URL?: string;
   readonly VITE_CONTACT_EMAILS?: string;
+  readonly VITE_SUPPORT_CONTACT_ENABLED?: string;
   readonly VITE_PRIVACY_URL?: string;
 }
 

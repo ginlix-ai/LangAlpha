@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://langalpha.ai"><strong>Try LangAlpha ↗</strong></a> ·
+  <a href="https://docs.langalpha.ai"><strong>Docs ↗</strong></a> ·
   <a href="#get-started"><strong>Get started</strong></a> ·
   <a href="#agentic-trading"><strong>Agentic trading</strong></a> ·
   <a href="#harness-design"><strong>Harness design</strong></a> ·
@@ -25,6 +26,7 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" alt="License: Apache 2.0" />
   <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square" alt="Python 3.13+" />
   <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?style=flat-square&logo=langchain&logoColor=white" alt="LangChain" /></a>
+  <a href="https://docs.langalpha.ai"><img src="https://img.shields.io/badge/docs-docs.langalpha.ai-1c3c3c?style=flat-square" alt="Documentation" /></a>
   <a href="https://github.com/ginlix-ai/langalpha/releases"><img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-555?style=flat-square" alt="Desktop app" /></a>
 </p>
 
@@ -180,7 +182,9 @@ make config   # wizard: model, data sources, sandbox, web search
 make up       # Postgres, Redis, backend and web app
 ```
 
-Open [http://localhost:5173](http://localhost:5173). The API listens on port 8000, with interactive docs at `/docs`.
+Open [http://localhost:5173](http://localhost:5173). The API listens on port 8000, with interactive docs at `/docs`. For a step by step walkthrough, see the [self-hosting quickstart](https://docs.langalpha.ai/get-started/self-hosting-quickstart/).
+
+**Read the docs.** [What is LangAlpha](https://docs.langalpha.ai/get-started/what-is-langalpha/) tours the product, and the [CLI reference](https://docs.langalpha.ai/cli/overview/) covers `langalpha` (`la` for short) for terminals and scripts.
 
 **How self-host differs.** Agents, workspaces, automations, skills and governed orders run the same. The rest differs:
 

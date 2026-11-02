@@ -83,7 +83,8 @@ Streaming perf benchmarks live in `e2e/perf/`, are gated behind `PERF=1`, and th
 | `VITE_COOKIE_DOMAIN` | (unset = host-only) | Parent domain to share auth/locale cookies across subdomains |
 | `VITE_APP_ENTRY_PATH` | `/app` (platform) / `/` (oss) | Where the SPA entry (login + anonymous bounce) mounts; set `/` on a dedicated app subdomain |
 | `VITE_PLATFORM_URL` | `/account` | Platform console origin/path for account, plans and integrations links. Absolute origin on a split-host deploy; **no trailing slash** (call sites concatenate) |
-| `VITE_CONTACT_EMAILS` | (unset = no contact rows) | Comma-separated support addresses for the dashboard help popover; the first is also the spec dialog's "Contact support" link |
+| `VITE_CONTACT_EMAILS` | (unset = no contact rows) | Comma-separated support addresses; the first is the spec dialog's "Contact support" link |
+| `VITE_SUPPORT_CONTACT_ENABLED` | (unset = off) | Set `true` in platform mode to add a "Contact support" row to the account menu's Help submenu, linking to the portal's `support/contact` page. Without it the submenu lists only the documentation links |
 | `VITE_PRIVACY_URL` | (unset = no privacy link) | Address of the privacy policy. The sign-in and legal pages link to it, and `/privacy` forwards to it |
 | `VITE_SENTRY_DSN` | (unset = no error tracking) | Sentry DSN for browser errors (`lib/sentry.ts`). The release is named from the entry chunk at runtime, never baked in, so a deploy that leaves the web unchanged keeps its entry hash |
 | `VITE_SENTRY_ENVIRONMENT` | the Vite mode | Sentry environment name |
