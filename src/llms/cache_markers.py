@@ -3,7 +3,8 @@
 The markers are placed by middleware every Anthropic route shares, so a
 policy that belongs to one route or to one call is applied to the whole
 request at once, as the client builds it: the subscription client's hour
-(``with_ttl``), and the markers a compaction call needs (``cache_scope``).
+(``with_ttl``), and the markers a compaction call needs (``cache_scope``),
+which OpenRouter's Claude takes too (``scoped_messages``).
 """
 
 from __future__ import annotations
@@ -27,7 +28,19 @@ _TTL_SECONDS = {"5m": 300, "1h": 3600}
 #: summary in place of that history, so writing the history would buy
 #: nothing; the tools prefix is what that call, and every thread with the
 #: same tools, reads back.
-CacheScope = Literal["last_tool"]
+#:
+#: ``system_and_tools``: the system's and the tools' markers. A compaction on
+#: an expired cache that keeps the newest turns reads the history once at the
+#: base rate too, and the call after it sends the same system and tools again
+#: before the summary and the kept turns, so their entries are read back and
+#: the history's would never be.
+CacheScope = Literal["last_tool", "system_and_tools"]
+
+#: The payload keys whose markers each scope keeps.
+_KEPT: dict[CacheScope, frozenset[str]] = {
+    "last_tool": frozenset({"tools"}),
+    "system_and_tools": frozenset({"system", "tools"}),
+}
 
 _scope: ContextVar[CacheScope | None] = ContextVar("cache_marker_scope", default=None)
 
@@ -46,10 +59,11 @@ def cache_scope(scope: CacheScope | None) -> Iterator[None]:
 def scoped(payload: dict[str, Any]) -> dict[str, Any]:
     """``payload`` with its markers where the call's scope puts them, as a
     copy; the payload itself, untouched, outside any scope."""
-    if _scope.get() != "last_tool":
+    scope = _scope.get()
+    if scope is None:
         return payload
     sent = {
-        key: value if key == "tools" else _rewrite(value, lambda _marker: None)
+        key: value if key in _KEPT[scope] else _rewrite(value, lambda _marker: None)
         for key, value in payload.items()
         if key != "cache_control"
     }
@@ -62,6 +76,21 @@ def scoped(payload: dict[str, Any]) -> dict[str, Any]:
     if last is not None:
         sent["tools"] = [*tools[:last], {**tools[last], "cache_control": {"type": "ephemeral"}}, *tools[last + 1 :]]
     return sent
+
+
+def scoped_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Chat-completions ``messages`` (OpenRouter's Claude) with their markers
+    where the call's scope puts them, as a copy: the system messages stand for
+    the request's system, and no tool there carries a marker. The messages
+    themselves, untouched, outside any scope."""
+    scope = _scope.get()
+    if scope is None:
+        return messages
+    system = "system" in _KEPT[scope]
+    return [
+        message if system and message.get("role") == "system" else _rewrite(message, lambda _marker: None)
+        for message in messages
+    ]
 
 
 def ttl_seconds(ttl: str) -> int:

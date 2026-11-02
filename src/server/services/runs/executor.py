@@ -884,14 +884,21 @@ class LocalRunExecutor:
         """
         if self.event_storage_backend != "redis":
             return
+        from src.server.services.thread_status import UNREAD, read_next_summary
+
         token_totals = None
+        next_summary = UNREAD
         closing_frames: list[str] = []
         if outcome is not None:
             from src.server.database.conversation.usage import (
                 get_thread_token_totals,
             )
 
-            token_totals = await get_thread_token_totals(thread_id)
+            # An interrupted run resumes where it stopped, past its turn start.
+            token_totals, next_summary = await asyncio.gather(
+                get_thread_token_totals(thread_id),
+                read_next_summary(thread_id) if outcome != "interrupted" else asyncio.sleep(0),
+            )
             # Ahead of ``run_end``: a gateway stops reading there, and every
             # reader of the stream, a reconnect included, then sees it once.
             returned = await stream_writer.steering_returned_frame(thread_id, run_id)
@@ -901,6 +908,7 @@ class LocalRunExecutor:
             thread_id, run_id, outcome,
             error_frame=error_frame,
             token_totals=token_totals,
+            next_summary=next_summary,
             closing_frames=closing_frames,
             redis_event_ttl=self.redis_event_ttl,
             max_stored_messages=self.max_stored_messages,

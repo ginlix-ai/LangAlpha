@@ -1,6 +1,6 @@
 {
   "_comment": "One precedence rule, two implementations: resolve_tuning_field in src/llms/preferences.py and resolveTuningField in web/src/lib/modelTuning.ts. Both read this table, so a change on either side fails the other's suite instead of letting the composer name a setting the turn will not run. `expected: null` means the field resolves to no value at all.",
-  "fields": ["prompt_guidance", "compaction_profile", "reasoning_effort", "fast_mode", "native_compaction"],
+  "fields": ["prompt_guidance", "compaction_profile", "reasoning_effort", "fast_mode", "native_compaction", "cold_compaction"],
   "cases": [
     {
       "name": "nothing set anywhere",
@@ -85,6 +85,13 @@
       "profile": {},
       "field": "compaction_profile",
       "expected": "moderate"
+    },
+    {
+      "name": "the summary after a break is the account's alone, whatever a profile holds",
+      "account": { "cold_compaction": false },
+      "profile": { "cold_compaction": true },
+      "field": "cold_compaction",
+      "expected": false
     },
     {
       "name": "an override with no account value beneath it",

@@ -190,6 +190,42 @@ describe('useChatMessages: a steer the server refuses as not_running', () => {
     expect(textContentCalls.at(-1)?.assistantMessageId).toBe(resentAssistant.id);
   });
 
+  it.each([true, false])('the send it goes out as keeps keepFullContext=%s', async (skip) => {
+    const firstHang = deferred<{ disconnected: boolean }>();
+    mockSendStream.mockImplementation(
+      async (_msg: string, _ws: string, _tid: string | null, { onEvent }: { onEvent: OnEvent }) => {
+        const call = mockSendStream.mock.calls.length;
+        if (call === 1) {
+          onEvent({ event: 'thread_id', thread_id: 'thread-nr-skip' });
+          return firstHang.promise;
+        }
+        if (call === 2) throw notRunning();
+        return new Promise(() => {});
+      },
+    );
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-nr'));
+    let firstSend: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      firstSend = result.current.handleSendMessage('first turn');
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(true));
+
+    await act(async () => {
+      await result.current.handleSendMessage('follow-up steering', null, null, { keepFullContext: skip });
+    });
+    firstHang.resolve({ disconnected: false });
+    await act(async () => {
+      await firstSend.catch(() => undefined);
+    });
+
+    await waitFor(() => expect(mockSendStream).toHaveBeenCalledTimes(3));
+    const resendOpts = mockSendStream.mock.calls[2][3] as { steerOnly?: boolean; keepFullContext?: boolean };
+    expect(resendOpts.steerOnly).toBeFalsy();
+    expect(resendOpts.keepFullContext).toBe(skip);
+  });
+
   it('a resend the server failed to start outlives a reload, and its Retry sends it again under its key', async () => {
     const firstHang = deferred<{ disconnected: boolean }>();
     const steerAnswer = deferred<void>();

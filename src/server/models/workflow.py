@@ -484,6 +484,11 @@ class RetryRequest(BaseModel):
     )
     reasoning_effort: Optional[ReasoningLevel] = Field(None)
     fast_mode: Optional[bool] = Field(None)
+    keep_full_context: bool = Field(
+        default=False,
+        description="As on a send: the attempt starts without the summary a "
+        "long thread gets after a break. For this attempt only.",
+    )
     additional_context: Optional[List[AdditionalContext]] = Field(
         None,
         description="The failed send's additional context, when its message "

@@ -32,6 +32,7 @@ from ptc_agent.agent.middleware.compaction.summary_request import (
     summary_prompt,
 )
 from ptc_agent.agent.middleware.compaction.utils import parse_summary_message, summary_source
+from src.llms import cache_markers
 from src.llms.provider_compaction import COMPACTION_BETA
 
 _FINISHED = "<summary>\nthe agent's own summary\n</summary>"
@@ -90,9 +91,11 @@ class _Handler:
         self.requests: list[ModelRequest] = []
         self.tags: list[list[str]] = []
         self.as_sent: list[bool] = []
+        self.scopes: list[str | None] = []
 
     async def __call__(self, request: ModelRequest) -> ModelResponse:
         self.requests.append(request)
+        self.scopes.append(cache_markers._scope.get())
         self.tags.append(list((var_child_runnable_config.get() or {}).get("tags") or ()))
         self.as_sent.append(model_resilience._as_sent.get())
         if _asks_summary(request):
@@ -169,6 +172,30 @@ class TestWritesItsOwn:
         assert TAG_NOSTREAM in run.handler.tags[0]
         assert run.handler.as_sent[0] is True
         assert TAG_NOSTREAM not in run.handler.tags[-1]
+
+    @pytest.mark.parametrize("scope", ["system_and_tools", "last_tool", None])
+    async def test_sent_with_the_cache_markers_its_scope_names(self, scope):
+        """A Claude model on a route whose provider does not compact (one
+        through OpenRouter) writes the summary itself, and on an expired cache
+        must not write the history the summary replaces."""
+        mw = CompactionMiddleware(
+            Summarizer(_summary_model(), limit=100_000, counter=len), token_threshold=6, keep_tokens=2
+        )
+        handler = _Handler(AIMessage(_FINISHED))
+        history = _history()
+        request = ModelRequest(
+            model=_model(),
+            messages=history,
+            system_message=SystemMessage("the agent's system prompt"),
+            tools=[],
+            state={"messages": history},
+            runtime=None,
+            model_settings={},
+        )
+
+        await mw._summarize(request, handler, history, 4, scope=scope)
+
+        assert [handler.scopes[i] for i, r in enumerate(handler.requests) if _asks_summary(r)] == [scope]
 
     async def test_stored_without_its_tags(self):
         run = await _run()

@@ -10,6 +10,7 @@ import json
 import logging
 from typing import Any, Dict, Optional, Sequence
 
+from src.server.services.thread_status import UNREAD
 from src.utils.cache.redis_cache import get_cache_client
 from src.utils.cache.stream_append import (
     StreamAppendError,
@@ -38,8 +39,9 @@ def stream_meta_key(thread_id: str, run_id: str) -> str:
 
 # Visible end-of-run frame (I6): written only after the finalize CAS commits,
 # carrying {thread_id, run_id, outcome}, plus the thread's token_totals when
-# they were read. Replaces the pre-finalize ``workflow_stream_end`` sentinel,
-# which survives only as a deploy-compat swallow in ``stream_from_log``.
+# they were read and what its next send summarizes first, if anything.
+# Replaces the pre-finalize ``workflow_stream_end`` sentinel, which survives
+# only as a deploy-compat swallow in ``stream_from_log``.
 RUN_END_EVENT_TYPE = "run_end"
 
 
@@ -177,6 +179,7 @@ async def append_run_end_event(
     *,
     error_frame: Optional[Dict[str, Any]] = None,
     token_totals: Optional[Dict[str, int]] = None,
+    next_summary: Optional[Dict[str, Any]] | object = UNREAD,
     closing_frames: Sequence[str] = (),
     redis_event_ttl: int,
     max_stored_messages: int,
@@ -258,6 +261,10 @@ async def append_run_end_event(
         }
         if token_totals is not None:
             frame_data["token_totals"] = token_totals
+        # None says the next send summarizes nothing; a frame without the
+        # field could not tell, and the client reads the status for it.
+        if next_summary is not UNREAD:
+            frame_data["next_summary"] = next_summary
         data = json.dumps(frame_data, ensure_ascii=False)
         payload = f"event: {RUN_END_EVENT_TYPE}\ndata: {data}\n\n".encode(
             "utf-8"

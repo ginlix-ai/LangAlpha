@@ -908,6 +908,9 @@ class PTCAgent:
                 TurnStartRebuilds(
                     self.config.compaction.rebuild_floor_tokens,
                     settled_at=turn_context.previous_run_settled_at if turn_context else None,
+                    cold_tokens=self.config.compaction.cold_compact_tokens,
+                    keep_full_context=bool(turn_context and turn_context.keep_full_context),
+                    sent_at=turn_context.sent_at if turn_context else None,
                 )
             )
 

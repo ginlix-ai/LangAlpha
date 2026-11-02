@@ -189,3 +189,32 @@ class TestNativeChoice:
         from src.llms.preferences import Tuning
 
         assert self._native(Tuning(native_compaction=False), None) is False
+
+
+class TestColdChoice:
+    """On until the user turns it off; off, no turn start summarizes a
+    thread for its cold cache alone."""
+
+    @staticmethod
+    def _cold_tokens(tuning, entry):
+        from types import SimpleNamespace
+
+        from src.server.services.llm.config import apply_compaction
+
+        config = SimpleNamespace(
+            compaction=SimpleNamespace(token_threshold=0, profile=None, native=True, cold_compact_tokens=300_000),
+        )
+        apply_compaction(config, tuning, entry)
+        return config.compaction.cold_compact_tokens
+
+    @pytest.mark.parametrize(("choice", "expected"), [(None, 300_000), (True, 300_000), (False, 0)])
+    def test_only_an_explicit_off_stands(self, choice, expected):
+        from src.llms.preferences import Tuning
+
+        assert self._cold_tokens(Tuning(cold_compaction=choice), {"context": 1_000_000}) == expected
+
+    def test_set_even_with_no_preset_to_apply(self):
+        from src.llms.preferences import Tuning
+
+        assert self._cold_tokens(Tuning(cold_compaction=False), None) == 0
+

@@ -896,6 +896,7 @@ export const attemptReconnectAfterDisconnect = async (
     try {
       const snapshotAtMs = Date.now();
       const status = await getWorkflowStatus(tid);
+      if (rt.threadIdRef.current === tid) rt.setNextSummary(status.next_summary ?? null);
       if (!status.can_reconnect) {
         console.log('[Reconnect] Workflow no longer reconnectable, cleaning up');
         runOver = true;
@@ -1032,6 +1033,24 @@ export const cleanupAfterStreamEnd = (
   void checkForNewBuild();
   rt.currentMessageRef.current = null;
   releaseStreamOwnership(rt);
+
+  // A run's closing frame says what the next send summarizes first, unless
+  // its read failed or it never came: the status says it then, once, for
+  // the thread on screen with no turn or stream since.
+  if (rt.nextSummaryOwedRef.current) {
+    rt.nextSummaryOwedRef.current = false;
+    const tid = rt.threadIdRef.current;
+    const epoch = rt.sessionEpochRef.current;
+    if (tid && tid !== '__default__') {
+      void getWorkflowStatus(tid).then(
+        (status) => {
+          if (rt.threadIdRef.current !== tid || rt.sessionEpochRef.current !== epoch || rt.isStreamingRef.current) return;
+          rt.setNextSummary(status.next_summary ?? null);
+        },
+        () => {},
+      );
+    }
+  }
 
   // Deliberately no status sweep here: card/chip status moves only on
   // positive evidence (ledger stamp at load, per-task chan_close live).

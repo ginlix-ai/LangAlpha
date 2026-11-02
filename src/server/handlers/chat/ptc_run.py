@@ -387,6 +387,7 @@ async def astream_ptc_workflow(
                 disk_free_mb=disk_free_mb,
                 disk_known=disk_known,
                 inherits_rules=inherits_rules,
+                sent_at=start_time,
             )
 
             query_type, fork = _resolve_fork(request=request, thread_id=thread_id)
