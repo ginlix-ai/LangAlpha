@@ -528,16 +528,18 @@ export const reconnectToStream = async (
     }
     if (result?.disconnected) {
       // The retry loop takes a drop of its own stream as it took the first:
-      // the turn runs on, left for the attempt that continues it.
+      // the turn runs on, left for the attempt that continues it. One the page
+      // came back to find quiet says nothing against the link, so it is charged
+      // as a resume; one that went quiet in view is failing, and spends attempts.
       if (onDrop) {
-        handOff(false);
+        handOff(false, null, !!result.silentOnReturn);
         return;
       }
       // A load's or a report-back's attach that drops is the same mid-run
       // drop, and goes to the loop once this reader lets go, with the idle
       // watchdog it had. Not one another stream has taken over from.
       if (rt.mainStreamAbortRef.current === abortController) {
-        handOff(false);
+        handOff(false, null, !!result.silentOnReturn);
         retryDrop = true;
         return;
       }

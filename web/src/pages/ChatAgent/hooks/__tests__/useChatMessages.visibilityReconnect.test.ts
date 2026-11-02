@@ -124,6 +124,56 @@ describe('useChatMessages — foreground (visibility) reconnect', () => {
     expect(mockReconnect.mock.calls[0][1]).toBe('run-1');
   });
 
+  // Reconnects go quiet across any number of app switches in one long tool call,
+  // and each says nothing against the link, so the loop must not run out on them.
+  it('does not spend its attempts on a run whose reconnects only go silent', async () => {
+    const result = await startActiveStream(visibility);
+    let silentDrops = 8;
+    mockReconnect.mockImplementation((...args: unknown[]) => {
+      if (silentDrops > 0) {
+        silentDrops -= 1;
+        return Promise.resolve({ disconnected: true, aborted: false, contentLocation: null, silentOnReturn: true });
+      }
+      const signal = args[4] as AbortSignal;
+      return new Promise((resolve) => {
+        signal.addEventListener('abort', () => resolve({ disconnected: false, aborted: true, contentLocation: null }), { once: true });
+      });
+    });
+
+    await act(async () => {
+      suspendTab();
+      document.dispatchEvent(new Event('visibilitychange'));
+      await flush();
+    });
+
+    await waitFor(() => expect(mockReconnect.mock.calls.length).toBe(9));
+    expect(result.current.isLoading).toBe(true);
+  });
+
+  // A reconnect that opens and then goes quiet with the page in view is failing:
+  // nothing about being away explains it, so the loop must still reach its end.
+  it('gives up on reconnects that keep going silent with the page in view', async () => {
+    const result = await startActiveStream(visibility);
+    mockReconnect.mockResolvedValue({ disconnected: true, aborted: false, contentLocation: null, silentOnReturn: false });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await act(async () => {
+        suspendTab();
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(mockReconnect).toHaveBeenCalledTimes(5);
+        // The give-up's reload attaches again to a run still going; this one is over.
+        mockStatus.mockResolvedValue({ can_reconnect: false, status: 'completed' });
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(mockReconnect).toHaveBeenCalledTimes(5);
+  });
+
   it('re-kicks reconnect on a pageshow event too', async () => {
     await startActiveStream(visibility);
 
