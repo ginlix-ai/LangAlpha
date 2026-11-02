@@ -46,7 +46,7 @@ class ComputerStatus(StrEnum):
 CLAIMABLE_FOR_START = (ComputerStatus.STOPPED, ComputerStatus.CREATING)
 
 
-ComputerKind = Literal["daytona", "docker", "e2b", "ssh"]
+ComputerKind = Literal["daytona", "docker", "e2b", "local", "ssh"]
 
 # Spec presets a request may name. Shown as Small, Medium, Large and Extra
 # Large; the ids predate those names and are persisted on computer rows. Each

@@ -8,11 +8,17 @@ be read together.
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Iterable
 
 from ptc_agent.core.paths import SandboxLayout, name_fold
-from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+from ptc_agent.core.sandbox.providers.ssh_errors import (
+    MACHINE_ID_PATTERN,
+    SSHConnectError,
+    SSHFolderMarked,
+)
+from ptc_agent.core.sandbox.runtime import SandboxTransientError
 
 # A file, not ``.langalpha``: that is the runtime's folder in the home, and a
 # home holding it must not read as some computer's root.
@@ -297,3 +303,27 @@ def folder_marked_message(path: str, host: str) -> str:
         "does not have, perhaps one from another account or an earlier "
         "install. Choose a new or empty folder."
     )
+
+
+def refuse_root(
+    exit_code: int | None, stdout: bytes, *, path: str, user: str, host: str
+) -> None:
+    """Raise what ``root_dir_script``'s exit says about *path*, if it refused it.
+
+    Raises:
+        SandboxTransientError: Another claim held the computers folder.
+        SSHFolderMarked: Another computer's mark is on the folder, named as
+            the probe names it so the owner can take the folder back.
+        SSHConnectError: ``root_dir``, the folder cannot be the user's.
+    """
+    if exit_code == 15:
+        raise SandboxTransientError(
+            f"Another computer's folder is still being set up on {host}"
+        )
+    if exit_code == 10:
+        owner = stdout.decode(errors="replace").strip()
+        if re.match(MACHINE_ID_PATTERN, owner):
+            raise SSHFolderMarked(folder_marked_message(path, host), owner)
+    error = root_dir_error(exit_code, path=path, user=user, host=host)
+    if error is not None:
+        raise error

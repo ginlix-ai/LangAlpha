@@ -126,7 +126,10 @@ def turn_launcher(
     if not isinstance(sandbox.provider, SSHProvider):
         plan = UserPlan(user_id)
         credential = HostedCredential(user_id, admitted.hosted, workspace_id)
-        if cloud_runs_in() == "sandbox":
+        # Past SSH, a whole machine is the server's own, so there is no
+        # sandbox to run the CLI inside: it runs in this worker, which is
+        # that machine.
+        if cloud_runs_in() == "sandbox" and sandbox.provider.recreatable:
             return sandbox_launcher(
                 sandbox, identity=user_id, credential=credential, plan=plan,
                 cli_slot=partial(computer_cli_slot, computer_id, queue=queue) if computer_id is not None else None,

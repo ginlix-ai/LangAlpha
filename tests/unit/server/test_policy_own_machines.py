@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from ptc_agent.core.sandbox.providers import OWN_MACHINE_KINDS, PROVIDER_KINDS, provider_class
+from ptc_agent.core.sandbox.providers import BROUGHT_KINDS, PROVIDER_KINDS, provider_class
 from tests.unit.server.policy_standing import standing_under
 from src.config.models import PolicyLayer
 from src.server.services.policy import ALLOW_ALL, OWN_MACHINES, merge
@@ -41,10 +41,13 @@ def _refused(excinfo, status=403):
 
 
 def test_own_machine_kinds_are_the_ones_their_owner_brings():
-    assert OWN_MACHINE_KINDS == tuple(
-        k for k in PROVIDER_KINDS if not provider_class(k).metered
+    # No cap counts a machine the owner brings; the server's own machine is
+    # not counted either, but the deployment provides it.
+    assert all(not provider_class(k).metered for k in BROUGHT_KINDS)
+    assert BROUGHT_KINDS == tuple(
+        k for k in PROVIDER_KINDS if not provider_class(k).metered and k != "local"
     )
-    assert OWN_MACHINE_KINDS == ("ssh",)
+    assert BROUGHT_KINDS == ("ssh",)
 
 
 def test_the_rule_merges_strictly_and_is_reported():

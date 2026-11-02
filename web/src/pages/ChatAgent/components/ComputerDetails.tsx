@@ -35,6 +35,7 @@ import { activeSpecChange, effectiveTier } from './specChangeUi';
 import { COMPUTER_NAME_MAX, computerNameTakenMessage } from '../utils/computerName';
 import { MakePrimaryButton } from './MakePrimaryDialog';
 import { providerIsOwnMachine, providerManagesSpec } from './providerUi';
+import { localMachine } from './machineArt/machine';
 import { ComputerFacts } from './computerFacts';
 import { ComputerClaudeCode } from './ComputerClaudeCode';
 import {
@@ -92,7 +93,7 @@ function ComputerDetails({ computer, index, total, height, onBack, backLabel, th
   // said here, beside the button that asks again.
   const primaryDropped = !computer.is_primary && computer.make_primary?.state === 'dropped' ? computer.make_primary : null;
   const primaryHintId = useId();
-  const hasSettings = (managesSpec && computer.is_always_on) || computer.kind === 'ssh';
+  const hasSettings = (managesSpec && computer.is_always_on) || !managesSpec;
 
   // The view replaced the button that opened it, so focus starts on the way back.
   useEffect(() => {
@@ -174,7 +175,7 @@ function ComputerDetails({ computer, index, total, height, onBack, backLabel, th
             <ComputerNotes computer={computer} thisMac={thisMac} prepareHintId={prepareHintId} primaryNote />
             <ComputerSpecRows computer={computer} spec={false}>
               {/* Where its workspaces are, on a machine the user brings. */}
-              {computer.kind === 'ssh' && computer.root_dir && (
+              {!managesSpec && computer.root_dir && (
                 <div>
                   <dt>{t('computer.machine.folder', 'Folder')}</dt>
                   <dd title={computer.root_dir}>
@@ -215,7 +216,7 @@ function ComputerDetails({ computer, index, total, height, onBack, backLabel, th
                   />
                 )}
                 {/* Only a machine the user brings offers the choice: a hosted one always backs up. */}
-                {computer.kind === 'ssh' && (
+                {!managesSpec && (
                   <ToggleRow
                     label={t('computer.filesBackup.label', 'Back up files')}
                     checked={computer.files_backup !== false}
@@ -242,13 +243,14 @@ function ComputerDetails({ computer, index, total, height, onBack, backLabel, th
  */
 function MachineFacts({ computer, onChangeSpec }: { computer: Computer; onChangeSpec: () => void }) {
   const { t } = useTranslation();
-  const { data } = useComputerProviders({ enabled: computer.kind !== 'ssh' });
+  const managesSpec = providerManagesSpec(computer.kind);
+  const { data } = useComputerProviders({ enabled: managesSpec });
   const rows: { key: string; label: string; value: string }[] = [];
   const add = (key: string, label: string, value: string | null | undefined) => {
     if (value) rows.push({ key, label, value });
   };
   const gb = (count: number) => t('computer.machine.gb', '{{count}} GB', { count });
-  const ssh = computer.kind === 'ssh' ? computer.ssh : null;
+  const ssh = computer.kind === 'ssh' ? computer.ssh : computer.kind === 'local' ? localMachine(computer) : null;
   if (ssh) {
     add('system', t('computer.machine.system', 'System'), ssh.distro || systemName(ssh.os));
     add('processor', t('computer.machine.processor', 'Processor'), ssh.cpu || ssh.arch);

@@ -317,7 +317,7 @@ function MovePanel({ workspace, onClose }: { workspace: MoveWorkspaceTarget; onC
           />
           <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
             {/* Leftovers on a machine the user brought are never removed. */}
-            {computers.find((c) => c.computer_id === currentId)?.kind === 'ssh'
+            {!providerManagesSpec(computers.find((c) => c.computer_id === currentId)?.kind ?? '')
               ? t('workspace.move.notCopiedKept', {
                   source: nameOf(currentId),
                   defaultValue:

@@ -16,7 +16,7 @@ from types import MappingProxyType
 
 from fastapi import HTTPException
 
-from ptc_agent.core.sandbox.providers import OWN_MACHINE_KINDS
+from ptc_agent.core.sandbox.providers import BROUGHT_KINDS
 from src.config.features import is_feature_enabled_system
 from src.config.models import OrgLibraryPolicy, PolicyLayer, SharedWorkspacesPolicy
 from src.server.database import mcp_config_version
@@ -355,7 +355,7 @@ async def refuse_machine_use(kind: str | None, owner_id: str | None) -> None:
     :func:`require_policy` refuses it, and lets one the deployment provides
     be used, as it was before organizations.
     """
-    if kind not in OWN_MACHINE_KINDS:
+    if kind not in BROUGHT_KINDS:
         if owner_id:
             (await read_standing(owner_id)).refuse_if_suspended()
         return

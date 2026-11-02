@@ -44,6 +44,7 @@ from typing import Any, Final
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
+from ptc_agent.core.sandbox.providers import MACHINE_KINDS
 from src.config.settings import (
     get_cli_approval_hold_seconds,
     get_cli_approval_max_pending,
@@ -462,8 +463,11 @@ async def computer_remove(
             for w in await get_live_workspace_ids_for_computer(computer_id, exclude_stand_in=True)
         ]
         names = [(await get_workspace(w) or {}).get("name") for w in on_it]
-        # Both act only on an ssh machine, so the user is told of them only there.
-        ssh = computer.get("kind") == "ssh"
+        # The folders go only from a whole machine, and the key line only from an
+        # ssh one, so the user is told of each only where it acts.
+        kind = computer.get("kind")
+        machine = kind in MACHINE_KINDS
+        ssh = kind == "ssh"
         return _ask(
             "computer_remove",
             path={"computer_id": computer_id},
@@ -476,7 +480,7 @@ async def computer_remove(
             target={"id": computer_id, "name": computer.get("name")},
             details={
                 "remove_key": remove_key and ssh,
-                "delete_files": delete_files and ssh,
+                "delete_files": delete_files and machine,
                 "delete_workspaces": on_it,
                 "delete_workspace_names": names,
             },

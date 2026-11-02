@@ -13,7 +13,11 @@ from __future__ import annotations
 import ipaddress
 from urllib.parse import urlsplit
 
-from ptc_agent.core.sandbox.providers import provider_class, provider_runs_remote
+from ptc_agent.core.sandbox.providers import (
+    provider_class,
+    provider_reaches_host_through_alias,
+    provider_runs_remote,
+)
 
 # Hostnames that are local by construction — no DNS needed to know a remote
 # sandbox can never reach them.
@@ -48,7 +52,8 @@ def effective_relay_base_url(provider: str) -> str:
     An explicitly configured EGRESS_RELAY_BASE_URL is always honored verbatim.
     Only the implicit SERVER_BASE_URL fallback is adapted: for local Docker
     sandboxes a loopback host is rewritten to the Docker host gateway, so the
-    OSS default stack works with zero relay configuration.
+    OSS default stack works with zero relay configuration. A computer on this
+    very machine dials loopback as it is.
     """
     from src.config.env import EGRESS_RELAY_BASE_URL, SERVER_BASE_URL
 
@@ -56,7 +61,7 @@ def effective_relay_base_url(provider: str) -> str:
         return EGRESS_RELAY_BASE_URL
     parts = urlsplit(SERVER_BASE_URL)
     host = (parts.hostname or "").lower()
-    if not provider_runs_remote(provider) and (
+    if provider_reaches_host_through_alias(provider) and (
         host in _LOOPBACK_HOSTNAMES or host.startswith("127.")
     ):
         port = f":{parts.port}" if parts.port else ""

@@ -17,11 +17,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from ptc_agent.core.sandbox.providers._script_run import reported_group
 from ptc_agent.core.sandbox.providers._ssh_shell import FRAME_PGID
 from ptc_agent.core.sandbox.providers._ssh_transport import (
     _COMMAND_SLOTS,
     Link,
-    _reported_group,
     run_framed,
 )
 
@@ -177,4 +177,4 @@ async def test_a_group_id_still_on_its_way_is_waited_for():
 
     asyncio.ensure_future(arrives())
 
-    assert await _reported_group(run) == 4242
+    assert await reported_group(run) == 4242

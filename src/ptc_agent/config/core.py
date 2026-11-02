@@ -617,6 +617,23 @@ class SSHConfig(ResourceTieredConfig):
         return cls(**(data or {}))
 
 
+class LocalConfig(ResourceTieredConfig):
+    """The machine the server itself runs on, as the desktop app bundles it.
+
+    Only a build that turns it on offers it (``providers.local``). The machine's
+    size is its own, so the kind has one tier and the tier is never shown.
+    """
+
+    # The machine never stops on idle, so the server's idle reaper stops a quiet
+    # one by this interval. Stopping only ends this computer's own processes.
+    auto_stop_interval: int = Field(default=3600, ge=60)
+    # The first start installs the Python runtime on the owner's own network.
+    bootstrap_timeout: int = Field(default=1800, ge=60)
+    resource_tiers: dict[str, ResourceTier] = Field(
+        default_factory=_single_tier, validate_default=True
+    )
+
+
 class PlatformSecretDefinition(BaseModel):
     """One backend-owned platform credential, declared in agent_config.yaml.
 
@@ -677,30 +694,38 @@ class PlatformSecretDefinition(BaseModel):
 class SandboxConfig(BaseModel):
     """Provider-agnostic sandbox configuration wrapper."""
 
-    provider: Literal["daytona", "docker", "e2b", "memory"] = "daytona"
+    provider: Literal["daytona", "docker", "e2b", "local", "memory"] = "daytona"
     # Kinds a new computer may be created on besides ``provider``, which stays
     # the default. Only this list offers a kind: holding its credentials does
     # not, since one environment often carries keys for several providers.
     # ``ssh`` is only ever offered: a computer on it needs a machine its owner
     # names, so it cannot be the default.
-    offered_providers: tuple[Literal["daytona", "docker", "e2b", "ssh"], ...] = ()
+    offered_providers: tuple[Literal["daytona", "docker", "e2b", "local", "ssh"], ...] = ()
     daytona: DaytonaConfig = Field(default_factory=DaytonaConfig)
     e2b: E2BConfig = Field(default_factory=E2BConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     ssh: SSHConfig = Field(default_factory=SSHConfig)
+    local: LocalConfig = Field(default_factory=LocalConfig)
     platform_secrets: tuple[PlatformSecretDefinition, ...] = ()
 
     def creatable_providers(self) -> tuple[str, ...]:
         """The kinds a new computer may be created on, the default first.
 
         Deduplicated because ``SANDBOX_PROVIDER`` can move the deployment onto
-        a kind the config also offers.
+        a kind the config also offers. ``local`` runs agent code as the server's
+        own user, so no config offers it where the build has not turned it on.
         """
-        return tuple(dict.fromkeys((self.provider, *self.offered_providers)))
+        kinds = dict.fromkeys((self.provider, *self.offered_providers))
+        if "local" in kinds:
+            from ptc_agent.core.sandbox.providers.local import local_computer_allowed
+
+            if not local_computer_allowed():
+                del kinds["local"]
+        return tuple(kinds)
 
     def settings_for(
         self, kind: str
-    ) -> DaytonaConfig | DockerConfig | E2BConfig | SSHConfig:
+    ) -> DaytonaConfig | DockerConfig | E2BConfig | SSHConfig | LocalConfig:
         """The settings computers of ``kind`` are built from.
 
         Each kind's settings sit under a field of the kind's own name, so a

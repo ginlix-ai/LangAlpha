@@ -27,6 +27,7 @@ import structlog
 
 from ptc_agent.config.core import DockerConfig, PlatformSecretDefinition
 from ptc_agent.core.sandbox._defaults import sandbox_thread_env
+from ptc_agent.core.sandbox.providers._docker_image import ensure_image
 from ptc_agent.core.sandbox.providers._docker_stream import open_docker_stream
 from ptc_agent.core.sandbox.providers._exec_sessions import ExecSessionRuntime
 from ptc_agent.core.sandbox.providers._tiers import (
@@ -599,6 +600,7 @@ class DockerProvider(SandboxProvider):
 
     label = "Docker"
     runs_remote = False
+    reaches_host_through_alias = True
     default_computer_name = "Local computer"
     # Commands run as the image's user, but a write goes through the daemon as
     # root, and in bind-mount mode a path outside the root lands in the host
@@ -739,7 +741,7 @@ class DockerProvider(SandboxProvider):
             tier: Resource tier name. ``None`` resolves to the configured default.
         """
         client = await self._get_client()
-        await self._ensure_image(client)
+        await ensure_image(client, self._config.image)
 
         runtime_id = f"docker-{uuid.uuid4().hex[:12]}"
         container_name = f"langalpha-sandbox-{runtime_id}"
@@ -983,87 +985,6 @@ class DockerProvider(SandboxProvider):
         )
         return any(marker in msg for marker in transient_markers)
 
-    # -- Internal --
-
-    async def _ensure_image(self, client: Any) -> None:
-        """Ensure the sandbox image exists, auto-building from Dockerfile.sandbox if needed."""
-        try:
-            await client.images.inspect(self._config.image)
-            logger.debug("Docker image found", image=self._config.image)
-            return
-        except Exception:
-            pass  # Image not found -- try to build
-
-        logger.info(
-            "Docker image not found, attempting to build",
-            image=self._config.image,
-        )
-
-        # Look for Dockerfile.sandbox relative to the repo root
-        dockerfile_name = "Dockerfile.sandbox"
-        # Try common locations
-        search_paths = [
-            os.path.join(os.getcwd(), dockerfile_name),
-        ]
-        # Also check relative to this file's location (up to repo root)
-        module_dir = os.path.dirname(os.path.abspath(__file__))
-        for _ in range(6):  # Walk up to 6 levels
-            candidate = os.path.join(module_dir, dockerfile_name)
-            search_paths.append(candidate)
-            module_dir = os.path.dirname(module_dir)
-
-        dockerfile_path = None
-        for path in search_paths:
-            if os.path.isfile(path):
-                dockerfile_path = path
-                break
-
-        if dockerfile_path is None:
-            raise RuntimeError(
-                f"Docker image {self._config.image!r} not found and "
-                f"{dockerfile_name} not found in any search path. "
-                f"Build the image manually or place {dockerfile_name} in the repo root."
-            )
-
-        dockerfile_basename = os.path.basename(dockerfile_path)
-        image_tag = self._config.image
-
-        logger.info(
-            "Building Docker sandbox image",
-            dockerfile=dockerfile_path,
-            tag=image_tag,
-        )
-
-        # Use aiodocker to build. It expects a tar stream via ``fileobj`` and
-        # the Dockerfile path via ``path_dockerfile``.
-        try:
-            build_tar = io.BytesIO()
-            with tarfile.open(fileobj=build_tar, mode="w") as tar:
-                tar.add(dockerfile_path, arcname=dockerfile_basename)
-            build_tar.seek(0)
-
-            async for log_line in client.images.build(
-                fileobj=build_tar,
-                path_dockerfile=dockerfile_basename,
-                tag=image_tag,
-                rm=True,
-                stream=True,
-                encoding="identity",
-            ):
-                if isinstance(log_line, dict) and "stream" in log_line:
-                    line = log_line["stream"].strip()
-                    if line:
-                        logger.debug("Docker build", log=line)
-                elif isinstance(log_line, dict) and "error" in log_line:
-                    raise RuntimeError(f"Docker build failed: {log_line['error']}")
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to build Docker image {image_tag!r}: {e}"
-            ) from e
-
-        logger.info("Docker sandbox image built", image=image_tag)
 
 
 # ---------------------------------------------------------------------------

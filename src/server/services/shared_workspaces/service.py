@@ -20,7 +20,7 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from psycopg.rows import tuple_row
 
-from ptc_agent.core.sandbox.providers import OWN_MACHINE_KINDS
+from ptc_agent.core.sandbox.providers import BROUGHT_KINDS
 from src.config import settings
 from src.server.database import pool
 from src.server.database import shared_workspaces as db
@@ -103,7 +103,7 @@ async def _resolve_person(email: str, org_id: str) -> dict[str, Any]:
 def _deployment_kind() -> str:
     config = workspace_manager.WorkspaceManager.get_instance().config
     kind = config.sandbox.provider
-    if kind in OWN_MACHINE_KINDS or kind not in config.sandbox.creatable_providers():
+    if kind in BROUGHT_KINDS or kind not in config.sandbox.creatable_providers():
         # A shared workspace runs only on a computer the deployment provides.
         raise _refusal(
             409, "no_cloud_computer",

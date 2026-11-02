@@ -41,6 +41,11 @@ class TestEffectiveBaseUrl:
         env(server=base)
         assert effective_relay_base_url("docker") == expected
 
+    def test_a_computer_on_this_machine_dials_loopback_as_it_is(self, env):
+        env(server="http://127.0.0.1:8000")
+        assert effective_relay_base_url("local") == "http://127.0.0.1:8000"
+        assert relay_reachability_warning("local", "http://127.0.0.1:8000") is None
+
     def test_docker_leaves_a_defaulted_public_base_alone(self, env):
         env(server="https://app.example.com")
         assert effective_relay_base_url("docker") == "https://app.example.com"

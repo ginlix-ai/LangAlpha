@@ -20,13 +20,16 @@ interface ProviderUi {
   descKey: string;
   /** The user's own machine, which they size, power and keep. */
   ownMachine?: true;
+  /** We log in with a key its `authorized_keys` holds. */
+  loginKey?: true;
 }
 
 const PROVIDER_UI: Partial<Record<string, ProviderUi>> = {
   daytona: { label: 'Daytona', descKey: 'computer.provider.daytonaDesc' },
   e2b: { label: 'E2B', descKey: 'computer.provider.e2bDesc' },
   docker: { label: 'Docker', descKey: 'computer.provider.dockerDesc' },
-  ssh: { labelKey: 'computer.provider.sshLabel', descKey: 'computer.provider.sshDesc', ownMachine: true },
+  ssh: { labelKey: 'computer.provider.sshLabel', descKey: 'computer.provider.sshDesc', ownMachine: true, loginKey: true },
+  local: { labelKey: 'computer.provider.localLabel', descKey: 'computer.provider.localDesc', ownMachine: true },
 };
 
 /**
@@ -48,9 +51,9 @@ export function providerIsOwnMachine(kind: string): boolean {
   return !!providerUi(kind)?.ownMachine;
 }
 
-/** What New computer adds: a machine of the user's own only where one is on offer. */
+/** What New computer adds: a machine reached over SSH only where one is on offer. */
 export function newComputerNote(t: Translate, providers: readonly ComputerProviderOption[] | undefined): string {
-  return providers?.some((p) => providerIsOwnMachine(p.kind))
+  return providers?.some((p) => providerUi(p.kind)?.loginKey)
     ? t('computer.card.newOwn', 'A cloud computer, or a machine you already have, reached over SSH.')
     : t('computer.card.newCloud', 'Another cloud computer, for work you want kept on its own machine.');
 }
@@ -69,7 +72,7 @@ export function providerKeepsFilesOnRemove(kind: string): boolean {
  * there, so removing the computer can take it out; a sandbox has no such line.
  */
 export function providerHoldsOurKey(kind: string): boolean {
-  return providerIsOwnMachine(kind);
+  return !!providerUi(kind)?.loginKey;
 }
 
 // hasOwn: a wire value like 'constructor' must not resolve to a prototype member.

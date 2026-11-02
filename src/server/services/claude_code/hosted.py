@@ -25,6 +25,7 @@ from functools import partial
 from typing import Any, Literal
 
 from ptc_agent.core.claude_code_clis import CLIS_DEFAULT, CLIS_MAX, CliCount, agents, default_clis
+from ptc_agent.core.sandbox.providers import MACHINE_KINDS
 from src.config.settings import get_claude_code_config
 from src.llms.claude_code import backend_available, rows_available
 from src.server.database.claude_code_hosted import (
@@ -220,6 +221,8 @@ def tier_refusal(computer: Mapping[str, Any]) -> ComputerRefusal | None:
     ``SANDBOX_MIN_TIER`` (``check_sandbox_tiers``)."""
     from src.server.services.computer_manager import ComputerManager
 
+    if computer.get("kind") in MACHINE_KINDS:
+        return None
     floor = ComputerManager.get_instance().tier_size(computer, SANDBOX_MIN_TIER)
     for size in _sizes(computer):
         if floor is None or size is None or size[0] < floor[0] or size[1] < floor[1]:
@@ -325,7 +328,7 @@ def check_sandbox_tiers(sandbox: Any) -> None:
     if not in_sandbox() or manager is None:
         return
     for kind in sandbox.creatable_providers():
-        if kind != "ssh" and manager.tier_size({"kind": kind}, SANDBOX_MIN_TIER) is None:
+        if kind not in MACHINE_KINDS and manager.tier_size({"kind": kind}, SANDBOX_MIN_TIER) is None:
             raise RuntimeError(
                 f"claude_code.sandbox_placement is on, but {kind} computers offer no {SANDBOX_MIN_TIER!r} tier"
             )

@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { Computer } from '@/types/api';
 
+import { machineArtOf } from './machineArt/machine';
 import { providerLabel, providerManagesSpec } from './providerUi';
 import { knownEffectiveTier } from './specChangeUi';
 import { tierLabel } from './tierUi';
@@ -18,10 +19,12 @@ import { tierLabel } from './tierUi';
 type Translate = ReturnType<typeof useTranslation>['t'];
 
 /**
- * - `thisMac`: the Mac this desktop app runs on, under remote control.
+ * - `thisMac`: the Mac this desktop app runs on, under remote control, or the
+ *   machine the server runs on (`local`) when that is a Mac.
  * - `mac`: a Mac under remote control, seen from anywhere else. The server says
  *   so (`ssh.helper`), the same on every device; only "this" needs the shell.
- * - `ssh`: a machine the user brought, reached over SSH.
+ * - `ssh`: a machine the user brought, reached over SSH, or the server's own
+ *   when that is not a Mac: a machine marked by its terminal.
  * - `hosted`: a sandbox the deployment runs (Daytona, E2B, Docker, ...).
  */
 export type ComputerKind = 'thisMac' | 'mac' | 'ssh' | 'hosted';
@@ -36,10 +39,17 @@ export interface ComputerIdentity {
   size: string | null;
 }
 
-type BadgeComputer = Pick<Computer, 'kind' | 'ssh' | 'resource_tier' | 'spec_change'>;
+type BadgeComputer = Pick<Computer, 'kind' | 'ssh' | 'config' | 'resource_tier' | 'spec_change'>;
 
 export function computerIdentity(t: Translate, computer: BadgeComputer, isThisMac: boolean): ComputerIdentity {
   if (!providerManagesSpec(computer.kind)) {
+    if (computer.kind === 'local') {
+      // A Mac by what the machine said of itself, as its drawing is.
+      const label = providerLabel(computer.kind, t);
+      return machineArtOf(computer) === 'linux'
+        ? { kind: 'ssh', label, icon: Terminal, size: null }
+        : { kind: 'thisMac', label, icon: Laptop, size: null };
+    }
     if (isThisMac) {
       return { kind: 'thisMac', label: t('computer.remoteControl.thisMacBadge', 'This Mac'), icon: Laptop, size: null };
     }

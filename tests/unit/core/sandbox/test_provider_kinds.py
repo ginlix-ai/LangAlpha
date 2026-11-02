@@ -16,10 +16,11 @@ import pytest
 from ptc_agent.core.sandbox.providers import (
     METERED_KINDS,
     ALLOCATION_KINDS,
+    MACHINE_KINDS,
     METRIC_KINDS,
     PROVIDER_KINDS,
     RECREATABLE_KINDS,
-    is_own_machine,
+    is_machine_kind,
     provider_class,
 )
 
@@ -30,7 +31,7 @@ metered_kinds(), metric_kinds()
 loaded = sorted(
     m for m in sys.modules
     if m.startswith("ptc_agent.core.sandbox.providers.")
-    and m.rpartition(".")[2] in ("daytona", "docker", "e2b", "ssh")
+    and m.rpartition(".")[2] in ("daytona", "docker", "e2b", "local", "ssh")
 )
 print("LOADED=" + ",".join(loaded))
 """
@@ -52,7 +53,8 @@ def test_the_registry_agrees_with_each_class(kind):
     assert (kind in METERED_KINDS) is cls.metered
     assert (kind in METRIC_KINDS) is (cls.metered and cls.reports_metrics)
     assert (kind in ALLOCATION_KINDS) is (cls.metered and cls.reports_allocation)
-    assert (kind in RECREATABLE_KINDS) is not is_own_machine(kind)
+    assert (kind in RECREATABLE_KINDS) is cls.recreatable
+    assert (kind in MACHINE_KINDS) is is_machine_kind(kind) is not cls.recreatable
 
 
 def test_the_ledgers_kinds_load_no_provider_module():
