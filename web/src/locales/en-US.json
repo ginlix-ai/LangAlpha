@@ -2103,6 +2103,10 @@
     "collapseResult": "Show less",
     "resultMoreItems": "+{{n}} more",
     "imageLoadFailed": "{{name}} could not be loaded",
+    "taskDone": "Done",
+    "taskOpen": "Not done",
+    "scrollableTable": "Table, scrolls sideways",
+    "diagram": "Diagram",
     "actions": {
       "copyMessage": "Copy message",
       "copied": "Copied!",

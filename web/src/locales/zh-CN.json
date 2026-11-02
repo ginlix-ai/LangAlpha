@@ -2131,6 +2131,10 @@
     "collapseResult": "收起",
     "resultMoreItems": "另有 {{n}} 项",
     "imageLoadFailed": "{{name}} 无法加载",
+    "taskDone": "已完成",
+    "taskOpen": "未完成",
+    "scrollableTable": "表格,可左右滑动",
+    "diagram": "图表",
     "actions": {
       "copyMessage": "复制消息",
       "copied": "已复制！",

@@ -9,6 +9,7 @@ import rehypeRaw from 'rehype-raw';
 import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import 'katex/dist/katex.min.css';
+import './Markdown.css';
 import SyntaxHighlighter, { oneDark, oneLight } from './SyntaxHighlighter';
 import { Copy, Check } from 'lucide-react';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -26,6 +27,9 @@ import { splitMarkdownBlocks, scanStreamingBlock } from '../utils/markdownBlocks
 import { repairStreamingTail } from '../utils/streamingTail';
 import { blockFreshKeys, rehypeFreshText, useRevealFade } from '../utils/revealFade';
 import CitationBubble from './CitationBubble';
+import { FootnoteLink, isFootnoteLink } from './markdown/FootnoteLink';
+import MermaidDiagram from './markdown/MermaidDiagram';
+import TableScroller from './markdown/TableScroller';
 import { InPlaceSwap } from '@/components/ui/crossfade';
 
 // Sanitize schema: extends GitHub-style defaults to allow KaTeX output,
@@ -36,6 +40,7 @@ const sanitizeSchema = {
     ...(defaultSchema.tagNames ?? []),
     // Custom citation element
     'cite-bubble',
+    'mark',
     // MathML (KaTeX accessibility tree inside .katex-mathml)
     'math', 'annotation', 'semantics',
     'mi', 'mn', 'mo', 'mrow', 'mfrac', 'msqrt', 'mroot', 'mstyle',
@@ -169,25 +174,28 @@ const CodeBlock = React.memo(function CodeBlock({ language, code, compact = fals
   // just code on a light gray background. Page-break-inside:avoid keeps
   // the block together across pages.
   if (isForceLight) {
+    const source = (
+      <SyntaxHighlighter
+        language={language || 'text'}
+        style={oneLight}
+        customStyle={{
+          margin: 0,
+          padding: '0.8rem 1rem',
+          backgroundColor: 'transparent',
+          fontSize: compact ? '0.75rem' : '0.8rem',
+          lineHeight: '1.6',
+        }}
+        codeTagProps={{ style: { backgroundColor: 'transparent' } }}
+        wrapLongLines
+      >
+        {code}
+      </SyntaxHighlighter>
+    );
     return (
       <div style={{ margin: compact ? '4px 0' : '6px 0' }}>
         <div className="rounded overflow-hidden"
           style={{ backgroundColor: '#f7f6f3', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
-          <SyntaxHighlighter
-            language={language || 'text'}
-            style={oneLight}
-            customStyle={{
-              margin: 0,
-              padding: '0.8rem 1rem',
-              backgroundColor: 'transparent',
-              fontSize: compact ? '0.75rem' : '0.8rem',
-              lineHeight: '1.6',
-            }}
-            codeTagProps={{ style: { backgroundColor: 'transparent' } }}
-            wrapLongLines
-          >
-            {code}
-          </SyntaxHighlighter>
+          {language === 'mermaid' && !live ? <MermaidDiagram code={code} theme="light" fallback={source} /> : source}
         </div>
       </div>
     );
@@ -206,7 +214,7 @@ const CodeBlock = React.memo(function CodeBlock({ language, code, compact = fals
             {/* Both labels hold the one cell, so the button is as wide as the
                 wider of them in every language and the header never shifts. */}
             <button onClick={handleCopy}
-              className="press text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+              className="tap-target press text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
               style={{ background: 'none', border: 'none', cursor: 'pointer' }}>
               <InPlaceSwap
                 swapped={copied}
@@ -217,7 +225,9 @@ const CodeBlock = React.memo(function CodeBlock({ language, code, compact = fals
             </button>
           </div>
         )}
-        <TypingLine.Provider value={live ? { line: typingLine } : null}>{highlighted}</TypingLine.Provider>
+        <TypingLine.Provider value={live ? { line: typingLine } : null}>
+          {language === 'mermaid' && !live ? <MermaidDiagram code={code} theme={effectiveTheme} fallback={highlighted} /> : highlighted}
+        </TypingLine.Provider>
       </div>
     </div>
   );
@@ -290,13 +300,18 @@ const em = ({ node: _node, ...props }: MarkdownComponentProps) => (
 const del = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <del style={{ color: 'var(--color-text-tertiary)', textDecoration: 'line-through' }} {...props} />
 );
+// A task list reports what the author wrote, and nothing saves a change to it.
+// `checked` is absent on an open task, which would leave the box uncontrolled
+// and tappable.
+function TaskCheckbox({ checked }: { checked?: boolean }): React.ReactElement {
+  const { t } = useTranslation();
+  return (
+    <input type="checkbox" checked={!!checked} disabled aria-label={t(checked ? 'chat.taskDone' : 'chat.taskOpen')}
+      style={{ marginRight: '6px', accentColor: 'var(--color-accent-primary)', opacity: 1 }} />
+  );
+}
 const input = ({ node: _node, type, checked, ...props }: MarkdownComponentProps) => {
-  if (type === 'checkbox') {
-    return (
-      <input type="checkbox" checked={checked} readOnly
-        style={{ marginRight: '6px', accentColor: 'var(--color-accent-primary)' }} />
-    );
-  }
+  if (type === 'checkbox') return <TaskCheckbox checked={checked} />;
   return <input {...props} />;
 };
 const img = ({ node: _node, ...props }: MarkdownComponentProps) => <WorkspaceImage {...props} />;
@@ -366,6 +381,7 @@ const chatBlockquote = ({ node: _node, ...props }: MarkdownComponentProps) => (
 function MarkdownLink({ href, ...props }: MarkdownComponentProps) {
   const route = useInRouterContext() ? appRoutePath(href) : null;
   const openShareLink = useShareLinkOpener();
+  if (isFootnoteLink(props)) return <FootnoteLink href={href} {...props} />;
   if (route !== null) return <GuardedLink to={route} {...props} />;
   const onClick = openShareLink && href
     ? (e: React.MouseEvent) => {
@@ -383,9 +399,9 @@ const chatHr = ({ node: _node, ...props }: MarkdownComponentProps) => (
 );
 const chatTable = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <div className="pt-[8px] pb-[18px]">
-    <div className="overflow-x-auto rounded-lg" style={{ border: '1px solid var(--color-border-muted)' }}>
+    <TableScroller className="rounded-lg">
       <table className="m-0 w-full border-collapse" {...props} />
-    </div>
+    </TableScroller>
   </div>
 );
 const chatThead = ({ node: _node, ...props }: MarkdownComponentProps) => <thead style={{ backgroundColor: 'var(--color-bg-input)' }} {...props} />;
@@ -393,6 +409,7 @@ const chatTbody = ({ node: _node, ...props }: MarkdownComponentProps) => <tbody 
 const chatTr = ({ node: _node, ...props }: MarkdownComponentProps) => <tr {...props} />;
 const chatTh = ({ node: _node, style, ...props }: MarkdownComponentProps) => (
   <th
+    scope="col"
     className="align-top not-first:border-l"
     style={{
       textAlign: 'left',
@@ -466,14 +483,14 @@ const panelHr = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <hr className="my-3 border-0" style={{ borderTop: '1px solid var(--color-border-muted)' }} {...props} />
 );
 const panelTable = ({ node: _node, ...props }: MarkdownComponentProps) => (
-  <div className="my-2 overflow-x-auto rounded" style={{ border: '1px solid var(--color-border-muted)' }}>
+  <TableScroller className="my-2 rounded">
     <table className="w-full border-collapse text-left" style={{ minWidth: '100%' }} {...props} />
-  </div>
+  </TableScroller>
 );
 const panelThead = ({ node: _node, ...props }: MarkdownComponentProps) => <thead style={{ backgroundColor: 'var(--color-bg-input)' }} {...props} />;
 const panelTr = ({ node: _node, ...props }: MarkdownComponentProps) => <tr className="last:border-b-0" style={{ borderBottom: '1px solid var(--color-border-muted)' }} {...props} />;
 const panelTh = ({ node: _node, ...props }: MarkdownComponentProps) => (
-  <th className="px-3 py-2 whitespace-nowrap" style={{ color: 'var(--color-text-primary)', fontWeight: 600, borderBottom: '1px solid var(--color-border-muted)' }} {...props} />
+  <th scope="col" className="px-3 py-2 whitespace-nowrap" style={{ color: 'var(--color-text-primary)', fontWeight: 600, borderBottom: '1px solid var(--color-border-muted)' }} {...props} />
 );
 const panelTd = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <td className="px-3 py-2 wrap-break-word align-top" style={{ color: 'var(--color-text-primary)' }} {...props} />
@@ -528,21 +545,21 @@ const PANEL_COMPONENTS = {
 
 // Compact table components -- reuse panel styles for consistency
 const compactTable = ({ node: _node, ...props }: MarkdownComponentProps) => (
-  <div className="my-1 overflow-x-auto rounded" style={{ border: '1px solid var(--color-border-muted)' }}>
+  <TableScroller className="my-1 rounded">
     <table className="w-full border-collapse text-left" style={{ minWidth: '100%', fontSize: '0.85em' }} {...props} />
-  </div>
+  </TableScroller>
 );
 const compactThead = ({ node: _node, ...props }: MarkdownComponentProps) => <thead style={{ backgroundColor: 'var(--color-bg-input)' }} {...props} />;
 const compactTr = ({ node: _node, ...props }: MarkdownComponentProps) => <tr className="last:border-b-0" style={{ borderBottom: '1px solid var(--color-border-muted)' }} {...props} />;
 const compactTh = ({ node: _node, ...props }: MarkdownComponentProps) => (
-  <th className="px-2 py-1.5 whitespace-nowrap" style={{ color: 'var(--color-text-primary)', fontWeight: 600, borderBottom: '1px solid var(--color-border-muted)' }} {...props} />
+  <th scope="col" className="px-2 py-1.5 whitespace-nowrap" style={{ color: 'var(--color-text-primary)', fontWeight: 600, borderBottom: '1px solid var(--color-border-muted)' }} {...props} />
 );
 const compactTd = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <td className="px-2 py-1.5 wrap-break-word align-top" style={{ color: 'var(--color-text-primary)' }} {...props} />
 );
 
 const COMPACT_COMPONENTS = {
-  strong, em, del, ul, ol, li,
+  strong, em, del, input, ul, ol, li,
   p: compactP, h1: compactH1, h2: compactH2, h3: compactH3,
   code: compactCode, pre: CompactPre,
   a: panelA, blockquote: panelBlockquote, hr: panelHr,
@@ -710,7 +727,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
     }
 
     const fileAwareA = ({ node: _node, href, children, ...props }: MarkdownComponentProps) => {
-      if (onAnchorLink && href?.startsWith('#') && href.length > 1) {
+      if (onAnchorLink && href?.startsWith('#') && href.length > 1 && !isFootnoteLink(props)) {
         return (
           <a
             className="underline hover:opacity-80 transition-opacity cursor-pointer"
@@ -767,7 +784,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
   return (
     <div
       ref={rootRef}
-      className={`font-content ${config.className} ${className}`.trim()}
+      className={`markdown-root font-content ${config.className} ${className}`.trim()}
       style={{ ...config.style, ...style }}
     >
       {blocks.map((block, i) => (

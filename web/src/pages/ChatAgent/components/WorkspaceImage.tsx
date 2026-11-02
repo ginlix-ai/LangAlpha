@@ -27,9 +27,20 @@ interface WorkspaceImageProps extends React.ImgHTMLAttributes<HTMLImageElement> 
   alt?: string;
 }
 
+function ImageLoadFailed({ name }: { name: string | undefined }) {
+  const { t } = useTranslation();
+  return (
+    <span className="text-xs my-2 inline-block" style={{ color: 'var(--color-text-tertiary)' }}>
+      {t('chat.imageLoadFailed', { name })}
+    </span>
+  );
+}
+
 function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   const { t } = useTranslation();
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  // Safari draws a broken image as a small question mark and drops its alt text.
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const contextWorkspaceId = useWorkspaceId();
   const downloadFileFn = useWorkspaceDownloadFile();
   const folders = useWorkspaceFolders();
@@ -121,6 +132,9 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   if (!canFetch) {
     // Don't render an empty src — browsers re-fetch the page
     if (!src) return null;
+    if (src === brokenSrc) {
+      return <ImageLoadFailed name={alt || src.split('/').pop()} />;
+    }
     return (
       <>
         <img
@@ -129,6 +143,7 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
           src={src}
           alt={alt}
           onClick={() => src && setLightboxOpen(true)}
+          onError={() => setBrokenSrc(src)}
           {...props}
         />
         {src && <ImageLightbox src={src} alt={alt} open={lightboxOpen} onClose={() => setLightboxOpen(false)} />}
@@ -152,11 +167,7 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   }
 
   if (state === 'error') {
-    return (
-      <span className="text-xs my-2 inline-block" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('chat.imageLoadFailed', { name: normalizedPath.split('/').pop() })}
-      </span>
-    );
+    return <ImageLoadFailed name={normalizedPath.split('/').pop()} />;
   }
 
   return (
@@ -167,6 +178,14 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
         src={blobUrl!}
         alt={alt}
         onClick={() => setLightboxOpen(true)}
+        onError={() => {
+          // Out of the cache too, or the next view of a repaired file shows these bytes.
+          if (blobCache.get(cacheKey) === blobUrl) {
+            blobCache.delete(cacheKey);
+            URL.revokeObjectURL(blobUrl!);
+          }
+          setState('error');
+        }}
         {...props}
       />
       <ImageLightbox src={blobUrl!} alt={alt} open={lightboxOpen} onClose={() => setLightboxOpen(false)} />
