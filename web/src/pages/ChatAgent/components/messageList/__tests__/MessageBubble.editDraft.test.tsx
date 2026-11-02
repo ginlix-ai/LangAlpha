@@ -91,6 +91,25 @@ describe('MessageBubble – an edit kept by the host', () => {
     expect(editDrafts.of('thread-1')).toEqual([]);
   });
 
+  it('takes return as a line break with an on-screen keyboard up, and Save sends', () => {
+    vi.stubGlobal('visualViewport', { height: 400, scale: 1 });
+    Object.defineProperty(document.documentElement, 'clientHeight', { configurable: true, value: 800 });
+    const editDrafts = createEditDraftStore(() => 'thread-1');
+    const onEditMessage = vi.fn();
+    render(bubble({ onEditMessage, editDrafts }));
+    fireEvent.click(screen.getByTitle('Edit message'));
+    fireEvent.change(box()!, { target: { value: 'question 1 rewritten' } });
+
+    fireEvent.keyDown(box()!, { key: 'Enter' });
+    expect(onEditMessage).not.toHaveBeenCalled();
+    expect(box()).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onEditMessage).toHaveBeenCalledWith('history-user-1', 'question 1 rewritten');
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(document.documentElement, 'clientHeight');
+  });
+
   it("keeps another thread's edit out of the box", () => {
     let shown = 'thread-1';
     const editDrafts = createEditDraftStore(() => shown);
