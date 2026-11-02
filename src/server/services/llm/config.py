@@ -413,6 +413,8 @@ def apply_compaction(
     from ptc_agent.config.agent import COMPACTION_PROFILES
 
     config.compaction.native = not custom and tuning.native_compaction is not False
+    if tuning.cold_compaction is False:
+        config.compaction.cold_compact_tokens = 0
     profile = tuning.compaction_profile
     if not isinstance(profile, str):
         profile = compaction_profile_for(entry)

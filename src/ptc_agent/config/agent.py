@@ -85,6 +85,11 @@ class CompactionConfig(BaseModel):
     #: a thread whose system prompt a deploy changed, once its prompt cache
     #: has expired (see ``compaction.rebuild``); 0 never does.
     rebuild_floor_tokens: int = 150_000
+    #: The least context at which a turn start under the threshold
+    #: summarizes a Claude thread whose prompt cache has expired, keeping the
+    #: tail where its prompt is not due (see ``compaction.rebuild``); 0
+    #: never does.
+    cold_compact_tokens: int = 300_000
 
     #: Which named preset the numbers above came from, stamped by
     #: ``resolve_llm_config``. None means they are the deployment's own YAML

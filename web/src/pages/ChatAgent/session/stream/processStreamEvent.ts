@@ -292,6 +292,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     if (eventType === 'run_end' && !isSubagent) {
       const counted = event.token_totals;
       if (counted) rt.setTokenUsage((prev) => withServerTotals(prev, counted));
+      rt.setNextSummary(event.next_summary ?? null);
       if (event.outcome === 'cancelled') {
         settleStoppedBubble({ assistantMessageId, refs, setMessages: setMessagesForHandlers });
       } else if (event.outcome === 'error' && !refs.retryNotice && !turnShowsFailure()) {

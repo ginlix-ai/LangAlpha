@@ -53,18 +53,18 @@ class ThreadAgent:
     backend: Any
     project: ProjectContext | None
 
-    async def ask(self, ask):
+    async def ask(self, ask, values: dict | None = None):
         """``ask`` answered by the agent's own model chain
-        (``ask_between_turns``), with the project bound as a run binds it.
-        Raises ``NoCompaction`` when the agent compacts nothing (compaction
-        off in its config)."""
+        (``ask_between_turns``), with the project bound as a run binds it, on
+        ``values``, the thread's state by default. Raises ``NoCompaction`` when
+        the agent compacts nothing (compaction off in its config)."""
         from ptc_agent.agent.middleware.compaction import ask_between_turns
         from ptc_agent.core.project_context import project_bound
 
         with project_bound(self.project):
             return await ask_between_turns(
                 self.graph.agent,
-                self.state.values,
+                self.state.values if values is None else values,
                 ask,
                 thread_id=self.thread_id,
                 store=setup.store,
@@ -320,9 +320,10 @@ async def _previous_run(thread_id: str) -> TurnContext:
     cancelled call refreshed the provider's cache at without a stamp in the
     checkpoint. A failed read leaves it unknown."""
     from src.server.database.runs import lifecycle as tl_db
+    from src.server.services.runs.pending_input import cache_clock_attempt
 
     try:
-        attempt = await tl_db.get_latest_attempt(thread_id)
+        attempt = await cache_clock_attempt(thread_id, await tl_db.get_latest_attempt(thread_id))
     except Exception:
         logger.debug("previous run read failed for thread %s", thread_id, exc_info=True)
         return TurnContext()
@@ -589,15 +590,23 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
         thread_id: The thread/conversation ID to offload
 
     Returns:
-        Dict with success, thread_id, message_count, offloaded_args, offloaded_reads
+        Dict with success, thread_id, message_count, offloaded_args,
+        offloaded_reads, and next_summary, what the next send summarizes
+        first after the offload (see ``read_next_summary``)
     """
     try:
         from ptc_agent.agent.middleware.compaction import (
+            Measure,
             OffloadSettings,
             offload_tool_args,
             record_offloads,
         )
+        from ptc_agent.agent.middleware.compaction.rebuild import (
+            LAST_ANSWER_KEY,
+            offloaded_reading,
+        )
         from src.server.database.conversation import get_thread_auth_meta
+        from src.server.services.thread_status import read_next_summary
 
         # Same fence as /compact — /offload also writes checkpoint state and
         # could race a running workflow's _offloaded_tool_call_ids updates.
@@ -644,15 +653,20 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                     "offloaded_reads": offloaded_reads,
                 }
             )
-            await agent.write(
-                {
-                    **record_offloads(
-                        state.values, offloaded_arg_ids, offloaded_read_ids
-                    ),
-                    "ui": [marker],
-                },
-                "offload",
-            )
+            update = record_offloads(state.values, offloaded_arg_ids, offloaded_read_ids)
+            # The cuts zero the measurement the composer's hint reads, so
+            # what they leave is measured as the next turn start will read it.
+            # A failed measure leaves the hint unsaid, as a zeroed one is.
+            if update:
+                after = {**state.values, **update}
+                try:
+                    reading = offloaded_reading(after, await agent.ask(Measure(), after))
+                except Exception:
+                    logger.debug(f"Offload measure failed for thread {thread_id}", exc_info=True)
+                    reading = None
+                if reading is not None:
+                    update[LAST_ANSWER_KEY] = reading
+            await agent.write({**update, "ui": [marker]}, "offload")
 
             logger.info(
                 f"Manual offload completed for thread {thread_id}: "
@@ -665,6 +679,9 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                 "message_count": len(messages),
                 "offloaded_args": offloaded_args,
                 "offloaded_reads": offloaded_reads,
+                "next_summary": await read_next_summary(
+                    thread_id, values={**state.values, **update}
+                ),
             }
 
     except HTTPException:

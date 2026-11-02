@@ -12,7 +12,7 @@ import type { SubagentTokenUsage } from '../utils/tokenUsage';
 import type { DecisionTarget } from './interrupts/toolApprovalCard';
 import type { StreamRefs, UpdateSubagentCard } from './streamRefs';
 import type { RetryNotice } from './stream/autoRetry';
-import type { ThreadTokenTotals } from '../utils/api/messages';
+import type { NextSummary, ThreadTokenTotals } from '../utils/api/messages';
 
 // --- Internal types for useChatMessages ---
 
@@ -105,6 +105,8 @@ interface SSEEvent {
   elapsed_ms?: number;
   /** What the thread has used, on a `run_end` frame. */
   token_totals?: ThreadTokenTotals | null;
+  /** What the thread's next send summarizes first, on a `run_end` frame. */
+  next_summary?: NextSummary | null;
   [key: string]: unknown;
 }
 
@@ -174,6 +176,9 @@ interface SendOptions extends ModelOptions {
   /** The title of the thread this send creates, in place of one generated
    *  from its message. A send on a live thread leaves the title alone. */
   threadTitle?: string;
+  /** This turn starts without the summary a cold thread would get first. An
+   *  edit, regenerate or Retry takes it as an argument of its own. */
+  keepFullContext?: boolean;
 }
 
 /** Offload batch ref state. */

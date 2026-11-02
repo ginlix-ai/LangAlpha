@@ -100,6 +100,9 @@ class Tuning:
     #: Whether a model whose provider can compact the conversation itself
     #: does. None leaves it on.
     native_compaction: bool | None = None
+    #: Whether a Claude thread whose prompt cache expired is summarized at
+    #: its next turn start from ``cold_compact_tokens``. None leaves it on.
+    cold_compaction: bool | None = None
 
 
 #: Settings a per-model profile may override. Derived from :class:`Tuning` so
@@ -145,7 +148,7 @@ def validate_tuning(
                 field, f"{where}.{field} must be one of {sorted(valid)}"
             )
 
-    for field in ("fast_mode", "native_compaction"):
+    for field in ("fast_mode", "native_compaction", "cold_compaction"):
         flag = values.get(field)
         if flag is not None and not isinstance(flag, bool):
             raise TuningError(field, f"{where}.{field} must be a boolean")

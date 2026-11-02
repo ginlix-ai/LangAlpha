@@ -17,7 +17,8 @@ on the one before.
   and mid-turn up to the step under way, which that call is sent as a row
   (see ``carry``), after a step on the notes when they are on,
   and on the main agent at a turn start under the threshold too, after a
-  deploy, once the prompt cache has expired (see ``rebuild``), and
+  deploy, once the prompt cache has expired, or once an expired cache holds
+  a large context, keeping the tail where nothing is due (see ``rebuild``), and
   the attachments in what it keeps are taken out until it fits; on Claude,
   whose kept turns are sent as they were, the summary takes them instead
   (see ``fitting.Fit``); and between turns when the user asks (see
@@ -71,7 +72,7 @@ from src.llms.provider_compaction import (
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY
-from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, asked
+from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, Measure, asked
 from ptc_agent.agent.middleware.compaction.types import CompactionState, OffloadSettings
 from ptc_agent.agent.middleware.compaction.fitting import Fit, Fitted, reported_usage
 from ptc_agent.agent.middleware.compaction.compact import (
@@ -100,7 +101,13 @@ from ptc_agent.agent.middleware.compaction.notes import (
     last_step_wrote_notes,
     rebuild_notes_ask,
 )
-from ptc_agent.agent.middleware.compaction.rebuild import StalePinRebuilds, TurnStartRebuilds, arm
+from ptc_agent.agent.middleware.compaction.rebuild import (
+    LAST_ANSWER_KEY,
+    StalePinRebuilds,
+    TurnStartRebuilds,
+    answer_reading,
+    arm,
+)
 from ptc_agent.agent.middleware.compaction.summary_request import (
     finished_summary,
     keeps_turns,
@@ -393,13 +400,16 @@ class CompactionMiddleware(AgentMiddleware):
             first_call=bool(request.state.get("_run_first_call")),
         )
         refusal: Exception | None = None
-        over = tokens >= self._token_threshold
+        threshold = plan.threshold or self._token_threshold
+        over = tokens >= threshold
         if over and not plan.forced:
             thread_id, agent = run_ids()
+            cold = tokens < self._token_threshold
             logger.info(
-                "[Compaction] trigger=threshold tokens=%d threshold=%d thread_id=%s agent=%s",
+                "[Compaction] trigger=%s tokens=%d threshold=%d thread_id=%s agent=%s",
+                "cold" if cold else "threshold",
                 tokens,
-                self._token_threshold,
+                threshold if cold else self._token_threshold,
                 thread_id,
                 agent,
             )
@@ -572,8 +582,11 @@ class CompactionMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
         view: list[AnyMessage],
         ask: Ask,
-    ) -> Compaction | HumanMessage | None:
+    ) -> Compaction | HumanMessage | int | None:
         """What a call between turns asks for (see ``between_turns``)."""
+        if isinstance(ask, Measure):
+            system = [request.system_message] if request.system_message is not None else []
+            return (await context_tokens(request.state, view, self._estimate(request.model), system)).tokens
         if isinstance(ask, HandOff):
             return await self._hand_off(request, handler, view, notes=self._notes_dir is not None)
         # A due thread's summary keeps no turns here too, so the next turn
@@ -782,9 +795,14 @@ class CompactionMiddleware(AgentMiddleware):
         summary or a fitted view has none. The run's first call is past once
         it answers (see ``abefore_agent``), and an arm lasts one call (see
         ``rebuild``) unless ``update`` sets it again."""
-        input_tokens, output_tokens = self._extract_token_usage(response, reading)
+        answer, input_tokens, output_tokens = self._extract_token_usage(response, reading)
         opened = {"_run_first_call": False} if request.state.get("_run_first_call") else {}
         disarmed = {"_rebuild_armed": None} if request.state.get("_rebuild_armed") else {}
+        if answer is not None and isinstance(self._rebuilds, TurnStartRebuilds):
+            previous = request.state.get(LAST_ANSWER_KEY)
+            opened[LAST_ANSWER_KEY] = answer_reading(
+                answer, self._token_threshold, request.model, previous, self._rebuilds
+            )
         return ExtendedModelResponse(
             model_response=response,
             command=Command(
@@ -801,14 +819,14 @@ class CompactionMiddleware(AgentMiddleware):
 
     def _extract_token_usage(
         self, response: ModelResponse, reading: ContextReading | None = None
-    ) -> tuple[int, int]:
-        """The (input, output) tokens the newest AI message reports, emitted
-        to the frontend with the threshold they fill and stamped with it for
-        replay, and with its growth from ``reading``, or (0, 0) when none
-        does."""
+    ) -> tuple[AIMessage | None, int, int]:
+        """The newest AI message that reports usage and its (input, output)
+        tokens, emitted to the frontend with the threshold they fill and
+        stamped with it for replay, and with its growth from ``reading``, or
+        (None, 0, 0) when none does."""
         usage = reported_usage(response)
         if usage is None:
-            return (0, 0)
+            return (None, 0, 0)
         msg, input_tokens, output_tokens = usage
         logger.debug("[Compaction] Token usage: input=%d, output=%d", input_tokens, output_tokens)
         stamp_context_threshold(msg, self._token_threshold)
@@ -822,7 +840,7 @@ class CompactionMiddleware(AgentMiddleware):
             total_tokens=input_tokens + output_tokens,
             threshold=self._token_threshold,
         )
-        return (input_tokens, output_tokens)
+        return (msg, input_tokens, output_tokens)
 
     # =========================================================================
     # Tier 1: trimming old tool args and Read results after a long pause

@@ -26,6 +26,7 @@ import {
   getReportBackStatus,
   getWorkflowStatus,
   watchThread,
+  type NextSummary,
   type OwedReportKind,
   type OwedReportsRead,
   type ReportBackOwedThread,
@@ -144,6 +145,8 @@ export interface UseReportBackWatchParams {
    * its subagent completes, so mid-run idleness proves nothing.
    */
   hasOpenProducers?: () => boolean;
+  /** Takes what the thread's next send summarizes first from a /status read. */
+  setNextSummary: (next: NextSummary | null) => void;
 }
 
 export interface ReportBackWatch {
@@ -235,6 +238,7 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     reconnectToStream,
     requestHistoryReload,
     hasOpenProducers,
+    setNextSummary,
   } = params;
 
   const queryClient = useQueryClient();
@@ -736,6 +740,8 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     // race this reconnect for the message state.
     if (disposedRef.current || threadIdRef.current !== threadId) return true;
     if (isStreamingRef.current || threadLoadingRef.current || isLoadingRef.current) return false;
+    // A turn this view did not stream moved it, and nothing else reads it here.
+    setNextSummary(status.next_summary ?? null);
     // A report-back run announced to an armed watch is the watch's, live or
     // ended: its attach does not move the turn watermark, so the full check
     // would reload over it. Each other run is announced too, so one that is

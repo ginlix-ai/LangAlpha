@@ -38,6 +38,7 @@ from ptc_agent.agent.middleware.compaction.offloading import (
 from ptc_agent.agent.middleware.compaction.between_turns import (
     Compact,
     HandOff,
+    Measure,
     NoCompaction,
     ask_between_turns,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "Compact",
     "Compaction",
     "HandOff",
+    "Measure",
     "NoCompaction",
     "ask_between_turns",
     "CompactionMiddleware",

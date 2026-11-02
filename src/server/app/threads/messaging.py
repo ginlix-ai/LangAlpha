@@ -1526,6 +1526,7 @@ async def retry_thread(
                 llm_model=(body.llm_model if body else None),
                 reasoning_effort=(body.reasoning_effort if body else None),
                 fast_mode=(body.fast_mode if body else None),
+                keep_full_context=bool(body and body.keep_full_context),
                 **await retried_wake_fields(thread_id, latest["turn_index"]),
             )
     except BaseException:

@@ -418,6 +418,8 @@
       "guidanceDesc": "How much instruction the agent carries into a turn. Concise trims the coaching and leaves the facts.",
       "guidanceLean": "Concise",
       "guidanceDetailed": "Thorough",
+      "coldCompaction": "Summarize long threads after a break",
+      "coldCompactionDesc": "When you come back to a long conversation after a while, it is summarized before your next message, which costs less than processing all of it again.",
       "fetchModel": "Web fetch model",
       "fetchModelDesc": "Used for web page extraction.",
       "compactionModel": "Compaction model",
@@ -2557,6 +2559,13 @@
       "custom": "Custom:",
       "submitCount": "Submit ({{n}})",
       "customPlaceholder": "Or type a custom answer..."
+    },
+    "nextSummary": {
+      "line": "Earlier messages will be summarized before your next one.",
+      "skip": "Skip",
+      "skipHint": "Send the whole conversation instead. It costs more.",
+      "skipped": "Your next message will include the whole conversation, which costs more.",
+      "undo": "Undo"
     }
   },
   "context": {

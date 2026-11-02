@@ -89,6 +89,31 @@ def test_a_deferred_tool_stays_unmarked_since_the_api_refuses_a_marker_there():
         assert _placed(scoped({**payload, "tools": [payload["tools"][2]]}))["tools"] == [False]
 
 
+def test_the_system_and_tools_scope_keeps_their_markers_and_drops_the_rest():
+    """A cold compaction that keeps the tail: the call after it sends the same
+    system and tools again, never the history it summarizes."""
+    payload = _payload()
+
+    with cache_scope("system_and_tools"):
+        sent = scoped(payload)
+
+    assert _placed(sent) == {
+        "top": False, "system": [True, True], "tools": [False, True], "document": False, "tool_result": False
+    }
+    assert sent["system"][0]["cache_control"] == _MARK and sent["tools"][1]["cache_control"] == _MARK
+    assert sent["messages"][1]["content"][0]["input"] == {"cache_control": _MARK}
+    assert _payload() == payload
+
+
+def test_the_system_and_tools_scope_marks_the_last_tool_the_api_caches():
+    payload = _payload()
+    del payload["tools"][1]["cache_control"]
+    payload["tools"].append({"name": "stored", "input_schema": {"type": "object"}, "defer_loading": True})
+
+    with cache_scope("system_and_tools"):
+        assert _placed(scoped(payload))["tools"] == [False, True, False]
+
+
 def _request(client: ChatAnthropic) -> dict:
     tools = [{"name": "probe", "description": "Probe.", "input_schema": {"type": "object"}, "cache_control": dict(_MARK)}]
     return client._get_request_payload([HumanMessage("hi")], tools=tools, cache_control=dict(_MARK))

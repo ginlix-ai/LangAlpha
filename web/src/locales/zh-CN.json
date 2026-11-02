@@ -456,6 +456,8 @@
       "guidanceDesc": "代理在每轮对话中携带的指令量。精简会去掉指导性内容，只保留事实。",
       "guidanceLean": "精简",
       "guidanceDetailed": "完整",
+      "coldCompaction": "长对话闲置后先总结",
+      "coldCompactionDesc": "隔一段时间再回到较长的对话时，系统会在你发送下一条消息前先总结，比重新处理整段对话更省费用。",
       "fetchModel": "网页抓取模型",
       "fetchModelDesc": "用于提取网页内容。",
       "compactionModel": "上下文压缩模型",
@@ -2587,6 +2589,13 @@
       "custom": "自定义：",
       "submitCount": "提交（{{n}}）",
       "customPlaceholder": "或输入自定义回答..."
+    },
+    "nextSummary": {
+      "line": "发送下一条消息前，会先总结之前的对话。",
+      "skip": "跳过",
+      "skipHint": "改为发送完整对话，费用更高。",
+      "skipped": "下一条消息会带上完整对话，费用更高。",
+      "undo": "撤销"
     }
   },
   "context": {

@@ -529,6 +529,14 @@ class ChatRequest(BaseModel):
         "turn runs the thread's own, else the user's Settings.",
     )
 
+    keep_full_context: bool = Field(
+        default=False,
+        description="When True, this turn starts without the summary a long "
+        "thread gets after a break, once the provider's prompt cache has "
+        "expired (`next_summary.reason` `cold` in the thread's status). A "
+        "summary at the threshold still runs. For this turn only.",
+    )
+
     # Internal: query type override (e.g., "system" for report-back invocations)
     query_type: Optional[str] = Field(
         default=None,

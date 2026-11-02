@@ -896,6 +896,7 @@ export const attemptReconnectAfterDisconnect = async (
     try {
       const snapshotAtMs = Date.now();
       const status = await getWorkflowStatus(tid);
+      if (rt.threadIdRef.current === tid) rt.setNextSummary(status.next_summary ?? null);
       if (!status.can_reconnect) {
         console.log('[Reconnect] Workflow no longer reconnectable, cleaning up');
         runOver = true;

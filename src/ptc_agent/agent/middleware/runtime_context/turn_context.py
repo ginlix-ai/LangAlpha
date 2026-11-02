@@ -29,6 +29,9 @@ class TurnContext:
     # provider's prompt cache. Read by the main agent's compaction to judge
     # whether that cache has expired at this turn's start.
     previous_run_settled_at: datetime | None = None
+    # The send asked to keep its whole context: no summary for a cold cache
+    # alone at this turn's start (see ``compaction.rebuild``).
+    keep_full_context: bool = False
     platform: str | None = None
     origin: str | None = None
     # The agent that sent an agent-origin turn (``chief_of_staff``),

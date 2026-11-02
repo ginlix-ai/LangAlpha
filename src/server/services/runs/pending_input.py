@@ -140,6 +140,20 @@ def read_pending_input(run: Optional[Mapping[str, Any]]) -> Optional[PendingInpu
     )
 
 
+async def cache_clock_attempt(
+    thread_id: str, latest: Optional[Mapping[str, Any]]
+) -> Optional[Mapping[str, Any]]:
+    """The attempt whose settle time the thread's prompt cache counts from
+    (``run_settled_at``): ``latest``, its newest attempt, unless that one's
+    input never reached the graph, so it made no model call and refreshed no
+    cache; then the newest attempt whose input did, read again."""
+    if read_pending_input(latest) is None:
+        return latest
+    from src.server.database.runs import lifecycle as tl_db
+
+    return await tl_db.get_latest_attempt(thread_id, without_key=PENDING_INPUT_KEY)
+
+
 def needs_resend(stamp: Mapping[str, Any]) -> bool:
     return (stamp.get(PENDING_INPUT_KEY) or {}).get("resend") is True
 
@@ -284,4 +298,5 @@ async def input_rerun_request(
         llm_model=body.llm_model if body else None,
         reasoning_effort=body.reasoning_effort if body else None,
         fast_mode=body.fast_mode if body else None,
+        keep_full_context=bool(body and body.keep_full_context),
     )

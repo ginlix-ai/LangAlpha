@@ -36,6 +36,8 @@ const h = vi.hoisted(() => ({
   threadId: 'thread-xyz', // mutated per-test to exercise the new-chat case
   pendingInterrupt: null as unknown, // mutated per-test to exercise input gating
   preferences: null as unknown, // the user's preferences, set per-test
+  nextSummary: null as unknown, // what the next send summarizes first, set per-test
+  setNextSummaryFor: vi.fn(),
 }));
 
 // API spies — compaction calls straight into the ChatAgent api module. (Stop is
@@ -89,6 +91,11 @@ vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({
     isCompacting: false,
     setIsCompacting: h.setIsCompacting,
     tokenUsage: null,
+    nextSummary: h.nextSummary,
+    forThread: (tid: string) => ({
+      setNextSummary: (next: unknown) => h.setNextSummaryFor(tid, next),
+      insertNotification: h.insertNotification,
+    }),
     insertNotification: h.insertNotification,
     handleEditMessage: h.handleEditMessage,
     handleRegenerate: h.handleRegenerate,
@@ -292,6 +299,7 @@ describe('MarketChatPanel', () => {
     h.isLoading = false;
     h.messages = [{ id: 'm1', role: 'assistant' }];
     h.preferences = null;
+    h.nextSummary = null;
     ml.props = null;
     ml.actions = null;
     ml.folders = null;
@@ -641,6 +649,35 @@ describe('MarketChatPanel', () => {
     expect(h.handleRetry).toHaveBeenCalled();
     // In a workspace → no hand-off context.
     expect(ml.props!.dispatcherContext).toBeNull();
+  });
+
+  it('says the next send summarizes first, and every turn it starts carries the skip', async () => {
+    h.nextSummary = { reason: 'cold', at: 1, now: 1 };
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: 'Skip' }));
+    expect(screen.getByText('Your next message will include the whole conversation, which costs more.')).toBeInTheDocument();
+
+    const a = ml.actions!;
+    act(() => (ci.props!.onSend as (m: string, att: unknown[], cmds: unknown[], opts: unknown) => void)('hi', [], [], {}));
+    (a.onWidgetSendPrompt as (text: string) => void)('from a widget');
+    (a.onEditMessage as (id: string, c: string) => void)('m1', 'edited');
+    (a.onRegenerate as (id: string) => void)('m1');
+    (a.onRetry as () => void)();
+    expect(h.handleSendMessage.mock.calls.map((call) => (call[3] as Record<string, unknown>).keepFullContext)).toEqual([true, true]);
+    expect(h.handleEditMessage).toHaveBeenCalledWith('m1', 'edited', undefined, true);
+    expect(h.handleRegenerate).toHaveBeenCalledWith('m1', undefined, true);
+    expect(h.handleRetry).toHaveBeenCalledWith(undefined, true);
+  });
+
+  it('takes what an offload leaves as the next summary, and clears it after a summary', async () => {
+    const after = { reason: 'threshold' };
+    api.offloadThread.mockResolvedValueOnce({ offloaded_args: 1, offloaded_reads: 0, next_summary: after });
+    renderPanel();
+    const onAction = ci.props!.onAction as (cmd: { name: string }) => void;
+    await act(async () => onAction({ name: 'offload' }));
+    expect(h.setNextSummaryFor).toHaveBeenLastCalledWith('thread-xyz', after);
+    await act(async () => onAction({ name: 'compact' }));
+    expect(h.setNextSummaryFor).toHaveBeenLastCalledWith('thread-xyz', null);
   });
 
   it('wires the stop button to the hook hard-cancel (stopWorkflow)', async () => {
