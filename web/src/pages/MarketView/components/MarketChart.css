@@ -589,4 +589,4 @@
   color: var(--color-text-secondary);
   white-space: nowrap;
 }
-.venue-clock-offset { opacity: 0.7; }
+.venue-clock-offset { color: var(--color-text-tertiary); }

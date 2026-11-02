@@ -134,7 +134,7 @@ export const CHART_THEME: Record<'dark' | 'light', ChartThemeColors> = {
   },
   light: {
     bg: '#FFFFFF',
-    text: '#73726E',
+    text: '#5F5E5A',
     grid: '#E8E8E6',
     upColor: '#1A7F37',
     downColor: '#CF222E',
@@ -217,6 +217,8 @@ export const OVERLAY_LABELS: Record<string, string> = {
 // --- Extended-hours presentation ---
 // Session semantics (window math, ext interval set) live in the session model
 // (@/lib/bars/marketSession); this file keeps the page's colors + shading.
+// These two are the chart's lines. Text in these hues reads --color-ext-pre and
+// --color-ext-post, since neither line color holds as text on a light ground.
 export const EXT_COLOR_PRE = '#fbbf24';   // amber — pre-market
 export const EXT_COLOR_POST = '#3b82f6';  // blue  — after-hours
 // Neutral grey for lines that mark a SETTLED close — must never look like a

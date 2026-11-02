@@ -393,7 +393,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     inert={!showActions || undefined}
     className={`flex gap-1 transition-opacity ${
       showActions
-        ? (isMobile ? 'opacity-70' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100')
+        ? (isMobile ? '' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100')
         : 'opacity-0 pointer-events-none'
     } ${
       // The top margin belongs to the user placement only: under a bubble the
