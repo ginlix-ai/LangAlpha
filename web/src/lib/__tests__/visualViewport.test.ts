@@ -5,7 +5,7 @@
  * an overlay's field needs the pan a shrunken shell would take away.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { trackVisualViewport } from '../visualViewport';
+import { onKeyboardFit, roomAboveKeyboard, trackVisualViewport } from '../visualViewport';
 
 const LAYOUT_H = 714;
 const KEYBOARD_UP_H = 385;
@@ -142,5 +142,73 @@ describe('trackVisualViewport', () => {
 
     expect(root.dataset.keyboardOpen).toBeUndefined();
     expect(scrollTo).not.toHaveBeenCalled();
+  });
+});
+
+describe('roomAboveKeyboard', () => {
+  const endingAt = (bottom: number) => {
+    const el = document.createElement('div');
+    el.getBoundingClientRect = () => ({ bottom }) as DOMRect;
+    return el;
+  };
+
+  it('measures to the clearance above the keyboard, negative once past it', () => {
+    field(shell()).focus();
+    move({ height: KEYBOARD_UP_H });
+
+    expect(roomAboveKeyboard(endingAt(KEYBOARD_UP_H - 58))).toBe(50);
+    expect(roomAboveKeyboard(endingAt(KEYBOARD_UP_H - 8))).toBe(0);
+    expect(roomAboveKeyboard(endingAt(KEYBOARD_UP_H + 50))).toBe(-58);
+  });
+
+  it('has nothing to measure with the shell not fitted', () => {
+    field().focus();
+    move({ height: KEYBOARD_UP_H });
+
+    expect(roomAboveKeyboard(endingAt(KEYBOARD_UP_H + 50))).toBeNull();
+  });
+});
+
+describe('onKeyboardFit', () => {
+  const listening = () => {
+    const listener = vi.fn();
+    unsubscribe = onKeyboardFit(listener);
+    return listener;
+  };
+  let unsubscribe = () => {};
+  afterEach(() => unsubscribe());
+
+  it('tells a field the keyboard arrived, changed height and left', () => {
+    field(shell()).focus();
+    const listener = listening();
+
+    move({ height: KEYBOARD_UP_H });
+    expect(listener).toHaveBeenCalledTimes(1);
+    move({ height: KEYBOARD_UP_H });
+    expect(listener).toHaveBeenCalledTimes(1);
+    move({ height: KEYBOARD_UP_H - 10 });
+    expect(listener).toHaveBeenCalledTimes(2);
+    move({ height: LAYOUT_H });
+    expect(listener).toHaveBeenCalledTimes(3);
+  });
+
+  it('tells a field focus reached it under the same keyboard', () => {
+    field(shell()).focus();
+    move({ height: KEYBOARD_UP_H });
+    const listener = listening();
+
+    field(shell()).focus();
+    window.dispatchEvent(new Event('focusin'));
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays quiet with no keyboard, so a desktop window resize refits nothing', () => {
+    field(shell()).focus();
+    const listener = listening();
+
+    move({ height: LAYOUT_H - 40 });
+
+    expect(listener).not.toHaveBeenCalled();
   });
 });

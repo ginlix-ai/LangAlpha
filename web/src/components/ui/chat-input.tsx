@@ -13,7 +13,7 @@ import { useAllModels } from '@/hooks/useAllModels';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
 import { useLapsedSignIn } from '@/hooks/useLapsedSignIn';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { onScreenKeyboardUp } from '@/lib/visualViewport';
+import { onKeyboardFit, onScreenKeyboardUp, roomAboveKeyboard } from '@/lib/visualViewport';
 import { useFavoriteModels } from '@/hooks/useFavoriteModels';
 import { useSeededModel } from '@/hooks/useSeededModel';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
@@ -49,6 +49,9 @@ import { formatContextBlock } from './chat-input.contextBlocks';
 
 /** Autosize cap for the composer textarea; past this the box scrolls. */
 const MAX_TEXTAREA_HEIGHT = 200;
+
+/** What the textarea keeps, two lines of the phone's text, however little room the keyboard leaves. */
+const MIN_TEXTAREA_HEIGHT_OVER_KEYBOARD = 52;
 
 /** A thread that follows Settings for both. */
 const FOLLOWS_SETTINGS = { reasoningEffort: null, fastMode: null } as const;
@@ -530,6 +533,34 @@ function ChatInput({
     }
   }, [message]);
 
+  // A composer in a scrolling route grows downward, so with a keyboard up the
+  // text gives up what would push the send row under it. A limit apart from the
+  // height above, measured from the box as it stands: nothing collapses, so the
+  // text keeps its scroll, and a composer hidden with its cached thread keeps its size.
+  const fitToKeyboard = useCallback(() => {
+    const textarea = textareaRef.current;
+    const box = chatContainerRef.current;
+    if (!textarea || !box) return;
+    const active = document.activeElement;
+    // Its picker is anchored to the box as it stands.
+    if (active?.closest('[data-composer-panel]')) return;
+    const room = active === textarea ? roomAboveKeyboard(box) : null;
+    if (room === null) {
+      textarea.style.maxHeight = '';
+      return;
+    }
+    const shownBefore = textarea.clientHeight;
+    textarea.style.maxHeight = Math.max(textarea.offsetHeight + room, MIN_TEXTAREA_HEIGHT_OVER_KEYBOARD) + 'px';
+    // The box gives up its foot, and a caret at the end of the text is there.
+    if (textarea.clientHeight < shownBefore && textarea.selectionEnd === textarea.value.length) {
+      textarea.scrollTop = textarea.scrollHeight;
+    }
+    if ((roomAboveKeyboard(box) ?? 0) < 0) box.scrollIntoView({ block: 'nearest' });
+  }, []);
+
+  useEffect(fitToKeyboard, [message, attachedFiles.length, mentionedFiles.length, slashCommands.length, widgetSnapshots.length, fitToKeyboard]);
+  useEffect(() => onKeyboardFit(fitToKeyboard), [fitToKeyboard]);
+
   // Large text pastes condense into a pill (snippet-mention mechanics) instead
   // of flooding the draft. File pastes keep priority — handlePaste prevents
   // default when it takes the clipboard.
@@ -803,7 +834,7 @@ function ChatInput({
           overlays repeat it. */}
       <div
         ref={attachChatContainer}
-        className={cn('chat-input-container owns-its-edge flex flex-col items-stretch relative z-10 rounded-[22px] cursor-text border border-(--color-border-input) bg-(--color-bg-card)', isListening && 'recording')}
+        className={cn('chat-input-container owns-its-edge scroll-mb-2 flex flex-col items-stretch relative z-10 rounded-[22px] cursor-text border border-(--color-border-input) bg-(--color-bg-card)', isListening && 'recording')}
         onClick={(event) => {
           // A press on a control in the box is that control's, and the deck
           // above the text is its own surface: focusing the text there would

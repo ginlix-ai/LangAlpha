@@ -37,6 +37,31 @@ export function onScreenKeyboardUp(): boolean {
   return keyboardOverlap() > 0;
 }
 
+/** Kept clear above the keyboard: Safari's address pill floats right at the visible edge. */
+const KEYBOARD_CLEARANCE_PX = 8;
+
+/**
+ * How far `el` can grow downward before it reaches the clearance above the
+ * keyboard, negative once past it, and null while the shell is not fitted.
+ * Something in a scrolling route, like a field that grows downward, can run past.
+ */
+export function roomAboveKeyboard(el: Element): number | null {
+  const viewport = window.visualViewport;
+  if (!viewport || document.documentElement.dataset.keyboardOpen === undefined) return null;
+  return viewport.height - KEYBOARD_CLEARANCE_PX - el.getBoundingClientRect().bottom;
+}
+
+const fitListeners = new Set<() => void>();
+
+/**
+ * Called once the shell has taken a new height for the keyboard or given it back,
+ * and when focus moves to another field under the same keyboard.
+ */
+export function onKeyboardFit(listener: () => void): () => void {
+  fitListeners.add(listener);
+  return () => fitListeners.delete(listener);
+}
+
 // A composer's picker opens from the fitted composer and is measured from it,
 // wherever it portals; any other dialog floats over the shell.
 function inShell(el: Element | null): el is Element {
@@ -49,6 +74,12 @@ export function trackVisualViewport(): void {
   if (!viewport) return;
   const root = document.documentElement;
   let revealed: Element | null = null;
+  let fittedTo: number | null = null;
+
+  const notify = (height: number | null) => {
+    fittedTo = height;
+    for (const listener of fitListeners) listener();
+  };
 
   const sync = () => {
     const overlap = keyboardOverlap();
@@ -58,6 +89,7 @@ export function trackVisualViewport(): void {
       root.style.removeProperty('--keyboard-viewport-height');
       root.style.removeProperty('--keyboard-overlap');
       revealed = null;
+      if (fittedTo !== null) notify(null);
       return;
     }
     root.dataset.keyboardOpen = '';
@@ -67,11 +99,13 @@ export function trackVisualViewport(): void {
     // Safari revealed the field by panning, so a field low in a scrolling route
     // sits under the keyboard once the pan is gone. Once per field: a textarea
     // that grows under a finger must not fight the user's own scrolling.
-    if (active !== revealed) {
+    const newField = active !== revealed;
+    if (newField) {
       active.scrollIntoView({ block: 'nearest' });
       revealed = active;
     }
     window.scrollTo(0, 0);
+    if (newField || viewport.height !== fittedTo) notify(viewport.height);
   };
 
   viewport.addEventListener('resize', sync);
