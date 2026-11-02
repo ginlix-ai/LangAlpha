@@ -9,6 +9,7 @@ documented import surface.
 import asyncio
 import os
 import random
+import sys
 from types import TracebackType
 from typing import Any
 
@@ -45,6 +46,25 @@ __all__ = [
     "reconnect_builtin_remote",
     "set_global_registry",
 ]
+
+
+def _stdio_launch(command: str, args: list[str]) -> tuple[str, list[str]]:
+    """How this process starts a stdio server, which may not be how it was declared.
+
+    The built-ins declare ``uv run python <file>`` for a project checkout, where
+    uv finds the project's environment. A backend running from a prebuilt tree has
+    its dependencies in its own interpreter and no project for uv to find, so
+    ``LANGALPHA_STDIO_OWN_PYTHON`` runs them on that interpreter directly. ``-B``
+    because the subprocess env is filtered and such a tree may be read-only. Only
+    this spawn changes: sandboxes still get the declared command.
+    """
+    if (
+        os.environ.get("LANGALPHA_STDIO_OWN_PYTHON") == "1"
+        and command == "uv"
+        and list(args[:2]) == ["run", "python"]
+    ):
+        return sys.executable, ["-B", *args[2:]]
+    return command, args
 
 
 class MCPServerConnector:
@@ -323,9 +343,10 @@ class MCPServerConnector:
                 # Stdio transport (default) - use command-based connection
                 if not self.config.command:
                     raise ValueError("Command is required for stdio transport")
+                command, args = _stdio_launch(self.config.command, self.config.args)
                 server_params = StdioServerParameters(
-                    command=self.config.command,
-                    args=self.config.args,
+                    command=command,
+                    args=args,
                     env=self._prepare_env(),
                 )
 

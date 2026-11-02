@@ -26,12 +26,14 @@ only a second pin move inside one turn's lifetime could take it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import gzip
 import hashlib
 import json
 import logging
 import os
+import platform as host
 import secrets
 import shlex
 import shutil
@@ -73,8 +75,9 @@ class CliMissing(CliInstallError):
 
 
 class CliUnsupported(CliInstallError):
-    """The machine runs musl, which no pinned build runs on, so trying again cannot help.
-    A computer registered before the probe refused musl can still be one."""
+    """The machine runs musl, or for the backend's own CLI any system the pins
+    have no build for, so trying again cannot help. A computer registered
+    before the probe refused musl can still be one."""
 
 
 #: How ``install_cli.sh`` exits on musl.
@@ -204,6 +207,122 @@ async def backend_copy(pin: CliPin, platform: str, *, base_url: str = RELEASES_U
     finally:
         await asyncio.to_thread(tmp.unlink, missing_ok=True)
     return path
+
+
+#: How often a worker waiting on another's download looks for the lock again.
+_LOCK_POLL_S = 0.5
+#: The CLI downloads in flight, held so the loop does not drop them.
+_FETCHES: set[asyncio.Task[str]] = set()
+
+
+def host_platform() -> str | None:
+    """The release platform the backend itself runs on, None where no pinned build runs (Windows, musl)."""
+    arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(host.machine().lower())
+    if arch is None:
+        return None
+    if host.system() == "Darwin":
+        return f"darwin-{arch}"
+    if host.system() == "Linux" and host.libc_ver()[0] == "glibc":
+        return f"linux-{arch}"
+    return None
+
+
+def _sdk_cli() -> Path | None:
+    """The CLI the SDK's wheel carries, absent where a build left it out."""
+    import claude_agent_sdk
+
+    path = Path(claude_agent_sdk.__file__).parent / "_bundled" / ("claude.exe" if os.name == "nt" else "claude")
+    return path if path.is_file() else None
+
+
+def _verified(path: Path, want: PlatformPin) -> bool:
+    """Whether ``path`` is a copy this module verified, read off its marker
+    rather than hashed again, so a turn pays one stat for it."""
+    marker = path.with_name(".verified")
+    try:
+        return marker.read_text() == want.sha256 and path.stat().st_size == want.size and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def _ready_to_run(path: Path, want: PlatformPin, keep: str) -> None:
+    """Make a verified download runnable, mark it, and drop every other version from the cache."""
+    path.chmod(0o755)
+    path.with_name(".verified").write_text(want.sha256)
+    for entry in path.parents[2].iterdir():
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name != keep:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
+@contextlib.asynccontextmanager
+async def _cache_lock(cache: Path):
+    """One download at a time across the backend's workers. Polled rather
+    than blocking in a thread, so a cancelled wait lets go at once."""
+    import fcntl
+
+    await asyncio.to_thread(cache.mkdir, parents=True, exist_ok=True)
+    fd = await asyncio.to_thread(os.open, cache / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(_LOCK_POLL_S)
+        yield
+    finally:
+        os.close(fd)
+
+
+async def worker_cli(*, base_url: str | None = None, cache_dir: Path | None = None) -> str:
+    """The CLI a turn on the backend's own machine runs.
+
+    The SDK's own copy where its wheel carries one. Otherwise the pinned
+    release of the same version, downloaded into the backend's cache the
+    first time it is needed and verified before it takes its name: the
+    desktop app ships the SDK without its copy, so nobody who leaves Claude
+    Code alone downloads it. Never the machine's own ``claude``, which the
+    SDK's lookup falls back to when it finds no copy of its own.
+
+    Raises:
+        CliUnsupported: The pins have no build for the backend's system.
+        CliInstallError: The release could not be fetched and verified.
+    """
+    bundled = await asyncio.to_thread(_sdk_cli)
+    if bundled is not None:
+        return str(bundled)
+    name = host_platform()
+    if name is None:
+        raise CliUnsupported("Claude Code has no build for the system this server runs on.")
+    pin = pinned()
+    want = pin.platforms[name]
+    cache = cache_dir or default_cache_dir()
+    path = cache / pin.version / name / "claude"
+    if await asyncio.to_thread(_verified, path, want):
+        return str(path)
+    async with _cache_lock(cache):
+        if not await asyncio.to_thread(_verified, path, want):
+            logger.info("[ClaudeCode] downloading the CLI %s for %s", pin.version, name)
+            await backend_copy(pin, name, base_url=base_url or RELEASES_URL, cache_dir=cache)
+            await asyncio.to_thread(_ready_to_run, path, want, pin.version)
+    return str(path)
+
+
+def fetch_worker_cli() -> asyncio.Task[str]:
+    """``worker_cli`` as a task of its own, held until it ends. A sign-in
+    starts one without waiting, so the minutes the user spends signing in
+    cover most of the download, and a check awaits one shielded, so a
+    request that goes away does not throw the download away with it."""
+    task = asyncio.get_running_loop().create_task(worker_cli())
+    _FETCHES.add(task)
+    task.add_done_callback(_fetched)
+    return task
+
+
+def _fetched(task: asyncio.Task[str]) -> None:
+    _FETCHES.discard(task)
+    if not task.cancelled() and (e := task.exception()) is not None:
+        logger.warning("[ClaudeCode] fetching the CLI failed: %s", e)
 
 
 def gzipped(path: Path) -> Path:

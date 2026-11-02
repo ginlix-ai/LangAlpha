@@ -694,6 +694,9 @@ class MachineHome:
         #: What the check of the token being placed reported of its plan.
         self.checked = CheckReports()
 
+    def warm(self) -> None:
+        """Nothing: the computer installs its CLI as ``ready`` reaches it."""
+
     @classmethod
     async def of(cls, user_id: str, computer_id: str) -> MachineHome:
         computer = await get_computer(computer_id)

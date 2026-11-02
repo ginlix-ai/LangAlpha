@@ -5,6 +5,7 @@ instead of the full environment, preventing host secret leakage to
 MCP discovery subprocesses.
 """
 
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +15,7 @@ from ptc_agent.core.mcp_registry import (
     MCPRegistry,
     MCPServerConnector,
     MCPToolInfo,
+    _stdio_launch,
     clear_global_registry,
     get_global_registry,
     set_global_registry,
@@ -378,3 +380,33 @@ class TestFreezeAndGlobalRegistry:
 
         assert not hasattr(registry, "call_tool")
         assert registry.connectors["alpha"].session is None
+
+
+class TestStdioLaunch:
+    """A backend running from a prebuilt tree has no project for ``uv run`` to find."""
+
+    DECLARED = ("uv", ["run", "python", "plugins/x/server.py"])
+
+    def test_declared_command_by_default(self, monkeypatch):
+        monkeypatch.delenv("LANGALPHA_STDIO_OWN_PYTHON", raising=False)
+        assert _stdio_launch(*self.DECLARED) == self.DECLARED
+
+    def test_own_interpreter_when_asked(self, monkeypatch):
+        monkeypatch.setenv("LANGALPHA_STDIO_OWN_PYTHON", "1")
+        assert _stdio_launch(*self.DECLARED) == (
+            sys.executable,
+            ["-B", "plugins/x/server.py"],
+        )
+
+    @pytest.mark.parametrize(
+        "launch",
+        [
+            ("uvx", ["some-server@1.0"]),
+            ("npx", ["-y", "some-server"]),
+            ("uv", ["run", "some-tool"]),
+            ("uv", []),
+        ],
+    )
+    def test_only_the_builtin_shape_changes(self, monkeypatch, launch):
+        monkeypatch.setenv("LANGALPHA_STDIO_OWN_PYTHON", "1")
+        assert _stdio_launch(*launch) == launch

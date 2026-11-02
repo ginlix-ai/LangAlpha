@@ -368,3 +368,87 @@ async def test_a_copy_that_matches_but_cannot_be_put_in_place_says_so(env, copy)
     assert "SHA-256" not in str(failed.value) and LocalSftp.sent == []
     assert env.downloads() == (1 if copy == "download" else 0), "a copy that matches is not fetched again"
     assert [name for name in os.listdir(folder) if name != "claude"] == []
+
+
+# The CLI a turn on the backend's own machine runs (``worker_cli``).
+
+
+def _no_sdk_copy(monkeypatch, pin: CliPin) -> list[str]:
+    """A wheel with no CLI of its own, as the desktop app ships it; returns the versions fetched."""
+    monkeypatch.setattr(cli_install, "_sdk_cli", lambda: None)
+    monkeypatch.setattr(cli_install, "pinned", lambda: pin)
+    fetched: list[str] = []
+    copy = cli_install.backend_copy
+
+    async def counted(pin, platform, **kw):
+        fetched.append(pin.version)
+        return await copy(pin, platform, **kw)
+
+    monkeypatch.setattr(cli_install, "backend_copy", counted)
+    return fetched
+
+
+async def test_the_backend_runs_the_sdks_own_copy_where_its_wheel_carries_one(env, monkeypatch):
+    own = env.tmp / "sdk-claude"
+    own.write_bytes(V1)
+    monkeypatch.setattr(cli_install, "_sdk_cli", lambda: own)
+    assert await cli_install.worker_cli(base_url=env.url, cache_dir=env.cache) == str(own)
+    assert not env.cache.exists()
+
+
+async def test_without_one_the_backend_fetches_the_pinned_release_once(env, monkeypatch):
+    fetched = _no_sdk_copy(monkeypatch, env.publish("1.0.0", V1))
+    paths = await asyncio.gather(*(cli_install.worker_cli(base_url=env.url, cache_dir=env.cache) for _ in range(3)))
+    want = env.cache / "1.0.0" / backend_platform() / "claude"
+    assert set(paths) == {str(want)}
+    assert want.read_bytes() == V1 and os.access(want, os.X_OK)
+    assert await cli_install.worker_cli(base_url=env.url, cache_dir=env.cache) == str(want)
+    assert fetched == ["1.0.0"]
+
+
+async def test_a_new_pin_replaces_the_backends_copy(env, monkeypatch):
+    _no_sdk_copy(monkeypatch, env.publish("1.0.0", V1))
+    await cli_install.worker_cli(base_url=env.url, cache_dir=env.cache)
+    monkeypatch.setattr(cli_install, "pinned", lambda: env.publish("2.0.0", V2))
+    path = await cli_install.worker_cli(base_url=env.url, cache_dir=env.cache)
+    assert Path(path).read_bytes() == V2
+    assert sorted(p.name for p in env.cache.iterdir() if p.is_dir()) == ["2.0.0"]
+
+
+async def test_a_release_that_does_not_match_its_pin_is_never_run(env, monkeypatch):
+    pin = env.publish("1.0.0", V1)
+    _no_sdk_copy(monkeypatch, CliPin(pin.version, {name: release(V2) for name in PLATFORMS}))
+    with pytest.raises(CliInstallError):
+        await cli_install.worker_cli(base_url=env.url, cache_dir=env.cache)
+    assert not (env.cache / "1.0.0" / backend_platform() / ".verified").exists()
+
+
+async def test_a_system_with_no_build_is_refused_before_anything_is_fetched(env, monkeypatch):
+    fetched = _no_sdk_copy(monkeypatch, env.publish("1.0.0", V1))
+    monkeypatch.setattr(cli_install, "host_platform", lambda: None)
+    with pytest.raises(CliUnsupported):
+        await cli_install.worker_cli(base_url=env.url, cache_dir=env.cache)
+    assert fetched == []
+
+
+async def test_a_turn_on_the_backend_hands_the_sdk_that_cli_never_leaving_it_to_look(env, monkeypatch):
+    """The SDK's own lookup falls back to the machine's ``claude``, whose login is the person's."""
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    from ptc_agent.agent.claude_code import launcher as launcher_module
+
+    _no_sdk_copy(monkeypatch, env.publish("1.0.0", V1))
+    monkeypatch.setattr(cli_install, "default_cache_dir", lambda: env.cache)
+    monkeypatch.setattr(cli_install, "RELEASES_URL", env.url)
+
+    async def unmanaged():
+        return ()
+
+    monkeypatch.setattr(launcher_module, "local_managed", unmanaged)
+    launcher = launcher_module.LocalLauncher(token="a-token")
+    prepared = await launcher.scratch()
+    try:
+        transport = launcher.transport(ClaudeAgentOptions())
+        assert transport._cli_path == str(env.cache / "1.0.0" / backend_platform() / "claude")
+    finally:
+        await launcher.release(prepared)
