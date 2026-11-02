@@ -7,7 +7,7 @@ import { print } from "../output.js";
 export type Row = Record<string, unknown>;
 
 export const GLOBAL = {
-  server: { type: "string", value: "URL", help: "the LangAlpha server (default: the one you signed in to)" },
+  server: { type: "string", value: "URL", help: "the LangAlpha server (else LANGALPHA_URL, the one you signed in to, or this build's default)" },
   token: {
     type: "string",
     value: "T",

@@ -51,7 +51,7 @@ function reasons(e: unknown): string[] {
 
 export function unreachable(where: string, e: unknown): CliError {
   const why = (e instanceof Error && e.cause instanceof Error ? reasons(e.cause).join("; ") : "") || String(e);
-  return new CliError(`Cannot reach ${where} (${why})`, Exit.error);
+  return new CliError(`Cannot reach ${where} (${why})`, Exit.error, { reason: "unreachable" });
 }
 
 export function exitFor(status: number): number {

@@ -3,7 +3,16 @@ import { CliError, Exit, unreachable } from "./errors.js";
 import { type OAuthLogin, putLogin, readStore, withStoreLock } from "./store.js";
 import { CLI_NAME } from "./name.js";
 
-export const DEFAULT_SERVER = "http://localhost:8000";
+declare const __LA_DEFAULT_SERVER__: string;
+
+const LOCAL_SERVER = "http://localhost:8000";
+
+/** The server a command talks to when nothing names one: the hosted service in
+ *  the build npm publishes, which `build.mjs` defines from
+ *  `LANGALPHA_CLI_DEFAULT_SERVER`, and a local server in a build from source. */
+export function defaultServer(): string {
+  return (typeof __LA_DEFAULT_SERVER__ === "string" && __LA_DEFAULT_SERVER__) || LOCAL_SERVER;
+}
 // Refresh this long before the access token runs out, so a call in flight
 // never carries one that lapses on the way.
 const REFRESH_MARGIN_MS = 30_000;
@@ -16,6 +25,8 @@ export interface Credential {
   baseUrl: string;
   /** What to tell the user when a 401 stands after ``renew``, if signing in would help. */
   loginHint?: string;
+  /** Whether nothing named this server: no flag, no `LANGALPHA_URL`, no saved sign-in. */
+  fromDefault?: boolean;
   token(): Promise<string | undefined>;
   /** After a 401: whether a different token is now on hand to retry with. */
   renew(): Promise<boolean>;
@@ -28,7 +39,9 @@ export interface CredentialOptions {
 }
 
 /** ``--token`` > ``LANGALPHA_TOKEN`` > ``LANGALPHA_TOKEN_FILE`` (what a
- *  computer's agent gets) > a stored login > none, which an oss server takes. */
+ *  computer's agent gets) > a stored login > none, which an oss server takes.
+ *  The server is ``--server`` > ``LANGALPHA_URL`` > the stored sign-in's >
+ *  this build's default. */
 export function resolveCredential(opts: CredentialOptions = {}): Credential {
   const env = opts.env ?? process.env;
   const given = opts.token || env.LANGALPHA_TOKEN || undefined;
@@ -37,13 +50,15 @@ export function resolveCredential(opts: CredentialOptions = {}): Credential {
   const server = opts.server || env.LANGALPHA_URL || undefined;
   if (filePath) return tokenFile(server, filePath);
   const store = readStore();
-  const baseUrl = trimUrl(server ?? store.current ?? DEFAULT_SERVER);
-  if (given) return fixed(baseUrl, given);
+  const named = server ?? store.current;
+  const baseUrl = trimUrl(named ?? defaultServer());
+  if (given) return { ...fixed(baseUrl, given), fromDefault: !named };
   const login = store.servers[baseUrl];
   if (login?.kind === "pat") return { ...fixed(baseUrl, login.token), loginHint: SIGN_IN_AGAIN };
   if (login?.kind === "oauth") return oauth(baseUrl, login);
   return {
     baseUrl,
+    fromDefault: !named,
     loginHint: `Sign in with \`${CLI_NAME} login\`, or set LANGALPHA_TOKEN.`,
     token: async () => undefined,
     renew: async () => false,

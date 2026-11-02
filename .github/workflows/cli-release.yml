@@ -3,7 +3,10 @@ name: CLI release
 # Publishes langalpha to npm from a tag naming its version, `cli-v<version>`,
 # kept apart from the app's CalVer `v*` tags: the CLI has versions of its own,
 # and computers never install it from npm (the backend image builds it from
-# source), so a release here is for people's own machines only.
+# source), so a release here is for people's own machines only. The published
+# build defaults to the hosted service (repository variable
+# LANGALPHA_CLI_DEFAULT_SERVER); `--server`, `LANGALPHA_URL` and a saved
+# sign-in still win over it.
 #
 # npm trusts this workflow by name (trusted publishing), so no npm token is
 # held anywhere. The `npm` environment requires a maintainer's approval before
@@ -47,8 +50,35 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm test
-      - run: pnpm run build
+      # The published build talks to the hosted service unless told otherwise;
+      # a build from source defaults to a local server. The address is a
+      # repository variable, so a release with it unset fails here instead of
+      # shipping a CLI that points at localhost. Only https: every npm user who
+      # names no server sends their sign-in to this address.
+      - name: Build with the hosted service as the default server
+        run: |
+          if [ -z "${LANGALPHA_CLI_DEFAULT_SERVER}" ]; then
+            echo "::error::Set the repository variable LANGALPHA_CLI_DEFAULT_SERVER before releasing"
+            exit 1
+          fi
+          if ! printf '%s\n' "${LANGALPHA_CLI_DEFAULT_SERVER}" | grep -Eq '^https://[^/?#[:space:]]+(/[^?#[:space:]]*)?$'; then
+            echo "::error::LANGALPHA_CLI_DEFAULT_SERVER must be an absolute https URL with no query or fragment, since every API path is appended to it"
+            exit 1
+          fi
+          if printf '%s\n' "${LANGALPHA_CLI_DEFAULT_SERVER}" | grep -Eq '^https://(localhost|127\.0\.0\.1|\[::1\])([:/]|$)'; then
+            echo "::error::LANGALPHA_CLI_DEFAULT_SERVER must not point at localhost"
+            exit 1
+          fi
+          pnpm run build
+        env:
+          LANGALPHA_CLI_DEFAULT_SERVER: ${{ vars.LANGALPHA_CLI_DEFAULT_SERVER }}
       - run: node scripts/check-package.mjs
+      # The default above is only a string until the server behind it answers
+      # the sign-in `langalpha login` asks for.
+      - name: Default server offers the CLI sign-in
+        run: node scripts/check-default-server.mjs
+        env:
+          LANGALPHA_CLI_DEFAULT_SERVER: ${{ vars.LANGALPHA_CLI_DEFAULT_SERVER }}
       # The bytes that were checked are the bytes published: the publish job
       # installs and builds nothing.
       - run: |
