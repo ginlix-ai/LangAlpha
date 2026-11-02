@@ -3,9 +3,11 @@ name: Desktop Release
 # Builds the OSS edition of the desktop shell and attaches it to a GitHub
 # release. That release is how a self-hoster gets a build.
 #
-# It ships the committed localhost defaults and takes no configuration, because
-# an OSS build points at the stack the person running it already has. The first
-# launch asks for that address.
+# On macOS and Linux it carries its own stack: Python and the backend, the web
+# app, Postgres and Valkey, built by desktop/scripts/bundle-backend.mjs, so it works
+# with no server to run. The first launch offers that or the address of a stack the
+# person already runs. Windows builds carry no stack and only ask for that address.
+# DESKTOP_BUNDLE_BACKEND=0 on the build step gives the thin build everywhere.
 #
 # Deliberately not here: the hosted build. It needs Apple and Windows signing
 # certificates and a key that can replace the binaries every installed app
@@ -66,8 +68,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-latest, ubuntu-latest]
+        # A bundled build holds native code for one architecture and is built on a
+        # runner of that architecture, so each Mac gets a runner of its own.
+        # ubuntu-22.04 rather than latest: Valkey is compiled here, and it then runs
+        # on any glibc at least as new as the one it was built against.
+        os: [macos-14, macos-15-intel, windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
+    # Valkey, the web build and a tree of over a gigabyte to compress and sign.
+    timeout-minutes: 120
     # Declared once for the whole job. It selects what gets built and, through
     # electron-builder.yml's per-edition `directories.output`, where the
     # artifacts land, so the steps below read it rather than spelling the edition
@@ -103,6 +111,24 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Pinned, because it decides which Python build comes out: uv knows a fixed
+      # table of them per release. bundle-backend.mjs refuses any other on CI.
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        if: runner.os != 'Windows'
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # What the bundler downloads, never what it compiles. fetchPinned hashes each
+      # file against its pin on every run, so a cache hit that is anything else is
+      # discarded and downloaded again.
+      - uses: actions/cache@v4
+        if: runner.os != 'Windows'
+        with:
+          path: desktop/dist/bundle-cache
+          key: desktop-bundle-${{ matrix.os }}-${{ hashFiles('desktop/scripts/bundle-backend.mjs') }}
+
       - name: Stamp version
         if: inputs.version != ''
         # Through `env`, never interpolated into the script body: an expression
@@ -136,10 +162,28 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm run dist
 
+      # The packaged app started the way a first launch starts it: the bundled
+      # database, cache and server, then the setup status and the web app asked
+      # for (src/stack/smoke.js). It is the one check that runs what the package
+      # carries, so a binary that will not load stops the release here. The
+      # script finds the app for the platform and skips a package with no stack:
+      # Windows, or a thin build.
+      - name: Launch the packaged app
+        run: scripts/smoke-packaged.sh "$RUNNER_TEMP/smoke"
+
+      # A bundled installer is hundreds of megabytes, and this is where it shows.
+      - name: Report installer sizes
+        run: |
+          {
+            echo "### Installers on ${{ matrix.os }}"
+            find "dist/$DESKTOP_EDITION" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+              -exec du -h {} \;
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # The point of building an unsigned artifact is knowing it is unsigned.
       # Without this the log looks identical either way.
       - name: Report signing status
-        if: matrix.os == 'macos-14'
+        if: runner.os == 'macOS'
         continue-on-error: true
         run: |
           app=$(find "dist/$DESKTOP_EDITION" -maxdepth 2 -name "*.app" -print -quit)
@@ -185,7 +229,7 @@ jobs:
           # certificates, and a tag is claimed by whichever job gets there first.
           # A fork has neither release to collide with and can use either.
           tag="desktop-oss-v${VERSION}"
-          notes="Self-hosted build. On first launch it asks for the address of your stack."$'\n\n'
+          notes="Self-hosted build. On macOS and Linux it can run everything on your own computer, with no server; on first launch it offers that or the address of a stack you run. On Windows it asks for that address."$'\n\n'
           if [ "$SIGNED_MAC" != "true" ]; then
             notes="${notes}macOS builds are unsigned. Open the app once, then go to System Settings > Privacy & Security and click Open Anyway. (Control-click > Open no longer works: Apple removed that bypass in macOS 15.)"$'\n\n'
           fi

@@ -57,9 +57,10 @@ directories:
   output: dist/${EDITION}
   buildResources: resources
 
-# The shell is a remote-URL wrapper: it carries no web bundle, so `files` is just
-# the shell itself. Everything the user sees is fetched at runtime, which is why
-# a web release needs no desktop release.
+# The shell itself. The hosted edition carries no web bundle, so everything its
+# user sees is fetched at runtime, which is why a web release needs no desktop
+# release there. An OSS build that runs its own stack gets that as `extraResources`,
+# added by scripts/build.mjs; see scripts/bundle-backend.mjs.
 files:
   - src/**/*
   - setup/**/*
@@ -78,12 +79,13 @@ protocols:
     schemes:
       - langalpha-oss
 
-# scripts/build.mjs adds two keys under this line on a mac build that has the
+# scripts/build.mjs adds keys under this line on a mac build. With the
 # remote-control helper: `extraFiles`, the binary into Contents/MacOS and its
 # generated launchd plist into Contents/Library/LaunchAgents, both build outputs
-# rather than source; and `sign`, scripts/sign-mac.mjs, which signs the helper
-# first, without the JIT entitlements below, then the rest with electron-builder's
-# own signer. A build without the helper keeps that signer alone.
+# rather than source. With a bundled backend: `minimumSystemVersion`. With
+# either: `sign`, scripts/sign-mac.mjs, which signs the helper without the JIT
+# entitlements below and the backend's Mach-O files, then the rest with
+# electron-builder's own signer. A build with neither keeps that signer alone.
 mac:
   category: public.app-category.finance
   target:

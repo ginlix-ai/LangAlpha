@@ -1,5 +1,6 @@
 'use strict'
 
+const backend = require('./backend')
 const config = require('./config')
 const origins = require('./origins')
 const store = require('./store')
@@ -7,14 +8,14 @@ const store = require('./store')
 // ---------------------------------------------------------------------------
 // What the shell decides, separated from what it does about it.
 //
-// Every function here is a pure read of config, the store and a URL. Nothing
-// opens a window, hands a URL to the system browser, or writes a setting: main
-// carries the verdicts out. That split is not tidiness. `classifyNavigation`
-// used to record "this install has reached the app" as it classified, which
-// recorded it for a navigation that was merely *allowed* — so a first run whose
-// link dropped between the verdict and the load skipped platform sign-in on
-// every launch afterwards. A module with no way to write cannot make that
-// mistake again.
+// Every function here is a pure read of config, the store, which backend this
+// install uses (`backend`) and a URL. Nothing opens a window, hands a URL to the
+// system browser, or writes a setting: main carries the verdicts out. That split
+// is not tidiness. `classifyNavigation` used to record "this install has reached
+// the app" as it classified, which recorded it for a navigation that was merely
+// *allowed* — so a first run whose link dropped between the verdict and the load
+// skipped platform sign-in on every launch afterwards. A module with no way to
+// write cannot make that mistake again.
 //
 // It also means these decisions are testable on their own, without the entry
 // module's lifecycle hooks.
@@ -37,9 +38,7 @@ const store = require('./store')
  * new account.
  */
 function entryUrl() {
-  if (!config.isSaas) {
-    return store.get('serverUrl') ? origins.appOrigin() : null
-  }
+  if (!config.isSaas) return backend.choice() ? origins.appOrigin() : null
   if (store.get('reachedApp')) return origins.appOrigin()
   return new URL(config.loginPath, origins.platformOrigin()).toString()
 }
@@ -121,11 +120,21 @@ function appPathUrl(path) {
 }
 
 /**
- * Whether the menu bar window has an app to load: the SaaS edition once this
- * install has reached the app, the OSS edition once it has a server.
+ * Whether the menu bar window has an app to load now: the SaaS edition once this
+ * install has reached the app, the OSS edition once its backend is up. The
+ * bundled stack's page waits for the stack, since one loaded before it answers
+ * only fails.
  */
 function menubarReachable() {
-  return config.isSaas ? Boolean(store.get('reachedApp')) : Boolean(store.get('serverUrl'))
+  return config.isSaas ? Boolean(store.get('reachedApp')) : backend.isUp()
 }
 
-module.exports = { appPathUrl, menubarReachable, entryUrl, platformFitsMainWindow, classifyNavigation, classifyWindowOpen, chromeKeyFor }
+/**
+ * Whether this install has an app to come up as, now or once its stack starts.
+ * What a login launch asks before it opens no window.
+ */
+function hasApp() {
+  return config.isSaas ? Boolean(store.get('reachedApp')) : backend.choice() !== null
+}
+
+module.exports = { appPathUrl, menubarReachable, hasApp, entryUrl, platformFitsMainWindow, classifyNavigation, classifyWindowOpen, chromeKeyFor }

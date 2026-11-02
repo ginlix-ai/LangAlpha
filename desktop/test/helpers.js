@@ -25,6 +25,8 @@ const BUILD_CONFIG = path.join(CONFIG_DIR, 'build.json')
 const STASHED_BUILD_CONFIG = fs.existsSync(BUILD_CONFIG) ? fs.readFileSync(BUILD_CONFIG) : null
 
 const opened = []
+// Every text the shell put on the clipboard.
+const copied = []
 const errorBoxes = []
 const exits = []
 // Every `app.quit()` the shell asked for, since the last `loadShell`.
@@ -137,6 +139,7 @@ class FakeBrowserWindow extends EventEmitter {
   isDestroyed() { return this.destroyed }
   getBounds() { return this.bounds || { x: 0, y: 0, width: this.options.width || 0, height: this.options.height || 0 } }
   setBounds(bounds) { this.bounds = { ...bounds }; (this.boundsSet ||= []).push({ ...bounds }) }
+  destroy() { this.close() }
   loadURL(url) { this.loaded.push(url); return Promise.resolve() }
   loadFile(file) { this.loaded.push(`file://${file}`); return Promise.resolve() }
   show() { this.visible = true }
@@ -205,6 +208,7 @@ const electronStub = {
     getPath: () => userData,
     getVersion: () => '0.0.0-test',
     isPackaged: false,
+    isReady: () => false,
     setAsDefaultProtocolClient: () => true,
     on: (event, handler) => {
       if (!appHandlers.has(event)) appHandlers.set(event, [])
@@ -229,6 +233,9 @@ const electronStub = {
   shell: {
     openExternal: async (url) => { opened.push(url) },
   },
+  clipboard: {
+    writeText: (text) => { copied.push(text) },
+  },
   dialog: {
     showErrorBox: (title, content) => { errorBoxes.push({ title, content }) },
     showMessageBox: async (...args) => {
@@ -243,6 +250,8 @@ const electronStub = {
     createFromBuffer: () => ({ addRepresentation() {}, setTemplateImage() {} }),
   },
   powerMonitor: new EventEmitter(),
+  // Squirrel's, which the shell listens on for a quit that installs an update.
+  autoUpdater: new EventEmitter(),
   nativeTheme: { themeSource: 'system' },
   screen: {
     getDisplayMatching: () => display,
@@ -348,6 +357,7 @@ function loadShellAs({
     store,
     config: require(path.join(SRC, 'config.js')),
     origins: require(path.join(SRC, 'origins.js')),
+    backend: require(path.join(SRC, 'backend.js')),
     policy: require(path.join(SRC, 'policy.js')),
     oauth: require(path.join(SRC, 'oauth.js')),
     deeplink: require(path.join(SRC, 'deeplink.js')),
@@ -568,7 +578,7 @@ function cleanup() {
 }
 
 module.exports = {
-  loadShell, loadEntryWith, loadPreload, cleanup, opened, electronStub, setOnline, setSaveDialog, tempDir,
+  loadShell, loadEntryWith, loadPreload, cleanup, opened, copied, electronStub, setOnline, setSaveDialog, tempDir,
   emitApp, windows, focusOrder, signedIn, openUrl, isAccount, navigateFrom, quietly,
   loginItems, resetLoginItems, messageBoxes, setMessageBox, ipcHandlers, ipcListeners, quits, trays, display,
   logged, from, closeEvent, sweep, menubarWindow, readyShell, fakeTimers, appMenuItem, findMenuItem,

@@ -184,6 +184,12 @@ describe('desktop settings', () => {
     assert.equal('junk' in desktop, false)
     assert.equal(loadShell({ settings: { desktop: 'broken' } }).store.get('desktop').openAtLogin, false)
   })
+
+  test('the store reads back only a stack port a socket can take', () => {
+    for (const [stored, read] of [[43123, 43123], [65535, 65535], [0, 0], [65536, 0], [-1, 0], [1.5, 0], ['8000', 0]]) {
+      assert.equal(loadShell({ settings: { stackPort: stored } }).store.get('stackPort'), read, `stored ${stored}`)
+    }
+  })
 })
 
 describe('platform traits', () => {

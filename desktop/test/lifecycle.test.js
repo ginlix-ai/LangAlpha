@@ -78,6 +78,45 @@ describe('the lifecycle', () => {
     assert.deepEqual(ran, ['icon', 'updater'])
   })
 
+  test('a drain holds the exit after teardown, then asks for the quit again', async () => {
+    const { life, app } = lifecycleOn('darwin')
+    const ran = []
+    let finish
+    life.onWillQuit(() => ran.push('teardown'))
+    life.onDrain(() => new Promise((resolve) => { finish = resolve }))
+    life.onDrain(() => null)
+    const event = () => ({ prevented: false, preventDefault() { this.prevented = true } })
+
+    app.emit('before-quit')
+    const first = event()
+    app.emit('will-quit', first)
+    assert.equal(first.prevented, true)
+    assert.deepEqual(ran, ['teardown'])
+    assert.equal(life.isExiting(), true)
+    // A quit asked for again while it drains is held too, and tears nothing down twice.
+    const meanwhile = event()
+    app.emit('will-quit', meanwhile)
+    assert.equal(meanwhile.prevented, true)
+    assert.equal(app.quits, 0)
+
+    finish()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(app.quits, 1)
+    const last = event()
+    app.emit('will-quit', last)
+    assert.equal(last.prevented, false)
+    assert.deepEqual(ran, ['teardown'])
+  })
+
+  test('with nothing to drain the quit goes straight through', () => {
+    const { life, app } = lifecycleOn('linux')
+    life.onDrain(() => null)
+    const event = { prevented: false, preventDefault() { this.prevented = true } }
+    app.emit('will-quit', event)
+    assert.equal(event.prevented, false)
+    assert.equal(app.quits, 0)
+  })
+
   test('the last user window: macOS stays, Linux quits, Windows stays in the tray when it may', () => {
     let open = false
     const mac = lifecycleOn('darwin', { userWindowOpen: () => open })

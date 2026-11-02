@@ -24,6 +24,17 @@ const DEFAULTS = {
    */
   reachedApp: false,
   /**
+   * OSS edition only: 'bundled' when this install runs its own stack, the choice
+   * the first-run page offers. Unset with a `serverUrl` means a server the user
+   * pointed it at, which is every install from before there was a choice.
+   */
+  stackMode: null,
+  /**
+   * The bundled stack's backend port, kept between launches. It is the app's
+   * origin, and a browser keys everything it stores by origin.
+   */
+  stackPort: 0,
+  /**
    * Whether the web build this install loads reserves a strip for the macOS
    * window buttons. Hiding the titlebar is only safe once it does: a build that
    * does not leaves the buttons on top of its own header and, with no drag
@@ -83,6 +94,9 @@ const DEFAULTS = {
 // field by field, so one bad value costs that field and not the group.
 const NORMALIZE = {
   desktop: (value) => desktopSettings.normalize(value),
+  // A number is not enough: a port no socket can take makes every launch fail to
+  // bind it, where 0 lets the stack pick a new one.
+  stackPort: (value) => (Number.isInteger(value) && value >= 1 && value <= 65535 ? value : 0),
 }
 
 let cache = null

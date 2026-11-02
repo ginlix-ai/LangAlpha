@@ -3,6 +3,7 @@
 const path = require('node:path')
 const { app, BrowserWindow, Menu, ipcMain, shell, dialog } = require('electron')
 
+const backend = require('./backend')
 const config = require('./config')
 const origins = require('./origins')
 const policy = require('./policy')
@@ -28,6 +29,7 @@ const { createGlance } = require('./glance')
 const { createCommands, commandFromArgv } = require('./commands')
 const { alive, appSenderWindow } = require('./sender')
 const { recordWindowFacts, windowFactsOf, watchLoads } = require('./pageFacts')
+const { createSetupWindow } = require('./setupWindow')
 
 // Before anything can ask where userData lives.
 //
@@ -50,11 +52,10 @@ if (traits.appUserModelId) app.setAppUserModelId(config.appId)
 
 let mainWindow = null
 let platformWindow = null
-let setupWindow = null
 // A deep link that arrived before this install had a server to resolve it
 // against. An OSS first run opens the picker, and the link used to be dropped
 // there: the user had to go back to the browser and click again, which a
-// single-use magic link may not survive. Held until `server:use` gives it an
+// single-use magic link may not survive. Held until a backend gives it an
 // origin, and only one, because the newest link is the one being acted on.
 let deferredLink = null
 // The window whose page last sent the user to the system browser. An
@@ -71,9 +72,12 @@ const remoteControl = createRemoteControl({ onMenuChange: installMenu })
  * The user's windows that are open: the app, the server picker, the account
  * window. Never the menu bar window, which is the shell's and always there.
  */
-const userWindows = () => [mainWindow, setupWindow, platformWindow].filter(alive)
+const userWindows = () => [mainWindow, setup.window(), platformWindow].filter(alive)
 
-const SETUP_DIR = path.join(__dirname, '..', 'setup')
+// The bundled stack, or null on anything that carries none. Required here and
+// only here, so the hosted edition never loads it; its package does not have it.
+const stack = config.isSaas ? null : require('./stack').createStack()
+backend.attach(stack)
 
 // ---------------------------------------------------------------------------
 // Navigation policy
@@ -160,7 +164,7 @@ function applyVerdict(verdict, { url, win, isMainWindow, isTopLevel }) {
   if (verdict === 'app-window') {
     showInMainWindow(url)
     // Deferred: this runs inside that window's own event dispatch.
-    if (isTopLevel) setImmediate(() => { if (!win.isDestroyed()) win.close() })
+    if (isTopLevel) setImmediate(() => { if (alive(win)) win.close() })
     return
   }
 
@@ -248,7 +252,7 @@ function attachPolicy(win, { isMainWindow }) {
   // A remote-URL shell shows a blank window when the network does not answer.
   // This is the screen that replaces it.
   outage.attach(win, {
-    onChangeServer: config.isSaas ? null : showServerPicker,
+    onChangeServer: config.isSaas ? null : () => setup.show(),
   })
 
   // The Go menu is built once, so its enablement has to be pushed at it.
@@ -259,7 +263,7 @@ function attachPolicy(win, { isMainWindow }) {
   // would otherwise publish its own history as the app window's, greying out a
   // Back the app can do. The focus handler below is unconditional, so a window
   // that navigated while hidden still corrects the menu when it comes forward.
-  const syncIfFocused = () => { if (!win.isDestroyed() && win.isFocused()) syncNavMenu(win) }
+  const syncIfFocused = () => { if (alive(win) && win.isFocused()) syncNavMenu(win) }
   win.webContents.on('did-navigate', syncIfFocused)
   win.webContents.on('did-navigate-in-page', syncIfFocused)
   win.on('focus', () => syncNavMenu(win))
@@ -381,8 +385,8 @@ function showInMainWindow(url) {
 
 /**
  * What a launch (or a dock click with no windows left) opens. An OSS build with
- * no server configured has nothing to show, so it gets the picker and no empty
- * frame behind it.
+ * no backend chosen has nothing to show, so it gets the picker and no empty
+ * frame behind it, and one on a stack not yet up gets the stack's progress.
  */
 function openInitialWindow() {
   // Never reload a live window: a dock click during a streaming turn must not
@@ -391,9 +395,15 @@ function openInitialWindow() {
     mainWindow.focus()
     return mainWindow
   }
+  // A quit past its windows may still be waiting on the stack.
+  if (lifecycle.isExiting()) return null
+  if (backend.runsBundled() && !backend.isUp()) {
+    setup.runBundled()
+    return null
+  }
   const url = policy.entryUrl()
   if (!url) {
-    showServerPicker()
+    setup.show()
     return null
   }
   // Sign-in and onboarding are platform pages. They open in the main window on
@@ -502,7 +512,11 @@ const lifecycle = createLifecycle({
   // Linux's Market Glance window, on screen, is one of the user's windows.
   userWindowOpen: () => userWindows().length > 0 || glance.isOpenAsWindow(),
   keepInTray: () => glance.keepRunningInTray(),
-  onQuitCancelled: () => glance.ensure(),
+  onQuitCancelled: () => {
+    glance.ensure()
+    // Stopped for an update that would have installed, then a page kept the app.
+    if (backend.stoppedForQuit()) setup.runBundled({ windowed: false })
+  },
 })
 
 const shortcut = createShortcut({ supported: traits.globalShortcut, onPress: () => glance.toggle() })
@@ -534,105 +548,32 @@ settings.onChange((next, prev) => {
 })
 
 // ---------------------------------------------------------------------------
-// OSS server picker
+// The OSS first-run page, and the backend it chooses (setupWindow.js, backend.js)
 // ---------------------------------------------------------------------------
 
-/**
- * Its own window, with its own preload. Folding this into the main window would
- * mean the remote page's bridge also carried `server:use`, which repoints the
- * whole app, not something to hand to whatever the loaded page becomes.
- */
-function showServerPicker() {
-  if (alive(setupWindow)) {
-    setupWindow.focus()
-    return setupWindow
-  }
-  setupWindow = new BrowserWindow({
-    width: 520,
-    height: 460,
-    resizable: false,
-    title: 'Connect to your server',
-    backgroundColor: theme.backgroundFor(store.get('theme')),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      preload: path.join(SETUP_DIR, 'setup-preload.js'),
+const setup = createSetupWindow({
+  stack,
+  host: {
+    mainWindow: () => mainWindow,
+    enterApp,
+    onBackendUp: ({ moved }) => {
+      // The menu bar page belongs to the backend it was loaded from.
+      if (moved) glance.reload()
+      if (!backend.runsBundled()) return
+      // The stack's page waited for it, and one loaded on the last launch's port
+      // before anything answered there tries again.
+      glance.ensure()
+      glance.reloadIfFailed()
     },
-  })
-  setupWindow.on('closed', () => {
-    setupWindow = null
-    // Closing the picker with nothing configured leaves no way back in, so the
-    // app has nothing left to do.
-    if (!store.get('serverUrl') && !alive(mainWindow)) {
-      app.quit()
-      return
-    }
-    // With a server, the picker is one of the user's windows like any other,
-    // and closing it can be closing the last.
-    lifecycle.afterUserWindowClosed()
-  })
-  setupWindow.loadFile(path.join(SETUP_DIR, 'setup.html'))
-  return setupWindow
-}
+    afterUserWindowClosed: () => lifecycle.afterUserWindowClosed(),
+    isExiting: () => lifecycle.isExiting(),
+    installMenu,
+  },
+})
 
 // ---------------------------------------------------------------------------
 // IPC
 // ---------------------------------------------------------------------------
-
-/**
- * Point this install at a stack: validate it, forget what the last one taught
- * the shell, and store it. Separated from the IPC handler because everything
- * here is a decision about persisted state, and the handler around it is window
- * work — the same split `policy` and `main` keep everywhere else.
- */
-function adoptServer(rawUrl) {
-  let parsed
-  try {
-    parsed = new URL(rawUrl)
-  } catch {
-    return { ok: false, error: 'That is not a valid URL.' }
-  }
-  // The scheme, not just the parse. `new URL('file:///x')` parses, and its
-  // origin is the *string* "null" — truthy, so it stores fine and `entryUrl`
-  // then treats the picker as answered, while `origins.appOrigin` throws on it
-  // and falls back to the compiled default. The result is an install that can
-  // never reach its picker again. The setup page prefixes `http://` and probes
-  // before it gets here, so this guards the IPC boundary rather than that flow.
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return { ok: false, error: 'Use an http:// or https:// address.' }
-  }
-  // A path is not part of an origin, and `parsed.origin` drops it silently. The
-  // setup page would probe `https://host/langalpha`, report that it reached it,
-  // and then open `https://host/`. Refusing is the honest answer rather than
-  // quietly opening somewhere else: nothing downstream is path-aware, since
-  // `origins` compares origins throughout.
-  if ((parsed.pathname && parsed.pathname !== '/') || parsed.search || parsed.hash) {
-    return { ok: false, error: 'Enter the address only, without a path.' }
-  }
-  // Credentials are dropped by `parsed.origin` exactly as a path is, and the
-  // path check above does not see them: `https://u:p@host` has pathname '/'. The
-  // honest answer is the same one — a stack that needs basic auth cannot be
-  // reached by storing an origin that no longer carries it, so say so here
-  // rather than opening an address the user did not type.
-  if (parsed.username || parsed.password) {
-    return { ok: false, error: 'Enter the address only, without a username or password.' }
-  }
-  const origin = parsed.origin
-  // The chrome flags are learned from a declaration the loaded page makes, so
-  // they are an answer about the origin that gave it, not about this install.
-  // Pointing at a different stack makes them answers about somewhere else: a
-  // server that ships the declaration followed by one that does not left the old
-  // `true` in place (a page that cannot answer is deliberately not read as a
-  // "no"), and the next launch opened frameless against a build that reserves
-  // nothing — window buttons over the app's own header, and no drag region
-  // anywhere. Which is the exact failure this mechanism exists to prevent.
-  if (origin !== store.get('serverUrl')) {
-    store.reset('appChrome')
-    store.reset('platformChrome')
-  }
-  store.set('serverUrl', origin)
-  return { ok: true, origin }
-}
 
 /**
  * Resolve a deep link against where the window is and go there.
@@ -738,6 +679,25 @@ function openLaunchWindows() {
   if (userWindows().length === 0) openInitialWindow()
 }
 
+/**
+ * The main window on an origin just adopted, landing a link that arrived while
+ * there was none, and the setup window closed behind it.
+ */
+function enterApp(origin) {
+  const win = alive(mainWindow) ? mainWindow : createMainWindow(origin)
+  // A link that arrived while the picker was up now has an origin to resolve
+  // against, so it lands instead of the bare app root. Cleared either way:
+  // one that no longer maps to this server must not outlive this attempt.
+  const link = deferredLink
+  deferredLink = null
+  if (!link || !openDeepLink(win, link, origin)) {
+    navigate(win, origin)
+    win.show()
+    win.focus()
+  }
+  setup.close()
+}
+
 function registerIpc() {
   ipcMain.handle('shell:open-external', openExternallyFrom)
   // Synchronous because the preload needs the answer before the page's first
@@ -753,33 +713,7 @@ function registerIpc() {
 
   outage.registerIpc({ onRetry: (win, url) => navigate(win, url) })
 
-  ipcMain.handle('server:probe', async (_event, rawUrl) => probe(rawUrl))
-
-  ipcMain.handle('server:use', (_event, rawUrl) => {
-    const before = store.get('serverUrl')
-    const result = adoptServer(rawUrl)
-    if (!result.ok) return result
-    const { origin } = result
-    // The menu bar page belongs to the server it was loaded from.
-    if (origin !== before) glance.reload()
-    const win = alive(mainWindow) ? mainWindow : createMainWindow(origin)
-    // A link that arrived while the picker was up now has an origin to resolve
-    // against, so it lands instead of the bare app root. Cleared either way:
-    // one that no longer maps to this server must not outlive this attempt.
-    const link = deferredLink
-    deferredLink = null
-    if (link && openDeepLink(win, link, origin)) {
-      if (alive(setupWindow)) setupWindow.close()
-      return result
-    }
-    navigate(win, origin)
-    win.show()
-    win.focus()
-    if (alive(setupWindow)) setupWindow.close()
-    return result
-  })
-
-  ipcMain.handle('server:current', () => store.get('serverUrl'))
+  setup.install()
 
   pdf.registerIpc()
 
@@ -798,7 +732,9 @@ function registerIpc() {
 function installMenu() {
   Menu.setApplicationMenu(buildMenu({
     isSaas: config.isSaas,
-    onChangeServer: showServerPicker,
+    onChangeServer: () => setup.show(),
+    hasBundledStack: backend.hasStack(),
+    onRevealStackLogs: backend.wantsStack() ? () => shell.openPath(stack.logsDir) : null,
     onOpenAccount: () => {
       const platform = origins.platformOrigin()
       if (!platform) return
@@ -865,7 +801,7 @@ if (!app.requestSingleInstanceLock()) {
       if (!carriesLink) openInitialWindow()
       return
     }
-    const which = win === mainWindow ? 'app' : win === setupWindow ? 'server picker' : 'account'
+    const which = win === mainWindow ? 'app' : win === setup.window() ? 'server picker' : 'account'
     console.log(`[shell] a second launch; focusing the ${which} window`)
     if (win.isMinimized()) win.restore()
     win.show()
@@ -875,6 +811,20 @@ if (!app.requestSingleInstanceLock()) {
   deeplink.init()
 
   app.whenReady().then(async () => {
+    // A release's launch check (`stack/smoke.js`): no window, no updater, and the
+    // exit code is the answer. Run with a --user-data-dir of its own.
+    if (process.env.LANGALPHA_DESKTOP_SMOKE === '1') {
+      // A build with no stack would otherwise open the server picker and wait
+      // there for a person, which a check run unattended never gets.
+      if (!stack) {
+        console.error('[smoke] this build carries no bundled stack, so there is nothing to launch-check')
+        app.exit(2)
+        return
+      }
+      const passed = await require('./stack/smoke').runSmoke(stack)
+      app.exit(passed ? 0 : 1)
+      return
+    }
     await oauth.startCallbackServer()
     registerIpc()
 
@@ -884,12 +834,18 @@ if (!app.requestSingleInstanceLock()) {
     glance.watchPower()
     shortcut.apply(settings.get().shortcut)
 
+    // Read off the module here rather than at the top of the file: it is a lazy
+    // getter that loads native code, which the hosted edition has no reason to.
+    if (stack) require('electron').powerMonitor.on('resume', () => stack.afterWake())
+
     // Opened at login, the app comes up as its menu bar presence only. That
     // needs a presence to come up as: an app reached at least once, and the
     // Dock or else the icon, since without either the window is the only way in.
     const presence = traits.dock || settings.get().menubar.enabled
-    if (loginItem.launchedAtLogin() && policy.menubarReachable() && presence) {
+    if (loginItem.launchedAtLogin() && policy.hasApp() && presence) {
       deeplink.attach(onDeepLink)
+      // The stack starts with no window, which a failure still opens.
+      if (backend.runsBundled()) setup.runBundled({ windowed: false })
     } else {
       openLaunchWindows()
     }
@@ -897,8 +853,9 @@ if (!app.requestSingleInstanceLock()) {
     // its own argv, which no `second-instance` reports.
     const command = commandFromArgv(process.argv)
     if (command) commands.deliver({ command })
+    // Nothing until there is an app to load, which for the stack is once it is up.
     glance.ensure()
-    updater.init(() => mainWindow)
+    updater.init(() => mainWindow, { beforeInstall: () => backend.stop() })
 
     // The user's windows, never all of them: the hidden menu bar window is
     // always there, and counting it left a Dock click with nothing to open.
@@ -920,6 +877,10 @@ lifecycle.onWillQuit(() => {
   updater.stop()
   remoteControl.unwatch()
 })
+// The exit waits for the bundled stack: the server first, which writes its
+// running turns' resume records on the way down, then Postgres's clean shutdown.
+// The windows have closed by then, through their pages' unload guards.
+lifecycle.onDrain(() => backend.stop())
 
 // A remote-URL shell loads code it did not build; a stray permission prompt from
 // a compromised page is not something to leave to the default.
@@ -939,13 +900,14 @@ app.on('web-contents-created', (_event, contents) => {
   // second. Same answer from both, or the policy is only half a policy.
   contents.session.setPermissionCheckHandler((_wc, permission) => permitted(permission))
   downloads.attach(contents.session)
+  stack?.proveOwner(contents.session)
 })
 
 // Exported for the tests: the verdict path that policy cannot own (it opens the
 // system browser), and the launch and the bridge's openExternal, since which
 // window a link lands in depends on what a launch opened, in which order, and
 // which page sent the user out.
-module.exports = { decide, adoptServer, openLaunchWindows, openExternallyFrom }
+module.exports = { decide, openLaunchWindows, openExternallyFrom }
 
 // Surfacing this as a dialog rather than a silent log: an unhandled rejection in
 // the main process leaves the window alive but the shell half-dead, which is

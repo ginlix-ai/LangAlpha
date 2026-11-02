@@ -117,7 +117,30 @@ async function announce(version, win) {
   return true
 }
 
-function init(getWindow) {
+/**
+ * Restart Now. Where the updater installs before it quits, `beforeInstall` runs
+ * first and is waited for: electron-updater's `BaseUpdater.quitAndInstall` calls
+ * `install()` and only then `app.quit()`, and an AppImage's install starts the new
+ * version at once (`AppImageUpdater.doInstall`, `isForceRunAfter`), which would
+ * find the old one's stack still holding its data and its single-instance lock.
+ *
+ * A Mac installs after it quits. `MacUpdater.quitAndInstall` hands over to
+ * Electron's `autoUpdater.quitAndInstall`, which closes the windows and then
+ * calls `app.quit()`, and Squirrel's ShipIt replaces the bundle only once this
+ * process has ended. So the quit's own drain (`lifecycle.onDrain`) stops the
+ * stack in order there, as on the install-on-quit path, and a page that cancels
+ * the quit keeps a stack that was never stopped.
+ */
+async function restartToInstall(updaterInstance, beforeInstall, platform = process.platform) {
+  if (platform !== 'darwin') await beforeInstall()
+  updaterInstance.quitAndInstall()
+}
+
+/**
+ * `beforeInstall()` answers a promise to wait for before an update that installs
+ * ahead of the quit replaces the app, or null.
+ */
+function init(getWindow, { beforeInstall = () => null } = {}) {
   if (!isConfigured()) {
     console.log(`[updater] no feed for this build (packaged=${app.isPackaged}); updates are manual`)
     return
@@ -161,8 +184,8 @@ function init(getWindow) {
         title: 'Update ready',
         message: `LangAlpha ${info.version} is ready to install.`,
         detail: 'It will be applied the next time you quit, or you can restart now.',
-      }).then(({ response }) => {
-        if (response === 1) updaterInstance.quitAndInstall()
+      }).then(async ({ response }) => {
+        if (response === 1) await restartToInstall(updaterInstance, beforeInstall)
       }).catch((err) => console.error(`[updater] update prompt failed: ${err.message}`))
     })
   }
@@ -246,4 +269,4 @@ async function checkManually(win) {
   }
 }
 
-module.exports = { init, stop, checkManually, isConfigured }
+module.exports = { init, stop, checkManually, isConfigured, restartToInstall }
