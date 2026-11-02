@@ -201,7 +201,7 @@ export function ThreadSharePanel({
           aria-label={t('share.shareConversation')}
           onClick={() => handleToggleShare(!isShared)}
           disabled={updating}
-          className="relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors"
+          className="tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors"
           style={{
             backgroundColor: isShared ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',
             opacity: updating ? 0.6 : 1,

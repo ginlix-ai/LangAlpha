@@ -249,7 +249,10 @@ export function ModelsPanel() {
                   <button
                     type="button"
                     onClick={() => favorites.remove(key)}
-                    className="ml-0.5 hover:opacity-70"
+                    // 32px is the chips' line pitch (26 + 6): any taller and a tap
+                    // removes the model on the line above or below. Moved left so
+                    // the box ends at the chip's edge, off the next chip and Add.
+                    className="tap-target ml-0.5 hover:opacity-70 [--tap-target-h:32px] [--tap-target-x:-9.5px]"
                     style={{ color: 'var(--color-text-tertiary)' }}
                     aria-label={t('settings.removeModel', { model: modelLabel(key, modelMetadata) })}
                   >

@@ -156,6 +156,9 @@
    touch, where there is no hover to show it. */
 .widget-card__attach--view {
   opacity: 0;
+  /* The hit area rises over the gap above the card, since just under the title
+     are the body's first controls (the news tabs). */
+  --tap-target-y: -10px;
 }
 .widget-frame:hover .widget-card__attach--view,
 .widget-card__attach--view:focus-visible {
@@ -248,6 +251,14 @@
 }
 
 /* ── A bare widget: the body draws its own cards ── */
+
+/* The index stack's dots sit at the foot of the body, and their hit area runs on
+   past it, over the gap to the next widget. The stack clips its own swipe. */
+@media (pointer: coarse) {
+  .widget-frame--fit > .widget-card[data-bare] > .widget-card__body {
+    overflow: visible;
+  }
+}
 
 /* Outside edit mode a bare widget (the index tiles) has no edge, no padding
    and no title; only its paperclip remains, over the top right corner. An
@@ -439,6 +450,10 @@ select.dash-field[data-set] {
   width: 18px;
   height: 18px;
   transform: translateY(-50%);
+  /* Just the padding reserved above, moved in from the cell's edge that would
+     clip it: past that is the cell's own text, a headline that opens its story. */
+  --tap-target-w: 1.5rem;
+  --tap-target-x: -3px;
 }
 /* Words that wrap rather than cut: a held row's second line. */
 .dash-sub {

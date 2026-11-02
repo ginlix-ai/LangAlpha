@@ -63,7 +63,7 @@ export function RowAttachButton({ instanceId, rowId, className }: RowAttachButto
   return (
     <button
       type="button"
-      className={`row-attach widget-drag-cancel ${className ?? ''}`}
+      className={`row-attach tap-target widget-drag-cancel ${className ?? ''}`}
       onClick={handleClick}
       disabled={busy}
       aria-label={t('dashboard.widgets.frame.addRowToContext', { defaultValue: 'Attach to chat' })}
