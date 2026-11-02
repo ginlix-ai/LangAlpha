@@ -55,6 +55,7 @@ from typing_extensions import NotRequired
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received, turn_failure
 from ptc_agent.agent.claude_code.compaction import (
     NO_RULES,
+    RULES_KEY,
     CompactionRules,
     SessionCompaction,
     compact,
@@ -163,9 +164,11 @@ async def token_works(launcher: Launcher, model: str) -> bool:
 
 
 class ClaudeCodeState(MainAgentState):
-    """A Claude Code thread's checkpoint: a main-agent thread's, plus Claude's session."""
+    """A Claude Code thread's checkpoint: a main-agent thread's, plus Claude's
+    session and the compaction rules its last turn ran under (``RULES_KEY``)."""
 
     claude_session: NotRequired[Annotated[SessionRecords, session_channel()]]
+    _claude_code_rules: NotRequired[dict[str, Any]]
 
 
 _END = object()
@@ -575,9 +578,9 @@ class ClaudeTurn:
 
 
     async def _repin(self, state: ClaudeCodeState) -> list[SessionWrite]:
-        """The records of the compaction that moves the session to this
-        build's pin, when this turn start is due one
-        (``CompactionRules.repin_plan``) and the CLI made it."""
+        """The records of the compaction this turn start makes, when it is
+        due one (``CompactionRules.repin_plan``: a move to this build's pin,
+        or a cold cache) and the CLI made it."""
         records = state.get("claude_session") or {}
         messages = state["messages"]
         if not records.get("session_id") or not (messages and isinstance(messages[-1], HumanMessage)):
@@ -882,7 +885,7 @@ def build_claude_code_graph(
             await run.finish()
             if sent := await turn.again(state, config, run):
                 return Command(update={"messages": sent, **turn.commit(run.store.drain())}, goto="model")
-            return Command(update=turn.commit(run.store.drain()), goto=END)
+            return Command(update={**turn.commit(run.store.drain()), RULES_KEY: turn.compaction.reading()}, goto=END)
         relay = ClaudeStreamRelay(model_name=turn.spec.model, metadata=dict(turn.spec.billing), cache=False).feed(message.events())
         ai: AIMessage = await relay.ainvoke([], config)
         await run.complete(message)

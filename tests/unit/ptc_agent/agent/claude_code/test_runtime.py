@@ -75,7 +75,7 @@ def test_a_rejected_rate_limit_is_a_spent_plan_only_when_the_query_failed():
 
 def test_a_claude_code_thread_keeps_every_main_agent_channel():
     assert set(MainAgentState.__annotations__) < set(ClaudeCodeState.__annotations__)
-    assert set(ClaudeCodeState.__annotations__) - set(MainAgentState.__annotations__) == {"claude_session"}
+    assert set(ClaudeCodeState.__annotations__) - set(MainAgentState.__annotations__) == {"claude_session", "_claude_code_rules"}
 
 
 def _claude(content: str, **kwargs) -> AIMessage:
@@ -1014,4 +1014,31 @@ async def test_a_compaction_whose_records_arrive_late_is_announced_with_the_repl
     notice = {"summary_length": 11, "original_message_count": 2, "summary_text": "the summary", "source": "provider"}
     assert signals == [("summarize", "complete", notice)]
     assert compaction_summary(reply) == {"summary_message_id": "b", **notice}
+
+
+
+
+@pytest.mark.asyncio
+async def test_a_cold_turn_start_compacts_a_session_already_on_this_builds_pin():
+    """Its pin needs no move, but the turn's first request would write the
+    whole context to an expired cache."""
+    from datetime import UTC, datetime, timedelta
+
+    made = []
+    usage = {"input_tokens": 0, "cache_read_input_tokens": 9_000, "cache_creation_input_tokens": 0, "output_tokens": 0}
+    for hours, skip in ((2, False), (0, False), (2, True)):
+        turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(), identity="u",
+                          thread_key="t", compaction=CompactionRules(0, threshold=100_000, cold_tokens=5_000, keep_full_context=skip))
+        stamp = (datetime.now(UTC) - timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
+        session = {"session_id": "s", "pinned": turn.current_pin(),
+                   "entries": [{"uuid": "a1", "type": "assistant", "timestamp": stamp, "message": {"id": "msg_1", "usage": usage}}]}
+
+        async def compact(_, hours=hours, skip=skip):
+            made.append((hours, skip))
+            return []
+
+        turn._compact = compact
+        replied = AIMessage("hello", response_metadata={"claude_message_id": "msg_1"})
+        await turn._repin({"messages": [HumanMessage("hi"), replied, HumanMessage("again")], "claude_session": session})
+    assert made == [(2, False)]
 

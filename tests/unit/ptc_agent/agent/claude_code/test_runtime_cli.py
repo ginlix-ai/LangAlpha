@@ -1187,3 +1187,26 @@ async def test_a_pdf_a_call_returns_reaches_claude_as_a_document_and_is_kept_as_
     result = values["messages"][2]
     assert result.content == returned
     assert sent[result.tool_call_id][0] == returned
+
+
+
+async def test_a_turn_leaves_the_rules_it_ran_under_for_the_composers_reading_between_turns(monkeypatch):
+    """The status reads them with the session the turn left, by the turn
+    start's own rules, once the cache has expired."""
+    from unittest.mock import AsyncMock
+
+    from ptc_agent.agent.claude_code.compaction import RULES_KEY
+    from src.server.services import thread_status
+
+    rules = CompactionRules(0, threshold=100_000, cold_tokens=100)
+    graph = new_graph()
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        values = await run_turn(SPEC, launcher, graph, "t-rules", [HumanMessage("hello")], compaction=rules)
+    assert {k: values[RULES_KEY][k] for k in ("threshold", "cold_tokens", "floor_tokens")} == {
+        "threshold": 100_000, "cold_tokens": 100, "floor_tokens": 0}
+    monkeypatch.setattr(thread_status, "get_checkpointer", lambda: graph.checkpointer)
+    monkeypatch.setattr(thread_status, "turn_base_checkpoint_id", AsyncMock(return_value=None))
+    told = await thread_status.read_next_summary("t-rules", latest={})
+    assert told["reason"] == "cold" and told["at"] > told["now"]
+

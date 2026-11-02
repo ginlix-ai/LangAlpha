@@ -199,6 +199,73 @@ def test_the_summary_a_user_is_shown_keeps_the_clis_words_but_not_its_transcript
     )
 
 
+def _cold_rules(**changes) -> CompactionRules:
+    return CompactionRules(150_000, **{"threshold": 500_000, "cold_tokens": 180_000, **changes})
+
+
+def test_a_cold_session_compacts_at_the_cold_threshold_on_its_own_pin():
+    """As the main agent summarizes a cold Claude thread: its turn's first
+    request would write the whole context to the cache again otherwise."""
+    on_pin = {"system_prompt": "new"}
+    assert _cold_rules().repin_plan(records(minutes_ago=61, **on_pin), CURRENT, NOW) == (True, "cold")
+    assert _cold_rules().repin_plan(records(minutes_ago=59, **on_pin), CURRENT, NOW) is None
+    assert _cold_rules().repin_plan(records(minutes_ago=61, tokens=170_000, **on_pin), CURRENT, NOW) is None
+    assert _cold_rules().repin_plan(records(minutes_ago=61, tokens=170_000, **on_pin), CURRENT, NOW, pending=10_000) == (True, "cold")
+    assert _cold_rules(cold_tokens=600_000).repin_plan(records(minutes_ago=61, **on_pin), CURRENT, NOW) is None
+
+
+def test_a_cold_compaction_is_judged_when_the_turn_was_sent():
+    on_pin = records(minutes_ago=61, system_prompt="new")
+    assert _cold_rules(sent_at=NOW - 30 * 60).repin_plan(on_pin, CURRENT, NOW) is None
+    assert _cold_rules(sent_at=NOW).repin_plan(on_pin, CURRENT, NOW - 30 * 60) == (True, "cold")
+
+
+def test_a_stale_pin_that_waits_compacts_for_a_cold_cache_too():
+    inputs_only = records(minutes_ago=61, source_digest="build-2")
+    assert CompactionRules(150_000, threshold=500_000).repin_plan(inputs_only, CURRENT, NOW) == (False, "inputs_only")
+    assert _cold_rules().repin_plan(inputs_only, CURRENT, NOW) == (True, "cold")
+
+
+def test_with_the_account_setting_off_or_a_send_that_keeps_the_full_context_nothing_compacts_cold():
+    """The setting reaches the rules as #662's turn start reads it
+    (``apply_compaction``), and a skip holds for its send alone."""
+    from types import SimpleNamespace
+
+    from ptc_agent.agent.middleware.runtime_context.turn_context import TurnContext
+    from ptc_agent.config.agent import CompactionConfig
+    from src.llms.preferences import Tuning
+    from src.server.services.llm.config import apply_compaction
+
+    def rules(choice, turn=None):
+        config = SimpleNamespace(compaction=CompactionConfig(token_threshold=500_000, rebuild_floor_tokens=150_000,
+                                                             cold_compact_tokens=180_000))
+        apply_compaction(config, Tuning(cold_compaction=choice), None)
+        return CompactionRules.of(config.compaction, turn)
+
+    on_pin = records(minutes_ago=61, system_prompt="new")
+    assert rules(None).repin_plan(on_pin, CURRENT, NOW) == (True, "cold")
+    assert rules(False).repin_plan(on_pin, CURRENT, NOW) is None
+    assert rules(None, TurnContext(keep_full_context=True)).repin_plan(on_pin, CURRENT, NOW) == (False, "kept_full_context")
+    deploy = records(minutes_ago=61)
+    assert rules(None, TurnContext(keep_full_context=True)).repin_plan(deploy, CURRENT, NOW) == (True, "deploy_cold")
+
+
+def test_the_composer_is_told_what_the_next_turn_start_compacts():
+    """By the turn start's own rules, from the rules the last turn ran under,
+    with the time the cache expires for what waits on it."""
+    expires = NOW - 60 + 3600
+    rules = _cold_rules().reading()
+    on_pin = {"system_prompt": "new", "source_digest": "build-2"}
+    assert compaction.next_summary(rules, records(minutes_ago=1, **on_pin), settled_at=None) == {"reason": "cold", "at": expires}
+    assert compaction.next_summary(rules, records(minutes_ago=1, tokens=170_000, **on_pin), settled_at=None) is None
+    assert compaction.next_summary({**rules, "cold_tokens": 0}, records(minutes_ago=1, **on_pin), settled_at=None) is None
+    assert compaction.next_summary(rules, records(minutes_ago=1, tokens=500_000, **on_pin), settled_at=None) == {"reason": "threshold"}
+    assert compaction.next_summary(rules, records(minutes_ago=1), settled_at=None) == {"reason": "rebuild", "at": expires}
+    assert compaction.next_summary(rules, {**records(minutes_ago=1), "repin_due": True}, settled_at=None) == {"reason": "rebuild"}
+    settled = datetime.fromtimestamp(NOW, UTC).replace(tzinfo=None)
+    assert compaction.next_summary(rules, records(minutes_ago=1, **on_pin), settled_at=settled) == {"reason": "cold", "at": NOW + 3600}
+
+
 @pytest.mark.asyncio
 async def test_the_transcripts_save_counts_against_the_compactions_budget(monkeypatch):
     """Admission holds a send for about that budget, so a slow save and a slow

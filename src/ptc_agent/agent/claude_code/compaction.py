@@ -19,6 +19,13 @@ or cache, a deploy's change moves once the context the turn sends is at
 least ``floor_tokens`` and its prompt cache has expired, so the turn's first
 request would write the whole context again anyway, and a change of per-turn
 inputs alone, or a rollback, never does.
+
+A turn start whose cache has expired also compacts a session on any pin once
+the context the turn sends reaches ``cold_threshold``, unless the send keeps
+the full context, as the main agent summarizes a cold Claude thread: the
+turn's first request would write that context to the cache again otherwise.
+Between turns, ``next_summary`` tells the composer what the next turn start
+does, by the same rules.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
@@ -56,6 +64,7 @@ from ptc_agent.agent.claude_code.session import (
     compacted,
 )
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
+from ptc_agent.agent.middleware.compaction.rebuild import NextSummary, cold_threshold
 from ptc_agent.agent.middleware.compaction.utils import attachment_tokens, stamp_context_threshold
 from ptc_agent.agent.prompts import release
 from ptc_agent.agent.transcript import Window
@@ -79,6 +88,9 @@ DEFAULT_TTL = ttl_seconds("1h")
 #: The answer a Haiku session's compaction launch is handed after its last
 #: one (``noted``).
 NOTED = "Noted."
+#: The state key holding the rules a Claude Code turn ran under
+#: (``CompactionRules.reading``), which ``next_summary`` reads between turns.
+RULES_KEY = "_claude_code_rules"
 
 
 #: The bytes of text a Claude token holds, taken low so a prompt's count errs
@@ -167,9 +179,14 @@ class CompactionRules:
             makes no turn-start rebuild either, so no session moves.
         sent_at: When the server received the turn's send (epoch seconds),
             when the cache's expiry is judged: the composer says a deploy's
-            rebuild is coming only once the cache has expired, so a send made
-            before then meets none, however long it waits to start. None
-            judges it at the turn start.
+            rebuild or a cold compaction is coming only once the cache has
+            expired, so a send made before then meets neither, however long
+            it waits to start. None judges it at the turn start.
+        cold_tokens: The context a cold session compacts at when under
+            ``threshold`` (``cold_threshold``); 0 never, as with the user's
+            setting off.
+        keep_full_context: The turn's send asked not to be compacted for a
+            cold cache alone; a move to the build's pin still is.
     """
 
     floor_tokens: int
@@ -179,12 +196,15 @@ class CompactionRules:
     workspace_id: str | None = None
     enabled: bool = True
     sent_at: float | None = None
+    cold_tokens: int = 0
+    keep_full_context: bool = False
 
     @classmethod
     def of(cls, settings: CompactionConfig, turn: TurnContext | None, *, backend: SandboxBackend | None = None,
            workspace_id: str | None = None) -> CompactionRules:
-        """The main agent's rules for a turn: its compaction config, when the
-        thread's previous run settled and the turn was sent, and where its
+        """The main agent's rules for a turn: its compaction config, the user's
+        settings included, when the thread's previous run settled and the turn
+        was sent, whether the send keeps the full context, and where its
         transcripts are read."""
         return cls(
             settings.rebuild_floor_tokens,
@@ -194,7 +214,30 @@ class CompactionRules:
             workspace_id=workspace_id,
             enabled=settings.enabled,
             sent_at=turn.sent_at if turn else None,
+            cold_tokens=settings.cold_compact_tokens,
+            keep_full_context=bool(turn and turn.keep_full_context),
         )
+
+    def reading(self) -> dict[str, Any]:
+        """What ``next_summary`` reads of this turn's rules between turns
+        (``RULES_KEY``), the user's settings included, and when it was read."""
+        return {"threshold": self.threshold, "floor_tokens": self.floor_tokens, "cold_tokens": self.cold_tokens,
+                "at": time.time()}
+
+    @property
+    def cold_at(self) -> int:
+        """The context a cold session compacts at, or 0 where it compacts only
+        at ``threshold``."""
+        lowered = cold_threshold(self.threshold, self.cold_tokens)
+        return lowered if self.enabled and lowered < self.threshold else 0
+
+    def expires_at(self, entries: Sequence[Mapping[str, Any]]) -> float:
+        """When the session's prompt cache expires: its ttl after the later of
+        the session's newest record and the previous run's settling, both read
+        after a request ended while the cache's life counts from its start, so
+        the estimate errs towards warm."""
+        settled = self.settled_at.replace(tzinfo=self.settled_at.tzinfo or UTC).timestamp() if self.settled_at else 0.0
+        return max(_last_activity(entries), settled) + cache_ttl(entries)
 
     async def transcript_note(self, thread_id: str, state: Mapping[str, Any]) -> str:
         """What the compaction summaries in the thread's session records end
@@ -212,29 +255,41 @@ class CompactionRules:
 
     def repin_plan(self, records: SessionRecords, current: SessionPin, now: float,
                    pending: int = 0) -> tuple[bool, str] | None:
-        """Whether the session moves to ``current`` at this turn start and why,
-        by the turn-start rebuild's reasons and ``threshold`` for one the CLI
-        would compact anyway; None when it already runs on ``current``.
+        """Whether this turn start compacts the session and why: to move it
+        to ``current`` by the turn-start rebuild's reasons (``_move``), or for
+        an expired cache once the context reaches ``cold_at``, on any pin,
+        unless the send keeps the full context. None when the session runs on
+        ``current`` and its cache is warm or its context under ``cold_at``.
         ``pending`` is what the turn's prompt adds to the context, which no
-        request has measured yet; the threshold and the floor read the
+        request has measured yet; the thresholds and the floor read the
         context with it, as the main agent's read the context its turn's
         first call sends.
 
-        The cache counts as cold once its ttl has passed since the later of
-        the session's newest record and the previous run's settling, both
-        read after a request ended while the cache's life counts from its
-        start, so the estimate errs towards warm. It is judged at the turn's
-        send (``sent_at``) when there is one, else at ``now``.
+        The cache is judged at the turn's send (``sent_at``) when there is
+        one, else at ``now`` (``expires_at``).
         """
         kept = records.get("pinned")
-        if not kept or same_pin(kept, current):
+        if not kept:
             return None
+        entries = records.get("entries") or []
+        tokens = context_tokens(entries) + pending
+        expired = (self.sent_at if self.sent_at is not None else now) > self.expires_at(entries)
+        moves, reason = (False, None) if same_pin(kept, current) else self._move(records, tokens, expired=expired)
+        if moves or not (expired and self.cold_at and tokens >= self.cold_at):
+            return (moves, reason) if reason else None
+        if self.keep_full_context:
+            return False, "kept_full_context"
+        return True, "cold"
+
+    def _move(self, records: SessionRecords, tokens: int, *, expired: bool) -> tuple[bool, str]:
+        """Whether a session on another pin moves at a turn start that sends
+        ``tokens``, by the turn-start rebuild's reasons, and ``threshold`` for
+        one the CLI would compact anyway."""
+        kept = records.get("pinned") or {}
         if not self.enabled:
             return False, "off"
         if records.get("repin_due"):
             return True, "compacted"
-        entries = records.get("entries") or []
-        tokens = context_tokens(entries) + pending
         if self.threshold and tokens >= self.threshold:
             return True, "threshold"
         pinned = kept.get("prompt_version") or 0
@@ -248,9 +303,7 @@ class CompactionRules:
             return False, "off"
         if tokens < self.floor_tokens:
             return False, "under_floor"
-        settled = self.settled_at.replace(tzinfo=self.settled_at.tzinfo or UTC).timestamp() if self.settled_at else 0.0
-        judged = self.sent_at if self.sent_at is not None else now
-        if judged - max(_last_activity(entries), settled) <= cache_ttl(entries):
+        if not expired:
             return False, "warm"
         return True, "deploy_cold"
 
@@ -262,6 +315,32 @@ class CompactionRules:
         kept = records.get("pinned")
         tokens = context_tokens(records.get("entries") or []) + pending
         return bool(kept and self.enabled and self.threshold and not same_pin(kept, current) and tokens >= self.threshold)
+
+
+def next_summary(rules: Mapping[str, Any], records: SessionRecords, *, settled_at: datetime | None) -> NextSummary | None:
+    """What a Claude Code thread's next turn start compacts, read between
+    turns as the main agent's ``next_summary`` reads an API thread's, by the
+    turn start's own rules (``CompactionRules.repin_plan``): from the
+    session's records and the ``rules`` its last turn ran under
+    (``RULES_KEY``), the user's settings included. The prompt the next turn
+    sends is not known yet, so the context is the last request's, and a pin
+    from another build's sources reads as one due a move. Only ``cold`` gives
+    way to a send that keeps the full context."""
+    kept = records.get("pinned")
+    judged = CompactionRules(rules.get("floor_tokens") or 0, threshold=rules.get("threshold") or 0, settled_at=settled_at,
+                             cold_tokens=rules.get("cold_tokens") or 0)
+    if not kept or not judged.threshold:
+        return None
+    entries = records.get("entries") or []
+    tokens, at = context_tokens(entries), judged.expires_at(entries)
+    moves, reason = judged._move(records, tokens, expired=False)
+    if moves:
+        return {"reason": "threshold"} if reason == "threshold" else {"reason": "rebuild"}
+    if judged._move(records, tokens, expired=True)[0]:
+        return {"reason": "rebuild", "at": at}
+    if judged.cold_at and tokens >= judged.cold_at:
+        return {"reason": "cold", "at": at}
+    return None
 
 
 #: The rules of a turn that compacts by none of the main agent's settings.
