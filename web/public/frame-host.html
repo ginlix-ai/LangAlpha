@@ -1,0 +1,47 @@
+<!doctype html>
+<!--
+  A frame host: holds one frame on an origin the app learns only at runtime (a
+  running app, a page on the preview base). The app's own frame-src is fixed in
+  index.html and cannot be widened, so such a frame gets a document of its own
+  between it and the app. The app fills it in from outside, once it has loaded
+  (src/pages/ChatAgent/components/viewers/HostedFrame.tsx): a frame-src naming
+  that one origin, then the frame. The inner frame's navigations are checked
+  against this document's policy, so it can move about its own origin and
+  nowhere else.
+
+  Inert on its own. A report that navigates itself here (the app's policy allows
+  its own origin) lands on an empty page: nothing here reads the address, and
+  only the app, from outside, ever puts a frame in it.
+
+  The script relays messages for a frame the app marked with data-relay-origin
+  (a page's bridge): from the app to the frame, and from the frame to the app,
+  so each end still hears its counterpart as its own parent or child. ES5 and
+  inline: this file is served as is, never built.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title></title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+      iframe { display: block; border: 0; width: 100%; height: 100%; }
+    </style>
+    <script>
+      (function () {
+        window.addEventListener('message', function (e) {
+          var frame = document.querySelector('iframe[data-relay-origin]');
+          var target = frame && frame.contentWindow;
+          var origin = frame && frame.getAttribute('data-relay-origin');
+          if (!target || !origin) return;
+          if (e.source === window.parent && e.origin === location.origin) {
+            target.postMessage(e.data, origin);
+          } else if (e.source === target && e.origin === origin) {
+            window.parent.postMessage(e.data, location.origin);
+          }
+        });
+      })();
+    </script>
+  </head>
+  <body data-frame-host></body>
+</html>

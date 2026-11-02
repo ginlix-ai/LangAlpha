@@ -73,6 +73,6 @@ describe('ChatInput — giveBack', () => {
       ref.current!.send();
     });
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0][1]).toEqual([expect.objectContaining({ file, dataUrl: sent.dataUrl })]);
+    expect(onSend.mock.calls[0][0].files).toEqual([expect.objectContaining({ file, dataUrl: sent.dataUrl })]);
   });
 });

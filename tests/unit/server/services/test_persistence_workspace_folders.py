@@ -238,13 +238,14 @@ def test_a_row_that_names_no_folder_is_refused_rather_than_widened(row):
     from fastapi import HTTPException
 
     from src.server.app.workspace_files import _shared
+    from src.server.services.workspace_files import owner_work_dir
     from src.server.services.workspace_layout import WorkspaceLayoutUnavailable
 
     unplaced = {"workspace_id": "ws-1", **row}
     with pytest.raises(WorkspaceLayoutUnavailable):
         _shared.work_dir_for(unplaced, manager=_manager())
     with pytest.raises(HTTPException) as raised:
-        _shared.owner_work_dir(unplaced, manager=_manager())
+        owner_work_dir(unplaced, manager=_manager())
     assert raised.value.status_code == 503
 
 

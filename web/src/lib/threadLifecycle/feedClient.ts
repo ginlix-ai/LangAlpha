@@ -22,6 +22,7 @@
  */
 import type { QueryClient } from '@tanstack/react-query';
 import { isCacheOnlyMeta, queryKeys } from '@/lib/queryKeys';
+import { ALL, refreshArtifactComments, refreshArtifactRecord, refreshArtifactThreads, refreshEveryArtifact } from '@/lib/artifactCache';
 import { threadFieldMutationKey } from '@/lib/threadFieldMutations';
 import { patchThreadTitle } from '@/lib/threadListCache';
 import { isArchivedThreadsKey, patchThreadRows } from '@/lib/threadRowActions';
@@ -29,7 +30,7 @@ import {
   getAuthHeaders,
   streamFetch,
 } from '@/pages/ChatAgent/utils/api/transport';
-import type { Thread } from '@/types/api';
+import type { ArtifactCommentEvent, ArtifactRecordEvent, Thread } from '@/types/api';
 import {
   getLifecycleQueryClient,
   markThreadSeen,
@@ -153,6 +154,7 @@ function scheduleInvalidate(workspaceId?: string | null): void {
       // The automation announcements have no replay either, and a wait that
       // started while detached would otherwise stay unseen until its poll.
       void qc.invalidateQueries({ queryKey: queryKeys.automations.all });
+      refreshEveryArtifact(qc);
       return;
     }
     for (const ws of workspaces) {
@@ -321,6 +323,7 @@ function onFeedEvent(raw: Record<string, unknown>): void {
           (rows) => (rows.some((t) => t.thread_id === tid) ? rows.filter((t) => t.thread_id !== tid) : rows),
           evt.type === 'thread_archived' ? { skipKey: isArchivedThreadsKey } : {},
         );
+        refreshArtifactThreads(qc);
       }
       if (evt.thread_id) pruneThread(evt.thread_id);
       scheduleInvalidate(evt.workspace_id);
@@ -339,6 +342,7 @@ function onFeedEvent(raw: Record<string, unknown>): void {
           (rows) => (rows.some((t) => t.thread_id === tid) ? rows.filter((t) => t.thread_id !== tid) : rows),
           { skipKey: (key) => !isArchivedThreadsKey(key) },
         );
+        refreshArtifactThreads(qc);
       }
       scheduleInvalidate(evt.workspace_id);
       return;
@@ -353,9 +357,47 @@ function onFeedEvent(raw: Record<string, unknown>): void {
       scheduleInvalidate();
       return;
     }
+    case 'artifact_comment':
+    case 'artifact': {
+      const qc = getLifecycleQueryClient();
+      const event = readArtifactEvent(raw);
+      if (!qc || !event) return;
+      const ref = { artifactId: event.artifact_id, workspaceId: event.workspace_id || null };
+      // A file's comments changed: a send took them, an answer arrived, or
+      // another tab edited or read one. Its comment layer, its counts and the
+      // destination thread's deck read them again, or every deck when the
+      // event names no thread: Mark all read can touch any of them.
+      if (event.type === 'artifact_comment') refreshArtifactComments(qc, [ref], event.thread_id ?? ALL);
+      // A file's record changed: published, updated, unshared, rebound.
+      else refreshArtifactRecord(qc, ref);
+      return;
+    }
     default:
       return; // forward-compatible: unknown types are ignored
   }
+}
+
+/**
+ * An artifact event, or null for one that names no artifact. Read loosely
+ * past the id, so an event missing a field still reads the file again.
+ */
+function readArtifactEvent(raw: Record<string, unknown>): ArtifactCommentEvent | ArtifactRecordEvent | null {
+  const { type, artifact_id: artifactId } = raw;
+  if (typeof artifactId !== 'string' || !artifactId) return null;
+  const str = (value: unknown) => (typeof value === 'string' ? value : '');
+  const common = { v: 1 as const, artifact_id: artifactId, workspace_id: str(raw.workspace_id), path: str(raw.path) };
+  if (type === 'artifact_comment') {
+    return {
+      ...common,
+      type,
+      thread_id: str(raw.thread_id) || null,
+      comment_ids: Array.isArray(raw.comment_ids) ? raw.comment_ids.filter((id): id is string => typeof id === 'string') : [],
+    };
+  }
+  if (type === 'artifact') {
+    return { ...common, type, shared: raw.shared === true, latest_seq: typeof raw.latest_seq === 'number' ? raw.latest_seq : 0 };
+  }
+  return null;
 }
 
 /** Seed the store from every thread-list response (rows carry lifecycle

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
+import type { CommentFocus } from '../viewers/html/comments/useCommentUi';
 import type { PanelTarget } from './types';
 import type { FileTabsApi } from './useFileTabs';
 import type { PreviewsApi } from './usePreviews';
@@ -17,6 +18,8 @@ interface PanelTargetArgs {
   /** Called with the ask's `seq` for a kind consumed on arrival (`ONE_SHOT_KINDS`);
    *  a memory or memo target is cleared by its tab's body instead, once it has the entry. */
   onTargetHandled?: (seq?: number) => void;
+  /** A file ask that names a comment: the file's comment layer shows it once its pin is placed. */
+  onCommentFocus?: (focus: CommentFocus) => void;
 }
 
 /**
@@ -29,9 +32,12 @@ interface PanelTargetArgs {
  */
 export function usePanelTarget({
   target, tabs, previews, openFileRef, cancelPending, clearSearch, setTreeOpen, setScopeDir, onTargetHandled,
+  onCommentFocus,
 }: PanelTargetArgs): void {
   const lastDirAsk = useRef<string | null>(null);
-  useEffect(() => {
+  // Before paint, so a panel opened on an ask first paints on the tab it
+  // asked for, not on the listing it then leaves.
+  useLayoutEffect(() => {
     if (!target) return;
     switch (target.kind) {
       case 'file': {
@@ -48,7 +54,11 @@ export function usePanelTarget({
             if (!target.path) tabs.showListing();
           }
         }
-        if (target.path) void openFileRef(target.path, { location: target.location ?? null, pin: !!target.pin });
+        if (target.path) {
+          void openFileRef(target.path, { location: target.location ?? null, pin: !!target.pin });
+          // Keyed by the ask, so a second click on the same comment shows it again.
+          if (target.comment) onCommentFocus?.({ path: target.path, commentId: target.comment, key: target.seq ?? 0 });
+        }
         onTargetHandled?.(target.seq);
         return;
       }

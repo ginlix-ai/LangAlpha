@@ -86,6 +86,23 @@ export const BUSY_REPLY_KEYS: Readonly<Record<BusyCode, string>> = {
 export const isBusyCode = (code: unknown): code is BusyCode =>
   typeof code === 'string' && Object.hasOwn(BUSY_REFUSAL_KEYS, code);
 
+type Words = string | StructuredError;
+
+/** A refusal in the view's words where it has its own (a busy chat), else the server's. */
+function refusalWords(refusal: { code: unknown; message: string }, busyMessage: (code: BusyCode) => Words): Words {
+  return isBusyCode(refusal.code) ? busyMessage(refusal.code) : refusal.message;
+}
+
+/**
+ * The words for `source` when it refuses a send that cuts nothing, so none of
+ * a fork's own cases (stale, resend, not retryable) apply; null when it is
+ * not an admission refusal.
+ */
+export function admissionRefusalWords(source: unknown, busyMessage: (code: BusyCode) => Words): Words | null {
+  const refusal = readForkRefusal(source);
+  return refusal === null ? null : refusalWords(refusal, busyMessage);
+}
+
 /** Whether `source` refuses its request because the chat changed after this
  *  view read it. */
 export function isStaleForkRefusal(source: unknown): boolean {
@@ -185,10 +202,8 @@ export function createForkRefusalRecovery(deps: {
         // sits right under it; a reply to an answered pause has none to give.
         if (cut.asked) deps.giveBack(cut.asked);
         refuse(deps.resendMessage(Boolean(cut.asked)), cut);
-      } else if (isBusyCode(refusal.code)) {
-        refuse(deps.busyMessage(refusal.code), cut, { busy: true });
       } else {
-        refuse(refusal.message, cut);
+        refuse(refusalWords(refusal, deps.busyMessage), cut, { busy: isBusyCode(refusal.code) });
       }
       return true;
     },

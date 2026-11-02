@@ -182,6 +182,11 @@ def test_a_claude_code_turn_opens_with_the_skills_turn_and_baseline_hooks():
     assert not {"Task", "RunWorkflow"} & {t.name for t in graph.turn.spec.tools}
 
 
+def test_a_claude_code_turn_can_answer_comments_on_a_file():
+    """A comment send tells the agent to answer with this tool."""
+    assert "reply_to_comment" in {t.name for t in _built().turn.spec.tools}
+
+
 def test_a_claude_code_turn_is_offered_no_tool_that_places_an_order():
     """An order is put to the user before it runs, which a Claude Code turn cannot do yet."""
     from langchain_core.tools import StructuredTool

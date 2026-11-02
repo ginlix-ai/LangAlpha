@@ -19,14 +19,7 @@ from fastapi import HTTPException
 from ptc_agent.agent.backends.db_json_route import DbJsonRoute
 from ptc_agent.agent.filesystem_routes import USER_DATA_ROUTES, route_for
 from ptc_agent.core.paths import (
-    AGENT_SYSTEM_DIRS,
     USER_DATA_DIRS,
-    ALWAYS_HIDDEN_BASENAMES as _SHARED_BASENAMES,
-    ALWAYS_HIDDEN_DIR_NAMES,
-    ALWAYS_HIDDEN_PATH_SEGMENTS,
-    ALWAYS_HIDDEN_SUFFIXES,
-    HIDDEN_DIR_NAMES,
-    TRANSIENT_ROOT_PREFIX,
     SandboxLayout,
     logged_path,
 )
@@ -45,7 +38,8 @@ from src.server.services.persistence.resolve import (
     too_large_to_serve,
 )
 from src.server.services.workspace_file_containment import normalize_requested_path
-from src.server.services.workspace_files import layout_for, owner_layout
+from src.server.services.served_paths import SYSTEM_DIR_PREFIXES
+from src.server.services.workspace_files import layout_for
 from src.server.utils.error_sanitization import single_line
 
 logger = logging.getLogger(__name__)
@@ -181,15 +175,6 @@ async def _present_virtual_file(client_path: str, user_id: str) -> bool:
         logger.exception("virtual file listing failed", extra={"path": logged_path(client_path)})
         return True
 
-
-# Derived from shared constants (source of truth: ptc_agent.core.paths)
-_SYSTEM_DIR_PREFIXES = tuple(f"{d}/" for d in sorted(AGENT_SYSTEM_DIRS))
-_HIDDEN_DIR_PREFIXES = tuple(f"{d}/" for d in sorted(HIDDEN_DIR_NAMES))
-_ALWAYS_HIDDEN_SEGMENTS = ALWAYS_HIDDEN_PATH_SEGMENTS
-_ALWAYS_HIDDEN_BASENAMES = _SHARED_BASENAMES + (".file_sync_marker",)
-_ALWAYS_HIDDEN_SUFFIXES = ALWAYS_HIDDEN_SUFFIXES
-
-_ALWAYS_HIDDEN_DIR_SEGMENTS = tuple(f"/{d}/" for d in ALWAYS_HIDDEN_DIR_NAMES)
 
 # Generous but bounded defaults.
 DEFAULT_READ_LIMIT_LINES = 20_000
@@ -351,98 +336,17 @@ async def folder_unmoved(workspace_id: str, dir_name: str | None) -> bool:
     return current == dir_name and (not current or is_top_level(current))
 
 
-def _to_client_path(
-    sandbox: Any, absolute_path: str, work_dir: str | None = None
-) -> str:
-    """Convert an absolute sandbox path into a virtual client path.
-
-    The CLI and web UX prefer paths like "work/task/foo.txt" (no leading slash),
-    while still preserving true absolute /tmp paths. *work_dir* is the workspace
-    folder the route serves: a client path is relative to that folder, not to
-    the computer root the sandbox handle folds against.
-    """
-
-    if work_dir and absolute_path.startswith(f"{work_dir.rstrip('/')}/"):
-        return absolute_path[len(work_dir.rstrip("/")) + 1:]
-
-    virtual_path = sandbox.virtualize_path(absolute_path)
-
-    # Keep /tmp paths absolute.
-    if virtual_path.startswith("/tmp/"):
-        return virtual_path
-
-    # Strip the leading slash for working-directory paths.
-    if virtual_path.startswith("/"):
-        return virtual_path[1:]
-
-    return virtual_path
-
-
 def _is_system_path(client_path: str) -> bool:
     # Virtual DB-backed files live under .agents/ but are first-class
     # user data, so never hide them from the file panel.
     if _virtual_file(client_path) or _is_virtual_dir(client_path):
         return False
-    return any(client_path.startswith(prefix) for prefix in _SYSTEM_DIR_PREFIXES)
-
-
-def _is_hidden_path(client_path: str) -> bool:
-    if client_path == SandboxLayout.INTERNAL_DIR:
-        return True
-    return any(client_path.startswith(prefix) for prefix in _HIDDEN_DIR_PREFIXES)
-
-
-def _is_always_hidden_path(client_path: str) -> bool:
-    normalized = f"/{client_path.lstrip('/')}"
-
-    # A transfer's partial or staged file, whose bytes are not yet the file
-    # they will become; one a user edits or removes fails the transfer.
-    if normalized.rfind("/") == 0 and normalized[1:].startswith(TRANSIENT_ROOT_PREFIX):
-        return True
-
-    if normalized.endswith(_ALWAYS_HIDDEN_BASENAMES):
-        return True
-
-    if normalized.endswith(_ALWAYS_HIDDEN_SUFFIXES):
-        return True
-
-    if any(seg in normalized for seg in _ALWAYS_HIDDEN_SEGMENTS):
-        return True
-
-    if any(seg in normalized for seg in _ALWAYS_HIDDEN_DIR_SEGMENTS):
-        return True
-
-    return False
-
-
-def _is_serve_blocked_path(client_path: str) -> bool:
-    """True if a path must never be served by the file-serving core.
-
-    Mirrors the hidden/system/always-hidden gate the read/download/list
-    endpoints apply, so the grant-gated wsfiles route and the public share
-    serve route never expose agent-infrastructure dirs (``.agents``, ``tools``,
-    ``mcp_servers``, ``_internal``, ...) that those endpoints deliberately hide.
-
-    Stricter than the panel: it skips ``_is_system_path``'s carve-out for the
-    user's profile, automation and subagent files. Their owner reads them through the
-    file routes, never this core, and the file mount links them into every
-    workspace folder, so only containment would stand between a share link and
-    the user's holdings.
-    """
-    return (
-        _is_always_hidden_path(client_path)
-        or _is_hidden_path(client_path)
-        or client_path.startswith(_SYSTEM_DIR_PREFIXES)
-    )
+    return any(client_path.startswith(prefix) for prefix in SYSTEM_DIR_PREFIXES)
 
 
 def work_dir_for(workspace: dict[str, Any], *, manager: Any = None) -> str:
     """The serve root as a path, for the routes that only need the string."""
     return layout_for(workspace, manager=manager).workspace
-
-
-def owner_work_dir(workspace: dict[str, Any], *, manager: Any = None) -> str:
-    return owner_layout(workspace, manager=manager).workspace
 
 
 def previous_roots_of(workspace: Mapping[str, Any] | None) -> tuple[str, ...]:
@@ -475,18 +379,7 @@ def _requested_system_ok(
         return False
     return any(
         normalized == prefix.rstrip("/") or normalized.startswith(prefix)
-        for prefix in _SYSTEM_DIR_PREFIXES
-    )
-
-
-def _is_text_content_type(content_type: str) -> bool:
-    """True for content types whose bytes should be redacted / theme-injected."""
-    ct = content_type.split(";", 1)[0].strip().lower()
-    return (
-        ct.startswith("text/")
-        or ct in ("application/json", "application/xml", "image/svg+xml")
-        or ct.endswith("+json")
-        or ct.endswith("+xml")
+        for prefix in SYSTEM_DIR_PREFIXES
     )
 
 
@@ -540,10 +433,3 @@ def may_be_utf8(head: bytes, *, whole: bool) -> bool:
     return True
 
 
-def _is_utf8(data: bytes) -> bool:
-    """True when bytes decode cleanly as UTF-8 (i.e. text, whatever the MIME)."""
-    try:
-        data.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True

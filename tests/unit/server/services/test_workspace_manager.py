@@ -5072,7 +5072,7 @@ class TestStatusRoutesToDbFallback:
     def test_the_warm_handle_is_fenced_on_the_rows_computer_root(self):
         """The file and share routes fence on the computer columns the
         workspace row already joins, with no read of their own."""
-        from src.server.app.workspace_files.serve import warm_sandbox
+        from src.server.services.warm_files import warm_sandbox
 
         wm = WorkspaceManager.get_instance(config=_make_config())
         session = self._ssh_session()
@@ -5100,7 +5100,7 @@ class TestStatusRoutesToDbFallback:
         "File not found", and a row whose sandbox auto-stopped serves nothing
         while reading 'running'.
         """
-        from src.server.app.workspace_files.serve import warm_sandbox
+        from src.server.services.warm_files import warm_sandbox
 
         wm = WorkspaceManager.get_instance(config=_make_config())
         session = _make_mock_session()  # on 'sandbox-abc'

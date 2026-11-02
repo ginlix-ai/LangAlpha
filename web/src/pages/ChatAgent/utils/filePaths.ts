@@ -66,6 +66,12 @@ export function fileExtension(path: string): string {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
+/** An HTML document: what is framed, takes comments and is published as a page. */
+export function isHtmlFile(path: string): boolean {
+  const ext = fileExtension(path);
+  return ext === 'html' || ext === 'htm';
+}
+
 /** What kind of deliverable this is, or null when it is working material. */
 export function fileKind(path: string): FileKind | null {
   return KIND_BY_EXT[fileExtension(path)] ?? null;

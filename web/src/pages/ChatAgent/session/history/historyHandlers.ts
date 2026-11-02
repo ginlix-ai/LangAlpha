@@ -17,6 +17,7 @@ import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, 
 import type { PairState } from '../types';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { wakeTurnOpener } from '../wakeupEvents';
+import { openerMatchText, readArtifactCommentsShown } from '../../components/artifactComments/artifactCommentSend';
 
 
 /** Shape of an SSE history event. */
@@ -231,8 +232,14 @@ export function handleHistoryUserMessage({
       return entry?.type === 'skills' && entry.name === 'onboarding';
     });
 
+  // A send of file comments stores the block the agent read as its query,
+  // and the note and comments the chat shows beside it. Its row shows the
+  // note, and the tracker knows a view's own copy by its comments and note.
+  const artifactComments = readArtifactCommentsShown(event.metadata?.artifact_comments);
+  const matchText = openerMatchText(messageContent, artifactComments);
+
   // Check if this message was recently sent (to avoid duplicates)
-  const isDuplicate = messageContent && recentlySentTracker.isRecentlySent(messageContent);
+  const isDuplicate = messageContent && recentlySentTracker.isRecentlySent(matchText);
 
   // A turn a stream is still writing keeps its live bubbles, and the replay
   // maps onto them. Any other copy on screen gives way to the replay's below.
@@ -296,6 +303,11 @@ export function handleHistoryUserMessage({
         userMessage.chartSelections = event.metadata!.chart_selections;
       }
 
+      if (artifactComments) {
+        userMessage.content = artifactComments.note;
+        userMessage.artifactComments = artifactComments;
+      }
+
       // A live attach that drew this turn's row before a reload keeps it
       // through the reload, which keeps live rows; this row, which knows its
       // turn, replaces it. A report's row is found by its run, and a wake's
@@ -310,7 +322,7 @@ export function handleHistoryUserMessage({
         const kept = prev.filter((m) => m.isHistory || (m.id !== rowId && !(runId && m.runId === runId)));
         const { rest, removedAbove } = streaming
           ? { rest: kept, removedAbove: 0 }
-          : dropLiveCopy(kept, messageContent, pairIndex, newMessagesStartIndexRef.current);
+          : dropLiveCopy(kept, String(userMessage.content ?? '').trim(), pairIndex, newMessagesStartIndexRef.current);
         const insertIndex = newMessagesStartIndexRef.current - removedAbove;
         const newMessages = [
           ...rest.slice(0, insertIndex),

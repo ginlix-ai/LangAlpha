@@ -119,7 +119,7 @@ export function usePanelLinkOpen({ workspaceId, folders, override, setOverride, 
       // file open neither panel effect ran, so the link read as dead.
       target = { kind: 'file', dir: r.targetDirectory };
     } else {
-      target = { kind: 'file', path: r.targetFile, location: location ?? null, pin: !!opts?.pin };
+      target = { kind: 'file', path: r.targetFile, location: location ?? null, pin: !!opts?.pin, ...(opts?.comment && { comment: opts.comment }) };
     }
     // Another workspace's strip replaces this one's, drafts included. Only a
     // change in the workspace the panel shows does that; clearing an unset

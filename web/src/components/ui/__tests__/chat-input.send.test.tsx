@@ -49,7 +49,7 @@ describe('ChatInput: send() on the handle', () => {
     });
     expect(sent).toBe(true);
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0][0]).toBe('what moved the market today');
+    expect(onSend.mock.calls[0][0].message).toBe('what moved the market today');
     expect(box.value).toBe('');
   });
 

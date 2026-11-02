@@ -39,11 +39,11 @@ export function usePanelFiles({ isHome, workspaceId, workspaceName = null, inclu
     /** FilePanel's access props, spread onto every mount. */
     panelAccess: showsSibling
       ? {
-          readOnly: true, singleFileMode: true, canShare: false, isHome: false,
+          readOnly: true, singleFileMode: true, isHome: false,
           onReturnHome: () => setOverride(null), returnLabel: isHome ? null : workspaceName,
         }
       : {
-          readOnly: false, singleFileMode: false, canShare: true, isHome,
+          readOnly: false, singleFileMode: false, isHome,
           onReturnHome: null, returnLabel: null,
         },
   };

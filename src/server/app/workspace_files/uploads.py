@@ -32,6 +32,7 @@ from src.server.services.workspace_files import (
     contained_target,
     not_running_for_upload,
     owned_workspace_on_computer,
+    owner_work_dir,
     previous_dir_names_of,
 )
 from src.server.services.workspace_upload_pull import (
@@ -55,7 +56,7 @@ from src.utils.storage import (
     sign_upload_part,
 )
 
-from ._shared import MAX_UPLOAD_BYTES, _virtual_file, owner_work_dir
+from ._shared import MAX_UPLOAD_BYTES, _virtual_file
 
 logger = logging.getLogger(__name__)
 

@@ -108,6 +108,7 @@ vi.mock('../../hooks/useChatMessages', async (importOriginal) => ({
     messageError: null,
     returnedSteering: null,
     clearReturnedSteering: vi.fn(),
+    watchCommentSends: () => () => {},
     handleSendMessage: vi.fn(),
     stopWorkflow: vi.fn(),
     stopCompaction: vi.fn(),

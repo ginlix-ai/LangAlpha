@@ -8,7 +8,7 @@
  */
 import React, { useContext, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Download, PanelRight } from 'lucide-react';
+import { ChevronDown, Download, Link2, PanelRight } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -86,8 +86,12 @@ export function TurnFileCards({ files, entering = false, onOpenFile, onDownloadF
   // outside-click and Escape collapse: otherwise choosing Download would fold
   // the deck shut under the pointer, and Escape would close both at once.
   const [menuOpen, setMenuOpen] = useState(false);
+  // The host's Publish dialog suspends the collapse as an open menu does.
+  // Absent where nobody can publish (a shared chat).
+  const { onPublishFile } = useMessageActions();
+  const [publishOpen, setPublishOpen] = useState(false);
   const n = files.length;
-  const rootRef = useDeckCollapse({ open: fanned, onCollapse: () => setFanned(false), suspend: menuOpen });
+  const rootRef = useDeckCollapse({ open: fanned, onCollapse: () => setFanned(false), suspend: menuOpen || publishOpen });
 
   // The entrance rides the container, not the cards: a card's own transform
   // is what the fan animates, and an animation on that property outranks the
@@ -204,6 +208,17 @@ export function TurnFileCards({ files, entering = false, onOpenFile, onDownloadF
                         </DropdownMenuItem>
                         {onDownloadFile && (
                           <CardDownloadItem file={file} onDownloadFile={onDownloadFile} />
+                        )}
+                        {onPublishFile && (
+                          <DropdownMenuItem
+                            onSelect={() => {
+                              setPublishOpen(true);
+                              void onPublishFile(file.path, file.workspaceId).finally(() => setPublishOpen(false));
+                            }}
+                          >
+                            <Link2 className="h-3.5 w-3.5" />
+                            {t('artifact.publishEllipsis')}
+                          </DropdownMenuItem>
                         )}
                       </DropdownMenuContent>
                     </DropdownMenu>

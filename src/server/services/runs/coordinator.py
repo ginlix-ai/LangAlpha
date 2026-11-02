@@ -744,9 +744,11 @@ class RunCoordinator:
         transcript export and nudges the drainer, so they never drift apart
         per call site. The export runs at every terminal status, since each
         stamps the checkpoint and another thread may read this one's
-        transcript."""
+        transcript, and so does the check on artifacts kept updated, since a
+        failed or cancelled turn may have changed their files too."""
         self._schedule_replay_refresh(thread_id)
         self._schedule_transcript_export(thread_id, run)
+        self._schedule_keep_updated(run)
         self._schedule_archive_prune(thread_id)
         self._nudge_hook_drainer()
 
@@ -784,6 +786,28 @@ class RunCoordinator:
         except Exception:
             logger.warning(
                 f"[RunCoordinator] archive prune scheduling failed for {thread_id}",
+                exc_info=True,
+            )
+
+    def _schedule_keep_updated(self, run: Optional[Dict[str, Any]]) -> None:
+        # From the row's START stamp, as the export's workspace is.
+        meta = (run or {}).get("metadata") or {}
+        workspace_id, user_id = meta.get("workspace_id"), meta.get("user_id")
+        if not workspace_id or not user_id:
+            return
+        try:
+            from src.server.services.artifacts.snapshot import keep_updated_after_turn
+
+            spawn_protected(
+                keep_updated_after_turn(
+                    workspace_id=str(workspace_id), user_id=str(user_id)
+                ),
+                f"artifacts-keep-updated-{workspace_id}",
+            )
+        except Exception:
+            logger.warning(
+                f"[RunCoordinator] keep-updated scheduling failed for "
+                f"workspace {workspace_id}",
                 exc_info=True,
             )
 

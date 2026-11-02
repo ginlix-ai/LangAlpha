@@ -18,6 +18,7 @@ import type { FeedbackResult, SubagentInfo } from './types';
 import type { PTCAgentProposalState, ToolApprovalPosition } from '@/types/chat';
 import type { OpenFileHandler } from '../../utils/fileLocation';
 import type { ChartTabSpec } from '../filePanel/types';
+import type { ArtifactCommentRef } from '../artifactComments/artifactCommentReply';
 import type { EditDraftStore } from '../../hooks/utils/editDrafts';
 
 export interface MessageActions {
@@ -39,6 +40,9 @@ export interface MessageActions {
    *  may grant reading without granting download: a copy-link share does. Its
    *  absence is what hides the deliverable card's Download item. */
   onDownloadFile?: (path: string, workspaceId?: string) => void;
+  /** Opens the host's Publish dialog on a workspace file, resolving once it
+   *  closes; absent where nobody can publish (a shared chat). */
+  onPublishFile?: (path: string, workspaceId?: string) => Promise<void>;
   /** The key a card's save is tracked under. The host builds it because only
    *  the host knows which workspace a card without its own names, and the
    *  click and the card's busy state must agree on it. */
@@ -46,6 +50,9 @@ export interface MessageActions {
   onOpenSources?: (messageId: string) => void;
   /** Opens a live chart for a symbol beside the chat; absent where there is no panel to land in. */
   onOpenChart?: (spec: ChartTabSpec) => void;
+  /** Opens a file beside the chat on one of its comments; absent where there
+   *  is no panel to land in (a shared chat). */
+  onOpenArtifactComment?: (comment: ArtifactCommentRef) => void;
   /** Opens a tool call's result by id; the host reads the live record. */
   onToolCallDetailClick?: (toolCallId: string) => void;
   onAnswerQuestion?: (answer: string, questionId: string, interruptId: string) => void;

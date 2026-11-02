@@ -1,7 +1,7 @@
 /**
- * A file behind its `/a/` link renders under the serve prefix the metadata
- * named. For HTML that is the iframe's src; for everything else it is where
- * the panel's own reader fetches the body and a Markdown document's images,
+ * A file behind its owner's `/a/` link, not HTML, renders under the serve
+ * prefix the metadata named: it is where the panel's own reader fetches the
+ * body and a Markdown document's images,
  * while a link to a sibling workspace file is plain text, since a visitor
  * can open only the files listed.
  */
@@ -11,23 +11,23 @@ import { screen, waitFor } from '@testing-library/react';
 
 import { renderWithProviders } from '@/test/utils';
 import { buildServeUrl } from '../../ChatAgent/components/viewers/html/wsfilesUrl';
-import { SERVED_HTML_SANDBOX } from '../../ChatAgent/components/viewers/html/sandbox';
 
 vi.mock('../../../contexts/ThemeContext', () => ({
   useTheme: () => ({ theme: 'light', setTheme: () => {} }),
 }));
-vi.mock('../../ChatAgent/components/viewers/html/useHtmlSandbox', () => ({
-  useHtmlSandbox: () => ({ height: null, pushTheme: () => {}, scrollToAnchor: () => {} }),
-}));
 
-import SharedFileView from '../SharedFileView';
+import SharedFileView, { FileBody } from '../SharedFileView';
 import type { SharedFileMetadata } from '../api';
 
 const CODE = 'k7f2m9q1x4z8';
 const FRAME_BASE = '/api/v1/wsfiles/s/2f9c1a7e/';
 
 function metadata(path: string): SharedFileMetadata {
-  return { kind: 'file', name: path.split('/').pop()!, path, access: 'public', frame_base: FRAME_BASE };
+  return {
+    kind: 'file', name: path.split('/').pop()!, path, access: 'owner',
+    artifact_id: '5b0c3d1e-7a2f-4c8b-9e6d-1a2b3c4d5e6f', workspace_id: 'ws-1', shared: false, latest_seq: 0,
+    frame_base: FRAME_BASE, expires_in: 12 * 60 * 60,
+  };
 }
 
 /** The served origin: each path under the prefix answers with its body, anything else 404s. */
@@ -51,25 +51,6 @@ describe('SharedFileView', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders HTML in an iframe served under frame_base with the theme injected', () => {
-    const fetchMock = serve({});
-    const { container } = renderWithProviders(<SharedFileView code={CODE} metadata={metadata('results/Q3 report.html')} />);
-
-    const frame = container.querySelector('iframe')!;
-    expect(frame).toHaveAttribute('title', 'Q3 report.html');
-    const src = frame.getAttribute('src')!;
-    expect(src).toBe(buildServeUrl(FRAME_BASE, 'results/Q3 report.html', { injectTheme: true }));
-    // The shape that matters: the prefix is the credential, the path rides
-    // under it with its segments encoded, and the theme query is the only one.
-    expect(src.endsWith(`${FRAME_BASE}results/Q3%20report.html?inject=theme`)).toBe(true);
-    expect(src).not.toContain('workspace');
-    expect(frame).toHaveAttribute('sandbox', SERVED_HTML_SANDBOX);
-    // No read for HTML: the frame is the reader.
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Q3 report.html');
-    expect(screen.getByRole('button', { name: 'Save as PDF' })).toBeInTheDocument();
-  });
-
   it('reads Markdown and its images under frame_base, encoded per buildServeUrl', async () => {
     const fetchMock = serve({
       'notes/README.md': '# Notes\n\n![chart](notes/img/c 1.png)\n',
@@ -85,6 +66,21 @@ describe('SharedFileView', () => {
     expect(urls).toContain(buildServeUrl(FRAME_BASE, 'notes/README.md'));
     expect(urls.some((u) => u.endsWith(`${FRAME_BASE}notes/img/c%201.png`))).toBe(true);
     expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+  });
+
+  it('tells the page when the file answers 404, an Update having ended its version, and only then', async () => {
+    serve({ 'kept.md': '# Kept\n' });
+    const onGone = vi.fn();
+    const body = (path: string) => (
+      <FileBody scope="share:c:v1" path={path} frameBase={FRAME_BASE} onDownload={() => {}} downloading={false} onGone={onGone} />
+    );
+
+    const view = renderWithProviders(body('kept.md'));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Kept' })).toBeInTheDocument();
+    expect(onGone).not.toHaveBeenCalled();
+
+    view.rerender(body('ended.md'));
+    await waitFor(() => expect(onGone).toHaveBeenCalledTimes(1));
   });
 
   it('renders a Markdown link to another workspace file as plain text', async () => {

@@ -1,9 +1,9 @@
 """What a share token authorizes: a thread, a workspace folder, and a subtree.
 
 The file routes and the replay routes both start here, and neither of them
-decides any of it for itself. A file share link resolves here too, for the
-one route it may use: it opens a workspace folder and a fixed list of files
-rather than a subtree.
+decides any of it for itself. A file or app link resolves here too
+(``resolve_link``): a shared file opens its published versions to anyone,
+never the workspace's folder.
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from ptc_agent.core.paths import is_agent_notes_path
-from src.server.app.workspace_files._shared import _is_serve_blocked_path, work_dir_for
+from src.server.app.workspace_files._shared import work_dir_for
 from src.server.database.conversation import get_thread_by_share_token
 from src.server.database.share_codes import is_share_code
-from src.server.database.share_links import KIND_FILE, ShareLink, get_link
+from src.server.database.share_links import ShareLink, get_link
 from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.services.served_paths import ShareScope, shared_path_visible
 from src.server.services.workspace_file_containment import contained_relative_path
 from src.server.services.workspace_files import previous_dir_names_of
 from src.server.services.workspace_layout import WorkspaceLayoutUnavailable
@@ -60,63 +60,18 @@ def require_permission(perms: dict[str, Any], key: str) -> None:
 
 
 @dataclass(frozen=True)
-class ShareScope:
-    """What a share token resolves to: a workspace and the subtree it opens.
-
-    The pair is the unit, not the workspace alone. A token issued for one report
-    serves that path and its subtree; nothing else in the workspace is reachable
-    through it, however the URL is spelled.
-    """
-
-    workspace_id: str
-    root_path: str
-
-    def contains(self, relative_path: str) -> bool:
-        if not self.root_path:
-            return True
-        return relative_path == self.root_path or relative_path.startswith(
-            f"{self.root_path}/"
-        )
-
-
-def shared_path_visible(scope: ShareScope, client_path: str) -> bool:
-    """Whether a canonical workspace path may leave through this share token.
-
-    Run on the path a sandbox read resolved to, not on the one that was asked
-    for: a symlink is how an in-scope request turns into an out-of-scope file.
-
-    The workspace's notes file stays out too, whatever the scope: it is the
-    agent's own runtime context, and a shared page cannot tell it from a
-    deliverable because the share carries no folder name to recognise it by.
-    """
-    return (
-        scope.contains(client_path)
-        and not _is_serve_blocked_path(client_path)
-        and not is_agent_notes_path(client_path)
-    )
-
-
-@dataclass(frozen=True)
 class SharedFileTarget:
-    """One resolution of a token for the file routes, read once per request.
-
-    ``files`` is set for a file share link: the list the owner confirmed, and
-    the only paths that leave. It is judged on the canonical path a read
-    resolved to, like the scope, so a symlink is not a way around it.
-    """
+    """One resolution of a token for the file routes, read once per request."""
 
     workspace: dict[str, Any]
     scope: ShareScope
     work_dir: str
-    files: frozenset[str] | None = None
 
     @property
     def workspace_id(self) -> str:
         return self.scope.workspace_id
 
     def visible(self, client_path: str) -> bool:
-        if self.files is not None and client_path not in self.files:
-            return False
         return shared_path_visible(self.scope, client_path)
 
 
@@ -203,8 +158,27 @@ class LinkAccess:
 
     link: ShareLink
     workspace: dict[str, Any]
-    work_dir: str
     owner: bool
+
+
+async def _link_workspace(workspace_id: str) -> dict[str, Any]:
+    """The workspace row a link is judged by, or ``LINK_NOT_FOUND``.
+
+    Whose it is and that it is not deleted, nothing about its folder: a
+    visitor sees a published version, which opens however its computer
+    stands, and the owner's own routes judge the folder for themselves.
+    """
+    try:
+        workspace = await db_get_workspace(workspace_id)
+    except Exception as e:
+        logger.warning(
+            f"Workspace read failed for shared link in {workspace_id}: "
+            f"{single_line(str(e))}"
+        )
+        workspace = None
+    if not workspace:
+        raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
+    return workspace
 
 
 async def resolve_link(token: str, *, user_id: str | None = None) -> LinkAccess | None:
@@ -223,32 +197,8 @@ async def resolve_link(token: str, *, user_id: str | None = None) -> LinkAccess 
     if user_id is None and not link.shared:
         # No viewer whose ownership could open it, so no workspace read.
         raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
-    try:
-        workspace, work_dir = await _serving_workspace(link.workspace_id)
-    except HTTPException:
-        raise HTTPException(status_code=404, detail=LINK_NOT_FOUND) from None
+    workspace = await _link_workspace(link.workspace_id)
     owner = user_id is not None and workspace.get("user_id") == user_id
     if not owner and not link.shared:
         raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
-    return LinkAccess(link, workspace, work_dir, owner)
-
-
-async def resolve_serve_target(code: str) -> SharedFileTarget:
-    """What the serve route may answer for a token of either kind.
-
-    Always resolved as a visitor, so only a shared file link opens anything
-    here, and only for the files its owner confirmed. A token that is not a
-    link falls through to the thread rules, files permission and all.
-    """
-    access = await resolve_link(code)
-    if access is None:
-        return await resolve_shared_files(code, require_files=True)
-    link = access.link
-    if link.kind != KIND_FILE:
-        raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
-    return SharedFileTarget(
-        access.workspace,
-        ShareScope(link.workspace_id, ""),
-        access.work_dir,
-        files=frozenset(link.files or ()),
-    )
+    return LinkAccess(link, workspace, owner)

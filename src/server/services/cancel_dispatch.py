@@ -144,6 +144,11 @@ async def cancel_workflow(
             held = intent.get("held_steers") or 0
             if by_user and intent_state == "requested":
                 returned = intent.get("returned_steers") or []
+                from src.server.services.artifacts.comments import (
+                    publish_returned_comments,
+                )
+
+                await publish_returned_comments(thread_id, returned)
             elif by_user and intent_state in ("already_requested", "already_terminal"):
                 # The stamp that returned them may be an earlier call's whose
                 # answer was lost.

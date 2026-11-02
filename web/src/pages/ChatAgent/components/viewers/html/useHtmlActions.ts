@@ -20,7 +20,7 @@ interface FileModeOptions {
   /** Server-side download of the original bytes. */
   triggerDownload?: () => Promise<void>;
   /**
-   * The byte-faithful served URL (no ?inject=theme) the PDF render is fetched
+   * The byte-faithful served URL (no ?inject) the PDF render is fetched
    * from. Absent until the owner's grant or the share's base is known, and the
    * export says so rather than guessing a URL.
    */

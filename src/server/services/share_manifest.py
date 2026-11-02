@@ -1,10 +1,10 @@
-"""The exact set of files a shared file exposes: the entry plus what it uses.
+"""The exact set of files a published version holds: the entry plus what it uses.
 
 A visitor gets the files on this list and nothing else, so the list is what
-the owner reviews before sharing. It is computed from the files as they are
-now, by reading them the way the owner's own file routes do, and the caller
-freezes it: a report that later gains an asset shows the owner the drift
-rather than widening the share on its own.
+the owner reviews before publishing. It is computed from the files as they
+are now, by reading them the way the owner's own file routes do, and a
+version freezes it: a report that later gains an asset shows the owner the
+drift rather than widening what visitors see on its own.
 
 Detection is static. Page references, stylesheet ``url()``s and Markdown
 links are exact; a path found as a string literal in a script is a guess,
@@ -21,17 +21,14 @@ import shlex
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from functools import partial
+from enum import Enum
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import unquote
 
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
-from src.server.app.share_access import ShareScope, shared_path_visible
-from src.server.app.workspace_files._shared import _to_client_path, owner_work_dir
-from src.server.app.workspace_files.serve import _db_fallback_bytes, warm_sandbox_bytes
-from src.server.models.workspace import served_from_mirror
 from src.server.services.persistence.file import FilePersistenceService
+from src.server.services.served_paths import may_be_artifact
 from src.server.services.workspace_file_containment import (
     contained_absolute_path,
     contained_relative_path,
@@ -39,9 +36,17 @@ from src.server.services.workspace_file_containment import (
     FileTooLargeToServe,
     is_within,
 )
+from src.server.services.warm_files import (
+    db_fallback_bytes,
+    warm_sandbox,
+    warm_sandbox_bytes,
+)
 from src.server.services.workspace_files import (
     acquire_sandbox_to_change,
+    held_workspace_row,
+    owner_work_dir,
     previous_dir_names_of,
+    to_client_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,10 +100,11 @@ _MD_REF_RE = re.compile(
 )
 _META_REFRESH_RE = re.compile(r"url\s*=\s*(['\"]?)([^'\"]+)\1", re.IGNORECASE)
 # A quoted string that could be a relative file: no scheme, no whitespace, no
-# template or glob punctuation, and an extension, which a query or fragment
-# ("chart.png?v=2") may follow.
+# template or glob punctuation, and an extension with a letter in it ("12.5" in
+# inlined data is a number), which a query or fragment ("chart.png?v=2") may
+# follow.
 _SCRIPT_PATH_RE = re.compile(
-    r"""['"`]([^'"`\s:{}$<>*?|]*[^'"`\s:{}$<>*?|/.]\.[A-Za-z0-9]{1,8})"""
+    r"""['"`]([^'"`\s:{}$<>*?|]*[^'"`\s:{}$<>*?|/.]\.(?=[0-9]*[A-Za-z])[A-Za-z0-9]{1,8})"""
     r"""(?:[?#][^'"`\s]*)?['"`]"""
 )
 
@@ -245,7 +251,7 @@ class _MirrorReader:
 
     async def read(self, path: str) -> bytes | None:
         # The mime is the serve route's concern; only the bytes are parsed here.
-        resolved = await _db_fallback_bytes(self._workspace, self._workspace_id, path, "")
+        resolved = await db_fallback_bytes(self._workspace, self._workspace_id, path, "")
         return resolved[0] if resolved else None
 
 
@@ -263,10 +269,9 @@ def _stat_command(paths: list[str]) -> str:
 class _SandboxReader:
     """Sizes and bytes from the live tree, judged on canonical paths."""
 
-    def __init__(self, sandbox: Any, work_dir: str, scope: ShareScope) -> None:
+    def __init__(self, sandbox: Any, work_dir: str) -> None:
         self._sandbox = sandbox
         self._work_dir = work_dir
-        self._visible = partial(shared_path_visible, scope)
 
     async def stat(self, paths: list[str]) -> dict[str, tuple[str, int]]:
         found: dict[str, tuple[str, int]] = {}
@@ -315,14 +320,14 @@ class _SandboxReader:
                 size = int(line[1:] or "0")
             except ValueError:
                 size = 0
-            client = _to_client_path(self._sandbox, canonical, self._work_dir)
+            client = to_client_path(self._sandbox, canonical, self._work_dir)
             found[requested] = (client, size)
         return found
 
     async def read(self, path: str) -> bytes | None:
         try:
             resolved = await warm_sandbox_bytes(
-                self._sandbox, path, work_dir=self._work_dir, visible=self._visible
+                self._sandbox, path, work_dir=self._work_dir, visible=may_be_artifact
             )
         except FileTooLargeToServe:
             # Grew past an exec read since it was sized: listed, not parsed.
@@ -330,27 +335,80 @@ class _SandboxReader:
         return resolved[1] if resolved else None
 
 
-@asynccontextmanager
-async def _reader_for(
-    workspace: dict[str, Any], user_id: str, work_dir: str
-) -> AsyncIterator[tuple[Any, str, tuple[str, ...]]]:
-    """The same source the owner's own file routes read for this status.
+class ReadMode(Enum):
+    """Where a snapshot may read a workspace's files from."""
 
-    Yields the reader with the folder and former folders to fold references
-    against. A live walk holds the folder until the list is built: a rename
-    settling mid-walk would drop every file read after the move.
+    #: The owner's own request: a running computer is acquired as the
+    #: owner's file routes acquire it, else the stored copy.
+    OWNER = "owner"
+    #: A session this worker already holds, as the share and wsfiles routes
+    #: read, else the stored copy. Nothing a visitor asks starts a computer.
+    WARM_OR_STORED = "warm_or_stored"
+    #: A session this worker already holds, or nothing: a stored copy can lag
+    #: the computer, and the end of a turn must not cut a version from it.
+    WARM_ONLY = "warm_only"
+
+
+class NoLiveSession(LookupError):
+    """``ReadMode.WARM_ONLY`` found no session this worker holds."""
+
+
+class FileSource(Protocol):
+    """``stat`` gives each found path its canonical path and size; ``read`` a
+    path's bytes, or None."""
+
+    async def stat(self, paths: list[str]) -> dict[str, tuple[str, int]]: ...
+
+    async def read(self, path: str) -> bytes | None: ...
+
+
+@dataclass(frozen=True)
+class Reader:
+    """Where a snapshot reads files, and the folders references fold against."""
+
+    files: FileSource
+    work_dir: str
+    previous_dirs: tuple[str, ...]
+
+
+@asynccontextmanager
+async def snapshot_reader(
+    workspace: dict[str, Any], user_id: str, mode: ReadMode
+) -> AsyncIterator[Reader]:
+    """A reader for copying files into a version, held until the caller is done.
+
+    Only a running workspace is read live, and a live read holds the folder
+    until the caller leaves: a rename settling mid-walk would drop every file
+    read after the move.
     """
-    if served_from_mirror(workspace.get("status")):
-        yield _MirrorReader(workspace), work_dir, previous_dir_names_of(workspace)
-        return
     workspace_id = str(workspace["workspace_id"])
-    async with acquire_sandbox_to_change(workspace_id, user_id) as (sandbox, held):
-        work_dir = owner_work_dir(held)
-        yield (
-            _SandboxReader(sandbox, work_dir, ShareScope(workspace_id, "")),
-            work_dir,
-            previous_dir_names_of(held),
-        )
+    if workspace.get("status") == "running":
+        if mode is ReadMode.OWNER:
+            async with acquire_sandbox_to_change(workspace_id, user_id) as (
+                sandbox,
+                held,
+            ):
+                yield _live_reader(sandbox, held)
+            return
+        sandbox = warm_sandbox(workspace, workspace_id)
+        if sandbox is not None:
+            async with held_workspace_row(workspace_id) as held:
+                yield _live_reader(sandbox, held)
+            return
+    if mode is ReadMode.WARM_ONLY:
+        raise NoLiveSession(workspace_id)
+    yield Reader(
+        _MirrorReader(workspace),
+        owner_work_dir(workspace),
+        previous_dir_names_of(workspace),
+    )
+
+
+def _live_reader(sandbox: Any, held: dict[str, Any]) -> Reader:
+    work_dir = owner_work_dir(held)
+    return Reader(
+        _SandboxReader(sandbox, work_dir), work_dir, previous_dir_names_of(held)
+    )
 
 
 # --- the walk ------------------------------------------------------------
@@ -391,35 +449,42 @@ def _references(kind: str, content: bytes) -> list[tuple[str, str]]:
     return [(r, REASON_SCRIPT) for r in script_refs(text)]
 
 
-async def build_manifest(
-    workspace: dict[str, Any], entry_path: str, *, user_id: str, work_dir: str
-) -> list[ManifestEntry]:
-    """The files ``entry_path`` exposes, entry first, in discovery order.
+def _resolved_references(
+    kind: str,
+    content: bytes,
+    referrers: tuple[str, ...],
+    work_dir: str,
+    previous_dirs: Sequence[str],
+) -> dict[str, str]:
+    """The shareable files a file names, each with the reason it was first
+    named. Off the event loop: a file of up to ``_MAX_PARSE_BYTES`` is seconds
+    of parsing, and inlined data names tens of thousands of strings to resolve,
+    which would stall every stream this worker is serving."""
+    found: dict[str, str] = {}
+    for ref, reason in _references(kind, content):
+        for referrer in referrers:
+            resolved = resolve_ref(ref, referrer, work_dir, previous_dirs)
+            if resolved is not None and may_be_artifact(resolved):
+                found.setdefault(resolved, reason)
+    return found
+
+
+async def walk_manifest(reader: Reader, entry_path: str) -> list[ManifestEntry]:
+    """The files ``entry_path`` exposes, entry first, in discovery order, read
+    through a reader the caller holds so it can go on to read the same files
+    from the same source.
 
     ``entry_path`` is already folded to a workspace-relative path. Raises
     ``ManifestEntryMissing`` when it is not a shareable file here and
     ``ManifestTooLarge`` past either cap.
     """
-    workspace_id = str(workspace["workspace_id"])
-    scope = ShareScope(workspace_id, "")
-    if not shared_path_visible(scope, entry_path):
+    if not may_be_artifact(entry_path):
         raise ManifestEntryMissing(entry_path)
-
-    async with _reader_for(workspace, user_id, work_dir) as (
-        reader,
-        work_dir,
-        previous_dirs,
-    ):
-        return await _walk(reader, entry_path, scope, work_dir, previous_dirs)
+    return await _walk(reader, entry_path)
 
 
-async def _walk(
-    reader: Any,
-    entry_path: str,
-    scope: ShareScope,
-    work_dir: str,
-    previous_dirs: tuple[str, ...],
-) -> list[ManifestEntry]:
+async def _walk(reader: Reader, entry_path: str) -> list[ManifestEntry]:
+    files, work_dir, previous_dirs = reader.files, reader.work_dir, reader.previous_dirs
     entries: list[ManifestEntry] = []
     listed: set[str] = set()
     total = 0
@@ -433,21 +498,25 @@ async def _walk(
         # One stat per level; the first reference to a path decides its reason.
         batch: dict[str, tuple[str, int, str]] = {}
         for path, reason, depth, page in level:
-            if path not in listed and shared_path_visible(scope, path):
+            if path not in listed and may_be_artifact(path):
                 batch.setdefault(path, (reason, depth, page))
         candidates += len(batch)
         if candidates > _MAX_CANDIDATES:
             raise ManifestTooLarge("too_many_files", MAX_FILES)
-        found = await reader.stat(list(batch)) if batch else {}
+        found = await files.stat(list(batch)) if batch else {}
         level = []
 
         for path, (reason, depth, page) in batch.items():
             if path not in found:
                 continue
             client_path, size = found[path]
+            if not may_be_artifact(client_path):
+                # A link to a file that may not leave: the read would refuse
+                # it, so it is as missing as a file that is not there.
+                continue
             new = [
                 p for p in dict.fromkeys((path, client_path))
-                if p not in listed and shared_path_visible(scope, p)
+                if p not in listed and may_be_artifact(p)
             ]
             listed.update(new)
             entries.extend(ManifestEntry(p, size, reason) for p in new)
@@ -468,7 +537,7 @@ async def _walk(
                 continue
             if kind == "markdown" and depth > 0:
                 continue
-            content = await reader.read(path)
+            content = await files.read(path)
             if content is None:
                 continue
             next_depth = depth + 1 if kind in ("html", "markdown") else depth
@@ -485,31 +554,13 @@ async def _walk(
                 referrers = tuple(dict.fromkeys((path, page)))
             else:
                 referrers = (path,)
-            # Parsing a file of up to _MAX_PARSE_BYTES is seconds of CPU; on
-            # the loop it would stall every stream this worker is serving.
-            refs = await asyncio.to_thread(_references, kind, content)
-            for ref, ref_reason in refs:
-                for referrer in referrers:
-                    resolved = resolve_ref(ref, referrer, work_dir, previous_dirs)
-                    if resolved is not None and resolved not in listed:
-                        level.append((resolved, ref_reason, next_depth, page))
+            named = await asyncio.to_thread(
+                _resolved_references, kind, content, referrers, work_dir, previous_dirs
+            )
+            for resolved, ref_reason in named.items():
+                if resolved not in listed:
+                    level.append((resolved, ref_reason, next_depth, page))
 
     if not entries:
         raise ManifestEntryMissing(entry_path)
     return entries
-
-
-def manifest_drift(
-    current: list[ManifestEntry], stored: list[str] | None
-) -> dict[str, list[str]] | None:
-    """What changed since the owner confirmed ``stored``, or None when nothing did."""
-    if stored is None:
-        return None
-    now = {e.path for e in current}
-    before = set(stored)
-    if now == before:
-        return None
-    return {
-        "added": sorted(now - before),
-        "removed": sorted(before - now),
-    }

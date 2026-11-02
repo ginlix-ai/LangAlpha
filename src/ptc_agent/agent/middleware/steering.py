@@ -70,7 +70,8 @@ class SteeredReport:
     (``ReportInbox.render_group``): a wakeup's ``content`` is its one line,
     and the notices share one ``<wakeup>`` block. ``shown`` is the reader's
     view of a report, the one key its ``steering_delivered`` entry carries
-    (``report_source``, ``market_alert`` or ``wakeup``)."""
+    (``report_source``, ``market_alert`` or ``wakeup``), and of a steer
+    carrying file comments (``artifact_comments``), beside its text."""
 
     job_id: str
     content: str                    # what the model reads
@@ -516,6 +517,7 @@ def _steer_entry(steer: SteeredReport) -> dict[str, Any]:
         "content": steer.content,
         "user_id": steer.user_id,
         "timestamp": steer.timestamp,
+        **steer.shown,
     }
     if steer.platform:
         entry["platform"] = steer.platform

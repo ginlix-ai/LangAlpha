@@ -10,7 +10,12 @@ import { projectMessageContent } from '../contentProjection';
 import { INLINE_ARTIFACT_MAP } from '../../charts/InlineArtifactCards';
 import type { MessageRecord } from '../types';
 
-const RETAINED = ['preview_url', 'chart_annotation', 'order_receipt', 'message_delivery'];
+const RETAINED = ['preview_url', 'chart_annotation', 'order_receipt', 'message_delivery', 'artifact_comment'];
+
+/** What a type's card needs to draw at all: a reply names its comment. */
+const FIELDS: Record<string, Record<string, unknown>> = {
+  artifact_comment: { artifact_id: 'art-1', comment_id: 'cmt-1', number: 1 },
+};
 
 /** A settled turn whose only non-text block is one inline artifact card. */
 function roleOf(artifactType: string): string | undefined {
@@ -28,7 +33,7 @@ function roleOf(artifactType: string): string | undefined {
       t1: {
         toolName: 'some_tool',
         toolCall: { id: 't1', name: 'some_tool', args: {} },
-        toolCallResult: { artifact: { type: artifactType } },
+        toolCallResult: { artifact: { type: artifactType, ...FIELDS[artifactType] } },
         order: 0,
       },
     },

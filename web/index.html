@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <!-- Where this document's frames may load, frame-src and nothing else. A
+         frame's navigations, its own included, are checked against it, so a
+         tampered report cannot send itself to another site with what it read.
+         Ahead of every script so it holds before any frame exists, and fixed
+         at build: a meta policy can be added to but never widened, so a frame
+         on an origin known only at runtime goes through /frame-host.html
+         (viewers/HostedFrame.tsx). -->
+    <!-- frame-policy: replaced in dev and at build by scripts/vite-plugins/framePolicy.ts -->
     <!-- This build reserves the strip macOS window buttons float over, so a
          desktop shell may hide the titlebar and hand the top of the window to
          it. Read by the shell after load; see watchChrome in desktop/src/main.js.

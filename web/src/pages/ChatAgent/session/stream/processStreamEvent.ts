@@ -467,7 +467,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         return fold.messages;
       });
       if (clearedErrors.length > 0) rt.setMessageError((prev) => (clearedErrors.includes(prev) ? null : prev));
-      for (const key of settledKeys) rt.requestKeyRef.current.settle(key);
+      for (const key of settledKeys) rt.requestKeyRef.current.settle(key, 'accepted');
 
       // 3. Create new assistant message placeholder (steering continuation — not a new backend turn),
       //    above any steer still waiting. Random suffix: the turn's first bubble uses the same

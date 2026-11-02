@@ -35,6 +35,32 @@ function readPlace(c: HTMLElement, orFirst = false): { id: string; delta: number
   return { id: hit.dataset.messageId, delta: top - hit.getBoundingClientRect().top };
 }
 
+/** The row a width change holds a reader mid-thread on, found as the browser's
+ *  scroll anchoring finds its anchor: from the bubble at the view's top down
+ *  through each block its top edge cuts, to the first that starts in view or
+ *  the innermost the edge cuts. A bubble is too coarse: a long reply
+ *  rewrapping above the line the reader is on would push that line down. */
+function rowAtTop(c: HTMLElement): HTMLElement | null {
+  const top = c.getBoundingClientRect().top;
+  const bubbles = c.querySelectorAll<HTMLElement>('[data-message-id]');
+  let lo = 0;
+  for (let hi = bubbles.length; lo < hi; ) {
+    const mid = (lo + hi) >> 1;
+    if (bubbles[mid].getBoundingClientRect().bottom <= top) lo = mid + 1;
+    else hi = mid;
+  }
+  let el: Element | undefined = bubbles[lo];
+  while (el && el.getBoundingClientRect().top < top) {
+    const next: Element | undefined = Array.from(el.children).find((k) => {
+      const r = k.getBoundingClientRect();
+      return r.height > 0 && r.bottom > top;
+    });
+    if (!next) break;
+    el = next;
+  }
+  return el instanceof HTMLElement ? el : null;
+}
+
 /** Where the reader was, for a thread: on a bubble, or at the end. */
 interface ShownPlace {
   tid: string;
@@ -339,7 +365,16 @@ export function useChatScroll({
     const saved = takeTabPlace('main');
     if (saved != null) follow.restore(saved);
 
+    // Whether the view sat at the very end when it last moved or the
+    // transcript last resized. A width change is judged by this, not by where
+    // its own layout left the view: that layout has already rewrapped the
+    // whole transcript, and the browser's scroll anchoring has moved the view
+    // with it.
+    const endNow = () => isNearBottom({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: c.clientHeight }, AT_BOTTOM_PX);
+    let atEnd = endNow();
+
     const handleScroll = () => {
+      atEnd = endNow();
       const byReader = follow.scrolled();
       // Record every settle (user scrolls AND pins/follows) so the cross-unmount
       // store always reflects where the transcript actually is: a bottom pin
@@ -417,8 +452,9 @@ export function useChatScroll({
     const status = content.querySelector<HTMLElement>(TRANSCRIPT_STATUS_SELECTOR);
     let lastHeight = -1;
     let lastPad = -1;
+    let lastWidth = -1;
     let lastStatusHeight = -1;
-    const ro = new ResizeObserver((entries) => {
+    const onResize = (entries: ResizeObserverEntry[]) => {
       // A cached view is display:none and measures 0. Coming back from that
       // is not growth: the composer and the status lines would read as grown
       // and carry a reader near the end to it. A hidden view keeps the sizes
@@ -450,6 +486,12 @@ export function useChatScroll({
       const pad = height - (entry.contentBoxSize?.[0]?.blockSize ?? entry.contentRect.height);
       const composerGrew = lastPad >= 0 && pad > lastPad;
       lastPad = pad;
+      // The wrapper is as wide as the scroller, so a change in its width is
+      // the file panel opening or closing beside the chat, or the window
+      // resizing: every line rewraps at once.
+      const width = entry.borderBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
+      const relaid = lastWidth >= 0 && Math.abs(width - lastWidth) >= 1;
+      lastWidth = width;
       const atEndBefore = () => isNearBottom(
         { scrollTop: c.scrollTop, scrollHeight: c.scrollHeight - growth, clientHeight: c.clientHeight },
         AT_BOTTOM_PX,
@@ -463,6 +505,9 @@ export function useChatScroll({
       }
       const hold = toggleHoldRef.current;
       if (hold && performance.now() <= hold.until && c.contains(hold.el)) {
+        // Held for as long as a width change goes on, however long the
+        // window takes to resize.
+        if (relaid) hold.until = performance.now() + TOGGLE_HOLD_MS;
         const delta = hold.el.getBoundingClientRect().top - hold.top;
         if (Math.abs(delta) >= 1) engine.jump(c.scrollTop + delta);
         return;
@@ -477,11 +522,33 @@ export function useChatScroll({
         // that growth short of it.
         isNearBottomRef.current = atEndBefore();
       }
+      // A width change is a relayout, not news. A reader at the very end, or
+      // one the follow is carrying, stays at the end through every frame of
+      // it, by a jump: a glide would trail the rewrap and leave the last lines
+      // under the composer. A reader mid-thread is held on the row at the top
+      // of the view, as a toggle holds its row. A landing re-reads its target
+      // every frame, so it carries on to where the rewrap moved it.
+      if (relaid && !engine.landing && entryRestoreSettled()) {
+        if (atEnd || follow.carrying) {
+          engine.jump(c.scrollHeight - c.clientHeight);
+          return;
+        }
+        const row = rowAtTop(c);
+        if (row) {
+          toggleHoldRef.current = { el: row, top: row.getBoundingClientRect().top, until: performance.now() + TOGGLE_HOLD_MS };
+          return;
+        }
+      }
       // The composer carries only a reader at the very end, measured before
       // the growth as for the toggle above: one in the band short of the end
       // is reading there. A status line arriving under the last reply is the
       // thread's news.
       if (growth > 0 && entryRestoreSettled()) follow.grew(statusGrew || (composerGrew && atEndBefore()));
+    };
+    const ro = new ResizeObserver((entries) => {
+      onResize(entries);
+      // A hidden view measures nothing, and keeps what it last showed.
+      if (c.clientHeight > 0) atEnd = endNow();
     });
     // The padded wrapper's border box, not the content's: its bottom padding
     // is the floating composer's height, and a taller composer (the tray

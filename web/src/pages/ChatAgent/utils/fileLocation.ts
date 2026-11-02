@@ -31,8 +31,9 @@ export type OpenFileHandler = (
   location?: FileLocation,
   /** `rooted`: the reference named where it starts, so it is not joined onto
    *  the viewing file's directory. `pin`: open in a tab of its own rather than
-   *  the preview slot. */
-  opts?: { rooted?: boolean; pin?: boolean },
+   *  the preview slot. `comment`: a comment on the file, by id, to bring
+   *  forward once its pin is placed. */
+  opts?: { rooted?: boolean; pin?: boolean; comment?: string },
 ) => void;
 
 // Uppercase only, as GitHub writes it: `#l2` is a heading slug ("L2"), not line 2.

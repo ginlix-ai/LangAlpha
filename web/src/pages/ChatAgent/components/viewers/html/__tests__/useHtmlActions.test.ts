@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vite
 import { renderHook } from '@testing-library/react';
 
 import { useHtmlActions, exportServedPdf } from '../useHtmlActions';
-import { buildServeUrl, pdfQuery } from '../wsfilesUrl';
+import { buildServeUrl, pdfQuery, versionPrefix } from '../wsfilesUrl';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -44,11 +44,23 @@ describe('buildServeUrl', () => {
     );
   });
 
-  it('appends ?inject=theme only when requested', () => {
-    expect(buildServeUrl(GRANT, 'results/report.html', { injectTheme: true })).toBe(
-      '/api/v1/wsfiles/g/grant-1/results/report.html?inject=theme',
+  it('names the bridge and the revision only when asked', () => {
+    expect(buildServeUrl(GRANT, 'results/report.html', { inject: 'view' })).toBe(
+      '/api/v1/wsfiles/g/grant-1/results/report.html?inject=view',
     );
-    expect(buildServeUrl(GRANT, 'results/report.html')).not.toContain('inject=theme');
+    expect(buildServeUrl(GRANT, 'results/report.html', { inject: 'comments', revision: 'a b' })).toBe(
+      '/api/v1/wsfiles/g/grant-1/results/report.html?inject=comments&h=a+b',
+    );
+    expect(buildServeUrl(GRANT, 'results/report.html')).not.toContain('?');
+  });
+
+  it('joins a version prefix to its entry, the slashes kept', () => {
+    expect(buildServeUrl(versionPrefix('/api/v1/artifacts/g/x/', 3), 'results/my report.html')).toBe(
+      '/api/v1/artifacts/g/x/v/3/results/my%20report.html',
+    );
+    expect(buildServeUrl(versionPrefix('https://artifact-1.example.com/g/x', 2), 'index.html')).toBe(
+      'https://artifact-1.example.com/g/x/v/2/index.html',
+    );
   });
 });
 
@@ -84,11 +96,11 @@ describe('buildServeUrl under a share prefix', () => {
     );
   });
 
-  it('appends ?inject=theme only when requested', () => {
-    expect(buildServeUrl(prefix, 'results/report.html', { injectTheme: true })).toBe(
-      '/api/v1/public/shared/tok-1/files/serve/results/report.html?inject=theme',
+  it('names the read-only bridge only when asked', () => {
+    expect(buildServeUrl(prefix, 'results/report.html', { inject: 'view' })).toBe(
+      '/api/v1/public/shared/tok-1/files/serve/results/report.html?inject=view',
     );
-    expect(buildServeUrl(prefix, 'results/report.html')).not.toContain('inject=theme');
+    expect(buildServeUrl(prefix, 'results/report.html')).not.toContain('inject');
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 
@@ -43,6 +43,7 @@ vi.mock('@/pages/ChatAgent/components/SyntaxHighlighter', () => ({
 
 import FilePanel from '@/pages/ChatAgent/components/FilePanel';
 import { fileTarget } from '@/pages/ChatAgent/components/filePanel/types';
+import { LazyCommentLayer } from '@/pages/ChatAgent/components/viewers/html/comments/lazyCommentLayer';
 
 const panel = (seq = 1) => (
   <FilePanel
@@ -56,6 +57,9 @@ const panel = (seq = 1) => (
 
 beforeEach(() => { localStorage.clear(); read.fail = false; });
 afterEach(() => { vi.restoreAllMocks(); });
+// The owner's HTML tab warms the comment layer's chunk, and an import still
+// in flight when the file ends rejects after the module runner has closed.
+afterAll(() => LazyCommentLayer.preload());
 
 /** The panel holds Source versus the page, and the file header switches it. */
 describe('FilePanel HTML view', () => {

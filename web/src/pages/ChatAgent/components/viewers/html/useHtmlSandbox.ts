@@ -12,14 +12,13 @@ interface UseHtmlSandboxOptions {
 interface UseHtmlSandboxResult {
   /** Reported iframe height (null until first resize), only set when autoHeight. */
   height: number | null;
-  /** Push current theme vars into the iframe (call after a served iframe loads). */
+  /** Push current theme vars into the iframe (call after a fresh srcdoc loads). */
   pushTheme: () => void;
-  /** Ask the served document to scroll to an element id. */
-  scrollToAnchor: (anchor: string) => void;
 }
 
 /**
- * Owns the parent-side postMessage bridge for a sandboxed HTML iframe:
+ * Owns the parent-side postMessage bridge for a srcdoc widget frame (a served
+ * document speaks the page bridge instead, `usePageBridge`):
  * resize → height (when autoHeight), sendPrompt → callback, and a theme
  * MutationObserver that re-pushes widget:themeUpdate on data-theme changes.
  */
@@ -37,18 +36,6 @@ export function useHtmlSandbox({
     // gives the iframe an opaque origin, which can't be named as a targetOrigin.
     win.postMessage({ type: 'widget:themeUpdate', css: resolveThemeVars() }, '*');
   }, [iframeRef]);
-
-  // A second reference to the section the URL already names leaves the iframe's
-  // `src` byte-identical, so the browser navigates nowhere and the click reads
-  // as dead. The served document scrolls on being asked instead.
-  const scrollToAnchor = useCallback(
-    (anchor: string) => {
-      const win = iframeRef.current?.contentWindow;
-      if (!win) return;
-      win.postMessage({ type: 'widget:scrollTo', id: anchor }, '*');
-    },
-    [iframeRef],
-  );
 
   const handleMessage = useCallback(
     (e: MessageEvent) => {
@@ -83,5 +70,5 @@ export function useHtmlSandbox({
     return () => observer.disconnect();
   }, []);
 
-  return { height, pushTheme, scrollToAnchor };
+  return { height, pushTheme };
 }

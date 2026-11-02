@@ -27,6 +27,8 @@ export interface HeldSteer {
   request_key: string | null;
   /** Epoch seconds. */
   timestamp?: number;
+  /** A send carrying file comments: `content` is its note, this its comments. */
+  artifact_comments?: unknown;
 }
 
 export interface CancelOutcome {
