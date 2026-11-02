@@ -1,7 +1,7 @@
 import { createElement, useState, type ComponentProps, type CSSProperties, type Key, type ReactNode } from 'react';
 import PrismAsyncLight from 'react-syntax-highlighter/dist/esm/prism-async-light';
 import createNode, { createClassNameString, createStyleObject } from 'react-syntax-highlighter/dist/esm/create-element';
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneDark as prismOneDark, oneLight as prismOneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
 import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
@@ -45,6 +45,33 @@ PrismAsyncLight.registerLanguage('cpp', cpp);
 PrismAsyncLight.registerLanguage('c', c);
 PrismAsyncLight.registerLanguage('ruby', ruby);
 
+// Prism's One themes were drawn for their own backgrounds, and several of their
+// token colors land under 4.5:1 on our code surfaces. Each step here is the same
+// hue taken just far enough to hold it on `--color-bg-code` in that theme.
+const LEGIBLE_LIGHT: Record<string, string> = {
+  'hsl(230, 4%, 64%)': '#6B6E78', // comment
+  'hsl(230, 1%, 62%)': '#6B6E78',
+  'hsl(5, 74%, 59%)': '#C5392C', // tag, deleted
+  'hsl(119, 34%, 47%)': '#2E7D32', // string
+  'hsl(35, 99%, 36%)': '#8A5A00', // number, class
+  'hsl(221, 87%, 60%)': '#2563D8', // function
+  'hsl(198, 99%, 37%)': '#0277A6', // builtin, regex
+};
+const LEGIBLE_DARK: Record<string, string> = {
+  'hsl(220, 10%, 40%)': '#8B92A0', // comment
+  'hsl(220, 9%, 55%)': '#8B92A0',
+};
+
+function withLegibleTokens(theme: Stylesheet, colors: Record<string, string>): Stylesheet {
+  return Object.fromEntries(Object.entries(theme).map(([selector, style]) => {
+    const color = style.color && colors[style.color];
+    return [selector, color ? { ...style, color } : style];
+  }));
+}
+
+const oneLight = withLegibleTokens(prismOneLight, LEGIBLE_LIGHT);
+const oneDark = withLegibleTokens(prismOneDark, LEGIBLE_DARK);
+
 declare module 'react-syntax-highlighter/dist/esm/create-element' {
   export function createStyleObject(classNames: string[], elementStyle?: CSSProperties, stylesheet?: Stylesheet): CSSProperties;
   export function createClassNameString(classNames: string[]): string;
@@ -70,6 +97,21 @@ function indexFor(stylesheet: Stylesheet): StylesheetIndex {
     indexes.set(stylesheet, index);
   }
   return index;
+}
+
+const NUMBERED_LINE_CODE: CSSProperties = { flex: 1, minWidth: 0, overflowWrap: 'anywhere' };
+
+// The library draws a wrapped, numbered line as a flex row, which makes every
+// token its own column: a line too long for the row breaks up token by token,
+// its words stacked in their columns and its end cut off. Beside the number the
+// tokens have to be one run of text, so they share one flex item.
+function joinNumberedLine(row: RendererNode): RendererNode {
+  if (row.properties?.style?.display !== 'flex' || !row.children) return row;
+  const [lineNumber, ...code] = row.children;
+  return {
+    ...row,
+    children: [lineNumber, { type: 'element', tagName: 'span', properties: { className: [], style: NUMBERED_LINE_CODE }, children: code }],
+  };
 }
 
 // The library's createElement with inline styles, output for output. It
@@ -113,7 +155,7 @@ function createHighlightRenderer(): Renderer {
     }
     drawn = rows.map((node, i) => {
       const source = JSON.stringify(node);
-      return drawn[i]?.source === source ? drawn[i] : { source, element: renderNode(node, stylesheet, index, `code-segment-${i}`) };
+      return drawn[i]?.source === source ? drawn[i] : { source, element: renderNode(joinNumberedLine(node), stylesheet, index, `code-segment-${i}`) };
     });
     return drawn.map((row) => row.element);
   };
