@@ -70,7 +70,7 @@ from ptc_agent.agent.middleware.direct_mcp import (
     direct_tool_middleware,
     direct_tool_summary,
 )
-from ptc_agent.agent.middleware.order_governance import OrderLedger, places_order
+from ptc_agent.agent.middleware.order_governance import OrderLedger
 from ptc_agent.agent.middleware.subagent_switch import (
     SubagentSwitchMiddleware,
     SubagentSwitchReader,
@@ -210,7 +210,7 @@ class PTCAgent:
         chart_annotation_enabled: bool = True,
         role: AgentRole = "analyst",
         channels_enabled: bool = False,
-        ask_user_enabled: bool = True,
+        claude_code: bool = False,
     ) -> str:
         """Build the static system prompt (excludes time/profile for cacheability).
 
@@ -222,7 +222,9 @@ class PTCAgent:
         deployment's messaging service and the turn having a user, neither of
         which moves between a thread's turns. ``history_files`` says the file
         tools read past threads with no mount, which follows the computer's
-        kind, so it does not move between them either.
+        kind, so it does not move between them either. ``claude_code`` asks
+        for one question per call, since a Claude Code turn holds one call for
+        the user at a time.
         """
         loader = get_loader()
         return loader.get_system_prompt(
@@ -234,7 +236,7 @@ class PTCAgent:
             ),
             subagent_summary=subagent_summary,
             max_concurrent_task_units=DEFAULT_MAX_CONCURRENT_TASK_UNITS,
-            ask_user_enabled=ask_user_enabled,
+            ask_user_enabled=True,
             include_examples=True,
             include_anti_patterns=True,
             thread_id=thread_id or "",
@@ -250,6 +252,7 @@ class PTCAgent:
             chart_annotation_enabled=chart_annotation_enabled,
             role=role,
             channels_enabled=channels_enabled,
+            claude_code=claude_code,
         )
 
     def _get_tool_summary(self, mcp_registry: MCPRegistry) -> str:
@@ -345,10 +348,8 @@ class PTCAgent:
         """
         turn = turn_model(self.config, llm, self.llm, background=False)
         claude_code = isinstance(turn.client, ClaudeCodeTarget)
-        # A subagent does not run on the Claude Code runtime yet, and a Claude
-        # Code turn cannot resume from a question to the user yet.
+        # A subagent does not run on the Claude Code runtime yet.
         disable_subagents = disable_subagents or claude_code
-        ask_user = not claude_code
 
         # Freeze current time for this request (refreshes on each new query)
         request_time = datetime.now(tz=UTC)
@@ -694,9 +695,6 @@ class PTCAgent:
         # Consent is re-read per call and an order is put to the user against
         # a durable attempt, which is what execution then reads.
         direct_tools = list(direct_mcp.tools) if direct_mcp is not None else []
-        if claude_code:
-            # A Claude Code turn cannot put an order to the user for approval yet.
-            direct_tools = [t for t in direct_tools if not places_order(t)]
         main_only_middleware.extend(direct_tool_middleware(direct_mcp, order_ledger))
 
         # Recursion gate: no subagents compiled, none advertised in the
@@ -746,10 +744,9 @@ class PTCAgent:
         if not disable_subagents:
             shared_tools.extend(background_middleware.tools)
 
-        if ask_user:
-            ask_user_middleware = AskUserMiddleware()
-            main_only_middleware.append(ask_user_middleware)
-            shared_tools.extend(ask_user_middleware.tools)
+        ask_user_middleware = AskUserMiddleware()
+        main_only_middleware.append(ask_user_middleware)
+        shared_tools.extend(ask_user_middleware.tools)
 
         tools: list[Any] = [execute_code_tool, bash_tool, *shared_tools]
 
@@ -830,7 +827,7 @@ class PTCAgent:
             chart_annotation_enabled=chart_annotation,
             role=role,
             channels_enabled=gates.channels,
-            ask_user_enabled=ask_user,
+            claude_code=claude_code,
         )
         # Read once: the baseline freezes this value per epoch, and the
         # prompt is sent with the frozen one (FrozenPromptMiddleware).
@@ -1215,6 +1212,7 @@ class PTCAgent:
                 user_id=user_id, thread_id=thread_id, checkpointer=checkpointer,
                 launcher=claude_code_launcher(sandbox),
                 entry=(skill_loader_middleware, context.turn, context.baseline),
+                middleware=deepagent_middleware,
                 baseline=context.baseline.frozen_block,
                 steering=steering,
                 alert_senders=alert_senders,

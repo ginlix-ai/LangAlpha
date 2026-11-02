@@ -8,6 +8,7 @@ import pytest
 from claude_agent_sdk import ProcessError, ResultMessage, SystemMessage
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
+from langgraph.graph import StateGraph
 
 from pathlib import Path
 
@@ -25,15 +26,16 @@ from ptc_agent.agent.transcript import pointer
 from ptc_agent.agent.transcript.pointer import transcript_note
 from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.core.sandbox.livefs_mount import TranscriptReach
+from ptc_agent.agent.claude_code.mid_turn import NOT_RUN, AfterTool, BeforeTool, mid_turn_messages
 from ptc_agent.agent.claude_code.launcher import LocalLauncher, Prepared
-from ptc_agent.agent.claude_code.mid_turn import AfterTool, mid_turn_messages
 from ptc_agent.agent.claude_code.runtime import (
     _END, ClaudeCodeState, ClaudeTurn, ClaudeTurnFailed, _Message, _Run, turn_prompt,
 )
 from ptc_agent.agent.claude_code.session import CheckpointSessionStore, SessionDrift
 from ptc_agent.agent.middleware.file_operations.multimodal import MAX_CONTENT_BYTES
-from ptc_agent.agent.claude_code.tools_bridge import ToolResults, tool_specs
+from ptc_agent.agent.claude_code.tools_bridge import Deferred, ToolResults, tool_specs
 from ptc_agent.agent.main_state import MainAgentState
+from ptc_agent.agent.middleware.credit_gate import CreditGateState, CreditLease, current_credit_gate
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 
 
@@ -75,7 +77,9 @@ def test_a_rejected_rate_limit_is_a_spent_plan_only_when_the_query_failed():
 
 def test_a_claude_code_thread_keeps_every_main_agent_channel():
     assert set(MainAgentState.__annotations__) < set(ClaudeCodeState.__annotations__)
-    assert set(ClaudeCodeState.__annotations__) - set(MainAgentState.__annotations__) == {"claude_session"}
+    assert set(ClaudeCodeState.__annotations__) - set(MainAgentState.__annotations__) == {"claude_session", "preapproved_calls"}
+    ours, main = StateGraph(ClaudeCodeState).channels, StateGraph(MainAgentState).channels
+    assert {k: type(main[k]) for k in main} == {k: type(ours[k]) for k in main}
 
 
 def _claude(content: str, **kwargs) -> AIMessage:
@@ -182,7 +186,7 @@ def bash(command: str) -> str:
 def test_options_give_claude_code_none_of_its_own_prompt_settings_or_tools():
     spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={}, effort="high")
     options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"),
-                          after_tool=AfterTool(ToolResults(), send=_unsent))
+                          before_tool=BeforeTool(ToolResults(), spec.waits, spec.ends_turn_call), after_tool=AfterTool(ToolResults(), send=_unsent))
     assert options.tools == [] and options.setting_sources == [] and options.strict_mcp_config is True
     assert options.system_prompt == {"type": "file", "path": "/c/system-prompt.md"} and options.allowed_tools == ["mcp__langalpha__Bash"]
     assert options.verbatim_prompts is True and options.cwd == "/w"
@@ -202,7 +206,17 @@ async def _unsent(text: str) -> None:
 
 def _run(client, spec, launcher=None, results=None, store=None) -> _Run:
     results = results or ToolResults()
-    return _Run(launcher, None, store or CheckpointSessionStore(), client, results, spec, AfterTool(results, send=_unsent))
+    return _Run(launcher, None, store or CheckpointSessionStore(), client, results, spec, BeforeTool(results, spec.waits, spec.ends_turn_call),
+                AfterTool(results, send=_unsent))
+
+
+def test_a_turns_launch_hooks_each_call_before_it_runs_and_a_compactions_does_not():
+    spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={})
+    common = dict(pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(),
+                  session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent))
+    before = BeforeTool(ToolResults(), spec.waits, spec.ends_turn_call)
+    assert [m.hooks for m in options_for(spec, before_tool=before, **common).hooks["PreToolUse"]] == [[before]]
+    assert "PreToolUse" not in options_for(spec, compaction=True, **common).hooks
 
 
 @pytest.mark.parametrize(("threshold", "window"), [(500_000, "533000"), (20_000, "100000"), (990_000, "1000000")])
@@ -590,6 +604,63 @@ async def test_a_closing_run_takes_nothing_more_in_as_its_calls_return():
     assert taken == []
 
 
+def _asks(name: str, args) -> bool:
+    return name == "AskUserQuestion"
+
+
+def _quiet(name: str, args) -> bool:
+    return name == "schedule_wakeup"
+
+
+async def _before(hook: BeforeTool, name: str, tool_use_id: str) -> str | None:
+    out = await hook({"tool_name": name, "tool_input": {}}, tool_use_id, None)
+    decision = out.get("hookSpecificOutput", {})
+    return decision.get("permissionDecisionReason") or decision.get("permissionDecision")
+
+
+@pytest.mark.asyncio
+async def test_a_batch_defers_its_first_call_that_waits_for_the_user_and_answers_another_as_not_run():
+    results = ToolResults()
+    hook = BeforeTool(results, _asks, _quiet)
+    assert [await _before(hook, n, i) for n, i in [("Bash", "t1"), ("AskUserQuestion", "t2"), ("AskUserQuestion", "t3")]] == [
+        None, "defer", NOT_RUN,
+    ]
+    assert isinstance(await results.due("t2"), Deferred)
+    hook.reopen()
+    assert await _before(hook, "AskUserQuestion", "t4") == "defer"
+
+
+@pytest.mark.asyncio
+async def test_the_call_a_resumed_cli_asks_for_again_runs_with_the_result_the_thread_holds():
+    results = ToolResults()
+    results.resolve(ToolMessage("User answered: apple", tool_call_id="t1"))
+    assert await _before(BeforeTool(results, _asks, _quiet), "AskUserQuestion", "t1") is None
+
+
+@pytest.mark.asyncio
+async def test_the_credit_gate_defers_the_first_call_past_its_boundary_and_lets_the_rest_of_the_batch_and_a_quiet_end_run():
+    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease.denial = {"message": "Out of credits."}
+    token = current_credit_gate.set(CreditGateState(run_ref="r", kind="run", port=None, lease=lease))
+    try:
+        hook = BeforeTool(ToolResults(), _asks, _quiet)
+        decisions = [await _before(hook, "Bash", i) for i in ("t1", "t2")]
+        ending = await _before(BeforeTool(ToolResults(), _asks, _quiet), "schedule_wakeup", "t3")
+    finally:
+        current_credit_gate.reset(token)
+    assert decisions == ["defer", None] and ending is None
+
+
+@pytest.mark.asyncio
+async def test_a_result_that_ends_the_turn_stops_the_cli_once_it_has_it():
+    results = ToolResults(ends_turn=lambda message: message.content == "Ended without a reply.")
+    results.resolve(ToolMessage("Ended without a reply.", tool_call_id="t1"))
+    results.resolve(ToolMessage("ok", tool_call_id="t2"))
+    hook = AfterTool(results, send=_unsent)
+    assert (await hook({"hook_event_name": "PostToolUse"}, "t1", None))["continue"] is False
+    assert "continue" not in await hook({"hook_event_name": "PostToolUse"}, "t2", None)
+
+
 class _Ends:
     async def receive_messages(self):
         return
@@ -970,3 +1041,25 @@ async def test_a_compaction_whose_records_arrive_late_is_announced_with_the_repl
     assert signals == [("summarize", "complete", notice)]
     assert compaction_summary(reply) == {"summary_message_id": "b", **notice}
 
+
+@pytest.mark.asyncio
+async def test_a_turn_start_compaction_runs_on_the_session_without_a_deferral_the_thread_went_on_from(monkeypatch):
+    """A compaction launch has no PreToolUse hook, so a deferral left in would
+    have it ask for the call again with nothing to run it."""
+    from ptc_agent.agent.claude_code import runtime
+
+    compacted = []
+
+    async def compact(spec, pin, launcher, *, records, **kwargs):
+        compacted.append(records["entries"])
+        return []
+
+    monkeypatch.setattr(runtime, "compact", compact)
+    monkeypatch.setattr(runtime, "context_signal", lambda *args, **kwargs: None)
+    turn, state = _repinning_turn(None)
+    del turn._compact
+    kept = state["claude_session"]["entries"]
+    deferral = {"uuid": "d1", "type": "attachment", "attachment": {"type": "hook_deferred_tool", "toolUseID": "t1"}}
+    state["claude_session"]["entries"] = [*kept, deferral]
+    assert await turn._repin(state) == []
+    assert compacted == [kept]

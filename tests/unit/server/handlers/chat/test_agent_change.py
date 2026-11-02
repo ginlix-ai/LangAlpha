@@ -16,9 +16,11 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from ptc_agent.agent.state import DeltaAgentState
+from src.llms.claude_code import MESSAGE_ID_KEY
 from src.server.handlers.chat.agent_change import cancel_tool_calls_it_lacks
 
 CONFIG = {"configurable": {"thread_id": "thread-1"}}
@@ -187,3 +189,28 @@ async def test_a_step_under_a_name_the_resuming_agent_has_is_left_waiting():
     await cancel_tool_calls_it_lacks(home, "thread-1")
 
     assert (await home.aget_state(CONFIG)).interrupts
+
+
+@pytest.mark.asyncio
+async def test_a_call_claude_code_holds_is_cancelled_for_a_turn_on_another_model():
+    """Claude Code runs the call it waits on in a node only its graph has, so
+    the other model's graph sees no step waiting and would drop the answer."""
+    saver = InMemorySaver()
+    claude = StateGraph(DeltaAgentState)
+    claude.add_node("model", lambda s: {"messages": [AIMessage(
+        content="", id="a-1", response_metadata={MESSAGE_ID_KEY: "msg_1"},
+        tool_calls=[{"name": "ask_user", "args": {"question": "Which?"}, "id": "call-ask", "type": "tool_call"}],
+    )]})
+    claude.add_node("held", lambda s: {"messages": [ToolMessage(str(interrupt("ask")), tool_call_id="call-ask")]})
+    claude.add_edge(START, "model")
+    claude.add_edge("model", "held")
+    claude.add_edge("held", END)
+    await claude.compile(checkpointer=saver).ainvoke({"messages": [HumanMessage("go", id="h-1")]}, CONFIG)
+    other = _agent(saver, [_quote, _ask], AIMessage(content="answer", id="a-2"))
+
+    cancelled = await cancel_tool_calls_it_lacks(other, "thread-1", by_name=False)
+
+    assert [(m.tool_call_id, m.status) for m in cancelled] == [("call-ask", "error")]
+    out = await other.ainvoke(Command(resume={"decisions": [{"type": "approve"}]}), CONFIG)
+    assert out["messages"][-1].content == "answer"
+    assert await cancel_tool_calls_it_lacks(other, "thread-1", by_name=False) == []

@@ -3,6 +3,6 @@
 **When NOT to use `AskUserQuestion`:**
 - When the user's intent is already clear from their message
 - For simple yes/no follow-ups (just ask in your text response)
-- Repeatedly in quick succession — batch related questions when possible
+- Repeatedly in quick succession{% if claude_code | default(false) %}. Ask one question per call and never make two `AskUserQuestion` calls at once: put related points in one question, and ask the next after the user answers.{% else %} — batch related questions when possible{% endif +%}
 
 **A `proactive_questions` preference in the user's profile overrides all of the above.** It is free text describing how eagerly they want to be asked; follow what it says.

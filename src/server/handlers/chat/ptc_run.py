@@ -105,6 +105,7 @@ from .admission_gate import agent_steer_of, steer_allowed, wait_or_steer
 from .attachments import attach_request_files
 from .error_handling import handle_workflow_error
 from .agent_change import cancel_tool_calls_it_lacks
+from src.llms.claude_code import is_claude_code_model
 from src.server.services.llm.clients import is_own_key_turn
 from src.server.services.llm.config import apply_fetch_override, resolve_llm_config
 from src.server.services.llm.thread_model import NamedModel
@@ -718,15 +719,18 @@ async def astream_ptc_workflow(
         )
         cancelled_calls = []
         if (
-            route.role == "chief_of_staff"
+            (route.role == "chief_of_staff" or not is_claude_code_model(effective_model))
             and request.hitl_response
             and not request.checkpoint_id
         ):
             # A Home thread the retired Flash agent ran may be waiting on a
-            # step only Flash had. A resume has no base: the route refused one
+            # step only Flash had, and a thread Claude Code paused on one only
+            # its graph runs. A resume has no base: the route refused one
             # whose pause is off the branch, so the newest checkpoint is the
             # pause it answers.
-            cancelled_calls = await cancel_tool_calls_it_lacks(ptc_graph, thread_id)
+            cancelled_calls = await cancel_tool_calls_it_lacks(
+                ptc_graph, thread_id, by_name=route.role == "chief_of_staff"
+            )
 
         if session.sandbox:
             sandbox_id = getattr(session.sandbox, "sandbox_id", None)

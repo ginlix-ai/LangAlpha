@@ -22,13 +22,23 @@ import copy
 from collections.abc import Mapping, Sequence
 from typing import Any, TypedDict
 
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from typing_extensions import NotRequired
 
 from langgraph.channels import DeltaChannel
 
+from ptc_agent.agent.claude_code.relay import anthropic_content
+from ptc_agent.agent.pending_calls import pending_calls
+
 SESSION_SNAPSHOT_FREQUENCY = 250
 #: How long a step waits for the CLI's records behind the messages it commits.
 SETTLE_TIMEOUT_S = 10.0
+#: The record the CLI writes for a call a PreToolUse hook deferred.
+_DEFERRED = "hook_deferred_tool"
+#: What a record the CLI writes carries besides its own content, as a result
+#: it records takes it from the call's deferral, whose place in the chain
+#: (``uuid``) it takes too, so the records written after it still lead to it.
+_RECORD_KEYS = ("uuid", "parentUuid", "isSidechain", "timestamp", "userType", "entrypoint", "cwd", "sessionId", "version", "gitBranch")
 
 
 class SessionDrift(RuntimeError):
@@ -139,6 +149,77 @@ def session_records_reducer(
     return out
 
 
+def pending_deferral(records: SessionRecords | None) -> str | None:
+    """The call the session holds deferred, which the CLI asks for again as it
+    resumes: the last one a PreToolUse hook put off, unless a result for it
+    followed, as the CLI itself reads the session. It never resumes more."""
+    entries = (records or {}).get("entries") or []
+    for i in range(len(entries) - 1, -1, -1):
+        if (tool_use_id := _deferred_call(entries[i])) is not None:
+            return None if any(_answers(e, tool_use_id) for e in entries[i + 1 :]) else tool_use_id
+    return None
+
+
+def awaiting_user(records: SessionRecords | None, messages: Sequence[BaseMessage]) -> bool:
+    """Whether a call the CLI deferred still waits for the user: the session
+    holds it deferred and the thread has no result for it yet."""
+    held = pending_deferral(records)
+    return held is not None and any(c["id"] == held for c in pending_calls(messages)[1])
+
+
+def resume_from(records: SessionRecords | None, messages: Sequence[BaseMessage]) -> tuple[list[dict[str, Any]], ToolMessage | None]:
+    """The records a new CLI resumes on, and the result it is handed for the
+    call the session holds deferred, which it asks for first.
+
+    It is handed the result only when the turn carries on from it. With no
+    result, or with a message after it (a resumed run failed before Claude
+    replied, and the user wrote again), the thread went on without the call.
+    The CLI is then resumed on a session with no record of the deferral, so it
+    answers the call as cut off, as it does a call a CLI that died held, and
+    goes on to the prompt; left in, it would ask Claude to carry on from the
+    call, in a query of its own the turn ends on, and the prompt would never
+    reach Claude.
+    """
+    entries = (records or {}).get("entries") or []
+    if (held := pending_deferral(records)) is None:
+        return entries, None
+    at = next((i for i, m in enumerate(messages) if isinstance(m, ToolMessage) and m.tool_call_id == held), None)
+    if at is not None and not any(isinstance(m, HumanMessage) for m in messages[at + 1 :]):
+        return entries, messages[at]
+    return [e for e in entries if _deferred_call(e) != held], None
+
+
+def answered_in(entries: Sequence[Mapping[str, Any]], message: ToolMessage) -> list[dict[str, Any]]:
+    """``entries`` with the deferral of the call ``message`` answers in place of
+    the record the CLI writes for a result it is handed, for a launch that
+    must not ask for the call again: a compaction's CLI waits on a deferred
+    call with nothing to run it, and one handed the result first asks Claude
+    to carry on."""
+    content = anthropic_content(message)
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+    result = {"tool_use_id": message.tool_call_id, "type": "tool_result", "content": blocks,
+              **({"is_error": True} if message.status == "error" else {})}
+    return [
+        {**{k: e[k] for k in _RECORD_KEYS if k in e}, "type": "user",
+         "message": {"role": "user", "content": [result]}, "toolUseResult": blocks,
+         "sourceToolAssistantUUID": e.get("parentUuid")}
+        if _deferred_call(e) == message.tool_call_id else dict(e)
+        for e in entries
+    ]
+
+
+def _deferred_call(entry: Mapping[str, Any]) -> str | None:
+    """The call a record says a PreToolUse hook deferred, when it is such a record."""
+    attachment = entry.get("attachment") if entry.get("type") == "attachment" else None
+    return attachment.get("toolUseID") if isinstance(attachment, dict) and attachment.get("type") == _DEFERRED else None
+
+
+def _answers(entry: Mapping[str, Any], tool_use_id: str) -> bool:
+    content = (entry.get("message") or {}).get("content") if entry.get("type") == "user" else None
+    return any(isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == tool_use_id
+               for b in (content if isinstance(content, list) else ()))
+
+
 def session_channel() -> DeltaChannel:
     return DeltaChannel(session_records_reducer, snapshot_frequency=SESSION_SNAPSHOT_FREQUENCY)
 
@@ -199,6 +280,8 @@ class CheckpointSessionStore:
         self.results = Arrivals("tool result records")
         #: Each result's (record, block), by tool use id.
         self.result_blocks: dict[str, tuple[str, dict[str, Any]]] = {}
+        #: The record of each call a hook deferred, by tool use id.
+        self.deferrals = Arrivals("deferred call records")
 
     async def append(self, key: dict[str, Any], entries: list[dict[str, Any]]) -> None:
         if key.get("subpath"):
@@ -214,6 +297,7 @@ class CheckpointSessionStore:
                     self.result_blocks[block["tool_use_id"]] = (e["uuid"], block)
                     results[block["tool_use_id"]] = e["uuid"]
         await self.results.add(results)
+        await self.deferrals.add({call: e["uuid"] for e in entries if (call := _deferred_call(e)) and e.get("uuid")})
 
     async def load(self, key: dict[str, Any]) -> None:
         return None

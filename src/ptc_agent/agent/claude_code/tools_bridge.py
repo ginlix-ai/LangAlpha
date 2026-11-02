@@ -84,8 +84,14 @@ class Ended:
     """The CLI's query ended before it asked for the call or answered it."""
 
 
+@dataclass(frozen=True)
+class Deferred:
+    """The CLI put the call off at our PreToolUse hook: it ends the query
+    with the call open and asks for it again when it resumes."""
+
+
 #: What the CLI made of a call, whichever came first.
-Due = Run | Answered | Ended
+Due = Run | Answered | Ended | Deferred
 
 
 @dataclass
@@ -98,6 +104,10 @@ class _Call:
     #: The step's result as Anthropic blocks, where it holds one MCP cannot
     #: carry (a PDF), for the PostToolUse hook to hand the CLI instead.
     blocks: list[dict[str, Any]] | None = None
+    #: Whether the result ends the turn, so the CLI stops once it has it.
+    ends_turn: bool = False
+    #: Whether the call went past the credit gate as one that ends the turn.
+    past_gate: bool = False
 
 
 class ToolResults:
@@ -109,7 +119,9 @@ class ToolResults:
     closes, a result still owed fails with the reason.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, ends_turn: Callable[[ToolMessage], bool] = lambda message: False) -> None:
+        #: Whether a result ends the turn, so the CLI stops once it has it.
+        self._ends_turn = ends_turn
         self._calls: dict[str, _Call] = {}
         self._query_ended = False
         self._closed: str | None = None
@@ -129,6 +141,7 @@ class ToolResults:
         call = self._call(message.tool_call_id)
         if call.result.done():
             return
+        call.ends_turn = self._ends_turn(message)
         content = anthropic_content(message)
         if isinstance(content, list) and any(b.get("type") == "document" for b in content):
             call.blocks = content
@@ -138,6 +151,30 @@ class ToolResults:
         """The result to hand the CLI in place of its MCP form, where that form lost a block."""
         call = self._calls.get(tool_use_id)
         return call.blocks if call is not None else None
+
+    def holds(self, tool_use_id: str) -> bool:
+        """Whether the call's result is here: the CLI asking for it gets it at once."""
+        call = self._calls.get(tool_use_id)
+        return call is not None and call.result.done()
+
+    def ends_turn(self, tool_use_id: str) -> bool:
+        call = self._calls.get(tool_use_id)
+        return call is not None and call.ends_turn
+
+    def pass_gate(self, tool_use_id: str) -> None:
+        """Let a call that would end the turn past the credit gate (``BeforeTool``)."""
+        self._call(tool_use_id).past_gate = True
+
+    def owes_gate(self, tool_use_id: str | None = None) -> bool:
+        """Whether a call let past the credit gate to end the turn returned a
+        result that does not (the tool refused to), so the CLI stops at that
+        result and the turn at the gate before Claude is asked again; with no
+        id, whether any call did."""
+        calls = [self._calls.get(tool_use_id)] if tool_use_id is not None else list(self._calls.values())
+        return any(c is not None and c.past_gate and c.result.done() and not c.ends_turn for c in calls)
+
+    def defer(self, tool_use_id: str) -> None:
+        self._settle(tool_use_id, Deferred())
 
     def refused(self, tool_use_id: str) -> bool:
         """Whether the CLI answered the call itself without asking for it."""
