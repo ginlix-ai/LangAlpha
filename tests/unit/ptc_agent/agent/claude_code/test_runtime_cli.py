@@ -1195,7 +1195,7 @@ async def test_a_turn_leaves_the_rules_it_ran_under_for_the_composers_reading_be
     start's own rules, once the cache has expired."""
     from unittest.mock import AsyncMock
 
-    from ptc_agent.agent.claude_code.compaction import RULES_KEY
+    from ptc_agent.agent.claude_code.session import RULES_KEY
     from src.server.services import thread_status
 
     rules = CompactionRules(0, threshold=100_000, cold_tokens=100)
