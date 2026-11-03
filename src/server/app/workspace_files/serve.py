@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Annotated, Any
 from urllib.parse import quote
 
@@ -11,7 +12,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 
 from src.config.env import PDF_RENDER_INTERNAL_BASE
 from src.server.preview_proxy.page_bridge import (
-    Inject,
+    Variant,
     bridge_for,
     parse_inject,
     with_bridge,
@@ -19,13 +20,12 @@ from src.server.preview_proxy.page_bridge import (
 from src.server.services.file_grants import (
     FileGrantError,
     grant_prefix,
-    mint_file_grant,
+    narrowed_file_grant,
     verify_file_grant,
 )
 from src.server.utils.error_sanitization import single_line
-from src.server.utils.html_cdns import html_document_csp
+from src.server.utils.html_policy import html_document_csp
 from src.server.utils.http_headers import content_disposition
-from src.server.utils.served_origins import served_sources
 from fastapi.responses import Response
 
 from src.server.database.home_workspace import is_unbound
@@ -48,7 +48,7 @@ from src.server.services.warm_files import (
     warm_sandbox_bytes,
 )
 from src.server.services.served_paths import (
-    is_serve_blocked_path,
+    page_may_load,
     is_text_content_type,
     is_utf8,
 )
@@ -60,8 +60,8 @@ from ._shared import (
 )
 
 
-def _default_visible(client_path: str) -> bool:
-    return not is_serve_blocked_path(client_path)
+def _owner_visible(client_path: str) -> bool:
+    return page_may_load(client_path)
 
 
 logger = logging.getLogger(__name__)
@@ -109,34 +109,20 @@ wsfiles_router = APIRouter(prefix="/api/v1", tags=["Workspace File Serving"])
 # retain the bytes.
 _WSFILES_CACHE_CONTROL = "private, max-age=60"
 
-# The renderer fetches the document and its subresources with no credential
-# of its own, so the prefix it is handed carries one that outlives the render
-# by a few minutes and nothing else.
-_PDF_GRANT_TTL_SECONDS = 5 * 60
+# The sandbox directive forces an opaque origin even though the iframe loads via
+# `src=`, so a document can never reach the app's cookies or storage. (The header
+# intersects with the iframe's sandbox attribute; both carry the same tokens.)
+# Otherwise a document loads what it likes (``utils/html_policy``): the route
+# below decides what it can read.
+_WSFILES_CSP = html_document_csp()
 
-# Content-Security-Policy for served reports (``utils/html_cdns``). Three jobs:
-#   1. The `sandbox` directive forces an opaque origin even though the iframe
-#      loads via `src=`, so agent/prompt-injected HTML can never reach app
-#      cookies/localStorage. (The header intersects with the iframe's sandbox
-#      attribute; both carry the popup tokens.)
-#   2. connect-src names the route prefix the report was served under, and
-#      nothing else: the owner's grant prefix, which opens the workspace, or a
-#      share's prefix, which opens what the share does. The route still refuses
-#      hidden and serve-blocked paths. So a report can fetch any file it could
-#      link to, while no fetch, beacon or socket reaches another API route,
-#      another grant or another host. A path in a source needs an absolute
-#      origin, which comes from configuration (`utils/served_origins`).
-#   3. The other source directives cap loads to the html-report skill's CDN
-#      allowlist.
-# connect-src stops background requests only. A frame navigating itself away
-# is stopped by the embedding app's frame-src (web/index.html). What remains is
-# a click on a link in a tampered report: the new tab's URL can carry whatever
-# the report has read, which for the owner's view is any file in the workspace.
-def _wsfiles_csp(reach: str | None, host: str | None) -> str:
-    """The served-file CSP whose connect-src is ``reach`` on each served origin."""
-    return html_document_csp(
-        served_sources(reach, host) if reach else [], published=False
-    )
+# What a browser says it fetches a document inside a page for
+# (``Sec-Fetch-Dest``): a frame, or an <object> or <embed> showing HTML.
+_FRAME_DESTS = ("iframe", "frame", "object", "embed")
+
+#: How long the grant a PDF render goes under lasts: past the render's own
+#: time limit, and over long before its PDF is likely to reach anyone else.
+_PDF_GRANT_TTL_SECONDS = 5 * 60
 
 
 def _guess_content_type(path: str) -> str:
@@ -159,7 +145,7 @@ async def _resolve_serve_bytes(
     normalized_path: str,
     *,
     work_dir: str,
-    visible: VisibilityGate = _default_visible,
+    visible: VisibilityGate,
 ) -> tuple[bytes, str] | None:
     """Resolve raw bytes + content type for a file, sandbox-first with DB fallback.
 
@@ -208,30 +194,27 @@ async def _resolve_serve_bytes(
     return resolved[1], extension_mime
 
 
-async def serve_workspace_file(
+@dataclass(frozen=True)
+class _ServedFile:
+    workspace: dict[str, Any]
+    path: str
+    content: bytes
+    content_type: str
+
+
+async def _read_served_file(
     workspace_id: str,
     path: str,
     *,
-    inject: Inject | None = None,
-    workspace: dict[str, Any] | None = None,
-    visible: VisibilityGate | None = None,
-    reach: str | None = None,
-    host: str | None = None,
-) -> Response:
-    """Serve one workspace file inline with a sandboxed CSP, bridged if asked.
+    workspace: dict[str, Any] | None,
+    visible: VisibilityGate,
+) -> _ServedFile:
+    """The file a route serves, under the workspace-relative path it folds to.
 
     Resolves the file (running sandbox first, DB fallback for stopped
-    workspaces), picks the Content-Type, redacts vault secrets from text
-    bodies, and emits the sandboxed, egress-capped CSP (``_wsfiles_csp``) on
-    every response. ``reach`` is the route prefix the file was served under,
-    which its document may fetch from; without one it fetches nothing.
-    ``host`` is the request's Host, which only picks among the configured
-    origins (``utils/served_origins``). With ``inject`` an HTML body carries
-    the page bridge a viewer frames it with (``preview_proxy/page_bridge``);
-    otherwise the bytes are served faithfully. Missing, unknown, traversal and
-    escaping inputs all raise a uniform 404 so the endpoint never reveals which
-    check failed, and a 404 rather than a 403 so a denial never confirms that a
-    path exists.
+    workspaces). Missing, unknown, traversal and escaping inputs all raise a
+    uniform 404 so the endpoint never reveals which check failed, and a 404
+    rather than a 403 so a denial never confirms that a path exists.
 
     ``workspace`` may be passed pre-resolved (e.g. by a share route) to reuse
     this core with a different credential resolver; otherwise the workspace is
@@ -240,7 +223,6 @@ async def serve_workspace_file(
     frozen to a file list narrows it, and the gate runs again on whatever path
     the sandbox read actually resolved to.
     """
-    visible = visible or _default_visible
     if _has_traversal(path):
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -265,6 +247,28 @@ async def serve_workspace_file(
     if resolved is None:
         raise HTTPException(status_code=404, detail="Not found")
     content, content_type = resolved
+    return _ServedFile(workspace, normalized_path, content, content_type)
+
+
+async def serve_workspace_file(
+    workspace_id: str,
+    path: str,
+    *,
+    visible: VisibilityGate,
+    inject: Variant | None = None,
+    workspace: dict[str, Any] | None = None,
+) -> Response:
+    """Serve one workspace file inline with a sandboxed CSP, bridged if asked.
+
+    Picks the Content-Type, redacts vault secrets from text bodies, and emits
+    the sandboxed CSP on every response. With ``inject`` an HTML body carries
+    the page bridge a viewer frames it with (``preview_proxy/page_bridge``);
+    otherwise the bytes are served faithfully.
+    """
+    served = await _read_served_file(
+        workspace_id, path, workspace=workspace, visible=visible
+    )
+    content, content_type = served.content, served.content_type
 
     # Redact vault secrets from any UTF-8-decodable body, not just declared
     # text MIME types — otherwise a secret written to a mis-named file (e.g.
@@ -272,7 +276,9 @@ async def serve_workspace_file(
     # route. Genuine binary fails to decode and is served verbatim, so we also
     # skip the per-asset vault fetch for it.
     if is_text_content_type(content_type) or is_utf8(content):
-        vault_secrets = await get_vault_secrets_for_redaction(workspace["user_id"])
+        vault_secrets = await get_vault_secrets_for_redaction(
+            served.workspace["user_id"]
+        )
         content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
     if inject is not None and _is_html_content_type(content_type) and is_utf8(content):
@@ -283,7 +289,7 @@ async def serve_workspace_file(
         content = await asyncio.to_thread(with_bridge, content, bridge_for(inject))
 
     headers = {
-        "Content-Security-Policy": _wsfiles_csp(reach, host),
+        "Content-Security-Policy": _WSFILES_CSP,
         # The frame's origin is opaque, so its fetches and module scripts reach
         # these files cross-origin, as Origin: null. The URL is the whole
         # credential, so any origin may read, and never with credentials
@@ -291,7 +297,7 @@ async def serve_workspace_file(
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": _WSFILES_CACHE_CONTROL,
         "Content-Disposition": content_disposition(
-            normalized_path.rsplit("/", 1)[-1] or "file", disposition="inline"
+            served.path.rsplit("/", 1)[-1] or "file", disposition="inline"
         ),
         "X-Content-Type-Options": "nosniff",
     }
@@ -303,12 +309,12 @@ async def render_workspace_file_pdf(
     workspace_id: str,
     path: str,
     *,
+    visible: VisibilityGate,
+    serve_base: str,
     workspace: dict[str, Any] | None = None,
     scale: float | None = None,
     page_numbers: bool = False,
     branding: bool = True,
-    visible: VisibilityGate | None = None,
-    serve_base: str | None = None,
 ) -> Response:
     """Render a workspace HTML file to PDF via headless Chromium.
 
@@ -321,52 +327,27 @@ async def render_workspace_file_pdf(
     ``serve_base`` is the route prefix the document and every subresource it
     pulls are fetched under, and it is the whole authorization story for those
     subresources: the browser fetches them with no token of its own, so
-    whatever the prefix admits is what the PDF can contain. The default is a
-    grant that outlives the render by minutes; a caller whose reach is
-    narrower than the workspace passes the prefix of a route that re-checks
-    each request rather than a deeper string to match against.
+    whatever the prefix admits is what the PDF can contain. A document can
+    print the address it was rendered from, so the prefix reaches no further
+    than the caller and lasts no longer than it must: a share's own route, or
+    for the owner a grant minted for the render that never outlives theirs.
     """
-    visible = visible or _default_visible
-    if _has_traversal(path):
-        raise HTTPException(status_code=404, detail="Not found")
-
-    if workspace is None:
-        try:
-            workspace = await db_get_workspace(workspace_id)
-        except Exception:
-            raise HTTPException(status_code=404, detail="Not found") from None
-    if not workspace or is_unbound(workspace):
-        raise HTTPException(status_code=404, detail="Not found")
-
-    work_dir = _served_work_dir(workspace, workspace_id)
-    normalized_path = contained_relative_path(
-        path, work_dir, previous_dir_names_of(workspace)
-    )
-    if normalized_path is None or not visible(normalized_path):
-        raise HTTPException(status_code=404, detail="Not found")
-
     # Cheap pre-validation: resolve bytes + content type and require HTML.
-    resolved = await _resolve_serve_bytes(
-        workspace, workspace_id, normalized_path, work_dir=work_dir, visible=visible
+    served = await _read_served_file(
+        workspace_id, path, workspace=workspace, visible=visible
     )
-    if resolved is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    _content, content_type = resolved
-    if not _is_html_content_type(content_type):
+    if not _is_html_content_type(served.content_type):
         raise HTTPException(status_code=404, detail="Not found")
 
     from src.server.services import pdf_render
 
     base = PDF_RENDER_INTERNAL_BASE.rstrip("/")
-    if serve_base is None:
-        grant = await mint_file_grant(workspace_id, ttl=_PDF_GRANT_TTL_SECONDS)
-        serve_base = grant_prefix(grant)
     if not serve_base.startswith(base):
         serve_base = f"{base}/{serve_base.lstrip('/')}"
     # Percent-encode the path (UTF-8) so metacharacters (#, ?, space) and
     # non-ASCII (CJK) survive into headless Chromium; keep `/` so the path
     # structure stays intact. The serving endpoint decodes it back to unicode.
-    internal_url = f"{serve_base}{quote(normalized_path, safe='/')}"
+    internal_url = f"{serve_base}{quote(served.path, safe='/')}"
     try:
         pdf_bytes = await pdf_render.render_workspace_pdf(
             internal_url,
@@ -383,7 +364,7 @@ async def render_workspace_file_pdf(
         logger.exception("PDF render failed for workspace file")
         raise HTTPException(status_code=500, detail="PDF rendering failed")
 
-    stem = normalized_path.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "document"
+    stem = served.path.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "document"
     headers = {
         "Content-Disposition": content_disposition(
             f"{stem}.pdf", disposition="attachment"
@@ -418,19 +399,24 @@ async def serve_workspace_file_endpoint(
     branding: bool = Query(
         True, description="PDF only: stamp 'LangAlpha · <date>' in the footer."
     ),
-    host: Annotated[str | None, Header()] = None,
+    sec_fetch_dest: Annotated[str | None, Header(include_in_schema=False)] = None,
 ) -> Response:
     """Serve a workspace file by path with sandboxed CSP.
 
     The grant is the credential; uniform 404 for a bad or expired grant, an
     unknown workspace, a missing file, or traversal. ``?inject=view`` adds the
     page bridge to HTML only, ``?inject=comments`` the bridge with comment
-    mode (``page_bridge.parse_inject``). ``?format=pdf`` renders HTML files to PDF
+    mode (``page_bridge.parse_inject``), and HTML a page frames with neither
+    gets the ``nested`` bridge. ``?format=pdf`` renders HTML files to PDF
     server-side; other values serve normally. ``scale``, ``page_numbers``,
     and ``branding`` apply only with ``format=pdf``.
     """
     try:
         workspace_id = await verify_file_grant(grant)
+        if format == "pdf":
+            # Not the caller's own grant, which a PDF that prints its address
+            # would carry out for the rest of a day.
+            render_grant = await narrowed_file_grant(grant, ttl=_PDF_GRANT_TTL_SECONDS)
     except FileGrantError as e:
         logger.info(f"Refusing wsfiles request: {single_line(str(e))}")
         raise HTTPException(status_code=404, detail="Not found") from None
@@ -441,11 +427,23 @@ async def serve_workspace_file_endpoint(
             scale=scale,
             page_numbers=page_numbers,
             branding=branding,
+            visible=_owner_visible,
+            serve_base=grant_prefix(render_grant),
         )
-    return await serve_workspace_file(
+    asked = parse_inject(inject)
+    # A page framing another of the workspace's files (<iframe src="detail.html">)
+    # asks for no bridge, and served as it is that file would run without the
+    # stand-ins an opaque origin needs, its loads never reaching the page's list.
+    framed = asked is None and (sec_fetch_dest or "").lower() in _FRAME_DESTS
+    response = await serve_workspace_file(
         workspace_id,
         path,
-        inject=parse_inject(inject),
-        reach=grant_prefix(grant),
-        host=host,
+        visible=_owner_visible,
+        inject="nested" if framed else asked,
     )
+    if asked is None and _is_html_content_type(response.media_type or ""):
+        # One URL with two bodies: a download, a fetch of the file or the PDF
+        # render must never get the framed copy from the browser's cache, nor a
+        # frame the bytes as they are.
+        response.headers["Vary"] = "Sec-Fetch-Dest"
+    return response

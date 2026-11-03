@@ -6,18 +6,29 @@ inside functions so this module never fails to import without the ``pdf`` extra;
 callers map ``PdfRenderUnavailable`` to a 501.
 
 SSRF containment: every subresource request is gated by ``_is_request_allowed``,
-which permits only the workspace's own serve prefix plus a fixed https CDN
-allowlist. Agent-authored HTML therefore cannot reach internal services or
-cloud metadata endpoints from inside the server.
+which permits the workspace's own serve prefix and any https host at a public
+address, and a redirect is followed only hop by hop through the same gate
+(``_fetch_gated``). Agent-authored HTML therefore loads what it loads in the
+viewer, and cannot reach services or cloud metadata endpoints on the server's
+own network. A stylesheet or framed document that redirected reaches the page
+as an import of, or a refresh to, where it landed, so its relative URLs
+resolve there and that request meets the gate too (``_stand_in``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import html
 import re
+from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse
+
+import httpx
+
+from src.server.utils.egress_guard import EgressBlockedError, resolve_public_ips
+from src.tools.web.inhouse.guard import GuardedAsyncTransport
 
 logger = logging.getLogger(__name__)
 
@@ -37,43 +48,285 @@ class PdfRenderTimeout(PdfRenderError):
     """Rendering exceeded the allotted time budget."""
 
 
-# --- SSRF allowlist --------------------------------------------------------
+# --- SSRF gate -------------------------------------------------------------
 
-# https-only CDN hosts agent HTML may pull libraries/fonts from. Everything
-# else (internal hosts, metadata IPs, lookalike domains) is aborted.
-_CDN_ALLOWLIST: frozenset[str] = frozenset(
+
+def _asks_for_pdf(url: str) -> bool:
+    # Parsed, not substring-matched, so percent-encoded forms like
+    # ``format=%70df`` that a serve endpoint decodes back to ``pdf`` count too.
+    query = urlparse(url).query or ""
+    return any(
+        key.lower() == "format" and value.lower() == "pdf"
+        for key, value in parse_qsl(query, keep_blank_values=True)
+    )
+
+
+async def _is_request_allowed(url: str, workspace_serve_prefix: str) -> bool:
+    """True if ``url`` may be fetched during a render.
+
+    Allowed when the URL starts with this workspace's serve prefix, or is https
+    to a public address. This browser sits on the server's network, where the
+    viewer's does not, so a report may load what a reader's browser can and
+    nothing only the server can. Https is what holds against a name repointed at
+    a private address after the check: the service there has no certificate for
+    that name. Any URL asking for ``format=pdf`` is refused, on any host, so a
+    document cannot have the renderer render again through the deployment's
+    public address and use up its slots.
+    """
+    if _asks_for_pdf(url):
+        return False
+    if url.startswith(workspace_serve_prefix):
+        return True
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    try:
+        await resolve_public_ips(parsed.hostname)
+    except EgressBlockedError:
+        return False
+    return True
+
+
+# Hops a gated fetch follows before it gives up, as a browser caps a chain.
+_MAX_REDIRECT_HOPS = 5
+
+# What a render takes from the internet, per answer and in all. Each answer is
+# held here until the browser has it, and a report may name any public
+# address, which may answer without end.
+_MAX_FETCH_BYTES = 16 * 1024 * 1024
+_MAX_RENDER_FETCH_BYTES = 64 * 1024 * 1024
+# One fetch, its redirects included, so a server sending a byte at a time
+# cannot hold a render slot past the render's own budget.
+_FETCH_TIMEOUT_S = 20.0
+
+# Not passed on in either direction: they describe the connection or the
+# encoding, and the body crosses whole and as sent.
+_HOP_HEADERS = frozenset(
     {
-        "cdnjs.cloudflare.com",
-        "cdn.jsdelivr.net",
-        "unpkg.com",
-        "esm.sh",
-        "fonts.googleapis.com",
-        "fonts.gstatic.com",
+        "accept-encoding",
+        "connection",
+        "content-encoding",
+        "content-length",
+        "host",
+        "keep-alive",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
     }
 )
 
 
-def _is_request_allowed(url: str, workspace_serve_prefix: str) -> bool:
-    """True if ``url`` may be fetched during a render.
+@dataclass(frozen=True)
+class _Fetched:
+    status: int
+    headers: dict[str, str]
+    body: bytes
+    #: Where the answer came from, past any redirects.
+    url: str
 
-    Allowed when the URL starts with this workspace's serve prefix, or when its
-    host is an exact match in the https CDN allowlist. Exact host equality (not
-    suffix) blocks lookalikes like ``unpkg.com.evil.io``. A workspace-prefix URL
-    carrying ``format=pdf`` is rejected so a rendered document cannot embed a
-    subresource that recursively re-invokes the renderer — the query is parsed
-    (not substring-matched) so percent-encoded forms like ``format=%70df`` that
-    the serve endpoint decodes back to ``pdf`` are caught too.
+
+#: Dropped once a redirect leaves the origin they were sent to, as a browser
+#: drops them: a token meant for one site never goes on to another.
+_CREDENTIAL_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization"})
+_REDIRECTS = frozenset({301, 302, 303, 307, 308})
+#: What describes a body, dropped with the body when a redirect turns the
+#: request into a GET.
+_BODY_HEADERS = frozenset({"content-language", "content-location", "content-type"})
+
+
+def _redirect_drops_body(status: int, method: str) -> bool:
+    """Fetch's rule: a 301 or 302 turns a POST into a GET and a 303 turns
+    anything but GET or HEAD into one; every other method and status repeats
+    the request as it was."""
+    return (status in (301, 302) and method == "POST") or (
+        status == 303 and method not in ("GET", "HEAD")
+    )
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = httpx.URL(url)
+    return parsed.scheme, parsed.host, parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+
+
+def _asked(url: str) -> tuple[str, str, int | None, bytes]:
+    """What a request for ``url`` puts on the wire, however the URL is
+    spelled: Chromium and httpx write the same one differently."""
+    return (*_origin(url), httpx.URL(url).raw_path)
+
+
+class _Budget:
+    """What one render may still take from the internet, over all its fetches,
+    and the answers it holds for a file the browser will ask for again
+    (``_stand_in``), already counted against it."""
+
+    def __init__(self, total: int = _MAX_RENDER_FETCH_BYTES) -> None:
+        self.left = total
+        self.held: dict[tuple[str, str, int | None, bytes], _Fetched] = {}
+
+
+def _fetch_transport() -> httpx.AsyncBaseTransport:
+    # Dials only the addresses it checked, so a name repointed after the gate
+    # reaches nothing private.
+    return GuardedAsyncTransport()
+
+
+async def _fetch_gated(
+    request, url: str, workspace_serve_prefix: str, budget: _Budget
+) -> _Fetched | None:
+    """The answer for ``url``, each redirect hop gated as the first request
+    was, or None when a hop is refused, the chain runs too long or the answer
+    is past its cap.
+
+    Fetched here rather than by Chromium, which follows a redirect without
+    asking the route handler again, so a public address answering 302 to a
+    private one would be fetched ungated; and rather than by Playwright's
+    ``route.fetch``, which holds the whole body before anything could cap it.
     """
+    method, content = request.method, request.post_data_buffer
+    headers = {
+        name: value
+        for name, value in request.headers.items()
+        if name.lower() not in _HOP_HEADERS
+    }
+    headers["accept-encoding"] = "identity"
+    async with (
+        asyncio.timeout(_FETCH_TIMEOUT_S),
+        httpx.AsyncClient(
+            transport=_fetch_transport(), timeout=_FETCH_TIMEOUT_S
+        ) as client,
+    ):
+        for _ in range(_MAX_REDIRECT_HOPS + 1):
+            asked = client.build_request(method, url, headers=headers, content=content)
+            response = await client.send(asked, stream=True)
+            try:
+                location = response.headers.get("location")
+                # Fetch follows only these; a 300 or 304 reaches the page as is.
+                if response.status_code not in _REDIRECTS or not location:
+                    return await _read_capped(response, budget)
+            finally:
+                await response.aclose()
+            hop = urljoin(url, location)
+            if not await _is_request_allowed(hop, workspace_serve_prefix):
+                return None
+            if _origin(hop) != _origin(url):
+                headers = {
+                    name: value
+                    for name, value in headers.items()
+                    if name.lower() not in _CREDENTIAL_HEADERS
+                }
+            url = hop
+            if _redirect_drops_body(response.status_code, method.upper()):
+                method, content = "GET", None
+                headers = {
+                    name: value
+                    for name, value in headers.items()
+                    if name.lower() not in _BODY_HEADERS
+                }
+    return None
+
+
+async def _read_capped(response: httpx.Response, budget: _Budget) -> _Fetched | None:
+    """The answer whole, or None once it passes its cap or the render's
+    budget. Asked uncompressed and refused compressed anyway, as
+    ``fetch_capped`` is, since a decoder expands a chunk with no bound before a
+    cap could see it; and streamed, since a Content-Length is only a claim."""
+    encoding = response.headers.get("content-encoding", "identity").strip().lower()
+    if encoding not in ("", "identity"):
+        return None
+    declared = response.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > min(_MAX_FETCH_BYTES, budget.left):
+        return None
+    body = bytearray()
+    async for chunk in response.aiter_raw():
+        body.extend(chunk)
+        budget.left -= len(chunk)
+        if len(body) > _MAX_FETCH_BYTES or budget.left < 0:
+            return None
+    headers: dict[str, str] = {}
+    for name, value in response.headers.multi_items():
+        name = name.lower()
+        if name in _HOP_HEADERS:
+            continue
+        # Cookies cannot be folded on commas, an Expires holds one: the browser
+        # end splits a Set-Cookie on line breaks, one cookie each.
+        joined = "\n" if name == "set-cookie" else ", "
+        headers[name] = f"{headers[name]}{joined}{value}" if name in headers else value
+    return _Fetched(response.status_code, headers, bytes(body), str(response.url))
+
+
+_CSS_STRING_ESCAPES = re.compile(r'[\x00-\x1f\x7f"\\]')
+
+
+def _css_string(value: str) -> str:
+    """``value`` quoted as CSSOM serializes a string, so no URL ends it early."""
+
+    def escape(match: re.Match[str]) -> str:
+        char = match.group()
+        return "\\" + char if char in '"\\' else f"\\{ord(char):x} "
+
+    return '"' + _CSS_STRING_ESCAPES.sub(escape, value) + '"'
+
+
+def _stand_in(request, url: str, fetched: _Fetched) -> tuple[str, bytes] | None:
+    """What reaches the page in place of a redirected answer's bytes, so the
+    file resolves its own relative URLs from where it landed, or None for the
+    bytes as they are.
+
+    Fulfilled under the URL the page asked for, they would resolve against
+    that URL. A stylesheet becomes an ``@import`` of where it landed, a framed
+    document a refresh to it: Chromium asks the route again for either, where
+    for a fulfilled redirect's target it would not, so the gate holds. A sheet
+    only with no Origin: one in cors mode checks the answer's CORS headers,
+    and SRI its bytes, which a stand-in passes neither of. A script has none:
+    a classic one cannot import, and at the route a module looks like a
+    classic script with crossorigin.
+    """
+    if _asked(fetched.url) == _asked(url):
+        return None
+    if request.resource_type == "stylesheet" and all(
+        name.lower() != "origin" for name in request.headers
+    ):
+        return "text/css; charset=utf-8", f"@import url({_css_string(fetched.url)});".encode()
+    if request.resource_type == "document" and request.method == "GET":
+        target = html.escape(fetched.url.replace("'", "%27"), quote=True)
+        refresh = f"<!doctype html><meta http-equiv=\"refresh\" content=\"0; url='{target}'\">"
+        return "text/html; charset=utf-8", refresh.encode()
+    return None
+
+
+async def _answer_request(
+    route, request, workspace_serve_prefix: str, budget: _Budget
+) -> None:
+    """Lets a render request through the gate or aborts it. The serve routes
+    answer without redirecting, so a request under the prefix goes on as is.
+    What a ``_stand_in`` sends the browser on to meets the gate like any
+    request, then takes the answer already fetched, once."""
+    url = request.url
+    if not await _is_request_allowed(url, workspace_serve_prefix):
+        await route.abort()
+        return
     if url.startswith(workspace_serve_prefix):
-        query = urlparse(url).query or ""
-        for key, value in parse_qsl(query, keep_blank_values=True):
-            if key.lower() == "format" and value.lower() == "pdf":
-                return False
-        return True
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        return False
-    return parsed.hostname in _CDN_ALLOWLIST
+        await route.continue_()
+        return
+    try:
+        fetched = budget.held.pop(_asked(url), None) or await _fetch_gated(
+            request, url, workspace_serve_prefix, budget
+        )
+    except Exception:
+        logger.debug("PDF render fetch failed for %s", url, exc_info=True)
+        fetched = None
+    if fetched is None:
+        await route.abort()
+    elif stand_in := _stand_in(request, url, fetched):
+        budget.held[_asked(fetched.url)] = fetched
+        content_type, body = stand_in
+        await route.fulfill(status=200, headers={"content-type": content_type}, body=body)
+    else:
+        await route.fulfill(
+            status=fetched.status, headers=fetched.headers, body=fetched.body
+        )
 
 
 # --- Browser lifecycle -----------------------------------------------------
@@ -373,8 +626,7 @@ async def render_workspace_pdf(
     """Render a workspace HTML URL to PDF bytes in headless Chromium.
 
     ``internal_url`` is the server's own loopback wsfiles URL; subresource
-    requests are SSRF-gated to ``workspace_serve_prefix`` plus the CDN
-    allowlist. ``scale`` (clamped to 0.5–2.0) shrinks/enlarges the whole
+    requests are SSRF-gated (``_is_request_allowed``). ``scale`` (clamped to 0.5 to 2.0) shrinks/enlarges the whole
     rendering; ``branding`` (default on) stamps "LangAlpha · <date>" in the
     footer and ``page_numbers`` adds ``N / total`` beside it. Raises
     ``PdfRenderUnavailable`` / ``PdfRenderTimeout`` / ``PdfRenderError`` for
@@ -392,18 +644,15 @@ async def render_workspace_pdf(
             # PlaywrightError (e.g. the browser died after _get_browser); keep
             # them inside the mapped try so none escapes as a raw 500.
             context = await browser.new_context(viewport=_PRINT_VIEWPORT)
+            budget = _Budget()
 
             async def _route_handler(route, request):
-                if _is_request_allowed(request.url, workspace_serve_prefix):
-                    await route.continue_()
-                else:
-                    await route.abort()
+                await _answer_request(route, request, workspace_serve_prefix, budget)
 
             async def _ws_route_handler(ws_route):
                 # WebSockets are not covered by page.route, so gate them
-                # separately. No ws:// URL can pass _is_request_allowed (it
-                # requires the https serve prefix or an https CDN host), so
-                # every WS is closed unconditionally — sealing the one egress
+                # separately. A report rendered once has no use for a live feed,
+                # so every WS is closed unconditionally, which seals the one
                 # channel the HTTP guard misses (e.g. ws://169.254.169.254,
                 # ws://127.0.0.1). There is deliberately no connect path.
                 await ws_route.close()

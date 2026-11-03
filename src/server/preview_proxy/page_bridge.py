@@ -2,12 +2,13 @@
 document it frames for the app, which speaks to the viewer around the frame
 (``bridge/core.js`` says what it does).
 
-A document gets the parts its view needs, inside one function. Every bridged
-document gets ``core.js`` and ``requests.js`` (``view``): a published version,
-and a live file the panel or a share reads. The owner's live view of a file
-adds the ``comments-*.js`` parts (``comments``). A live file is bridged only
-when its URL asks (``?inject=``, ``parse_inject``); a PDF render or a download reads the
-bytes as they are.
+A document gets the parts its view needs, inside one function. Every document
+the viewer frames gets the ``view`` parts: a published version, and a live file
+the panel or a share reads. The owner's live view of a file adds the
+``comments-*.js`` parts (``comments``). A live file is bridged only when its URL
+asks (``?inject=``, ``parse_inject``), or, in the owner's view, when a page frames
+it (``nested``: the stand-ins and a reporter of what the frame loads); a PDF
+render or a download reads the bytes as they are.
 """
 
 from __future__ import annotations
@@ -18,26 +19,33 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-__all__ = ["Bridge", "Inject", "bridge_for", "parse_inject", "with_bridge"]
+__all__ = ["Bridge", "Inject", "Variant", "bridge_for", "parse_inject", "with_bridge"]
 
 Inject = Literal["view", "comments"]
+# What a document is served with: what its URL asks for, or ``nested`` for a
+# workspace file a page in the owner's view frames, which asks for nothing.
+Variant = Literal["view", "comments", "nested"]
 
-_PARTS: dict[Inject, tuple[str, ...]] = {
-    "view": ("core", "requests"),
+# In the order they run, which is the order their listeners hear an event.
+_VIEW_PARTS = ("opaque", "core", "links", "loads", "requests")
+_PARTS: dict[Variant, tuple[str, ...]] = {
+    "view": _VIEW_PARTS,
     "comments": (
-        "core",
-        "requests",
+        *_VIEW_PARTS,
         "comments-text",
         "comments-areas",
         "comments-anchors",
         "comments-mode",
     ),
+    "nested": ("opaque", "nested"),
 }
 # One function around the parts, so nothing they declare is the document's.
 # Opened outside a frame, a document has no viewer to speak to. The hello goes
-# last, once every part is listening.
+# last, once every part is listening; a frame inside a page has no viewer to
+# greet.
 _OPEN = "(function () {\n'use strict';\nif (!window.parent || window.parent === window) return;\n"
-_CLOSE = "\nhello();\n})();"
+_HELLO = "\nhello();"
+_CLOSE = "\n})();"
 
 # The frame's scheme follows the app's theme, so a document that paints no
 # ground of its own shows the app's, not a white sheet under a dark app.
@@ -90,6 +98,9 @@ class Bridge:
     # In the ETag of every document it is spliced into, so a changed bridge
     # is a changed document. Covers all ``with_bridge`` may add.
     digest: str
+    # Whether the document is the viewer's frame, which takes the app's color
+    # scheme and scrollbar. A frame inside a page keeps what the page gives it.
+    viewer_frame: bool = True
 
 
 def _part(name: str) -> str:
@@ -101,18 +112,22 @@ def _part(name: str) -> str:
     return source
 
 
-def _assemble(inject: Inject) -> Bridge:
-    source = _OPEN + "\n".join(_part(name) for name in _PARTS[inject]) + _CLOSE
+def _assemble(variant: Variant) -> Bridge:
+    parts = _PARTS[variant]
+    hello = _HELLO if "core" in parts else ""
+    source = _OPEN + "\n".join(_part(name) for name in parts) + hello + _CLOSE
     script = f"<script>{source}</script>".encode("ascii")
-    digest = hashlib.sha256(_COLOR_SCHEME + _EMBED_SCROLLBARS + script).hexdigest()[:12]
-    return Bridge(script=script, digest=digest)
+    viewer_frame = variant != "nested"
+    dress = _COLOR_SCHEME + _EMBED_SCROLLBARS if viewer_frame else b""
+    digest = hashlib.sha256(dress + script).hexdigest()[:12]
+    return Bridge(script=script, digest=digest, viewer_frame=viewer_frame)
 
 
-_BRIDGES: dict[Inject, Bridge] = {inject: _assemble(inject) for inject in _PARTS}
+_BRIDGES: dict[Variant, Bridge] = {variant: _assemble(variant) for variant in _PARTS}
 
 
-def bridge_for(inject: Inject) -> Bridge:
-    return _BRIDGES[inject]
+def bridge_for(variant: Variant) -> Bridge:
+    return _BRIDGES[variant]
 
 
 def parse_inject(value: str | None) -> Inject | None:
@@ -174,9 +189,12 @@ def with_bridge(document: bytes, bridge: Bridge) -> bytes:
     Up to the 25 MiB a version holds, so callers on the event loop hand it to
     a thread.
     """
-    scrollbars = b"" if _STYLES_OWN_SCROLLBAR.search(document) else _EMBED_SCROLLBARS
-    scheme = b"" if _declares_color_scheme(document) else _COLOR_SCHEME
-    tag = scheme + scrollbars + bridge.script
+    tag = bridge.script
+    if bridge.viewer_frame:
+        if not _STYLES_OWN_SCROLLBAR.search(document):
+            tag = _EMBED_SCROLLBARS + tag
+        if not _declares_color_scheme(document):
+            tag = _COLOR_SCHEME + tag
     content = _outside_comments(_CONTENT, document, len(document))
     end = content.start() if content is not None else len(document)
     for pattern in (_HEAD, _HTML, _DOCTYPE):

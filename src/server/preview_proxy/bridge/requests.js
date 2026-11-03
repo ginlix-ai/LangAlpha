@@ -18,6 +18,13 @@ function requestBack() {
   settleSoon();
 }
 
+// A worker's start and its requests, which the stand-in counts (opaque.js).
+onWorkerRequests.push(function (delta) {
+  if (settled) return;
+  inFlight = Math.max(0, inFlight + delta);
+  if (delta < 0) settleSoon();
+});
+
 if (typeof window.fetch === 'function') {
   var pageFetch = window.fetch;
   /**

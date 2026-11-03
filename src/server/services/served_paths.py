@@ -31,6 +31,17 @@ _ALWAYS_HIDDEN_SUFFIXES = ALWAYS_HIDDEN_SUFFIXES
 
 _ALWAYS_HIDDEN_DIR_SEGMENTS = tuple(f"/{d}/" for d in ALWAYS_HIDDEN_DIR_NAMES)
 
+# Hidden only to keep a listing tidy, and where a page keeps its libraries and
+# build output. The rest of the always-hidden folders hold a repository's
+# history, an environment and tool caches, which no page needs and which can
+# carry credentials.
+PAGE_LIBRARY_DIR_NAMES: frozenset[str] = frozenset(
+    {"node_modules", "vendor", ".next", ".nuxt"}
+)
+_UNLOADABLE_DIR_SEGMENTS = tuple(
+    f"/{d}/" for d in sorted(ALWAYS_HIDDEN_DIR_NAMES - PAGE_LIBRARY_DIR_NAMES)
+)
+
 
 def is_hidden_path(client_path: str) -> bool:
     if client_path == SandboxLayout.INTERNAL_DIR:
@@ -38,12 +49,18 @@ def is_hidden_path(client_path: str) -> bool:
     return any(client_path.startswith(prefix) for prefix in _HIDDEN_DIR_PREFIXES)
 
 
+def _is_transient_path(normalized: str) -> bool:
+    # A transfer's partial or staged file, whose bytes are not yet the file
+    # they will become; one a user edits or removes fails the transfer.
+    return normalized.rfind("/") == 0 and normalized[1:].startswith(
+        TRANSIENT_ROOT_PREFIX
+    )
+
+
 def is_always_hidden_path(client_path: str) -> bool:
     normalized = f"/{client_path.lstrip('/')}"
 
-    # A transfer's partial or staged file, whose bytes are not yet the file
-    # they will become; one a user edits or removes fails the transfer.
-    if normalized.rfind("/") == 0 and normalized[1:].startswith(TRANSIENT_ROOT_PREFIX):
+    if _is_transient_path(normalized):
         return True
 
     if normalized.endswith(_ALWAYS_HIDDEN_BASENAMES):
@@ -61,24 +78,34 @@ def is_always_hidden_path(client_path: str) -> bool:
     return False
 
 
-def is_serve_blocked_path(client_path: str) -> bool:
-    """True if a path must never be served by the file-serving core.
+def is_agent_machinery_path(client_path: str) -> bool:
+    """True for what no page has a use for and an owner's page must not read.
 
-    Mirrors the hidden/system/always-hidden gate the read/download/list
-    endpoints apply, so the grant-gated wsfiles route and the public share
-    serve route never expose agent-infrastructure dirs (``.agents``, ``tools``,
-    ``mcp_servers``, ``_internal``, ...) that those endpoints deliberately hide.
-
-    Stricter than the panel: it skips ``_is_system_path``'s carve-out for the
-    user's profile, automation and subagent files. Their owner reads them through the
-    file routes, never this core, and the file mount links them into every
-    workspace folder, so only containment would stand between a share link and
-    the user's holdings.
+    The agent's own directories hold its tool wrappers and the user's profile,
+    memory and holdings, which the file mount links into every workspace
+    folder, and a page that runs a stranger's script has the reach of whatever
+    this lets through.
     """
     return (
-        is_always_hidden_path(client_path)
+        _is_transient_path(f"/{client_path.lstrip('/')}")
         or is_hidden_path(client_path)
         or client_path.startswith(SYSTEM_DIR_PREFIXES)
+    )
+
+
+def page_may_load(client_path: str) -> bool:
+    """Whether the owner's view of a page, and what the page publishes, may
+    hold this file: anything but the agent's machinery and the always-hidden
+    files, except the library folders (``PAGE_LIBRARY_DIR_NAMES``) a page
+    loads its scripts and styles from."""
+    if is_agent_machinery_path(client_path):
+        return False
+    normalized = f"/{client_path.lstrip('/')}"
+    return not (
+        normalized.endswith(_ALWAYS_HIDDEN_BASENAMES)
+        or normalized.endswith(_ALWAYS_HIDDEN_SUFFIXES)
+        or any(seg in normalized for seg in _ALWAYS_HIDDEN_SEGMENTS)
+        or any(seg in normalized for seg in _UNLOADABLE_DIR_SEGMENTS)
     )
 
 
@@ -128,13 +155,19 @@ def shared_path_visible(scope: ShareScope, client_path: str) -> bool:
     Run on the path a sandbox read resolved to, not on the one that was asked
     for: a symlink is how an in-scope request turns into an out-of-scope file.
 
+    Stricter than the panel: it skips ``_is_system_path``'s carve-out for the
+    user's profile, automation and subagent files. Their owner reads them through
+    the file routes, and the file mount links them into every workspace folder,
+    so only containment would stand between a share link and the user's holdings.
+
     The workspace's notes file stays out too, whatever the scope: it is the
     agent's own runtime context, and a shared page cannot tell it from a
     deliverable because the share carries no folder name to recognise it by.
     """
     return (
         scope.contains(client_path)
-        and not is_serve_blocked_path(client_path)
+        and not is_always_hidden_path(client_path)
+        and not is_agent_machinery_path(client_path)
         and not is_agent_notes_path(client_path)
     )
 
@@ -144,9 +177,11 @@ _MAX_ARTIFACT_PATH = 1024
 
 
 def may_be_artifact(path: str) -> bool:
-    """Whether a workspace-relative path may have an artifact record: what
-    any link to it would let out, in a length its comments and versions can
-    store."""
-    return len(path) <= _MAX_ARTIFACT_PATH and shared_path_visible(
-        ShareScope("", ""), path
+    """Whether a workspace-relative path may have an artifact record and go out
+    with a publish, in a length its comments and versions can store. Wider than
+    a share token's gate because the owner reviews each file a publish lists."""
+    return (
+        len(path) <= _MAX_ARTIFACT_PATH
+        and page_may_load(path)
+        and not is_agent_notes_path(path)
     )

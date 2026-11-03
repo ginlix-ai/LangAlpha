@@ -22,6 +22,7 @@ __all__ = [
     "FileGrantError",
     "grant_prefix",
     "mint_file_grant",
+    "narrowed_file_grant",
     "seconds_left",
     "verify_file_grant",
 ]
@@ -69,6 +70,20 @@ async def mint_file_grant(
 ) -> FileGrant:
     token, expires_at = await _CODEC.mint((workspace_id,), ttl=ttl, now=now)
     return FileGrant(token=token, workspace_id=workspace_id, expires_at=expires_at)
+
+
+async def narrowed_file_grant(
+    token: str, *, ttl: int, now: int | None = None
+) -> FileGrant:
+    """A grant to the workspace a live ``token`` opens that lasts ``ttl``
+    seconds at most and never past ``token`` itself, or ``FileGrantError``:
+    for an address that may be copied out of the request, as a rendered
+    document can print its own."""
+    (workspace_id,), expires_at = await _CODEC.verify(token, now=now)
+    current = int(now if now is not None else time.time())
+    return await mint_file_grant(
+        workspace_id, ttl=min(ttl, expires_at - current), now=current
+    )
 
 
 async def verify_file_grant(token: str, *, now: int | None = None) -> str:
