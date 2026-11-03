@@ -96,7 +96,11 @@ test('a keyboard reaches a thread and its menu', async ({ page }) => {
 
 test('a sidebar rename and a gallery rename of one thread reach the server in the order made', async ({ page }) => {
   const applied = [];
+  // Lists read the saved title, as the server's would: each rename reads them
+  // again once its write answers.
+  const listed = () => ALL.map((th) => (th.thread_id === T1 && applied.length ? { ...th, title: applied.at(-1) } : th));
   await open(page, `/chat/${WS_ID}`, {
+    'GET /threads': (route) => json(route, { threads: listed(), total: ALL.length }),
     'PATCH /threads/*': async (route) => {
       const body = JSON.parse(route.request().postData() || '{}');
       // The first answer is slow: the second write must still land after it.
@@ -105,6 +109,10 @@ test('a sidebar rename and a gallery rename of one thread reach the server in th
       return json(route, { ...ALL[0], ...body, updated_at: new Date().toISOString() });
     },
   });
+  // The gallery mounts after the tree. A rename made before its list arrives
+  // reaches no card, and the list then reads the old title while the slow
+  // write is still out.
+  await expect(page.locator('main').getByRole('heading', { name: 'AMD recovery entry plan' })).toBeVisible({ timeout: 15_000 });
 
   await threadRow(page, 'AMD recovery').click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Rename' }).click();
