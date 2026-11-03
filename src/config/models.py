@@ -348,6 +348,23 @@ class MarketWatchConfig(BaseModel):
     )
 
 
+class ClaudeCodeConfig(BaseModel):
+    """Claude Code on cloud computers (the runtime's own switch is the
+    ``claude_code_runtime`` feature). The CLI of a turn on a cloud computer
+    runs in the backend worker that owns the turn."""
+
+    hosted_api_key: bool = Field(
+        default=False,
+        description="Run Claude Code turns on cloud computers on the user's own Anthropic API key",
+    )
+    worker_cli_slots: int = Field(
+        default=8, ge=1, description="Claude Code CLIs one worker runs at once for cloud computers"
+    )
+    hosted_turns_per_user: int = Field(
+        default=3, ge=1, description="Claude Code turns one user runs at once on cloud computers"
+    )
+
+
 class WorkflowOrchestrationConfig(BaseModel):
     """Caps and timeouts for RunWorkflow programmatic subagent runs."""
 
@@ -501,6 +518,7 @@ class InfrastructureConfig(BaseModel):
     )
     langsmith_tracing: bool = Field(default=False, description="Enable LangSmith tracing")
     market_watch: MarketWatchConfig = Field(default_factory=MarketWatchConfig)
+    claude_code: ClaudeCodeConfig = Field(default_factory=ClaudeCodeConfig)
 
     # User-facing product features (deployment overrides of the code catalog
     # in src/config/features.py). Distinct from the infra toggles above, which

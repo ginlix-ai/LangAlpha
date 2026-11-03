@@ -15,9 +15,13 @@ from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 from ptc_agent.agent.claude_code.launcher import (
+    API_KEY_FD_ENV,
     SDK_CONNECT_SHA256,
     TOKEN_FD_ENV,
+    CliSlots,
+    Credential,
     LocalLauncher,
+    ScopedEnvTransport,
     _token_socket,
     session_file_path,
     thread_dir,
@@ -31,12 +35,12 @@ def test_the_transport_is_a_copy_of_the_pinned_sdks():
     )
 
 
-async def launch(launcher: LocalLauncher, tmp_path: Path) -> tuple[dict[str, str], str, str]:
-    """Start a stand-in CLI that records its environment, its argv and what the token descriptor holds."""
+async def launch(launcher: LocalLauncher, tmp_path: Path, fd_env: str = TOKEN_FD_ENV) -> tuple[dict[str, str], str, str]:
+    """Start a stand-in CLI that records its environment, its argv and what the descriptor ``fd_env`` names holds."""
     cli, seen = tmp_path / "claude", tmp_path / "seen.json"
     cli.write_text(
         f"#!{sys.executable}\nimport json, os, socket, sys\n"
-        f"fd = os.environ.get({TOKEN_FD_ENV!r})\n"
+        f"fd = os.environ.get({fd_env!r})\n"
         "token = socket.socket(fileno=int(fd)).recv(4096).decode().strip() if fd else ''\n"
         f"json.dump({{'env': dict(os.environ), 'argv': sys.argv[1:], 'token': token}}, open({str(seen)!r}, 'w'))\n"
     )
@@ -83,6 +87,60 @@ async def test_the_token_reaches_the_cli_through_a_socket_never_its_environment_
     env, argv, handed = await launch(LocalLauncher(token=token), tmp_path)
     assert handed == token
     assert token not in argv and not any(token in v for v in env.values())
+
+
+class _Store:
+    def __init__(self, credential: Credential) -> None:
+        self.credential = credential
+
+    async def read(self) -> Credential:
+        return self.credential
+
+    async def refused(self, credential: Credential) -> None: ...
+
+
+@pytest.mark.asyncio
+async def test_an_api_key_reaches_the_cli_on_its_own_descriptor_never_its_environment_or_argv(tmp_path):
+    key = "sk-ant-api03-" + "9" * 80
+    launcher = LocalLauncher(saved=_Store(Credential(key, kind="api_key")))
+    env, argv, handed = await launch(launcher, tmp_path, fd_env=API_KEY_FD_ENV)
+    assert handed == key and TOKEN_FD_ENV not in env
+    assert key not in argv and not any(key in v for v in env.values())
+
+
+@pytest.mark.asyncio
+async def test_a_cli_waits_for_a_slot_is_busy_once_none_frees_in_time_and_gives_it_back_once_closed(monkeypatch):
+    from src.llms.claude_code import ClaudeTurnFailed
+
+    monkeypatch.setattr(CliSlots, "WAIT_S", 0.2)
+    monkeypatch.setattr(ScopedEnvTransport, "_start", lambda self: anyio.sleep(0))
+    slots = CliSlots(1)
+    first = LocalLauncher(slots=slots).transport(ClaudeAgentOptions())
+    await first.connect()
+    with pytest.raises(ClaudeTurnFailed) as busy:
+        await LocalLauncher(slots=slots).transport(ClaudeAgentOptions()).connect()
+    assert busy.value.kind == "busy"
+    await first.close()
+    await first.close()
+    after = LocalLauncher(slots=slots).transport(ClaudeAgentOptions())
+    await after.connect()
+    with pytest.raises(ClaudeTurnFailed):
+        await LocalLauncher(slots=slots).transport(ClaudeAgentOptions()).connect()
+    await after.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cli_that_fails_to_start_gives_its_slot_back(monkeypatch):
+    async def fails(self):
+        raise RuntimeError("no cli")
+
+    slots = CliSlots(1)
+    monkeypatch.setattr(ScopedEnvTransport, "_start", fails)
+    with pytest.raises(RuntimeError):
+        await LocalLauncher(slots=slots).transport(ClaudeAgentOptions()).connect()
+    monkeypatch.setattr(CliSlots, "WAIT_S", 0.2)
+    monkeypatch.setattr(ScopedEnvTransport, "_start", lambda self: anyio.sleep(0))
+    await LocalLauncher(slots=slots).transport(ClaudeAgentOptions()).connect()
 
 
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="reads open descriptors from /proc")

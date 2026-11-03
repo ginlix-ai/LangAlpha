@@ -159,7 +159,7 @@ def _built(**kwargs) -> ClaudeCodeGraph:
         sandbox=SandboxConfig(daytona=DaytonaConfig(api_key="test-key")), mcp=MCPConfig(), filesystem=FilesystemConfig(),
     )
     target = create_llm("claude-haiku-5-5-code")
-    kwargs = {"sandbox": MagicMock(), "claude_code_launcher": lambda sandbox: LocalLauncher(), **kwargs}
+    kwargs = {"sandbox": MagicMock(), "claude_code_launcher": lambda sandbox, hosted: LocalLauncher(), **kwargs}
     with patch.object(AgentConfig, "get_llm_client", return_value=target):
         graph = PTCAgent(config).create_agent(
             llm=target, thread_id="t-1", user_id="u-1", mcp_registry=MagicMock(), **kwargs
@@ -290,7 +290,7 @@ def test_every_tool_description_reaches_claude_whole(role):
 def test_the_turn_runs_where_the_callers_launcher_puts_it_for_the_turns_sandbox():
     sandbox, launcher = MagicMock(), LocalLauncher()
     seen = []
-    graph = _built(sandbox=sandbox, claude_code_launcher=lambda s: seen.append(s) or launcher)
+    graph = _built(sandbox=sandbox, claude_code_launcher=lambda s, hosted: seen.append(s) or launcher)
     assert seen == [sandbox] and graph.turn.launcher is launcher
 
 

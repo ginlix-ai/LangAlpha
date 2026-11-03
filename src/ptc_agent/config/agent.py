@@ -398,6 +398,10 @@ class AgentConfig(BaseModel):
     subagent_models: dict[str, SubagentModel] = Field(
         default_factory=dict, exclude=True
     )
+    # What a Claude Code turn on a cloud computer was admitted to sign in
+    # with, None on any other turn; the run's row is stamped from it, so the
+    # turn is counted as what admission let it run on.
+    claude_code_hosted: str | None = Field(default=None, exclude=True)
     # None permits standalone name resolution; [] means resolution rejected all candidates.
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)
     # Display names aligned index-for-index with ``fallback_llm_clients``
