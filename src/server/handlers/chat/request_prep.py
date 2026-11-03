@@ -39,6 +39,7 @@ from src.server.database.conversation.threads_write import remember_thread_llm_m
 from src.server.services.llm.thread_model import NamedModel
 from src.server.services.runs.pending_input import cache_clock_attempt
 from src.server.database.runs import lifecycle as tl_db
+from src.server.database.runs.hook_jobs import SURFACE_META
 from src.server.models.chat import CommandReport, summarize_hitl_response_map
 from src.server.utils.skill_context import (
     detect_slash_commands,
@@ -660,8 +661,9 @@ def _turn_platform(request: ChatRequest, prior: PriorThread) -> Optional[str]:
     return None
 
 
-#: The run-row key under which an attempt records where it ran, for its retry.
-SURFACE_KEY = "surface"
+#: The run-row key under which an attempt records where it ran, for its retry
+#: and for the finalize's decision table, which skips a chat app's push.
+SURFACE_KEY = SURFACE_META
 
 
 def surface_stamp(

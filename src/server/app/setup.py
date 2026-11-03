@@ -555,6 +555,7 @@ async def lifespan(app: FastAPI):
     from src.server.services.features import register_feature_off_hook
     from src.server.services.hook_outbox import HookOutboxDrainer
     from src.server.services.market_targets import delivery as market_target_delivery
+    from src.server.services.push import notify as push_notify
     from src.server.services.wakeups import cancel as wakeups_cancel
     from src.server.services.wakeups import delivery as wakeup_delivery
 
@@ -565,6 +566,8 @@ async def lifespan(app: FastAPI):
     thread_lifecycle_feed.register_outbox_executors()
     automation_settlement.register_outbox_executors()
     market_target_delivery.register_outbox_executors()
+    # Registered with push off too: its rows then ack as no-ops.
+    push_notify.register_outbox_executors()
     wakeup_delivery.register_wakeup_executors()
     # Turning wakeups off ends what the agent set, on every thread.
     register_feature_off_hook("wakeups", wakeups_cancel.setting_off)
@@ -1068,6 +1071,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error closing usage limits HTTP client: {e}")
 
+    try:
+        from src.server.services.push.apns import close_apns_client
+
+        await close_apns_client()
+    except Exception as e:
+        logger.warning(f"Error closing APNs client: {e}")
+
     # 9.1. Close the messaging gateway HTTP client
     try:
         from src.tools.messaging.tools import close_client
@@ -1350,6 +1360,7 @@ from src.server.app.bars import router as bars_router
 from src.server.app.user_events import router as user_events_router
 from src.server.app.users import router as users_router
 from src.server.app.trading_permission import router as trading_permission_router
+from src.server.app.push_devices import router as push_devices_router
 from src.server.app.features import router as features_router
 from src.server.app.claude_code import router as claude_code_router
 from src.server.app.claude_code_computers import router as claude_code_computers_router
@@ -1442,6 +1453,9 @@ app.include_router(
 app.include_router(
     user_events_router
 )  # /api/v1/users/me/thread-events - Thread lifecycle SSE feed
+app.include_router(
+    push_devices_router
+)  # /api/v1/users/me/push-devices - Phones for push notifications
 app.include_router(features_router)  # /api/v1/features/* - Feature flags (per-user resolved)
 app.include_router(claude_code_router)  # /api/v1/claude-code/* - Claude Code setup token and readiness
 app.include_router(claude_code_computers_router)  # /api/v1/claude-code/computers/* - Claude Code on own computers

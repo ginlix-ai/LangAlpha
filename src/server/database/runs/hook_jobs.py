@@ -10,9 +10,9 @@ makes it testable as data.
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, NotRequired, Optional, TypedDict
 
+from src.config import env
 from src.server.contracts.status import to_public
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
-
 
 
 @dataclass
@@ -23,6 +23,8 @@ class HookJob:
     idempotency_key: str
     payload: Dict[str, Any] = field(default_factory=dict)
     ordering_key: Optional[str] = None
+    #: Seconds before the row is first due; None is due at once.
+    delay_seconds: Optional[float] = None
 
 
 # Payload contracts between the decision table below and the executors in
@@ -75,6 +77,33 @@ class UserFeedPayload(TypedDict):
     last_seen_run_seq: NotRequired[int]
 
 
+class PushPayload(TypedDict):
+    user_id: str
+    thread_id: str
+    workspace_id: Optional[str]
+    run_id: str
+    run_seq: Optional[int]
+    status: str  # the CAS-adopted run status: completed, error or interrupted
+    interrupt_reason: Optional[str]
+    automation_id: Optional[str]
+    # A report-back summary run on the Chief of Staff thread.
+    report_back: bool
+
+
+#: How long a finished turn's push waits for a client to mark the thread
+#: seen, so a turn watched on the web or another phone does not buzz this one.
+#: An interrupted run cannot be marked seen, so its push goes at once.
+PUSH_SEEN_GRACE_SECONDS = 8.0
+
+#: The surfaces the web app draws; any other surface a turn ran on is a chat
+#: app, which answers the user itself.
+APP_SURFACES = frozenset({"web", "market_view"})
+
+
+#: Run metadata key for where an attempt ran ({"platform", ...}), stamped at
+#: START by ``request_prep.surface_stamp`` (its ``SURFACE_KEY``).
+SURFACE_META = "surface"
+
 #: Run metadata key for how a wake turn ended quietly: {"changed"}.
 WAKEUP_QUIET_META = "wakeup_quiet"
 
@@ -103,6 +132,9 @@ def build_finalize_jobs(
     automation_id: Optional[str] = None,
     superseded: bool = False,
     last_seen_run_seq: Optional[int] = None,
+    quiet_unchanged: bool = False,
+    surface_platform: Optional[str] = None,
+    push_enabled: bool = False,
 ) -> Callable[[str], List[HookJob]]:
     """The one decision table mapping a run's final status to its hook jobs.
 
@@ -118,6 +150,31 @@ def build_finalize_jobs(
     thread fall back to their own thread_id. Pure and synchronous — it runs
     inside the finalize transaction and must not do I/O.
     """
+
+    def _owes_push(final_status: str) -> bool:
+        """Whether the user's phones hear of this settle. Not a stop, a run
+        that was never the firing's turn, or a quiet check that changed
+        nothing. Not a dispatched analyst's ending: the report-back on the
+        watching thread is the one that pushes, though an analyst waiting on
+        the user has no report coming and does push. Not a turn on a chat
+        app, which answers the user there."""
+        if not (push_enabled and user_id) or superseded:
+            return False
+        if final_status == "cancelled":
+            return False
+        if final_status == "completed" and (
+            quiet_unchanged or last_seen_run_seq is not None
+        ):
+            return False
+        reports_elsewhere = (
+            dispatcher_thread_id
+            and dispatcher_thread_id != thread_id
+            and not report_back_ptc_thread_id
+        )
+        if reports_elsewhere and final_status != "interrupted":
+            return False
+        surface = (surface_platform or "").partition(":")[0]
+        return not surface or surface in APP_SURFACES
 
     def _jobs(final_status: str) -> List[HookJob]:
         jobs: List[HookJob] = []
@@ -150,6 +207,34 @@ def build_finalize_jobs(
                     hook_type="user_feed",
                     idempotency_key=f"{run_id}:user_feed",
                     payload=feed,
+                )
+            )
+
+        if _owes_push(final_status):
+            jobs.append(
+                HookJob(
+                    hook_type="push",
+                    idempotency_key=f"{run_id}:push",
+                    payload=PushPayload(
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        workspace_id=workspace_id,
+                        run_id=run_id,
+                        run_seq=run_seq,
+                        status=final_status,
+                        interrupt_reason=(
+                            interrupt_reason
+                            if final_status == "interrupted"
+                            else None
+                        ),
+                        automation_id=automation_id,
+                        report_back=bool(report_back_ptc_thread_id),
+                    ),
+                    delay_seconds=(
+                        None
+                        if final_status == "interrupted"
+                        else PUSH_SEEN_GRACE_SECONDS
+                    ),
                 )
             )
 
@@ -242,6 +327,7 @@ def build_finalize_jobs_from_run_row(
     DEFAULT: no finalize path can skip required terminal effects (I5).
     ``last_seen_run_seq`` is the seen pointer the finalize itself carried."""
     meta = run.get("metadata") or {}
+    surface = meta.get(SURFACE_META)
     return build_finalize_jobs(
         run_id=str(run["conversation_response_id"]),
         thread_id=str(run["conversation_thread_id"]),
@@ -259,4 +345,9 @@ def build_finalize_jobs_from_run_row(
         # Stamped by the finalize itself, which the post-CAS row carries.
         superseded=bool(meta.get("superseded")),
         last_seen_run_seq=last_seen_run_seq,
+        quiet_unchanged=is_unchanged_quiet(meta),
+        surface_platform=(
+            surface.get("platform") if isinstance(surface, dict) else None
+        ),
+        push_enabled=env.APNS_ENABLED,
     )
