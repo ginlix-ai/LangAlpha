@@ -220,7 +220,7 @@ def resolve_tuning(model_pref: dict[str, Any], model: str | None) -> Tuning:
 
     The typed twin of ``resolveTuning`` in ``web/src/lib/modelTuning.ts``; the
     two implement one precedence rule and are pinned together by
-    ``tests/fixtures/tuning_precedence.json``.
+    ``web/src/lib/__tests__/__fixtures__/tuning_precedence.json``.
     """
     return Tuning(
         **{f: resolve_tuning_field(model_pref, model, f) for f in TUNING_FIELDS}

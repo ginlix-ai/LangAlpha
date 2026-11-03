@@ -20,7 +20,7 @@ from src.llms.reasoning import REASONING_LEVELS, apply_reasoning_effort
 #: this table so a change to one side fails the other's suite instead of quietly
 #: making the UI name a level the server does not run.
 _CLAMP_CONTRACT = json.loads(
-    (Path(__file__).parents[3] / "tests/fixtures/reasoning_clamp.json").read_text()
+    (Path(__file__).parents[3] / "web/src/lib/__tests__/__fixtures__/reasoning_clamp.json").read_text()
 )
 
 

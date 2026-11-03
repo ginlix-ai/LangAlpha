@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "typeRoots": ["../../../../web/node_modules/@types"],
+    "types": ["node"],
+    "paths": { "*": ["../../../../web/node_modules/*"] }
+  },
+  "include": ["*.test.ts"]
+}

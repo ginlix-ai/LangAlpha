@@ -192,7 +192,7 @@ function text(value: string | null | undefined): string | null {
  * subagent role models). Presence, not truthiness: a field the profile carries
  * wins even when its value is empty, because clearing a field deletes the key
  * rather than storing a blank. The two are pinned together by
- * `tests/fixtures/tuning_precedence.json`.
+ * `__tests__/__fixtures__/tuning_precedence.json`.
  */
 export function resolveTuningField<K extends TuningField>(
   account: AccountTuning,
@@ -208,7 +208,7 @@ export function resolveTuningField<K extends TuningField>(
  * The twin of `resolve_tuning` in `src/llms/preferences.py`, which owns the
  * same precedence for the turns this UI never starts (schedules, automations,
  * subagent role models). The two are pinned together by
- * `tests/fixtures/tuning_precedence.json`. `inherited` is the extra layer the
+ * `__tests__/__fixtures__/tuning_precedence.json`. `inherited` is the extra layer the
  * server applies at resolve time rather than storing, so a control can name
  * what "Default" will actually do instead of saying only "Default".
  *
