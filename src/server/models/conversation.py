@@ -10,6 +10,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.llms.reasoning import ReasoningLevel
+from src.server.utils.thread_stamp import SCANNED_CHARS
 
 
 # ==================== Workspace Thread Response Models ====================
@@ -265,10 +266,10 @@ class ThreadCreateRequest(BaseModel):
     @field_validator("first_query")
     @classmethod
     def _clip_first_query(cls, v: str) -> str:
-        # Clients send the full first message; the server consumes at most
-        # 4000 chars of it (title-prompt clip; the title stamp is [:255]).
+        # Clients send the full first message; the server reads only what the
+        # title stamp scans, which has to reach a reply after a long quote.
         # Truncate rather than reject so long pastes don't 422 the fast door.
-        return v[:4000]
+        return v[:SCANNED_CHARS]
     # Same contract as ChatRequest.platform (see models/chat.py for the format
     # rationale) — pre-created MarketView threads must carry their tag since
     # ensure_thread_exists never updates platform on an existing row.
