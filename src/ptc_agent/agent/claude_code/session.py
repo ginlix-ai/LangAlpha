@@ -29,6 +29,12 @@ from langgraph.channels import DeltaChannel
 SESSION_SNAPSHOT_FREQUENCY = 250
 #: How long a step waits for the CLI's records behind the messages it commits.
 SETTLE_TIMEOUT_S = 10.0
+#: The state key holding the rules a Claude Code turn ran under
+#: (``CompactionRules.reading``), which ``compaction.next_summary`` reads
+#: between turns. Here rather than there because this module loads without
+#: the SDK, and the server reads the key on every thread to learn whether it
+#: needs the SDK at all.
+RULES_KEY = "_claude_code_rules"
 
 
 class SessionDrift(RuntimeError):

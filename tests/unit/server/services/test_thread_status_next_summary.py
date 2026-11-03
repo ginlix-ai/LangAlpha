@@ -156,7 +156,7 @@ async def test_the_status_reads_the_checkpoint_after_the_run_it_shows_over(statu
 
 
 def _claude_code_values(at: float = 1_100.0) -> dict:
-    from ptc_agent.agent.claude_code.compaction import RULES_KEY
+    from ptc_agent.agent.claude_code.session import RULES_KEY
 
     return {RULES_KEY: {"threshold": THRESHOLD, "floor_tokens": 5_000, "cold_tokens": COLD, "at": at}}
 

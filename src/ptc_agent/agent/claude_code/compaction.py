@@ -88,9 +88,6 @@ DEFAULT_TTL = ttl_seconds("1h")
 #: The answer a Haiku session's compaction launch is handed after its last
 #: one (``noted``).
 NOTED = "Noted."
-#: The state key holding the rules a Claude Code turn ran under
-#: (``CompactionRules.reading``), which ``next_summary`` reads between turns.
-RULES_KEY = "_claude_code_rules"
 
 
 #: The bytes of text a Claude token holds, taken low so a prompt's count errs

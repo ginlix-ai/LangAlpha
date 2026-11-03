@@ -112,7 +112,7 @@ async def read_next_summary(
     from src.server.contracts.run_times import run_settled_at
     from src.server.database.runs import lifecycle as tl_db
     from src.server.services.runs.pending_input import cache_clock_attempt
-    from ptc_agent.agent.claude_code import compaction as claude_code
+    from ptc_agent.agent.claude_code.session import RULES_KEY
     from ptc_agent.agent.middleware.compaction.rebuild import next_summary
 
     try:
@@ -123,17 +123,20 @@ async def read_next_summary(
             if values is None:
                 base = await turn_base_checkpoint_id(get_checkpointer(), thread_id)
                 values = extract_state_values(await get_checkpoint_tuple(thread_id, base))
-            rules = values.get(claude_code.RULES_KEY)
+            rules = values.get(RULES_KEY)
             if rules and rules.get("at", 0) < (values.get("_last_model_response_at") or 0):
                 rules = None
             records = await _claude_session(thread_id, base) if rules else None
             clock = await cache_clock_attempt(thread_id, latest)
         settled_at = run_settled_at(clock)
-        found = (
-            claude_code.next_summary(rules, records, settled_at=settled_at)
-            if rules
-            else next_summary(values, settled_at=settled_at)
-        )
+        if rules:
+            # Only a Claude Code thread loads the SDK, which a backend without
+            # the claude-code extra lacks (see the package docstring).
+            from ptc_agent.agent.claude_code import compaction as claude_code
+
+            found = claude_code.next_summary(rules, records, settled_at=settled_at)
+        else:
+            found = next_summary(values, settled_at=settled_at)
     except Exception:
         logger.debug("next summary read failed for thread %s", thread_id, exc_info=True)
         return UNREAD

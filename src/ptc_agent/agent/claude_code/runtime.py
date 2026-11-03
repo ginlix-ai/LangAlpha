@@ -55,7 +55,6 @@ from typing_extensions import NotRequired
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received, turn_failure
 from ptc_agent.agent.claude_code.compaction import (
     NO_RULES,
-    RULES_KEY,
     CompactionRules,
     SessionCompaction,
     compact,
@@ -68,6 +67,7 @@ from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, TurnSteering
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
 from ptc_agent.agent.claude_code.session import (
+    RULES_KEY,
     SETTLE_TIMEOUT_S,
     CheckpointSessionStore,
     SessionDrift,
