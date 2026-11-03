@@ -92,5 +92,5 @@
 
 /* The quoted text, once writing the reply has moved the real selection away. */
 ::highlight(selection-quote) {
-  background-color: Highlight;
+  background-color: var(--color-quote-highlight);
 }
