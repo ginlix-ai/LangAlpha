@@ -154,6 +154,11 @@ html {
      takes the accent. */
   --color-border-strong: rgba(230, 230, 228, 0.32);
 
+  /* Text kept marked once the real selection has moved away. The system colour
+     alone is opaque and pale, which the theme's text cannot be read on; thinned,
+     it reads as the selection the browser paints itself and keeps the OS accent. */
+  --color-quote-highlight: color-mix(in srgb, Highlight 42%, transparent);
+
   /* Data cards in the transcript (charts/termCard.css): an unfilled box held
      by its edge, the rules inside it a step quieter. Light is cool and
      neutral against the warm page, so a number reads as data, not as
@@ -377,6 +382,7 @@ html {
   --color-border-subtle: #EFEFEE;
   --color-border-input: #E3E3E1;
   --color-border-strong: rgba(31, 31, 30, 0.3);
+  --color-quote-highlight: color-mix(in srgb, Highlight 73%, transparent);
 
   --color-term-edge: #CDD2D9;
   --color-term-edge-hover: #9AA1AC;
