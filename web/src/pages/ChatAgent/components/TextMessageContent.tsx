@@ -67,7 +67,7 @@ function TextMessageContent({ content, isStreaming, onOpenFile, onRevealed }: Te
 
   return (
     // The typewriter still writes after the stream ends, until it catches up.
-    <Markdown variant="chat" content={displayText} className="text-base" onOpenFile={onOpenFile} streaming={isStreaming || displayText !== text} />
+    <Markdown variant="chat" content={displayText} className={revealed && !isStreaming ? 'message-quotable text-base' : 'text-base'} onOpenFile={onOpenFile} streaming={isStreaming || displayText !== text} />
   );
 }
 

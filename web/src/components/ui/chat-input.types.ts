@@ -9,22 +9,53 @@ export interface FileAttachment {
   dataUrl: string | null;
 }
 
-export interface MentionedFile {
+/** A whole file, whose `@path` is a word of the draft. */
+export interface FileMention {
+  kind: 'file';
   path: string;
-  snippet?: string;
-  label?: string;
-  lineStart?: number;
-  lineEnd?: number;
-  lineCount?: number;
-  /**
-   * Where inside the file the snippet came from, when lines are the wrong unit:
-   * a spreadsheet range writes `Model!B4:D9`. Fragment syntax without the `#`,
-   * so `@path#locator` round-trips back through `parseFragment` as a link the
-   * agent can answer with.
-   */
-  locator?: string;
-  source?: string;
 }
+
+/** Where a quote came from, which is what the agent is told. */
+export type QuoteOrigin =
+  | { kind: 'file'; path: string; label: string; lineStart?: number | null; lineEnd?: number | null; lineCount: number }
+  /** `message` is the bubble quoted from. A quote read back from what was sent no longer knows it. */
+  | { kind: 'message'; speaker: string; message?: string };
+
+export interface QuoteContext {
+  kind: 'quote';
+  snippet: string;
+  /** What the user wrote about the quote; goes out right after it. */
+  reply?: string;
+  from: QuoteOrigin;
+}
+
+export interface QuoteMention extends QuoteContext {
+  /** The words standing for the quote in the draft; it goes out where they sit. */
+  token: string;
+}
+
+/**
+ * What goes out beside the draft without being a word of it: a long paste, a
+ * live chart's hint, a sheet range. A range's `locator` is where in the file it
+ * came from, in the file's own vocabulary (`Model!B4:D9`). Fragment syntax
+ * without the `#`, so `@path#locator` round-trips back through `parseFragment`
+ * as a link the agent can answer with.
+ */
+export type ChipContext = { kind: 'chip'; label: string; snippet: string } & (
+  | { source: 'paste' | 'chart'; path?: never; locator?: never }
+  | { source: 'range'; path: string; locator: string }
+);
+
+export type MentionedFile = FileMention | QuoteMention | ChipContext;
+
+/** What a surface outside the composer hands it (`ChatInputHandle.addContext`). */
+export type ContextPayload =
+  | FileMention
+  | QuoteContext
+  /** Images for the next message and words for the draft. `files` is empty when
+   *  only an image's address is known. */
+  | { kind: 'attachment'; files: File[]; text?: string }
+  | ChipContext;
 
 export interface SlashCommand {
   type: string;

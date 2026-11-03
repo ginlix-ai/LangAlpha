@@ -1,7 +1,8 @@
 import React, { Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, PanelRight, TextSelect, Menu } from 'lucide-react';
+import { MessageSelectionQuote } from './selectionQuote/MessageSelectionQuote';
+import { ArrowLeft, PanelRight, Menu } from 'lucide-react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useLatestRef } from '@/hooks/useLatestRef';
@@ -50,7 +51,7 @@ import {
 } from '../utils/compactionControl';
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
-import type { ComposerSend } from '../../../components/ui/chat-input.types';
+import type { ComposerSend, ContextPayload } from '../../../components/ui/chat-input.types';
 import { attachmentsToContexts, widgetSnapshotsToContexts } from '../utils/fileUpload';
 import MessageList, { LiveMessageList, normalizeSubagentText } from './MessageList';
 import { MessageActionsProvider } from './messageList/MessageActionsContext';
@@ -108,7 +109,7 @@ import type { SendOptions } from '../session/types';
 import type {
   MessageRecord, LocationState,
   ActionCommand,
-  MsgSelectionTooltipData, ChatViewProps,
+  ChatViewProps,
 } from './chatView/types';
 import { TranscriptStatus } from './chatView/TranscriptStatus';
 import { FallbackSuggestionPill } from './chatView/FallbackSuggestionPill';
@@ -1158,72 +1159,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
 
   // Add context from FilePanel or message selection to ChatInput
-  const handleAddContext = useCallback((ctx: any) => { // TODO: type properly
+  const handleAddContext = useCallback((ctx: ContextPayload) => {
     chatInputRef.current?.addContext(ctx);
   }, []);
 
-  // Message text selection → "Add to context" tooltip
-  const [msgSelectionTooltip, setMsgSelectionTooltip] = useState<MsgSelectionTooltipData | null>(null);
   const msgAreaRef = useRef<HTMLDivElement>(null);
   // Collapse avatars when the messages column is too narrow to comfortably
   // accommodate them (mobile, side panels, etc.). 640px matches the visual
   // breakpoint where avatar gutters start crowding the message bubble.
-
-  const handleMessageMouseUp = useCallback(() => {
-    // Small delay to let the browser finalize the selection
-    setTimeout(() => {
-      const sel = window.getSelection();
-      if (!sel || !sel.toString().trim()) {
-        setMsgSelectionTooltip(null);
-        return;
-      }
-      const text = sel.toString();
-      const range = sel.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      const area = msgAreaRef.current;
-      const areaRect = area?.getBoundingClientRect();
-      if (!areaRect) return;
-
-      setMsgSelectionTooltip({
-        x: rect.left - areaRect.left + rect.width / 2,
-        y: rect.top - areaRect.top - 8,
-        text,
-      });
-    }, 10);
-  }, []);
-
-  const handleAddMessageContext = useCallback(() => {
-    if (!msgSelectionTooltip) return;
-    const text = msgSelectionTooltip.text;
-    const lineCount = (text.match(/\n/g) || []).length + 1;
-    // Label: show line count for multi-line, or truncated text for single-line
-    const label = lineCount > 1
-      ? `chat: ${lineCount} lines`
-      : (text.length > 30 ? text.slice(0, 27).trim() + '...' : text);
-    chatInputRef.current?.addContext({
-      snippet: text,
-      label,
-      lineCount,
-      source: 'chat',
-    });
-    setMsgSelectionTooltip(null);
-    window.getSelection()?.removeAllRanges();
-  }, [msgSelectionTooltip]);
-
-  // Clear tooltip on mousedown (unless clicking the tooltip itself)
-  useEffect(() => {
-    if (!msgSelectionTooltip) return;
-    const handler = (e: MouseEvent) => {
-      if ((e.target as HTMLElement)?.closest?.('.chat-selection-tooltip')) return;
-      setTimeout(() => {
-        const sel = window.getSelection();
-        if (!sel || !sel.toString().trim()) setMsgSelectionTooltip(null);
-      }, 10);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [msgSelectionTooltip]);
-
 
   const scrollThreadToTop = useCallback(() => {
     if (activeAgentId === 'main') toTop();
@@ -1601,25 +1544,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 height: 0, // Force flex-1 to work properly
                 position: 'relative',
               }}
-              onMouseUp={handleMessageMouseUp}
             >
-              {/* Message selection tooltip */}
-              {msgSelectionTooltip && (() => {
-                const lines = (msgSelectionTooltip.text.match(/\n/g) || []).length + 1;
-                return (
-                  <div
-                    className="chat-selection-tooltip file-panel-selection-tooltip"
-                    style={{
-                      left: Math.max(8, msgSelectionTooltip.x - 60),
-                      top: Math.max(4, msgSelectionTooltip.y - 32),
-                    }}
-                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAddMessageContext(); }}
-                  >
-                    <TextSelect className="h-3.5 w-3.5" style={{ color: 'var(--color-accent-primary)' }} />
-                    {lines > 1 ? t('context.addNLinesToContext', { count: lines }) : t('context.addToContext')}
-                  </div>
-                );
-              })()}
+              <MessageSelectionQuote
+                key={`${threadId}:${activeAgentId}:${isActive}`}
+                surfaceRef={msgAreaRef}
+                active={!!isActive && activeAgentId === 'main'}
+                agentName={isHome ? t('agents.chiefOfStaff') : t('agents.analyst')}
+                onAddContext={handleAddContext}
+              />
               {activeAgentId === 'main' ? (
                 <ScrollArea ref={scrollAreaRef} className={`h-full w-full${!isMobile && !rightPanelType ? ' chat-scroll-hide-scrollbar' : ''}`}>
                   {/* The floor a pinned send holds open under its reply
@@ -1983,7 +1915,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   filesLoading={filesLoading}
                   filesError={filesError}
                   onRefreshFiles={refreshFiles}
-                  onAddContext={handleAddContext}
+                  onAddContext={activeAgentId === 'main' ? handleAddContext : null}
+                  agentName={isHome ? t('agents.chiefOfStaff') : t('agents.analyst')}
                   showSystemFiles={showSystemFiles}
                   onToggleSystemFiles={() => {
                     setShowSystemFiles((v) => {
@@ -2057,7 +1990,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       filesLoading={filesLoading}
                       filesError={filesError}
                       onRefreshFiles={refreshFiles}
-                      onAddContext={handleAddContext}
+                      onAddContext={activeAgentId === 'main' ? handleAddContext : null}
+                      agentName={isHome ? t('agents.chiefOfStaff') : t('agents.analyst')}
                       showSystemFiles={showSystemFiles}
                       onToggleSystemFiles={() => {
                         setShowSystemFiles((v) => {

@@ -1,8 +1,7 @@
 import { Bot, HardDriveDownload, Shrink, Terminal } from 'lucide-react';
-import type { SlashCommand } from './chat-input.types';
+import type { ChipContext, FileMention, QuoteContext, SlashCommand } from './chat-input.types';
 import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import { TWEEN } from '@/lib/motion';
-import type { MentionedFile } from './chat-input.types';
 
 /** Return the appropriate icon for a slash command. */
 export function getSlashCommandIcon(cmd: SlashCommand, className: string) {
@@ -33,15 +32,30 @@ export const MENU_PRESENCE = {
   exit: { opacity: 0, scale: 0.95, transition: TWEEN.exit },
 };
 
+/** One passage from one place: the same words on other lines are another quote. */
+const quotedFrom = ({ from }: QuoteContext) => (from.kind === 'file' ? `@${from.path}:${from.lineStart ?? ''}-${from.lineEnd ?? ''}` : from.speaker);
+
+/** Two mentions alike here are one context, whatever was said about it. */
+/** The same words in two replies are two passages, as far as each is known. */
+const sameMessage = ({ from: a }: QuoteContext, { from: b }: QuoteContext) => (
+  a.kind !== 'message' || b.kind !== 'message' || !a.message || !b.message || a.message === b.message
+);
+
+export function sameMention(a: FileMention | QuoteContext | ChipContext, b: FileMention | QuoteContext | ChipContext): boolean {
+  if (a.kind === 'file') return b.kind === 'file' && a.path === b.path;
+  if (a.kind === 'quote') return b.kind === 'quote' && a.snippet === b.snippet && quotedFrom(a) === quotedFrom(b) && sameMessage(a, b);
+  return b.kind === 'chip' && a.source === b.source && a.path === b.path && a.locator === b.locator && a.snippet === b.snippet;
+}
+
 /**
  * A stable key per pill. Removing a pill must not rename the ones after it,
  * or each would leave and arrive again; two pills alike in every field the
  * draft can tell apart are numbered in order.
  */
-export function mentionPillKeys(files: MentionedFile[]): string[] {
+export function mentionPillKeys(chips: ChipContext[]): string[] {
   const seen = new Map<string, number>();
-  return files.map((f) => {
-    const base = [f.path, f.label, f.locator, f.source, f.lineStart, f.lineEnd, f.snippet?.length].join('::');
+  return chips.map((f) => {
+    const base = [f.path, f.label, f.locator, f.source, f.snippet.length].join('::');
     const n = seen.get(base) ?? 0;
     seen.set(base, n + 1);
     return n ? `${base}::${n}` : base;

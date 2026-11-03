@@ -63,7 +63,8 @@ export function useVoiceInput({ message, setMessage, isLoading }: {
       recognition.lang = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
 
       // Capture message BEFORE starting recognition
-      const startMessage = messageRef.current.trim();
+      // Not its start: a quote's token begins with blank room for its icon.
+      const startMessage = messageRef.current.trimEnd();
       baseMessageRef.current = startMessage ? startMessage + ' ' : '';
 
       recognition.onstart = () => {
@@ -140,5 +141,19 @@ export function useVoiceInput({ message, setMessage, isLoading }: {
     recognitionRef.current?.stop();
   }, []);
 
-  return { isListening, toggleListening, stopListening };
+  /**
+   * For a draft changed by something else: a stop still delivers the last words,
+   * and each result rewrites the draft from where dictation began. What it has
+   * written so far stays.
+   */
+  const abandonListening = useCallback(() => {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+    recognitionRef.current = null;
+    isStartingRef.current = false;
+    recognition.abort();
+    setIsListening(false);
+  }, []);
+
+  return { isListening, toggleListening, stopListening, abandonListening };
 }

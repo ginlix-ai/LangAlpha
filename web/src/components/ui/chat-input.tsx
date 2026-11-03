@@ -13,21 +13,23 @@ import { useAllModels } from '@/hooks/useAllModels';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
 import { useLapsedSignIn } from '@/hooks/useLapsedSignIn';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { useLatestRef } from '@/hooks/useLatestRef';
 import { onKeyboardFit, onScreenKeyboardUp, roomAboveKeyboard } from '@/lib/visualViewport';
 import { useFavoriteModels } from '@/hooks/useFavoriteModels';
 import { useSeededModel } from '@/hooks/useSeededModel';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import { AnimatePresence } from '@/lib/framer';
 import { isImeComposing } from '@/lib/ime';
+import { focusWithoutRing } from '@/lib/inputModality';
 import { cn } from '@/lib/utils';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import './chat-input.css';
-import type { ComposerDraft, ComposerScope, ComposerSend, MentionedFile, ModelOptions, ReadyAttachment, SlashCommand, ThreadTuning, Workspace } from './chat-input.types';
+import type { ComposerDraft, ComposerScope, ComposerSend, ContextPayload, ModelOptions, ReadyAttachment, SlashCommand, ThreadTuning, Workspace } from './chat-input.types';
 import { isLargePaste, getModelDisplayName } from './chat-input.helpers';
 import { effortLabelFor, resolveEffort } from '@/lib/modelTuning';
 import { ChatInputWidgetDeck, MentionAutocompleteList, SlashCommandList } from './chat-input.parts';
 import {
-  ComposerAttachments, ComposerPills, DropOverlay, SendStopButton, ToolbarOverflowMenu, VoiceButton, VoiceOverlay,
+  ComposerAttachments, ComposerChips, DraftTokenLayer, DropOverlay, SendStopButton, ToolbarOverflowMenu, VoiceButton, VoiceOverlay,
 } from './chat-input.composerParts';
 import { ChatInputModelMenu, ModelTriggerMeasure, type EffortMenuProps } from './chat-input.modelMenu';
 import type { ModelRowStatus } from './chat-input.modelPicker';
@@ -40,12 +42,14 @@ import {
   useToolbarFold, CONTAINER_BORDER, CONTAINER_PX, GROUP_GAP, ICON_BUTTON_W, TOOLBAR_GAP,
 } from './chat-input.useToolbarFold';
 import { useMentions } from './chat-input.useMentions';
+import { useQuoteTokens } from './chat-input.useQuoteTokens';
 import { useSlashCommands } from './chat-input.useSlashCommands';
 import { speechSupported, useVoiceInput } from './chat-input.useVoiceInput';
 import { useFileAttachments } from './chat-input.useFileAttachments';
 import { useDeviceTuningLift } from './chat-input.useDeviceTuningLift';
 import { readSubagentsDefault } from '@/lib/subagentsDefault';
-import { formatContextBlock } from './chat-input.contextBlocks';
+import { readGivenBack, spellOutQuotes } from './chat-input.quoteTokens';
+import { formatContextBlock } from './chat-input.wire';
 
 /** Autosize cap for the composer textarea; past this the box scrolls. */
 const MAX_TEXTAREA_HEIGHT = 200;
@@ -65,13 +69,9 @@ function withGivenBack(typed: string, text: string): string {
   return `${kept}\n\n${text}`;
 }
 
-function sameMention(a: MentionedFile, b: MentionedFile): boolean {
-  return a.path === b.path && a.snippet === b.snippet && a.locator === b.locator && a.source === b.source;
-}
-
 export interface ChatInputHandle {
   getModelOptions: () => ModelOptions;
-  addContext: (ctx: { path?: string; snippet?: string; label?: string; locator?: string; lineStart?: number; lineEnd?: number; lineCount?: number; source?: string }) => void;
+  addContext: (ctx: ContextPayload) => void;
   /**
    * Imperatively add a widget context snapshot to the deck. Local-only —
    * this does NOT publish to ContextBus. Use this when re-seeding the deck
@@ -388,15 +388,31 @@ function ChatInput({
   const slash = useSlashCommands({ textareaRef, message, setMessage, workspaceId: slashWorkspaceId });
   const {
     mentionedFiles, setMentionedFiles, pruneRemoved: pruneMentions, detectTrigger: detectMention,
-    close: closeMentions, reset: resetMentions, handleKeyDown: mentionKeyDown, open: mentionsOpen,
+    close: closeMentions, reset: resetMentions, handleKeyDown: mentionKeyDown, open: mentionsOpen, addMention, removeMention,
   } = mentions;
   const {
     slashCommands, pruneRemoved: pruneSlash, detectTrigger: detectSlash,
     close: closeSlash, reset: resetSlash, restore: restoreSlash, handleKeyDown: slashKeyDown,
   } = slash;
 
+  // Pills whose /{command} or @mention text was deleted go with it
+  const pruneDraft = useCallback((draft: string) => {
+    pruneSlash(draft);
+    pruneMentions(draft);
+  }, [pruneSlash, pruneMentions]);
+  // The words of the draft that stand for a skill or a file.
+  const draftTokens = useMemo(() => [
+    ...slashCommands.map((c) => `/${c.name}`),
+    ...mentionedFiles.filter((f) => f.kind === 'file').map((f) => `@${f.path}`),
+  ], [slashCommands, mentionedFiles]);
+  const {
+    heldMentions, quotes, chips, addQuote, handleSelect, handleQuotePress, handleKeyDown: tokenKeyDown, keepWhole,
+  } = useQuoteTokens({ textareaRef, message, setMessage, mentions, draftTokens, pruneDraft });
+
   // Voice input (speech recognition) — see chat-input.useVoiceInput.
-  const { isListening, toggleListening, stopListening } = useVoiceInput({ message, setMessage, isLoading });
+  const { isListening, toggleListening, stopListening, abandonListening } = useVoiceInput({ message, setMessage, isLoading });
+
+  const givenBackBesideRef = useLatestRef(mentionedFiles);
 
   // The handle is built before the send below, so it reaches it through here.
   const sendRef = useRef<() => boolean>(() => false);
@@ -413,29 +429,34 @@ function ChatInput({
         ...ownOverrides,
       };
     },
-    addContext({ path, snippet, label, locator, lineStart, lineEnd, lineCount, source }) {
-      if (snippet) {
-        // Snippet context — add pill with snippet data, don't modify textarea
-        setMentionedFiles((prev) => {
-          // Deduplicate by exact snippet content (handles multiple selections)
-          if (prev.some((f) => f.snippet === snippet && f.path === (path || '') && f.locator === locator && f.source === (source || undefined))) return prev;
-          return [...prev, { path: path || '', snippet, label, locator, lineStart, lineEnd, lineCount, source }];
-        });
-      } else if (path) {
-        // Whole file context — same behavior as selectFile via @mention
-        setMentionedFiles((prev) => {
-          if (prev.some((f) => f.path === path && !f.snippet)) return prev;
-          return [...prev, { path }];
-        });
-        // Insert @path into message text
-        setMessage((prev) => {
-          if (prev.includes('@' + path)) return prev;
-          const prefix = prev && !prev.endsWith(' ') ? prev + ' ' : prev;
-          return prefix + '@' + path + ' ';
-        });
+    addContext(ctx) {
+      // Dictation rewrites the draft from what it held when it started.
+      if (ctx.kind !== 'chip') abandonListening();
+      switch (ctx.kind) {
+        case 'file':
+          // Same behavior as selectFile via @mention
+          addMention(ctx);
+          setMessage((prev) => {
+            if (prev.includes('@' + ctx.path)) return prev;
+            const prefix = prev && !prev.endsWith(' ') ? prev + ' ' : prev;
+            return prefix + '@' + ctx.path + ' ';
+          });
+          break;
+        case 'quote':
+          addQuote(ctx);
+          break;
+        case 'chip':
+          addMention(ctx);
+          break;
+        case 'attachment': {
+          const { files, text } = ctx;
+          if (files.length) handleFiles(files);
+          if (text) setMessage((prev) => (prev.trim() ? `${prev.trimEnd()}\n${text}` : text));
+          break;
+        }
       }
       // Focus the textarea
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      setTimeout(() => focusWithoutRing(textareaRef.current), 0);
     },
     addWidgetSnapshot(snapshot) {
       setWidgetSnapshots((prev) => {
@@ -448,11 +469,12 @@ function ChatInput({
       setTimeout(() => textareaRef.current?.focus(), 0);
     },
     giveBack(text, files = [], { mentions = [], commands = [], focus = true } = {}) {
-      if (text) setMessage((prev) => withGivenBack(prev, text));
+      // Through a ref, for what else comes back in the same commit to number against.
+      const back = readGivenBack(text, mentions, givenBackBesideRef.current);
+      givenBackBesideRef.current = [...givenBackBesideRef.current, ...back.mentions];
+      if (back.text) setMessage((prev) => withGivenBack(prev, back.text));
       restoreFiles(files);
-      if (mentions.length > 0) {
-        setMentionedFiles((prev) => [...prev, ...mentions.filter((m) => !prev.some((p) => sameMention(p, m)))]);
-      }
+      if (back.mentions.length > 0) setMentionedFiles((prev) => [...prev, ...back.mentions]);
       restoreSlash(commands);
       if (focus) setTimeout(() => textareaRef.current?.focus(), 0);
     },
@@ -462,7 +484,7 @@ function ChatInput({
     focus() {
       textareaRef.current?.focus();
     },
-  }), [pillModel, sentEffort, resolvedFastMode, effectiveMarketWatch, draftSubagents, ownOverrides, setMentionedFiles, restoreFiles, restoreSlash]);
+  }), [pillModel, sentEffort, resolvedFastMode, effectiveMarketWatch, draftSubagents, ownOverrides, mentionedFiles, setMentionedFiles, addMention, addQuote, restoreFiles, restoreSlash, handleFiles, abandonListening]);
 
   // Subscribe to ContextBus so this input mirrors the global widget-context
   // deck. Multiple chat inputs can be visible simultaneously (hero card +
@@ -525,13 +547,46 @@ function ChatInput({
     else onPickFastMode?.(next);
   }, [settingsFast, tuning.fastMode, hostTuning, onPickFastMode]);
 
-  // Auto-resize textarea; past the cap the box scrolls (overflow-y-auto).
-  useEffect(() => {
+  const tokenLayerRef = useRef<HTMLDivElement>(null);
+  const sizeTokenLayer = useCallback(() => {
+    if (!textareaRef.current || !tokenLayerRef.current) return;
+    tokenLayerRef.current.style.width = `${textareaRef.current.clientWidth}px`;
+    tokenLayerRef.current.style.height = `${textareaRef.current.clientHeight}px`;
+    tokenLayerRef.current.scrollTop = textareaRef.current.scrollTop;
+  }, []);
+
+  // Auto-resize textarea; past the cap the box scrolls (overflow-y-auto). A
+  // chip beside it changes its width, and so where the text wraps, and the
+  // layer has to wrap with it, a scrollbar taken out of the width included.
+  const fitTextarea = useCallback(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, MAX_TEXTAREA_HEIGHT) + 'px';
+      // Rounded up: `scrollHeight` rounds a fractional line height down as often as
+      // not, and what fits exactly then comes up short and shows a scrollbar.
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight + 1, MAX_TEXTAREA_HEIGHT) + 'px';
+      sizeTokenLayer();
     }
-  }, [message]);
+  }, [sizeTokenLayer]);
+  useEffect(fitTextarea, [fitTextarea, message, chips.length, draftTokens.length]);
+  // A narrower window wraps the text too. Fitted a frame on, since the fit itself
+  // resizes what is being observed.
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    let width = textarea.clientWidth;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (textarea.clientWidth === width) return;
+      width = textarea.clientWidth;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(fitTextarea);
+    });
+    observer.observe(textarea);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [fitTextarea]);
 
   // A composer in a scrolling route grows downward, so with a keyboard up the
   // text gives up what would push the send row under it. A limit apart from the
@@ -547,6 +602,7 @@ function ChatInput({
     const room = active === textarea ? roomAboveKeyboard(box) : null;
     if (room === null) {
       textarea.style.maxHeight = '';
+      sizeTokenLayer();
       return;
     }
     const shownBefore = textarea.clientHeight;
@@ -557,8 +613,9 @@ function ChatInput({
     if (textarea.clientHeight < shownBefore && textarea.selectionEnd === textarea.value.length) {
       textarea.scrollTop = textarea.scrollHeight;
     }
+    sizeTokenLayer();
     if ((roomAboveKeyboard(box) ?? 0) < 0) box.scrollIntoView({ block: 'nearest' });
-  }, []);
+  }, [sizeTokenLayer]);
 
   useEffect(fitToKeyboard, [message, fitToKeyboard]);
   useEffect(() => {
@@ -589,27 +646,21 @@ function ChatInput({
     const text = e.clipboardData.getData('text/plain');
     if (!isLargePaste(text)) return;
     e.preventDefault();
-    const lineCount = text.split('\n').length;
-    setMentionedFiles((prev) => {
-      if (prev.some((f) => f.source === 'paste' && f.snippet === text)) return prev;
-      return [...prev, { path: '', snippet: text, label: t('context.pastedLines', { count: lineCount }), lineCount, source: 'paste' }];
-    });
-  }, [handlePaste, setMentionedFiles, t]);
+    addMention({ kind: 'chip', source: 'paste', snippet: text, label: t('context.pastedLines', { count: text.split('\n').length }) });
+  }, [handlePaste, addMention, t]);
 
   // Detect @ and / triggers on input change
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
+    const val = keepWhole(e.target.value, e.target.selectionStart);
     setMessage(val);
     const cursorPos = e.target.selectionStart;
 
-    // Pills whose /{command} or @mention text was deleted go with it
-    pruneSlash(val);
-    pruneMentions(val);
+    pruneDraft(val);
 
     // A live /slash trigger wins: the two menus never show at once.
     if (detectSlash(val, cursorPos)) closeMentions();
     else detectMention(val, cursorPos);
-  }, [pruneSlash, pruneMentions, detectSlash, detectMention, closeMentions]);
+  }, [keepWhole, pruneDraft, detectSlash, detectMention, closeMentions]);
 
   // Close both autocompletes on blur
   const handleBlur = useCallback(() => {
@@ -620,7 +671,7 @@ function ChatInput({
   }, [closeMentions, closeSlash]);
 
   // --- Send ---
-  const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || mentionedFiles.some((f) => f.snippet) || widgetSnapshots.length > 0 || hasExternalContext;
+  const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || chips.length > 0 || widgetSnapshots.length > 0 || hasExternalContext;
 
   const handleSend = useCallback(() => {
     if (!hasContent || disabled) return;
@@ -654,17 +705,16 @@ function ChatInput({
         type: f.type,
         preview: f.preview,
       }));
-    // Append snippet blocks to message for mentions that have snippets
-    let finalMessage = message;
-    const snippetMentions = mentionedFiles.filter((f) => f.snippet);
-    if (snippetMentions.length > 0) {
-      const blocks = snippetMentions.map((f) => formatContextBlock(f, t));
+    // Quotes go where they sit among the typed words. Chips' blocks trail.
+    let finalMessage = spellOutQuotes(message, quotes);
+    if (chips.length > 0) {
+      const blocks = chips.map((f) => formatContextBlock(f, t));
       finalMessage = finalMessage.trimEnd() + '\n' + blocks.join('\n');
     }
     onSend({
       text: message,
       files: readyAttachments,
-      mentions: mentionedFiles,
+      mentions: heldMentions,
       commands: slashCommands,
       message: finalMessage,
       modelOptions: {
@@ -691,7 +741,7 @@ function ChatInput({
     setDeckFanned(false);
     settleAfterSend(textareaRef.current);
   }, [hasContent, disabled, message, effectiveMarketWatch, draftSubagents, attachedFiles, setAttachedFiles, onSend, onAction,
-    mentionedFiles, resetMentions, slashCommands, resetSlash,
+    heldMentions, quotes, chips, resetMentions, slashCommands, resetSlash,
     pillModel, sentEffort, resolvedFastMode, ownOverrides, widgetSnapshots, t]);
   useEffect(() => {
     sendRef.current = () => {
@@ -715,6 +765,7 @@ function ChatInput({
     // suppresses the mention menu while active).
     if (slashKeyDown(e)) return;
     if (mentionKeyDown(e)) return;
+    if (tokenKeyDown(e)) return;
 
     if (e.key === 'Enter' && !mentionsOpen) {
       // Cmd/Ctrl+Enter inserts a newline at the cursor (browsers suppress this by default)
@@ -737,7 +788,7 @@ function ChatInput({
         handleSend();
       }
     }
-  }, [slashKeyDown, mentionKeyDown, mentionsOpen, handleSend, isListening, stopListening, message]);
+  }, [slashKeyDown, mentionKeyDown, tokenKeyDown, mentionsOpen, handleSend, isListening, stopListening, message]);
 
   /* --- Progressive toolbar folding ---
    *
@@ -892,13 +943,6 @@ function ChatInput({
             />
           )}
 
-          <ComposerPills
-            slashCommands={slashCommands}
-            onRemoveCommand={slash.removeCommand}
-            mentionedFiles={mentionedFiles}
-            onRemoveMention={mentions.removeMention}
-          />
-
           <ComposerAttachments
             chartImage={chartImage}
             onRemoveChartImage={onRemoveChartImage}
@@ -934,15 +978,33 @@ function ChatInput({
             )}
           </AnimatePresence>
 
-          {/* Textarea */}
-          <div className="relative">
+          {/* Textarea, starting on the line the chips end on while it fits
+              there: its basis grows with the draft until it takes a line of
+              its own, where the text has the whole width to wrap in. */}
+          <div className="relative flex flex-wrap items-start gap-x-2">
+            <ComposerChips chips={chips} onRemove={removeMention} />
+            <div
+              className="relative min-w-0 flex-[1_1_5rem]"
+              style={chips.length > 0 ? { flexBasis: message.includes('\n') ? '100%' : `max(5rem, ${message.length + 1}ch)` } : undefined}
+            >
+            <DraftTokenLayer
+              text={message}
+              tokens={draftTokens}
+              quotes={quotes}
+              layerRef={tokenLayerRef}
+              onQuotePress={handleQuotePress}
+              onWheel={(e) => { if (textareaRef.current) textareaRef.current.scrollTop += e.deltaY; }}
+              className={`font-content ${isMobile ? 'text-base' : 'text-sm'} leading-relaxed transition-opacity ${isListening ? 'opacity-20' : 'opacity-100'}`}
+            />
             <textarea
               ref={textareaRef}
               value={message}
               onChange={handleChange}
               onPaste={handleTextareaPaste}
               onKeyDown={handleKeyDown}
+              onSelect={handleSelect}
               onBlur={handleBlur}
+              onScroll={(e) => { if (tokenLayerRef.current) tokenLayerRef.current.scrollTop = e.currentTarget.scrollTop; }}
               onCompositionStart={() => {
                 // Terminate voice input if IME starts
                 if (isListening) {
@@ -952,12 +1014,13 @@ function ChatInput({
               // Named apart from the placeholder, which says what state the
               // thread is in and is empty while listening.
               aria-label={t("chat.composer.messageLabel")}
-              placeholder={isListening ? "" : (placeholder ?? t("chat.placeholderDefault"))}
-              className={`font-content w-full bg-transparent border-0 text-(--color-text-primary) ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-(--color-text-tertiary) resize-none overflow-y-auto leading-relaxed block transition-opacity ${isListening ? 'opacity-20' : 'opacity-100'}`}
+              placeholder={isListening || chips.length > 0 ? "" : (placeholder ?? t("chat.placeholderDefault"))}
+              className={`relative font-content w-full bg-transparent border-0 text-(--color-text-primary) ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-(--color-text-tertiary) resize-none overflow-y-auto leading-relaxed block transition-opacity ${isListening ? 'opacity-20' : 'opacity-100'}`}
               rows={minRows}
               disabled={disabled}
               style={{ minHeight: `${minRows * 1.5}em` }}
             />
+            </div>
           </div>
 
           {/* Action Bar */}

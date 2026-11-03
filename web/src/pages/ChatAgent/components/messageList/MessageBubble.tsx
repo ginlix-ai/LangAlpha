@@ -9,6 +9,7 @@ import { DURATION, EASE_COLLAPSE } from '@/lib/motion';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
 import { CitationMetadataProvider } from '../CitationMetadataContext';
 import TextMessageContent, { TurnErrorCard } from '../TextMessageContent';
+import { SentMessageBody } from './SentMessageBody';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { countDedupedSources, type CreditPauseState, type MessageProvenance, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState } from '@/types/chat';
 import { TextShimmer } from '@/components/ui/text-shimmer';
@@ -25,6 +26,8 @@ import { isSteeringUserMessage } from './messagePredicates';
 import { UserBubble } from './UserBubble';
 import { MessageTime } from './MessageTime';
 import { assistantText, userMessageText } from './messageText';
+import { EditMessageField } from './EditMessageField';
+import { sentMessageForCopy, sentMessageWords } from './sentMessage';
 import { TurnFileCards } from './TurnFileCards';
 import type { ArtifactCommentsShown } from '@/types/api';
 import { CommentSendBody } from '../artifactComments/CommentSendBody';
@@ -284,12 +287,6 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   // edge whatever its length: before a user's buttons, after a reply's.
   const shownAt = isUser ? (isSteering ? undefined : message.timestamp) : completedAt;
   const shownTime = <MessageTime value={shownAt} />;
-  const resizeTextarea = () => {
-    const el = editTextareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = el.scrollHeight + 'px';
-  };
   const handleStartEdit = useStableHandler(() => {
     draftStore.markFocus(draftKey);
     draftStore.put({ ...draftKey, text: originalText });
@@ -301,7 +298,6 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   useLayoutEffect(() => {
     const el = editTextareaRef.current;
     if (!isEditing || !el) return;
-    resizeTextarea();
     const active = document.activeElement;
     const key = { turnIndex, original: originalText, messageId };
     if (draftStore.takeFocus(key) && (!active || active === document.body)) {
@@ -333,7 +329,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   }, [isEditing]);
 
   const handleCopy = useStableHandler(() => {
-    const text = isUser ? userMessageText(message) : assistantText(message);
+    const text = isUser ? sentMessageForCopy(userMessageText(message)) : assistantText(message);
     // Confirm only after the write lands (it can reject when the document
     // loses focus); rapid re-copies reset the shared timer instead of
     // stacking timers that would cut the newer indicator short.
@@ -497,14 +493,16 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
       className="text-sm [--base-color:var(--color-text-secondary)] [--base-gradient-color:var(--color-text-primary)]"
       duration={1.5}
     >
-      {(message.content as string) || ''}
+      {sentMessageWords((message.content as string) || '')}
     </TextShimmer>
   ) : (
     <>
     {/* Render content segments in chronological order. A call streaming
         before any of them draws too, or the turn's first call would show
         nothing until it landed. */}
-    {((message.contentSegments as ContentSegmentRecord[] | undefined)?.length ?? 0) > 0 || projection.preparingToolCall !== null ? (
+    {isUser && typeof message.content === 'string' ? (
+      <SentMessageBody content={message.content} isStreaming={message.isStreaming as boolean} onOpenFile={onOpenFile} />
+    ) : ((message.contentSegments as ContentSegmentRecord[] | undefined)?.length ?? 0) > 0 || projection.preparingToolCall !== null ? (
       <CitationMetadataProvider toolCallProcesses={(message.toolCallProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}>
       <MessageContentSegments
         contentProjection={projection}
@@ -636,17 +634,11 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
                 color: 'var(--color-text-primary)',
               }}
             >
-              <textarea
-                ref={editTextareaRef}
+              <EditMessageField
+                textareaRef={editTextareaRef}
                 value={editContent}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
-                  draftStore.put({ ...draftKey, text: e.target.value });
-                  resizeTextarea();
-                }}
+                onChange={(text) => draftStore.put({ ...draftKey, text })}
                 onKeyDown={handleEditKeyDown}
-                className="w-full bg-transparent text-sm resize-none leading-relaxed overflow-hidden"
-                style={{ color: 'var(--color-text-primary)' }}
-                rows={1}
               />
             </div>
 

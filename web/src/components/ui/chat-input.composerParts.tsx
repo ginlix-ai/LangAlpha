@@ -1,6 +1,6 @@
-import { Fragment, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useRef, useState, type CSSProperties, type Ref, type WheelEvent } from 'react';
 import {
-  Archive, ArrowUp, ChartCandlestick, ClipboardList, FileText, Mic, MicOff, MoreHorizontal, Square, TextSelect, X,
+  Archive, ArrowUp, ChartCandlestick, ClipboardList, Mic, MicOff, MoreHorizontal, Quote, Square, TextSelect, X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -10,10 +10,12 @@ import { Loader } from './loader';
 import { AnimatePresence, motion } from '@/lib/framer';
 import { SwapCell } from '@/components/ui/crossfade';
 import { cn } from '@/lib/utils';
-import { CHIP_PRESENCE, getSlashCommandIcon, mentionPillKeys } from './chat-input.helpers';
+import { CHIP_PRESENCE, mentionPillKeys } from './chat-input.helpers';
+import { escapeToken } from './chat-input.quoteTokens';
+import { QuoteCard } from './chat-input.quoteCard';
 import { FilePreviewCard } from './chat-input.parts';
 import type { ToolbarItem } from './chat-input.useToolbarFold';
-import type { FileAttachment, MentionedFile, SlashCommand } from './chat-input.types';
+import type { ChipContext, FileAttachment, QuoteMention } from './chat-input.types';
 
 /* The composer box's own pieces: the draft's pills and attachments, the
  * overlays that cover it, and the buttons of its action bar. Each takes the
@@ -29,81 +31,117 @@ const WAVEFORM_BARS = [0, 1, 2, 3, 4, 5, 6, 7];
  *  cancel the turn it just started. */
 const STOP_ARM_MS = 500;
 
+
+/** The context a chip stands for, by what made it. */
+function chipIcon(f: ChipContext) {
+  const Icon = f.source === 'paste' ? ClipboardList
+    : f.source === 'chart' ? ChartCandlestick
+    : TextSelect;
+  return <Icon className="h-3.5 w-3.5 shrink-0" />;
+}
+
 /**
- * Slash command pills + mention pills. The row stays mounted so a pill can
- * leave as it arrived; empty, it takes no room.
+ * What goes out with the draft without being a word of it: long pastes, chart
+ * views, sheet ranges. They sit in the line the draft starts on, because they
+ * read as part of the message, so they are direct children of the row around the
+ * textarea.
  */
-export function ComposerPills({
-  slashCommands,
-  onRemoveCommand,
-  mentionedFiles,
-  onRemoveMention,
+export function ComposerChips({
+  chips,
+  onRemove,
 }: {
-  slashCommands: SlashCommand[];
-  onRemoveCommand: (name: string) => void;
-  mentionedFiles: MentionedFile[];
-  onRemoveMention: (path: string, label?: string, snippet?: string) => void;
+  chips: ChipContext[];
+  onRemove: (chip: ChipContext) => void;
 }) {
   const { t } = useTranslation();
-  const mentionKeys = mentionPillKeys(mentionedFiles);
+  const keys = mentionPillKeys(chips);
   return (
-    <div className="mention-pills">
-      <AnimatePresence initial={false}>
-        {slashCommands.map((cmd) => (
-          <motion.div
-            key={`slash-${cmd.name}`}
-            {...CHIP_PRESENCE}
-            className="mention-pill mention-pill-slash"
-            title={cmd.description}
-          >
-            {getSlashCommandIcon(cmd, "h-3 w-3 shrink-0 mention-pill-icon")}
-            <span>/{cmd.name}</span>
+    <AnimatePresence initial={false}>
+      {chips.map((f, idx) => (
+        <QuoteCard
+          key={`chip::${keys[idx]}`}
+          side="top"
+          quote={f.snippet}
+          source={f.path ? f.label : undefined}
+        >
+          <motion.span {...CHIP_PRESENCE} className="composer-quote-chip">
+            {chipIcon(f)}
+            <span>{f.label}</span>
             <button
-              className="mention-pill-remove"
-              onClick={(e) => { e.stopPropagation(); onRemoveCommand(cmd.name); }}
+              type="button"
+              className="composer-quote-remove"
+              onClick={(e) => { e.stopPropagation(); onRemove(f); }}
               title={t('chat.composer.remove')}
+              aria-label={t('chat.composer.remove')}
             >
               <X className="h-2.5 w-2.5" />
             </button>
-          </motion.div>
-        ))}
-        {mentionedFiles.map((f, idx) => {
-          const isSnippet = !!f.snippet;
-          const isPaste = f.source === 'paste';
-          const isChart = f.source === 'chart';
-          const name = isSnippet ? f.label : f.path.split('/').pop();
-          // Snippet tooltips preview, not mirror: a condensed paste can
-          // be tens of KB and title= renders it all.
-          const tooltip = isSnippet
-            ? (f.snippet!.length > 500 ? f.snippet!.slice(0, 500) + '…' : f.snippet)
-            : f.path;
-          return (
-            <motion.div
-              key={`mention::${mentionKeys[idx]}`}
-              {...CHIP_PRESENCE}
-              className={`mention-pill ${isSnippet ? 'mention-pill-snippet' : ''}`}
-              title={tooltip}
+          </motion.span>
+        </QuoteCard>
+      ))}
+    </AnimatePresence>
+  );
+}
+
+/**
+ * The copy of the draft a token's tint is drawn on (`.draft-token-layer`). With
+ * a quote in the draft it draws the words too, since only this copy can show one
+ * as its chip: an icon, in the accent. That token is also the one part of the
+ * draft a pointer can tell apart, so it takes the hover; a press leaves the caret
+ * at its end, as a token is whole.
+ */
+export function DraftTokenLayer({
+  text,
+  tokens,
+  quotes,
+  layerRef,
+  className,
+  onQuotePress,
+  onWheel,
+}: {
+  text: string;
+  tokens: string[];
+  quotes: QuoteMention[];
+  layerRef: Ref<HTMLDivElement>;
+  className?: string;
+  /** Gets where the pressed token ends in `text`. */
+  onQuotePress: (end: number) => void;
+  onWheel?: (e: WheelEvent<HTMLDivElement>) => void;
+}) {
+  // A `/skill` or `@file` is one only as a word of its own. A quote's marks
+  // already bound it, so text typed hard against one leaves it a token.
+  const matchers = [
+    ...(tokens.length ? [`(?<=^|\\s)(?:${tokens.map(escapeToken).join('|')})(?=\\s|$)`] : []),
+    ...quotes.map((f) => escapeToken(f.token)),
+  ];
+  const pieces = matchers.length ? text.split(new RegExp(`(${matchers.join('|')})`)) : [text];
+  return (
+    <div ref={layerRef} aria-hidden data-shows-text={quotes.length > 0 || undefined} className={cn('draft-token-layer', className)} onWheel={onWheel}>
+      {pieces.map((piece, i) => {
+        if (!(i % 2)) return piece;
+        const quote = quotes.find((f) => f.token === piece);
+        if (!quote) return <span key={i} className="draft-token">{piece}</span>;
+        return (
+          <QuoteCard
+            // Pasted, or given back beside itself, a token can be in the draft twice.
+            key={pieces.indexOf(piece) === i ? piece : `${piece}:${i}`}
+            side="top"
+            quote={quote.snippet}
+            reply={quote.reply}
+            source={quote.from.kind === 'file' ? quote.from.label : undefined}
+          >
+            <span
+              className="draft-token-quote"
+              onMouseDown={(e) => { e.preventDefault(); onQuotePress(pieces.slice(0, i + 1).join('').length); }}
             >
-              {isPaste
-                ? <ClipboardList className="h-3 w-3 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-                : isChart
-                  ? <ChartCandlestick className="h-3 w-3 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-                : isSnippet
-                  ? <TextSelect className="h-3 w-3 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-                  : <FileText className="h-3 w-3 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-              }
-              <span>{name}</span>
-              <button
-                className="mention-pill-remove"
-                onClick={(e) => { e.stopPropagation(); onRemoveMention(f.path, f.label, f.snippet); }}
-                title={t('chat.composer.remove')}
-              >
-                <X className="h-2.5 w-2.5" />
-              </button>
-            </motion.div>
-          );
-        })}
-      </AnimatePresence>
+              <Quote />
+              {piece}
+            </span>
+          </QuoteCard>
+        );
+      })}
+      {/* A last empty line takes no height in a block as it does in a textarea. */}
+      {text.endsWith('\n') && '\u200b'}
     </div>
   );
 }

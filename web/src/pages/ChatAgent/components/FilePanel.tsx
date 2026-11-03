@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, useState, Suspense } from 'react';
-import { CandlestickChart, FolderTree, LayoutDashboard, TextSelect, Upload } from 'lucide-react';
+import { CandlestickChart, FolderTree, LayoutDashboard, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   memoMimeForName,
@@ -31,12 +31,15 @@ import './FilePanel.css';
 
 const ExportPreviewModal = React.lazy(() => import('./ExportPreviewModal'));
 
-import type { ApiAdapter, ChartTabSpec, ContextPayload, PanelAccess, PanelTarget } from './filePanel/types';
+import type { ContextPayload } from '@/components/ui/chat-input.types';
+import type { ApiAdapter, ChartTabSpec, PanelAccess, PanelTarget } from './filePanel/types';
 import { EDITABLE_EXTENSIONS, getFileExtension, viewerFor } from './filePanel/fileMeta';
 import { useFileUpload } from './filePanel/useFileUpload';
 import { useFileEdit } from './filePanel/useFileEdit';
 import { usePanelConfirm } from './filePanel/usePanelConfirm';
-import { useSelectionContext } from './filePanel/useSelectionContext';
+import { selectionSourceName, useSelectionContext } from './filePanel/useSelectionContext';
+import { ImageReply } from './selectionQuote/ImageReply';
+import { SelectionQuote } from './selectionQuote/SelectionQuote';
 import { useFileSelection } from './filePanel/useFileSelection';
 import { useFileBackup } from './filePanel/useFileBackup';
 import { useFileFocus } from './filePanel/useFileFocus';
@@ -131,6 +134,8 @@ interface FilePanelProps {
   isActive?: boolean;
   apiAdapter?: ApiAdapter | null;
   onAddContext?: ((ctx: ContextPayload) => void) | null;
+  /** Who a quote from this panel goes to: the placeholder names them. */
+  agentName?: string;
   showSystemFiles?: boolean;
   onToggleSystemFiles?: (() => void) | null;
   /** The guard the panel's own close runs, for whoever else can unmount the
@@ -177,6 +182,7 @@ function FilePanel({
   isActive = true,
   apiAdapter = null,
   onAddContext = null,
+  agentName,
   showSystemFiles = false,
   onToggleSystemFiles = null,
   onLeaveGuardChange = null,
@@ -318,7 +324,7 @@ function FilePanel({
   useEffect(() => { reportActiveKind(activeTab.kind); }, [activeTab.kind]);
   useEffect(() => () => reportActiveKind(null), []);
 
-  const { selectionTooltip, contentWrapperRef, contextMenu, setContextMenu, handleContentMouseUp, handleEditorTextSelect, handleAddSelectionContext } =
+  const { selectionTooltip, selectionComposing, beginReply, dismissSelection, contentWrapperRef, contextMenu, setContextMenu, handleEditorTextSelect, handleAddSelectionContext } =
     useSelectionContext({ selectedFile, fileContent, onAddContext });
 
   const viewer = selectedFile ? viewerFor(selectedFile, fileMime, edit.isEditing) : 'other';
@@ -516,7 +522,7 @@ function FilePanel({
     setContextMenu(null);
     if (action === 'add-context' && onAddContext) {
       tabs.openFile(filePath, { pin: true });
-      onAddContext({ path: filePath });
+      onAddContext({ kind: 'file', path: filePath });
     } else if (action === 'add-to-memo') {
       handleAddToMemo(filePath);
     } else if (action === 'open') {
@@ -877,32 +883,28 @@ function FilePanel({
           <div className="file-panel-viewer">
             {/* font-content only while reading a file: the tree stays on the UI font. */}
             <div className={`file-panel-content${selectedFile ? ' font-content' : ''}`} ref={contentWrapperRef}>
-              {selectionTooltip && onAddContext && (
-                <button
-                  type="button"
-                  className="file-panel-selection-tooltip"
-                  style={{ left: Math.max(8, selectionTooltip.x - 60), top: Math.max(4, selectionTooltip.y - 32) }}
-                  // Acts on mousedown: a click would land after the browser has
-                  // already collapsed the selection it is meant to capture.
-                  onMouseDown={(e: React.MouseEvent) => {
-                    e.preventDefault(); e.stopPropagation();
-                    tabs.pinTab(activeTab.id);
-                    handleAddSelectionContext();
-                  }}
-                  onKeyDown={(e: React.KeyboardEvent) => {
-                    if (e.key !== 'Enter' && e.key !== ' ') return;
-                    e.preventDefault();
-                    tabs.pinTab(activeTab.id);
-                    handleAddSelectionContext();
-                  }}
-                >
-                  <TextSelect className="h-3.5 w-3.5" style={{ color: 'var(--color-accent-primary)' }} />
-                  {selectionTooltip.lineStart != null
+              <ImageReply surfaceRef={contentWrapperRef} enabled={!!onAddContext && isActive !== false} paused={!!selectionTooltip} agentName={agentName} onAddContext={onAddContext} />
+              {selectionTooltip && selectedFile && (
+                <SelectionQuote
+                  key={selectionTooltip.id}
+                  anchor={selectionTooltip}
+                  composing={selectionComposing}
+                  hidden={!onAddContext || isActive === false}
+                  boundsRef={contentWrapperRef}
+                  label={t('context.quote.from', { name: selectionSourceName(selectedFile, selectionTooltip) })}
+                  placeholder={agentName ? t('context.quote.reply', { name: agentName }) : t('context.quote.replyGeneric')}
+                  addLabel={selectionTooltip.lineStart != null
                     ? (selectionTooltip.lineEnd !== selectionTooltip.lineStart
                         ? t('context.addLinesToContext', { start: selectionTooltip.lineStart, end: selectionTooltip.lineEnd })
                         : t('context.addLineToContext', { line: selectionTooltip.lineStart }))
                     : t('context.addToContext')}
-                </button>
+                  onAdd={(reply) => {
+                    tabs.pinTab(activeTab.id);
+                    handleAddSelectionContext(reply);
+                  }}
+                  onReply={() => beginReply(selectionTooltip)}
+                  onDismiss={dismissSelection}
+                />
               )}
               <PreviewPanes tabs={tabs.tabs} activeId={activeTab.id} previews={previews} />
               {!treeFull && (
@@ -942,7 +944,6 @@ function FilePanel({
                   onUndoRedoChange: edit.handleUndoRedoChange,
                   onEditorTextSelect: handleEditorTextSelect,
                   onAddContext: onAddContext ? addViewerContext : null,
-                  onContentMouseUp: handleContentMouseUp,
                   onViewerLink: handleViewerLink,
                   onAnchorLink: handleAnchorLink,
                   htmlSource: htmlView.source,
@@ -1052,7 +1053,7 @@ function FilePanel({
 }
 
 export default FilePanel;
-export type { ContextPayload, PanelTarget } from './filePanel/types';
+export type { PanelTarget } from './filePanel/types';
 export { SYSTEM_DIR_PREFIXES } from './filePanel/fileMeta';
 // eslint-disable-next-line react-refresh/only-export-components
 export { categorizeFileError } from './filePanel/fileErrors';

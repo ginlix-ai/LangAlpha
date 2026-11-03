@@ -165,6 +165,18 @@ if (typeof window !== 'undefined') {
   });
 }
 
+/**
+ * Focus for the field a finished action carries on in, such as the composer once
+ * a quote lands in it. The Enter that finished the action was no walk through
+ * the page, so this is not the keyboard's focus and draws no ring, as a text
+ * field the mouse focused does not.
+ */
+export function focusWithoutRing(field: HTMLElement | null | undefined, options?: FocusOptions) {
+  if (!field) return;
+  field.focus(options);
+  document.documentElement.toggleAttribute(POINTER_FOCUS, true);
+}
+
 export function lastInputWasPointer(): boolean {
   return pointer;
 }

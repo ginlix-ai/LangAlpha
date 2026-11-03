@@ -8,6 +8,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { insertOptimisticThread } from '@/lib/threadListCache';
 import type { Thread } from '@/types/api';
+import { sentMessageWords } from '../components/messageList/sentMessage';
 import { createThreadWithTitle } from '../utils/api';
 import { bumpThreadNavOrder } from '../hooks/useNavigationData';
 
@@ -99,7 +100,7 @@ export async function ensureThreadId({
       current_status: 'in_progress',
       msg_type: created.msg_type,
       title: created.title,
-      first_query_content: message,
+      first_query_content: sentMessageWords(message),
       created_at: nowIso,
       updated_at: nowIso,
     } as Thread);
