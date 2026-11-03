@@ -18,7 +18,6 @@ from src.server.services.history.reader import pair_turns, turn_anchors
 from src.server.utils.checkpoint_helpers import (
     FORK_ROOT_CHECKPOINT_ID,
     build_checkpoint_config,
-    checkpoint_on_branch,
     get_checkpointer,
     turn_base_checkpoint_id,
     walk_current_branch_boundaries,
@@ -308,30 +307,31 @@ async def get_retry_checkpoint(thread_id: str, checkpoint_id: str | None = None)
 
 
 async def settle_resume_request(thread_id: str, request: ChatRequest) -> ChatRequest:
-    """The HITL answer ``request``, refused if its pause is on a branch a fork
-    replaced, else stamped with the run horizon START holds it to.
+    """The HITL answer ``request``, refused unless it resumes the pause the
+    thread would resume next, else stamped with the run horizon START holds it
+    to.
 
     A resume that names no checkpoint loads the newest, and after a fork
     whose run failed before its first step that is the replaced branch's
     pause, which no reader shows any more (``turn_base_checkpoint_id``). One
-    that names its checkpoint resumes there, which must be on the branch the
-    thread's pointer names. A fork admitted after this check is caught at
-    START, which refuses the answer if a run started after the horizon; read
-    first, so no fork can fall between the check and the horizon.
+    that names its checkpoint must name that newest one. LangGraph resumes a
+    named checkpoint wherever it sits, so an older pause would resume a card a
+    later run already went past, putting its call through (an order
+    included), and one under a flush or a compaction would run its step's
+    finished calls again and drop what was written on top. A fork admitted
+    after this check is caught at START, which refuses the answer if a run
+    started after the horizon; read first, so no fork can fall between the
+    check and the horizon.
     """
     branch = await threads_read.get_thread_branch_read(thread_id)
     checkpointer = get_checkpointer()
-    if not request.checkpoint_id:
-        replaced = await turn_base_checkpoint_id(checkpointer, thread_id) is not None
-    elif branch.checkpoint_id is None:
-        replaced = False
-    else:
-        replaced = not await checkpoint_on_branch(
-            thread_id,
-            request.checkpoint_id,
-            branch.checkpoint_id,
-            checkpointer=checkpointer,
+    stale = await turn_base_checkpoint_id(checkpointer, thread_id) is not None
+    if not stale and request.checkpoint_id:
+        newest = await checkpointer.aget_tuple(build_checkpoint_config(thread_id))
+        stale = (
+            newest is None
+            or newest.config["configurable"]["checkpoint_id"] != request.checkpoint_id
         )
-    if replaced:
+    if stale:
         raise HTTPException(status_code=409, detail=stale_fork_detail())
     return request.model_copy(update={"resume_run_horizon": branch.run_horizon})
