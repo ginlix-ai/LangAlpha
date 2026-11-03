@@ -170,7 +170,7 @@ async def get_oauth_tokens(
 
     Returns:
         {access_token, refresh_token, account_id, email, plan_type, expires_at,
-        needs_reauth_at, last_error_code} or None if not found.
+        updated_at, needs_reauth_at, last_error_code} or None if not found.
     """
     enc_key = get_encryption_key()
     async with get_db_connection() as conn:
@@ -180,7 +180,7 @@ async def get_oauth_tokens(
                 SELECT
                     pgp_sym_decrypt(access_token, %s)  AS access_token,
                     pgp_sym_decrypt(refresh_token, %s)  AS refresh_token,
-                    account_id, email, plan_type, expires_at,"""
+                    account_id, email, plan_type, expires_at, updated_at,"""
                 + _LIVE_FLAG
                 + """
                 FROM user_oauth_tokens
@@ -244,19 +244,68 @@ async def mark_oauth_needs_reauth(
     refresh tokens are single use), or because the user reconnected while it
     ran, must not flag the working connection that replaced it.
     """
+    return await _flag(user_id, provider, "pgp_sym_decrypt(refresh_token, %s) = %s", error_code, refresh_token)
+
+
+#: The row as a caller read it: its access token hashing to the given hex,
+#: and saved when it read it. A refusal that raced a save, of another token
+#: or of the same one again, then changes nothing the save made.
+_SAME_SAVE = "encode(digest(pgp_sym_decrypt(access_token, %s), 'sha256'), 'hex') = %s AND updated_at = %s"
+
+
+async def mark_access_token_refused(
+    user_id: str, provider: str, *, access_token_sha256: str, saved_at: datetime, error_code: str
+) -> bool:
+    """Flag a connection whose access token the provider refused, for one no
+    refresh can replace (Claude Code's setup token); False when the row moved
+    on since the caller read it (``_SAME_SAVE``), which needs to hold only the
+    hash its check is kept by and the row's ``updated_at``. Each refusal
+    stamps the flag anew, so a clear made on the stamp it read
+    (``clear_access_token_refused``) leaves a refusal recorded since.
+    """
+    return await _flag(user_id, provider, _SAME_SAVE, error_code, access_token_sha256, saved_at, restamp=True)
+
+
+async def clear_access_token_refused(
+    user_id: str, provider: str, *, access_token_sha256: str, saved_at: datetime, flagged_at: datetime
+) -> bool:
+    """Clear the flag ``mark_access_token_refused`` set at ``flagged_at``,
+    once the provider served the token after all; False when that flag is
+    gone, a refusal stamped it since, or the row moved on. The row's save
+    time stays, so no flag the save itself cleared returns."""
+    async with get_db_connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            f"""
+            UPDATE user_oauth_tokens SET needs_reauth_at = NULL, last_error_code = NULL
+            WHERE user_id = %s AND provider = %s AND needs_reauth_at = %s AND {_SAME_SAVE}
+            """,
+            (user_id, provider, flagged_at, get_encryption_key(), access_token_sha256, saved_at),
+        )
+        cleared = cur.rowcount > 0
+    if cleared:
+        logger.info(f"[oauth_tokens] needs_reauth cleared user_id={user_id} provider={provider}")
+        await invalidate_oauth_active_cache(user_id)
+    return cleared
+
+
+async def _flag(
+    user_id: str, provider: str, matches: str, error_code: str, *values: Any, restamp: bool = False,
+) -> bool:
+    """Set the needs-reauth flag on the row whose token ``matches`` (SQL of
+    this module's own, taking the key then ``values``), keeping an earlier
+    flag's time unless ``restamp``."""
+    flagged_at = "NOW()" if restamp else "CASE WHEN needs_reauth_at >= updated_at THEN needs_reauth_at ELSE NOW() END"
     enc_key = get_encryption_key()
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 UPDATE user_oauth_tokens
-                SET needs_reauth_at = CASE WHEN needs_reauth_at >= updated_at
-                                           THEN needs_reauth_at ELSE NOW() END,
+                SET needs_reauth_at = {flagged_at},
                     last_error_code = %s
-                WHERE user_id = %s AND provider = %s
-                  AND pgp_sym_decrypt(refresh_token, %s) = %s
+                WHERE user_id = %s AND provider = %s AND {matches}
                 """,
-                (error_code, user_id, provider, enc_key, refresh_token),
+                (error_code, user_id, provider, enc_key, *values),
             )
             flagged = cur.rowcount > 0
     logger.info(
@@ -269,17 +318,19 @@ async def mark_oauth_needs_reauth(
 
 
 async def flagged_oauth_connection(user_id: str) -> Optional[Dict[str, Any]]:
-    """The user's most recently flagged connection, ``{provider,
-    last_error_code}``, or None when none needs signing in again."""
+    """The user's most recently flagged subscription, ``{provider,
+    last_error_code}``, or None when none needs signing in again. Claude
+    Code's setup token is left out: it pays for no turn but its own, so it
+    never stands in for the subscription a turn needs reconnected."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
                 SELECT provider, last_error_code FROM user_oauth_tokens
-                WHERE user_id = %s AND needs_reauth_at >= updated_at
+                WHERE user_id = %s AND provider <> %s AND needs_reauth_at >= updated_at
                 ORDER BY needs_reauth_at DESC LIMIT 1
                 """,
-                (user_id,),
+                (user_id, CLAUDE_CODE_PROVIDER),
             )
             return await cur.fetchone()
 

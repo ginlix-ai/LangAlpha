@@ -44,7 +44,7 @@ async def _admit(computer, *, backend=False, cache=None, saved=None):
         patch(f"{SERVICE}.rows_available", return_value=True),
         patch(f"{SERVICE}.backend_available", return_value=backend),
         patch("src.server.database.computer.get_computer_for_workspace", new_callable=AsyncMock, return_value=computer),
-        patch(f"{SAVED}.stored_token", new_callable=AsyncMock, return_value=saved),
+        patch(f"{SAVED}.stored_row", new_callable=AsyncMock, return_value={"access_token": saved} if saved else None),
         patch(f"{MACHINES}.machine_of", new=dial),
     ):
         await require_runnable(config, CODE, "analyst", user_id="user-1", workspace_id="ws-1")
@@ -216,10 +216,18 @@ async def test_a_turn_refused_on_the_machines_token_records_it_for_that_computer
 @pytest.mark.asyncio
 async def test_a_relayed_token_is_handed_over_once_asked_and_its_refusal_marks_it_by_hash_only():
     cache = _Cache()
-    with serving(cache), patch(f"{SAVED}.stored_token", new_callable=AsyncMock, return_value="sk-ant-oat01-saved"):
+    with (
+        serving(cache),
+        patch(
+            "src.server.services.claude_code.machine.stored_row", new_callable=AsyncMock,
+            return_value={"access_token": "sk-ant-oat01-saved", "updated_at": None},
+        ),
+        patch(f"{SAVED}.mark_access_token_refused", new_callable=AsyncMock, return_value=True),
+    ):
         machine = ComputerToken("user-1", "c-1")
         assert await machine.relay() == "sk-ant-oat01-saved"
-        await machine.refused("relay")
+        with pytest.raises(ClaudeTurnFailed):
+            await machine.refused("relay")
         assert cache.values == {token_check_key("sk-ant-oat01-saved"): False}
         assert "sk-ant-oat01-saved" not in repr(vars(machine))
         assert await ComputerToken("user-1", "c-1").relay() is None, "a token Claude refused is not relayed again"

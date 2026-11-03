@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from ptc_agent.config.agent import AgentConfig, CredentialSource, LLMConfig
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SandboxConfig, SecurityConfig
-from src.llms.claude_code import ClaudeCodeTarget
+from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed
 from src.server.services.claude_code.saved import SavedToken, token_check_key
 from src.server.services.llm.claude_code import CLAUDE_CODE_OFF
 from tests.unit.server.services.claude_code.fakes import Cache, serving
@@ -48,7 +48,7 @@ async def _resolve(
     cleanup = AsyncMock(return_value=[])
     with (
         serving(_Status(checked)),
-        patch("src.server.services.claude_code.saved.stored_token", new_callable=AsyncMock, return_value=token),
+        patch("src.server.services.claude_code.saved.stored_row", new_callable=AsyncMock, return_value={"access_token": token} if token else None),
         patch("src.server.services.llm.user_models.get_model_preference", new_callable=AsyncMock, return_value=pref),
         patch("src.server.services.llm.clients.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
         patch(f"{HANDLER}.effective_flags_for_user", new_callable=AsyncMock, return_value={"claude_code_runtime": opted_in}),
@@ -76,22 +76,36 @@ async def test_a_turn_that_cannot_run_claude_code_is_refused_and_nothing_saved_i
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("token", "checked"), [(None, None), ("sk-ant-oat01-tok", "refused"), ("sk-ant-oat01-tok", False)])
-async def test_a_turn_on_a_token_known_not_to_work_is_refused_as_signed_out(token, checked):
+@pytest.mark.parametrize(
+    ("token", "checked", "reason"),
+    [(None, None, "signed_out"), ("sk-ant-oat01-tok", "refused", "token_refused"), ("sk-ant-oat01-tok", False, "token_refused")],
+)
+async def test_a_turn_on_a_token_known_not_to_work_is_refused_saying_whether_one_is_saved(token, checked, reason):
     with pytest.raises(HTTPException) as refused:
         await _resolve({"preferred_model": CODE}, token=token, checked=checked)
-    assert refused.value.detail == {"message": CLAUDE_CODE_OFF["signed_out"], "type": "claude_code_off", "model": CODE, "reason": "signed_out"}
+    assert refused.value.detail == {"message": CLAUDE_CODE_OFF[reason], "type": "claude_code_off", "model": CODE, "reason": reason}
 
 
 @pytest.mark.asyncio
 async def test_a_token_a_turn_found_refused_is_refused_from_the_next_turn_on():
     cache = Cache()
-    with serving(cache):
-        await SavedToken("user-1").refused("sk-ant-oat01-tok")
+    with (
+        serving(cache),
+        patch("src.server.services.claude_code.saved.mark_access_token_refused", new_callable=AsyncMock, return_value=True),
+        patch("src.server.services.claude_code.saved.backend_available", return_value=True),
+        patch(
+            "src.server.services.claude_code.saved.stored_row", new_callable=AsyncMock,
+            return_value={"access_token": "sk-ant-oat01-tok", "updated_at": None},
+        ),
+        pytest.raises(ClaudeTurnFailed),
+    ):
+        token = SavedToken("user-1")
+        await token.read()
+        await token.refused("sk-ant-oat01-tok")
     assert cache.values == {token_check_key("sk-ant-oat01-tok"): False}
     with pytest.raises(HTTPException) as refused:
         await _resolve({"preferred_model": CODE}, checked=cache.values[token_check_key("sk-ant-oat01-tok")])
-    assert refused.value.detail["reason"] == "signed_out"
+    assert refused.value.detail["reason"] == "token_refused"
 
 
 @pytest.mark.asyncio

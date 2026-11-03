@@ -2078,9 +2078,10 @@ export function useChatMessages(
     // retry meets the same refusal. Without a working token, the change is
     // one the user makes in Settings.
     if (errorInfo?.type === 'claude_code_off' && worded) {
-      const { reread, link } = claudeCodeRefusal(errorInfo.reason, workspaceId);
+      const { reread, link, messageKey } = claudeCodeRefusal(errorInfo.reason, workspaceId);
       if (reread) refreshClaudeCode();
-      return { banner: link ? { message: worded, links: [link] } : worded, answered: true };
+      const message = messageKey ? t(messageKey) : worded;
+      return { banner: link ? { message, links: [link] } : message, answered: true };
     }
     return { banner: worded, answered: false };
   };

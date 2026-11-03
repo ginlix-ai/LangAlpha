@@ -2,8 +2,8 @@
  * The Claude Code row says what the user's setup token is doing and offers
  * the one next step for it, and a link from elsewhere opens its sheet.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, fireEvent, screen, within } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 import { CLAUDE_CODE_TOKEN_URL } from '@/lib/claudeCode';
 import type { ClaudeCodeState } from '@/api/model';
@@ -31,7 +31,13 @@ const SIGNED_IN: Status = { ...base, state: 'signed_in', email: 'user@example.co
 const row = () => screen.getByText('Claude Code').closest('li') as HTMLElement;
 
 describe('ModelAccessSection: Claude Code', () => {
-  beforeEach(() => { status.current = base; });
+  // The expiry lines read against today, so today is fixed.
+  beforeEach(() => {
+    status.current = base;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-03T12:00:00Z'));
+  });
+  afterEach(() => { vi.useRealTimers(); });
 
   it('offers a setup token while there is none', () => {
     renderWithProviders(<ModelAccessSection />);
@@ -103,6 +109,44 @@ describe('ModelAccessSection: Claude Code', () => {
     expect(within(row()).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     fireEvent.click(within(row()).getByRole('button', { name: 'Add new token' }));
     expect(screen.getByRole('dialog', { name: 'Add a setup token' })).toBeInTheDocument();
+  });
+
+  it('says when a token expired, and offers a new one or its removal', () => {
+    status.current = { ...base, state: 'rejected', expiresAt: '2026-10-30T12:00:00Z' };
+    renderWithProviders(<ModelAccessSection />);
+    expect(within(row()).getByText('Not connected')).toBeInTheDocument();
+    expect(within(row()).getByText('Oct 30, 2026').parentElement).toHaveTextContent(
+      /^This token expired by Oct 30, 2026\. Add a new one to keep using Claude Code\.$/,
+    );
+    expect(within(row()).getAllByRole('button').map((b) => b.textContent)).toEqual(['Add new token', 'Remove']);
+  });
+
+  it('asks for a new token in the two weeks before one expires, and not before', () => {
+    status.current = { ...SIGNED_IN, expiresAt: '2026-11-13T12:00:00Z' };
+    const { unmount } = renderWithProviders(<ModelAccessSection />);
+    expect(within(row()).getByText('Connected')).toBeInTheDocument();
+    expect(within(row()).getByText('Nov 13, 2026').parentElement).toHaveTextContent(
+      /^This token expires by Nov 13, 2026\. Add a new one before then so Claude Code keeps running\.$/,
+    );
+    expect(within(row()).getAllByRole('button').map((b) => b.textContent)).toEqual(['Add new token', 'Remove']);
+    unmount();
+    status.current = { ...SIGNED_IN, expiresAt: '2026-11-18T12:00:00Z' };
+    renderWithProviders(<ModelAccessSection />);
+    expect(within(row()).getByText('Nov 18, 2026').parentElement).toHaveTextContent(/^user@example\.com · Expires by Nov 18, 2026$/);
+  });
+
+  it('moves the expiry lines on while Settings stays open', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(new Date('2026-11-03T12:00:00Z'));
+    status.current = { ...SIGNED_IN, expiresAt: '2026-11-17T12:00:30Z' };
+    renderWithProviders(<ModelAccessSection />);
+    expect(within(row()).getByText('Nov 17, 2026').parentElement).toHaveTextContent(/^user@example\.com · Expires by Nov 17, 2026$/);
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(within(row()).getByText('Nov 17, 2026').parentElement).toHaveTextContent(/^This token expires by Nov 17, 2026\./);
+    vi.setSystemTime(new Date('2026-11-17T12:01:00Z'));
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(within(row()).getByText('Not connected')).toBeInTheDocument();
+    expect(within(row()).getByText('Nov 17, 2026').parentElement).toHaveTextContent(/^This token expired by Nov 17, 2026\./);
   });
 
   it('opens the sheet from a link, and closing it drops the link', () => {

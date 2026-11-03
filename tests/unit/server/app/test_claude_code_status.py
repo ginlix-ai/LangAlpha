@@ -55,7 +55,7 @@ async def _status(client, *, token="tok", answer=True, runs=True, rows=True, opt
     with (
         serving(cache if cache is not None else _Cache()),
         _switches(runs=runs, rows=rows, opted_in=opted_in),
-        patch(f"{SAVED}.stored_row", new_callable=AsyncMock, return_value={"access_token": token} if token else None),
+        patch(f"{SAVED}.stored_row", new_callable=AsyncMock, return_value={"access_token": token, "updated_at": None} if token else None),
         patch(f"{SAVED}.get_oauth_connection", new_callable=AsyncMock, return_value={"email": None} if token else None),
         patch("ptc_agent.agent.claude_code.runtime.token_works", check),
     ):

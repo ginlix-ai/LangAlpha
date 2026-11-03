@@ -210,7 +210,8 @@ async def test_a_turns_word_never_lands_over_an_answer_kept_after_it_read_the_la
 
 def test_a_turn_anywhere_else_runs_on_the_backend_with_the_saved_token():
     launcher = turn_launcher(SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1")
-    assert isinstance(launcher, LocalLauncher) and launcher.saved == SavedToken("user-1") and launcher.token is None
+    assert isinstance(launcher, LocalLauncher) and isinstance(launcher.saved, SavedToken) and launcher.token is None
+    assert launcher.saved.user_id == "user-1"
 
 
 @pytest.mark.asyncio
@@ -219,7 +220,7 @@ async def test_a_backend_turn_on_a_hosted_server_never_starts_and_is_refused_as_
     and the workspace may have moved off an own computer since."""
     launcher = turn_launcher(SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1")
     with patch("src.server.services.claude_code.saved.backend_available", return_value=False), \
-            patch("src.server.services.claude_code.saved.stored_token", AsyncMock(return_value="sk-ant-oat01-saved")), \
+            patch("src.server.services.claude_code.saved.stored_row", AsyncMock(return_value={"access_token": "sk-ant-oat01-saved", "updated_at": None})), \
             patch("tempfile.mkdtemp") as laid_out, pytest.raises(ClaudeTurnFailed) as refused:
         await launcher.prepare("t-1", None, [], identity="user-1", system_prompt="s")
     laid_out.assert_not_called()
@@ -239,7 +240,7 @@ async def test_a_backend_turn_where_an_organizations_policy_is_installed_never_s
     monkeypatch.setattr(claude_code_managed, "CLAUDE_CODE_MANAGED_DIR_MAC", str(managed))
     launcher = turn_launcher(SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1")
     with patch("src.server.services.claude_code.saved.backend_available", return_value=True), \
-            patch("src.server.services.claude_code.saved.stored_token", AsyncMock(return_value="sk-ant-oat01-saved")), \
+            patch("src.server.services.claude_code.saved.stored_row", AsyncMock(return_value={"access_token": "sk-ant-oat01-saved", "updated_at": None})), \
             patch("tempfile.mkdtemp") as laid_out:
         for start in (lambda: launcher.prepare("t-1", None, [], identity="user-1", system_prompt="s"), launcher.scratch):
             with pytest.raises(ClaudeTurnFailed) as refused:
