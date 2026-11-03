@@ -15,11 +15,12 @@ const h = vi.hoisted(() => ({
   mutateAsync: vi.fn(async (_payload: unknown) => ({})),
   place: undefined as unknown,
   keysLoading: false,
+  ownKeys: true,
   prune: vi.fn(async (_replaced: readonly string[], _by: string) => {}),
 }));
 
 vi.mock('@/hooks/useApiKeys', () => ({
-  useApiKeys: () => ({ isLoading: h.keysLoading }),
+  useApiKeys: () => ({ isLoading: h.keysLoading, apiKeys: { byok_enabled: h.ownKeys } }),
   useUpdateApiKeys: () => ({ mutateAsync: h.mutateAsync }),
 }));
 vi.mock('@/hooks/useModelAccessActions', () => ({
@@ -119,6 +120,23 @@ describe('useApiKeyForm', () => {
       api_keys: { deepseek: 'sk-new' },
       base_urls: { deepseek: 'https://gateway.example/v1' },
     });
+  });
+
+  it('saves a stored key as it is while own keys are off, which turns them back on', async () => {
+    h.mutateAsync.mockClear();
+    h.ownKeys = false;
+    const { result } = renderHookWithProviders(() => useApiKeyForm(option, [saved('sk-...7e48')]));
+    expect(result.current.canSave).toBe(true);
+    await act(async () => { await result.current.save(); });
+    expect(h.mutateAsync).toHaveBeenCalledWith({ byok_enabled: true });
+    h.ownKeys = true;
+  });
+
+  it("asks for a key while own keys are off and the deployment's key is the one shown", () => {
+    h.ownKeys = false;
+    const { result } = renderHookWithProviders(() => useApiKeyForm(option, [saved('(server)')]));
+    expect(result.current.canSave).toBe(false);
+    h.ownKeys = true;
   });
 
   it('waits for the saved keys before saving, so it knows which region the key replaces', () => {

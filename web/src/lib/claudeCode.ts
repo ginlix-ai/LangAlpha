@@ -1,3 +1,4 @@
+import type { ClaudeCodeCustodyMode } from '@/api/model';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import type { ErrorLinkSpec } from '@/utils/rateLimitError';
 
@@ -17,10 +18,30 @@ export const CLAUDE_CODE_CONNECTION: ConfiguredProvider = {
   state: 'connected',
 };
 
+/** Settings → Model access. */
+export const MODEL_ACCESS_URL = '/settings?tab=model';
+
 /** Settings → Model access with the setup-token sheet open, the one place a
  *  token is added, which `ModelAccessSection` reads off the query. */
 export const CLAUDE_CODE_TOKEN_PARAM = 'connect';
-export const CLAUDE_CODE_TOKEN_URL = `/settings?tab=model&${CLAUDE_CODE_TOKEN_PARAM}=${CLAUDE_CODE}`;
+export const CLAUDE_CODE_TOKEN_URL = `${MODEL_ACCESS_URL}&${CLAUDE_CODE_TOKEN_PARAM}=${CLAUDE_CODE}`;
+
+/** The provider whose API key Claude Code runs on on cloud computers, and
+ *  Settings → Model access with that key's sheet open, by the same query. */
+export const ANTHROPIC = 'anthropic';
+export const ANTHROPIC_KEY_URL = `${MODEL_ACCESS_URL}&${CLAUDE_CODE_TOKEN_PARAM}=${ANTHROPIC}`;
+
+/** What each way Claude Code can run on cloud computers is called, in its
+ *  sheet and on its row in Model access. */
+export const CLAUDE_CODE_MODE_LABELS: Readonly<Record<ClaudeCodeCustodyMode, string>> = {
+  local: 'modelAccess.claudeCode.hosted.local',
+  api_key: 'modelAccess.claudeCode.hosted.apiKey',
+};
+
+/** Settings → Model access with Claude Code's sheet open, where the user
+ *  chooses how it runs on cloud computers, by the same query. */
+export const CLAUDE_CODE_CHOICE = 'claude-code-cloud';
+export const CLAUDE_CODE_CHOICE_URL = `${MODEL_ACCESS_URL}&${CLAUDE_CODE_TOKEN_PARAM}=${CLAUDE_CODE_CHOICE}`;
 
 /** With this too, Settings opens the sheet for the token that workspace's
  *  turns run on, which it resolves when it opens: a link made before the
@@ -45,23 +66,49 @@ export const CLAUDE_CODE_UNRUNNABLE: ReadonlySet<string> = new Set(['policy_bloc
  *  keeps the server's English words. */
 const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
   token_refused: 'chat.claudeCode.off.token_refused',
+  hosted_off: 'chat.claudeCode.off.hosted_off',
+  needs_api_key: 'chat.claudeCode.off.needs_api_key',
+  api_key_endpoint: 'chat.claudeCode.off.api_key_endpoint',
+  api_key_refused: 'chat.claudeCode.off.api_key_refused',
+  busy: 'chat.claudeCode.off.busy',
+  too_many_turns: 'chat.claudeCode.off.too_many_turns',
+};
+
+/** The links that fix a cloud computer's refusal: choosing how Claude Code
+ *  runs there, or adding the Anthropic API key it runs on. */
+const CLAUDE_CODE_CLOUD_LINKS: Readonly<Record<string, ErrorLinkSpec>> = {
+  hosted_off: { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' },
+  needs_api_key: { url: ANTHROPIC_KEY_URL, label: 'Add an API key', labelKey: 'chat.errorLinkAddApiKey' },
+  api_key_endpoint: { url: ANTHROPIC_KEY_URL, label: 'Model access', labelKey: 'modelAccess.title' },
 };
 
 /**
  * What a turn's `claude_code_off` refusal means, wherever it arrives:
- * whether the server's next read of the tokens changed, so they are read
- * again, the link that fixes it, and the key it is worded by where the app
- * words it (`messageKey`). No token (`signed_out`) or one Claude refused
+ * whether the server's next read of the tokens and of the user's choice for
+ * cloud computers changed, so they are read again, the link that fixes it,
+ * and the key it is worded by where the app words it (`messageKey`, with
+ * `messageValues`). No token (`signed_out`) or one Claude refused
  * (`token_refused`) is fixed with a new one in Settings; a computer where
- * Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`) is fixed by no token.
- * Any other reason keeps the server's words alone.
+ * Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`) is fixed by no token. On
+ * a cloud computer, the choice of how it runs there (`hosted_off`) or the
+ * Anthropic API key it runs on (`needs_api_key`, or `api_key_endpoint` for one
+ * set to another endpoint) fixes it. Too many turns
+ * at once names the user's cap, `limit`, and keeps the server's words
+ * without one. Any other reason keeps the server's words alone.
  */
 export function claudeCodeRefusal(
-  reason: unknown, workspaceId: string | null | undefined,
-): { reread: boolean; link: ErrorLinkSpec | null; messageKey: string | null } {
+  reason: unknown, workspaceId: string | null | undefined, limit?: unknown,
+): { reread: boolean; link: ErrorLinkSpec | null; messageKey: string | null; messageValues?: { n: number } } {
+  if (reason === 'too_many_turns') {
+    return typeof limit === 'number'
+      ? { reread: false, link: null, messageKey: CLAUDE_CODE_OFF_KEYS[reason], messageValues: { n: limit } }
+      : { reread: false, link: null, messageKey: null };
+  }
   const messageKey = typeof reason === 'string' ? CLAUDE_CODE_OFF_KEYS[reason] ?? null : null;
   if (reason === 'signed_out' || reason === 'token_refused') {
     return { reread: true, link: claudeCodeTokenLink(workspaceId), messageKey };
   }
+  const cloudLink = typeof reason === 'string' ? CLAUDE_CODE_CLOUD_LINKS[reason] : undefined;
+  if (cloudLink) return { reread: true, link: cloudLink, messageKey };
   return { reread: typeof reason === 'string' && CLAUDE_CODE_UNRUNNABLE.has(reason), link: null, messageKey };
 }
