@@ -41,15 +41,27 @@ export const claudeCodeTokenLink = (workspaceId?: string | null): ErrorLinkSpec 
  *  list of computers does not have yet, and no token fixes it. */
 export const CLAUDE_CODE_UNRUNNABLE: ReadonlySet<string> = new Set(['policy_blocked', 'needs_perl', 'computer_unsupported']);
 
+/** The refusals the app words itself, in the user's language; any other
+ *  keeps the server's English words. */
+const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
+  token_refused: 'chat.claudeCode.off.token_refused',
+};
+
 /**
  * What a turn's `claude_code_off` refusal means, wherever it arrives:
  * whether the server's next read of the tokens changed, so they are read
- * again, and the link that fixes it. Anthropic refusing the token
- * (`signed_out`) is fixed with a new one in Settings; a computer where
+ * again, the link that fixes it, and the key it is worded by where the app
+ * words it (`messageKey`). No token (`signed_out`) or one Claude refused
+ * (`token_refused`) is fixed with a new one in Settings; a computer where
  * Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`) is fixed by no token.
  * Any other reason keeps the server's words alone.
  */
-export function claudeCodeRefusal(reason: unknown, workspaceId: string | null | undefined): { reread: boolean; link: ErrorLinkSpec | null } {
-  if (reason === 'signed_out') return { reread: true, link: claudeCodeTokenLink(workspaceId) };
-  return { reread: typeof reason === 'string' && CLAUDE_CODE_UNRUNNABLE.has(reason), link: null };
+export function claudeCodeRefusal(
+  reason: unknown, workspaceId: string | null | undefined,
+): { reread: boolean; link: ErrorLinkSpec | null; messageKey: string | null } {
+  const messageKey = typeof reason === 'string' ? CLAUDE_CODE_OFF_KEYS[reason] ?? null : null;
+  if (reason === 'signed_out' || reason === 'token_refused') {
+    return { reread: true, link: claudeCodeTokenLink(workspaceId), messageKey };
+  }
+  return { reread: typeof reason === 'string' && CLAUDE_CODE_UNRUNNABLE.has(reason), link: null, messageKey };
 }

@@ -2667,6 +2667,11 @@
       "skipHint": "Send the whole conversation instead. It costs more.",
       "skipped": "Your next message will include the whole conversation, which costs more.",
       "undo": "Undo"
+    },
+    "claudeCode": {
+      "off": {
+        "token_refused": "Claude refused your setup token. It may have expired or been revoked. Add a new one in Settings under Model access to use this model."
+      }
     }
   },
   "context": {
@@ -6661,6 +6666,8 @@
       "removeFailed": "Couldn't remove the token. Try again.",
       "pasteHeading": "Already have a setup token? Paste it",
       "expiresBy": "Expires by <date>{{date}}</date>",
+      "expired": "This token expired by <date>{{date}}</date>. Add a new one to keep using Claude Code.",
+      "expiresSoon": "This token expires by <date>{{date}}</date>. Add a new one before then so Claude Code keeps running.",
       "signIn": {
         "intro": "Sign in to Claude in a new tab. LangAlpha then makes a setup token for itself, so there's nothing to run in a terminal.",
         "start": "Sign in with Claude",

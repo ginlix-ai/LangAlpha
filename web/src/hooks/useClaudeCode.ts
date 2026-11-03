@@ -1,10 +1,26 @@
-import { useQuery } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getClaudeCodeComputers, getClaudeCodeStatus, type ClaudeCodeState } from '@/api/model';
 import { queryKeys } from '@/lib/queryKeys';
 import { isFeatureEnabled, useFeatures } from './useFeatures';
 
 /** A token Anthropic has not answered for yet is read again this often. */
 const CHECKING_POLL_MS = 5_000;
+/** The longest delay a timer takes; a token lasting longer is read again at this pace. */
+const MAX_DELAY_MS = 2 ** 31 - 1;
+/** How often a token past its expiry by this clock is read again while the
+ *  server, its clock behind this one, still says it works. */
+const PAST_EXPIRY_POLL_MS = 30_000;
+
+/** When a token that works is read again: as its expiry passes, when the
+ *  server reads it as refused, so every reader changes then without a clock
+ *  of its own. False for one with no expiry, or no token that works. */
+function untilExpiry(state: string | undefined, expiresAt: string | null | undefined): number | false {
+  const at = expiresAt && (state === 'signed_in' || state === 'unverified') ? Date.parse(expiresAt) : NaN;
+  if (Number.isNaN(at)) return false;
+  const left = at - Date.now();
+  return left >= 0 ? Math.min(left + 1_000, MAX_DELAY_MS) : PAST_EXPIRY_POLL_MS;
+}
 
 /** `whenOff`: read even while the user's flag is off, for a token left in
  *  place when they opted out, which Settings still offers to remove. */
@@ -26,7 +42,8 @@ function useClaudeCodeFlag() {
  * once the user opts out. The server answers at once and checks a token it
  * has no answer for meanwhile (`checking`), so the status is read again until
  * the answer lands. One it could not check (`unverified`) waits for the next
- * ordinary read, since each recheck spends a request on the user's plan.
+ * ordinary read, since each recheck spends a request on the user's plan. A
+ * token that works is read again as it expires.
  */
 export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
   const { flagged, featuresLoading } = useClaudeCodeFlag();
@@ -36,7 +53,8 @@ export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
     enabled: flagged || whenOff,
     staleTime: 60_000,
     retry: false,
-    refetchInterval: (query) => (query.state.data?.state === 'checking' ? CHECKING_POLL_MS : false),
+    refetchInterval: (query) => (query.state.data?.state === 'checking'
+      ? CHECKING_POLL_MS : untilExpiry(query.state.data?.state, query.state.data?.expires_at)),
   });
   const state: ClaudeCodeState = flagged ? data?.state ?? 'off' : 'off';
   // A server from before `enabled` ran Claude Code only on the saved token.
@@ -55,19 +73,33 @@ export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
 /**
  * The user's own computers (SSH, and a Mac through Remote control) and the
  * token each one's Claude Code turns use, read again every 5 s while any of
- * them is being checked. With the flag off the server says `off` for each,
- * still naming a token left on one.
+ * them is being checked, and as the saved token expires while one signs in
+ * with it. The saved token read as refused while one still signs in with it
+ * reads them again too, since the status may be read first (a refocus) and
+ * the expiry timer then never fires. With the flag off the server says
+ * `off` for each, still naming a token left on one.
  */
 export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
   const { flagged, featuresLoading } = useClaudeCodeFlag();
+  const saved = useClaudeCodeStatus({ whenOff });
   const { data, isLoading, isError } = useQuery({
     queryKey: queryKeys.features.claudeCodeComputers(),
     queryFn: () => getClaudeCodeComputers(),
     enabled: flagged || whenOff,
     staleTime: 60_000,
     retry: 1,
-    refetchInterval: (query) => (query.state.data?.computers.some((c) => c.state === 'checking') ? CHECKING_POLL_MS : false),
+    refetchInterval: (query) => {
+      const computers = query.state.data?.computers ?? [];
+      if (computers.some((c) => c.state === 'checking')) return CHECKING_POLL_MS;
+      return computers.some((c) => c.source === 'saved') ? untilExpiry(saved.state, saved.expiresAt) : false;
+    },
   });
+  const queryClient = useQueryClient();
+  const behindSaved = saved.state === 'rejected'
+    && (data?.computers ?? []).some((c) => c.source === 'saved' && (c.state === 'signed_in' || c.state === 'unverified'));
+  useEffect(() => {
+    if (behindSaved) void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
+  }, [behindSaved, queryClient]);
   // A failed read again keeps the list it had, which still says whose they are.
   return { computers: data?.computers ?? [], isLoading: featuresLoading || isLoading, unread: isError && !data };
 }

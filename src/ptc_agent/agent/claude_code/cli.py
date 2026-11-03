@@ -277,7 +277,7 @@ def turn_failure(
     # The login text is read only where the CLI's request failed: any other
     # end's text is the model's or a tool's, which can quote a vendor's.
     cli_said = result.terminal_reason == "api_error" and any(s in text.lower() for s in _AUTH_TEXT)
-    if result.api_error_status in (401, 403) or cli_said:
+    if result.api_error_status == 401 or cli_said:
         return ClaudeTurnFailed("auth_failed", detail)
     if result.api_error_status == 429:
         return ClaudeTurnFailed("plan_exhausted", detail)
@@ -293,7 +293,7 @@ def compaction_failure(error: str) -> ClaudeTurnFailed | None:
     if any(s in text for s in _NOTHING_TO_COMPACT):
         return None
     status = re.search(r"API Error: (\d{3})", error)
-    if any(s in text for s in _AUTH_TEXT) or (status and status[1] in ("401", "403")):
+    if any(s in text for s in _AUTH_TEXT) or (status and status[1] == "401"):
         return ClaudeTurnFailed("auth_failed", error)
     return ClaudeTurnFailed("plan_exhausted" if status and status[1] == "429" else "api_error", error or "the compaction failed")
 

@@ -182,7 +182,7 @@ def world():
         patch(f"{MACHINES}.get_computer", new_callable=AsyncMock, side_effect=lambda _: w.computer),
         patch(f"{MACHINES}.get_computer_roster", new_callable=AsyncMock, side_effect=lambda _: [_roster_row(w.computer)]),
         patch(f"{MACHINES}.tunnels_for", new_callable=AsyncMock, side_effect=lambda *_: {"tun-1": {"live": w.tunnel_live}}),
-        patch(f"{MACHINES}.stored_token", new_callable=AsyncMock, side_effect=lambda _: w.saved),
+        patch(f"{MACHINES}.stored_row", new_callable=AsyncMock, side_effect=lambda _: {"access_token": w.saved} if w.saved else None),
         patch(f"{MACHINES}.machine_of", new=w.dial),
         patch(f"{TOKENS}.stage_machine_token", new=m.stage),
         patch(f"{TOKENS}.promote_machine_token", new=m.promote),

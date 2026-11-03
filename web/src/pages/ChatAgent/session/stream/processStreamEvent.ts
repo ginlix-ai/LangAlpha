@@ -869,7 +869,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       const kind = event.error_kind as 'upstream' | 'internal' | undefined;
       const structured: StructuredError | undefined = busyCode !== null
         ? { message: errorMessage as string, kind: 'notice' }
-        : readStreamFailure(event, errorMessage as string, rt.workspaceId);
+        : readStreamFailure(event, errorMessage as string, rt.workspaceId, rt.t);
 
       // A server older than this view frames its time limit, then the same
       // stop again as an internal error: the card already says it, and a

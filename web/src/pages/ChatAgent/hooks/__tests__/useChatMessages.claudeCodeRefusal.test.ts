@@ -59,6 +59,21 @@ describe('useChatMessages: a Claude Code refusal', () => {
     expect(result.current.messages.filter((m) => m.role === 'assistant')).toEqual([]);
   });
 
+  it('at admission words a refused token in the app, linking its sheet', async () => {
+    const worded = 'Claude refused your setup token.';
+    mockSendStream.mockRejectedValue(
+      Object.assign(new Error(worded), { status: 400, errorInfo: { type: 'claude_code_off', message: worded, reason: 'token_refused' } }),
+    );
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+    await act(async () => {
+      await result.current.handleSendMessage('hello');
+    });
+    await waitFor(() => expect(result.current.messageError).toMatchObject({
+      message: 'chat.claudeCode.off.token_refused',
+      links: [{ labelKey: 'modelAccess.claudeCode.add' }],
+    }));
+  });
+
   it('mid-turn shows the same words on the turn', async () => {
     mockSendStream.mockImplementation(async (_m: string, _w: string, _t: string | null, { onEvent }: { onEvent: (e: Record<string, unknown>) => void }) => {
       onEvent({ event: 'error', error: SIGNED_OUT, message: SIGNED_OUT, type: 'claude_code_off' });

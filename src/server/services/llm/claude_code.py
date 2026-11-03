@@ -25,7 +25,7 @@ from src.llms.claude_code import (
 from src.llms.error_classification import iter_exception_chain
 from src.server.services.claude_code.flow import POLICY_BLOCKED
 from src.server.services.claude_code.machine import NEEDS_PERL, computer_state, read_answer
-from src.server.services.claude_code.saved import usable_token
+from src.server.services.claude_code.saved import saved_refusal, usable_token
 from src.server.services.ssh_computers import is_own_computer
 
 from .availability import drop_models, model_resolves
@@ -40,6 +40,10 @@ CLAUDE_CODE_OFF = {
     "chief_of_staff": "Chief of Staff does not run on Claude Code models yet. Pick another model.",
     "other_model": "Claude Code cannot continue a thread another model has replied on. Start a new thread to use this model.",
     "signed_out": "Add a Claude Code setup token in Settings under Model access to use this model.",
+    "token_refused": (
+        "Claude refused your setup token. It may have expired or been revoked. Add a new one in Settings under "
+        "Model access to use this model."
+    ),
     "needs_own_computer": (
         "On this server, Claude Code models run only on your own computers. Move this workspace to one of them, "
         "or pick another model."
@@ -68,13 +72,14 @@ def _refusal(model_name: str | None, reason: str) -> dict[str, Any]:
 
 
 #: The turn failures admission would have refused the turn for, by the
-#: reason it gives: Anthropic refused the setup token, the launcher found
+#: reason it gives: Anthropic refused the setup token (the saved one, which
+#: admission refuses from then on, or a machine's), the launcher found
 #: an organization's policy installed where the CLI would run, or a computer
 #: with no perl or on musl, or the turn's workspace is not on an own computer
 #: where the backend runs none.
 _ADMISSION_REASON = {
-    "auth_failed": "signed_out", "policy_blocked": "policy_blocked", "needs_own_computer": "needs_own_computer",
-    "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
+    "auth_failed": "signed_out", "token_refused": "token_refused", "policy_blocked": "policy_blocked",
+    "needs_own_computer": "needs_own_computer", "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
 }
 
 
@@ -118,13 +123,13 @@ async def require_runnable(config, model: str, role: AgentRole, *, user_id: str,
 
 async def require_signed_in(model: str, user_id: str) -> None:
     """Refuse a turn on the backend whose token is known not to work: none
-    saved, or one the status check found refused.
+    saved, or one that needs replacing (Claude refused it on a turn or a
+    check, or it expired) or that the status check found refused.
 
-    A token not checked yet runs, so admission never waits on Anthropic; one
-    refused there ends the turn with this same message.
+    A token not checked yet runs, so admission never waits on Anthropic.
     """
-    if await usable_token(user_id) is None:
-        raise_claude_code_off(model, "signed_out")
+    if reason := await saved_refusal(user_id):
+        raise_claude_code_off(model, reason)
 
 
 async def require_computer_signed_in(model: str, user_id: str, computer_id: str) -> None:
@@ -136,10 +141,16 @@ async def require_computer_signed_in(model: str, user_id: str, computer_id: str)
     relayed). A relayed token not known to be refused runs, as on the backend.
 
     Never dials the machine: a computer not checked lately runs, and one
-    refused there ends the turn with this same message.
+    refused there ends the turn with this same message. A computer last found
+    to sign in with the relayed token is refused as the backend is once
+    Claude refused that token, however long ago it was found so.
     """
     answer = await read_answer(computer_id)
-    if answer is None or not answer.fresh:
+    if answer is None:
+        return
+    if answer.relays and backend_available() and await saved_refusal(user_id) == "token_refused":
+        raise_claude_code_off(model, "token_refused")
+    if not answer.fresh:
         return
     relayed = answer.relays and backend_available() and await usable_token(user_id) is not None
     state = computer_state(answer, "signed_in" if relayed else None)

@@ -56,6 +56,7 @@ def result(**kw) -> ResultMessage:
         (result(), [("server_error", "overloaded")], "api_error"),
         (result(terminal_reason="api_error", result="Not logged in \u00b7 Please run /login"), [], "auth_failed"),
         (result(terminal_reason="api_error", result="unauthorized", api_error_status=401), [], "auth_failed"),
+        (result(terminal_reason="api_error", result="Request not allowed", api_error_status=403), [], "api_error"),
         (result(terminal_reason="api_error", result="MCP server needs authentication for its upstream"), [], "api_error"),
         (result(is_error=True, terminal_reason="prompt_too_long", result="FMP said: Invalid API key"), [], "api_error"),
         (result(subtype="error_during_execution", is_error=True, terminal_reason=None, errors=["tool: 401 Invalid API key"]), [], "api_error"),
@@ -758,6 +759,7 @@ async def test_a_turn_whose_last_reply_is_another_models_does_not_compact_claude
     ("No messages to compact", None),
     ("Error during compaction: Failed to authenticate. API Error: 401 invalid token", "auth_failed"),
     ("Error during compaction: API Error: 429 rate limited", "plan_exhausted"),
+    ("Error during compaction: API Error: 403 Request not allowed", "api_error"),
     ("Error during compaction: Connection error.", "api_error"),
     ("", "api_error"),
 ])

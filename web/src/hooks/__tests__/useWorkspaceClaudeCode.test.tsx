@@ -113,6 +113,46 @@ describe('useWorkspaceClaudeCode', () => {
     await waitFor(() => expect(result.current).toEqual({ state: 'no_token', computerId: 'cmp-mac', known: true }));
   });
 
+  // As the saved token expires the server reads it as refused, and the picker
+  // offers its models no longer, on a hosted computer and on one relaying it.
+  describe('as the saved token expires', () => {
+    const NOW = new Date('2026-11-03T12:00:00Z');
+    const SIGNED_IN: ClaudeCodeStatus = { enabled: true, state: 'signed_in', email: null, expires_at: '2026-11-03T12:00:30Z', saved: true };
+    const RELAYING: ClaudeCodeComputer = { ...MAC, state: 'signed_in', source: 'saved' };
+
+    it.each([
+      ['a hosted computer', 'cmp-daytona', null],
+      ['a computer relaying it', 'cmp-mac', 'cmp-mac'],
+    ])('reads %s as refused', async (_, computerId, expected) => {
+      vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+      vi.setSystemTime(NOW);
+      try {
+        const { result } = run(computerId, SIGNED_IN, () => Promise.resolve({ computers: [RELAYING] }));
+        await act(() => vi.waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: expected, known: true })));
+        (getClaudeCodeStatus as Mock).mockResolvedValue({ ...SIGNED_IN, state: 'rejected' });
+        (getClaudeCodeComputers as Mock).mockImplementation(() => Promise.resolve({ computers: [{ ...RELAYING, state: 'rejected' }] }));
+        await act(() => vi.advanceTimersByTimeAsync(31_000));
+        await act(() => vi.waitFor(() => expect(result.current).toEqual({ state: 'rejected', computerId: expected, known: true })));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reads a computer relaying it as refused where the status is read again first', async () => {
+      (getClaudeCodeStatus as Mock).mockResolvedValue(SIGNED_IN);
+      (getClaudeCodeComputers as Mock).mockReset().mockResolvedValue({ computers: [RELAYING] });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
+      queryClient.setQueryData(queryKeys.features.list(), [{ key: 'claude_code_runtime', enabled: true }]);
+      queryClient.setQueryData(queryKeys.workspaces.detail('ws-1'), desk('cmp-mac'));
+      const { result } = renderHookWithProviders(() => useWorkspaceClaudeCode('ws-1'), { queryClient });
+      await waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: 'cmp-mac', known: true }));
+      (getClaudeCodeStatus as Mock).mockResolvedValue({ ...SIGNED_IN, state: 'rejected' });
+      (getClaudeCodeComputers as Mock).mockResolvedValue({ computers: [{ ...RELAYING, state: 'rejected' }] });
+      await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeStatus() }));
+      await waitFor(() => expect(result.current).toEqual({ state: 'rejected', computerId: 'cmp-mac', known: true }));
+    });
+  });
+
   it('is off while Claude Code is', async () => {
     const { result } = run('cmp-mac', { ...OWN_ONLY, enabled: false });
     await waitFor(() => expect(result.current).toEqual({ state: 'off', computerId: null, known: true }));

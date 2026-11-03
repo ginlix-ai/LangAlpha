@@ -2692,6 +2692,11 @@
       "skipHint": "改为发送完整对话，费用更高。",
       "skipped": "下一条消息会带上完整对话，费用更高。",
       "undo": "撤销"
+    },
+    "claudeCode": {
+      "off": {
+        "token_refused": "Claude 拒绝了你的 setup token，它可能已过期或被撤销。请在设置的“模型接入”中添加新的 token 后使用此模型。"
+      }
     }
   },
   "context": {
@@ -6573,6 +6578,8 @@
       "removeFailed": "无法移除 token，请重试。",
       "pasteHeading": "已有 setup token？直接粘贴",
       "expiresBy": "最晚于 <date>{{date}}</date> 到期",
+      "expired": "此 token 最晚已于 <date>{{date}}</date> 过期。请添加新的 token 以继续使用 Claude Code。",
+      "expiresSoon": "此 token 最晚将于 <date>{{date}}</date> 过期。请在此之前添加新的 token，让 Claude Code 继续运行。",
       "signIn": {
         "intro": "在新标签页中登录 Claude，LangAlpha 随后会为自己生成 setup token，无需在终端中运行任何命令。",
         "start": "使用 Claude 登录",
