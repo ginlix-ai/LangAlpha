@@ -1,11 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import SyntaxHighlighter, { oneDark, oneLight } from '../SyntaxHighlighter';
 import { ComposerDockSlot } from '../chatView/composerDock';
 import { ArtifactFrames, ServeFailed, type HtmlArtifactView } from './html/ArtifactFrames';
 import { BridgedFrame } from './html/BridgedFrame';
-import { useFragmentScroll, useLiveFrame } from './html/liveFrame';
-import type { PageBridge } from './html/usePageBridge';
+import { useLiveFrame, type FrameLinkHandler } from './html/liveFrame';
 import './HtmlViewer.css';
 
 export type { HtmlArtifactView } from './html/ArtifactFrames';
@@ -30,6 +29,8 @@ interface HtmlViewerProps {
   anchorSeq?: number | null;
   /** The owner's comments and versions. */
   artifact?: HtmlArtifactView | null;
+  /** Where a link to another workspace file opens. */
+  onOpenLink?: FrameLinkHandler | null;
 }
 
 /**
@@ -57,6 +58,7 @@ export default function HtmlViewer({
   anchor = null,
   anchorSeq = null,
   artifact = null,
+  onOpenLink = null,
 }: HtmlViewerProps) {
   const { theme } = useTheme();
   const isLight = theme === 'light';
@@ -92,11 +94,12 @@ export default function HtmlViewer({
             shown={!source}
             anchor={anchor}
             anchorSeq={anchorSeq}
+            onOpenLink={onOpenLink}
           />
         </div>
       ) : !source && (
         <div className="html-viewer-stage">
-          <ViewFrame fileName={fileName} workspaceId={workspaceId} filePath={filePath} servePrefix={servePrefix} anchor={anchor} anchorSeq={anchorSeq} />
+          <ViewFrame fileName={fileName} workspaceId={workspaceId} filePath={filePath} servePrefix={servePrefix} anchor={anchor} anchorSeq={anchorSeq} onOpenLink={onOpenLink} />
         </div>
       )}
       {owner && <ComposerDockSlot workspaceId={workspaceId} path={filePath} tabId={artifact.tabId} ui={artifact.ui} active={artifact.active} />}
@@ -105,17 +108,16 @@ export default function HtmlViewer({
 }
 
 /** The file as served, read only: a share's view, and a panel that takes no comments. */
-function ViewFrame({ fileName, workspaceId, filePath, servePrefix, anchor, anchorSeq }: {
+function ViewFrame({ fileName, workspaceId, filePath, servePrefix, anchor, anchorSeq, onOpenLink }: {
   fileName: string;
   workspaceId: string;
   filePath: string;
   servePrefix?: string;
   anchor: string | null;
   anchorSeq: number | null;
+  onOpenLink: FrameLinkHandler | null;
 }): React.ReactElement {
-  const live = useLiveFrame({ workspaceId, filePath, prefix: servePrefix, inject: 'view', anchor });
-  const [bridge, setBridge] = useState<PageBridge | null>(null);
-  useFragmentScroll(bridge, anchor, anchorSeq);
+  const live = useLiveFrame({ workspaceId, filePath, prefix: servePrefix, inject: 'view', anchor, anchorSeq, onOpenLink });
   if (live.failed) return <ServeFailed onRetry={live.retry} />;
-  return <BridgedFrame source={live.source} title={fileName || 'HTML Preview'} groundKey={filePath} onBridge={setBridge} />;
+  return <BridgedFrame source={live.source} title={fileName || 'HTML Preview'} groundKey={filePath} onBridge={live.onBridge} />;
 }

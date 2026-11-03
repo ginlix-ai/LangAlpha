@@ -3,10 +3,12 @@ import { Loader } from '@/components/ui/loader';
 import { DURATION } from '@/lib/motion';
 import { useTranslation } from 'react-i18next';
 import { HostedFrame } from '../HostedFrame';
-import { messageOrigin } from '../frameHost';
+import { framedDirectly, messageOrigin, sendFrameTo } from '../frameHost';
 import { frameSwap, isReady, isShown, NO_SWAP, type FramedDoc, type FrameSwap, type FrameSwapAction } from './frameSwap';
 import { SETTLE_CAP_MS, type PageToViewer } from './pageProtocol';
+import { SERVED_HTML_PERMISSIONS } from './sandbox';
 import { usePageBridge, type PageBridge } from './usePageBridge';
+import { withServeView } from './wsfilesUrl';
 import './BridgedFrame.css';
 
 /**
@@ -82,7 +84,7 @@ interface BridgedFrameProps {
    * so a rect the document reports needs no conversion.
    */
   overlay?: (bridge: PageBridge, view: FrameView) => React.ReactNode;
-  /** Hears every message the document sends, for whoever holds the frame. */
+  /** Handed the frame's bridge whenever it changes, for whoever holds the frame. */
   onBridge?: (bridge: PageBridge) => void;
   /**
    * A document the frame loaded, a link inside it followed included, that
@@ -90,6 +92,8 @@ interface BridgedFrameProps {
    * (a version's files answer 404 once an Update or an unshare ended it).
    */
   onUnbridged?: () => void;
+  /** The document on screen, or about to be, fired its `load`: what it fetches to draw is in. */
+  onLoad?: () => void;
 }
 
 /**
@@ -105,7 +109,7 @@ interface BridgedFrameProps {
  * address would reload it under the reader.
  */
 export function BridgedFrame({
-  source, title, groundKey, notice, overlay, onBridge, onUnbridged,
+  source, title, groundKey, notice, overlay, onBridge, onUnbridged, onLoad,
 }: BridgedFrameProps): React.ReactElement {
   const { t } = useTranslation();
   const frameKey = source?.key ?? null;
@@ -160,14 +164,23 @@ export function BridgedFrame({
   }, [current]);
   const [ground, setGround] = useState<string | null>(() => knownGrounds.get(groundKey) ?? null);
   const { subscribe, post } = bridge;
+  // The same document under a renewed grant reloads nothing, so it is told.
+  const address = source?.key === current ? source?.src : null;
+  useEffect(() => {
+    if (address) post({ type: 'page:address', src: address });
+  }, [address, post]);
   // A load waiting for its hello, or a hello that came before its load. The
   // flags answer at once, since a hello can follow its load before React
   // renders again; `loads` restarts the wait for each load.
   const greeted = useRef(false);
   const waiting = useRef(false);
+  // The address of the document this frame was last sent from to take its
+  // view again, until the next document says hello.
+  const carried = useRef<string | null>(null);
   const [loads, setLoads] = useState(0);
   const onFrameLoad = (key: string) => {
     dispatch({ type: 'loaded', key });
+    onLoad?.();
     if (greeted.current) {
       greeted.current = false;
       return;
@@ -213,7 +226,26 @@ export function BridgedFrame({
         knownGrounds.set(groundKey, message.color);
         setGround(message.color);
         return;
+      case 'page:frame-loads': {
+        // A script or a refresh took this frame to another file without the
+        // view, so its document carries only what a frame inside a page gets.
+        // Loaded again with it, as a link would have gone, once per document:
+        // what that one sent before it went still arrives. It answered, so it
+        // counts as its hello.
+        // A frame host's document is a version's, which is always bridged.
+        const next = frame && framedDirectly(frame.src)
+          ? withServeView(message.doc, new URL(frame.src, window.location.href).href)
+          : null;
+        const el = frameRef.current;
+        if (!next || !el || carried.current === message.doc) return;
+        carried.current = message.doc;
+        if (waiting.current) waiting.current = false;
+        else greeted.current = true;
+        sendFrameTo(el, next);
+        return;
+      }
       case 'page:ready': {
+        carried.current = null;
         setOffPageOf(null);
         if (waiting.current) waiting.current = false;
         else greeted.current = true;
@@ -262,6 +294,9 @@ export function BridgedFrame({
             data-state={!isCurrent ? 'leaving' : shown || !behind ? 'shown' : 'pending'}
             title={title}
             sandbox={f.sandbox}
+            allow={SERVED_HTML_PERMISSIONS}
+            // A crafted link's query must not reach a page that reads its referrer.
+            referrerPolicy="no-referrer"
             relay
             tabIndex={isCurrent ? undefined : -1}
             aria-hidden={isCurrent ? undefined : true}

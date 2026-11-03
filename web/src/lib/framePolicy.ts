@@ -1,6 +1,6 @@
 // Where the app's frames may load, as CSP `frame-src`. A frame's navigations,
 // its own included, are checked against its parent's frame-src, so this is what
-// keeps a tampered report from sending itself to another site with what it read.
+// keeps a report from replacing itself with another site inside the app's frame.
 //
 // Dependency-free: scripts/vite-plugins/framePolicy.ts builds index.html's
 // policy from it, and the app reads the same answer when it decides how to
@@ -22,12 +22,23 @@ export const EMBED_FRAME_ORIGINS = [
  * stay open; without them a page's contact link ends the frame in an error
  * page.
  */
-export const HANDOFF_SCHEMES = ['mailto:', 'tel:'] as const;
+const HANDOFF_SCHEMES = ['mailto:', 'tel:'] as const;
+
+/**
+ * What a page's own "download as CSV" link goes to. Firefox and WebKit check it
+ * against frame-src as if the frame were going there, and without these the
+ * button does nothing. Either holds only the page's own bytes, and a frame that
+ * does go to one stays in the same sandbox, so nothing is gained by it.
+ */
+const DOWNLOAD_SCHEMES = ['blob:', 'data:'] as const;
+
+/** The only schemes a frame may go to. */
+export const FRAME_SCHEMES = [...HANDOFF_SCHEMES, ...DOWNLOAD_SCHEMES] as const;
 
 // One origin, or a `*.` host wildcard, never a bare web scheme: `https:` would
 // let a frame go anywhere.
 const SOURCE = /^https?:\/\/(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*(:(\d{1,5}|\*))?$/;
-const HANDOFF: ReadonlySet<string> = new Set(HANDOFF_SCHEMES);
+const SCHEMES: ReadonlySet<string> = new Set(FRAME_SCHEMES);
 
 /** `scheme://host[:port]` of an http(s) URL, or null for anything else. */
 export function originOf(url: string | null | undefined, base?: string): string | null {
@@ -44,7 +55,7 @@ export function originOf(url: string | null | undefined, base?: string): string 
 
 function directive(sources: readonly string[]): string {
   for (const source of sources) {
-    if (source !== "'self'" && !HANDOFF.has(source) && !SOURCE.test(source)) {
+    if (source !== "'self'" && !SCHEMES.has(source) && !SOURCE.test(source)) {
       throw new Error(`frame-src source must be an origin, got ${JSON.stringify(source)}`);
     }
   }
@@ -59,11 +70,11 @@ function directive(sources: readonly string[]): string {
  */
 export function appFrameSrc(apiBase?: string | null): string {
   const api = apiBase && /^https?:\/\//i.test(apiBase) ? originOf(apiBase) : null;
-  return directive(["'self'", ...(api ? [api] : []), ...EMBED_FRAME_ORIGINS, ...HANDOFF_SCHEMES]);
+  return directive(["'self'", ...(api ? [api] : []), ...EMBED_FRAME_ORIGINS, ...FRAME_SCHEMES]);
 }
 
 /** A frame host's policy: the one origin it was set up to frame. */
 export function hostedFrameSrc(src: string): string | null {
   const origin = originOf(src);
-  return origin ? directive([origin, ...HANDOFF_SCHEMES]) : null;
+  return origin ? directive([origin, ...FRAME_SCHEMES]) : null;
 }

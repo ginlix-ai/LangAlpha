@@ -18,6 +18,14 @@ export function framedDirectly(src: string): boolean {
 }
 
 /**
+ * Moves a directly framed document to `url` in place of the one it holds,
+ * with no step of its own in the browser's history.
+ */
+export function sendFrameTo(frame: HTMLIFrameElement, url: string): void {
+  frame.contentWindow?.location.replace(url);
+}
+
+/**
  * The origin a frame's messages arrive from: the app's when a frame host
  * relays them, else the document's own, which a sandbox without
  * `allow-same-origin` makes opaque (`'null'`).

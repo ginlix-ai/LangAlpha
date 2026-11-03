@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { FileDown, Link2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
+import { toast } from '@/components/ui/use-toast';
+import { useEnsureArtifact } from '@/hooks/useArtifact';
 import { ThreadLifecycleFeed } from '@/lib/threadLifecycle/ThreadLifecycleFeed';
 import PublishDialog from '../ChatAgent/components/PublishDialog';
 import {
@@ -69,6 +71,24 @@ export default function OwnerArtifactView({ code, metadata }: {
   const [publishOpen, setPublishOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const ui = useCommentUi();
+  const ensureArtifact = useEnsureArtifact();
+
+  // No panel on this page, so a linked file opens on its own, as a link does:
+  // in this tab, at the section it named, and Back returns here. The section
+  // comes as the link's own fragment, already escaped.
+  const openLink = (linked: string, fragment: string) => {
+    ensureArtifact(workspaceId, linked).then(
+      (artifact) => window.location.assign(fragment ? `${artifact.url}#${fragment}` : artifact.url),
+      () => toast({ description: t('publish.linkFailed'), variant: 'destructive' }),
+    );
+  };
+  const [anchor] = useState(() => {
+    try {
+      return decodeURIComponent(window.location.hash.slice(1)) || null;
+    } catch {
+      return null;
+    }
+  });
 
   const savePdf = async () => {
     if (pdfBusy) return;
@@ -115,6 +135,8 @@ export default function OwnerArtifactView({ code, metadata }: {
           filePath={path}
           prefix={frameBase}
           view={{ tabId: VIEW_ID, ui, active: true, versionView }}
+          onOpenLink={openLink}
+          anchor={anchor}
         />
       </div>
     </div>

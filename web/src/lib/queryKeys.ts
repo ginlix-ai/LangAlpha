@@ -76,6 +76,8 @@ export const queryKeys = {
   fileGrants: {
     all:       ['fileGrants'],
     workspace: (wsId: string) => [...queryKeys.fileGrants.all, wsId],
+    // Apart from `workspace`, so renewing the shared grant mints none of these.
+    own:       (wsId: string, mount: number) => [...queryKeys.fileGrants.all, 'own', wsId, mount],
   },
   // A workspace file's record, its versions and comments. The `artifact_comment`
   // user event and a turn's end read the comments, the record (its `unread` and

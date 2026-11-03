@@ -72,6 +72,34 @@ export function buildServeUrl(
   return search ? `${url}?${search}` : url;
 }
 
+// The part of a served address that names its route and credential: the
+// owner's grant, or a shared thread's serve route (links.js reads it the same).
+const SERVE_PREFIX = /^.*?\/(?:wsfiles\/g\/[^/]+|api\/v1\/public\/shared\/[^/]+\/files\/serve)\//;
+
+/**
+ * Where a frame that left its view goes back with it: `doc`, another file
+ * under the same serve prefix as `framed`, with `framed`'s view, or null when
+ * it is not one or already has it (its document then speaks no bridge for
+ * another reason). Both are absolute. A link carries the view before it is
+ * followed; a script that sets location, or a refresh, cannot.
+ */
+export function withServeView(doc: string, framed: string): string | null {
+  let to: URL;
+  let from: URL;
+  try {
+    to = new URL(doc);
+    from = new URL(framed);
+  } catch {
+    return null;
+  }
+  const view = from.searchParams.getAll('inject').at(-1);
+  const prefix = SERVE_PREFIX.exec(from.pathname)?.[0];
+  if (!view || !prefix || to.origin !== from.origin || !to.pathname.startsWith(prefix)) return null;
+  if (to.searchParams.getAll('inject').at(-1) === view) return null;
+  to.searchParams.set('inject', view);
+  return to.href;
+}
+
 /**
  * The serve prefix of one published version under an artifact grant's or a
  * visitor's base: `buildServeUrl` joins the version's own paths to it, so the
