@@ -50,6 +50,8 @@ def _row(**overrides) -> dict[str, Any]:
         "keep_updated": False,
         "latest_seq": 3,
         "legacy_refused": None,
+        "loaded_files": [],
+        "left_out_files": [],
     }
     row.update(overrides)
     return row

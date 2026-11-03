@@ -680,6 +680,13 @@ function FilePanel({
     void openFileRef(path, { fromFile: rooted ? null : selectedFile, location, pin: opts?.pin });
   });
 
+  // A link in a framed document opens beside it, so the document cannot stay
+  // the preview tab the new one would take over. Its path starts at the workspace.
+  const handleFrameLink = useStableHandler((path: string, fragment: string) => {
+    tabs.pinTab(activeTab.id);
+    handleViewerLink(path, undefined, parseFragment(fragment) ?? undefined, { rooted: true, pin: true });
+  });
+
   const handleAnchorLink = useStableHandler((fragment: string) => {
     if (selectedFile) focus.focusAt(selectedFile, parseFragment(fragment));
   });
@@ -945,6 +952,7 @@ function FilePanel({
                   onEditorTextSelect: handleEditorTextSelect,
                   onAddContext: onAddContext ? addViewerContext : null,
                   onViewerLink: handleViewerLink,
+                  onFrameLink: handleFrameLink,
                   onAnchorLink: handleAnchorLink,
                   htmlSource: htmlView.source,
                   htmlArtifact: artifactTab.view,

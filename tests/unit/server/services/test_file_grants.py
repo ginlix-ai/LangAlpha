@@ -20,6 +20,7 @@ from src.server.services.file_grants import (
     FileGrantError,
     grant_prefix,
     mint_file_grant,
+    narrowed_file_grant,
     seconds_left,
     verify_file_grant,
 )
@@ -49,6 +50,20 @@ async def test_round_trip():
     assert grant.expires_at == NOW + DEFAULT_TTL_SECONDS
     assert grant.token.split(".")[:3] == ["v1", WORKSPACE_ID, str(grant.expires_at)]
     assert await verify_file_grant(grant.token, now=NOW) == WORKSPACE_ID
+
+
+@pytest.mark.asyncio
+async def test_a_narrowed_grant_lasts_its_own_time_and_never_past_the_one_it_came_from():
+    long = await mint_file_grant(WORKSPACE_ID, now=NOW)
+    short = await narrowed_file_grant(long.token, ttl=300, now=NOW)
+    assert (short.workspace_id, short.expires_at) == (WORKSPACE_ID, NOW + 300)
+    assert short.token != long.token
+
+    ending = await mint_file_grant(WORKSPACE_ID, ttl=60, now=NOW)
+    assert (await narrowed_file_grant(ending.token, ttl=300, now=NOW)).expires_at == NOW + 60
+
+    with pytest.raises(FileGrantError):
+        await narrowed_file_grant(ending.token, ttl=300, now=NOW + 61)
 
 
 @pytest.mark.asyncio

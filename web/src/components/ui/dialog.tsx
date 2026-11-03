@@ -41,9 +41,11 @@ const DIALOG_MOBILE_SHEET_CLASSES =
 // Desktop / centered: single-element grid with native overflow scroll.
 // Centred through `transform`, not translate-*: the pop-in keyframes carry the
 // centring translate in `transform`, and a separate `translate` would stack on
-// top of it for the length of the animation.
+// top of it for the length of the animation. Its one column grows to an item's
+// longest line unless the item may be narrower (`*:min-w-0`), and a long file
+// name would take everything in the dialog past its edge.
 const DIALOG_CENTERED_CLASSES =
-  "fixed left-[50%] top-[50%] z-1030 grid w-full max-w-lg gap-4 border bg-background p-6 shadow-lg [transform:translate(-50%,-50%)] rounded-lg max-h-[85vh] overflow-y-auto pop-in-center";
+  "fixed left-[50%] top-[50%] z-1030 grid w-full max-w-lg gap-4 border bg-background p-6 shadow-lg [transform:translate(-50%,-50%)] rounded-lg max-h-[85vh] overflow-y-auto pop-in-center *:min-w-0";
 
 function DialogContent({
   className,

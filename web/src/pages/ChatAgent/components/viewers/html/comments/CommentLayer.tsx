@@ -127,7 +127,7 @@ export default function CommentLayer({
   // The live file's hash, stored with a new comment. Read only once one is
   // being written, for a file with comments to compare or published: each
   // read copies the file's whole list off the computer.
-  const { data: status } = useArtifactStatus(artifactId, {
+  const { data: status } = useArtifactStatus(artifact, {
     enabled: !!artifact && !!draft && (artifact.open_comments > 0 || artifact.latest_seq > 0),
   });
   const sending = useLayerSending({

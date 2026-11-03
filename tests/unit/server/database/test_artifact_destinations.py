@@ -37,6 +37,8 @@ def _row(**overrides) -> dict:
         "revision": 0,
         "created_at": _NOW,
         "legacy_refused": None,
+        "loaded_files": [],
+        "left_out_files": [],
         "comment_destination": None,
     }
     return {**row, **overrides}

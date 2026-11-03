@@ -4,6 +4,7 @@ import '@testing-library/jest-dom';
 import type { ReactElement } from 'react';
 
 import HtmlViewer from '../../HtmlViewer';
+import { SERVED_HTML_SANDBOX } from '../sandbox';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';
 
 vi.mock('react-i18next', () => ({
@@ -43,6 +44,9 @@ vi.mock('@/hooks/useWorkspaceFileGrant', () => ({
     error: workspaceId ? grant.state.error : null,
     refetch: grant.refetch,
   }),
+}));
+vi.mock('@/hooks/useOwnFileGrant', () => ({
+  useOwnFileGrant: () => ({ data: undefined, error: null, refetch: vi.fn() }),
 }));
 vi.mock('@/hooks/useShareLink', () => ({
   useShareLink: (workspaceId: string | null) => ({
@@ -115,7 +119,7 @@ describe('HtmlViewer', () => {
   it('sandboxes the preview iframe without allow-same-origin', () => {
     renderViewer(<HtmlViewer {...defaultProps} />);
     expect(getPreviewIframe().getAttribute('sandbox')).toBe(
-      'allow-scripts allow-popups allow-popups-to-escape-sandbox',
+      SERVED_HTML_SANDBOX,
     );
   });
 

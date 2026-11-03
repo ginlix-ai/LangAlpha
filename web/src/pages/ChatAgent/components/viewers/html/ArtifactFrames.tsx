@@ -1,4 +1,4 @@
-import React, { Suspense, useMemo, useState } from 'react';
+import React, { Suspense, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -7,9 +7,8 @@ import type { ArtifactVersionView } from '../../filePanel/useArtifactVersionView
 import { BridgedFrame, type FrameSource } from './BridgedFrame';
 import { LazyCommentLayer as CommentLayer } from './comments/lazyCommentLayer';
 import type { CommentUi } from './comments/useCommentUi';
-import type { PageBridge } from './usePageBridge';
 import { ISOLATED_PAGE_SANDBOX, SERVED_HTML_SANDBOX } from './sandbox';
-import { useFragmentScroll, useLiveFrame } from './liveFrame';
+import { useLiveFrame, type FrameLinkHandler } from './liveFrame';
 import { buildServeUrl, versionPrefix } from './wsfilesUrl';
 import './ArtifactFrames.css';
 
@@ -50,6 +49,8 @@ interface ArtifactFramesProps {
   /** Element id a reference pointed at, and the count that makes a repeat ask a new one. */
   anchor?: string | null;
   anchorSeq?: number | null;
+  /** Where a link to another workspace file opens. */
+  onOpenLink?: FrameLinkHandler | null;
 }
 
 /** The owner's grant never arrived, so nothing will load until a retry. */
@@ -87,12 +88,10 @@ function VersionNotice({ title, hint, children }: { title: string; hint: string;
  * version.
  */
 export function ArtifactFrames({
-  revision, fileName, workspaceId, filePath, view, shown = true, prefix: givenPrefix = null, anchor = null, anchorSeq = null,
+  revision, fileName, workspaceId, filePath, view, shown = true, prefix: givenPrefix = null, anchor = null, anchorSeq = null, onOpenLink = null,
 }: ArtifactFramesProps): React.ReactElement {
   const { t } = useTranslation();
-  const live = useLiveFrame({ workspaceId, filePath, prefix: givenPrefix, inject: 'comments', revision, anchor });
-  const [liveBridge, setLiveBridge] = useState<PageBridge | null>(null);
-  useFragmentScroll(liveBridge, anchor, anchorSeq);
+  const live = useLiveFrame({ workspaceId, filePath, prefix: givenPrefix, inject: 'comments', revision, anchor, anchorSeq, onOpenLink });
 
   // A published version, framed from the artifact's own grant.
   const { record, version, entry } = view.versionView;
@@ -138,7 +137,7 @@ export function ArtifactFrames({
             source={live.source}
             title={fileName || 'HTML Preview'}
             groundKey={filePath}
-            onBridge={setLiveBridge}
+            onBridge={live.onBridge}
             overlay={(bridge, frameView) => (
               // Its own boundary: the layer's chunk loading must not hide the frame.
               <Suspense fallback={null}>

@@ -459,8 +459,6 @@ async def serve_shared_file(
             inject="view" if parse_inject(inject) else None,
             workspace=target.workspace,
             visible=target.visible,
-            reach=prefix,
-            host=request.headers.get("host"),
         )
     except (SandboxGoneError, SandboxTransientError):
         # This route is unauthenticated, so it must never distinguish "sandbox

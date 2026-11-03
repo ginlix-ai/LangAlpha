@@ -34,7 +34,7 @@ export function HostedFrame({ relay = false, ...props }: HostedFrameProps): Reac
   return <FrameHost key={props.src} relay={relay} {...props} />;
 }
 
-function FrameHost({ src, sandbox, title, onLoad, relay, ref, tabIndex, ...rest }: HostedFrameProps & { relay: boolean }) {
+function FrameHost({ src, sandbox, title, onLoad, relay, ref, tabIndex, allow, referrerPolicy, ...rest }: HostedFrameProps & { relay: boolean }) {
   const hostRef = useRef<HTMLIFrameElement | null>(null);
   const innerRef = useRef<HTMLIFrameElement | null>(null);
   const setHost = useCallback((el: HTMLIFrameElement | null) => {
@@ -85,6 +85,9 @@ function FrameHost({ src, sandbox, title, onLoad, relay, ref, tabIndex, ...rest 
       doc.head.appendChild(meta);
       const frame = doc.createElement('iframe');
       frame.setAttribute('sandbox', sandbox);
+      // The host passes on what it was granted, or the frame inside never gets it.
+      if (allow) frame.setAttribute('allow', allow);
+      if (referrerPolicy) frame.referrerPolicy = referrerPolicy;
       if (relay) frame.setAttribute('data-relay-origin', origin);
       describe(frame);
       frame.addEventListener('load', () => loaded());
@@ -100,11 +103,11 @@ function FrameHost({ src, sandbox, title, onLoad, relay, ref, tabIndex, ...rest 
       host.removeEventListener('load', fill);
       themes.disconnect();
     };
-  }, [src, sandbox, relay]);
+  }, [src, sandbox, relay, allow, referrerPolicy]);
 
   useEffect(() => {
     if (innerRef.current) describe(innerRef.current);
   }, [title, tabIndex]);
 
-  return <iframe {...rest} ref={setHost} src={FRAME_HOST_PATH} title={title} tabIndex={tabIndex} />;
+  return <iframe {...rest} allow={allow} referrerPolicy={referrerPolicy} ref={setHost} src={FRAME_HOST_PATH} title={title} tabIndex={tabIndex} />;
 }

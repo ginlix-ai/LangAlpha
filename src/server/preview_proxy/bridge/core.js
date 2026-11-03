@@ -1,12 +1,12 @@
 // @ts-check
 // The document's end of the viewer's postMessage bridge, the part every
-// bridged document carries: the hello, the theme, the ground, the scroll and
-// putting it back, settling, links, and a section the viewer asks for. The
-// server inlines it as the first script of each HTML file it frames for the
-// app (page_bridge.py: a published version, the owner's live view, a file
-// read in the panel or on a share), inside one function with the other parts
-// that document gets, so it runs before any of the document's own code and
-// nothing it declares is the document's. It speaks only to the frame's
+// document the viewer frames carries: the hello, the theme, the ground, the
+// scroll and putting it back, settling, a section the viewer asks for, and
+// which windows are heard at all. The server inlines it as the first script of each HTML file
+// it frames for the app (page_bridge.py: a published version, the owner's live
+// view, a file read in the panel or on a share), inside one function with the
+// other parts that document gets, so it runs before any of the document's own
+// code and nothing it declares is the document's. It speaks only to the frame's
 // parent, in the page:* namespace, whose messages are typed in
 // web/src/pages/ChatAgent/components/viewers/html/pageProtocol.ts.
 
@@ -59,12 +59,15 @@ function listen(type, handler) {
 }
 
 // What another part of the bridge does with a theme the viewer sent, before
-// the page hears of it; and what it reports once the document settles,
-// before the viewer hears that it has.
+// the page hears of it; what it reports once the document settles, before the
+// viewer hears that it has; and what it reports once the viewer has named
+// itself, since anything found earlier went nowhere.
 /** @type {Array<(css: string) => void>} */
 var onTheme = [];
 /** @type {Array<() => void>} */
 var onSettled = [];
+/** @type {Array<() => void>} */
+var onSpoke = [];
 
 var THEME_STYLE_ID = '__page_theme__';
 
@@ -242,6 +245,7 @@ function reportGround() {
   lastGround = color;
   send({ type: 'page:ground', color: color });
 }
+onSpoke.push(reportGround);
 
 // Settled: loaded, the page's requests back (requests.js), then 250 ms
 // without a change, so an anchor still not found is missing rather than
@@ -338,6 +342,51 @@ listen('page:scroll-to', function (data) {
   if (el && el.scrollIntoView) el.scrollIntoView();
 });
 
+// A window the document has no tie to is not heard, by this bridge or the
+// document's own listeners. Anyone holding this page's link can open it and
+// reach its frames with a message, so a listener that writes what it hears into
+// the page would run a stranger's script with the reach of this document's URL.
+// This listener is the first the window gets, as the bridge runs first.
+/** @param {MessageEventSource | null} from */
+function isKin(from) {
+  /** @type {any} */
+  var at = from;
+  try {
+    for (var hops = 0; at && hops < 32; hops++) {
+      if (at === window || at === viewer) return true;
+      at = at.parent !== at ? at.parent : at.opener;
+    }
+  } catch (e) {
+    // A browser withholding a property ends the walk: no tie found.
+  }
+  return false;
+}
+
+// A frame of this page's own whose file is the workspace's sends what it loaded
+// (nested.js), which goes out with what this document loaded, and the page
+// never hears it. Only a frame whose parent is this window: the viewer and a
+// stranger never pass for one.
+/** @param {MessageEventSource | null} from */
+function isChildFrame(from) {
+  try {
+    return !!from && from !== window && /** @type {Window} */ (from).parent === window;
+  } catch (e) {
+    return false;
+  }
+}
+
+window.addEventListener('message', function (event) {
+  if (!isKin(event.source)) {
+    event.stopImmediatePropagation();
+    return;
+  }
+  var data = event.data;
+  if (data && data.type === 'page:frame-loads' && isChildFrame(event.source)) {
+    event.stopImmediatePropagation();
+    if (Array.isArray(data.urls)) heardLoads(data.urls);
+  }
+}, true);
+
 window.addEventListener('message', function (event) {
   if (event.source !== viewer) return;
   var data = event.data;
@@ -348,82 +397,5 @@ window.addEventListener('message', function (event) {
   if (first) viewerOrigin = event.origin;
   var answer = handlers[data.type];
   for (var i = 0; i < answer.length; i++) answer[i](data);
-  // The ground found before the viewer spoke went nowhere.
-  if (first) reportGround();
-});
-
-// ---- Links ----
-
-// The view rides on its URL (?inject=), which a link in the document does
-// not carry: followed as written, it would land on the next file with no
-// bridge, unthemed, and a reader of the owner's live view could not comment
-// on it. So a link that stays under this view's prefix (the owner's file
-// grant, or a shared thread's serve route) gets this document's inject value
-// before the browser follows it, its fragment and other parameters kept.
-// Other origins and prefixes are left as written. Forms need nothing: the CSP
-// has form-action 'none'. A script that sets location itself is not covered.
-var LIVE_PREFIX = /^.*?\/(?:wsfiles\/g\/[^\/]+|api\/v1\/public\/shared\/[^\/]+\/files\/serve)\//.exec(location.pathname);
-/** @type {string | null} */
-var LIVE_MODE = null;
-try {
-  LIVE_MODE = new URLSearchParams(location.search).get('inject');
-} catch (e) {
-  LIVE_MODE = null;
-}
-
-/**
- * @param {Element} link
- * @param {RegExpExecArray} prefix
- * @param {string} mode
- */
-function carryMode(link, prefix, mode) {
-  var href = link.getAttribute('href');
-  if (href === null) return;
-  var url;
-  try {
-    url = new URL(href, document.baseURI);
-  } catch (e) {
-    return;
-  }
-  if (url.protocol !== location.protocol || url.host !== location.host) return;
-  if (url.pathname.indexOf(prefix[0]) !== 0) return;
-  // Already carried, a section of this same document included: rewritten,
-  // the jump would reload the page.
-  if (url.searchParams.get('inject') === mode) return;
-  url.searchParams.set('inject', mode);
-  link.setAttribute('href', url.href);
-}
-
-/**
- * The link a click is on, if any.
- * @param {Event} event
- */
-function linkOf(event) {
-  var target = /** @type {Element | null} */ (event.target);
-  return target && target.closest ? target.closest('a[href], area[href]') : null;
-}
-
-if (LIVE_PREFIX && LIVE_MODE) {
-  // Capturing, so the address is set before any handler, the page's own
-  // included, reads it or follows it.
-  window.addEventListener('click', function (event) {
-    var link = linkOf(event);
-    if (link && LIVE_PREFIX && LIVE_MODE) carryMode(link, LIVE_PREFIX, LIVE_MODE);
-  }, true);
-}
-
-// A link to another site opens in a tab of its own: the viewer lets a
-// page's frame load only the page's own origin and the mail and phone
-// hand-offs (web/src/lib/framePolicy.ts), so followed in place it would be a
-// dead click. A link within the page, a section of it included, and any
-// other scheme are the browser's. On window and bubbling, so the page's own
-// handlers hear the click first and one that took it has said so.
-window.addEventListener('click', function (event) {
-  if (event.defaultPrevented || event.button !== 0) return;
-  var link = /** @type {HTMLAnchorElement | HTMLAreaElement | null} */ (linkOf(event));
-  var href = link ? link.href : null;
-  if (!link || typeof href !== 'string' || !/^https?:/i.test(href)) return;
-  if (link.host === location.host) return;
-  event.preventDefault();
-  window.open(href, '_blank', 'noopener,noreferrer');
+  if (first) for (i = 0; i < onSpoke.length; i++) onSpoke[i]();
 });

@@ -97,11 +97,14 @@ async def _record_creator(workspace_dir: str, normalized_path: str) -> None:
     if any(part.startswith(".") for part in path.split("/")[:-1]):
         return
     try:
-        from src.server.services.served_paths import may_be_artifact
+        from src.server.services.served_paths import (
+            is_always_hidden_path,
+            may_be_artifact,
+        )
 
-        # A file no link could let out never gets a record, as the routes
-        # that make one refuse it.
-        if not may_be_artifact(path):
+        # A dependency unpacked under vendor/ or node_modules/ may go out with a
+        # page that loads it, but it is not a file the agent made for anyone.
+        if is_always_hidden_path(path) or not may_be_artifact(path):
             return
         from langgraph.config import get_config
 

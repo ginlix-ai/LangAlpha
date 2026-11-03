@@ -15,12 +15,13 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import Response
 
 from src.config.env import PREVIEW_PROXY_FRAME_ANCESTORS
 from src.server.preview_proxy.artifacts import (
     ArtifactFileUnavailable,
+    error_page,
     load_artifact_file,
 )
 from src.server.services.preview_base import preview_base
@@ -35,8 +36,8 @@ async def serve_artifact_file(
     grant: str,
     seq: str,
     path: str,
+    request: Request,
     if_none_match: Annotated[str | None, Header()] = None,
-    host: Annotated[str | None, Header()] = None,
 ) -> Response:
     """A version's file, sandboxed to an opaque origin. Uniform 404 for a bad
     or expired grant, an unshared link, a version that is no longer the
@@ -51,13 +52,18 @@ async def serve_artifact_file(
             sandboxed=True,
             frame_ancestors=PREVIEW_PROXY_FRAME_ANCESTORS,
             if_none_match=if_none_match,
-            host=host,
+            head=request.method == "HEAD",
         )
     except ArtifactFileUnavailable as e:
         logger.warning("Artifact file could not be served: %s", e)
         raise HTTPException(status_code=503, detail="File unavailable") from None
-    if served is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    return Response(
-        content=served.body, status_code=served.status, headers=dict(served.headers)
+    served = served or error_page(404, PREVIEW_PROXY_FRAME_ANCESTORS)
+    headers = dict(served.headers)
+    response = Response(
+        content=served.body, status_code=served.status, headers=headers
     )
+    if "content-length" not in headers:
+        # A bridged document's HEAD leaves its length unsaid, where Starlette
+        # would state the empty body's.
+        del response.headers["content-length"]
+    return response

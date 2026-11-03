@@ -12,6 +12,7 @@
  * (`make test-bridge`) holds both ends to one shape.
  */
 import * as z from 'zod/mini';
+import { MAX_PAGE_LOADS } from '@/lib/pageLoads';
 import type {
   AreaAnchor,
   ArtifactCommentAnchor,
@@ -36,7 +37,10 @@ export interface PageAnchorItem {
   mark?: boolean;
 }
 
-/** What the viewer posts to the document. The read-only bridge answers the first four. */
+/**
+ * What the viewer posts to the document. A read-only document has no comment
+ * parts, so it answers only the theme, the scroll and the address.
+ */
 export type ViewerToPage =
   /** The app's CSS variables, as `resolveThemeVars()` writes them. */
   | { type: 'page:theme'; css: string }
@@ -49,7 +53,9 @@ export type ViewerToPage =
   | { type: 'page:anchors'; items: PageAnchorItem[] }
   /** Report the pointer's next move over the page (`page:pointer-in`). */
   | { type: 'page:pointer-watch' }
-  | { type: 'page:clear-selection' };
+  | { type: 'page:clear-selection' }
+  /** The document's address under a renewed grant, which it moves to without loading again. */
+  | { type: 'page:address'; src: string };
 
 // --- The page to the viewer ---
 
@@ -120,7 +126,17 @@ export type PageToViewer =
   | { type: 'page:selection'; selection: PageSelection | null }
   /** Esc or C pressed inside the frame, which the viewer takes as it takes them outside. */
   | { type: 'page:key'; key: 'Escape' | 'c' }
-  | { type: 'page:pointer-in' };
+  | { type: 'page:pointer-in' }
+  /** A link to another workspace file in the owner's view: the path, and its section or empty. */
+  | { type: 'page:open-file'; path: string; fragment: string }
+  /** Every workspace file the document has loaded in the owner's view, and the file it is. Sent once it settles, then as it grows. */
+  | { type: 'page:loads'; paths: string[]; path: string }
+  /**
+   * A frame inside a page reporting what it loaded, by the address of its own
+   * document. From the viewer's own frame, it says a script or a refresh took
+   * the frame to that file without the view, so it carries the nested bridge.
+   */
+  | { type: 'page:frame-loads'; doc: string };
 
 /** Larger than any viewport, small enough that arithmetic on it stays exact. */
 const MAX_COORD = 1e6;
@@ -129,6 +145,8 @@ const MAX_COORD = 1e6;
  * on both); a hello naming a longer one is not believed.
  */
 export const MAX_DOC_PATH = 1024;
+/** A served address: a prefix with its grant, then a workspace path. */
+const MAX_ADDRESS = 4096;
 /**
  * The comment API's limits per anchor field. A longer value is cut rather
  * than refused: the anchor is a description of the spot, and its opening is
@@ -158,13 +176,6 @@ function cleanText(v: string, limit: number): string | undefined {
   return `${text.slice(0, cut)}…`;
 }
 
-/** The path a hello names, if it is one a workspace file could have. */
-function cleanPath(path: string): string | undefined {
-  // eslint-disable-next-line no-control-regex
-  if (!path || path.length > MAX_DOC_PATH || /[\u0000-\u001f\u007f]/.test(path)) return undefined;
-  return path.replace(/^\/+/, '');
-}
-
 /** The object without the keys whose value is undefined, as the API stores an anchor. */
 function defined<T extends object>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
@@ -179,6 +190,12 @@ function lenient<T extends z.ZodMiniType>(schema: T) {
 function text(limit: number) {
   return lenient(z.pipe(z.nullable(z.string()), z.transform((v) => (v === null ? undefined : cleanText(v, limit)))));
 }
+
+/** A path a workspace file could have. */
+// eslint-disable-next-line no-control-regex
+const filePath = z.string().check(z.maxLength(MAX_DOC_PATH), z.regex(/^[^\u0000-\u001f\u007f]+$/));
+/** The file a document says it is, in a hello or a report. */
+const docPath = z.pipe(filePath, z.transform((path) => path.replace(/^\/+/, '')));
 
 const coord = z.number().check(z.gte(-MAX_COORD), z.lte(MAX_COORD));
 const extent = z.number().check(z.gte(0), z.lte(MAX_COORD));
@@ -248,12 +265,29 @@ function click<K extends 'page:pick' | 'page:area'>(type: K, anchor: typeof elem
 /** One per type: a nested union where a type's message can also say `clear`. */
 const pageToViewer = z.discriminatedUnion('type', [
   z.pipe(
-    z.object({ type: z.literal('page:ready'), v: z.optional(z.number()), path: lenient(z.pipe(z.string(), z.transform(cleanPath))) }),
+    z.object({ type: z.literal('page:ready'), v: z.optional(z.number()), path: lenient(docPath) }),
     z.transform((m) => ({ type: m.type, path: m.path ?? null })),
   ),
   z.object({ type: z.literal('page:ground'), color: z.nullable(z.string().check(z.regex(RGB))) }),
   z.object({ type: z.literal('page:scroll'), x: coord, y: coord, moving: z.boolean() }),
   z.object({ type: z.literal('page:settled') }),
+  z.object({ type: z.literal('page:open-file'), path: filePath, fragment: z.string().check(z.maxLength(MAX_DOC_PATH)) }),
+  z.pipe(
+    z.object({ type: z.literal('page:frame-loads'), doc: z.string().check(z.maxLength(MAX_ADDRESS)) }),
+    z.transform((m) => ({ type: m.type, doc: m.doc })),
+  ),
+  z.pipe(
+    z.object({ type: z.literal('page:loads'), path: docPath, paths: z.array(z.unknown()) }),
+    z.transform((m) => ({
+      type: m.type,
+      path: m.path,
+      // One odd name loses that name, not the report.
+      paths: m.paths.slice(0, MAX_PAGE_LOADS).flatMap((p) => {
+        const read = filePath.safeParse(p);
+        return read.success ? [read.data] : [];
+      }),
+    })),
+  ),
   z.pipe(
     z.object({ type: z.literal('page:positions'), items: z.array(z.unknown()) }),
     z.transform((m) => ({

@@ -49,7 +49,7 @@ from src.server.app.workspace_files.crud import (
     read_workspace_file,
 )
 from src.server.utils.http_headers import content_disposition
-from src.server.app.workspace_files.serve import serve_workspace_file
+from src.server.app.workspace_files.serve import _owner_visible, serve_workspace_file
 from ptc_agent.core.sandbox.providers.ssh_runtime import SSHRuntime
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 
@@ -441,7 +441,7 @@ async def test_serve_falls_back_to_the_mirror_when_the_probe_cannot_run(tree) ->
         _warm(mgr, tree.sandbox)
         fp.get_file_content = AsyncMock(return_value=record)
         response = await serve_workspace_file(
-            WS_ID, "work/report.html"
+            WS_ID, "work/report.html", visible=_owner_visible
         )
     assert response.status_code == 200
     assert response.body == b"mirrored"
@@ -476,7 +476,7 @@ async def test_serve_denies_a_symlink_out_of_the_serve_root(tree) -> None:
         fp.get_file_content = AsyncMock(return_value=None)
         with pytest.raises(HTTPException) as exc:
             await serve_workspace_file(
-                WS_ID, "work/escape/secret.txt"
+                WS_ID, "work/escape/secret.txt", visible=_owner_visible
             )
     assert exc.value.status_code == 404
     assert tree.sandbox.reads == []
@@ -496,7 +496,7 @@ async def test_serve_denies_a_symlink_into_the_reserved_runtime_dir(tree) -> Non
         fp.get_file_content = AsyncMock(return_value=None)
         with pytest.raises(HTTPException) as exc:
             await serve_workspace_file(
-                WS_ID, "work/reserved/secret.txt"
+                WS_ID, "work/reserved/secret.txt", visible=_owner_visible
             )
     assert exc.value.status_code == 404
     assert tree.sandbox.reads == []
@@ -515,7 +515,7 @@ async def test_serve_returns_a_contained_file(tree) -> None:
         _warm(mgr, tree.sandbox)
         fp.get_file_content = AsyncMock(return_value=None)
         response = await serve_workspace_file(
-            WS_ID, "work/report.html"
+            WS_ID, "work/report.html", visible=_owner_visible
         )
     assert response.status_code == 200
     assert response.body == REPORT_HTML
@@ -533,7 +533,7 @@ async def test_serve_denies_a_traversal_path_without_touching_the_sandbox(tree) 
         _warm(mgr, tree.sandbox)
         with pytest.raises(HTTPException) as exc:
             await serve_workspace_file(
-                WS_ID, "../outside/secret.txt"
+                WS_ID, "../outside/secret.txt", visible=_owner_visible
             )
     assert exc.value.status_code == 404
     assert tree.sandbox.runtime.commands == []

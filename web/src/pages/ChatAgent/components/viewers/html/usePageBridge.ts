@@ -30,6 +30,19 @@ export interface PageBridge {
 
 export type PageBridgeListener = (message: PageToViewer, bridge: PageBridge) => void;
 
+/** Hears one type of the page's messages for as long as the bridge is there. */
+export function useBridgeMessage<T extends PageToViewer['type']>(
+  bridge: PageBridge | null,
+  type: T,
+  listener: (message: Extract<PageToViewer, { type: T }>) => void,
+): void {
+  const heard = useEffectEvent(listener);
+  const subscribe = bridge?.subscribe;
+  useEffect(() => subscribe?.((message) => {
+    if (message.type === type) heard(message as Extract<PageToViewer, { type: T }>);
+  }), [subscribe, type]);
+}
+
 interface UsePageBridgeOptions {
   frameRef: React.RefObject<HTMLIFrameElement | null>;
   /** The origin the frame posts from: the page's own, or `'null'` for an opaque fallback frame. */

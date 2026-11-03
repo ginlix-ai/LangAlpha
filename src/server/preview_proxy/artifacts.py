@@ -39,21 +39,17 @@ from src.server.database.workspace_file_blobs import fetch_blob
 from src.server.preview_proxy.page_bridge import bridge_for, with_bridge
 from src.server.services.artifacts.grants import (
     ArtifactGrantError,
-    grant_prefix,
     is_share_grant,
     verify_artifact_grant,
     verify_artifact_share_grant,
 )
-from src.server.utils.html_cdns import html_document_csp
-from src.server.utils.served_origins import served_sources
+from src.server.utils.html_policy import html_document_csp
 
 __all__ = [
     "ArtifactFileUnavailable",
-    "ServedArtifactFile",
+    "error_page",
     "load_artifact_file",
     "serve_artifact",
-    "serve_version_file",
-    "version_file_bytes",
 ]
 
 logger = logging.getLogger(__name__)
@@ -106,21 +102,21 @@ _TEXT_TYPES = frozenset(
 )
 
 _ERROR_HEADERS = [
-    (b"content-type", b"text/html; charset=utf-8"),
-    (b"cache-control", b"no-store"),
+    ("content-type", "text/html; charset=utf-8"),
+    ("cache-control", "no-store"),
     # So the app's read of a file sees the 404 that ends a grant, and asks
     # for a fresh one, rather than a CORS failure it cannot tell apart.
-    (b"access-control-allow-origin", b"*"),
-    (b"x-content-type-options", b"nosniff"),
-    (b"referrer-policy", b"no-referrer"),
-    (b"x-robots-tag", b"noindex"),
+    ("access-control-allow-origin", "*"),
+    ("x-content-type-options", "nosniff"),
+    ("referrer-policy", "no-referrer"),
+    ("x-robots-tag", "noindex"),
 ]
 _ERROR_CSP = "default-src 'none'; style-src 'unsafe-inline'"
 _ERRORS = {
     404: (
-        "File not found",
-        "This link has expired or was never valid. Open the file again from "
-        "the app to get a fresh one.",
+        "File not available",
+        "This file wasn't shared with this link, or the link has expired. Go "
+        "back, or open the link again.",
     ),
     405: ("Method not allowed", "A file does not accept this kind of request."),
     503: (
@@ -189,19 +185,12 @@ def _headers(
     cache_control: str,
     sandboxed: bool,
     frame_ancestors: str | None,
-    prefix: str,
-    host: str | None,
 ) -> list[tuple[str, str]]:
-    # On its own host a version's origin is the artifact's, so `'self'` is
-    # its own files. On the API origin the sandbox gives it an opaque origin
-    # instead, and `'self'` would be every API route, so it names the route it
-    # was asked through on the configured origins (``utils/served_origins``);
-    # Host only picks among them, naming the PDF renderer's for a request
-    # addressed to it.
-    own = served_sources(prefix, host) if sandboxed else ["'self'"]
-    csp = html_document_csp(
-        own, published=True, sandboxed=sandboxed, frame_ancestors=frame_ancestors
-    )
+    # A page on its own host may frame its own files, an <object> or an <iframe>
+    # of a chart, and each of those meets this same list.
+    if frame_ancestors and not sandboxed:
+        frame_ancestors = f"'self' {frame_ancestors}"
+    csp = html_document_csp(sandboxed=sandboxed, frame_ancestors=frame_ancestors)
     headers = [
         ("content-type", content_type),
         ("cache-control", cache_control),
@@ -209,7 +198,9 @@ def _headers(
         ("content-security-policy", csp),
         ("permissions-policy", _PERMISSIONS_POLICY),
         ("x-content-type-options", "nosniff"),
-        ("referrer-policy", "no-referrer"),
+        # Another site hears only this origin, never the path and the grant in
+        # it. Some embeds need that much: YouTube's refuses to play without it.
+        ("referrer-policy", "strict-origin-when-cross-origin"),
         ("x-robots-tag", "noindex"),
         ("service-worker-allowed", _SERVICE_WORKER_ALLOWED),
         # A sandboxed document's origin is opaque, so its fetch() and module
@@ -286,7 +277,7 @@ async def load_artifact_file(
     sandboxed: bool = False,
     frame_ancestors: str | None = None,
     if_none_match: str | None = None,
-    host: str | None = None,
+    head: bool = False,
 ) -> ServedArtifactFile | None:
     """The file ``v/<seq>/<path>`` names under a grant, or None for the 404.
 
@@ -299,7 +290,8 @@ async def load_artifact_file(
     response never says which. Raises ``ArtifactFileUnavailable`` when a read
     fails, which a caller answers with a 503. A file the browser already
     holds answers 304 before its bytes are read, and only once the grant has
-    passed every check.
+    passed every check. A ``head`` answer has GET's headers and no body, and
+    reads no bytes either.
     """
     if _SEQ.fullmatch(seq) is None or not _valid_path(path):
         return None
@@ -308,33 +300,6 @@ async def load_artifact_file(
     stored = await load(grant, int(seq), path, host_artifact_id)
     if stored is None:
         return None
-    return await serve_version_file(
-        stored,
-        visitor=visitor,
-        prefix=grant_prefix(grant),
-        sandboxed=sandboxed,
-        frame_ancestors=frame_ancestors,
-        if_none_match=if_none_match,
-        host=host,
-    )
-
-
-async def serve_version_file(
-    stored: StoredVersionFile,
-    *,
-    visitor: bool,
-    prefix: str,
-    sandboxed: bool,
-    frame_ancestors: str | None = None,
-    if_none_match: str | None = None,
-    host: str | None = None,
-) -> ServedArtifactFile:
-    """A version file the caller has already authorized, as a response.
-
-    ``prefix`` is the API route the file was asked through, the one a
-    sandboxed document may fetch its own files from. A visitor's file is
-    asked for again on every view, so each fetch meets the link's row.
-    """
     content_type = _content_type(stored.content_type)
     bridged = _is_html(content_type) and _charset_is_utf8(content_type)
     bridge = bridge_for("view")
@@ -349,23 +314,25 @@ async def serve_version_file(
         cache_control=cache_control,
         sandboxed=sandboxed,
         frame_ancestors=frame_ancestors,
-        prefix=prefix,
-        host=host,
     )
     if if_none_match is not None and _etag_matches(if_none_match, etag):
         return ServedArtifactFile(body=b"", headers=headers, status=304)
+    if head:
+        # The length sealed with the version, which serving never changes. A
+        # bridged document's depends on where the bridge lands in it, so it
+        # goes unsaid, as RFC 9110 lets a HEAD do (9.3.2).
+        if not bridged:
+            headers.append(("content-length", str(stored.byte_len)))
+        return ServedArtifactFile(body=b"", headers=headers)
 
-    body = await version_file_bytes(stored)
+    body = await _version_file_bytes(stored)
     if bridged:
         body = await asyncio.to_thread(with_bridge, body, bridge)
+    headers.append(("content-length", str(len(body))))
     return ServedArtifactFile(body=body, headers=headers)
 
 
-async def version_file_bytes(stored: StoredVersionFile) -> bytes:
-    """A stored version file's bytes, from its row or its blob.
-
-    ``ArtifactFileUnavailable`` when the blob cannot be read.
-    """
+async def _version_file_bytes(stored: StoredVersionFile) -> bytes:
     if stored.content is not None:
         return stored.content
     try:
@@ -385,7 +352,9 @@ def _etag_matches(if_none_match: str, etag: str) -> bool:
     return False
 
 
-async def _error(send: Any, status: int, frame_ancestors: str | None) -> None:
+def error_page(status: int, frame_ancestors: str | None) -> ServedArtifactFile:
+    """The page an error answers with: a frame a link took here shows it, and a
+    fetch reads only the status."""
     title, text = _ERRORS[status]
     body = (
         '<!doctype html><html><head><meta charset="utf-8">'
@@ -397,35 +366,26 @@ async def _error(send: Any, status: int, frame_ancestors: str | None) -> None:
     ).encode()
     csp = _ERROR_CSP
     if frame_ancestors:
-        csp = f"{csp}; frame-ancestors {frame_ancestors}"
+        # A version's page frames its own files, and one missing shows this.
+        csp = f"{csp}; frame-ancestors 'self' {frame_ancestors}"
     headers = [
         *_ERROR_HEADERS,
-        (b"content-security-policy", csp.encode("latin-1")),
-        (b"content-length", str(len(body)).encode()),
+        ("content-security-policy", csp),
+        ("content-length", str(len(body))),
     ]
     if status == 405:
-        headers.append((b"allow", b"GET, HEAD"))
-    await send({"type": "http.response.start", "status": status, "headers": headers})
-    await send({"type": "http.response.body", "body": body})
+        headers.append(("allow", "GET, HEAD"))
+    return ServedArtifactFile(body=body, headers=headers, status=status)
 
 
-async def serve_artifact(
-    scope: dict[str, Any],
-    receive: Any,
-    send: Any,
-    *,
-    artifact_id: str,
-    frame_ancestors: str | None,
-) -> None:
-    """Answer an http request to ``artifact-<artifact_id>.<base>``."""
-    method = scope["method"]
-    if method not in ("GET", "HEAD"):
-        await _error(send, 405, frame_ancestors)
-        return
+async def _answer(
+    scope: dict[str, Any], artifact_id: str, frame_ancestors: str | None
+) -> ServedArtifactFile:
+    if scope["method"] not in ("GET", "HEAD"):
+        return error_page(405, frame_ancestors)
     route = _ROUTE.fullmatch(scope.get("path", ""))
     if route is None:
-        await _error(send, 404, frame_ancestors)
-        return
+        return error_page(404, frame_ancestors)
     grant, seq, path = route.groups()
     if_none_match = next(
         (
@@ -443,20 +403,27 @@ async def serve_artifact(
             host_artifact_id=artifact_id,
             frame_ancestors=frame_ancestors,
             if_none_match=if_none_match,
+            head=scope["method"] == "HEAD",
         )
     except ArtifactFileUnavailable as e:
         logger.warning("Artifact %s could not be served: %s", artifact_id, e)
-        await _error(send, 503, frame_ancestors)
-        return
-    if served is None:
-        await _error(send, 404, frame_ancestors)
-        return
+        return error_page(503, frame_ancestors)
+    return served or error_page(404, frame_ancestors)
+
+
+async def serve_artifact(
+    scope: dict[str, Any],
+    receive: Any,
+    send: Any,
+    *,
+    artifact_id: str,
+    frame_ancestors: str | None,
+) -> None:
+    """Answer an http request to ``artifact-<artifact_id>.<base>``."""
+    served = await _answer(scope, artifact_id, frame_ancestors)
     headers = [(k.encode("latin-1"), v.encode("latin-1")) for k, v in served.headers]
-    if served.status != 304:
-        headers.append((b"content-length", str(len(served.body)).encode()))
     await send(
         {"type": "http.response.start", "status": served.status, "headers": headers}
     )
-    await send(
-        {"type": "http.response.body", "body": b"" if method == "HEAD" else served.body}
-    )
+    body = b"" if scope["method"] == "HEAD" else served.body
+    await send({"type": "http.response.body", "body": body})

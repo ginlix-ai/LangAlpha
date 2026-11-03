@@ -5,6 +5,7 @@ when, after their locks, no copy of it reached a run."""
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import re
 from datetime import datetime, timezone
@@ -125,6 +126,25 @@ async def test_a_publish_clears_a_legacy_refusal(locked, mock_cursor):
         s for s in _sql(mock_cursor) if s.lstrip().startswith("UPDATE share_links")
     ]
     assert "legacy_refused = NULL" in update
+
+
+@pytest.mark.asyncio
+async def test_only_an_owners_publish_changes_what_the_page_is_known_to_load(
+    locked, mock_cursor
+):
+    mock_cursor.fetchone.return_value = None
+
+    await artifacts.publish_version(
+        user_id=_U, artifact_id=_A, origin="keep_updated", files=[_file("x")]
+    )
+
+    (update,) = [
+        c
+        for c in mock_cursor.execute.await_args_list
+        if c.args[0].lstrip().startswith("UPDATE share_links")
+    ]
+    assert "COALESCE(" in update.args[0]
+    assert update.args[1]["loaded_files"] is None
 
 
 @pytest.mark.asyncio
@@ -355,3 +375,75 @@ async def test_what_no_agent_read_goes_back_though_its_key_is_spent(mock_cursor)
     sql = _sql(mock_cursor)
     assert "FOR UPDATE" in sql[0]
     assert any("sent_at = NULL" in s for s in sql)
+
+
+@pytest.fixture
+def left_out_locked(monkeypatch):
+    record = dataclasses.replace(
+        _record(latest_seq=4), left_out_files=("b.html", "c.html")
+    )
+    monkeypatch.setattr(versions, "lock_owned", AsyncMock(return_value=record))
+    return record
+
+
+@pytest.mark.asyncio
+async def test_an_owners_publish_does_not_carry_a_file_left_out_during_its_read(
+    left_out_locked, mock_cursor
+):
+    """Taking a file off moves no revision, since visitors' grants are minted at
+    it, so the list the read walked with is compared under the lock."""
+    with pytest.raises(versions.LeftOutChanged):
+        await artifacts.publish_version(
+            user_id=_U,
+            artifact_id=_A,
+            origin="owner",
+            files=[_file("x")],
+            revision=1,
+            left_out_read=("b.html",),
+        )
+
+    assert not any("UPDATE share_links" in s or "INSERT" in s for s in _sql(mock_cursor))
+
+
+@pytest.mark.asyncio
+async def test_an_owners_publish_keeps_what_its_walk_still_left_out(
+    left_out_locked, mock_cursor
+):
+    mock_cursor.fetchone.return_value = None
+
+    await artifacts.publish_version(
+        user_id=_U,
+        artifact_id=_A,
+        origin="owner",
+        files=[_file("x")],
+        revision=1,
+        # The same choice, read in another order.
+        left_out_read=("c.html", "b.html"),
+        left_out_files=["b.html"],
+    )
+
+    (update,) = [
+        c
+        for c in mock_cursor.execute.await_args_list
+        if c.args[0].lstrip().startswith("UPDATE share_links")
+    ]
+    assert "left_out_files = COALESCE(" in _flat(update.args[0])
+    assert update.args[1]["left_out_files"] == ["b.html"]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_that_did_not_walk_leaves_the_left_out_list_alone(
+    left_out_locked, mock_cursor
+):
+    mock_cursor.fetchone.return_value = None
+
+    await artifacts.publish_version(
+        user_id=_U, artifact_id=_A, origin="keep_updated", files=[_file("x")]
+    )
+
+    (update,) = [
+        c
+        for c in mock_cursor.execute.await_args_list
+        if c.args[0].lstrip().startswith("UPDATE share_links")
+    ]
+    assert update.args[1]["left_out_files"] is None
