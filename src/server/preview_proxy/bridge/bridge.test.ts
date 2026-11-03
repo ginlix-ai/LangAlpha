@@ -2,25 +2,28 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // The page's end of the bridge is plain script the server inlines as the
 // first script of a framed document, so there is no module to import: it runs
 // here from its parts, in a document of its own, wrapped as
-// `preview_proxy/page_bridge.py` wraps the owner's live view (core, the
-// request counter, then the comment parts). It runs on web's Vitest from this
-// directory (`make test-bridge`), so the web package never reads outside web/.
-const part = (name: string) => readFileSync(
-  resolve(__dirname, `${name}.js`),
-  'utf8',
-);
-const BRIDGE = [
-  "(function () {\n'use strict';\nif (!window.parent || window.parent === window) return;",
-  part('core'),
-  part('requests'),
-  ...['text', 'areas', 'anchors', 'mode'].map((name) => part(`comments-${name}`)),
-  'hello();\n})();',
-].join('\n');
+// `preview_proxy/page_bridge.py` wraps the owner's live view, and in the order
+// that file lists them. It runs on web's Vitest from this directory
+// (`make test-bridge`), so the web package never reads outside web/.
+const part = (name: string) => readFileSync(resolve(__dirname, `${name}.js`), 'utf8');
+const quoted = (source: string) => [...source.matchAll(/"([\w-]+)"/g)].map((name) => name[1]);
+const { PARTS, NESTED_PARTS } = (() => {
+  const python = readFileSync(resolve(__dirname, '../page_bridge.py'), 'utf8');
+  const view = /^_VIEW_PARTS = \(([^)]*)\)/m.exec(python);
+  const comments = /"comments": \(\s*\*_VIEW_PARTS,([^)]*)\)/.exec(python);
+  const nested = /"nested": \(([^)]*)\)/.exec(python);
+  if (!view || !comments || !nested) throw new Error('page_bridge.py no longer lists its parts as this suite reads them');
+  return { PARTS: [...quoted(view[1]), ...quoted(comments[1])], NESTED_PARTS: quoted(nested[1]) };
+})();
+const OPEN = "(function () {\n'use strict';\nif (!window.parent || window.parent === window) return;";
+const BRIDGE = [OPEN, ...PARTS.map(part), 'hello();\n})();'].join('\n');
+// A frame inside a page has no viewer to greet.
+const NESTED = [OPEN, ...NESTED_PARTS.map(part), '})();'].join('\n');
 
 type PageWindow = Window & typeof globalThis;
 // jsdom ships no type declarations and @types/jsdom is not a dependency here.
@@ -883,6 +886,291 @@ describe('the page bridge carries its view to the next file', () => {
   });
 });
 
+// A file as the owner's grant serves it, with what the browser would report it
+// loading under the test's control: jsdom keeps no resource timing.
+const GRANT = 'https://api.example.com/api/v1/wsfiles/g/';
+function served(url: string, body = '', prepare?: (win: PageWindow) => void) {
+  const sent: Record<string, unknown>[] = [];
+  const viewer = { postMessage: (message: unknown) => sent.push(JSON.parse(JSON.stringify(message))) };
+  const entries = (names: string[]) => names.map((name) => ({ name }));
+  const timing: { report: ((list: { getEntries: () => { name: string }[] }) => void) | null; waiting: string[] } = {
+    report: null,
+    waiting: [],
+  };
+  const { window: w } = new JSDOM(`<!doctype html><html><head><script>${BRIDGE}</script></head><body>${body}</body></html>`, {
+    url,
+    runScripts: 'dangerously',
+    pretendToBeVisual: true,
+    beforeParse(win) {
+      Object.defineProperty(win, 'parent', { value: viewer, configurable: true });
+      Object.defineProperty(win, 'PerformanceObserver', {
+        configurable: true,
+        value: class {
+          constructor(report: NonNullable<typeof timing.report>) { timing.report = report; }
+          observe() {}
+          takeRecords() { return entries(timing.waiting.splice(0)); }
+        },
+      });
+      prepare?.(win);
+    },
+  });
+  open.push(w);
+  const from = (source: unknown, data: unknown) => {
+    const e = new w.Event('message');
+    Object.defineProperties(e, {
+      source: { value: source },
+      origin: { value: 'https://app.example.com' },
+      data: { value: data },
+    });
+    w.dispatchEvent(e);
+  };
+  return {
+    w,
+    viewer,
+    sent,
+    timing,
+    from,
+    // The viewer names itself with its first message; nothing is sent before.
+    speak: () => from(viewer, { type: 'page:theme', css: '' }),
+    loaded: (...names: string[]) => timing.report?.({ getEntries: () => entries(names) }),
+    of: (type: string) => sent.filter((message) => message.type === type),
+  };
+}
+
+describe('the page bridge carries the view on a form to its own files', () => {
+  const send = (page: ReturnType<typeof served>, id: string) => {
+    const form = page.w.document.getElementById(id) as HTMLFormElement;
+    form.dispatchEvent(new page.w.Event('submit', { bubbles: true, cancelable: true }));
+    return form;
+  };
+  const view = (form: HTMLFormElement) => (form.elements.namedItem('inject') as HTMLInputElement | null)?.value ?? null;
+
+  it('as a field on a GET form here, and leaves the rest as written', () => {
+    const page = served(
+      `${GRANT}tok/reports/index.html?inject=comments`,
+      '<form id="here" action="details.html"><input name="q"></form>'
+        + '<form id="self"></form>'
+        + '<form id="post" method="post" action="details.html"></form>'
+        + '<form id="away" action="https://elsewhere.example.com/s"></form>',
+    );
+    expect(view(send(page, 'here'))).toBe('comments');
+    expect(view(send(page, 'self'))).toBe('comments');
+    expect(view(send(page, 'post'))).toBeNull();
+    const away = send(page, 'away');
+    expect(view(away)).toBeNull();
+    expect(away.getAttribute('target')).toBe('_blank');
+  });
+
+  it('as the button that sent it says, over what its form says', () => {
+    const page = served(
+      `${GRANT}tok/reports/index.html?inject=comments`,
+      '<form id="toget" method="post"><button id="g" formmethod="get" formaction="details.html"></button></form>'
+        + '<form id="topost" action="details.html"><button id="p" formmethod="post"></button></form>'
+        + '<form id="toaway" action="details.html"><button id="a" formaction="https://elsewhere.example.com/s"></button></form>',
+    );
+    const by = (formId: string, buttonId: string) => {
+      const form = page.w.document.getElementById(formId) as HTMLFormElement;
+      const submitter = page.w.document.getElementById(buttonId) as HTMLButtonElement;
+      form.dispatchEvent(new page.w.SubmitEvent('submit', { bubbles: true, cancelable: true, submitter }));
+      return { form, submitter };
+    };
+    expect(view(by('toget', 'g').form)).toBe('comments');
+    expect(view(by('topost', 'p').form)).toBeNull();
+    const away = by('toaway', 'a');
+    expect(view(away.form)).toBeNull();
+    expect(away.submitter.getAttribute('formtarget')).toBe('_blank');
+    expect(away.form.hasAttribute('target')).toBe(false);
+  });
+
+  it('after a field of the page\'s own by the same name, where the server reads it', () => {
+    const page = served(
+      `${GRANT}tok/reports/index.html?inject=comments`,
+      '<form id="own" action="details.html"><input name="inject" value="mine"></form>',
+    );
+    const form = send(page, 'own');
+    send(page, 'own');
+    const fields = [...form.querySelectorAll('input[name="inject"]')] as HTMLInputElement[];
+    expect(fields.map((f) => f.value)).toEqual(['mine', 'comments']);
+  });
+
+  it('reads the view from the last of its address\'s values, as the server does', () => {
+    const page = served(
+      `${GRANT}tok/reports/index.html?inject=mine&inject=comments`,
+      '<form id="here" action="details.html"></form>',
+    );
+    expect(view(send(page, 'here'))).toBe('comments');
+  });
+
+  it('to this frame by name, and leaves a form for another window as written', () => {
+    const page = served(
+      `${GRANT}tok/reports/index.html?inject=comments`,
+      '<form id="self" target="_self" action="details.html"></form>'
+        + '<form id="byself" target="pane"><button id="s" formtarget="_self" formaction="details.html"></button></form>'
+        + '<form id="pane" target="pane" action="details.html"></form>',
+    );
+    expect(view(send(page, 'self'))).toBe('comments');
+    const byself = page.w.document.getElementById('byself') as HTMLFormElement;
+    const submitter = page.w.document.getElementById('s') as HTMLButtonElement;
+    byself.dispatchEvent(new page.w.SubmitEvent('submit', { bubbles: true, cancelable: true, submitter }));
+    expect(view(byself)).toBe('comments');
+    expect(view(send(page, 'pane'))).toBeNull();
+  });
+});
+
+describe('the page bridge hears only windows tied to the page', () => {
+  function heardBy(page: ReturnType<typeof served>, source: unknown) {
+    const heard: unknown[] = [];
+    const listener = (e: Event) => heard.push((e as MessageEvent).data);
+    // Capturing, the earliest a page's own listener can be.
+    page.w.addEventListener('message', listener, true);
+    page.from(source, { hello: 'page' });
+    page.w.removeEventListener('message', listener, true);
+    return heard.length > 0;
+  }
+
+  it('drops a stranger, a window with no tie to it, and a message with no source', () => {
+    const page = served(`${GRANT}tok/reports/index.html`);
+    const stranger = { parent: null, opener: null };
+    const strangersChild = { parent: stranger, opener: null };
+    expect(heardBy(page, stranger)).toBe(false);
+    expect(heardBy(page, strangersChild)).toBe(false);
+    expect(heardBy(page, null)).toBe(false);
+  });
+
+  it('hears itself, the viewer, a frame inside it and a window it opened', () => {
+    const page = served(`${GRANT}tok/reports/index.html`);
+    const opened: { parent: unknown; opener: unknown } = { parent: null, opener: page.w };
+    opened.parent = opened;
+    expect(heardBy(page, page.w)).toBe(true);
+    expect(heardBy(page, page.viewer)).toBe(true);
+    expect(heardBy(page, { parent: page.w })).toBe(true);
+    expect(heardBy(page, opened)).toBe(true);
+  });
+});
+
+describe('the page bridge reports what the page loads', () => {
+  const GRANTED = `${GRANT}tok/`;
+
+  it('holds the report until the document settles, naming the file it is', async () => {
+    const page = served(`${GRANTED}reports/index.html?inject=view`);
+    page.speak();
+    // Its own file and another site's are no workspace file it loaded.
+    page.loaded(`${GRANTED}data/a.csv`, `${GRANTED}reports/index.html`, 'https://cdn.example.com/lib.js');
+    expect(page.of('page:loads')).toEqual([]);
+
+    // What the browser has not handed over yet still goes in the settled report.
+    page.timing.waiting.push(`${GRANTED}data/b%20c.csv`);
+    await vi.waitFor(() => expect(page.of('page:settled')).toHaveLength(1), { timeout: 10_000 });
+    expect(page.of('page:loads')).toEqual([
+      { type: 'page:loads', v: 1, path: 'reports/index.html', paths: ['data/a.csv', 'data/b c.csv'] },
+    ]);
+    const types = page.sent.map((message) => message.type);
+    expect(types.indexOf('page:loads')).toBeLessThan(types.indexOf('page:settled'));
+
+    // From then on a file only a click loaded goes out as it arrives.
+    page.loaded(`${GRANTED}data/d.csv`);
+    expect(page.of('page:loads').pop()?.paths).toEqual(['data/a.csv', 'data/b c.csv', 'data/d.csv']);
+    page.loaded(`${GRANTED}data/d.csv`);
+    expect(page.of('page:loads')).toHaveLength(2);
+  }, 15_000);
+
+  // No view of a workspace file serves the root of its host, so the review
+  // warns of such a load by its path there, "/" first, never a file's.
+  it('names a load from the root of its own host by its path there, and no other host\'s', async () => {
+    const page = served(`${GRANTED}reports/index.html?inject=view`);
+    page.speak();
+    page.loaded(
+      'https://api.example.com/assets/dark.json?v=2#top',
+      `${GRANTED}data/a.csv`,
+      'https://api.example.com/assets/a%20b.json',
+      'http://api.example.com/assets/other-scheme.json',
+      'https://api.example.com:8443/assets/other-port.json',
+      'https://cdn.example.com/assets/lib.json',
+    );
+    // As a frame of the page's, or its worker, would send it.
+    page.from({ parent: page.w }, { type: 'page:frame-loads', urls: ['https://api.example.com/fonts/x.woff2'] });
+    await vi.waitFor(() => expect(page.of('page:settled')).toHaveLength(1), { timeout: 10_000 });
+    expect(page.of('page:loads').pop()?.paths).toEqual([
+      '/assets/dark.json', 'data/a.csv', '/assets/a b.json', '/fonts/x.woff2',
+    ]);
+  }, 15_000);
+
+  it('leaves out what the routes that serve files answer, another grant\'s included', async () => {
+    const page = served(`${GRANTED}reports/index.html?inject=view`);
+    page.speak();
+    page.loaded(
+      `${GRANT}other/data/b.csv`,
+      'https://api.example.com/api/v1/public/shared/tok/files/serve/data/c.csv',
+      'https://api.example.com/api/v1/artifacts/g/tok/v/3/data/d.csv',
+      `${GRANTED}reports/index.html`,
+      `${GRANTED}`,
+    );
+    await vi.waitFor(() => expect(page.of('page:settled')).toHaveLength(1), { timeout: 10_000 });
+    expect(page.of('page:loads')).toEqual([]);
+  }, 15_000);
+
+  it('watches nothing on a share, which has no workspace to review', () => {
+    const page = served('https://api.example.com/api/v1/public/shared/tok/files/serve/reports/index.html?inject=view');
+    expect(page.timing.report).toBeNull();
+  });
+});
+
+describe('the page bridge moves to a renewed grant', () => {
+  const at = (grant: string) => `${GRANT}${grant}/reports/index.html?inject=view`;
+
+  it('takes the new address without loading again, and reads links under it', () => {
+    const page = served(at('old'), '<a id="next" href="charts/next.html#q2">next</a>');
+    page.speak();
+    page.from(page.viewer, { type: 'page:address', src: at('new') });
+    expect(page.w.location.href).toBe(at('new'));
+
+    const next = page.w.document.getElementById('next')!;
+    next.dispatchEvent(new page.w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(page.of('page:open-file')).toEqual([
+      { type: 'page:open-file', v: 1, path: 'reports/charts/next.html', fragment: 'q2' },
+    ]);
+  });
+
+  it('leaves a link that carries a query to the frame, where the page reads it', () => {
+    const page = served(at('g'), '<a id="detail" href="detail.html?ticker=MSFT#q2">MSFT</a>');
+    page.speak();
+    const detail = page.w.document.getElementById('detail')!;
+    const click = new page.w.MouseEvent('click', { bubbles: true, cancelable: true });
+    detail.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(false);
+    expect(page.of('page:open-file')).toEqual([]);
+  });
+
+  it('opens the same host over another scheme as another site, in a tab of its own', () => {
+    const page = served(at('g'), '<a id="plain" href="http://api.example.com/api/v1/wsfiles/g/g/reports/a.html">a</a>');
+    page.speak();
+    const opened: unknown[][] = [];
+    page.w.open = ((...args: unknown[]) => { opened.push(args); return null; }) as typeof page.w.open;
+    const click = new page.w.MouseEvent('click', { bubbles: true, cancelable: true });
+    page.w.document.getElementById('plain')!.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(opened).toEqual([['http://api.example.com/api/v1/wsfiles/g/g/reports/a.html', '_blank', 'noopener,noreferrer']]);
+    expect(page.of('page:open-file')).toEqual([]);
+  });
+
+  it("moves a published version's page to its renewed grant, on either origin", () => {
+    for (const base of ['https://api.example.com/api/v1/artifacts/g/', 'https://artifact-x.example.com/g/']) {
+      const version = (grant: string) => `${base}${grant}/v/3/reports/index.html?inject=view`;
+      const page = served(version('old'));
+      page.speak();
+      page.from(page.viewer, { type: 'page:address', src: version('new') });
+      expect(page.w.location.href).toBe(version('new'));
+    }
+  });
+
+  it('stays put for an address under the grant it already has', () => {
+    const page = served(at('same'));
+    page.speak();
+    page.from(page.viewer, { type: 'page:address', src: `${GRANT}same/elsewhere.html` });
+    expect(page.w.location.href).toBe(at('same'));
+  });
+});
+
 describe('the page bridge finds what a comment was stored on', () => {
   it('knows an image by its alt, which its text does not hold', () => {
     const anchor = { path: 'body > img:nth-of-type(1)', quote: 'Revenue by quarter' };
@@ -896,5 +1184,385 @@ describe('the page bridge finds what a comment was stored on', () => {
     expect(positions(`<p>${words}</p>`, { kind: 'text', quote: `${words.slice(0, 1999)}…` })).not.toBeNull();
     // A quote that only ends in an ellipsis is still searched as it stands.
     expect(positions('<p>wait for it</p>', { kind: 'text', quote: 'wait…' })).toBeNull();
+  });
+});
+
+// jsdom serves every document on its URL's origin; the browser puts a served
+// file on an opaque one.
+function opaque(win: PageWindow) {
+  Object.defineProperty(win, 'origin', { value: 'null', configurable: true });
+}
+
+type Posted = { data: unknown; ports: unknown[] };
+type FakeWorker = EventTarget & {
+  url: string;
+  options?: WorkerOptions;
+  posted: Posted[];
+  deliver: ((message: Posted) => void) | null;
+};
+// jsdom has no Worker: this one keeps the blob the stand-in starts it from, and
+// its onmessage listens from the first time it is set, as a browser's does.
+// What the page sends it waits, as a browser holds it, until the worker runs.
+function stubWorkers(win: PageWindow, blobs: Blob[], workers: FakeWorker[]) {
+  win.URL.createObjectURL = (blob: Blob) => {
+    blobs.push(blob);
+    return `blob:null/${blobs.length}`;
+  };
+  class Worker extends (win.EventTarget as typeof EventTarget) {
+    url: string;
+    options?: WorkerOptions;
+    handler: ((e: Event) => void) | null = null;
+    listening = false;
+    posted: Posted[] = [];
+    deliver: ((message: Posted) => void) | null = null;
+    constructor(url: string, options?: WorkerOptions) {
+      super();
+      this.url = url;
+      this.options = options;
+      workers.push(this);
+    }
+    get onmessage() { return this.handler; }
+    set onmessage(fn: ((e: Event) => void) | null) {
+      if (!this.listening) this.addEventListener('message', (e) => this.handler?.(e));
+      this.listening = true;
+      this.handler = fn;
+    }
+    terminate() {}
+    postMessage(data: unknown, ports: unknown[] = []) {
+      if (this.deliver) this.deliver({ data, ports });
+      else this.posted.push({ data, ports });
+    }
+  }
+  Object.defineProperty(win, 'Worker', { value: Worker, configurable: true, writable: true });
+}
+
+// The blob's source run against a global of the test's, as the worker would run
+// it, its messages arriving at the worker the page holds. `scripts` are what
+// importScripts runs, by address.
+async function runWorker(
+  w: PageWindow, blob: Blob, worker: FakeWorker, scripts: Record<string, (self: any) => void> = {},
+) {
+  const source = await blob.text();
+  const fetched: string[] = [];
+  const imported: string[] = [];
+  const opened: string[] = [];
+  let report: ((list: { getEntries: () => { name: string }[] }) => void) | null = null;
+  const scope = Object.assign(new w.EventTarget(), {
+    postMessage: (data: unknown) => worker.dispatchEvent(new w.MessageEvent('message', { data })),
+    fetch: (input: unknown) => {
+      fetched.push(String(input));
+      return Promise.resolve({ clone: () => ({ arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)) }) });
+    },
+    importScripts: (...urls: string[]) => {
+      imported.push(...urls);
+      urls.forEach((url) => scripts[url]?.(scope));
+    },
+    Request: class { url: string; constructor(input: unknown) { this.url = String(input); } },
+    XMLHttpRequest: class {
+      open(_method: string, url: string) { opened.push(url); }
+      send() {}
+      addEventListener() {}
+      removeEventListener() {}
+    },
+    PerformanceObserver: class {
+      constructor(callback: NonNullable<typeof report>) { report = callback; }
+      observe() {}
+    },
+    // jsdom's takes no ports of Node's channel.
+    MessageEvent: class extends w.Event {
+      data: unknown;
+      ports: unknown[];
+      constructor(type: string, init: { data: unknown; ports: unknown[] }) {
+        super(type);
+        this.data = init.data;
+        this.ports = init.ports;
+      }
+    },
+  });
+  worker.deliver = ({ data, ports }) => {
+    const event = new w.Event('message');
+    Object.defineProperties(event, { data: { value: data }, ports: { value: ports } });
+    scope.dispatchEvent(event);
+  };
+  try {
+    new Function('self', source)(scope);
+  } finally {
+    worker.posted.splice(0).forEach(worker.deliver);
+  }
+  const loaded = (...names: string[]) => report?.({ getEntries: () => names.map((name) => ({ name })) });
+  return { scope, fetched, imported, opened, loaded };
+}
+
+describe('the page bridge starts a worker on an opaque origin', () => {
+  const GRANTED = `${GRANT}tok/`;
+  const BODY = '<script>window.heard = []; window.worker = new Worker("work/w.js");'
+    + ' worker.onmessage = function (e) { heard.push(e.data); };</script>';
+  function withWorker(body = BODY) {
+    const blobs: Blob[] = [];
+    const workers: FakeWorker[] = [];
+    const page = served(`${GRANTED}reports/index.html?inject=view`, body, (win) => {
+      opaque(win);
+      stubWorkers(win, blobs, workers);
+    });
+    return { page, blobs, workers };
+  }
+
+  it('resolves what the worker asks for against its script, not the blob', async () => {
+    const { page, blobs, workers } = withWorker();
+    expect(workers[0].url).toMatch(/^blob:/);
+    const run = await runWorker(page.w, blobs[0], workers[0]);
+    expect(run.imported).toEqual([`${GRANTED}reports/work/w.js`]);
+
+    run.scope.fetch('data/x.csv');
+    run.scope.importScripts('lib/util.js');
+    new run.scope.XMLHttpRequest().open('GET', '../table.json');
+    expect(run.fetched).toEqual([`${GRANTED}reports/work/data/x.csv`]);
+    expect(run.imported[1]).toBe(`${GRANTED}reports/work/lib/util.js`);
+    expect(run.opened).toEqual([`${GRANTED}reports/table.json`]);
+    expect(new run.scope.Request('q.csv').url).toBe(`${GRANTED}reports/work/q.csv`);
+    // Its location is the script's, as a real worker's is, for a path built on it.
+    const place = (run.scope as unknown as { location: URL }).location;
+    expect(new URL('data/y.csv', place).href).toBe(`${GRANTED}reports/work/data/y.csv`);
+    expect(String(place)).toBe(`${GRANTED}reports/work/w.js`);
+    // An address of another site is left as written.
+    run.scope.fetch('https://cdn.example.com/data.json');
+    expect(run.fetched[1]).toBe('https://cdn.example.com/data.json');
+  });
+
+  it('starts a module worker as a classic one that imports it, which every engine allows', async () => {
+    const { blobs, workers } = withWorker('<script>new Worker("work/m.js", { type: "module", name: "rows" });</script>');
+    expect(workers[0].options).toEqual({ type: 'classic', name: 'rows' });
+    // The script, this document's tag, that it is a module, and no shared one.
+    const source = await blobs[0].text();
+    expect(source).toMatch(/\)\("[^"]+\/reports\/work\/m\.js", "__page_worker_\w+", true, false\);$/);
+  });
+
+  it('settles once the worker has run, with what it loaded, which the page never hears', async () => {
+    const { page, blobs, workers } = withWorker();
+    page.speak();
+    // Held while the worker's script has yet to run, as a request out is.
+    await new Promise((done) => setTimeout(done, 600));
+    expect(page.of('page:settled')).toEqual([]);
+
+    const run = await runWorker(page.w, blobs[0], workers[0]);
+    run.loaded(`${GRANTED}data/w.csv`);
+    // The page's own messages still reach it.
+    run.scope.postMessage({ rows: 3 });
+    expect((page.w as unknown as { heard: unknown[] }).heard).toEqual([{ rows: 3 }]);
+
+    await vi.waitFor(() => expect(page.of('page:settled')).toHaveLength(1), { timeout: 10_000 });
+    expect(page.of('page:loads').pop()?.paths).toEqual(['reports/work/w.js', 'data/w.csv']);
+  }, 15_000);
+});
+
+describe('the page bridge starts a shared worker on an opaque origin', () => {
+  const GRANTED = `${GRANT}tok/`;
+  const SCRIPT = `${GRANTED}reports/work/s.js`;
+  const channels: MessageChannel[] = [];
+  afterEach(() => channels.splice(0).forEach((channel) => {
+    channel.port1.close();
+    channel.port2.close();
+  }));
+  function withShared(body: string) {
+    const blobs: Blob[] = [];
+    const workers: FakeWorker[] = [];
+    const page = served(`${GRANTED}reports/index.html?inject=view`, body, (win) => {
+      opaque(win);
+      stubWorkers(win, blobs, workers);
+      // What a browser offers there, refusing the page's script.
+      Object.defineProperty(win, 'SharedWorker', {
+        configurable: true,
+        writable: true,
+        value: class { constructor() { throw new Error('SecurityError'); } },
+      });
+      // jsdom has no channel; Node's is the browser's shape.
+      Object.defineProperty(win, 'MessageChannel', {
+        configurable: true,
+        value: class extends MessageChannel {
+          constructor() {
+            super();
+            channels.push(this);
+          }
+        },
+      });
+    });
+    return { page, blobs, workers };
+  }
+  // A script that answers each connection on its port, and says how many it has.
+  const answering = (self: any) => {
+    let count = 0;
+    self.onconnect = (event: MessageEvent) => {
+      const port = event.ports[0];
+      count += 1;
+      port.onmessage = (message: MessageEvent) => port.postMessage(`${message.data} ${count}`);
+    };
+  };
+  const reply = (port: MessagePort, data: string) => new Promise((done) => {
+    port.onmessage = (message) => done(message.data);
+    port.postMessage(data);
+  });
+
+  it("connects every construction for its script and name to one worker, each on a port of its own", async () => {
+    const { page, blobs, workers } = withShared(
+      '<script>window.a = new SharedWorker("work/s.js", "rows");'
+        + ' window.b = new SharedWorker("work/s.js", { name: "rows" });'
+        + ' window.c = new SharedWorker("work/s.js");</script>',
+    );
+    const win = page.w as unknown as { a: SharedWorker; b: SharedWorker; c: SharedWorker };
+    expect(win.a).toBeInstanceOf(page.w.SharedWorker);
+    expect(win.a).toBeInstanceOf(page.w.EventTarget);
+    // One worker per name, each a classic one from a blob.
+    expect(workers.map((worker) => worker.options)).toEqual([
+      { name: 'rows', type: 'classic' },
+      { type: 'classic' },
+    ]);
+    const source = await blobs[0].text();
+    expect(source).toMatch(/\)\("[^"]+\/reports\/work\/s\.js", "__page_worker_\w+", false, true\);$/);
+
+    // Connected before the script ran, heard once it has.
+    const run = await runWorker(page.w, blobs[0], workers[0], { [SCRIPT]: answering });
+    expect(run.imported).toEqual([SCRIPT]);
+    expect(await reply(win.a.port, 'ping')).toBe('ping 2');
+    expect(await reply(win.b.port, 'pong')).toBe('pong 2');
+
+    // One more on a worker already running connects at once, by listener too.
+    const connected: unknown[] = [];
+    run.scope.addEventListener('connect', (event: Event) => connected.push((event as MessageEvent).ports.length));
+    const d = new page.w.SharedWorker('work/s.js', 'rows');
+    expect(workers).toHaveLength(2);
+    expect(connected).toEqual([1]);
+    expect(await reply(d.port, 'again')).toBe('again 3');
+  });
+
+  it('settles once its script has run, with what it loaded, and its messages are the page\'s own', async () => {
+    const { page, blobs, workers } = withShared('<script>window.shared = new SharedWorker("work/s.js");</script>');
+    page.speak();
+    await new Promise((done) => setTimeout(done, 600));
+    expect(page.of('page:settled')).toEqual([]);
+
+    const run = await runWorker(page.w, blobs[0], workers[0], { [SCRIPT]: answering });
+    run.loaded(`${GRANTED}data/s.csv`);
+    run.scope.fetch('rows.json');
+    expect(run.fetched).toEqual([`${GRANTED}reports/work/rows.json`]);
+    await vi.waitFor(() => expect(page.of('page:settled')).toHaveLength(1), { timeout: 10_000 });
+    expect(page.of('page:loads').pop()?.paths).toEqual(['reports/work/s.js', 'data/s.csv']);
+  }, 15_000);
+
+  it('is an error to every connection when its script never runs, and starts again on the next', async () => {
+    const { page, blobs, workers } = withShared(
+      '<script>window.errors = []; window.a = new SharedWorker("work/s.js");'
+        + ' a.onerror = function (e) { errors.push("a " + e.type); };'
+        + ' a.addEventListener("error", function () { errors.push("a listener"); });'
+        + ' window.b = new SharedWorker("work/s.js");'
+        + ' b.onerror = function () { errors.push("b"); };</script>',
+    );
+    const missing = () => { throw new Error('NetworkError'); };
+    await expect(runWorker(page.w, blobs[0], workers[0], { [SCRIPT]: missing })).rejects.toThrow('NetworkError');
+    expect((page.w as unknown as { errors: string[] }).errors).toEqual(['a error', 'a listener', 'b']);
+    new page.w.SharedWorker('work/s.js');
+    expect(workers).toHaveLength(2);
+  });
+});
+
+describe('the page bridge takes in what a frame of its own loaded', () => {
+  const GRANTED = `${GRANT}tok/`;
+
+  it('from a frame whose parent it is, out of the page\'s hearing, and from no one else', async () => {
+    const page = served(`${GRANTED}reports/index.html?inject=view`);
+    page.speak();
+    const heard: unknown[] = [];
+    page.w.addEventListener('message', (e) => heard.push((e as MessageEvent).data), true);
+    const report = (source: unknown, file: string) => {
+      const message = { type: 'page:frame-loads', urls: [`${GRANTED}${file}`] };
+      page.from(source, message);
+      return message;
+    };
+    const child = report({ parent: page.w }, 'reports/detail.html');
+    report({ parent: null, opener: null }, 'data/stranger.csv');
+    report(page.viewer, 'data/viewer.csv');
+    expect(heard).not.toContainEqual(child);
+
+    await vi.waitFor(() => expect(page.of('page:settled')).toHaveLength(1), { timeout: 10_000 });
+    expect(page.of('page:loads').pop()?.paths).toEqual(['reports/detail.html']);
+  }, 15_000);
+});
+
+describe('a workspace file a page frames', () => {
+  it('sends its parent what it loaded on its own host, and what a frame inside it sends', () => {
+    const posted: { message: { type: string; urls: string[] }; to: string }[] = [];
+    const parent = {
+      postMessage: (message: unknown, to: string) => posted.push({ message: JSON.parse(JSON.stringify(message)), to }),
+    };
+    let report: ((list: { getEntries: () => { name: string }[] }) => void) | null = null;
+    const here = `${GRANT}tok/reports/detail.html`;
+    const { window: w } = new JSDOM(`<!doctype html><html><head><script>${NESTED}</script></head><body></body></html>`, {
+      url: here,
+      runScripts: 'dangerously',
+      pretendToBeVisual: true,
+      beforeParse(win) {
+        Object.defineProperty(win, 'parent', { value: parent, configurable: true });
+        Object.defineProperty(win, 'PerformanceObserver', {
+          configurable: true,
+          value: class {
+            constructor(callback: NonNullable<typeof report>) { report = callback; }
+            observe() {}
+          },
+        });
+      },
+    });
+    open.push(w);
+    expect(NESTED).not.toContain('page:ready');
+    // Each report names this document, which the viewer reads when the frame is its own.
+    expect(posted).toEqual([{ message: { type: 'page:frame-loads', urls: [here], doc: here }, to: '*' }]);
+
+    report!({ getEntries: () => [{ name: `${GRANT}tok/data/d.csv` }, { name: 'https://cdn.example.com/lib.js' }, { name: here }] });
+    expect(posted.map((p) => p.message.urls)).toEqual([[here], [`${GRANT}tok/data/d.csv`]]);
+
+    const heard: unknown[] = [];
+    w.addEventListener('message', (e) => heard.push((e as MessageEvent).data), true);
+    const from = (source: unknown, file: string) => {
+      const e = new w.Event('message');
+      const data = { type: 'page:frame-loads', urls: [`${GRANT}tok/${file}`] };
+      Object.defineProperties(e, { source: { value: source }, data: { value: data } });
+      w.dispatchEvent(e);
+      return data;
+    };
+    const inner = from({ parent: w }, 'data/inner.csv');
+    from({ parent: null }, 'data/stranger.csv');
+    expect(posted.map((p) => p.message.urls).slice(2)).toEqual([[`${GRANT}tok/data/inner.csv`]]);
+    expect(heard).not.toContainEqual(inner);
+  });
+});
+
+describe('the page bridge on an opaque origin', () => {
+  it('has IndexedDB read as absent, so a library that probes for it keeps to storage', () => {
+    const page = served(`${GRANT}tok/reports/index.html`, '', (win) => {
+      opaque(win);
+      // What a browser offers there, refusing once it is opened.
+      Object.defineProperty(win, 'indexedDB', {
+        configurable: true,
+        value: { open() { throw new Error('SecurityError'); } },
+      });
+    });
+    expect(page.w.indexedDB).toBeUndefined();
+    page.w.localStorage.setItem('theme', 'dark');
+    expect(page.w.localStorage.getItem('theme')).toBe('dark');
+  });
+
+  it('ends a cookie on any Max-Age of zero or less, and on a past Expires only without one', () => {
+    const page = served(`${GRANT}tok/reports/index.html`, '', (win) => {
+      // A browser drops a cross-site frame's cookies without a word.
+      Object.defineProperty(win.document, 'cookie', { configurable: true, get: () => '', set: () => {} });
+    });
+    const doc = page.w.document;
+    doc.cookie = 'a=1';
+    doc.cookie = 'b=2';
+    doc.cookie = 'c=3';
+    doc.cookie = 'a=; Max-Age=-1';
+    doc.cookie = 'b=2; max-age=60; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+    doc.cookie = 'c=3; Max-Age=soon';
+    expect(doc.cookie).toBe('b=2; c=3');
+    doc.cookie = 'c=; Expires=Thu, 01 Jan 1970 00:00:00 GMT';
+    expect(doc.cookie).toBe('b=2');
   });
 });

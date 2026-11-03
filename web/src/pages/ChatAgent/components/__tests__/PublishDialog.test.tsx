@@ -10,13 +10,40 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { renderWithProviders } from '@/test/utils';
+import { runAuthResets } from '@/lib/authResets';
+import { notePageLoads, notePageOpen } from '@/lib/pageLoads';
 import type { Artifact, ArtifactStatus, ArtifactVersion, ShareFileEntry } from '@/types/api';
 
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
+
+// The page the dialog loads out of sight: it answers at once, unless a test
+// holds it, which is the one place its wait matters.
+const scout = vi.hoisted(() => ({ settle: null as (() => void) | null, hold: false, grantFails: false }));
+vi.mock('../viewers/html/BridgedFrame', () => ({
+  BridgedFrame: ({ onUnbridged }: { onUnbridged?: () => void }) => {
+    React.useEffect(() => {
+      if (scout.hold) scout.settle = onUnbridged ?? null;
+      else onUnbridged?.();
+    });
+    return null;
+  },
+}));
+
+// Its own grant, which a test may have never arrive.
+vi.mock('../viewers/html/liveFrame', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../viewers/html/liveFrame')>();
+  return {
+    ...actual,
+    useLiveFrame: (options: Parameters<typeof actual.useLiveFrame>[0]) => {
+      const live = actual.useLiveFrame(options);
+      return scout.grantFails ? { ...live, source: null, failed: true } : live;
+    },
+  };
+});
 
 vi.mock('@/pages/ChatAgent/utils/api/artifacts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/pages/ChatAgent/utils/api/artifacts')>();
@@ -29,6 +56,7 @@ vi.mock('@/pages/ChatAgent/utils/api/artifacts', async (importOriginal) => {
     publishArtifact: vi.fn(),
     unshareArtifact: vi.fn(),
     setArtifactKeepUpdated: vi.fn(),
+    setArtifactFileLeftOut: vi.fn(),
   };
 });
 
@@ -39,7 +67,7 @@ import {
   getArtifactStatus,
   listArtifactVersions,
   publishArtifact,
-  unshareArtifact,
+  unshareArtifact, setArtifactFileLeftOut,
 } from '@/pages/ChatAgent/utils/api/artifacts';
 import PublishDialog from '../PublishDialog';
 
@@ -89,16 +117,18 @@ function version(seq: number, overrides: Partial<ArtifactVersion> = {}): Artifac
   };
 }
 
-const ENTRY_ROW: ShareFileEntry = { path: ENTRY, size: 40_960, reason: 'entry' };
-const STYLE_ROW: ShareFileEntry = { path: 'results/style.css', size: 512, reason: 'style' };
-const CHART_ROW: ShareFileEntry = { path: 'results/charts/rev.png', size: 2_048, reason: 'page' };
+const ENTRY_ROW: ShareFileEntry = { path: ENTRY, size: 40_960, reason: 'entry', optional: false };
+const STYLE_ROW: ShareFileEntry = { path: 'results/style.css', size: 512, reason: 'style', optional: false };
+const CHART_ROW: ShareFileEntry = { path: 'results/charts/rev.png', size: 2_048, reason: 'page', optional: false };
 
 function status(rows: ShareFileEntry[], overrides: Partial<ArtifactStatus> = {}): ArtifactStatus {
   return {
     latest_seq: 0,
     live_sha256: 'a'.repeat(64),
+    page_sha256: 'c'.repeat(64),
     files: rows,
-    total_size: rows.reduce((s, r) => s + r.size, 0),
+    left_out: [],
+    total_size: rows.reduce((s, r) => s + (r.size ?? 0), 0),
     changed: null,
     drift: null,
     ...overrides,
@@ -142,6 +172,7 @@ const updateButton = () => screen.getByRole('button', { name: 'Update' });
 describe('PublishDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    runAuthResets();
     mockVersions.mockResolvedValue([]);
   });
 
@@ -149,6 +180,181 @@ describe('PublishDialog', () => {
     beforeEach(() => {
       serve(artifact());
       mockStatus.mockResolvedValue(status([ENTRY_ROW, STYLE_ROW]));
+    });
+
+    it('locks the boxes while a publish carries the list', async () => {
+      const LINKED: ShareFileEntry = { path: 'results/other.html', size: 100, reason: 'link', optional: true };
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, LINKED]));
+      mockPublish.mockReturnValue(new Promise(() => {}));
+      renderDialog();
+
+      const box = await screen.findByRole('checkbox', { name: 'Include other.html' });
+      await waitFor(() => expect(publishButton()).toBeEnabled());
+      expect(box).toBeEnabled();
+      await userEvent.click(publishButton());
+      await waitFor(() => expect(box).toBeDisabled());
+    });
+
+    it('offers a box on what the page does not need now, and none on what it loads', async () => {
+      const GUESS: ShareFileEntry = { path: 'results/c.json', size: 2, reason: 'script', optional: true };
+      const OLD: ShareFileEntry = { path: 'results/old.csv', size: 1, reason: 'loaded', optional: true };
+      const NOW: ShareFileEntry = { path: 'results/now.csv', size: 1, reason: 'loaded', optional: false };
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, GUESS, OLD, NOW]));
+      renderDialog();
+
+      await screen.findByText('now.csv');
+      expect(screen.getByRole('checkbox', { name: 'Include c.json' })).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: 'Include old.csv' })).toBeChecked();
+      expect(screen.queryByRole('checkbox', { name: 'Include now.csv' })).toBeNull();
+    });
+
+    // A library file left out while the computer is stopped: the stored copy
+    // never keeps it, so nothing can say its size.
+    it('shows a left-out row with no size where nothing could read one', async () => {
+      const LIB: ShareFileEntry = { path: 'results/vendor/lib.js', size: null, reason: 'script', optional: true };
+      mockStatus.mockResolvedValue(status([ENTRY_ROW], { left_out: [LIB] }));
+      renderDialog();
+
+      const row = (await screen.findByText('lib.js')).closest('li');
+      expect(row?.textContent).toContain('left out');
+      expect(row?.textContent).not.toMatch(/\d\s*(B|KB|MB)/);
+      expect(screen.getByRole('checkbox', { name: 'Include lib.js' })).not.toBeChecked();
+    });
+
+    it('lists the files past a cap, holds Publish, and takes off what puts it over', async () => {
+      const RAW: ShareFileEntry = { path: 'results/raw.zip', size: 40_000_000, reason: 'link', optional: true };
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, RAW], {
+        over_cap: { code: 'too_many_bytes', limit: 25 * 1024 * 1024 },
+        live_sha256: null,
+        page_sha256: null,
+      }));
+      vi.mocked(setArtifactFileLeftOut).mockResolvedValue(artifact());
+      renderDialog();
+
+      await screen.findByText('raw.zip');
+      expect(screen.getByText(/which is more than a link can carry\. Leave out files below until it fits\./)).toBeInTheDocument();
+      expect(publishButton()).toBeDisabled();
+
+      mockStatus.mockResolvedValue(status([ENTRY_ROW], { left_out: [RAW] }));
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Include raw.zip' }));
+
+      expect(setArtifactFileLeftOut).toHaveBeenCalledWith(artifact().artifact_id, RAW.path, true);
+      await waitFor(() => expect(publishButton()).toBeEnabled());
+      expect(screen.queryByText(/Leave out files below/)).toBeNull();
+    });
+
+    it('warns of files the page loads from the site root, which no link serves', async () => {
+      mockStatus.mockResolvedValue(status([ENTRY_ROW], { root_refs: ['/assets/index-4f2a.js', '/assets/index.css'] }));
+      renderDialog();
+
+      const warning = await screen.findByText(/This page loads files from the site root/);
+      expect(warning).toHaveTextContent(
+        'This page loads files from the site root, such as /assets/index-4f2a.js, which visitors won\'t get. Build it with relative paths, for example with vite build --base=./.',
+      );
+      expect(within(warning).getByText('vite build --base=./').tagName).toBe('CODE');
+      // A warning, not a refusal.
+      await waitFor(() => expect(publishButton()).toBeEnabled());
+    });
+
+    it('says nothing about leaving out where no file past a cap has a box', async () => {
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, STYLE_ROW], {
+        over_cap: { code: 'too_many_files', limit: 200 },
+        live_sha256: null,
+        page_sha256: null,
+      }));
+      renderDialog();
+
+      await screen.findByText(/references more than 200 files/);
+      expect(screen.queryByText(/Leave out files below/)).toBeNull();
+      expect(publishButton()).toBeDisabled();
+    });
+
+    it('holds a box still while its own change is on its way', async () => {
+      const LINKED: ShareFileEntry = { path: 'results/other.html', size: 100, reason: 'link', optional: true };
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, LINKED]));
+      vi.mocked(setArtifactFileLeftOut).mockReturnValue(new Promise(() => {}));
+      renderDialog();
+
+      const box = await screen.findByRole('checkbox', { name: 'Include other.html' });
+      await userEvent.click(box);
+      await waitFor(() => expect(box).toBeDisabled());
+      await userEvent.click(box);
+      expect(setArtifactFileLeftOut).toHaveBeenCalledTimes(1);
+    });
+
+    it('says to start the computer when only it has the files a page uses', async () => {
+      mockStatus.mockRejectedValue(apiError(409, { code: 'needs_computer' }));
+      renderDialog();
+
+      expect(await screen.findByText(
+        'This page uses files that are only on the running computer. Start the computer, then publish.',
+      )).toBeInTheDocument();
+      expect(publishButton()).toBeDisabled();
+    });
+
+    it('lets the owner take a linked page off the list, and only a linked page', async () => {
+      const LINKED: ShareFileEntry = { path: 'results/other.html', size: 100, reason: 'link', optional: true };
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, STYLE_ROW, LINKED]));
+      vi.mocked(setArtifactFileLeftOut).mockResolvedValue(artifact());
+      renderDialog();
+
+      await screen.findByText('other.html');
+      // The entry and what the page loads have no box.
+      expect(within(filesList(3)).getAllByRole('checkbox')).toHaveLength(1);
+      const box = screen.getByRole('checkbox', { name: 'Include other.html' });
+      expect(box).toBeChecked();
+
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, STYLE_ROW], { left_out: [LINKED] }));
+      await userEvent.click(box);
+
+      expect(setArtifactFileLeftOut).toHaveBeenCalledWith(artifact().artifact_id, LINKED.path, true);
+      // The list says so, in the same place, and a publish sends only what stays.
+      await within(filesList(2)).findByText('left out');
+      expect(screen.getByRole('checkbox', { name: 'Include other.html' })).not.toBeChecked();
+      expect(within(filesList(2)).getAllByRole('listitem').map((row) => row.textContent)).toEqual([
+        expect.stringContaining('report.html'),
+        expect.stringContaining('other.html'),
+        expect.stringContaining('style.css'),
+      ]);
+      await waitFor(() => expect(publishButton()).toBeEnabled());
+      await userEvent.click(publishButton());
+      await waitFor(() => expect(mockPublish).toHaveBeenCalled());
+      expect(mockPublish.mock.calls[0][1].files).toEqual([ENTRY_ROW.path, STYLE_ROW.path]);
+    });
+
+    it('holds Publish while a file is coming off the list', async () => {
+      const LINKED: ShareFileEntry = { path: 'results/other.html', size: 100, reason: 'link', optional: true };
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, LINKED]));
+      let finish = (_: Artifact) => {};
+      vi.mocked(setArtifactFileLeftOut).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      renderDialog();
+
+      await screen.findByText('other.html');
+      await waitFor(() => expect(publishButton()).toBeEnabled());
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Include other.html' }));
+
+      // Already says what was asked, and a publish now could carry the old list.
+      expect(screen.getByRole('checkbox', { name: 'Include other.html' })).not.toBeChecked();
+      expect(publishButton()).toBeDisabled();
+
+      await act(async () => { finish(artifact()); });
+    });
+
+    it('tells a keyboard or a pointer the whole path of a row and why it goes along', async () => {
+      mockStatus.mockResolvedValue(status([ENTRY_ROW, { ...CHART_ROW, reason: 'link', optional: true }]));
+      renderDialog();
+      await screen.findByText('rev.png');
+      const list = filesList(2);
+      const row = within(list).getByText('rev.png').closest('li')!;
+      expect(within(row).getByText('linked by page')).toBeInTheDocument();
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+      await userEvent.tab();
+      row.focus();
+
+      const tip = await screen.findByRole('tooltip');
+      expect(tip).toHaveTextContent(CHART_ROW.path);
+      expect(tip).toHaveTextContent('The page links to it');
     });
 
     it('shows the link, Private, and the files a publish would carry with each reason', async () => {
@@ -193,6 +399,9 @@ describe('PublishDialog', () => {
         files: [ENTRY, STYLE_ROW.path],
         label: 'First cut',
         keep_updated: true,
+        loaded: [],
+        earlier: [],
+        page_sha256: 'c'.repeat(64),
       });
       expect(await screen.findByText('Published v1')).toBeInTheDocument();
       expect(updateButton()).toBeInTheDocument();
@@ -209,7 +418,7 @@ describe('PublishDialog', () => {
       await user.type(screen.getByRole('textbox'), '   ');
       await user.click(publishButton());
 
-      expect(mockPublish).toHaveBeenCalledWith(ID, { files: [ENTRY, STYLE_ROW.path], label: null, keep_updated: false });
+      expect(mockPublish).toHaveBeenCalledWith(ID, { files: [ENTRY, STYLE_ROW.path], label: null, keep_updated: false, loaded: [], earlier: [], page_sha256: 'c'.repeat(64) });
     });
   });
 
@@ -274,6 +483,9 @@ describe('PublishDialog', () => {
       files: serverList.map((f) => f.path),
       label: null,
       keep_updated: false,
+      loaded: [],
+      earlier: [],
+      page_sha256: 'c'.repeat(64),
     });
     expect(await screen.findByText('Published v1')).toBeInTheDocument();
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
@@ -347,8 +559,8 @@ describe('PublishDialog', () => {
       expect(screen.getByText('Changed since v1. Visitors see v1 until you update.')).toBeInTheDocument();
       expect(screen.getByText('Updating shares 3 files')).toBeInTheDocument();
       const rows = within(filesList(3)).getAllByRole('listitem');
-      expect(within(rows[2]).getByText('rev.png')).toBeInTheDocument();
-      expect(within(rows[2]).getByText('not shared yet')).toBeInTheDocument();
+      const added = rows.find((row) => within(row).queryByText('rev.png'))!;
+      expect(within(added).getByText('not shared yet')).toBeInTheDocument();
       // Only the added row carries the mark; the others keep their reason.
       expect(screen.getAllByText('not shared yet')).toHaveLength(1);
       expect(within(rows[0]).getByText('this file')).toBeInTheDocument();
@@ -359,6 +571,9 @@ describe('PublishDialog', () => {
       expect(mockPublish).toHaveBeenCalledWith(ID, {
         files: [ENTRY, STYLE_ROW.path, CHART_ROW.path],
         label: null,
+        loaded: [],
+        earlier: [],
+        page_sha256: 'c'.repeat(64),
       });
       expect(mockPublish.mock.calls[0][1]).not.toHaveProperty('keep_updated');
     });
@@ -405,6 +620,68 @@ describe('PublishDialog', () => {
 
       expect(await screen.findByText('This file is no longer in the workspace.')).toHaveAttribute('role', 'status');
       expect(toast).not.toHaveBeenCalled();
+    });
+
+    it('reads the list with what the page reported, and sends that same report', async () => {
+      const frame = {};
+      notePageOpen(WS, ENTRY, frame);
+      notePageLoads(WS, ENTRY, ['data/built-in-code.csv'], frame);
+      serve(artifact());
+      mockStatus.mockResolvedValue(status([ENTRY_ROW]));
+      mockPublish.mockImplementation(answers(artifact({ shared: true, latest_seq: 1 })));
+      const user = userEvent.setup();
+      renderDialog();
+
+      await screen.findByText('report.html');
+      await waitFor(() => expect(publishButton()).toBeEnabled());
+      await user.click(publishButton());
+
+      expect(mockStatus).toHaveBeenCalledWith(ID, { now: ['data/built-in-code.csv'], earlier: [] });
+      expect(mockPublish.mock.calls[0][1].loaded).toEqual(['data/built-in-code.csv']);
+      // With the page's code it was read under, which the server checks.
+      expect(mockPublish.mock.calls[0][1].page_sha256).toBe('c'.repeat(64));
+    });
+
+    it('reads the list before the page loads and again after, and only then lets it go out', async () => {
+      serve(artifact());
+      mockStatus.mockResolvedValue(status([ENTRY_ROW]));
+      scout.hold = true;
+      try {
+        renderDialog();
+
+        // The first read names the code the page is about to run.
+        await screen.findByText('report.html');
+        await waitFor(() => expect(scout.settle).not.toBeNull());
+        expect(mockStatus).toHaveBeenCalledTimes(1);
+        expect(publishButton()).toBeDisabled();
+        act(() => scout.settle?.());
+        await waitFor(() => expect(mockStatus).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(publishButton()).toBeEnabled());
+      } finally {
+        scout.hold = false;
+        scout.settle = null;
+      }
+    });
+
+    it('holds Publish when the page could not run, and runs it again on Retry', async () => {
+      serve(artifact());
+      mockStatus.mockResolvedValue(status([ENTRY_ROW]));
+      scout.grantFails = true;
+      try {
+        const user = userEvent.setup();
+        renderDialog();
+
+        // Published from its source alone, a file its code builds would be missing.
+        expect(await screen.findByText("The file can't be read right now. Try again shortly.")).toBeInTheDocument();
+        expect(publishButton()).toBeDisabled();
+
+        scout.grantFails = false;
+        await user.click(screen.getByRole('button', { name: 'Retry' }));
+        await waitFor(() => expect(publishButton()).toBeEnabled());
+        expect(screen.queryByText("The file can't be read right now. Try again shortly.")).not.toBeInTheDocument();
+      } finally {
+        scout.grantFails = false;
+      }
     });
 
     it('any other failure toasts and leaves the file private', async () => {

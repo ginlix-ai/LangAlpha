@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { parsePageMessage, type PageToViewer } from '../pageProtocol';
+import { MAX_DOC_PATH, parsePageMessage, type PageToViewer } from '../pageProtocol';
 
 const RECT = { x: 10, y: 20, width: 30, height: 40 };
 
@@ -29,6 +29,22 @@ describe('parsePageMessage', () => {
     expect(read('page:ready', { path: 'a\u0000b' })?.path).toBeNull();
     expect(read('page:ready', { path: 'x'.repeat(1024) })?.path).toBe('x'.repeat(1024));
     expect(read('page:ready', { path: 'x'.repeat(1025) })?.path).toBeNull();
+  });
+
+  it('reads a link to another file, and none that names no path', () => {
+    expect(read('page:open-file', { path: 'other/report.html', fragment: 'q3' }))
+      .toEqual({ type: 'page:open-file', path: 'other/report.html', fragment: 'q3' });
+    expect(read('page:open-file', { path: '', fragment: '' })).toBeNull();
+    expect(read('page:open-file', { path: 'a\u0000b', fragment: '' })).toBeNull();
+    expect(read('page:open-file', { path: 'x'.repeat(1025), fragment: '' })).toBeNull();
+    expect(read('page:open-file', { path: 'a.html' })).toBeNull();
+  });
+
+  it('reads the address a frame\'s report names, and nothing of its list', () => {
+    const doc = 'https://app.example.com/api/v1/wsfiles/g/t/r/next.html';
+    expect(read('page:frame-loads', { urls: [doc], doc })).toEqual({ type: 'page:frame-loads', doc });
+    expect(read('page:frame-loads', { urls: [doc] })).toBeNull();
+    expect(read('page:frame-loads', { doc: 'x'.repeat(4097) })).toBeNull();
   });
 });
 
@@ -205,6 +221,27 @@ describe('page:positions', () => {
 
   it('refuses a message without a list', () => {
     expect(read('page:positions', { items: { a: RECT } })).toBeNull();
+  });
+});
+
+describe('page:loads', () => {
+  const path = 'reports/index.html';
+
+  it('keeps the names it can use and loses only the odd ones', () => {
+    const bad = ['x'.repeat(MAX_DOC_PATH + 1), 'a\u0000b', '', 7];
+    expect(read('page:loads', { path, paths: ['data/a.csv', ...bad] })?.paths).toEqual(['data/a.csv']);
+  });
+
+  it('holds no more than the server takes', () => {
+    const paths = Array.from({ length: 501 }, (_, i) => `f${i}`);
+    expect(read('page:loads', { path, paths })?.paths).toHaveLength(500);
+  });
+
+  // There is nowhere to file a report that does not say which file it is for.
+  it('takes no report without the file it is for', () => {
+    expect(read('page:loads', { paths: ['data/a.csv'] })).toBeNull();
+    expect(read('page:loads', { path: 'a\u0000b', paths: ['data/a.csv'] })).toBeNull();
+    expect(read('page:loads', { path: '/reports/index.html', paths: [] })?.path).toBe(path);
   });
 });
 

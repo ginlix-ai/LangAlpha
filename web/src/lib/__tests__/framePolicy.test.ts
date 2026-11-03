@@ -3,14 +3,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { withFramePolicy } from '../../../scripts/vite-plugins/framePolicy';
-import { EMBED_FRAME_ORIGINS, HANDOFF_SCHEMES, appFrameSrc, hostedFrameSrc } from '../framePolicy';
+import { EMBED_FRAME_ORIGINS, FRAME_SCHEMES, appFrameSrc, hostedFrameSrc } from '../framePolicy';
 
-// The policy is the one thing standing between a tampered report and a
-// self-navigation that carries what it read to another site. A bare scheme
-// (`https:`), a lone `*` or a scheme-less wildcard would let a frame go
-// anywhere while every frame in the app still loads, so nothing else would
-// notice it. `mailto:` and `tel:` are the only schemes allowed, since they
-// load no document.
+// The policy is the one thing keeping a report from replacing itself with another
+// site inside the app's frame. A bare scheme (`https:`), a lone `*` or a
+// scheme-less wildcard would let a frame go anywhere while every frame in the app
+// still loads, so nothing else would notice it. The only schemes allowed load no
+// document (`mailto:`, `tel:`) or hold only the page's own bytes (`blob:`, `data:`).
 function sources(policy: string): string[] {
   const [directive, ...rest] = policy.split(' ');
   expect(directive).toBe('frame-src');
@@ -19,7 +18,7 @@ function sources(policy: string): string[] {
 
 function expectNoWildcardScheme(policy: string): void {
   for (const source of sources(policy)) {
-    if (source === "'self'" || (HANDOFF_SCHEMES as readonly string[]).includes(source)) continue;
+    if (source === "'self'" || (FRAME_SCHEMES as readonly string[]).includes(source)) continue;
     expect(source).toMatch(/^https?:\/\/(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*(:(\d+|\*))?$/);
   }
 }
@@ -28,7 +27,7 @@ describe('appFrameSrc', () => {
   it('names the app, the embeds and nothing else when the API is same-origin', () => {
     for (const base of [undefined, '', '/']) {
       const policy = appFrameSrc(base);
-      expect(sources(policy)).toEqual(["'self'", ...EMBED_FRAME_ORIGINS, ...HANDOFF_SCHEMES]);
+      expect(sources(policy)).toEqual(["'self'", ...EMBED_FRAME_ORIGINS, ...FRAME_SCHEMES]);
       expectNoWildcardScheme(policy);
     }
   });
@@ -42,7 +41,7 @@ describe('appFrameSrc', () => {
   it('drops an API base that is not one origin', () => {
     for (const base of ['https:', 'https://*', 'ftp://files.example.com', 'javascript:alert(1)']) {
       const policy = appFrameSrc(base);
-      expect(sources(policy)).toEqual(["'self'", ...EMBED_FRAME_ORIGINS, ...HANDOFF_SCHEMES]);
+      expect(sources(policy)).toEqual(["'self'", ...EMBED_FRAME_ORIGINS, ...FRAME_SCHEMES]);
       expectNoWildcardScheme(policy);
     }
   });
@@ -51,9 +50,9 @@ describe('appFrameSrc', () => {
 describe('hostedFrameSrc', () => {
   it('names exactly the framed origin, port included', () => {
     expect(hostedFrameSrc('https://3000-abc.preview.example.com/g/x/?token=t')).toBe(
-      'frame-src https://3000-abc.preview.example.com mailto: tel:',
+      'frame-src https://3000-abc.preview.example.com mailto: tel: blob: data:',
     );
-    expect(hostedFrameSrc('http://localhost:54321/app')).toBe('frame-src http://localhost:54321 mailto: tel:');
+    expect(hostedFrameSrc('http://localhost:54321/app')).toBe('frame-src http://localhost:54321 mailto: tel: blob: data:');
   });
 
   it('refuses anything that is not an http(s) origin', () => {
