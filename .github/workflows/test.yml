@@ -179,6 +179,10 @@ jobs:
       - run: pnpm run build
       - run: node scripts/check-package.mjs
 
+  # web/ is a package that installs, type-checks, lints, tests and builds on
+  # its own, so this job runs from an export of that directory alone, with the
+  # rest of the repo out of reach: a config, source or test that resolves a
+  # path outside web/ fails here rather than in a build that copies only web/.
   frontend-unit:
     runs-on: ubuntu-latest
     defaults:
@@ -186,6 +190,10 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: checkout
+      - run: git -C checkout archive HEAD web | tar -xf -
+        working-directory: .
       - uses: actions/setup-node@v4
         with:
           node-version: 24
