@@ -21,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from ptc_agent.agent.claude_code.launcher import Credential
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.app import claude_code as route
-from src.server.database.claude_code_hosted import WORKER_TURN
+from src.server.database.claude_code_hosted import WORKER_TURN, Custody
 from src.server.services.claude_code import hosted as hosted_module
 from src.server.services.claude_code.launchers import HostedCredential
 from src.server.services.claude_code.saved import token_hash
@@ -45,24 +45,25 @@ SAVED = {"api_key": KEY, "base_url": None}
 
 
 @contextmanager
-def platform(*, switch=True, mode="local", key=True, live=0, computer=CLOUD):
-    """A platform deployment with the runtime on, the hosted switch as given,
-    and one user's choice, saved key and running turns."""
+def platform(*, switch=True, stored=False, mode="local", blocked=False, key=True, live=0, computer=CLOUD):
+    """A platform deployment with the runtime on, the API-key switch
+    (`switch`) and the stored-token one as given, and one user's choice,
+    saved key and running turns."""
     saved = key if isinstance(key, dict) else ({"base_url": None} if key else None)
     reads = SimpleNamespace(
-        mode=AsyncMock(return_value=mode), key=AsyncMock(return_value=saved), live=AsyncMock(return_value=live),
+        mode=AsyncMock(return_value=Custody(mode, blocked)), key=AsyncMock(return_value=saved),
+        live=AsyncMock(return_value=live),
     )
-    config = SimpleNamespace(hosted_api_key=switch, hosted_turns_per_user=3, worker_cli_slots=8)
+    config = SimpleNamespace(hosted_api_key=switch, stored_custody=stored, hosted_turns_per_user=3, worker_cli_slots=8)
     with ExitStack() as stack:
         for target, value in [
             ("src.config.settings.HOST_MODE", "platform"),
             (f"{HOSTED}.rows_available", lambda: True),
             (f"{HOSTED}.backend_available", lambda: False),
             (f"{HOSTED}.get_claude_code_config", lambda: config),
-            (f"{HOSTED}.get_custody_mode", reads.mode),
+            (f"{HOSTED}.get_custody", reads.mode),
             (f"{HOSTED}.saved_key", reads.key),
             (f"{SERVICE}.rows_available", lambda: True),
-            (f"{SERVICE}.backend_available", lambda: False),
             (f"{SERVICE}.get_claude_code_config", lambda: config),
             (f"{SERVICE}.live_worker_turns", reads.live),
             ("src.server.database.computer.get_computer_for_workspace", AsyncMock(return_value=computer)),
@@ -147,9 +148,9 @@ async def test_a_key_set_to_another_endpoint_is_refused_since_the_worker_sends_i
 async def test_admission_hands_on_what_the_turn_runs_on():
     config = SimpleNamespace(feature_enabled=lambda _: True)
     with platform(mode="api_key"):
-        assert await require_runnable(config, CODE, "analyst", user_id="user-1", workspace_id="ws-1") == "api_key"
+        assert await require_runnable(config, CODE, "analyst", user_id="user-1", workspace_id="ws-1") == ("api_key", None)
     with platform(computer=OWN):
-        assert await require_runnable(config, CODE, "analyst", user_id="user-1", workspace_id="ws-1") is None
+        assert await require_runnable(config, CODE, "analyst", user_id="user-1", workspace_id="ws-1") == (None, None)
 
 
 @pytest.mark.asyncio
@@ -258,8 +259,9 @@ async def test_a_refused_setup_token_is_still_flagged_and_ends_the_turn_saying_s
     [("platform", "api_key", WORKER_TURN), ("platform", None, {}), ("oss", "saved_token", {})],
 )
 def test_only_a_turn_admitted_on_a_cloud_computer_on_the_platform_is_counted(mode, hosted, stamp):
+    config = SimpleNamespace(claude_code_hosted=hosted, claude_code_saved=None)
     with patch("src.config.settings.HOST_MODE", mode):
-        assert run_stamp(hosted) == stamp
+        assert run_stamp(config) == stamp
 
 
 # -- Settings --
@@ -286,19 +288,23 @@ async def test_the_choice_is_not_offered_with_the_switch_off(client):
 
 @pytest.mark.asyncio
 async def test_settings_reads_and_saves_the_choice(client):
-    saved = AsyncMock()
+    saved = AsyncMock(return_value=None)
     with (
         platform(mode="local", key=False),
         patch("src.server.services.claude_code.flow.rows_on", AsyncMock(return_value=True)),
-        patch(f"{HOSTED}.set_custody_mode", saved),
+        patch(f"{HOSTED}.write_custody", saved),
+        patch(f"{HOSTED}.live_stored_turns", AsyncMock(return_value=[])),
     ):
         got = await client.get("/api/v1/claude-code/custody")
         put = await client.put("/api/v1/claude-code/custody", json={"mode": "api_key"})
         stored = await client.put("/api/v1/claude-code/custody", json={"mode": "stored"})
-    assert got.json() == {"mode": "local", "api_key_saved": False, "runs_on": None, "refusal": "hosted_off"}
+    assert got.json() == {
+        "mode": "local", "api_key_saved": False, "offered": ["api_key"], "blocked": False, "runs_on": None,
+        "refusal": "hosted_off", "disclosure": "2026-11-v1",
+    }
     assert put.status_code == 200
-    saved.assert_awaited_once_with("test-user-123", "api_key")
-    assert stored.status_code == 422, "storing a setup token is not a choice this build offers"
+    saved.assert_awaited_once_with("test-user-123", "api_key", block_reason=None)
+    assert stored.status_code == 409, "storing a setup token is not offered with its switch off"
 
 
 # -- Automations --

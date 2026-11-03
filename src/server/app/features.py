@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from src.server.services.features import (
     FeatureNotOverridableError,
+    FeatureOffFailed,
     FeatureState,
     UnknownFeatureError,
     list_user_features,
@@ -46,5 +47,10 @@ async def put_feature_override(
         raise HTTPException(
             status_code=403,
             detail=f"Feature gate does not accept user overrides: {key}",
+        )
+    except FeatureOffFailed:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not turn off feature: {key}",
         )
     return FeatureListResponse(features=features)

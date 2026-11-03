@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel
 
-from src.llms.claude_code import FEATURE, backend_available, is_token_text, rows_available
+from src.llms.claude_code import FEATURE, is_token_text, rows_available
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn, exchange_failure
 from src.server.models.claude_code import CodeBody, TokenBody
 from src.server.services import claude_oauth
@@ -99,8 +99,10 @@ async def rows_on(user_id: str) -> bool:
 
 
 async def backend_on(user_id: str) -> bool:
-    """Whether they are on and run on the backend's own CLI, on the saved token."""
-    return backend_available() and await user_feature_enabled(user_id, FEATURE)
+    """Whether they are on and the saved token signs in their turns (``hosted.saved_token_runs``)."""
+    from .hosted import saved_token_runs
+
+    return await saved_token_runs(user_id) and await user_feature_enabled(user_id, FEATURE)
 
 
 def require(on: bool, why: str = "Claude Code is not on for your account.") -> None:
@@ -110,6 +112,14 @@ def require(on: bool, why: str = "Claude Code is not on for your account.") -> N
 
 def busy() -> OAuthRefusal:
     return OAuthRefusal(409, "check_in_progress", "A token is already being checked. Try again shortly.", retryable=True)
+
+
+def turns_running() -> OAuthRefusal:
+    """The stored token is deleted, but a turn on it did not stop; asking again stops the turns again."""
+    return OAuthRefusal(
+        500, "turns_running", "Your setup token was deleted, but a Claude Code turn using it couldn't be stopped.",
+        retryable=True,
+    )
 
 
 @asynccontextmanager

@@ -42,7 +42,7 @@ from src.server.models.automation import (
 from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_settlement import Outcome, settle
 from src.server.services.llm import user_models
-from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, require_claude_code_continues
+from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, relayed_token, require_claude_code_continues
 from src.server.utils.api import (
     raise_not_found,
     require_thread_owner,
@@ -195,18 +195,39 @@ async def _check_claude_code_continues(name: str | None, pin: str | None) -> Non
         raise AutomationRefusal(exc.detail["message"], field="llm_model") from None
 
 
-async def _check_claude_code_hosted(user_id: str, name: str | None, workspace_id: str | None, conn=None) -> None:
+async def _check_claude_code_hosted(
+    user_id: str, name: str | None, workspace_id: str | None, conn=None, pref: dict[str, Any] | None = None,
+) -> None:
     """Refuse a Claude Code row in a workspace on a cloud computer where the
     user's choice for cloud computers refuses its turns, placed as admission
-    places them (``placement``), so every firing would fail; nothing is read
-    where no choice is offered. Read on ``conn``, the caller's."""
+    places them (``placement``), or runs them on the setup token they stored,
+    which runs no automation (``require_attended``), so every firing would fail;
+    on an own computer, where admission would relay that token to it by its
+    last answer. A row naming no model is judged on the default its firing
+    runs (``select_model``): the user's saved one in ``pref``, else the
+    deployment's; Home's Chief of Staff runs no Claude Code default. Nothing
+    is read where no choice is offered. Read on ``conn``, the caller's."""
     from src.server.services.claude_code.hosted import choice_offered, placement
+    from src.server.services.claude_code.machine import read_answer
+    from src.server.services.llm.config import deployment_llm, saved_default_model
 
-    if not (name and workspace_id and is_claude_code_model(name) and choice_offered()):
+    if not (workspace_id and choice_offered()):
         return
-    state = (await placement(user_id, workspace_id, conn=conn)).hosted
-    if state is not None and state.refusal is not None:
-        raise AutomationRefusal(CLAUDE_CODE_OFF[state.refusal], field="llm_model")
+    if not name and not is_home_id(user_id, workspace_id):
+        if pref is None:
+            pref = await user_models.get_model_preference(user_id)
+        name = saved_default_model(pref, "primary") or getattr(deployment_llm(), "name", None)
+    if not (name and is_claude_code_model(name)):
+        return
+    where = await placement(user_id, workspace_id, conn=conn)
+    if where.own_computer is not None:
+        answer = await read_answer(str(where.own_computer["computer_id"]))
+        if await relayed_token(user_id, answer, conn=conn) == "stored_token":
+            raise AutomationRefusal(CLAUDE_CODE_OFF["stored_unattended"], field="llm_model")
+        return
+    state = where.hosted
+    if state is not None and (state.refusal or state.runs_on == "stored_token"):
+        raise AutomationRefusal(CLAUDE_CODE_OFF[state.refusal or "stored_unattended"], field="llm_model")
 
 
 def _check_home_model(user_id: str, name: str | None, workspace_id: str | None) -> None:
@@ -368,9 +389,9 @@ async def create_automation(
         await _require_pin_in(
             user_id, str(data.conversation_thread_id), workspace_id, conn
         )
+    _check_home_model(user_id, data.llm_model, workspace_id)
+    await _check_claude_code_hosted(user_id, data.llm_model, workspace_id, conn, model_pref)
     if data.llm_model:
-        _check_home_model(user_id, data.llm_model, workspace_id)
-        await _check_claude_code_hosted(user_id, data.llm_model, workspace_id, conn)
         await _check_model(user_id, data.llm_model, model_pref)
         if data.thread_strategy == "continue" and data.conversation_thread_id:
             await _check_claude_code_continues(data.llm_model, str(data.conversation_thread_id))
@@ -510,7 +531,7 @@ async def update_automation(
     runs_on = update_kwargs.get("llm_model", current.get("llm_model"))
     if runs_on != current.get("llm_model") or moved_to != stored_in:
         _check_home_model(user_id, runs_on, moved_to)
-        await _check_claude_code_hosted(user_id, runs_on, moved_to, conn)
+        await _check_claude_code_hosted(user_id, runs_on, moved_to, conn, model_pref)
     pinned = update_kwargs.get("conversation_thread_id", stored_pin)
     strategy = update.thread_strategy or current.get("thread_strategy")
     if strategy == "continue" and (runs_on, pinned, strategy) != (

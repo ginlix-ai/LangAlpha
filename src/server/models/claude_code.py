@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 #: Where the user's Claude Code models stand on the backend. ``unverified``: a
 #: token is saved but the check could not reach Anthropic; its turns run, as
@@ -60,22 +60,36 @@ class ClaudeCodeComputers(BaseModel):
     computers: list[ClaudeCodeComputer]
 
 
+#: The credentials a user may choose for their turns on a cloud computer.
+HostedMode = Literal["api_key", "stored"]
+
+
 class ClaudeCodeCustody(BaseModel):
     """How the user's Claude Code turns on a cloud computer run: ``local``
     runs none there (only on their own computers), ``api_key`` runs them on
     their Anthropic API key, the one saved under Model access, which
-    ``api_key_saved`` says is there. ``runs_on`` and ``refusal`` are the verdict
-    admission gives such a turn: the credential it runs on, else the
-    ``CLAUDE_CODE_OFF`` reason it is refused for."""
+    ``api_key_saved`` says is there, and ``stored`` on the setup token they
+    let the server store. ``offered`` is what the server lets them choose
+    now: a mode chosen before its switch went off is kept, and paused.
+    ``blocked``: an operator turned storing a token off for this user.
+    ``runs_on`` and ``refusal`` are the verdict admission gives a turn there:
+    the credential it runs on, else the ``CLAUDE_CODE_OFF`` reason it is
+    refused for."""
 
-    mode: Literal["local", "api_key"]
+    mode: Literal["local", "api_key", "stored"]
     api_key_saved: bool
-    runs_on: Literal["api_key"] | None = None
+    offered: list[HostedMode]
+    blocked: bool = False
+    runs_on: Literal["api_key", "stored_token"] | None = None
     refusal: str | None = None
+    #: The version of the consent text storing a token needs accepted now.
+    disclosure: str | None = None
 
 
 class CustodyBody(BaseModel):
-    mode: Literal["local", "api_key"]
+    mode: Literal["local", "api_key", "stored"]
+    #: The version of the consent text accepted, which storing a token needs.
+    disclosure: str | None = Field(default=None, max_length=32)
 
 
 class TokenBody(BaseModel):

@@ -57,6 +57,11 @@ class FeatureNotOverridableError(PermissionError):
     """The feature's gate does not accept per-user overrides."""
 
 
+class FeatureOffFailed(RuntimeError):
+    """What has to end before the feature is off for the user did not, so
+    the override was not saved."""
+
+
 async def _get_overrides(user_id: str) -> dict[str, Any]:
     prefs = await get_user_preferences(user_id)
     other = (prefs or {}).get("other_preference") or {}
@@ -240,6 +245,20 @@ async def set_feature_override(
     else:
         overrides[key] = enabled
 
+    before = _FEATURE_BEFORE_OFF_HOOKS.get(key, ())
+    if before and not (await effective_flags_for_user(user_id, overrides)).get(key, False):
+        try:
+            for hook in before:
+                await hook(user_id)
+        except Exception as exc:
+            logger.warning(
+                "[Features] off hook for %s failed before save user_id=%s",
+                key,
+                user_id,
+                exc_info=True,
+            )
+            raise FeatureOffFailed(key) from exc
+
     await upsert_user_preferences(
         user_id, other_preference={"feature_overrides": overrides or None}
     )
@@ -255,12 +274,20 @@ async def set_feature_override(
 # setting registers here at startup, as an outbox executor registers its
 # hook type.
 _FEATURE_OFF_HOOKS: dict[str, list[Callable[[str], Awaitable[None]]]] = {}
+# Those whose work nothing later could tell apart from work the setting
+# allows, so the override is saved only once they finish.
+_FEATURE_BEFORE_OFF_HOOKS: dict[str, list[Callable[[str], Awaitable[None]]]] = {}
 
 
-def register_feature_off_hook(key: str, hook: Callable[[str], Awaitable[None]]) -> None:
-    """Run ``hook(user_id)`` each time a user's override leaves ``key`` off.
-    Idempotent for the same function."""
-    hooks = _FEATURE_OFF_HOOKS.setdefault(key, [])
+def register_feature_off_hook(
+    key: str, hook: Callable[[str], Awaitable[None]], *, before_save: bool = False
+) -> None:
+    """Run ``hook(user_id)`` each time a user's override leaves ``key`` off:
+    once it is saved, best effort, or with ``before_save`` before it is,
+    where a failure saves no override (``FeatureOffFailed``). Idempotent for
+    the same function."""
+    registry = _FEATURE_BEFORE_OFF_HOOKS if before_save else _FEATURE_OFF_HOOKS
+    hooks = registry.setdefault(key, [])
     if hook not in hooks:
         hooks.append(hook)
 

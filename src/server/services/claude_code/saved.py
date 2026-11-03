@@ -1,8 +1,9 @@
 """The setup token a user saves in Settings.
 
-The backend's own CLI signs in with it, only on a self-hosted server
-(``backend_available``), which also relays it to a computer of the user's
-own that has no token of its own. It is checked before it is saved, and
+The backend's own CLI signs in with it where it signs in the user's turns
+(``hosted.saved_token_runs``): on a self-hosted server, and on the platform
+while the user chose to store it there. It is also relayed to a computer of
+the user's own that has no token of its own. It is checked before it is saved, and
 saved encrypted in the OAuth token store, never sent back. What the check
 found is kept by the token's hash, never the token.
 """
@@ -16,7 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
-from src.llms.claude_code import backend_available
+from .hosted import TurnsNotStopped, saved_token_runs, stop_stored_turns
 from ptc_agent.core.claude_code_managed import local_managed
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn
 from src.server.database.oauth_tokens import (
@@ -33,7 +34,7 @@ from src.server.models.claude_code import ClaudeCodeStatus, State
 from src.utils.cache.redis_cache import get_cache_client
 
 from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, Held, in_background, keep_check, read_check, run_check
-from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, rows_on
+from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, rows_on, turns_running
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.launcher import LocalLauncher
@@ -67,6 +68,8 @@ async def stored_token(user_id: str) -> str | None:
     return row["access_token"] if row else None
 
 
+#: Why a token checked as the user stopped storing theirs is not saved.
+STORE_ENDED = "You stopped storing your setup token while this one was checked, so it wasn't saved."
 #: What the token store's flag records when Claude refused the saved token.
 REFUSED_CODE = "token_refused"
 
@@ -196,7 +199,7 @@ async def status(user_id: str) -> ClaudeCodeStatus:
     Settings and the picker. Where an organization's policy is installed on
     the backend's machine, none can, whatever the token, which is not checked."""
     enabled = await rows_on(user_id)
-    if not (enabled and backend_available()):
+    if not (enabled and await saved_token_runs(user_id)):
         saved = await get_oauth_connection(user_id, CLAUDE_CODE_PROVIDER) is not None
         return ClaudeCodeStatus(state="off", saved=saved, enabled=enabled)
     if await local_managed():
@@ -240,10 +243,13 @@ class SavedHome:
         # Before the row, so a read that finds the row finds its answer too.
         await keep_check(token_check_key(token), "works")
         # Read under the writer lock a removal also takes, so a save whose
-        # hold lapsed never undoes a removal made after.
+        # hold lapsed never undoes a removal made after, nor one that ends the
+        # user's choice to store it, made while the token was checked.
         async with connection_change(self.user_id, CLAUDE_CODE_PROVIDER) as conn:
             if not await held():
                 raise busy()
+            if not await saved_token_runs(self.user_id, conn=conn):
+                raise OAuthRefusal(409, "unavailable", STORE_ENDED, retryable=False)
             await upsert_oauth_tokens(
                 self.user_id, CLAUDE_CODE_PROVIDER, access_token=token, refresh_token="", account_id=token_uuid,
                 email=email, expires_at=expires_at, conn=conn,
@@ -268,3 +274,7 @@ class SavedHome:
             await delete_oauth_tokens(self.user_id, CLAUDE_CODE_PROVIDER, conn=conn)
         if previous is not None:
             await get_cache_client().delete(token_check_key(previous))
+        try:
+            await stop_stored_turns(self.user_id)
+        except TurnsNotStopped:
+            raise turns_running() from None

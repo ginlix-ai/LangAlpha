@@ -357,6 +357,10 @@ class ClaudeCodeConfig(BaseModel):
         default=False,
         description="Run Claude Code turns on cloud computers on the user's own Anthropic API key",
     )
+    stored_custody: bool = Field(
+        default=False,
+        description="Run Claude Code turns on cloud computers on a setup token the user lets the server store",
+    )
     worker_cli_slots: int = Field(
         default=8, ge=1, description="Claude Code CLIs one worker runs at once for cloud computers"
     )

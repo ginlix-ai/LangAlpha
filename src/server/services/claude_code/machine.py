@@ -3,9 +3,10 @@ machine, and what the backend knows of it.
 
 An own computer (the SSH provider's, a Mac reached through Remote control
 included) runs the CLI itself, signed in with the token LangAlpha keeps on
-that machine. With none there, a self-hosted server relays the token the
-user saved in Settings (``backend_available``), handed to the CLI by fd and
-never written to the machine; a hosted server has nothing to relay.
+that machine. With none there, the token the user saved in Settings is
+relayed where it signs in their turns (``hosted.saved_token_runs``): on a
+self-hosted server, and on the platform while the user stores it there. It
+is handed to the CLI by fd and never written to the machine.
 
 A token passes through the backend once, from a sign-in or a paste: it is
 staged on the machine over its SSH connection's stdin, beside the computer's
@@ -34,7 +35,7 @@ from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Li
 from ptc_agent.core.sandbox.providers.ssh import MUSL_UNSUPPORTED
 from ptc_agent.core.sandbox.providers.ssh_errors import connect_failure
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
-from src.llms.claude_code import ClaudeTurnFailed, backend_available
+from src.llms.claude_code import ClaudeTurnFailed
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn
 from src.server.database.computer import get_computer, get_computer_roster
 from src.server.models.claude_code import ClaudeCodeComputer, ClaudeCodeComputers, ComputerState, Source, State
@@ -44,6 +45,7 @@ from src.utils.cache.redis_cache import get_cache_client
 
 from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, SHORT_TTL_S, Held, in_background, run_check, ttl
 from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, changing, rows_on
+from .hosted import saved_token_runs
 from .saved import refuse, stored_row, token_hash, token_state, usable
 
 if TYPE_CHECKING:
@@ -254,7 +256,7 @@ class ComputerToken:
         return last is None or last.checked_at <= self.built_at, last
 
     async def relay(self) -> str | None:
-        row = await stored_row(self.user_id)
+        row = await stored_row(self.user_id) if await saved_token_runs(self.user_id) else None
         if row is None or not await usable(row):
             self._relayed = None
             return None
@@ -405,7 +407,7 @@ def _entry(
 
 async def _relayed(user_id: str) -> dict | None:
     """The saved token's row, for a machine with none of its own that would sign in with it, where it is relayed."""
-    return await stored_row(user_id) if backend_available() else None
+    return await stored_row(user_id) if await saved_token_runs(user_id) else None
 
 
 async def _from_answer(

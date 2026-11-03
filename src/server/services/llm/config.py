@@ -577,7 +577,7 @@ async def resolve_llm_config(
         await load_user_context(config, user_id, workspace_id, model_pref)
         selection = select_model(config, model_pref, slot, request_model)
         if is_claude_code_model(selection.effective_model):
-            config.claude_code_hosted = await require_runnable(
+            config.claude_code_hosted, config.claude_code_saved = await require_runnable(
                 config, selection.effective_model, role, user_id=user_id, workspace_id=workspace_id,
                 thread_id=thread_id,
             )

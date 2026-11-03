@@ -18,7 +18,7 @@ from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 from ptc_agent.core.sandbox.providers._ssh_transport import Link, Machine
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from src.config.settings import get_claude_code_config
-from src.llms.claude_code import ClaudeTurnFailed, backend_available
+from src.llms.claude_code import ClaudeTurnFailed
 from src.server.database.api_keys import get_key_with_base_url
 
 from .hosted import ANTHROPIC, hosted
@@ -53,11 +53,10 @@ class HostedCredential:
     rule admission asked (``hosted``), so a run whose user changed their
     choice or removed their key since is refused as admission would refuse
     it, and so is one whose credential is no longer the one admission let it
-    run on (``admitted``), which its run's row is stamped with. A setup token
-    Anthropic refuses is recorded as refused (``saved.refuse``) and ends the
-    turn saying so, as admission will from then on; an API key it refuses
-    ends the turn saying so and is never flagged, since the key's own status
-    lives in Model access."""
+    run on (``admitted``), which its run's row is stamped with. A setup token Anthropic refuses is recorded as refused
+    (``saved.refuse``) and ends the turn saying so, as admission will from
+    then on; an API key it refuses ends the turn saying so and is
+    never flagged, since the key's own status lives in Model access."""
 
     def __init__(self, user_id: str, admitted: str | None) -> None:
         self.user_id = user_id
@@ -72,7 +71,7 @@ class HostedCredential:
             raise ClaudeTurnFailed(state.refusal, "the user's choice for cloud computers changed since admission")
         if state.runs_on != self.admitted:
             raise ClaudeTurnFailed("choice_changed", "the credential the turn runs on changed since admission")
-        if state.runs_on == "saved_token":
+        if state.runs_on in ("saved_token", "stored_token"):
             self._read = await stored_row(self.user_id)
             return Credential(self._read["access_token"]) if self._read else None
         key = await get_key_with_base_url(self.user_id, ANTHROPIC)
@@ -90,17 +89,19 @@ class HostedCredential:
         raise ClaudeTurnFailed("token_refused", "Claude refused the saved setup token")
 
 
-def turn_launcher(sandbox: PTCSandbox, *, computer_id: str | None, user_id: str, admitted: str | None) -> Launcher:
+def turn_launcher(
+    sandbox: PTCSandbox, *, computer_id: str | None, user_id: str, admitted: str | None, saved: str | None,
+) -> Launcher:
     """The launcher of a turn in ``sandbox``, on the computer ``computer_id``.
 
     On a computer of the user's own the CLI runs on its machine, signed in
-    with the computer's token kept there, else the saved one where it is
-    relayed, and the launcher tells the backend which it used, whether
+    with the computer's token kept there, else the saved one where admission
+    let the turn be relayed it (``saved``), so no turn signs in with a token
+    its run's row is not stamped for; the launcher tells the backend which it used, whether
     Claude refused it, and whether an organization's policy is installed
     there. Anywhere else it runs in this worker, on the credential the
-    user's turns on a cloud computer run on (``HostedCredential``), only
-    where admission let it run on that one (``admitted``), in one of the
-    worker's slots on the platform.
+    user's turns on a cloud computer run on (``HostedCredential``), in one
+    of the worker's slots on the platform.
     """
     if not isinstance(sandbox.provider, SSHProvider):
         return LocalLauncher(saved=HostedCredential(user_id, admitted), slots=worker_slots())
@@ -114,6 +115,6 @@ def turn_launcher(sandbox: PTCSandbox, *, computer_id: str | None, user_id: str,
 
     return SSHLauncher(
         Machine(link, lambda: sandbox.working_dir), identity=user_id, token_file=token_name(computer_id),
-        relay=token.relay if backend_available() else None, on_announced=token.announced, on_refused=token.refused,
+        relay=token.relay if saved else None, on_announced=token.announced, on_refused=token.refused,
         on_blocked=token.blocked, on_no_perl=token.no_perl, on_unsupported=token.unsupported,
     )

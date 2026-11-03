@@ -157,11 +157,12 @@ class AgentInputs:
             "claude_code_launcher": self.claude_code_launcher,
         }
 
-    def claude_code_launcher(self, sandbox: PTCSandbox, admitted: str | None) -> Launcher:
+    def claude_code_launcher(self, sandbox: PTCSandbox, admitted: str | None, saved: str | None) -> Launcher:
         """Where a Claude Code turn's CLI runs, on the token it signs in with:
         on a cloud computer the credential admission let it run on
-        (``admitted``). Imported here, never at the top: the SDK loads only
-        for such a turn."""
+        (``admitted``), and the setup token the user saved where admission let
+        it sign in with that (``saved``). Imported here, never at the top: the
+        SDK loads only for such a turn."""
         from src.server.services.claude_code.launchers import turn_launcher
 
-        return turn_launcher(sandbox, computer_id=self.computer_id, user_id=self.user_id, admitted=admitted)
+        return turn_launcher(sandbox, computer_id=self.computer_id, user_id=self.user_id, admitted=admitted, saved=saved)

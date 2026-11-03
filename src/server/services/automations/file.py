@@ -65,6 +65,7 @@ from src.server.models.automation import (
     thread_fields,
 )
 from src.server.services.automations import lifecycle
+from src.server.services.claude_code.hosted import choice_offered
 from src.server.services.llm import user_models
 from src.server.services.price_monitor import watched_market
 from src.server.utils.pg_sanitize import normalize_uuid
@@ -744,7 +745,10 @@ class AutomationFile(DbJsonFile[dict[str, Any] | None, Document, FilePlan]):
             fields=written,
             shown=shown,
             timezone=zone,
-            model_pref=await user_models.get_model_preference(user_id) if _names_model(written, shown) else None,
+            model_pref=(
+                await user_models.get_model_preference(user_id)
+                if _names_model(written, shown) or (not written.get("llm_model") and choice_offered()) else None
+            ),
             home_id=get_home_workspace_id(user_id),
             delivery=delivery,
             delivery_problems=refused,

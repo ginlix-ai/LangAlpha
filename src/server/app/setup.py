@@ -571,6 +571,10 @@ async def lifespan(app: FastAPI):
     wakeup_delivery.register_wakeup_executors()
     # Turning wakeups off ends what the agent set, on every thread.
     register_feature_off_hook("wakeups", wakeups_cancel.setting_off)
+    # Turning Claude Code off deletes a setup token stored for the user.
+    from src.server.services.claude_code.hosted import register_opt_out
+
+    register_opt_out()
     try:
         HookOutboxDrainer.get_instance().start()
         logger.info("HookOutboxDrainer started")
