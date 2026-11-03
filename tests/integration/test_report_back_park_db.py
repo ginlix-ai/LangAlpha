@@ -315,3 +315,210 @@ async def test_a_hold_behind_a_finalize_in_flight_is_released_once_it_commits(
         await asyncio.wait_for(holding, 10)
 
     assert job_id in await _claim()
+
+
+# ---------------------------------------------------------------------------
+# A card still waiting under a send that ended short
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def graph(test_db_pool, thread):
+    """A graph writing the thread's steps, stamped with their run as
+    ``build_graph_config`` stamps them, through the saver the notice reads."""
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from langgraph.graph import START, StateGraph
+    from langgraph.types import interrupt
+
+    from ptc_agent.agent.state import DeltaAgentState
+
+    saver = AsyncPostgresSaver(test_db_pool)
+
+    def reply(state):
+        if state["messages"][-1].content == "card":
+            interrupt({"question": "which ticker?"})
+        return {"messages": [AIMessage(content="reply", id=f"ai-{uuid.uuid4()}")]}
+
+    compiled = (
+        StateGraph(DeltaAgentState)
+        .add_node("reply", reply)
+        .add_edge(START, "reply")
+        .compile(checkpointer=saver)
+    )
+    with patch(
+        "src.server.utils.checkpoint_helpers.get_checkpointer", return_value=saver
+    ):
+        yield compiled
+    await saver.adelete_thread(thread.id)
+
+
+async def _step(graph, thread, run_id: str | None, text: str = "q") -> None:
+    """A turn's steps, stamped with its run unless ``run_id`` is None, as steps
+    written before runs were stamped are; ``"card"`` pauses on one."""
+    from langchain_core.messages import HumanMessage
+
+    config = {"configurable": {"thread_id": thread.id}}
+    if run_id is not None:
+        config["metadata"] = {"run_id": run_id}
+    await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config)
+
+
+async def _card_then_send(
+    thread,
+    db_conn,
+    graph,
+    *,
+    status: str,
+    send_took_a_step: bool,
+    first="interrupted",
+    stamped=True,
+) -> str:
+    """A turn that started a task and paused on a card, then a send that
+    ended after it, whose finalize released the task's report; returns the
+    report's job."""
+    paused = await _run(thread)
+    job_id = await _report(thread, db_conn, paused)
+    await _step(
+        graph,
+        thread,
+        paused if stamped else None,
+        "card" if first == "interrupted" else "q",
+    )
+    await _end(thread, paused, first)
+    send = await _run(thread)
+    if send_took_a_step:
+        await _step(graph, thread, send)
+    else:
+        # A stop's teardown writes its flush on top, with no run's stamp.
+        await graph.aupdate_state(
+            {"configurable": {"thread_id": thread.id}}, {"messages": []}
+        )
+    await _end(thread, send, status)
+    return job_id
+
+
+@pytest.mark.parametrize("stamped", [True, False], ids=["stamped", "unstamped"])
+@pytest.mark.parametrize("status", ["cancelled", "error"])
+async def test_a_report_waits_behind_a_card_a_send_stopped_short_left_waiting(
+    thread, db_conn, graph, status, stamped
+):
+    """The send ended before its first step, so the card is still the newest
+    thing on the thread. Posted now, the report's turn would go past it."""
+    job_id = await _card_then_send(
+        thread,
+        db_conn,
+        graph,
+        status=status,
+        send_took_a_step=False,
+        stamped=stamped,
+    )
+    job = (await _claim())[job_id]
+
+    with patch(_POST, new=AsyncMock(return_value=("cap", None))) as post:
+        await _execute_report(job)
+
+    post.assert_not_awaited()
+    assert await _parked(db_conn, job_id)
+
+
+async def test_a_report_follows_a_send_that_went_past_the_card(
+    thread, db_conn, graph
+):
+    """The send took a step before it was stopped: it answered the card's
+    call, so nothing waits on the user and the report is posted."""
+    job_id = await _card_then_send(
+        thread, db_conn, graph, status="cancelled", send_took_a_step=True
+    )
+    job = (await _claim())[job_id]
+
+    with patch(_POST, new=AsyncMock(return_value=("cap", None))) as post:
+        await _execute_report(job)
+
+    post.assert_awaited()
+
+
+
+async def test_a_report_follows_a_send_stopped_short_on_an_idle_thread(
+    thread, db_conn, graph
+):
+    """The turn before the send finished, so no card waits: the stopped send
+    leaves the thread idle and the report is posted."""
+    job_id = await _card_then_send(
+        thread,
+        db_conn,
+        graph,
+        status="cancelled",
+        send_took_a_step=False,
+        first="completed",
+    )
+    job = (await _claim())[job_id]
+
+    with patch(_POST, new=AsyncMock(return_value=("cap", None))) as post:
+        await _execute_report(job)
+
+    post.assert_awaited()
+
+
+async def test_sends_stopped_over_a_card_never_run_its_report_dead(
+    thread, db_conn, graph
+):
+    """Each send stopped over the card releases the report, which finds the
+    card still waiting and parks again. Those stops spend none of its
+    attempts, so the answer still gets the report, and every claim still
+    takes a fresh fence token."""
+    from langgraph.types import Command
+
+    paused = await _run(thread)
+    job_id = await _report(thread, db_conn, paused)
+    await _step(graph, thread, paused, "card")
+    await _end(thread, paused, "interrupted")
+
+    tokens = []
+    for _ in range(MAX + 1):
+        await _end(thread, await _run(thread), "cancelled")
+        job = (await _claim())[job_id]
+        tokens.append(job["attempts"])
+        with patch(_POST, new=AsyncMock(return_value=("cap", None))) as post:
+            await _execute_report(job)
+        post.assert_not_awaited()
+        assert await _parked(db_conn, job_id)
+    assert tokens == sorted(set(tokens))
+
+    answer = await _run(thread)
+    await graph.ainvoke(
+        Command(resume="AAPL"),
+        {"configurable": {"thread_id": thread.id}, "metadata": {"run_id": answer}},
+    )
+    await _end(thread, answer)
+    with patch(_POST, new=AsyncMock(return_value=("cap", None))) as post:
+        await _execute_report((await _claim())[job_id])
+    post.assert_awaited()
+
+
+
+async def test_a_report_follows_an_answer_that_ended_the_waiting_step(
+    thread, db_conn, graph
+):
+    """The answer's update was written as the waiting node, answering its
+    calls, and the answer was stopped before its first step. Nothing waits on
+    the user any more, so the report is posted."""
+    from langchain_core.messages import AIMessage
+
+    paused = await _run(thread)
+    job_id = await _report(thread, db_conn, paused)
+    await _step(graph, thread, paused, "card")
+    await _end(thread, paused, "interrupted")
+    answer = await _run(thread)
+    await graph.aupdate_state(
+        {"configurable": {"thread_id": thread.id}},
+        {"messages": [AIMessage(content="cancelled", id=f"ai-{uuid.uuid4()}")]},
+        as_node="reply",
+    )
+    await _end(thread, answer, "cancelled")
+    job = (await _claim())[job_id]
+
+    with patch(_POST, new=AsyncMock(return_value=("cap", None))) as post:
+        await _execute_report(job)
+
+    post.assert_awaited()
