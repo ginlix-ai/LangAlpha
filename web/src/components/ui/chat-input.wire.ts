@@ -15,9 +15,19 @@ function fence(body: string): string {
   return `${ticks}\n${body}\n${ticks}`;
 }
 
+/**
+ * Unicode tag characters draw as nothing yet a model can read them, which would
+ * let a page hide words in a selection from the person making it. Removed before
+ * any guard below looks at the text, since one inside `</quote>` hides it from them.
+ * A lone surrogate goes too: two either side of a removed character would join into a new one.
+ * The flags of England, Scotland and Wales are the only emoji spelled with them, and stay.
+ */
+const TAG_CHARS = /(\u{1F3F4}\u{E0067}\u{E0062}(?:\u{E0065}\u{E006E}\u{E0067}|\u{E0073}\u{E0063}\u{E0074}|\u{E0077}\u{E006C}\u{E0073})\u{E007F})|[\u{E0000}-\u{E007F}\p{Cs}]/gu;
+const withoutTagChars = (text: string) => text.replace(TAG_CHARS, (_, flag?: string) => flag ?? '');
+
 /** A sheet name or a path may carry `<` or `>` and a chart label a newline;
  *  neither survives inside `<summary>` as the text it was. */
-const summaryText = (text: string) => text.replace(/[<>]/g, '').replace(/[\r\n]+/g, ' ');
+const summaryText = (text: string) => withoutTagChars(text).replace(/[<>]/g, '').replace(/[\r\n]+/g, ' ');
 
 /** Only the tag's own closer needs guarding, so the rest reaches the agent as it was selected. */
 const guardCloser = (text: string, tag: string) => text
@@ -27,7 +37,7 @@ const guardCloser = (text: string, tag: string) => text
 const unguard = (text: string, tag: string) => text
   .replace(new RegExp(`&lt;/(\\s*${tag})`, 'gi'), '</$1')
   .replace(new RegExp(`&amp;((?:amp;)*lt;/\\s*${tag})`, 'gi'), '&$1');
-const attribute = (text: string) => text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/[\r\n]+/g, ' ');
+const attribute = (text: string) => withoutTagChars(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/[\r\n]+/g, ' ');
 const fromAttribute = (text: string) => text.replace(/&quot;/g, '"').replace(/&#64;/g, '@').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
 
 /** A leading `@` is how a file reads, so a speaker's name is kept from starting with one. */
@@ -61,8 +71,8 @@ function quoteOrigin(rawSource: string, snippet: string): QuoteOrigin {
  * reply always follows its quote, which is how the two are paired.
  */
 export function formatQuoteBlock({ snippet, reply, from }: QuoteContext): string {
-  const quote = `<quote source="${quoteSource(from)}">${guardCloser(snippet, 'quote')}</quote>`;
-  return reply ? `${quote}\n<reply>${guardCloser(reply, 'reply')}</reply>` : quote;
+  const quote = `<quote source="${quoteSource(from)}">${guardCloser(withoutTagChars(snippet), 'quote')}</quote>`;
+  return reply ? `${quote}\n<reply>${guardCloser(withoutTagChars(reply), 'reply')}</reply>` : quote;
 }
 
 /**
@@ -85,7 +95,7 @@ export function formatContextBlock(chip: ChipContext, t: TFunction): string {
     case 'range': {
       const described = describeLocatorSize(chip.locator);
       const size = described ? ` (${described})` : '';
-      return `\n<details>\n<summary>@${summaryText(`${chip.path}#${chip.locator}`)}${size}</summary>\n\n${fence(chip.snippet)}\n</details>`;
+      return `\n<details>\n<summary>@${summaryText(`${chip.path}#${chip.locator}`)}${size}</summary>\n\n${fence(withoutTagChars(chip.snippet))}\n</details>`;
     }
   }
 }

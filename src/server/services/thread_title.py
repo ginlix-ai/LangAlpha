@@ -17,6 +17,7 @@ from datetime import datetime, timezone as dt_timezone
 from pydantic import BaseModel, Field
 
 from src.server.database.conversation import update_thread_title_cas
+from src.server.utils.thread_stamp import message_to_title
 from src.utils.timezone_utils import zone_or_none
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ class ThreadTitleSchema(BaseModel):
 
 def _build_user_prompt(first_query: str) -> str:
     nonce = secrets.token_hex(8)
-    truncated = first_query[:_QUERY_PROMPT_CHARS]
+    truncated = message_to_title(first_query)[:_QUERY_PROMPT_CHARS]
     return (
         f"<first_message_{nonce} user_supplied=\"true\">\n"
         f"{truncated}\n"
