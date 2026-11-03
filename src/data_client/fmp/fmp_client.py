@@ -531,37 +531,6 @@ class FMPClient:
             result.append([quarter, fiscal_year, call_date])
         return result
 
-    async def get_sec_filings(
-        self,
-        symbol: str,
-        filing_type: Optional[str] = None,
-        limit: int = 20,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
-    ) -> List[Dict]:
-        """SEC filings for a company.
-
-        Stable's ``sec-filings-search/symbol`` requires ``from`` and ``to``
-        dates; when omitted we default to "last 5 years → today" so the
-        contract still works for callers that only pass ``symbol``.
-        Param ``type`` was renamed to ``formType``.
-        """
-        if not from_date:
-            from_date = (_today_utc() - timedelta(days=365 * 5)).isoformat()
-        if not to_date:
-            to_date = _today_utc().isoformat()
-
-        params: Dict[str, Any] = {
-            "symbol": symbol,
-            "limit": limit,
-            "from": from_date,
-            "to": to_date,
-        }
-        if filing_type:
-            params["formType"] = filing_type
-
-        return await self._make_request("sec-filings-search/symbol", params=params)
-
     async def get_historical_earnings_calendar(
         self, symbol: str, limit: int = 20
     ) -> List[Dict]:
