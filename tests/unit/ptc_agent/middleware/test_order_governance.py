@@ -397,6 +397,19 @@ async def test_a_tool_the_binder_did_not_stamp_as_an_order_passes_through():
     assert ledger.attempts == {}
 
 
+@pytest.mark.asyncio
+async def test_an_order_call_already_answered_is_not_put_to_the_user(monkeypatch):
+    """A Claude Code turn answers every call of a batch but the one it holds
+    for the user before this runs."""
+    seen = _answer(monkeypatch, {"decisions": [{"type": "approve"}]})
+    mw = OrderGovernanceMiddleware(_FakeLedger(), [_tool()])
+    ai = AIMessage(content="", id="msg-1", tool_calls=[
+        {"id": call, "name": TOOL_NAME, "args": dict(ARGS), "type": "tool_call"} for call in ("call-1", "call-2")
+    ])
+    await mw.aafter_model({"messages": [ai, ToolMessage("Not run.", tool_call_id="call-2")]}, None)
+    assert [r["tool_call_id"] for r in seen[0]["action_requests"]] == ["call-1"]
+
+
 def test_the_sync_path_refuses_every_order():
     ledger = _FakeLedger()
     mw = OrderGovernanceMiddleware(ledger, [_tool()])

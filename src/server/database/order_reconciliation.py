@@ -559,6 +559,35 @@ async def refuse_abandoned_proposals(*, grace_seconds: float) -> list[dict[str, 
             return [row_as_json(row) for row in await cur.fetchall()]  # type: ignore[misc]
 
 
+async def refuse_cut_off_proposal(
+    user_id: str, message_id: str, tool_call_id: str
+) -> dict[str, Any] | None:
+    """Refuse the proposal of a call a later run cut off, or None when it was
+    not still proposed.
+
+    Its run paused for the card and stays ``interrupted``, so the sweep never
+    takes it, and a resume that names the paused checkpoint would still put
+    the card to the user after the thread went on without the call.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                UPDATE order_attempts
+                   SET status = 'refused',
+                       failure = %s,
+                       decided_at = COALESCE(decided_at, NOW()),
+                       completed_at = NOW(),
+                       updated_at = NOW()
+                 WHERE user_id = %s AND message_id = %s AND tool_call_id = %s
+                   AND status = 'proposed'
+                RETURNING attempt_id, user_id, vendor, tool
+                """,
+                (SafeJson(_ABANDONED), user_id, message_id, tool_call_id),
+            )
+            return row_as_json(await cur.fetchone())
+
+
 async def claimed_vendor_order_ids(
     user_id: str, vendor: str, account_ref: str | None
 ) -> set[str]:
