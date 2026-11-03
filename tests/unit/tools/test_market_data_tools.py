@@ -2775,7 +2775,7 @@ class TestOverviewOneArtifact:
         with p1, p2, p3:
             content, _ = await fetch_company_overview("0001.HK")
 
-        assert "- **EPS:** HK$5.20 actual vs HK$5.00 estimate" in content
+        assert "- **EPS (consensus basis):** HK$5.20 actual vs HK$5.00 estimate" in content
         assert "- **Revenue:** HK$180.00B (no estimate available)" in content
         assert "Current Price: HK$500.00" in content
 
