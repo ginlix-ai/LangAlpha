@@ -370,23 +370,11 @@ class TestServeSharedFile:
             )
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "text/html; charset=utf-8"
-        # Keep the sandbox AND cap egress to the token's own prefix; assert
-        # shape, not the exact string, so directive ordering can change freely.
+        # A shared file keeps its opaque origin; the token decides what it reads.
         csp = resp.headers["content-security-policy"]
-        assert csp.startswith(
-            "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;"
-        )
-        assert "default-src 'none'" in csp
-        connect = next(
-            d.split()[1:] for d in csp.split(";") if d.strip().startswith("connect-src")
-        )
-        assert connect and all(
-            src.endswith(f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/")
-            for src in connect
-        )
+        assert csp.startswith("sandbox allow-scripts ")
+        assert "allow-same-origin" not in csp
         assert resp.headers["access-control-allow-origin"] == "*"
-        assert "https://fonts.googleapis.com" in csp  # CJK web-font path
-        assert "https://fonts.gstatic.com" in csp
         assert b"shared report" in resp.content
         # The workspace UUID must never leak into the response headers.
         for value in resp.headers.values():

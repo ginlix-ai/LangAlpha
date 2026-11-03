@@ -53,7 +53,7 @@ from src.server.app.workspace_files.crud import (
 )
 from src.server.app.workspace_files.crud import DeleteFilesRequest, WriteFileRequest
 from src.server.app.workspace_files.file_refs import ResolveFileRefRequest
-from src.server.app.workspace_files.serve import serve_workspace_file
+from src.server.app.workspace_files.serve import _owner_visible, serve_workspace_file
 from src.server.database.workspace_folders import moving_path
 
 WS_A = "ws-folder-a"
@@ -677,7 +677,7 @@ async def test_the_workspace_serves_its_own_files(computer) -> None:
         _warm(mgr, computer.sandbox)
         fp.get_file_content = AsyncMock(return_value=None)
         response = await serve_workspace_file(
-            WS_A, "work/report.html"
+            WS_A, "work/report.html", visible=_owner_visible
         )
     assert response.status_code == 200
     assert response.body == A_REPORT
