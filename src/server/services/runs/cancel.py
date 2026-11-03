@@ -2,9 +2,11 @@
 
 /cancel stamps durable intent on the run's ledger row; when the owning
 executor lives in another worker process, this channel nudges it to
-interrupt now. Purely a latency optimization: a lost or undelivered nudge
-still converges, because the finalize CAS adopts 'cancelled' from the
-durable intent whenever the run reaches any terminal.
+interrupt now. The nudge is the fast path only: each worker's listener also
+re-reads the intent of the runs it owns as it subscribes and every
+``_POLL_TIMEOUT_S`` (``TurnCancelListener._reconcile``), so a nudge lost while
+it was not subscribed, or dropped by Redis, still stops the run within
+seconds rather than leaving it to run to its own end.
 """
 
 from __future__ import annotations
@@ -102,7 +104,12 @@ class TurnCancelListener:
                 pubsub = client.pubsub()
                 await pubsub.subscribe(CANCEL_CHANNEL)
                 logger.info("[cancel-nudge] listener subscribed")
+                loop = asyncio.get_running_loop()
+                reconcile_at = loop.time()
                 while not self._stopping.is_set():
+                    if loop.time() >= reconcile_at:
+                        await self._reconcile()
+                        reconcile_at = loop.time() + _POLL_TIMEOUT_S
                     msg = await pubsub.get_message(
                         ignore_subscribe_messages=True, timeout=_POLL_TIMEOUT_S
                     )
@@ -126,6 +133,25 @@ class TurnCancelListener:
                         await pubsub.aclose()
                     except Exception:
                         pass
+
+    async def _reconcile(self) -> None:
+        """Signal each run this worker owns whose row carries cancel intent
+        that never reached it, the durable fallback for a missed nudge."""
+        try:
+            from src.server.database.runs import lifecycle as tl_db
+            from src.server.services.runs.executor import LocalRunExecutor
+
+            executor = LocalRunExecutor.get_instance()
+            running = await executor.uncancelled_runs()
+            stamped = await tl_db.cancel_requested_runs([run_id for _, run_id in running])
+            for thread_id, run_id in running:
+                if run_id in stamped and await executor.signal_cancel(thread_id, run_id):
+                    logger.info(
+                        f"[cancel-nudge] durable intent signalled for "
+                        f"thread={thread_id} run={run_id}"
+                    )
+        except Exception:
+            logger.warning("[cancel-nudge] cancel intent re-read failed", exc_info=True)
 
     async def _handle(self, data) -> None:
         try:
