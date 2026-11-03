@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from contextlib import suppress
 
 from src.config.settings import (
+    get_checkpoint_flush_timeout,
     get_max_concurrent_workflows,
     get_workflow_result_ttl,
     get_abandoned_workflow_timeout,
@@ -789,15 +790,33 @@ class LocalRunExecutor:
             )
 
     async def _flush_checkpoint(self, thread_id: str, run_id: str) -> None:
-        """Resolve the run's graph and flush its checkpoint on user stop."""
+        """Resolve the run's graph and flush its checkpoint on user stop.
+
+        Only a run that wrote a step has one in flight to discard. One stopped
+        before that leaves the thread as the run before it did, and on a card
+        that run paused for, a write on top would plan the waiting call again
+        under a new interrupt id, so the user's answer would miss it and the
+        card be asked again. The ownership read and the flush share the one
+        deadline the next send's admission allows the stop.
+        """
+        from src.server.utils.checkpoint_helpers import newest_checkpoint
+
         async with self.task_lock:
             task_info = self.executions.get((thread_id, run_id))
             graph = task_info.graph if task_info else None
 
         if not graph:
             return
-
-        await teardown.flush_checkpoint(graph, thread_id)
+        try:
+            async with asyncio.timeout(get_checkpoint_flush_timeout()):
+                newest = await newest_checkpoint(graph.checkpointer, thread_id)
+                if newest is None or newest.run_id != run_id:
+                    return
+                await teardown.flush_checkpoint(graph, thread_id)
+        except TimeoutError:
+            logger.warning(
+                f"[LocalRunExecutor] Checkpoint flush timed out for {thread_id}"
+            )
 
     def _track_orphan_collector(
         self, thread_id: str, run_id: str, task: asyncio.Task
