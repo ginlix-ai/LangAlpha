@@ -336,7 +336,10 @@ export function TabStrip({
 
   return (
     <div className="file-panel-header file-panel-tabstrip" data-chrome="drag">
-      <TooltipProvider delayDuration={350} skipDelayDuration={600}>
+      {/* A hoverable hint closes only on the document's pointermove, and a
+          page frame below the strip takes those, so a pointer leaving a tab
+          into it left the hint up. The hint holds nothing to reach for. */}
+      <TooltipProvider delayDuration={350} skipDelayDuration={600} disableHoverableContent>
       <div
         className="file-panel-tabs clips-focus-ring"
         role="tablist"
