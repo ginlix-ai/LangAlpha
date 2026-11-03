@@ -503,6 +503,18 @@ async def get_thread_lifecycle_rows(
     return [r for r in fetched if r.get("branch")], as_of_seq
 
 
+async def count_threads_needing_attention(user_id: str) -> int:
+    """Threads with an unseen ending or waiting on the user, as the thread
+    list badges them: the number an app icon shows."""
+    rows, _ = await get_thread_lifecycle_rows(user_id)
+    return sum(
+        1
+        for r in rows
+        if r["branch"] == "unseen"
+        or (r["branch"] == "live" and r.get("latest_run_status") == "interrupted")
+    )
+
+
 async def get_thread_with_summary(
     conversation_thread_id: str,
 ) -> Optional[Dict[str, Any]]:

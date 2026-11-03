@@ -77,10 +77,8 @@ async def enqueue_hooks(
                     next_retry_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp(),
-                        CASE WHEN %s::float8 IS NULL THEN NULL
-                             ELSE clock_timestamp()
-                                  + make_interval(secs => %s::float8)
-                        END)
+                        -- NULL with no delay: make_interval is strict.
+                        clock_timestamp() + make_interval(secs => %s::float8))
                 ON CONFLICT (idempotency_key) DO NOTHING
                 """,
                 (
@@ -90,7 +88,6 @@ async def enqueue_hooks(
                     SafeJson(job.payload),
                     job.ordering_key,
                     job.idempotency_key,
-                    job.delay_seconds,
                     job.delay_seconds,
                 ),
             )

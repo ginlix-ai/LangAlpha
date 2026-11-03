@@ -25,6 +25,6 @@ async def test_the_delay_rides_into_next_retry_at(mock_connection, mock_cursor):
     ]
     assert "next_retry_at" in push_sql
     assert "clock_timestamp()" in push_sql and "make_interval" in push_sql
-    assert push_params[-2:] == (8.0, 8.0)
-    # Without a delay the row is due at once, as before.
-    assert feed_params[-2:] == (None, None)
+    assert push_params[-1] == 8.0
+    # Without a delay the interval is NULL, so the row is due at once, as before.
+    assert feed_params[-1] is None

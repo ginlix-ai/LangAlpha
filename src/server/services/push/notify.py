@@ -1,33 +1,47 @@
 """The ``push`` outbox executor: what a settled run tells the user's phones.
 
-Always registered, push configured or not: a row whose type has no executor
-nacks toward dead, and a server whose key was removed still has rows to drain.
-The push says which thread and what kind of news, never what the agent wrote.
+The finalize enqueues a push for every settle that might be news; this
+executor decides, from the run row and the thread, whether it is and what it
+says. Always registered, push configured or not: a row whose type has no
+executor nacks toward dead, and a server whose key was removed still has rows
+to drain. The push says which thread and what kind of news, never what the
+agent wrote.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Literal, Mapping, Optional, get_args
 
 from src.server.database import push_devices as push_db
-from src.server.database.conversation.threads_read import get_thread_lifecycle_rows
+from src.server.database.conversation.threads_read import count_threads_needing_attention
 from src.server.database.runs import outbox as outbox_db
+from src.server.database.runs.hook_jobs import SURFACE_META, is_unchanged_quiet
 from src.server.services.push.apns import ApnsClient, ApnsOutcome, get_apns_client
+from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
 
 logger = logging.getLogger(__name__)
 
-PUSH_KINDS = ("turn", "needs_input", "wakeup", "automation")
+PushKind = Literal["turn", "needs_input", "wakeup", "automation"]
+PUSH_KINDS: tuple[PushKind, ...] = get_args(PushKind)
 TITLE_LIMIT = 80
 FALLBACK_TITLE = "LangAlpha"
+
+#: The surfaces the web app draws; any other surface a turn ran on is a chat
+#: app, which answers the user itself.
+APP_SURFACES = frozenset({"web", "market_view"})
 
 _NEEDS_INPUT_BODIES = {
     "approval_required": "Waiting for your approval",
     "user_question": "Has a question for you",
     "credit_pause": "Paused: out of credits",
 }
-_WAKE_BODIES = {
+#: What a run that ended well says, by where it came from (``_origin``).
+_DONE_BODIES = {
+    "turn": "Finished",
+    "report": "Reported back",
     "wakeup": "Checked back in",
     "market_target": "Price alert",
 }
@@ -41,7 +55,7 @@ class PushRetry(Exception):
 
 @dataclass(frozen=True)
 class PushMessage:
-    kind: str
+    kind: PushKind
     title: str
     body: str
 
@@ -55,43 +69,61 @@ def push_title(title: Optional[str]) -> str:
     return title
 
 
+def push_owed(status: str, thread_id: str, run_meta: Mapping[str, Any]) -> bool:
+    """Whether a settle is news to the user's phones. Not a quiet check that
+    changed nothing. Not a dispatched analyst's ending: the report-back on the
+    watching thread is the one that pushes, though an analyst waiting on the
+    user has no report coming and does push. Not a turn on a chat app, which
+    answers the user there."""
+    if status == "completed" and is_unchanged_quiet(run_meta):
+        return False
+    dispatcher = run_meta.get(ORIGIN_THREAD_META)
+    reports_elsewhere = (
+        dispatcher
+        and dispatcher != thread_id
+        and not run_meta.get("report_back_ptc_thread_id")
+    )
+    if reports_elsewhere and status != "interrupted":
+        return False
+    surface = run_meta.get(SURFACE_META)
+    platform = (surface.get("platform") if isinstance(surface, dict) else None) or ""
+    return platform.partition(":")[0] in ("", *APP_SURFACES)
+
+
+def _origin(run_meta: Mapping[str, Any], query_type: Optional[str]) -> str:
+    """Where a run came from: an automation, a report-back, a wake of some
+    kind (its query type), or the user's own turn."""
+    if run_meta.get("automation_id"):
+        return "automation"
+    if run_meta.get("report_back_ptc_thread_id") or query_type == "system":
+        return "report"
+    if query_type in ("wakeup", "market_target"):
+        return query_type
+    return "turn"
+
+
 def compose(payload: Mapping[str, Any], context: Mapping[str, Any]) -> PushMessage:
     """The kind and wording of a settled run's push, from its outbox payload
-    and the thread read the executor made."""
+    and the read the executor made."""
     title = push_title(context.get("title"))
     status = payload.get("status")
-    failed = status == "error"
     if status == "interrupted":
         body = _NEEDS_INPUT_BODIES.get(payload.get("interrupt_reason"), "Waiting on you")
         return PushMessage("needs_input", title, body)
-    if payload.get("automation_id"):
+    failed = status == "error"
+    origin = _origin(context.get("run_metadata") or {}, context.get("query_type"))
+    if origin == "automation":
         name = (context.get("automation_name") or "").strip()
         verb = "failed" if failed else "ran"
-        body = f"{name} {verb}" if name else f"Automation {verb}"
-        return PushMessage("automation", title, body)
-    query_type = context.get("query_type")
-    if failed and (payload.get("report_back") or query_type in ("system", *_WAKE_BODIES)):
-        return PushMessage("wakeup", title, "Stopped with an error")
-    if payload.get("report_back") or query_type == "system":
-        return PushMessage("wakeup", title, "Reported back")
-    if query_type in _WAKE_BODIES:
-        return PushMessage("wakeup", title, _WAKE_BODIES[query_type])
-    return PushMessage("turn", title, "Stopped with an error" if failed else "Finished")
+        return PushMessage("automation", title, f"{name or 'Automation'} {verb}")
+    kind: PushKind = "turn" if origin == "turn" else "wakeup"
+    body = "Stopped with an error" if failed else _DONE_BODIES[origin]
+    return PushMessage(kind, title, body)
 
 
-def device_wants(device: Mapping[str, Any], kind: str) -> bool:
+def device_wants(device: Mapping[str, Any], kind: PushKind) -> bool:
     """A kind is on unless the device switched it off."""
     return (device.get("preferences") or {}).get(kind) is not False
-
-
-def badge_count(rows: List[Dict[str, Any]]) -> int:
-    """Threads unseen or waiting on the user, as the thread list counts them."""
-    return sum(
-        1
-        for r in rows
-        if r.get("branch") == "unseen"
-        or (r.get("branch") == "live" and r.get("latest_run_status") == "interrupted")
-    )
 
 
 def _other_environment(environment: str) -> str:
@@ -104,8 +136,7 @@ async def _deliver(
     aps_payload: Mapping[str, Any],
     collapse_id: str,
 ) -> ApnsOutcome:
-    """Send to one device and tidy its row by the answer. Returns SENT, RETRY,
-    or what else came of it."""
+    """Send to one device and tidy its row by the answer."""
     device_id = str(device["push_device_id"])
     environment = device["environment"]
 
@@ -142,30 +173,30 @@ async def _deliver(
 
 async def execute_push(job: Dict[str, Any]) -> None:
     payload = job.get("payload") or {}
-    user_id = payload.get("user_id")
-    thread_id = payload.get("thread_id") or job.get("conversation_thread_id")
-    run_id = payload.get("run_id") or job.get("run_id")
+    user_id, thread_id, run_id = (
+        payload.get("user_id"),
+        payload.get("thread_id"),
+        payload.get("run_id"),
+    )
     if not (user_id and thread_id and run_id):
         logger.warning(
             "push outbox job missing user_id/thread_id/run_id — dropping (job=%s)",
             job.get("hook_outbox_id"),
         )
         return
-    thread_id, run_id = str(thread_id), str(run_id)
     client = await get_apns_client()
     if client is None:
         return
     devices = await push_db.list_push_devices(user_id)
     if not devices:
         return
-    context = await push_db.get_push_context(
-        thread_id=thread_id, run_id=run_id, automation_id=payload.get("automation_id")
-    )
+    context = await push_db.get_push_context(thread_id=thread_id, run_id=run_id)
     if (
         context is None
         or context.get("owner_id") != user_id
         or context.get("workspace_status") == "deleted"
         or context.get("archived_at") is not None
+        or not push_owed(payload.get("status"), thread_id, context.get("run_metadata") or {})
     ):
         return
     run_seq = payload.get("run_seq")
@@ -190,12 +221,11 @@ async def execute_push(job: Dict[str, Any]) -> None:
     ]
     if not targets:
         return
-    rows, _ = await get_thread_lifecycle_rows(user_id)
     aps_payload = {
         "aps": {
             "alert": {"title": message.title, "body": message.body},
             "sound": "default",
-            "badge": badge_count(rows),
+            "badge": await count_threads_needing_attention(user_id),
             "thread-id": thread_id,
         },
         # expo-notifications reads a remote push's data from userInfo.body.
@@ -207,13 +237,22 @@ async def execute_push(job: Dict[str, Any]) -> None:
         },
     }
 
-    sent: List[str] = []
+    # The devices are sent to at once. A database error on one counts as a
+    # miss to retry, so the devices already reached are still recorded.
+    outcomes = await asyncio.gather(
+        *(_deliver(client, d, aps_payload, thread_id) for d in targets),
+        return_exceptions=True,
+    )
+    sent = [
+        str(d["push_device_id"])
+        for d, outcome in zip(targets, outcomes)
+        if outcome is ApnsOutcome.SENT
+    ]
     failed = 0
-    for device in targets:
-        outcome = await _deliver(client, device, aps_payload, thread_id)
-        if outcome is ApnsOutcome.SENT:
-            sent.append(str(device["push_device_id"]))
-        elif outcome is ApnsOutcome.RETRY:
+    for outcome in outcomes:
+        if isinstance(outcome, Exception):
+            logger.warning("[PUSH] a device's send failed: %s", type(outcome).__name__)
+        if outcome is ApnsOutcome.RETRY or isinstance(outcome, Exception):
             failed += 1
     if sent:
         await push_db.stamp_push_devices_sent(sent)

@@ -60,6 +60,9 @@ def _classify(status: int, reason: Optional[str]) -> ApnsOutcome:
         return ApnsOutcome.BAD_TOKEN
     if status == 429 or status >= 500:
         return ApnsOutcome.RETRY
+    if status == 403 and reason == "ExpiredProviderToken":
+        # Refused after a fresh mint too: this host's clock is off.
+        return ApnsOutcome.RETRY
     return ApnsOutcome.REJECTED
 
 
@@ -116,8 +119,8 @@ class ApnsClient:
         the outcome says what to do with the device and the job."""
         url = f"{HOSTS[environment]}/3/device/{token}"
         body = json.dumps(payload, separators=(",", ":")).encode()
-        provider_token = self._provider_token()
-        for attempt in range(2):
+
+        async def post(provider_token: str) -> tuple[httpx.Response, Optional[str]]:
             headers = {
                 "authorization": f"bearer {provider_token}",
                 "apns-topic": bundle_id,
@@ -127,38 +130,31 @@ class ApnsClient:
             }
             if collapse_id:
                 headers["apns-collapse-id"] = collapse_id
-            try:
-                response = await self._http.post(url, content=body, headers=headers)
-            except httpx.HTTPError as e:
-                logger.warning(
-                    "[PUSH] APNs %s unreachable: %s", environment, type(e).__name__
-                )
-                return ApnsResult(ApnsOutcome.RETRY)
+            response = await self._http.post(url, content=body, headers=headers)
             reason = _reason(response) if response.status_code != 200 else None
-            if (
-                response.status_code == 403
-                and reason == "ExpiredProviderToken"
-                and attempt == 0
-            ):
-                # Re-mint unless a concurrent send already has.
-                provider_token = self._provider_token(
-                    fresh=provider_token == self._token
-                )
-                continue
-            outcome = _classify(response.status_code, reason)
+            return response, reason
+
+        provider_token = self._provider_token()
+        try:
+            response, reason = await post(provider_token)
             if response.status_code == 403 and reason == "ExpiredProviderToken":
-                # A fresh token refused as expired: this host's clock is off.
-                outcome = ApnsOutcome.RETRY
-            if outcome is ApnsOutcome.REJECTED:
-                logger.warning(
-                    "[PUSH] APNs refused a push to %s (%s): %s %s",
-                    bundle_id,
-                    environment,
-                    response.status_code,
-                    reason,
+                # Re-mint unless a concurrent send already has, and try once more.
+                response, reason = await post(
+                    self._provider_token(fresh=provider_token == self._token)
                 )
-            return ApnsResult(outcome, response.status_code, reason)
-        raise AssertionError("unreachable")
+        except httpx.HTTPError as e:
+            logger.warning("[PUSH] APNs %s unreachable: %s", environment, type(e).__name__)
+            return ApnsResult(ApnsOutcome.RETRY)
+        outcome = _classify(response.status_code, reason)
+        if outcome is ApnsOutcome.REJECTED:
+            logger.warning(
+                "[PUSH] APNs refused a push to %s (%s): %s %s",
+                bundle_id,
+                environment,
+                response.status_code,
+                reason,
+            )
+        return ApnsResult(outcome, response.status_code, reason)
 
     async def aclose(self) -> None:
         await self._http.aclose()

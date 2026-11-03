@@ -16,21 +16,12 @@ from pydantic import BaseModel, Field
 from src.config import env
 from src.server.database import push_devices as push_db
 from src.server.services.push.config import push_available
-from src.server.services.push.notify import PUSH_KINDS, device_wants
+from src.server.services.push.notify import PUSH_KINDS, PushKind, device_wants
 from src.server.utils.api import CurrentUserId, handle_api_exceptions
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/users/me/push-devices", tags=["Users"])
-
-
-class PushPreferences(BaseModel):
-    """Per-kind switches; a kind left out keeps its current value."""
-
-    turn: Optional[bool] = None
-    needs_input: Optional[bool] = None
-    wakeup: Optional[bool] = None
-    automation: Optional[bool] = None
 
 
 class PushDeviceRegister(BaseModel):
@@ -43,7 +34,9 @@ class PushDeviceRegister(BaseModel):
 
 
 class PushDeviceUpdate(BaseModel):
-    preferences: PushPreferences
+    #: Per-kind switches; a kind left out keeps its current value, and one this
+    #: server does not know (a newer app's) is ignored.
+    preferences: Dict[str, bool]
 
 
 class PushDevice(BaseModel):
@@ -54,7 +47,7 @@ class PushDevice(BaseModel):
     device_name: Optional[str] = None
     app_version: Optional[str] = None
     #: Every kind, on unless switched off.
-    preferences: Dict[str, bool]
+    preferences: Dict[PushKind, bool]
     created_at: datetime
     updated_at: datetime
     last_sent_at: Optional[datetime] = None
@@ -118,7 +111,7 @@ async def register_push_device(body: PushDeviceRegister, user_id: CurrentUserId)
 async def update_push_device(
     push_device_id: UUID, body: PushDeviceUpdate, user_id: CurrentUserId
 ):
-    changes = body.preferences.model_dump(exclude_none=True)
+    changes = {k: v for k, v in body.preferences.items() if k in PUSH_KINDS}
     if changes:
         row = await push_db.update_push_device_preferences(
             user_id, str(push_device_id), changes

@@ -153,12 +153,11 @@ async def stamp_push_devices_sent(push_device_ids: List[str]) -> None:
             )
 
 
-async def get_push_context(
-    *, thread_id: str, run_id: str, automation_id: Optional[str]
-) -> Optional[Dict[str, Any]]:
+async def get_push_context(*, thread_id: str, run_id: str) -> Optional[Dict[str, Any]]:
     """What a settled run's push is decided by, in one read: the thread's
-    title and owner, how far it was seen, its newest run, the query type of
-    the run's turn and the automation's name. None for a thread that is gone."""
+    title and owner, how far it was seen, its newest run, and the run's own
+    START metadata, the query type of its turn and its automation's name.
+    None for a thread that is gone."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -171,24 +170,21 @@ async def get_push_context(
                        (SELECT MAX(lr.run_seq) FROM conversation_responses lr
                         WHERE lr.conversation_thread_id = ct.conversation_thread_id
                        ) AS latest_run_seq,
-                       (SELECT q.type
-                        FROM conversation_responses r
-                        JOIN conversation_queries q
-                          ON q.conversation_thread_id = r.conversation_thread_id
-                         AND q.turn_index = r.turn_index
-                        WHERE r.conversation_response_id = %(run_id)s::uuid
-                       ) AS query_type,
-                       (SELECT a.name FROM automations a
-                        WHERE a.automation_id = %(automation_id)s::uuid
-                       ) AS automation_name
+                       COALESCE(r.metadata, '{}'::jsonb) AS run_metadata,
+                       q.type AS query_type,
+                       a.name AS automation_name
                 FROM conversation_threads ct
                 JOIN workspaces w ON w.workspace_id = ct.workspace_id
+                LEFT JOIN conversation_responses r
+                  ON r.conversation_response_id = %(run_id)s::uuid
+                 AND r.conversation_thread_id = ct.conversation_thread_id
+                LEFT JOIN conversation_queries q
+                  ON q.conversation_thread_id = r.conversation_thread_id
+                 AND q.turn_index = r.turn_index
+                LEFT JOIN automations a
+                  ON a.automation_id::text = r.metadata->>'automation_id'
                 WHERE ct.conversation_thread_id = %(thread_id)s::uuid
                 """,
-                {
-                    "thread_id": thread_id,
-                    "run_id": run_id,
-                    "automation_id": automation_id,
-                },
+                {"thread_id": thread_id, "run_id": run_id},
             )
             return await cur.fetchone()
