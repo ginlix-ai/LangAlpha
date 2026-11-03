@@ -1,10 +1,12 @@
-import React, { useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { useArtifactStatus } from '@/hooks/useArtifact';
 import { queryKeys } from '@/lib/queryKeys';
+import type { Artifact, ArtifactStatus } from '@/types/api';
 import { ArtifactVersionPicker } from '../viewers/html/ArtifactVersionPicker';
+import { usePageScout } from '../viewers/html/usePageScout';
 import type { ArtifactVersionView } from './useArtifactVersionView';
 import { usePublish } from './usePublish';
 
@@ -31,8 +33,12 @@ export function ArtifactCrumbs({ view, onReview, readAt }: ArtifactCrumbsProps):
   const latest = artifact?.latest_seq ?? 0;
   // Compared only where it is said: a shared file, on its live view.
   const shared = !!artifact?.shared;
-  const { data: status } = useArtifactStatus(artifactId, { enabled: shared && latest > 0 && version === null });
+  const { data: status } = useArtifactStatus(artifact, { enabled: shared && latest > 0 && version === null });
   const publish = usePublish(t('artifact.updateFailed'));
+  // The file an Update is reviewing. Dropped once the crumb shows another, so
+  // coming back to this one later publishes nothing on its own.
+  const [reviewing, setReviewing] = useState<string | null>(null);
+  if (reviewing !== null && reviewing !== artifactId) setReviewing(null);
 
   // The agent's edit, once the panel has read it, is a live file the status
   // has not compared yet.
@@ -48,25 +54,43 @@ export function ArtifactCrumbs({ view, onReview, readAt }: ArtifactCrumbsProps):
   if (!artifact || (latest < 1 && !refused)) return null;
   const changed = shared && version === null && !!status && (status.changed === true || !!status.drift?.added.length);
 
-  const update = async () => {
-    if (!status) return;
+  const update = () => {
+    if (!status || !artifactId) return;
     // A file the page newly reads widens what visitors get: the owner reviews it first.
     if (status.drift?.added.length) {
       onReview();
       return;
     }
-    const result = await publish.send(artifact.artifact_id, { files: status.files.map((f) => f.path) });
-    if (result.kind === 'published') {
-      // An Update that finds the files as the latest version left them cuts nothing.
-      toast({ description: result.cut ? t('artifact.updatedTo', { seq: result.version.seq }) : t('artifact.unchanged') });
-    } else if (result.kind !== 'failed') {
-      // A list that moved, or one the server refuses, is the dialog's to show.
-      onReview();
+    setReviewing(artifactId);
+  };
+
+  const publishReviewed = async (target: Artifact, reviewed: ArtifactStatus | null) => {
+    try {
+      // What running the page added, a list past a cap, or one that could not
+      // be read: the dialog shows it.
+      if (!reviewed || reviewed.drift?.added.length || reviewed.over_cap) {
+        onReview();
+        return;
+      }
+      const result = await publish.send(target, {
+        files: reviewed.files.map((f) => f.path),
+        page_sha256: reviewed.page_sha256 ?? undefined,
+      });
+      if (result.kind === 'published') {
+        // An Update that finds the files as the latest version left them cuts nothing.
+        toast({ description: result.cut ? t('artifact.updatedTo', { seq: result.version.seq }) : t('artifact.unchanged') });
+      } else if (result.kind !== 'failed') {
+        // A list that moved, or one the server refuses, is the dialog's to show.
+        onReview();
+      }
+    } finally {
+      setReviewing(null);
     }
   };
 
   return (
     <>
+      {reviewing === artifact.artifact_id && <UpdateReview artifact={artifact} onReviewed={publishReviewed} />}
       <ArtifactVersionPicker view={view} variant="chip" />
       {refused ? (
         // The list goes through the dialog: it may still be past the caps.
@@ -80,8 +104,8 @@ export function ArtifactCrumbs({ view, onReview, readAt }: ArtifactCrumbsProps):
           <button
             type="button"
             className="file-panel-artifact-update"
-            onClick={() => void update()}
-            disabled={publish.pending}
+            onClick={update}
+            disabled={publish.pending || reviewing === artifactId}
           >
             {t('artifact.update')}
           </button>
@@ -89,6 +113,32 @@ export function ArtifactCrumbs({ view, onReview, readAt }: ArtifactCrumbsProps):
       )}
     </>
   );
+}
+
+/**
+ * An Update reviews the file as the Publish dialog does before it publishes:
+ * the page runs out of sight first, so a file its code as it is now asks for
+ * as it loads is on the list, and the publish names that code, which the
+ * server refuses once the agent has changed the page again. Answers once, with
+ * the list, or null when it could not be read.
+ */
+function UpdateReview({ artifact, onReviewed }: {
+  artifact: Artifact;
+  onReviewed: (artifact: Artifact, status: ArtifactStatus | null) => void;
+}): React.ReactNode {
+  const scout = usePageScout(artifact.workspace_id, artifact.path);
+  const { data, isFetching, isError } = useArtifactStatus(artifact, { always: true, report: true, enabled: scout.reads });
+  scout.follow(data?.page_sha256);
+  // A page that could not run goes to the dialog, which says so and retries.
+  const reviewed = isError || scout.failed ? null : data && !isFetching && !scout.holding ? data : undefined;
+  const answered = useRef(false);
+  const answer = useEffectEvent(onReviewed);
+  useEffect(() => {
+    if (reviewed === undefined || answered.current) return;
+    answered.current = true;
+    answer(artifact, reviewed);
+  }, [reviewed, artifact]);
+  return scout.element;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type RefObject } from 'react';
 import { Check, Copy, ExternalLink, Link2, Lock } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -11,6 +11,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Loader } from '@/components/ui/loader';
 import { ToggleSwitch } from '@/components/ui/switch';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from '@/components/ui/use-toast';
 import { cn } from '@/lib/utils';
 import { formatBytes, shortMonthDay } from '@/lib/format';
@@ -19,14 +20,17 @@ import { useLocale } from '@/hooks/useLocale';
 import {
   useArtifactPublishing,
   useArtifactStatus,
+  useFileLeftOut,
+  useFileLeftOutPending,
   useArtifactVersions,
   useOwnedArtifact,
 } from '@/hooks/useArtifact';
-import type { ArtifactStatus, ArtifactVersion, PublishArtifactRequest, ShareFileEntry } from '@/types/api';
+import { usePageScout } from './viewers/html/usePageScout';
+import type { ArtifactStatus, ArtifactVersion, ShareFileEntry } from '@/types/api';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import { basename, dirname } from '../utils/fileRefResolver';
 import { shareLinkHref } from '../utils/api/shareLinks';
-import { refusalIn, usePublish, type PublishRefusal } from './filePanel/usePublish';
+import { refusalIn, usePublish, type PublishBody, type PublishRefusal } from './filePanel/usePublish';
 
 /** The server takes a label of 1 to 200 characters. */
 const LABEL_MAX = 200;
@@ -47,30 +51,81 @@ type Outcome =
   /** Published, but the files were as the latest version left them. */
   | { kind: 'unchanged'; seq: number };
 
-function FileRow({ entry, added, t }: {
+function FileRow({ artifactId, entry, added, leftOut, gutter, locked }: {
+  artifactId: string;
   entry: ShareFileEntry;
   /** Read by the file now but in no version yet: what an Update would add. */
   added: boolean;
-  t: (key: string) => string;
+  /** Off what a publish carries, and on offer to put back. */
+  leftOut: boolean;
+  /** Some row of the list has a box, so the names line up past it. */
+  gutter: boolean;
+  /** A publish is under way with the list as it stands. */
+  locked: boolean;
 }) {
+  const { t } = useTranslation();
   const locale = useLocale();
+  const toggle = useFileLeftOut(artifactId);
+  const out = toggle.isPending ? toggle.variables.leftOut : leftOut;
   const dir = dirname(entry.path);
+  const name = basename(entry.path);
   return (
-    <li className="flex items-center gap-3 px-3 py-1.5 text-xs" data-selectable>
-      <span className="flex-1 min-w-0 truncate" title={entry.path}>
-        {dir && <span style={{ color: 'var(--color-text-tertiary)' }}>{dir}/</span>}
-        <span style={{ color: 'var(--color-text-primary)' }}>{basename(entry.path)}</span>
-      </span>
-      <span className="shrink-0 tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
-        {formatBytes(entry.size, locale)}
-      </span>
-      <span
-        className="shrink-0 w-20 text-right"
-        style={{ color: added ? 'var(--color-warning)' : 'var(--color-text-quaternary)' }}
-      >
-        {added ? t('publish.notShared') : t(`shareLink.reason.${entry.reason}`)}
-      </span>
-    </li>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <li
+          tabIndex={0}
+          className="flex items-center gap-3 px-3 py-1.5 text-xs outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover)"
+          data-selectable
+        >
+          {leftOut || entry.optional ? (
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-(--color-accent-primary)"
+              aria-label={t('publish.includeFile', { file: name })}
+              checked={!out}
+              disabled={locked || toggle.isPending}
+              onChange={(e) => toggle.mutate(
+                { path: entry.path, leftOut: !e.target.checked },
+                { onError: () => toast({ description: t('publish.leftOutFailed'), variant: 'destructive' }) },
+              )}
+            />
+          ) : gutter && <span aria-hidden className="w-3.5 shrink-0" />}
+          {/* The folder gives way first: rows cut from the end would all read as
+              the same folder. A touch screen cannot hover, so there it all wraps. */}
+          <span className="flex flex-1 min-w-0 pointer-coarse:block pointer-coarse:wrap-anywhere">
+            {dir && (
+              <span className="min-w-0 truncate pointer-coarse:whitespace-normal" style={{ color: 'var(--color-text-tertiary)' }}>
+                {dir}/
+              </span>
+            )}
+            <span
+              className="shrink-0 max-w-full truncate pointer-coarse:whitespace-normal"
+              style={{ color: out ? 'var(--color-text-tertiary)' : 'var(--color-text-primary)' }}
+            >
+              {name}
+            </span>
+          </span>
+          <span className="shrink-0 tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
+            {entry.size !== null && formatBytes(entry.size, locale)}
+          </span>
+          <span
+            className="shrink-0 w-24 text-right"
+            style={{ color: added && !out ? 'var(--color-warning)' : 'var(--color-text-quaternary)' }}
+          >
+            {out ? t('publish.leftOut') : added ? t('publish.notShared') : t(`shareLink.reason.${entry.reason}`)}
+          </span>
+        </li>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="start" className="max-w-md">
+        <p className="wrap-anywhere">{entry.path}</p>
+        <p className="mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
+          {out
+            ? t('publish.leftOutDetail')
+            : t(`shareLink.reasonDetail.${entry.reason === 'loaded' && entry.optional ? 'loadedBefore' : entry.reason}`)}
+        </p>
+        {added && !out && <p className="mt-1" style={{ color: 'var(--color-warning)' }}>{t('publish.notSharedDetail')}</p>}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -141,20 +196,28 @@ function VersionList({ artifactId }: { artifactId: string | undefined }) {
 }
 
 /** The review list: exactly what a publish sends. */
-function ReviewList({ heading, status, files, added, unavailable, failed, fetching, onRetry }: {
+function ReviewList({ artifactId, heading, status, files, added, failure, failed, fetching, locked, onRetry }: {
+  artifactId: string;
   /** Null while the status is read. */
   heading: string | null;
   status: ArtifactStatus | undefined;
   files: ShareFileEntry[];
   added: ReadonlySet<string>;
-  /** The status could not be read: for now, or for any other reason. */
-  unavailable: boolean;
+  /** Why the status could not be read, when the owner can do something about it. */
+  failure: string | null;
   failed: boolean;
   fetching: boolean;
+  locked: boolean;
   onRetry: () => void;
 }) {
   const { t } = useTranslation();
   const headingId = useId();
+  const leftOut = status?.left_out ?? [];
+  // By name rather than as the server found them, so a row stays under the
+  // pointer when its box is changed. One array, so it also keeps its focus.
+  const rows = [...files, ...leftOut].sort((a, b) =>
+    Number(b.reason === 'entry') - Number(a.reason === 'entry') || a.path.localeCompare(b.path));
+  const gutter = rows.some((entry) => entry.optional) || leftOut.length > 0;
   return (
     <div className="flex flex-col gap-1.5">
       <span id={headingId} className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
@@ -167,7 +230,7 @@ function ReviewList({ heading, status, files, added, unavailable, failed, fetchi
         {failed ? (
           <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
             <span style={{ color: 'var(--color-text-tertiary)' }}>
-              {unavailable ? t('publish.unavailable') : t('publish.listFailed')}
+              {failure ?? t('publish.listFailed')}
             </span>
             <button
               type="button"
@@ -184,15 +247,25 @@ function ReviewList({ heading, status, files, added, unavailable, failed, fetchi
             <Loader size={16} className="text-(--color-text-tertiary)" />
           </div>
         ) : (
-          <ul
-            className="max-h-56 overflow-y-auto divide-y"
-            style={{ borderColor: 'var(--color-border-subtle)' }}
-            aria-labelledby={headingId}
-          >
-            {files.map((entry) => (
-              <FileRow key={entry.path} entry={entry} added={added.has(entry.path)} t={t} />
-            ))}
-          </ul>
+          <TooltipProvider delayDuration={300} skipDelayDuration={600}>
+            <ul
+              className="max-h-56 overflow-y-auto divide-y"
+              style={{ borderColor: 'var(--color-border-subtle)' }}
+              aria-labelledby={headingId}
+            >
+              {rows.map((entry) => (
+                <FileRow
+                  key={entry.path}
+                  artifactId={artifactId}
+                  entry={entry}
+                  added={added.has(entry.path)}
+                  leftOut={leftOut.includes(entry)}
+                  gutter={gutter}
+                  locked={locked}
+                />
+              ))}
+            </ul>
+          </TooltipProvider>
         )}
       </div>
     </div>
@@ -239,8 +312,12 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
   const owned = useOwnedArtifact(workspaceId, path, { root });
   const artifact = owned.record ?? null;
   const latestSeq = artifact?.latest_seq ?? 0;
-  const statusQuery = useArtifactStatus(artifact?.artifact_id, { always: true });
+  const scout = usePageScout(workspaceId, artifact?.path ?? null);
+  // Read once before the scout loads the page, naming the code it will run,
+  // and again once it has heard the page out.
+  const statusQuery = useArtifactStatus(artifact, { always: true, report: true, enabled: scout.reads });
   const { unshare, keepUpdated } = useArtifactPublishing();
+  const changingList = useFileLeftOutPending(artifact?.artifact_id ?? '');
   const publish = usePublish(t('publish.failed'));
   const { copy, copiedCode } = useCopyShareLink();
 
@@ -256,21 +333,33 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
 
   const shared = !!artifact?.shared;
   const status = statusQuery.data;
+  scout.follow(status?.page_sha256);
   const statusRefusal = refusalIn(statusQuery.error);
   // A cap or a missing file ends the review; a file unreadable for now is
   // retried from the list.
-  const blocking = statusRefusal?.kind === 'unavailable' ? null : statusRefusal;
-  const refusal = blocking ?? (outcome?.kind === 'refused' ? outcome.refusal : null);
+  // Said where the list would be, so not again below it.
+  const statusFailure = statusRefusal?.kind === 'unavailable' ? t('publish.unavailable')
+    : statusRefusal?.kind === 'needsComputer' ? t('publish.needsComputer') : null;
+  const blocking = statusFailure ? null : statusRefusal;
+  // The page could not run to say what it loads: said and retried as a list
+  // unreadable for now is.
+  const listFailure = statusFailure ?? (scout.failed ? t('publish.unavailable') : null);
+  // Past a cap the list still comes, for the owner to leave out what puts it over.
+  const overCap = status?.over_cap ?? null;
+  const refusal = blocking
+    ?? (overCap ? { kind: 'cap' as const, cap: overCap } : null)
+    ?? (outcome?.kind === 'refused' ? outcome.refusal : null);
   const files = outcome?.kind === 'conflict' && statusQuery.dataUpdatedAt <= outcome.statusAt
     ? outcome.files
     : status?.files ?? [];
   const drift = shared ? status?.drift ?? null : null;
   const added = new Set(drift?.added ?? []);
+  const rootRefs = status?.root_refs ?? [];
   const hasDrift = !!drift && drift.added.length + drift.removed.length + drift.changed.length > 0;
   // An Update of an unchanged file cuts nothing, so it waits for a change.
   const upToDate = shared && status?.changed === false && !hasDrift;
   // Publishing sends the list on screen, so it waits for one that is current.
-  const listReady = !!status && !statusQuery.isFetching && !statusQuery.isError;
+  const listReady = !!status && !overCap && !statusQuery.isFetching && !statusQuery.isError && !scout.holding && !changingList;
   const canPublish = !!artifact && listReady && files.length > 0 && !busy && !upToDate;
   const keepOn = shared ? !!artifact?.keep_updated : keepDraft ?? !!artifact?.keep_updated;
   const recordFailed = !!owned.error;
@@ -285,11 +374,17 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
 
   const send = async () => {
     if (!artifact || !canPublish) return;
-    const body: PublishArtifactRequest = { files: files.map((f) => f.path), label: label.trim() || null };
+    // With the code it was read under: the server refuses the publish once
+    // the agent has changed it, and the review loads the page again.
+    const body: PublishBody = {
+      files: files.map((f) => f.path),
+      label: label.trim() || null,
+      page_sha256: status?.page_sha256 ?? undefined,
+    };
     if (!shared) body.keep_updated = keepOn;
     const statusAt = statusQuery.dataUpdatedAt;
     setOutcome(null);
-    const result = await publish.send(artifact.artifact_id, body);
+    const result = await publish.send(artifact, body);
     if (result.kind === 'published') {
       setLabel('');
       setKeepDraft(null);
@@ -344,15 +439,20 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
     refusalText = refusal.cap.code === 'too_many_bytes'
       ? t('publish.tooManyBytes', { size: formatBytes(refusal.cap.limit, locale) })
       : t('publish.tooManyFiles', { limit: refusal.cap.limit });
+    // Said only where a box can bring it back under.
+    if (overCap && files.some((f) => f.optional)) refusalText += ` ${t('publish.overCapLeaveOut')}`;
   } else if (refusal?.kind === 'missing') {
     refusalText = t('publish.missing');
   } else if (refusal?.kind === 'unavailable') {
     refusalText = t('publish.unavailable');
+  } else if (refusal?.kind === 'needsComputer') {
+    refusalText = t('publish.needsComputer');
   }
 
   return (
     <>
-      <DialogTitle className="text-base font-semibold truncate pr-6" style={{ color: 'var(--color-text-primary)' }}>
+      {scout.element}
+      <DialogTitle className="text-base font-semibold truncate pr-6" style={{ color: 'var(--color-text-primary)' }} title={name}>
         {t('publish.title', { file: name })}
       </DialogTitle>
       <DialogDescription className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
@@ -473,18 +573,29 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
             {t('publish.driftAdded', { count: added.size })}
           </p>
         )}
+        {rootRefs.length > 0 && (
+          <p className="text-xs" role="status" style={{ color: 'var(--color-warning)' }}>
+            <Trans
+              i18nKey="publish.rootRefs"
+              values={{ example: rootRefs[0] }}
+              components={{ path: <code className="break-all" />, cmd: <code className="whitespace-nowrap" /> }}
+            />
+          </p>
+        )}
 
         {/* A refusal has no list to show, nor does a record that failed to load. */}
         {!recordFailed && !blocking && (
           <ReviewList
+            artifactId={artifact?.artifact_id ?? ''}
             heading={status ? listHeading : null}
             status={status}
             files={files}
             added={added}
-            unavailable={statusRefusal?.kind === 'unavailable'}
-            failed={statusQuery.isError}
+            failure={listFailure}
+            locked={busy}
+            failed={statusQuery.isError || scout.failed}
             fetching={statusQuery.isFetching}
-            onRetry={() => void statusQuery.refetch()}
+            onRetry={() => (scout.failed ? scout.retry() : void statusQuery.refetch())}
           />
         )}
 

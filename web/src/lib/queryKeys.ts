@@ -102,6 +102,11 @@ export const queryKeys = {
     // Reads the computer, so it is fetched on demand (crumb, Publish dialog)
     // rather than on every record change.
     status:      (artifactId: string) => [...queryKeys.artifacts.all, 'status', artifactId],
+    leftOut:     (artifactId: string) => [...queryKeys.artifacts.all, 'left-out', artifactId],
+    // The answer under one report of what the page loaded, beneath `status`, so
+    // anything that reads a file's status again reads this too.
+    statusWith:  (artifactId: string, loaded: readonly string[], earlier: readonly string[]) =>
+      [...queryKeys.artifacts.status(artifactId), loaded, earlier],
     // The owner's comment destination setting changes every file's answer.
     allDestinations: ['artifacts', 'destinations'],
     // A bind or unbind changes the answer for every thread beside.

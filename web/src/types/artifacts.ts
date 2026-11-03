@@ -91,25 +91,36 @@ export interface ArtifactDrift {
 }
 
 /** Why a file goes with a publish: the entry itself, or what it links, styles, reads or runs. */
-export type ShareFileReason = 'entry' | 'page' | 'style' | 'markdown' | 'script';
+export type ShareFileReason = 'entry' | 'page' | 'link' | 'style' | 'markdown' | 'script' | 'loaded';
 
 export interface ShareFileEntry {
   path: string;
-  size: number;
+  /** Null only for a left-out file nothing could probe: one the stored copy never keeps, while its computer is stopped. */
+  size: number | null;
   reason: ShareFileReason;
+  /** The owner may leave it out: a link, a guess, a load only an earlier report named. */
+  optional: boolean;
 }
 
 /** The live file against the latest version: what the crumb's "changed since" and the Publish dialog read. */
 export interface ArtifactStatus {
   latest_seq: number;
-  /** The entry as served now, secrets redacted; equals a version file's `sha256` when unchanged. */
-  live_sha256: string;
+  /** The entry as served now, secrets redacted; equals a version file's `sha256` when unchanged. Null `over_cap`, when nothing was read. */
+  live_sha256: string | null;
+  /** The page's code as this list was read; a publish sends it back, refused as `files_changed` once it moved. Null `over_cap`. */
+  page_sha256: string | null;
   /** What a publish now would carry, the entry first. */
   files: ShareFileEntry[];
+  /** What the owner left out and the page still names, to offer back. */
+  left_out: ShareFileEntry[];
   total_size: number;
   /** Null before the first publish. */
   changed: boolean | null;
   drift: ArtifactDrift | null;
+  /** The cap the list crossed, which a publish refuses until enough is left out; `files` then stops at the file that crossed it. */
+  over_cap?: { code: 'too_many_files' | 'too_many_bytes'; limit: number } | null;
+  /** What the files load from the site root, as written, which no view of them serves; never on the list. */
+  root_refs?: string[];
 }
 
 export interface PublishArtifactRequest {
@@ -118,6 +129,12 @@ export interface PublishArtifactRequest {
   label?: string | null;
   /** Left out, the setting is kept; a new share starts with it off. */
   keep_updated?: boolean;
+  /** What the live page reported loading, the same report the list was read with. */
+  loaded: readonly string[];
+  /** What earlier documents of the page loaded in this tab (`PageLoads.earlier`). */
+  earlier: readonly string[];
+  /** `ArtifactStatus.page_sha256` of the list reviewed. */
+  page_sha256?: string;
 }
 
 export interface PublishArtifactResponse {

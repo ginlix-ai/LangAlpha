@@ -16,6 +16,8 @@ interface LiveFrameOptions {
   prefix?: string | null;
   /** Without `prefix`, a grant no other frame shares (`useOwnFileGrant`), so what it reports is the files as they are now. */
   ownGrant?: boolean;
+  /** The publish review's own load of the page, whose report stands for the page while it is open (`notePageOpen`). */
+  scout?: boolean;
   inject: ServeInject;
   /**
    * Which bytes of the file to show. A new one loads the file again, over the
@@ -50,7 +52,8 @@ export interface LiveFrame {
  * of the path, and a link may have led the frame to another file.
  */
 export function useLiveFrame({
-  workspaceId, filePath, prefix: given = null, ownGrant = false, inject, revision, anchor = null, anchorSeq = null, onOpenLink = null,
+  workspaceId, filePath, prefix: given = null, ownGrant = false, scout = false, inject, revision, anchor = null, anchorSeq = null,
+  onOpenLink = null,
 }: LiveFrameOptions): LiveFrame {
   const root = useWorkspaceFolders()?.rootDir;
   const shared = useWorkspaceFileGrant(given || ownGrant ? null : workspaceId);
@@ -82,7 +85,10 @@ export function useLiveFrame({
   // Under the file the document says it is, as its report is: a link with a
   // query leads the frame to another file in place.
   const shown = bridge?.path ?? null;
-  useEffect(() => (bridge && shown ? notePageOpen(workspaceId, shown, bridge) : undefined), [bridge, workspaceId, shown]);
+  useEffect(
+    () => (bridge && shown ? notePageOpen(workspaceId, shown, bridge, { scout }) : undefined),
+    [bridge, workspaceId, shown, scout],
+  );
   return {
     source,
     // A failed renewal keeps the grant it already had, and the frame keeps

@@ -11,11 +11,12 @@
  * write or the agent's answer arrives without polling.
  */
 import { useCallback, useEffect, useMemo } from 'react';
-import { useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
+import { partialMatchKey, useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { ALL, refreshArtifactComments, refreshArtifactRecord } from '@/lib/artifactCache';
 import { artifactUnread, readAll, readThrough, unreadComments, type ArtifactUnread } from '@/lib/artifactCommentReads';
 import { GRANT_RENEW_MARGIN_MS, MIN_RENEW_INTERVAL_MS, msUntilRenewal } from '@/lib/expiry';
+import { NO_PAGE_LOADS, usePageLoads } from '@/lib/pageLoads';
 import { isClientError, retryUnlessClientError } from '@/api/errors';
 import { workspaceRelativePath } from '@/pages/ChatAgent/utils/agentPaths';
 import {
@@ -32,6 +33,7 @@ import {
   markArtifactCommentRead,
   markArtifactCommentsRead,
   publishArtifact,
+  setArtifactFileLeftOut,
   setArtifactKeepUpdated,
   unbindArtifact,
   unshareArtifact,
@@ -258,15 +260,25 @@ export function useArtifactBinding() {
  * The live file against the latest version, and what a publish now would
  * carry. It reads the computer, so a view asks only while it shows it: the
  * crumb of a published file, and the Publish dialog (`always` re-reads on
- * open, as the review step must describe the files as they are now).
+ * open, as the review step must describe the files as they are now). Only the
+ * review sends the page's report of what it loaded (`report`): a page that
+ * keeps loading files would otherwise make every view read again each time.
  */
 export function useArtifactStatus(
-  artifactId: string | null | undefined,
-  { enabled = true, always = false }: { enabled?: boolean; always?: boolean } = {},
+  artifact: Artifact | null | undefined,
+  { enabled = true, always = false, report = false }: { enabled?: boolean; always?: boolean; report?: boolean } = {},
 ): UseQueryResult<ArtifactStatus, Error> {
+  const artifactId = artifact?.artifact_id ?? '';
+  const reported = usePageLoads(artifact?.workspace_id ?? '', artifact?.path ?? '');
+  const loads = report ? reported : NO_PAGE_LOADS;
   return useQuery<ArtifactStatus, Error>({
-    queryKey: queryKeys.artifacts.status(artifactId ?? ''),
-    queryFn: () => getArtifactStatus(artifactId!),
+    queryKey: queryKeys.artifacts.statusWith(artifactId, loads.now, loads.earlier),
+    queryFn: () => getArtifactStatus(artifactId, loads),
+    // A new report reads the list again, which stays on screen meanwhile. Never
+    // another file's: a view stays mounted from tab to tab, and the placeholder
+    // reaches a disabled query too.
+    placeholderData: (previous, query) =>
+      (query && partialMatchKey(query.queryKey, queryKeys.artifacts.status(artifactId)) ? previous : undefined),
     enabled: enabled && !!artifactId,
     staleTime: always ? 0 : 30_000,
     refetchOnMount: always ? 'always' : true,
@@ -275,6 +287,29 @@ export function useArtifactStatus(
     refetchOnWindowFocus: always,
     retry: retryUnlessClientError,
   });
+}
+
+/**
+ * One file taken off what a publish carries, or put back. Pending until the
+ * list has been read again, so a box shows what the owner asked for until the
+ * list says the same.
+ */
+export function useFileLeftOut(artifactId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: queryKeys.artifacts.leftOut(artifactId),
+    mutationFn: ({ path, leftOut }: { path: string; leftOut: boolean }) =>
+      setArtifactFileLeftOut(artifactId, path, leftOut),
+    onSuccess: async (artifact: Artifact) => {
+      putArtifact(qc, artifact);
+      await qc.invalidateQueries({ queryKey: queryKeys.artifacts.status(artifactId) });
+    },
+  });
+}
+
+/** A file is being taken off the list or put back, so the list may not be what a publish would find. */
+export function useFileLeftOutPending(artifactId: string): boolean {
+  return useIsMutating({ mutationKey: queryKeys.artifacts.leftOut(artifactId) }) > 0;
 }
 
 /** Newest first. */

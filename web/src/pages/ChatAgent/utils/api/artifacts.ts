@@ -9,6 +9,7 @@
 import { api } from '@/api/client';
 import i18n from '@/i18n';
 import { deviceTimezone } from '@/lib/deviceTimezone';
+import type { PageLoads } from '@/lib/pageLoads';
 import { randomUUID } from '@/lib/randomUUID';
 import type {
   AddArtifactCommentMessageRequest,
@@ -57,6 +58,12 @@ export async function setArtifactKeepUpdated(artifactId: string, keepUpdated: bo
   return data;
 }
 
+/** Take a file the page does not need to draw off what a publish carries, or put it back. */
+export async function setArtifactFileLeftOut(artifactId: string, path: string, leftOut: boolean): Promise<Artifact> {
+  const { data } = await api.post<Artifact>(`${artifactPath(artifactId)}/left-out`, { path, left_out: leftOut });
+  return data;
+}
+
 // --- Where comments go ---
 
 /** Send the file's comments to `threadId` until unbound. 409 `destination_unavailable`. */
@@ -88,11 +95,15 @@ export async function getArtifactDestinations(
 
 /**
  * The live file against the latest version, and what a publish now would
- * carry. Reads the computer (or the stored copy when it is stopped): 404
- * `file_missing`, 422 over a cap, 503 when it cannot be read now.
+ * carry, with what the page reported loading added to what a scan of its
+ * source finds. Reads the computer (or the stored copy when it is stopped):
+ * 404 `file_missing`, 422 over a cap, 503 when it cannot be read now.
  */
-export async function getArtifactStatus(artifactId: string): Promise<ArtifactStatus> {
-  const { data } = await api.get<ArtifactStatus>(`${artifactPath(artifactId)}/status`);
+export async function getArtifactStatus(artifactId: string, loads: PageLoads): Promise<ArtifactStatus> {
+  const { data } = await api.post<ArtifactStatus>(`${artifactPath(artifactId)}/status`, {
+    loaded: loads.now,
+    earlier: loads.earlier,
+  });
   return data;
 }
 
