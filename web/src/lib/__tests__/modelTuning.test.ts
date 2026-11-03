@@ -20,7 +20,7 @@ type ClampContract = {
   cases: { ladder: string[]; requested: string; expected: string | null }[];
 };
 
-const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../tests/fixtures');
+const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '__fixtures__');
 const read = <T,>(name: string): T => JSON.parse(readFileSync(resolve(FIXTURES, name), 'utf-8'));
 
 const contract: ClampContract = read('reasoning_clamp.json');

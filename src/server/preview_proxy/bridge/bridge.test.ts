@@ -8,10 +8,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 // first script of a framed document, so there is no module to import: it runs
 // here from its parts, in a document of its own, wrapped as
 // `preview_proxy/page_bridge.py` wraps the owner's live view (core, the
-// request counter, then the comment parts). This suite is the repo's only JavaScript
-// runner, hence the reach into the server's tree.
+// request counter, then the comment parts). It runs on web's Vitest from this
+// directory (`make test-bridge`), so the web package never reads outside web/.
 const part = (name: string) => readFileSync(
-  resolve(__dirname, `../../../../../../../../../src/server/preview_proxy/bridge/${name}.js`),
+  resolve(__dirname, `${name}.js`),
   'utf8',
 );
 const BRIDGE = [
@@ -24,7 +24,8 @@ const BRIDGE = [
 
 type PageWindow = Window & typeof globalThis;
 // jsdom ships no type declarations and @types/jsdom is not a dependency here.
-const { JSDOM } = createRequire(import.meta.url)('jsdom') as {
+// It is web's dependency, so it resolves from web's package, not from here.
+const { JSDOM } = createRequire(resolve(__dirname, '../../../../web/package.json'))('jsdom') as {
   JSDOM: new (
     html: string,
     options: { url: string; runScripts: 'dangerously'; pretendToBeVisual: boolean; beforeParse: (w: PageWindow) => void },

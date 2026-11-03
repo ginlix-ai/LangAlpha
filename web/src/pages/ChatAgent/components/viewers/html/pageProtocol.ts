@@ -8,8 +8,8 @@
  * the frame can post as the bridge does. A message that does not parse is
  * dropped whole, and the viewer acts only on what the owner then does in its
  * own UI; nothing the page says creates a comment. The bridge's sources
- * import the wire types below in JSDoc, so `tsc -b` holds both ends to one
- * shape (`web/tsconfig.bridge.json`).
+ * import the wire types below in JSDoc, so the bridge's own typecheck
+ * (`make test-bridge`) holds both ends to one shape.
  */
 import * as z from 'zod/mini';
 import type {

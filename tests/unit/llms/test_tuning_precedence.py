@@ -16,7 +16,7 @@ import pytest
 from src.llms.preferences import TUNING_FIELDS, Tuning, resolve_tuning, resolve_tuning_field
 
 CONTRACT = json.loads(
-    (Path(__file__).parents[3] / "tests/fixtures/tuning_precedence.json").read_text()
+    (Path(__file__).parents[3] / "web/src/lib/__tests__/__fixtures__/tuning_precedence.json").read_text()
 )
 
 MODEL = "m1"
