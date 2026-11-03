@@ -13,6 +13,7 @@ import { isHomeWorkspace } from '@/lib/homeWorkspace';
 import { getRecentThreads } from '@/pages/ChatAgent/utils/api';
 import { workspaceThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
 import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
+import { sentMessageWords } from '@/pages/ChatAgent/components/messageList/sentMessage';
 import type { Thread, ThreadsResponse, Workspace } from '@/types/api';
 import { queryKeys } from '@/lib/queryKeys';
 import { registerWidget } from '../framework/WidgetRegistry';
@@ -51,6 +52,11 @@ function formatThreadTime(date: Date, bucket: BucketKey, locale: string): string
   return shortMonthDay(date, locale);
 }
 
+/** A thread's title, else the words of its first message. */
+function threadName(thread: Thread): string {
+  return thread.title || sentMessageWords((thread as { first_query_content?: string }).first_query_content ?? '');
+}
+
 interface GroupedThreads {
   today: Thread[];
   week: Thread[];
@@ -75,8 +81,7 @@ function ThreadRow({
   const { t } = useTranslation();
   const locale = useLocale();
   const title =
-    thread.title ||
-    ((thread as { first_query_content?: string }).first_query_content as string | undefined) ||
+    threadName(thread) ||
     t('dashboard.widgets.recentThreads.untitled');
   const updated = thread.updated_at ? new Date(thread.updated_at) : null;
   const timeStr = updated ? formatThreadTime(updated, bucket, locale) : '';
@@ -279,8 +284,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
         const ws = wsId ? workspaceMap.get(wsId) : undefined;
         return {
           title:
-            th.title ||
-            ((th as { first_query_content?: string }).first_query_content as string | undefined) ||
+            threadName(th) ||
             t('dashboard.widgets.recentThreads.untitled'),
           workspace: isHomeWorkspace(ws) ? label(ws) : ws?.name ?? '',
           when: th.updated_at ?? '',
@@ -316,8 +320,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
       const wsId = (th as { workspace_id?: string }).workspace_id;
       const ws = wsId ? workspaceMap.get(wsId) : undefined;
       const title =
-        th.title ||
-        ((th as { first_query_content?: string }).first_query_content as string | undefined) ||
+        threadName(th) ||
         t('dashboard.widgets.recentThreads.untitled');
       const lines: string[] = [`**${title}**`];
       if (ws?.name) lines.push(`Workspace: ${ws.name}`);
