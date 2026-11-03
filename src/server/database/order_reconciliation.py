@@ -529,13 +529,18 @@ _ABANDONED = {
 
 
 async def refuse_abandoned_proposals(*, grace_seconds: float) -> list[dict[str, Any]]:
-    """Refuse the proposals whose run ended without putting them to the user.
+    """Refuse the proposals no answer can reach any more.
 
     A run that asks for a verdict ends ``interrupted`` and waits however long
     the user takes, so only a run stopped or finished first abandons one, as a
-    Stop between the write and the card does. An errored run keeps its
-    proposals: ``/retry`` resumes it from its last checkpoint, which proposes
-    the same attempt again and has to find it still waiting.
+    Stop between the write and the card does, or a later turn the user started
+    with a new message once it has ended, since its first step went past the
+    card and answered its call with a cancellation. One stopped or failed
+    before that step carries the ``pending_input`` stamp and leaves the card
+    the newest thing on the thread, still answerable. A later answer's run
+    never counts: its ``/retry`` raises the same card. An errored run keeps
+    its proposals: ``/retry`` resumes it from its last checkpoint, which
+    proposes the same attempt again and has to find it still waiting.
     """
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -551,7 +556,20 @@ async def refuse_abandoned_proposals(*, grace_seconds: float) -> list[dict[str, 
                  WHERE a.status = 'proposed'
                    AND a.updated_at < NOW() - make_interval(secs => %s)
                    AND r.conversation_response_id = a.conversation_response_id
-                   AND r.status IN ('cancelled', 'completed')
+                   AND (
+                         r.status IN ('cancelled', 'completed')
+                      OR (r.status = 'interrupted' AND EXISTS (
+                            SELECT 1 FROM conversation_responses later
+                              JOIN conversation_queries q
+                                ON q.conversation_thread_id = later.conversation_thread_id
+                               AND q.turn_index = later.turn_index
+                             WHERE later.conversation_thread_id = r.conversation_thread_id
+                               AND later.run_seq > r.run_seq
+                               AND later.status <> 'in_progress'
+                               AND NOT (later.metadata ? 'pending_input')
+                               AND q.type <> 'resume_feedback'
+                         ))
+                       )
                 RETURNING a.attempt_id, a.user_id, a.vendor, a.tool
                 """,
                 (SafeJson(_ABANDONED), float(grace_seconds)),

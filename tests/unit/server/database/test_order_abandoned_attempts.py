@@ -96,8 +96,11 @@ async def test_a_proposal_is_refused_only_under_a_run_that_ended_without_asking(
     failure, grace = (getattr(p, "obj", p) for p in conn.params)
     assert grace == 600.0
     assert "WHERE a.status = 'proposed'" in conn.sql
-    # An interrupted run is still waiting on the user, however long they take.
-    assert "AND r.status IN ('cancelled', 'completed')" in conn.sql
+    assert "r.status IN ('cancelled', 'completed')" in conn.sql
+    # An interrupted run is still waiting on the user, however long they take,
+    # until a turn started by a new message goes past its card.
+    assert "OR (r.status = 'interrupted' AND EXISTS" in conn.sql
+    assert "AND q.type <> 'resume_feedback'" in conn.sql
     assert Failure.from_json(failure).code == "never_decided"
 
 
