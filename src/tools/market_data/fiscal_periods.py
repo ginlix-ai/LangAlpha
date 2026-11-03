@@ -5,12 +5,16 @@ December), so every label is read off the issuer's own income statements.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Collection, Dict, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
 
-FILING_DATE_TOLERANCE_DAYS = 5  # a filing lands within days of its earnings release
+# An A-share's annual report is due by April 30: 121 days after December 31 in a leap year.
+REPORT_LAG_MAX_DAYS = 125
+# An interim report comes far sooner (a 10-Q within 45 days, an A-share's or HK
+# interim within about two months), so a report this late is the next period's.
+INTERIM_LAG_MAX_DAYS = 95
 DAYS_PER_QUARTER = 90  # Approximate days per fiscal quarter
 
 
@@ -70,40 +74,61 @@ def infer_fiscal_period(
     return None
 
 
-def match_filing_to_fiscal_period(
-    filing_date: str,
-    earnings_calendar: List[Dict],
-    lookup: Dict[str, str],
-) -> str:
+def report_period_ends(
+    report_dates: List[str], period_ends: List[str], annual_ends: Collection[str] = ()
+) -> Dict[str, str]:
+    """Map each earnings announcement date to the fiscal period end it reports.
+
+    FMP's stable earnings rows no longer carry ``fiscalDateEnding``, so the two
+    dated sequences are aligned in order: each period end pairs with at most
+    one later report within ``REPORT_LAG_MAX_DAYS`` of a fiscal year end (one of
+    *annual_ends*) or ``INTERIM_LAG_MAX_DAYS`` of any other, and the alignment
+    with the least total lag wins, a skipped end or report costing the most a
+    lag can.
+    So an A-share's annual report (late April, after Q1 has ended) stays on Q4
+    and its Q1 report on Q1, and a statement older than the earnings history
+    is left out instead of shifting every quarter by one.
     """
-    Match a SEC filing date to its fiscal period using earnings calendar.
-    Returns the fiscal period name or 'Quarterly' if no match found.
-    """
-    if not earnings_calendar or not filing_date or filing_date == "N/A":
-        return "Quarterly"
+    reports = sorted({str(d)[:10] for d in report_dates if d})
+    ends = sorted({str(e)[:10] for e in period_ends if e})
+    annual = {str(e)[:10] for e in annual_ends}
 
-    try:
-        filing_dt = datetime.strptime(filing_date, "%Y-%m-%d")
-        best_match = None
-        min_diff = float("inf")
+    def lag(end: str, report: str) -> Optional[int]:
+        try:
+            days = (datetime.strptime(report, "%Y-%m-%d") - datetime.strptime(end, "%Y-%m-%d")).days
+        except ValueError:
+            return None
+        cap = REPORT_LAG_MAX_DAYS if end in annual else INTERIM_LAG_MAX_DAYS
+        return days if 0 < days <= cap else None
 
-        for cal in earnings_calendar:
-            cal_date = cal.get("date")
-            fiscal_ending = cal.get("fiscalDateEnding")
-            if not cal_date or not fiscal_ending:
-                continue
+    skip = REPORT_LAG_MAX_DAYS
+    n, m = len(ends), len(reports)
+    # cost[i][j]: the cheapest alignment of ends[i:] with reports[j:].
+    cost = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n, -1, -1):
+        for j in range(m, -1, -1):
+            options = [skip + cost[i + 1][j]] if i < n else []
+            options += [skip + cost[i][j + 1]] if j < m else []
+            paired = lag(ends[i], reports[j]) if i < n and j < m else None
+            options += [paired + cost[i + 1][j + 1]] if paired is not None else []
+            cost[i][j] = min(options, default=0)
 
-            try:
-                cal_dt = datetime.strptime(cal_date, "%Y-%m-%d")
-                diff = abs((filing_dt - cal_dt).days)
-                if diff < min_diff and diff <= FILING_DATE_TOLERANCE_DAYS:
-                    min_diff = diff
-                    if fiscal_ending in lookup:
-                        best_match = lookup[fiscal_ending]
-            except ValueError:
-                continue
+    out: Dict[str, str] = {}
+    i = j = 0
+    while i < n and j < m:
+        paired = lag(ends[i], reports[j])
+        if paired is not None and cost[i][j] == paired + cost[i + 1][j + 1]:
+            out[reports[j]] = ends[i]
+            i, j = i + 1, j + 1
+        elif cost[i][j] == skip + cost[i + 1][j]:
+            i += 1
+        else:
+            j += 1
+    return out
 
-        return best_match or "Quarterly"
 
-    except ValueError:
-        return "Quarterly"
+def period_name(period_end: Optional[str], lookup: Dict[str, str]) -> Optional[str]:
+    """The fiscal name for *period_end*, read off the statements or inferred."""
+    if not period_end:
+        return None
+    return lookup.get(period_end) or infer_fiscal_period(period_end, lookup)
