@@ -66,6 +66,7 @@ services:
       dockerfile: deploy/Dockerfile.dev
       args:
         INSTALL_OBSERVABILITY: ${INSTALL_OBSERVABILITY:-${OTEL_EXPORTER_OTLP_ENDPOINT:+true}}
+        INSTALL_CLAUDE_CODE: ${INSTALL_CLAUDE_CODE:-false}
     depends_on:
       cli:
         condition: service_completed_successfully
@@ -133,6 +134,7 @@ services:
       dockerfile: deploy/Dockerfile.dev
       args:
         INSTALL_OBSERVABILITY: ${INSTALL_OBSERVABILITY:-${OTEL_EXPORTER_OTLP_ENDPOINT:+true}}
+        INSTALL_CLAUDE_CODE: ${INSTALL_CLAUDE_CODE:-false}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     init: true
