@@ -503,6 +503,25 @@ async def get_thread_lifecycle_rows(
     return [r for r in fetched if r.get("branch")], as_of_seq
 
 
+async def count_threads_needing_attention(user_id: str) -> int:
+    """Threads with an unseen ending or waiting on the user, as the thread
+    list badges them: the number an app icon shows. Counted over the
+    snapshot with no cap on its unseen branch (``LIMIT NULL``), so a long
+    unseen backlog is counted in full, not as the feed's first page."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT count(*) FROM ({_LIFECYCLE_SNAPSHOT_SQL}) s
+                WHERE s.branch = 'unseen'
+                   OR (s.branch = 'live' AND s.latest_run_status = 'interrupted')
+                """,
+                (user_id, None),
+            )
+            (count,) = await cur.fetchone()
+    return count
+
+
 async def get_thread_with_summary(
     conversation_thread_id: str,
 ) -> Optional[Dict[str, Any]]:

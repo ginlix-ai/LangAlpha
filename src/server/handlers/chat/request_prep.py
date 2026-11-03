@@ -39,6 +39,7 @@ from src.server.database.conversation.threads_write import remember_thread_llm_m
 from src.server.services.llm.thread_model import NamedModel
 from src.server.services.runs.pending_input import cache_clock_attempt
 from src.server.database.runs import lifecycle as tl_db
+from src.server.database.runs.hook_jobs import SURFACE_META
 from src.server.models.chat import CommandReport, summarize_hitl_response_map
 from src.server.utils.skill_context import (
     detect_slash_commands,
@@ -458,7 +459,7 @@ async def _read_prior_thread(
         last_turn_at = stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
 
     platform = row.get("platform")
-    ran_on = ((attempt or {}).get("metadata") or {}).get(SURFACE_KEY)
+    ran_on = ((attempt or {}).get("metadata") or {}).get(SURFACE_META)
     attempt_platform = ran_on.get("platform") if isinstance(ran_on, dict) else None
     return PriorThread(
         last_turn_at=last_turn_at,
@@ -660,10 +661,6 @@ def _turn_platform(request: ChatRequest, prior: PriorThread) -> Optional[str]:
     return None
 
 
-#: The run-row key under which an attempt records where it ran, for its retry.
-SURFACE_KEY = "surface"
-
-
 def surface_stamp(
     request: ChatRequest, prior: PriorThread, *, inherits_rules: bool
 ) -> dict:
@@ -684,7 +681,7 @@ def surface_stamp(
         stamp["rules"] = request.surface_rules
     if inherits_rules:
         stamp["inherits_rules"] = True
-    return {SURFACE_KEY: stamp} if stamp else {}
+    return {SURFACE_META: stamp} if stamp else {}
 
 
 async def retried_on_its_surface(request: ChatRequest) -> tuple[ChatRequest, bool]:
@@ -698,7 +695,7 @@ async def retried_on_its_surface(request: ChatRequest) -> tuple[ChatRequest, boo
     if not request.retry_of_run_id or request.platform:
         return request, False
     run = await tl_db.get_run(request.retry_of_run_id)
-    stamp = ((run or {}).get("metadata") or {}).get(SURFACE_KEY)
+    stamp = ((run or {}).get("metadata") or {}).get(SURFACE_META)
     if not isinstance(stamp, dict):
         return request, False
     platform, rules = stamp.get("platform"), stamp.get("rules")

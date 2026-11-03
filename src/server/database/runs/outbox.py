@@ -30,6 +30,7 @@ from src.server.database.runs.hook_jobs import (  # noqa: F401
     BurstReleasePayload,
     HookJob,
     NeedsInputWakePayload,
+    PushPayload,
     ReportBackPayload,
     UserFeedPayload,
     WatchClearPayload,
@@ -63,7 +64,8 @@ async def enqueue_hooks(
     ON CONFLICT DO NOTHING on idempotency_key: re-finalizing after a lost
     race never double-registers an effect. Each row is dated by the clock,
     not by the transaction, so jobs one transaction writes on a key run in
-    the order written.
+    the order written. A job with ``delay_seconds`` is first due that long
+    after the write, through the same ``next_retry_at`` a nack's backoff sets.
     """
     async with conn.cursor() as cur:
         for job in jobs:
@@ -71,9 +73,12 @@ async def enqueue_hooks(
                 """
                 INSERT INTO hook_outbox (
                     run_id, conversation_thread_id, hook_type,
-                    payload, ordering_key, idempotency_key, created_at
+                    payload, ordering_key, idempotency_key, created_at,
+                    next_retry_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp())
+                VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp(),
+                        -- NULL with no delay: make_interval is strict.
+                        clock_timestamp() + make_interval(secs => %s::float8))
                 ON CONFLICT (idempotency_key) DO NOTHING
                 """,
                 (
@@ -83,6 +88,7 @@ async def enqueue_hooks(
                     SafeJson(job.payload),
                     job.ordering_key,
                     job.idempotency_key,
+                    job.delay_seconds,
                 ),
             )
 
@@ -1592,6 +1598,30 @@ async def merge_job_payload(
                 (SafeJson(patch), list(remove or []), job_id),
             )
             return cur.rowcount > 0
+
+
+async def add_to_job_payload_list(job_id: str, key: str, values: List[str]) -> None:
+    """Union ``values`` into the string list at ``payload[key]``, against the
+    row as it stands, so two owners of a job (one whose lease lapsed) each add
+    what they did rather than overwrite the other's."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE hook_outbox
+                SET payload = jsonb_set(
+                    COALESCE(payload, '{}'::jsonb),
+                    ARRAY[%(key)s],
+                    (SELECT COALESCE(jsonb_agg(v ORDER BY v), '[]'::jsonb)
+                     FROM (SELECT jsonb_array_elements_text(
+                                      COALESCE(payload->%(key)s, '[]'::jsonb)) AS v
+                           UNION
+                           SELECT unnest(%(values)s::text[])) AS s)
+                )
+                WHERE hook_outbox_id = %(job_id)s
+                """,
+                {"key": key, "values": list(values), "job_id": job_id},
+            )
 
 
 # ---------------------------------------------------------------------------

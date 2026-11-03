@@ -141,6 +141,26 @@ AUTOMATION_WEBHOOK_SECRET: str = os.getenv("AUTOMATION_WEBHOOK_SECRET", "")
 # the user's account. Unset, neither tool exists.
 CHANNEL_GATEWAY_URL: str = os.getenv("CHANNEL_GATEWAY_URL", "").strip().rstrip("/")
 
+# Apple Push Notification service, for the iOS app. Push is on only when the
+# key id, the team id, the .p8 key (inline PEM, whose newlines may arrive as
+# literal ``\n``, or a path) and the app's bundle ids are all set; the key file
+# is read on first send.
+APNS_KEY_ID: str = os.getenv("APNS_KEY_ID", "").strip()
+APNS_TEAM_ID: str = os.getenv("APNS_TEAM_ID", "").strip()
+APNS_PRIVATE_KEY: str = os.getenv("APNS_PRIVATE_KEY", "").replace("\\n", "\n").strip()
+APNS_PRIVATE_KEY_PATH: str = os.getenv("APNS_PRIVATE_KEY_PATH", "").strip()
+# The APNs topics a device may register under: the bundle ids of the app
+# builds this server pushes to. No default, since they name one team's apps.
+APNS_BUNDLE_IDS: tuple[str, ...] = tuple(
+    b.strip() for b in os.getenv("APNS_BUNDLE_IDS", "").split(",") if b.strip()
+)
+APNS_ENABLED: bool = bool(
+    APNS_KEY_ID
+    and APNS_TEAM_ID
+    and (APNS_PRIVATE_KEY or APNS_PRIVATE_KEY_PATH)
+    and APNS_BUNDLE_IDS
+)
+
 # Host IP for local LLM providers (Ollama, LM Studio, vLLM).
 # In Docker, "localhost" means the container — use host.docker.internal to reach the host.
 _IN_DOCKER: bool = os.path.exists("/.dockerenv")
