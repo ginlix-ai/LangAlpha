@@ -22,6 +22,10 @@ def _env(statuses, *, parked="pending"):
     drainer = MagicMock()
     with (
         patch("src.server.database.runs.lifecycle.get_latest_attempt", new=latest),
+        patch(
+            "src.server.services.report_back.notify_turn._card_waits",
+            new=AsyncMock(return_value=False),
+        ),
         patch("src.server.database.runs.outbox.defer_claimed_job", new=defer),
         patch(
             "src.server.database.runs.outbox.release_deferred_notifications",
@@ -56,7 +60,7 @@ async def test_an_idle_thread_lets_the_caller_post(status):
 async def test_a_busy_thread_parks_the_job(status):
     with _env([status, status]) as (_, defer, release, drainer):
         assert await _park() is True
-    defer.assert_awaited_once_with("job-1", attempts=2, max_attempts=5)
+    defer.assert_awaited_once_with("job-1", attempts=2, max_attempts=5, waits_on_user=False)
     release.assert_not_awaited()
     drainer.nudge.assert_not_called()
 

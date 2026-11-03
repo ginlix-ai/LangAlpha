@@ -39,6 +39,56 @@ _TERMINAL_POLL = 5.0
 _BUSY_STATUSES = ("interrupted", "in_progress")
 
 
+async def _holds_notifications(thread_id: str, latest: Mapping[str, Any] | None) -> bool:
+    """Whether the thread cannot take a notification turn now.
+
+    The latest attempt decides, except for one that was stopped or failed:
+    it may have ended before its first step, leaving a card an earlier run
+    paused on still waiting, and a notification turn would go past it,
+    answering the call it holds with a cancellation.
+    """
+    if not latest:
+        return False
+    status = latest.get("status")
+    if status in _BUSY_STATUSES:
+        return True
+    if status not in ("cancelled", "error"):
+        return False
+    return await _card_waits(thread_id)
+
+
+async def _card_waits(thread_id: str) -> bool:
+    """Whether the step the thread's next turn starts from holds a pending
+    interrupt.
+
+    That step is read where a turn starts (``turn_base_checkpoint_id``, so a
+    fork that pinned the branch back to a card counts) and beneath an update
+    on top that marked no node as run, as a stop's flush wrote one. An update
+    written as the waiting node (an agent change answering its calls) ended
+    the step, so nothing beneath it waits.
+    """
+    from src.server.utils.checkpoint_helpers import (
+        build_checkpoint_config,
+        get_checkpointer,
+        interrupt_records,
+        turn_base_checkpoint_id,
+    )
+
+    checkpointer = get_checkpointer()
+    base = await turn_base_checkpoint_id(checkpointer, thread_id)
+    cp = await checkpointer.aget_tuple(build_checkpoint_config(thread_id, base))
+    while cp is not None and (cp.metadata or {}).get("source") == "update":
+        if cp.parent_config is None:
+            return False
+        parent = await checkpointer.aget_tuple(cp.parent_config)
+        if parent is None or (
+            parent.checkpoint["versions_seen"] != cp.checkpoint["versions_seen"]
+        ):
+            return False
+        cp = parent
+    return cp is not None and bool(interrupt_records(cp.pending_writes))
+
+
 @dataclass(frozen=True)
 class NotOwed:
     """A report nothing is owed for any more: its executor drops it, and a
@@ -322,24 +372,31 @@ async def park_while_thread_busy(
     target's or a wakeup's notice, held for the thread's next turn), so the
     re-read covers it there too; a steer settled there instead is not
     parked, and has nothing to release.
+
+    Held by a card under a stopped or failed attempt, the park does not spend
+    the claim: each stop over the card releases the job again, and a user
+    stopping a few sends before answering must not run it dead.
     """
     from src.server.database.runs import lifecycle as tl_db
     from src.server.database.runs import outbox as outbox_db
     from src.server.services.hook_outbox import MAX_ATTEMPTS
 
     latest = await tl_db.get_latest_attempt(thread_id)
-    if not latest or latest.get("status") not in _BUSY_STATUSES:
+    if not await _holds_notifications(thread_id, latest):
         return False
     parked = await outbox_db.defer_claimed_job(
-        job_id, attempts=attempts, max_attempts=MAX_ATTEMPTS
+        job_id,
+        attempts=attempts,
+        max_attempts=MAX_ATTEMPTS,
+        waits_on_user=latest.get("status") not in _BUSY_STATUSES,
     )
     logger.info(
         f"{log_prefix} Parked job {job_id} for {subject} while thread "
-        f"{thread_id} is {latest.get('status')} (status={parked})"
+        f"{thread_id} holds it, latest run {latest.get('status')} (status={parked})"
     )
     if parked == "pending" or (parked == "exhausted" and parks_at_ceiling):
         latest = await tl_db.get_latest_attempt(thread_id, wait_for_finalize=True)
-        if not latest or latest.get("status") not in _BUSY_STATUSES:
+        if not await _holds_notifications(thread_id, latest):
             await release_parked_notifications(thread_id)
     return True
 
@@ -382,7 +439,7 @@ async def release_if_a_turn_ended(thread_id: str, since: tuple[str, str] | None)
 
     # Behind a finalize in flight, as the park's re-read is.
     latest = await tl_db.get_latest_attempt(thread_id, wait_for_finalize=True)
-    if not latest or latest.get("status") in _BUSY_STATUSES:
+    if not latest or await _holds_notifications(thread_id, latest):
         return False
     if run_marker(latest) == since:
         return False

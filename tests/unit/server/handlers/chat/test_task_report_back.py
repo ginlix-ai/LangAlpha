@@ -178,6 +178,10 @@ def _arb_env(
             "src.server.database.runs.lifecycle.get_latest_attempt", new=latest
         ),
         patch(
+            "src.server.services.report_back.notify_turn._card_waits",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
             "src.server.database.runs.lifecycle.get_run",
             new=AsyncMock(return_value=parent_run),
         ),
