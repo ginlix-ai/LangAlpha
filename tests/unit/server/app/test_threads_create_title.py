@@ -92,3 +92,8 @@ def test_a_named_title_is_capped_like_a_rename():
     with pytest.raises(ValidationError):
         ThreadCreateRequest(title="x" * 256)
     assert ThreadCreateRequest(title="x" * 255).first_query == ""
+
+
+def test_a_reply_after_a_long_quote_survives_the_clip():
+    message = '<quote source="Analyst">' + "word " * 1000 + "</quote>\n<reply>why?</reply>"
+    assert ThreadCreateRequest(first_query=message).first_query == message
