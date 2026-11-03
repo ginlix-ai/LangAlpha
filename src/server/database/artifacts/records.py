@@ -53,6 +53,12 @@ class Artifact:
     #: caps (``too_many_files``, ``too_many_bytes``). Visitors get a 404 and
     #: nothing tries again until the owner publishes.
     legacy_refused: str | None = None
+    #: What the page loaded in code when last published, which only it can name.
+    loaded_files: tuple[str, ...] = ()
+    #: What the owner left out of a publish, which the page may still name.
+    #: Each publish keeps only what its walk still found, so a path outlives
+    #: the page naming it until the next publish at most.
+    left_out_files: tuple[str, ...] = ()
 
     @property
     def shared(self) -> bool:
@@ -69,7 +75,7 @@ ARTIFACT_COLUMNS = """
     l.artifact_id::text, l.code, l.workspace_id::text, l.path,
     l.created_thread_id::text, l.bound_thread_id::text, l.keep_updated,
     l.latest_seq, l.shared_at, l.files, l.revision, l.created_at,
-    l.legacy_refused
+    l.legacy_refused, l.loaded_files, l.left_out_files
 """
 
 #: The owner's records: ``l`` joined to a live workspace of ``%(user_id)s``.
@@ -99,6 +105,8 @@ def artifact_from_row(row: dict[str, Any] | None) -> Artifact | None:
         revision=row["revision"],
         created_at=row["created_at"],
         legacy_refused=row["legacy_refused"],
+        loaded_files=tuple(row["loaded_files"]),
+        left_out_files=tuple(row["left_out_files"]),
     )
 
 
@@ -241,6 +249,30 @@ async def set_keep_updated(
         artifact_id=artifact_id,
         assignments="keep_updated = %(keep_updated)s",
         params={"keep_updated": keep_updated},
+    )
+
+
+async def set_left_out(
+    *, user_id: str, artifact_id: str, path: str, left_out: bool, cap: int
+) -> Artifact:
+    """Take one file off the list or put it back, in one statement, so two boxes
+    changed at once both hold. A list already at ``cap`` takes no new path, which
+    the answer shows by not holding it; the check is in the statement, so two
+    at once cannot both pass it. The next version is what carries the change; a
+    publish whose read began before it is refused under the lock
+    (``versions.LeftOutChanged``), since this moves no ``revision``."""
+    return await set_record(
+        user_id=user_id,
+        artifact_id=artifact_id,
+        assignments=(
+            "left_out_files = CASE "
+            "WHEN NOT %(left_out)s::boolean "
+            "THEN array_remove(l.left_out_files, %(path)s::text) "
+            "WHEN %(path)s::text = ANY(l.left_out_files) "
+            "OR cardinality(l.left_out_files) >= %(cap)s THEN l.left_out_files "
+            "ELSE array_append(l.left_out_files, %(path)s::text) END"
+        ),
+        params={"path": path, "left_out": left_out, "cap": cap},
     )
 
 

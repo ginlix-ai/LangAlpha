@@ -85,6 +85,7 @@ from src.server.database.artifacts.records import (
     one_line,
     record_creator,
     set_keep_updated,
+    set_left_out,
     unshare,
 )
 from src.server.database.artifacts.versions import (
@@ -164,6 +165,7 @@ __all__ = [
     "release_unread",
     "release_unread_send",
     "set_keep_updated",
+    "set_left_out",
     "unbind",
     "unshare",
     "update_comment",

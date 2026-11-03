@@ -1,7 +1,7 @@
 """Reads of a workspace file from a warm sandbox or its persisted record.
 
-Below the routers so the share manifest and the artifact snapshot can reach a
-file the way the file routes do, without depending on a route module.
+Below the routers so the artifact snapshot's reader can reach a file the way
+the file routes do, without depending on a route module.
 """
 
 from __future__ import annotations

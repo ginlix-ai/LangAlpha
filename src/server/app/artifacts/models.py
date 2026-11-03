@@ -74,6 +74,12 @@ class KeepUpdatedRequest(BaseModel):
     keep_updated: bool
 
 
+class LeftOutRequest(BaseModel):
+    #: The column's limit (``served_paths.may_be_artifact``).
+    path: str = Field(min_length=1, max_length=1024)
+    left_out: bool
+
+
 class BindRequest(BaseModel):
     thread_id: ThreadId
 
@@ -105,8 +111,11 @@ class ShareFileEntryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     path: str
-    size: int
+    #: Null for a left-out file nothing could probe (``ManifestEntry.size``).
+    size: int | None
     reason: str
+    #: The owner may leave it out (a link, a guess, a load no report names now).
+    optional: bool = False
 
 
 class DriftResponse(BaseModel):
@@ -117,13 +126,30 @@ class DriftResponse(BaseModel):
     changed: list[str]
 
 
+class ShareCapResponse(BaseModel):
+    code: Literal["too_many_files", "too_many_bytes"]
+    limit: int
+
+
 class StatusResponse(BaseModel):
     latest_seq: int
-    live_sha256: str
+    #: Null past a cap, when nothing was read: as for the page's code.
+    live_sha256: str | None
+    #: The page's code as this list was read (``Snapshot.page_sha256``), which
+    #: a publish sends back.
+    page_sha256: str | None
     files: list[ShareFileEntryResponse]
+    #: What the owner left out and the page still names, to offer back.
+    left_out: list[ShareFileEntryResponse]
     total_size: int
     changed: bool | None
     drift: DriftResponse | None
+    #: The cap the list crossed, which a publish refuses until the owner leaves
+    #: out enough; ``files`` then stops at the file that crossed it.
+    over_cap: ShareCapResponse | None = None
+    #: What the files load from the root of the origin, as written, which no
+    #: view of them serves: a warning, never part of the list.
+    root_refs: list[str] = []
 
 
 def _label(value: str | None) -> str | None:
@@ -139,11 +165,35 @@ def _label(value: str | None) -> str | None:
     return text
 
 
+#: As many as a page's bridge reports. Past the version cap the walk refuses the
+#: list with that reason, which the review shows, rather than this refusing it.
+_MAX_LOADED = 500
+#: A path the column holds (``served_paths.may_be_artifact``), refused here
+#: rather than folded on the event loop and dropped after.
+LoadedPath = Annotated[str, Field(max_length=1024)]
+
+
+class StatusRequest(BaseModel):
+    #: What the live page reported loading. It only ever adds to the list the
+    #: owner reviews, so a page that lies shows the owner a file, nothing more.
+    loaded: list[LoadedPath] = Field(default_factory=list, max_length=_MAX_LOADED)
+    #: What an earlier document of the page loaded in this tab and the one now
+    #: has not: kept, as a load the record remembers is, and the owner's to
+    #: leave out.
+    earlier: list[LoadedPath] = Field(default_factory=list, max_length=_MAX_LOADED)
+
+
 class PublishRequest(BaseModel):
     #: The paths the owner reviewed, from ``status``.
     files: list[str] = Field(min_length=1, max_length=snapshot.MAX_VERSION_FILES * 2)
     label: Annotated[str | None, AfterValidator(_label)] = None
     keep_updated: bool | None = None
+    #: The same report the reviewed list was read with.
+    loaded: list[LoadedPath] = Field(default_factory=list, max_length=_MAX_LOADED)
+    earlier: list[LoadedPath] = Field(default_factory=list, max_length=_MAX_LOADED)
+    #: ``StatusResponse.page_sha256`` of the reviewed list. Absent from a tab on
+    #: the previous build, which publishes unchecked as it did.
+    page_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
 
 
 class PublishResponse(BaseModel):

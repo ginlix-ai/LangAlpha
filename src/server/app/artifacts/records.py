@@ -21,9 +21,12 @@ from src.server.app.artifacts.models import (
     DestinationsResponse,
     DriftResponse,
     KeepUpdatedRequest,
+    LeftOutRequest,
     PublishRequest,
     PublishResponse,
+    ShareCapResponse,
     ShareFileEntryResponse,
+    StatusRequest,
     StatusResponse,
 )
 from src.server.services.workspace_files import owner_work_dir
@@ -45,6 +48,9 @@ from src.server.utils.api import CurrentUserId
 from src.server.utils.pg_sanitize import normalize_uuid
 
 router = APIRouter()
+
+#: As many as a version may hold, the longest list an owner unticks from.
+_MAX_LEFT_OUT = snapshot.MAX_VERSION_FILES
 workspace_router = APIRouter(prefix="/api/v1/workspaces", tags=["Artifacts"])
 
 
@@ -99,6 +105,8 @@ def _snapshot_errors() -> Iterator[None]:
             raise conflict(
                 "files_changed", files=[entry.as_dict() for entry in e.files or ()]
             ) from None
+        if e.code == "needs_computer":
+            raise conflict("needs_computer") from None
         raise HTTPException(
             status_code=422, detail={"code": e.code, "limit": e.limit}
         ) from None
@@ -216,6 +224,27 @@ async def update_artifact(
     return await _changed(x_user_id, artifact)
 
 
+@router.post("/{artifact_id}/left-out", response_model=ArtifactResponse)
+async def set_file_left_out(
+    artifact_id: str, body: LeftOutRequest, x_user_id: CurrentUserId
+) -> ArtifactResponse:
+    """Take a file the page does not need to draw off what a publish carries, or
+    put it back. A file the page loads goes along regardless, so naming one here
+    changes nothing."""
+    artifact = await owned(artifact_id, x_user_id)
+    with db_errors():
+        artifact = await artifacts_db.set_left_out(
+            user_id=x_user_id,
+            artifact_id=artifact.artifact_id,
+            path=body.path,
+            left_out=body.left_out,
+            cap=_MAX_LEFT_OUT,
+        )
+    if body.left_out and body.path not in artifact.left_out_files:
+        raise HTTPException(status_code=422, detail="too_many_left_out")
+    return await _changed(x_user_id, artifact)
+
+
 # --- where comments go -------------------------------------------------------
 
 
@@ -279,21 +308,52 @@ async def get_destinations(
 # --- publish and versions ----------------------------------------------------
 
 
-@router.get("/{artifact_id}/status", response_model=StatusResponse)
-async def get_status(artifact_id: str, x_user_id: CurrentUserId) -> StatusResponse:
+@router.post("/{artifact_id}/status", response_model=StatusResponse)
+async def get_status(
+    artifact_id: str, body: StatusRequest, x_user_id: CurrentUserId
+) -> StatusResponse:
     """The live file against the latest version, and the files a publish now
-    would carry. Reads the computer, or the stored copy when it is stopped."""
-    artifact = await owned(artifact_id, x_user_id)
+    would carry, what the live page reported loading among them. Reads the
+    computer, or the stored copy when it is stopped, which holds no library
+    folder: a page loading from one is a 409 ``needs_computer``. Past a cap,
+    the files listed before the walk stopped, with ``over_cap``, so the owner
+    can leave out what puts it over; a publish is still refused. A POST
+    because the report can outgrow a URL."""
+    return await _status(
+        artifact_id, x_user_id, tuple(body.loaded), tuple(body.earlier)
+    )
+
+
+# A tab still on the build before the POST reads status this way until it reloads.
+@router.get("/{artifact_id}/status", response_model=StatusResponse)
+async def get_status_unreported(
+    artifact_id: str, x_user_id: CurrentUserId
+) -> StatusResponse:
+    return await _status(artifact_id, x_user_id, (), ())
+
+
+async def _status(
+    artifact_id: str, user_id: str, loaded: tuple[str, ...], earlier: tuple[str, ...]
+) -> StatusResponse:
+    artifact = await owned(artifact_id, user_id)
     with _snapshot_errors():
-        found = await snapshot.status(artifact, user_id=x_user_id)
-    entries = found.snapshot.entries
+        found = await snapshot.status(
+            artifact, user_id=user_id, loaded=loaded, earlier=earlier
+        )
+    over, sealed = found.over_cap, found.snapshot
+    entries = over.entries if over else sealed.entries
+    left_out = over.left_out if over else sealed.left_out
     return StatusResponse(
         latest_seq=found.latest_seq,
-        live_sha256=found.snapshot.entry_sha256,
+        live_sha256=None if over else sealed.entry_sha256,
+        page_sha256=None if over else sealed.page_sha256,
         files=[ShareFileEntryResponse.model_validate(e) for e in entries],
-        total_size=sum(e.size for e in entries),
+        left_out=[ShareFileEntryResponse.model_validate(e) for e in left_out],
+        total_size=sum(e.size or 0 for e in entries),
         changed=found.changed,
         drift=DriftResponse.model_validate(found.drift) if found.drift else None,
+        over_cap=ShareCapResponse(code=over.code, limit=over.limit) if over else None,
+        root_refs=[] if over else sealed.root_refs,
     )
 
 
@@ -304,9 +364,12 @@ async def publish_artifact(
     """Share the file and cut a version from the list the owner reviewed.
 
     The list is found again and must match, never widening on its own (409
-    ``files_changed`` with the list as it is now). A file equal to its latest
-    version cuts nothing and is shared at that version. A version cut during
-    the read is a 409 ``version_moved``: publishing again reads the file anew.
+    ``files_changed`` with the list as it is now, as for a file left out or
+    put back during the read). A file equal to its latest version cuts nothing
+    and is shared at that version. A version cut during the read is a 409
+    ``version_moved``: publishing again reads the file anew. A stopped
+    computer's page that loads from a library folder is a 409
+    ``needs_computer``, as for status.
     """
     artifact = await owned(artifact_id, x_user_id)
     with db_errors(), _snapshot_errors():
@@ -316,6 +379,9 @@ async def publish_artifact(
             reviewed=body.files,
             label=body.label,
             keep_updated=body.keep_updated,
+            loaded=tuple(body.loaded),
+            earlier=tuple(body.earlier),
+            reviewed_page=body.page_sha256,
         )
     version = await artifacts_db.get_version(artifact.artifact_id, result.seq)
     if version is None:

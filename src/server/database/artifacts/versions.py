@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -72,6 +73,11 @@ class VersionMoved(Exception):
     """A version was cut while the owner's publish read its files."""
 
 
+class LeftOutChanged(Exception):
+    """The owner took a file off the list, or put one back, while the owner's
+    publish read its files."""
+
+
 @dataclass(frozen=True)
 class PublishResult:
     artifact: Artifact
@@ -108,6 +114,9 @@ async def publish_version(
     keep_updated: bool | None = None,
     based_on: int | None = None,
     revision: int | None = None,
+    loaded_files: list[str] | None = None,
+    left_out_read: Sequence[str] | None = None,
+    left_out_files: list[str] | None = None,
 ) -> PublishResult:
     """Cut the artifact's next version from ``files``, unless it would equal
     the latest one, and with ``origin="owner"`` share it.
@@ -121,7 +130,12 @@ async def publish_version(
     unsharing moves it, and that raises ``SharingChanged``: a stop that lands
     during the read must not be undone by the publish it overtook. ``based_on``
     is its latest version then, and a version cut since raises ``VersionMoved``:
-    those bytes may be older, and would replace it.
+    those bytes may be older, and would replace it. ``left_out_read`` is what
+    it had left out then, and a change since raises ``LeftOutChanged``: the
+    read would carry a file the owner just took off, or miss one put back.
+    It is compared rather than moving ``revision``, since visitors' grants are
+    minted at that. ``left_out_files``, when given, replaces the list in the
+    same write.
 
     The other origins never change sharing, and each acts only while its
     reason holds when the lock is taken: ``keep_updated`` on a shared record
@@ -145,6 +159,10 @@ async def publish_version(
                 )
                 if revision is not None and artifact.revision != revision:
                     raise SharingChanged
+                if left_out_read is not None and set(artifact.left_out_files) != set(
+                    left_out_read
+                ):
+                    raise LeftOutChanged
                 if origin == "keep_updated":
                     proceed = (
                         artifact.shared
@@ -230,7 +248,13 @@ async def publish_version(
                            revision = l.revision
                                       + CASE WHEN %(shared_now)s THEN 1 ELSE 0 END,
                            keep_updated = COALESCE(%(keep_updated)s, l.keep_updated),
-                           legacy_refused = NULL
+                           legacy_refused = NULL,
+                           loaded_files = COALESCE(
+                               %(loaded_files)s::text[], l.loaded_files
+                           ),
+                           left_out_files = COALESCE(
+                               %(left_out_files)s::text[], l.left_out_files
+                           )
                      WHERE l.artifact_id = %(artifact_id)s
                     RETURNING {ARTIFACT_COLUMNS}
                     """,
@@ -241,6 +265,8 @@ async def publish_version(
                         "files": sorted(paths),
                         "keep_updated": setting,
                         "artifact_id": artifact_id,
+                        "loaded_files": loaded_files,
+                        "left_out_files": left_out_files,
                     },
                 )
                 updated = artifact_from_row(await cur.fetchone())
