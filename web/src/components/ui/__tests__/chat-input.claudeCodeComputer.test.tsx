@@ -169,6 +169,13 @@ describe("ChatInput: Claude Code rows by the workspace's computer", () => {
     expect(screen.getByText(/^at:/).textContent).toBe(`at:${url}`);
   });
 
+  it('holds them where the user\'s choice for cloud computers is paused, with nothing to fix', () => {
+    mocks.where = { state: 'hosted_paused', computerId: null, known: true };
+    renderInput();
+    expect(codeRow()).toBe('claude-x-code:held:Paused on cloud computers on this server');
+    expect(screen.queryByRole('button', { name: 'fix' })).toBeNull();
+  });
+
   it("runs them on a hosted computer on the user's Anthropic API key, which pays for them there", () => {
     mocks.where = { state: 'api_key', computerId: null, known: true };
     const { unmount } = renderInput();

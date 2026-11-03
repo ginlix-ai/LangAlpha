@@ -109,6 +109,19 @@ describe('ClaudeCodeTokenSheet', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('The server says why.');
   });
 
+  // The worded `unavailable` is Claude Code off for the user; a 409 is storing
+  // ended while this token was checked, which the server's sentence says.
+  it("shows the server's words for a token refused as the user stopped storing theirs", async () => {
+    const ended = "You stopped storing your setup token while this one was checked, so it wasn't saved.";
+    save.mockRejectedValue(Object.assign(new Error('Request failed'), {
+      response: { status: 409, data: { detail: ended, error: { code: 'unavailable', message: ended, retryable: false } } },
+    }));
+    const { field, submit } = setup();
+    fireEvent.change(field, { target: { value: TOKEN } });
+    submit();
+    expect(await screen.findByText(ended)).toBeInTheDocument();
+  });
+
   it('clears the refusal as the user edits the field', async () => {
     save.mockRejectedValue(refusal('check_unavailable'));
     const { field, submit } = setup();
@@ -147,6 +160,15 @@ describe('RemoveClaudeCodeTokenDialog', () => {
     renderWithProviders(<RemoveClaudeCodeTokenDialog onClose={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove token' }));
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't remove the token. Try again.");
+  });
+
+  it('says the token is deleted where a turn on it did not stop, and reads the token again', async () => {
+    remove.mockRejectedValue(refusal('turns_running', 'server words', true));
+    const { queryClient } = renderWithProviders(<RemoveClaudeCodeTokenDialog onClose={() => {}} />);
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove token' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("Your token is deleted, but a Claude Code turn using it couldn't be stopped. Stop it in its thread.");
+    expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ queryKey: queryKeys.features.claudeCode() }));
   });
 
   it('stays open with the reason when the removal fails', async () => {

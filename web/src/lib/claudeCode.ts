@@ -36,6 +36,7 @@ export const ANTHROPIC_KEY_URL = `${MODEL_ACCESS_URL}&${CLAUDE_CODE_TOKEN_PARAM}
 export const CLAUDE_CODE_MODE_LABELS: Readonly<Record<ClaudeCodeCustodyMode, string>> = {
   local: 'modelAccess.claudeCode.hosted.local',
   api_key: 'modelAccess.claudeCode.hosted.apiKey',
+  stored: 'modelAccess.claudeCode.hosted.stored',
 };
 
 /** Settings → Model access with Claude Code's sheet open, where the user
@@ -67,20 +68,32 @@ export const CLAUDE_CODE_UNRUNNABLE: ReadonlySet<string> = new Set(['policy_bloc
 const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
   token_refused: 'chat.claudeCode.off.token_refused',
   hosted_off: 'chat.claudeCode.off.hosted_off',
+  hosted_paused: 'chat.claudeCode.off.hosted_paused',
   needs_api_key: 'chat.claudeCode.off.needs_api_key',
   api_key_endpoint: 'chat.claudeCode.off.api_key_endpoint',
+  stored_blocked: 'chat.claudeCode.off.stored_blocked',
+  stored_unattended: 'chat.claudeCode.off.stored_unattended',
+  choice_changed: 'chat.claudeCode.off.choice_changed',
   api_key_refused: 'chat.claudeCode.off.api_key_refused',
   busy: 'chat.claudeCode.off.busy',
   too_many_turns: 'chat.claudeCode.off.too_many_turns',
 };
 
+const CLAUDE_CODE_CHOICE_LINK: ErrorLinkSpec = { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' };
+
 /** The links that fix a cloud computer's refusal: choosing how Claude Code
  *  runs there, or adding the Anthropic API key it runs on. */
 const CLAUDE_CODE_CLOUD_LINKS: Readonly<Record<string, ErrorLinkSpec>> = {
-  hosted_off: { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' },
+  hosted_off: CLAUDE_CODE_CHOICE_LINK,
+  stored_unattended: CLAUDE_CODE_CHOICE_LINK,
   needs_api_key: { url: ANTHROPIC_KEY_URL, label: 'Add an API key', labelKey: 'chat.errorLinkAddApiKey' },
   api_key_endpoint: { url: ANTHROPIC_KEY_URL, label: 'Model access', labelKey: 'modelAccess.title' },
 };
+
+/** A cloud computer's refusals that say the user's choice for cloud
+ *  computers, the key it runs on, or what the server offers, is not what the
+ *  view read. */
+const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set(['hosted_off', 'hosted_paused', 'needs_api_key', 'api_key_endpoint', 'stored_blocked', 'choice_changed']);
 
 /**
  * What a turn's `claude_code_off` refusal means, wherever it arrives:
@@ -88,27 +101,33 @@ const CLAUDE_CODE_CLOUD_LINKS: Readonly<Record<string, ErrorLinkSpec>> = {
  * cloud computers changed, so they are read again, the link that fixes it,
  * and the key it is worded by where the app words it (`messageKey`, with
  * `messageValues`). No token (`signed_out`) or one Claude refused
- * (`token_refused`) is fixed with a new one in Settings; a computer where
- * Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`) is fixed by no token. On
- * a cloud computer, the choice of how it runs there (`hosted_off`) or the
- * Anthropic API key it runs on (`needs_api_key`, or `api_key_endpoint` for one
- * set to another endpoint) fixes it. Too many turns
- * at once names the user's cap, `limit`, and keeps the server's words
- * without one. Any other reason keeps the server's words alone.
+ * (`token_refused`), stored or not, is fixed with a new one in Settings; a
+ * computer where Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`) is fixed
+ * by no token. On a cloud computer, the choice of how it runs there
+ * (`hosted_off`, and `stored_unattended` for automations and wakeups, which
+ * a stored token does not run) or the Anthropic API key it runs on
+ * (`needs_api_key`, or `api_key_endpoint` for one set to another endpoint)
+ * fixes it; a choice paused on the server or storing
+ * blocked for the user has nothing to fix. Too many turns at once names the
+ * user's cap, `limit`, and keeps the server's words without one. Any other
+ * reason keeps the server's words alone.
  */
 export function claudeCodeRefusal(
   reason: unknown, workspaceId: string | null | undefined, limit?: unknown,
 ): { reread: boolean; link: ErrorLinkSpec | null; messageKey: string | null; messageValues?: { n: number } } {
+  if (typeof reason !== 'string') return { reread: false, link: null, messageKey: null };
   if (reason === 'too_many_turns') {
     return typeof limit === 'number'
       ? { reread: false, link: null, messageKey: CLAUDE_CODE_OFF_KEYS[reason], messageValues: { n: limit } }
       : { reread: false, link: null, messageKey: null };
   }
-  const messageKey = typeof reason === 'string' ? CLAUDE_CODE_OFF_KEYS[reason] ?? null : null;
+  const messageKey = CLAUDE_CODE_OFF_KEYS[reason] ?? null;
   if (reason === 'signed_out' || reason === 'token_refused') {
     return { reread: true, link: claudeCodeTokenLink(workspaceId), messageKey };
   }
-  const cloudLink = typeof reason === 'string' ? CLAUDE_CODE_CLOUD_LINKS[reason] : undefined;
-  if (cloudLink) return { reread: true, link: cloudLink, messageKey };
-  return { reread: typeof reason === 'string' && CLAUDE_CODE_UNRUNNABLE.has(reason), link: null, messageKey };
+  return {
+    reread: CLAUDE_CODE_UNRUNNABLE.has(reason) || CLAUDE_CODE_CHOICE_CHANGED.has(reason),
+    link: CLAUDE_CODE_CLOUD_LINKS[reason] ?? null,
+    messageKey,
+  };
 }

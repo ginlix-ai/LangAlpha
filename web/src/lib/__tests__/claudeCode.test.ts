@@ -16,7 +16,7 @@ describe('claudeCodeRefusal', () => {
     });
   });
 
-  it('links a cloud computer kept off to Model access, and one without a key to the Anthropic key, reading both again', () => {
+  it('links a cloud computer kept off to Model access, and one without a key it can use to the Anthropic key, reading them again', () => {
     expect(claudeCodeRefusal('hosted_off', 'ws-1')).toEqual({
       reread: true,
       link: { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' },
@@ -27,6 +27,23 @@ describe('claudeCodeRefusal', () => {
       link: { url: ANTHROPIC_KEY_URL, label: 'Add an API key', labelKey: 'chat.errorLinkAddApiKey' },
       messageKey: 'chat.claudeCode.off.needs_api_key',
     });
+    expect(claudeCodeRefusal('api_key_endpoint', 'ws-1')).toEqual({
+      reread: true,
+      link: { url: ANTHROPIC_KEY_URL, label: 'Model access', labelKey: 'modelAccess.title' },
+      messageKey: 'chat.claudeCode.off.api_key_endpoint',
+    });
+  });
+
+  it('links automations on a stored token to Model access, reading nothing again', () => {
+    expect(claudeCodeRefusal('stored_unattended', 'ws-1')).toEqual({
+      reread: false,
+      link: { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' },
+      messageKey: 'chat.claudeCode.off.stored_unattended',
+    });
+  });
+
+  it.each(['hosted_paused', 'stored_blocked', 'choice_changed'])('words %s in the app with nothing to fix, and reads the choice again', (reason) => {
+    expect(claudeCodeRefusal(reason, 'ws-1')).toEqual({ reread: true, link: null, messageKey: `chat.claudeCode.off.${reason}` });
   });
 
   it.each(['api_key_refused', 'busy'])('words %s mid-turn in the app, with nothing to link', (reason) => {

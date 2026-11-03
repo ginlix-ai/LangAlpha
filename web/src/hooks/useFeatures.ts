@@ -35,7 +35,11 @@ export function useFeatureEnabled(key: string): boolean {
 }
 
 /** Mutation for a user override; setQueryData propagates the returned list
- *  instantly, and whatever is read under the flag's own key is read again. */
+ *  instantly, and whatever is read under the flag's own key is read again.
+ *  Toggling Claude Code also reads its choice for cloud computers again,
+ *  kept under the keys, and its status and computers, success or not:
+ *  turning it off drops a stored token, choice too, even where a turn on it
+ *  then fails to stop and the toggle is refused. */
 export function useSetFeatureOverride() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -47,6 +51,12 @@ export function useSetFeatureOverride() {
     },
     onError: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.features.list() });
+    },
+    onSettled: (_features, _error, { key }) => {
+      if (key === 'claude_code_runtime') {
+        queryClient.invalidateQueries({ queryKey: queryKeys.user.claudeCodeCustody() });
+        queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() });
+      }
     },
   });
 }

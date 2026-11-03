@@ -7,8 +7,8 @@ import { ModalShell } from '@/components/ui/ModalShell';
 import { isPlatformMode } from '@/config/hostMode';
 import { useConfiguredProviders, type ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
-import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
+import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { ANTHROPIC, CLAUDE_CODE, CLAUDE_CODE_CHOICE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_MODE_LABELS, CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM } from '@/lib/claudeCode';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
 import type { ProviderCatalogEntry } from '@/components/model/types';
@@ -16,7 +16,7 @@ import { isSubscriptionProvider, subscriptionKey, type SubscriptionProvider } fr
 import { RemoveAccessDialog } from '@/components/modelAccess/RemoveAccessDialog';
 import { ClaudeCodeTokenSheet, RemoveClaudeCodeTokenDialog, TokenActions } from '@/components/modelAccess/ClaudeCodeToken';
 import { linkedSheetAction, useClaudeCodeTokenRows } from '@/components/modelAccess/tokenLine';
-import { tokenSheetTitle, type SheetAction, type TokenTarget } from '@/components/modelAccess/tokenTarget';
+import { SAVED_TOKEN, tokenSheetTitle, type SheetAction, type TokenTarget } from '@/components/modelAccess/tokenTarget';
 import { planLabel } from '@/components/modelAccess/planLabel';
 import { regionTag } from '@/components/modelAccess/optionLabels';
 import { StatusLabel, type AccessStatus } from '@/components/modelAccess/parts';
@@ -48,7 +48,7 @@ type Sheet =
   | { kind: 'local-key'; entry: ProviderCatalogEntry }
   | { kind: 'claude-code-token'; target: TokenTarget; action: SheetAction }
   /** Claude Code itself, where the server lets the user choose how it runs on
-   *  cloud computers. */
+   *  cloud computers: that choice, and the setup token it may store. */
   | { kind: 'claude-code' }
   /** `from` the add-key flow keeps that flow's width for the key it just saved.
    *  `justConnected`: the flow before it made the connection, so its models
@@ -92,6 +92,10 @@ export function ModelAccessSection() {
   const { providers, withdrawn, configuredSet, statusLoading, statusError } = useConfiguredProviders();
   const tokenRows = useClaudeCodeTokenRows();
   const { custody } = useClaudeCodeCustody();
+  // Where the server offers the choice, the saved token is one of its ways,
+  // so it lives in Claude Code's sheet beside it rather than on a row.
+  const savedRow = tokenRows.find(({ key }) => key === 'saved');
+  const listedTokenRows = custody ? tokenRows.filter((row) => row !== savedRow) : tokenRows;
   const [opened, setSheet] = useState<Sheet | null>(null);
   const [removing, setRemoving] = useState<ConfiguredProvider | null>(null);
   const [removingToken, setRemovingToken] = useState<TokenTarget | null>(null);
@@ -210,9 +214,9 @@ export function ModelAccessSection() {
               key={`${CLAUDE_CODE}:cloud`}
               provider={CLAUDE_CODE}
               name={CLAUDE_CODE_CONNECTION.display_name}
-              detail={t(CLAUDE_CODE_MODE_LABELS[custody.mode])}
+              detail={custody.mode === 'stored' && savedRow ? savedRow.line.detail : t(CLAUDE_CODE_MODE_LABELS[custody.mode])}
               wrapDetail
-              status={custody.runs_on ? 'connected' : 'not_connected'}
+              status={custody.mode === 'stored' && savedRow ? savedRow.line.status : custody.runs_on ? 'connected' : 'not_connected'}
               action={(
                 <Button type="button" variant="ghost" size="sm" onClick={() => setSheet({ kind: 'claude-code' })}>
                   {t('modelAccess.manage')}
@@ -222,7 +226,7 @@ export function ModelAccessSection() {
           )] : []),
           // Claude Code signs in with a setup token the user makes for it, so
           // the token is all there is to add, replace or remove.
-          ...tokenRows.map(({ key, target, tag, line }) => (
+          ...listedTokenRows.map(({ key, target, tag, line }) => (
             <AccessRow
               key={`${CLAUDE_CODE}:${key}`}
               provider={CLAUDE_CODE}
@@ -300,7 +304,7 @@ export function ModelAccessSection() {
           title={sheetTitle}
           onClose={closeSheet}
           width={isWide(sheet) ? 'wide' : 'standard'}
-          covered={!!removing || choiceCovered}
+          covered={!!removing || (!!removingToken && sheet.kind === 'claude-code') || choiceCovered}
         >
           {sheet.kind === 'pick-subscription' && (
             <SubscriptionChoices
@@ -386,7 +390,13 @@ export function ModelAccessSection() {
           )}
           {sheet.kind === 'manage' && !managed && <StatusLabel status="working" />}
           {sheet.kind === 'claude-code' && (
-            <ClaudeCodeSheet anthropicKey={anthropicKey} configured={providers} onCover={setChoiceCovered} />
+            <ClaudeCodeSheet
+              savedRow={savedRow}
+              anthropicKey={anthropicKey}
+              configured={providers}
+              onRemoveToken={() => setRemovingToken(SAVED_TOKEN)}
+              onCover={setChoiceCovered}
+            />
           )}
           {sheet.kind === 'claude-code-token' && <ClaudeCodeTokenSheet target={sheet.target} onSaved={closeSheet} onCancel={closeSheet} />}
         </ModalShell>
@@ -402,7 +412,7 @@ export function ModelAccessSection() {
         />
       )}
 
-      {removingToken && <RemoveClaudeCodeTokenDialog target={removingToken} onClose={() => setRemovingToken(null)} />}
+      {removingToken && <RemoveClaudeCodeTokenDialog target={removingToken} stacked={!!sheet} onClose={() => setRemovingToken(null)} />}
     </div>
   );
 }
