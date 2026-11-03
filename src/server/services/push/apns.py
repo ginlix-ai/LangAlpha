@@ -84,7 +84,9 @@ class ApnsClient:
         self._http = httpx.AsyncClient(
             http2=True,
             transport=transport,
-            timeout=httpx.Timeout(10.0, connect=5.0),
+            # A send answers in well under a second; a short wait keeps a job's
+            # devices inside the outbox lease when APNs is slow.
+            timeout=httpx.Timeout(5.0),
         )
         self._token: Optional[str] = None
         self._minted_at = 0.0
