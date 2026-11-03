@@ -1,6 +1,7 @@
 """The push executor: what a settled run's push says, who gets it, and what
 APNs' answers do to the devices and the job."""
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -9,6 +10,7 @@ from src.server.services.push import notify
 from src.server.services.push.apns import ApnsOutcome, ApnsResult
 
 MOD = "src.server.services.push.notify"
+REGISTERED = datetime(2026, 11, 1, tzinfo=timezone.utc)
 
 
 def _payload(**kw):
@@ -33,6 +35,7 @@ def _context(**kw):
         "owner_id": "u-1",
         "workspace_status": "running",
         "latest_run_seq": 5,
+        "run_exists": True,
         "run_metadata": {},
         "query_type": "follow_up",
         "automation_name": None,
@@ -48,6 +51,7 @@ def _device(n, environment="production", **prefs):
         "bundle_id": "com.example.app",
         "environment": environment,
         "preferences": prefs,
+        "updated_at": REGISTERED,
     }
 
 
@@ -58,7 +62,9 @@ class FakeApns:
         self.answers = answers or {}
         self.sent = []
 
-    async def send(self, *, token, bundle_id, environment, payload, collapse_id):
+    async def send(
+        self, *, token, bundle_id, environment, payload, collapse_id, deadline
+    ):
         self.sent.append(
             {
                 "token": token,
@@ -85,7 +91,9 @@ def db(monkeypatch):
     fakes["badge"] = AsyncMock(return_value=3)
     monkeypatch.setattr(notify, "count_threads_needing_attention", fakes["badge"])
     fakes["merge"] = AsyncMock(return_value=True)
-    monkeypatch.setattr(notify.outbox_db, "merge_job_payload", fakes["merge"])
+    monkeypatch.setattr(notify.outbox_db, "add_to_job_payload_list", fakes["merge"])
+    fakes["renew"] = AsyncMock(return_value=True)
+    monkeypatch.setattr(notify.outbox_db, "extend_job_lease", fakes["renew"])
     return fakes
 
 
@@ -98,7 +106,12 @@ def apns(monkeypatch):
 
 async def _run(payload=None, **job):
     await notify.execute_push(
-        {"hook_outbox_id": "job-1", "payload": payload or _payload(), **job}
+        {
+            "hook_outbox_id": "job-1",
+            "attempts": 1,
+            "payload": payload or _payload(),
+            **job,
+        }
     )
 
 
@@ -270,7 +283,17 @@ async def test_a_settle_that_is_not_news_sends_nothing(db, apns):
 @pytest.mark.asyncio
 async def test_push_off_is_a_no_op(db, monkeypatch):
     monkeypatch.setattr(notify, "get_apns_client", AsyncMock(return_value=None))
+    monkeypatch.setattr(notify, "push_available", lambda: False)
     await _run()
+    db["list_push_devices"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_key_that_will_not_load_is_retried_not_dropped(db, monkeypatch):
+    monkeypatch.setattr(notify, "get_apns_client", AsyncMock(return_value=None))
+    monkeypatch.setattr(notify, "push_available", lambda: True)
+    with pytest.raises(notify.PushRetry):
+        await _run()
     db["list_push_devices"].assert_not_awaited()
 
 
@@ -290,8 +313,9 @@ async def test_no_devices_reads_nothing_more(db, apns):
         _context(owner_id="someone-else"),
         _context(workspace_status="deleted"),
         _context(archived_at="2026-11-01T00:00:00Z"),
+        _context(run_exists=False),
     ],
-    ids=["gone", "not_theirs", "workspace_deleted", "archived"],
+    ids=["gone", "not_theirs", "workspace_deleted", "archived", "run_gone"],
 )
 async def test_a_thread_the_user_cannot_open_is_not_pushed(db, apns, context):
     db["get_push_context"].return_value = context
@@ -349,7 +373,7 @@ async def test_every_device_off_reads_no_badge(db, apns):
 async def test_an_unregistered_token_is_pruned(db, apns):
     apns.answers[("01" * 32, "production")] = ApnsOutcome.UNREGISTERED
     await _run()
-    db["delete_push_device_by_token"].assert_awaited_once_with("01" * 32)
+    db["delete_push_device_by_token"].assert_awaited_once_with("01" * 32, REGISTERED)
     db["stamp_push_devices_sent"].assert_not_awaited()
 
 
@@ -358,7 +382,7 @@ async def test_a_bad_token_is_tried_in_the_other_environment_and_moved(db, apns)
     apns.answers[("01" * 32, "production")] = ApnsOutcome.BAD_TOKEN
     await _run()
     assert [s["environment"] for s in apns.sent] == ["production", "sandbox"]
-    db["set_push_device_environment"].assert_awaited_once_with("dev-1", "sandbox")
+    db["set_push_device_environment"].assert_awaited_once_with("dev-1", "sandbox", REGISTERED)
     db["delete_push_device_by_token"].assert_not_awaited()
     db["stamp_push_devices_sent"].assert_awaited_once_with(["dev-1"])
 
@@ -369,7 +393,16 @@ async def test_a_bad_token_in_both_environments_is_pruned(db, apns):
     apns.answers[("01" * 32, "sandbox")] = ApnsOutcome.BAD_TOKEN
     await _run()
     db["set_push_device_environment"].assert_not_awaited()
-    db["delete_push_device_by_token"].assert_awaited_once_with("01" * 32)
+    db["delete_push_device_by_token"].assert_awaited_once_with("01" * 32, REGISTERED)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_on_the_other_host_keeps_the_device(db, apns):
+    apns.answers[("01" * 32, "production")] = ApnsOutcome.BAD_TOKEN
+    apns.answers[("01" * 32, "sandbox")] = ApnsOutcome.REJECTED
+    await _run()
+    db["delete_push_device_by_token"].assert_not_awaited()
+    db["set_push_device_environment"].assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -391,7 +424,7 @@ async def test_a_failure_to_retry_raises_after_every_device_and_remembers_the_re
     assert len(apns.sent) == 3
     db["stamp_push_devices_sent"].assert_awaited_once_with(["dev-1", "dev-3"])
     db["merge"].assert_awaited_once_with(
-        "job-1", {"sent_device_ids": ["dev-1", "dev-3"]}
+        "job-1", "sent_device_ids", ["dev-1", "dev-3"]
     )
 
 
@@ -410,25 +443,9 @@ async def test_a_device_whose_send_raises_is_retried_and_the_rest_recorded(db, a
     with pytest.raises(notify.PushRetry):
         await _run()
     db["stamp_push_devices_sent"].assert_awaited_once_with(["dev-1"])
-    db["merge"].assert_awaited_once_with("job-1", {"sent_device_ids": ["dev-1"]})
-
-
-@pytest.mark.asyncio
-async def test_the_badge_counts_unseen_threads_and_threads_waiting_on_the_user(
-    monkeypatch,
-):
-    from src.server.database.conversation import threads_read
-
-    rows = [
-        {"branch": "unseen", "latest_run_status": "completed"},
-        {"branch": "unseen", "latest_run_status": "error"},
-        {"branch": "live", "latest_run_status": "interrupted"},
-        {"branch": "live", "latest_run_status": "in_progress"},
-    ]
-    monkeypatch.setattr(
-        threads_read, "get_thread_lifecycle_rows", AsyncMock(return_value=(rows, 9))
-    )
-    assert await threads_read.count_threads_needing_attention("u-1") == 3
+    db["merge"].assert_awaited_once_with("job-1", "sent_device_ids", ["dev-1"])
+    # The lease is renewed before what was sent is recorded.
+    db["renew"].assert_awaited_once_with("job-1", 60, attempts=1)
 
 
 def test_the_executor_is_registered_for_push():

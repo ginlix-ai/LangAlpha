@@ -1,7 +1,9 @@
 """The APNs client: the request it makes, its provider token, and how it reads
 Apple's answers."""
 
+import asyncio
 import json
+import time
 
 import httpx
 import jwt
@@ -9,6 +11,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from src.server.services.push import apns
 from src.server.services.push.apns import (
     TOKEN_TTL_SECONDS,
     ApnsClient,
@@ -56,13 +59,14 @@ def _answer(status, reason=None):
     return handler
 
 
-async def _send(client, environment="production"):
+async def _send(client, environment="production", deadline=None):
     return await client.send(
         token=TOKEN,
         bundle_id="app.x",
         environment=environment,
         payload={"aps": {"alert": {"title": "t", "body": "b"}}},
         collapse_id="thread-1",
+        deadline=deadline,
     )
 
 
@@ -167,6 +171,7 @@ async def test_an_expired_provider_token_is_minted_again_and_sent_once_more(key)
         (429, "TooManyRequests", ApnsOutcome.RETRY),
         (500, "InternalServerError", ApnsOutcome.RETRY),
         (503, "ServiceUnavailable", ApnsOutcome.RETRY),
+        (400, "IdleTimeout", ApnsOutcome.RETRY),
         (400, "PayloadTooLarge", ApnsOutcome.REJECTED),
         (403, "InvalidProviderToken", ApnsOutcome.REJECTED),
     ],
@@ -189,3 +194,80 @@ async def test_a_network_failure_is_retried_later(key, error):
     result = await _send(_client(key, handler))
     assert result.outcome is ApnsOutcome.RETRY
     assert result.status is None
+
+
+@pytest.mark.asyncio
+async def test_sends_go_one_at_a_time(key):
+    # APNs allows one stream on a new connection, and httpx's HTTP/2 pool hangs
+    # past it, so concurrent sends must not overlap on the wire.
+    in_flight = peak = 0
+
+    async def handler(request):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return httpx.Response(200)
+
+    client = _client(key, handler)
+    results = await asyncio.gather(*(_send(client) for _ in range(4)))
+    assert [r.outcome for r in results] == [ApnsOutcome.SENT] * 4
+    assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_a_hung_request_gives_up_and_the_connection_is_replaced(key, monkeypatch):
+    monkeypatch.setattr(apns, "REQUEST_SECONDS", 0.05)
+    hang = True
+
+    async def handler(request):
+        if hang:
+            await asyncio.sleep(10)
+        return httpx.Response(200)
+
+    client = _client(key, handler)
+    first = client._http
+    assert (await _send(client)).outcome is ApnsOutcome.RETRY
+    assert client._http is not first
+    hang = False
+    assert (await _send(client)).outcome is ApnsOutcome.SENT
+
+
+@pytest.mark.asyncio
+async def test_a_send_queued_past_its_deadline_is_not_made(key):
+    # Sends queue on one connection, so a slow Apple can hold a job's last ones
+    # past its outbox lease; those are left to the job's retry instead.
+    clock = Clock()
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        clock.now += 20
+        return httpx.Response(200)
+
+    client = _client(key, handler, clock)
+    deadline = clock.now + 30
+    results = await asyncio.gather(*(_send(client, deadline=deadline) for _ in range(3)))
+    assert [r.outcome for r in results] == [
+        ApnsOutcome.SENT,
+        ApnsOutcome.SENT,
+        ApnsOutcome.RETRY,
+    ]
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_send_waiting_behind_another_gives_up_at_its_deadline(key):
+    async def handler(request):
+        await asyncio.sleep(0.5)
+        return httpx.Response(200)
+
+    client = _client(key, handler, time.time)
+    slow = asyncio.create_task(_send(client))
+    await asyncio.sleep(0)
+    late = asyncio.create_task(_send(client, deadline=time.time() + 0.05))
+    done, _ = await asyncio.wait({slow, late}, return_when=asyncio.FIRST_COMPLETED)
+    assert done == {late}
+    assert late.result().outcome is ApnsOutcome.RETRY
+    assert (await slow).outcome is ApnsOutcome.SENT

@@ -47,6 +47,10 @@ async def client():
 @pytest.fixture
 def db(monkeypatch):
     from src.server.app import push_devices
+    from src.config import env
+
+    # The bodies register the development app; a local .env may list others.
+    monkeypatch.setattr(env, "APNS_BUNDLE_IDS", ("com.example.app.dev",))
 
     fakes = {
         name: AsyncMock()

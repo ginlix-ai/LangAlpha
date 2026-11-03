@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Mapping, Optional, get_args
 
@@ -20,6 +21,7 @@ from src.server.database.conversation.threads_read import count_threads_needing_
 from src.server.database.runs import outbox as outbox_db
 from src.server.database.runs.hook_jobs import SURFACE_META, is_unchanged_quiet
 from src.server.services.push.apns import ApnsClient, ApnsOutcome, get_apns_client
+from src.server.services.push.config import push_available
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,11 @@ _DONE_BODIES = {
 }
 #: Payload key listing the devices a retried job already reached.
 _SENT_KEY = "sent_device_ids"
+#: A job starts no send this long after it starts. Its last request, at most
+#: two of ``REQUEST_SECONDS`` with a renewed token and a reconnect, then ends
+#: well inside the outbox's 60 s lease, which the job renews before it records
+#: what it sent; the devices left over retry.
+SEND_SECONDS = 20.0
 
 
 class PushRetry(Exception):
@@ -135,6 +142,7 @@ async def _deliver(
     device: Mapping[str, Any],
     aps_payload: Mapping[str, Any],
     collapse_id: str,
+    deadline: float,
 ) -> ApnsOutcome:
     """Send to one device and tidy its row by the answer."""
     device_id = str(device["push_device_id"])
@@ -147,6 +155,7 @@ async def _deliver(
             environment=env,
             payload=aps_payload,
             collapse_id=collapse_id,
+            deadline=deadline,
         )
 
     result = await send(environment)
@@ -154,24 +163,23 @@ async def _deliver(
         # A development-signed build of the production app holds a sandbox
         # token, and the other way round: the token may be the other host's.
         other = _other_environment(environment)
-        retried = await send(other)
-        if retried.outcome is ApnsOutcome.SENT:
-            await push_db.set_push_device_environment(device_id, other)
-            return ApnsOutcome.SENT
-        if retried.outcome is ApnsOutcome.RETRY:
-            return ApnsOutcome.RETRY
-        await push_db.delete_push_device_by_token(device["token"])
-        logger.info("[PUSH] pruned device %s: a bad token in both environments", device_id)
-        return ApnsOutcome.UNREGISTERED
-    if result.outcome is ApnsOutcome.UNREGISTERED:
-        await push_db.delete_push_device_by_token(device["token"])
+        result = await send(other)
+        if result.outcome is ApnsOutcome.SENT:
+            await push_db.set_push_device_environment(device_id, other, device["updated_at"])
+    if result.outcome in (ApnsOutcome.BAD_TOKEN, ApnsOutcome.UNREGISTERED):
+        # A token neither host takes, or one APNs retired. Any other refusal
+        # says nothing about the token, so the device stays.
+        await push_db.delete_push_device_by_token(device["token"], device["updated_at"])
         logger.info(
             "[PUSH] pruned device %s: %s %s", device_id, result.status, result.reason
         )
+        return ApnsOutcome.UNREGISTERED
     return result.outcome
 
 
 async def execute_push(job: Dict[str, Any]) -> None:
+    # From the claim, so the reads before the sends count against the lease.
+    deadline = time.time() + SEND_SECONDS
     payload = job.get("payload") or {}
     user_id, thread_id, run_id = (
         payload.get("user_id"),
@@ -186,6 +194,9 @@ async def execute_push(job: Dict[str, Any]) -> None:
         return
     client = await get_apns_client()
     if client is None:
+        if push_available():
+            # Configured, but the key would not load: retry, it may be mounted yet.
+            raise PushRetry("APNs is configured but its key could not be read")
         return
     devices = await push_db.list_push_devices(user_id)
     if not devices:
@@ -193,6 +204,7 @@ async def execute_push(job: Dict[str, Any]) -> None:
     context = await push_db.get_push_context(thread_id=thread_id, run_id=run_id)
     if (
         context is None
+        or not context.get("run_exists")
         or context.get("owner_id") != user_id
         or context.get("workspace_status") == "deleted"
         or context.get("archived_at") is not None
@@ -240,7 +252,7 @@ async def execute_push(job: Dict[str, Any]) -> None:
     # The devices are sent to at once. A database error on one counts as a
     # miss to retry, so the devices already reached are still recorded.
     outcomes = await asyncio.gather(
-        *(_deliver(client, d, aps_payload, thread_id) for d in targets),
+        *(_deliver(client, d, aps_payload, thread_id, deadline) for d in targets),
         return_exceptions=True,
     )
     sent = [
@@ -254,14 +266,22 @@ async def execute_push(job: Dict[str, Any]) -> None:
             logger.warning("[PUSH] a device's send failed: %s", type(outcome).__name__)
         if outcome is ApnsOutcome.RETRY or isinstance(outcome, Exception):
             failed += 1
+    job_id = job.get("hook_outbox_id")
+    if sent and job_id and job.get("attempts") is not None:
+        # Fresh runway for the writes below and the ack, so no other worker
+        # claims the job and sends again before what this one sent is recorded.
+        # A lost fence changes nothing here: recording it still helps.
+        from src.server.services.hook_outbox import LEASE_SECONDS
+
+        await outbox_db.extend_job_lease(
+            str(job_id), LEASE_SECONDS, attempts=job["attempts"]
+        )
+    if failed and sent and job_id:
+        # A retry reaches only the devices that missed it.
+        await outbox_db.add_to_job_payload_list(str(job_id), _SENT_KEY, sent)
     if sent:
         await push_db.stamp_push_devices_sent(sent)
     if failed:
-        if sent and job.get("hook_outbox_id"):
-            # A retry reaches only the devices that missed it.
-            await outbox_db.merge_job_payload(
-                str(job["hook_outbox_id"]), {_SENT_KEY: sorted(already_sent | set(sent))}
-            )
         raise PushRetry(f"{failed} device(s) of {len(targets)} to retry")
 
 

@@ -210,6 +210,9 @@ def build_finalize_jobs(
                         if final_status == "interrupted"
                         else PUSH_SEEN_GRACE_SECONDS
                     ),
+                    # A thread's pushes reach APNs in run order, so an older
+                    # one sent slowly can't land after, and replace, a newer.
+                    ordering_key=f"push:{thread_id}",
                 )
             )
 

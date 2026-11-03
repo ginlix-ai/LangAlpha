@@ -1600,6 +1600,30 @@ async def merge_job_payload(
             return cur.rowcount > 0
 
 
+async def add_to_job_payload_list(job_id: str, key: str, values: List[str]) -> None:
+    """Union ``values`` into the string list at ``payload[key]``, against the
+    row as it stands, so two owners of a job (one whose lease lapsed) each add
+    what they did rather than overwrite the other's."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE hook_outbox
+                SET payload = jsonb_set(
+                    COALESCE(payload, '{}'::jsonb),
+                    ARRAY[%(key)s],
+                    (SELECT COALESCE(jsonb_agg(v ORDER BY v), '[]'::jsonb)
+                     FROM (SELECT jsonb_array_elements_text(
+                                      COALESCE(payload->%(key)s, '[]'::jsonb)) AS v
+                           UNION
+                           SELECT unnest(%(values)s::text[])) AS s)
+                )
+                WHERE hook_outbox_id = %(job_id)s
+                """,
+                {"key": key, "values": list(values), "job_id": job_id},
+            )
+
+
 # ---------------------------------------------------------------------------
 # Steers: a message for a thread's (or a task's) live agent, from the user or
 # the Chief of Staff. One ``steer`` row per message, parked at insert

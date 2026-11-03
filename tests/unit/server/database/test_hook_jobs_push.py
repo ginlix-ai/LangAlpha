@@ -29,7 +29,7 @@ def _push(final_status, **kw):
 def test_a_finished_turn_pushes_after_the_seen_grace():
     job = _push("completed")
     assert job.idempotency_key == "run-1:push"
-    assert job.ordering_key is None
+    assert job.ordering_key == "push:thread-1"
     assert job.delay_seconds == PUSH_SEEN_GRACE_SECONDS == 8.0
     assert job.payload == {
         "user_id": "u-1",
