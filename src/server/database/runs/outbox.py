@@ -294,7 +294,7 @@ async def claim_outbox_jobs(
                               OR {_STEER_SAFETY_NET_SQL}))
                         OR (o.status = 'claimed'
                             AND o.lease_expires_at <= NOW()
-                            AND o.attempts < %s)
+                            AND {_spent_sql("o")} < %s)
                       )
                       AND NOT EXISTS (
                         SELECT 1 FROM hook_outbox p
@@ -346,7 +346,7 @@ async def claim_outbox_jobs(
                                   OR {_STEER_SAFETY_NET_SQL}))
                             OR (o.status = 'claimed'
                                 AND o.lease_expires_at <= NOW()
-                                AND o.attempts < %s)
+                                AND {_spent_sql("o")} < %s)
                         )
                         AND (
                             o.ordering_key IS NULL
@@ -484,7 +484,7 @@ async def park_exhausted_jobs(*, max_attempts: int = 5) -> List[Dict[str, Any]]:
                         WHERE status = 'claimed'
                           AND hook_type NOT IN {_sql_list(("steer", *ALERT_HOOK_TYPES))}
                           AND lease_expires_at <= NOW()
-                          AND attempts >= %s
+                          AND {_spent_sql()} >= %s
                         RETURNING *
                     ),
                     comp AS ({_DEAD_REPORT_BACK_COMPENSATION_SQL})
@@ -812,6 +812,15 @@ def _fence_params(job_id: str, attempts: int, max_attempts: int) -> Dict[str, An
     return {"job_id": job_id, "attempts": attempts, "max": max_attempts}
 
 
+def _spent_sql(a: str = "") -> str:
+    """The attempts a job has spent toward the ceiling: its claims, less the
+    parks that found its thread waiting on the user (``waited``, see
+    ``defer_claimed_job``). ``attempts`` itself only grows, the fence token.
+    ``a`` is the hook_outbox alias, if any."""
+    c = f"{a}." if a else ""
+    return f"({c}attempts - COALESCE(({c}payload->>'waited')::int, 0))"
+
+
 async def nack_outbox_job(
     job_id: str, *, attempts: int, max_attempts: int = 5
 ) -> Optional[str]:
@@ -837,7 +846,8 @@ async def nack_outbox_job(
                     WITH bumped AS (
                         UPDATE hook_outbox
                         SET status = CASE
-                                WHEN attempts >= %s THEN 'dead' ELSE 'pending'
+                                WHEN {_spent_sql()} >= %s THEN 'dead'
+                                ELSE 'pending'
                             END,
                             -- A steer backs off in its payload (see
                             -- _STEER_DUE_SQL), so a build that cannot run it
@@ -856,7 +866,8 @@ async def nack_outbox_job(
                             END,
                             lease_expires_at = NULL,
                             completed_at = CASE
-                                WHEN attempts >= %s THEN NOW() ELSE completed_at
+                                WHEN {_spent_sql()} >= %s THEN NOW()
+                                ELSE completed_at
                             END
                         WHERE hook_outbox_id = %s AND status = 'claimed'
                           AND attempts = %s
@@ -1108,7 +1119,7 @@ async def release_deferred_notifications(conn, thread_id: str) -> int:
 
 
 async def defer_claimed_job(
-    job_id: str, *, attempts: int, max_attempts: int = 5
+    job_id: str, *, attempts: int, max_attempts: int = 5, waits_on_user: bool = False
 ) -> Optional[str]:
     """Park a CLAIMED job back to deferred (``next_retry_at='infinity'``).
 
@@ -1127,7 +1138,14 @@ async def defer_claimed_job(
     the caller stops either way and its fenced ack no-ops. A turn's hold on
     the job is dropped: a job its executor holds was never confirmed, so the
     next live turn may take it in again.
+
+    ``waits_on_user`` is for a thread's report held by a card that only the
+    user's answer clears: each stop short of it releases the job again, so
+    the claim that found the card still waiting is not spent (``waited``).
+    Steers and alerts keep their own ceilings.
     """
+    waits = f"(%(waits)s AND hook_type IN {_THREAD_REPORT_TYPES_SQL})"
+    spent = f"({_spent_sql()} - {waits}::int)"
     async with pool.get_db_connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -1141,19 +1159,23 @@ async def defer_claimed_job(
                     WITH parked AS (
                         UPDATE hook_outbox
                         SET status = CASE
-                                WHEN attempts >= %s THEN 'dead' ELSE 'pending'
+                                WHEN {spent} >= %(max)s THEN 'dead' ELSE 'pending'
                             END,
                             next_retry_at = CASE
-                                WHEN attempts >= %s THEN NOW()
+                                WHEN {spent} >= %(max)s THEN NOW()
                                 ELSE 'infinity'::timestamptz
                             END,
                             lease_expires_at = NULL,
                             completed_at = CASE
-                                WHEN attempts >= %s THEN NOW() ELSE completed_at
+                                WHEN {spent} >= %(max)s THEN NOW() ELSE completed_at
                             END,
-                            payload = payload - 'steered_run_id' - 'due_at'
-                        WHERE hook_outbox_id = %s AND status = 'claimed'
-                          AND attempts = %s
+                            payload = (payload - 'steered_run_id' - 'due_at')
+                                || CASE WHEN {waits} THEN jsonb_build_object(
+                                    'waited',
+                                    COALESCE((payload->>'waited')::int, 0) + 1
+                                ) ELSE '{{}}'::jsonb END
+                        WHERE hook_outbox_id = %(job_id)s AND status = 'claimed'
+                          AND attempts = %(attempts)s
                         RETURNING *
                     ),
                     dead_rows AS (
@@ -1162,7 +1184,7 @@ async def defer_claimed_job(
                     comp AS ({_DEAD_REPORT_BACK_COMPENSATION_SQL})
                     SELECT status FROM parked
                     """,
-                    (max_attempts, max_attempts, max_attempts, job_id, attempts),
+                    {**fence, "waits": waits_on_user},
                 )
                 row = await cur.fetchone()
                 return row["status"] if row else None
@@ -1521,13 +1543,14 @@ async def requeue_job_with_key(
                 WITH bumped AS (
                     UPDATE hook_outbox
                     SET status = CASE
-                            WHEN attempts >= %s THEN 'dead' ELSE 'pending'
+                            WHEN {_spent_sql()} >= %s THEN 'dead' ELSE 'pending'
                         END,
                         ordering_key = %s,
                         created_at = clock_timestamp(),
                         lease_expires_at = NULL, next_retry_at = NOW(),
                         completed_at = CASE
-                            WHEN attempts >= %s THEN NOW() ELSE completed_at
+                            WHEN {_spent_sql()} >= %s THEN NOW()
+                            ELSE completed_at
                         END
                     WHERE hook_outbox_id = %s AND status = 'claimed'
                       AND attempts = %s

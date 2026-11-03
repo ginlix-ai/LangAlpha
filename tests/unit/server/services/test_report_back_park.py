@@ -22,6 +22,10 @@ def _env(statuses, *, parked="pending"):
     drainer = MagicMock()
     with (
         patch("src.server.database.runs.lifecycle.get_latest_attempt", new=latest),
+        patch(
+            "src.server.services.report_back.notify_turn._card_waits",
+            new=AsyncMock(return_value=False),
+        ),
         patch("src.server.database.runs.outbox.defer_claimed_job", new=defer),
         patch(
             "src.server.database.runs.outbox.release_deferred_notifications",
