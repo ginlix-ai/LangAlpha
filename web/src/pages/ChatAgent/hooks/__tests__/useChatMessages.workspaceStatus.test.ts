@@ -7,7 +7,7 @@
  * - `starting` without `sandbox_state`          -> 'starting' (generic copy)
  * - `starting` with an unknown `sandbox_state`  -> 'starting' (graceful fallback)
  * - `ready`                                     -> false (spinner clears)
- * - `turn_held` held/released drive `turnHeld` the same way; a reconnect also clears it
+ * - `turn_held` held/released drive `turnHeld` the same way; a drop before released clears it too
  *
  * Note: the hook's `cleanupAfterStreamEnd` resets `workspaceStarting` to
  * false when the stream completes, so we keep the stream open with a
@@ -280,11 +280,10 @@ describe('useChatMessages – workspace_status SSE handling', () => {
     expect(result.current.turnHeld).toBeNull();
   });
 
-  it('a reconnect clears turnHeld when the stream dropped before released', async () => {
-    mockStatus.mockResolvedValue(threadStatus({ can_reconnect: true, status: 'running' }));
-    // The resumed run stream stays open, so only the attach can clear the line.
-    mockReconnect.mockImplementation(() => new Promise(() => {}));
-    mockSendStream.mockImplementation(
+  it('a drop before released clears turnHeld and sends the message again', async () => {
+    // A held frame always precedes the run's first frame, so this drop has no
+    // run to resume: the send goes again, and the held line must not wait on it.
+    mockSendStream.mockImplementationOnce(
       async (
         _msg: string,
         _ws: string,
@@ -296,6 +295,8 @@ describe('useChatMessages – workspace_status SSE handling', () => {
         return { disconnected: true };
       },
     );
+    // The second attempt stays open, so only the drop can have cleared the line.
+    mockSendStream.mockImplementation(() => new Promise(() => {}));
 
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
@@ -303,7 +304,13 @@ describe('useChatMessages – workspace_status SSE handling', () => {
       void result.current.handleSendMessage('hello');
     });
 
-    await waitFor(() => expect(mockReconnect).toHaveBeenCalled());
+    await waitFor(() => expect(mockSendStream).toHaveBeenCalledTimes(1));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(result.current.turnHeld).toBeNull();
+    expect(mockSendStream).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => expect(mockSendStream).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(mockReconnect).not.toHaveBeenCalled();
     expect(result.current.turnHeld).toBeNull();
   });
 

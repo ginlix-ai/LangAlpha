@@ -10,6 +10,7 @@ renames never leak and the frontend switches on exactly one vocabulary.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Optional
 
 # The public vocabulary is a PARTITION, not a list: every status is live
@@ -100,7 +101,7 @@ def is_live(raw: Any) -> bool:
     return value is not None and str(value) in _LIVE
 
 
-def is_user_stop(row: Optional[dict[str, Any]]) -> bool:
+def is_user_stop(row: Optional[Mapping[str, Any]]) -> bool:
     """True iff a run or response row ended because the user stopped it.
 
     A cancelled status alone is not a stop: shutdown and recovery cancel runs

@@ -25,11 +25,12 @@ KEY = "8c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5"
 TURN = "2e4f6a8b-0c1d-4e2f-8a3b-5c6d7e8f9a0b"
 
 
-async def _resend(thread_owner, steered=True):
+async def _resend(thread_owner, steered=True, **ended):
     turn = {
         "conversation_response_id": uuid.UUID(TURN),
         "conversation_thread_id": "tid-mine",
         "status": "in_progress",
+        **ended,
     }
     job = {
         "id": "job-1",
@@ -98,6 +99,33 @@ async def test_a_resend_of_a_send_that_started_its_turn_is_not_marked_steered():
     detail = resp.json()["detail"]
     assert (detail["code"], detail["run_id"]) == ("duplicate_request", TURN)
     assert "steered" not in detail
+    assert detail["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_resend_of_a_send_dropped_in_setup_may_run_it_again():
+    resp, _ = await _resend(
+        CALLER,
+        steered=False,
+        status="cancelled",
+        metadata={"pending_input": {"checkpoint_id": None}},
+    )
+
+    detail = resp.json()["detail"]
+    assert (detail["run_status"], detail["retryable"]) == ("cancelled", True)
+
+
+@pytest.mark.asyncio
+async def test_a_resend_of_a_stopped_send_stays_stopped():
+    resp, _ = await _resend(
+        CALLER,
+        steered=False,
+        status="cancelled",
+        metadata={"pending_input": {"checkpoint_id": None}, "cancelled_by_user": True},
+    )
+
+    detail = resp.json()["detail"]
+    assert (detail["run_status"], detail["retryable"]) == ("cancelled", False)
 
 
 @pytest.mark.asyncio

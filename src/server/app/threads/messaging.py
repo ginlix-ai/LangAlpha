@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # require_thread_owner is called through the module (auth_api.…) so a single
 # definition-site patch governs every route — a consumer-site patch that stops
 # intercepting after a move would silently bypass auth in tests.
+from src.config.settings import get_sse_keepalive_interval
 from src.server.utils import api as auth_api
 from src.server.utils.api import (
     CurrentUserId,
@@ -342,6 +343,7 @@ async def _reject_duplicate_request(
     turn carries, which is that turn's own message, not a copy of it.
     """
     from src.server.services.runs.admission import run_named_by_key
+    from src.server.services.runs.pending_input import can_retry
 
     keyed = await run_named_by_key(
         thread_id, request_key, except_job_id=except_job_id
@@ -365,6 +367,7 @@ async def _reject_duplicate_request(
             thread_id=existing_thread,
             run_id=str(existing["conversation_response_id"]),
             run_status=existing["status"],
+            retryable=can_retry(existing),
         )
         # A steer's run is another message's turn, not one to retry or adopt.
         if keyed.steered:
@@ -422,6 +425,7 @@ async def _handle_send_message(
     from src.server.handlers.chat import astream_ptc_workflow
     from src.server.handlers.chat.image_intake import inline_image_urls
     from src.server.handlers.chat.error_handling import end_after_failure_frame
+    from src.server.handlers.chat.setup_keepalive import SetupKeepaliveResponse
     from src.server.services.turn_runtime import requested_workspace, turn_route
 
     # Canonical run_id generation site. Each POST gets a fresh UUID that
@@ -659,6 +663,7 @@ async def _handle_send_message(
         "Content-Location": f"/api/v1/threads/{thread_id}/messages/stream?run_id={run_id}",
     }
 
+    setup_over = asyncio.Event()
     gen = astream_ptc_workflow(
         request=request,
         thread_id=thread_id,
@@ -682,10 +687,11 @@ async def _handle_send_message(
             else None
         ),
         extra_configurable=_automation_configurable(request),
+        setup_over=setup_over,
     )
 
     if not is_dispatch:
-        return StreamingResponse(
+        return SetupKeepaliveResponse(
             end_after_failure_frame(
                 observe_chat_stream(
                     gen,
@@ -697,6 +703,8 @@ async def _handle_send_message(
             ),
             media_type="text/event-stream",
             headers=sse_headers_with_loc,
+            interval=get_sse_keepalive_interval(),
+            setup_over=setup_over,
         )
 
     return await _prime_dispatch(
@@ -1418,7 +1426,7 @@ async def retry_thread(
     Retry a failed run as a new attempt on the same turn (v4 attempt chain).
 
     Validates the target is the thread's LATEST attempt and terminally
-    retryable (status=error), then starts attempt N+1 with
+    retryable (``can_retry``), then starts attempt N+1 with
     ``retry_of_run_id`` chaining — no truncation, the failed attempt stays
     archived. Graph-wise the retry resumes from the last checkpoint, unless
     the failed attempt never reached the graph: then it runs that attempt's
@@ -1434,6 +1442,7 @@ async def retry_thread(
     from src.server.handlers.checkpoint_handler import get_retry_checkpoint
     from src.server.services.runs.admission import RunScope
     from src.server.services.runs.pending_input import (
+        can_retry,
         input_rerun_request,
         read_pending_input,
         retried_wake_fields,
@@ -1478,7 +1487,7 @@ async def retry_thread(
             raise HTTPException(
                 status_code=409, detail=admission_conflict_detail("running")
             )
-        if latest["status"] != "error":
+        if not can_retry(latest):
             raise HTTPException(
                 status_code=409,
                 detail={

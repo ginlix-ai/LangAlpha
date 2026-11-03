@@ -5,7 +5,7 @@
  * a failure whose response never arrived: the server dedups on `request_key`
  * (HTTP 409 `duplicate_request`), so a lost-response resubmit adopts the
  * already-accepted run instead of opening a duplicate turn. A send's key is
- * spent as soon as its response headers arrive; from then on an identical
+ * spent with its response's first frame; from then on an identical
  * message is a genuinely new logical send. Only that send's own key is spent:
  * by then the pending key may be another send's.
  *
@@ -45,7 +45,7 @@ export interface RequestKeyTracker {
    *  out again under the key it was sent with. The request holds `comments`
    *  until it settles. */
   take: (fingerprint: string, options?: { alongside?: boolean; key?: string; comments?: CarriedComments }) => string;
-  /** The server has a copy of the send under this key (headers arrived, or a
+  /** The server has a copy of the send under this key (its first frame came, or a
    *  run delivered or returned it): the same text sent again is a new send. */
   spend: (requestKey: string) => void;
   /** How the request under this key ended for its comments. The first answer

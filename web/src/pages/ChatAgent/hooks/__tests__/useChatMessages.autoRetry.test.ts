@@ -42,11 +42,12 @@ vi.mock('../../utils/api', async (importOriginal) => {
   });
 });
 
-import { getWorkflowStatus, replayThreadHistory } from '../../utils/api';
+import { getWorkflowStatus, reconnectToWorkflowStream, replayThreadHistory } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
 
 const mockStatus = getWorkflowStatus as Mock;
 const mockReplay = replayThreadHistory as Mock;
+const mockReconnect = reconnectToWorkflowStream as Mock;
 
 const WS = 'ws-x';
 const TID = 'th-x';
@@ -406,5 +407,207 @@ describe('useChatMessages: a turn the server ends with `retry`', () => {
 
     expect(retryPosts()[0].body).toMatchObject({ run_id: 'run-1', additional_context: CONTEXT });
     expect(JSON.stringify(assistants(result.current.messages))).toContain('Recovered answer');
+  });
+
+  describe('a send whose connection drops during setup', () => {
+    const KEEPALIVE = ':keepalive\n\n';
+    const conflict = (detail: Record<string, unknown>) => ({
+      ok: false,
+      status: 409,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({
+        detail: { code: 'duplicate_request', message: 'already accepted', thread_id: TID, run_id: 'run-1', ...detail },
+      }),
+    }) as unknown as Response;
+    const answered = (runId: string) => sse(runId, [metadataFrame(runId), ANSWER, RUN_END], { drop: false });
+
+    it('sends the message again under its key, without a second bubble', async () => {
+      onSend = (n) => (n === 1 ? sse('run-1', [KEEPALIVE, KEEPALIVE], { drop: true }) : answered('run-2'));
+
+      const { result, statusCallsAtMount } = await mountAndSend();
+
+      // Waiting out the backoff, not attaching to a run that may not exist.
+      expect(result.current.isLoading).toBe(true);
+      expect(mockStatus.mock.calls.length).toBe(statusCallsAtMount);
+
+      await advance(1000);
+
+      expect(sendPosts()).toHaveLength(2);
+      expect(sendPosts()[1].body.request_key).toBeTruthy();
+      expect(sendPosts()[1].body.request_key).toBe(sendPosts()[0].body.request_key);
+      expect(users(result.current.messages)).toHaveLength(1);
+      expect(assistants(result.current.messages)).toHaveLength(1);
+      expect(JSON.stringify(result.current.messages)).toContain('Recovered answer');
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('attaches to the run when the first copy got further than this client heard', async () => {
+      onSend = (n) => (n === 1
+        ? sse('run-1', [KEEPALIVE], { drop: true })
+        : conflict({ run_status: 'in_progress', retryable: false }));
+      mockStatus.mockResolvedValue({ can_reconnect: true, status: 'running', run_id: 'run-1', active_tasks: [] });
+      mockReconnect.mockImplementation(async (_tid: string, _rid: string, _cursor: unknown, onEvent: (e: Record<string, unknown>) => void) => {
+        onEvent({ event: 'metadata', thread_id: TID, run_id: 'run-1', _eventId: 1 });
+        onEvent({ event: 'message_chunk', agent: 'main', role: 'assistant', content: 'Recovered answer', content_type: 'text', _eventId: 2 });
+        return { disconnected: false, aborted: false };
+      });
+
+      const { result } = await mountAndSend();
+      await advance(1000);
+
+      expect(mockReconnect).toHaveBeenCalled();
+      expect(sendPosts()).toHaveLength(2);
+      expect(retryPosts()).toHaveLength(0);
+      expect(JSON.stringify(result.current.messages)).toContain('Recovered answer');
+    });
+
+    // The first copy's server may not hear its client is gone until after the
+    // resend: its own disconnect then cancels the run the resend adopted.
+    it.each([
+      ['its reader ends with nothing heard', { can_reconnect: true, status: 'running', run_id: 'run-1', active_tasks: [] }],
+      ['its status says it is over', { can_reconnect: false, status: 'cancelled' }],
+    ])('asks again when an adopted run goes without a word: %s', async (_how, status) => {
+      onSend = (n) => {
+        if (n === 1) return sse('run-1', [KEEPALIVE], { drop: true });
+        return n === 2
+          ? conflict({ run_status: 'in_progress', retryable: false })
+          : conflict({ run_status: 'cancelled', retryable: true });
+      };
+      onRetry = () => answered('run-2');
+      mockStatus.mockResolvedValue(status);
+      mockReconnect.mockResolvedValue({ disconnected: false, aborted: false });
+
+      const { result } = await mountAndSend();
+      await advance(1000);
+      expect(sendPosts()).toHaveLength(2);
+      expect(result.current.isLoading).toBe(true);
+
+      await advance(2000);
+
+      expect(sendPosts()).toHaveLength(3);
+      expect(sendPosts()[2].body.request_key).toBe(sendPosts()[0].body.request_key);
+      expect(retryPosts()).toHaveLength(1);
+      expect(users(result.current.messages)).toHaveLength(1);
+      expect(assistants(result.current.messages)).toHaveLength(1);
+      expect(JSON.stringify(result.current.messages)).toContain('Recovered answer');
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('stops asking at the budget and leaves the reply failed', async () => {
+      onSend = (n) => (n === 1
+        ? sse('run-1', [KEEPALIVE], { drop: true })
+        : conflict({ run_status: 'in_progress', retryable: false }));
+      mockStatus.mockResolvedValue({ can_reconnect: false, status: 'cancelled' });
+
+      const { result } = await mountAndSend();
+      const replaysAtMount = mockReplay.mock.calls.length;
+      await advance(60_000);
+
+      expect(sendPosts()).toHaveLength(4);
+      // No reload: the reply is only on this page, and its Retry with it.
+      expect(mockReplay.mock.calls.length).toBe(replaysAtMount);
+      expect(assistants(result.current.messages)[0]).toMatchObject({ isStreaming: false, error: true, structuredError: { message: 'chat.autoRetryExhausted' } });
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('reruns a run the drop cancelled before it ran', async () => {
+      onSend = (n) => (n === 1
+        ? sse('run-1', [KEEPALIVE], { drop: true })
+        : conflict({ run_status: 'cancelled', retryable: true }));
+      onRetry = () => answered('run-2');
+
+      const { result } = await mountAndSend();
+      await advance(1000);
+
+      expect(retryPosts()).toHaveLength(1);
+      expect(retryPosts()[0].body).toMatchObject({ run_id: 'run-1' });
+      expect(users(result.current.messages)).toHaveLength(1);
+      expect(assistants(result.current.messages)).toHaveLength(1);
+      expect(JSON.stringify(result.current.messages)).toContain('Recovered answer');
+    });
+
+    it('tries a rerun that could not open again', async () => {
+      onSend = (n) => (n === 1
+        ? sse('run-1', [KEEPALIVE], { drop: true })
+        : conflict({ run_status: 'cancelled', retryable: true }));
+      onRetry = (n) => {
+        if (n === 1) throw new TypeError('Load failed');
+        return answered('run-2');
+      };
+
+      const { result } = await mountAndSend();
+      await advance(1000);
+      expect(retryPosts()).toHaveLength(1);
+
+      await advance(2000);
+
+      expect(retryPosts()).toHaveLength(2);
+      expect(JSON.stringify(result.current.messages)).toContain('Recovered answer');
+    });
+
+    it('leaves a run the user stopped elsewhere stopped', async () => {
+      onSend = (n) => (n === 1
+        ? sse('run-1', [KEEPALIVE], { drop: true })
+        : conflict({ run_status: 'cancelled', retryable: false }));
+      onRetry = () => answered('run-2');
+
+      await mountAndSend();
+      await advance(1000);
+
+      expect(retryPosts()).toHaveLength(0);
+    });
+
+    it('waits for a link before sending again', async () => {
+      const onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+      try {
+        onSend = (n) => (n === 1 ? sse('run-1', [KEEPALIVE], { drop: true }) : answered('run-2'));
+
+        const { result } = await mountAndSend();
+        await advance(60_000);
+        expect(sendPosts()).toHaveLength(1);
+        expect(result.current.isLoading).toBe(true);
+
+        onLine.mockReturnValue(true);
+        await act(async () => {
+          window.dispatchEvent(new Event('online'));
+        });
+        await advance(0);
+
+        expect(sendPosts()).toHaveLength(2);
+        expect(sendPosts()[1].body.request_key).toBe(sendPosts()[0].body.request_key);
+      } finally {
+        onLine.mockRestore();
+      }
+    });
+
+    it('a stop while offline cancels the resend', async () => {
+      const onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+      try {
+        onSend = (n) => (n === 1 ? sse('run-1', [KEEPALIVE], { drop: true }) : answered('run-2'));
+
+        const { result } = await mountAndSend();
+        await advance(2000);
+        await act(async () => {
+          await result.current.stopWorkflow();
+        });
+
+        onLine.mockReturnValue(true);
+        await advance(10_000);
+
+        expect(sendPosts()).toHaveLength(1);
+      } finally {
+        onLine.mockRestore();
+      }
+    });
+
+    it('reconnects, and sends nothing again, once its run has spoken', async () => {
+      onSend = () => sse('run-1', [KEEPALIVE, metadataFrame('run-1'), ANSWER], { drop: true });
+
+      const { statusCallsAtMount } = await mountAndSend();
+      await advance(10_000);
+
+      expect(sendPosts()).toHaveLength(1);
+      expect(mockStatus.mock.calls.length).toBeGreaterThan(statusCallsAtMount);
+    });
   });
 });

@@ -88,22 +88,17 @@ describe('a stream gone silent', () => {
     expect(settled).not.toHaveBeenCalled();
   });
 
-  // A disconnect during a send's setup cancels the turn, and a computer starting
-  // can take minutes with nothing sent, so only the run's frames start the watch.
-  it('leaves a send alone through its setup, and watches it from the first run frame', async () => {
+  // The server beats from the headers on, so a setup that goes quiet is a dead
+  // socket like any other.
+  it('watches from the headers, through frames of the setup', async () => {
     const { response, send } = openResponse();
     (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(response);
-    const settled = vi.fn();
 
-    const stream = streamFetch('/s', {}, () => undefined, undefined, { beatMs: BEAT_MS, fromRunStart: true });
-    void stream.then(settled);
+    const stream = streamFetch('/s', {}, () => undefined, undefined, { beatMs: BEAT_MS });
     await settle();
     send('id: 0\nevent: workspace_status\ndata: {"status":"starting"}\n\n');
-    await vi.advanceTimersByTimeAsync(300_000);
-    expect(settled).not.toHaveBeenCalled();
-
-    send('id: 1\nevent: metadata\ndata: {}\n\n');
     await settle();
+
     await vi.advanceTimersByTimeAsync(SILENCE_MS);
     await expect(stream).resolves.toMatchObject({ disconnected: true, silentOnReturn: false });
   });

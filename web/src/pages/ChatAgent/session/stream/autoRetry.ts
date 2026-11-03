@@ -9,6 +9,8 @@
  * reply failed, with Retry on it, once it stops.
  */
 
+import { isOnline, waitForOnline } from '@/lib/network';
+import { holdReload } from '@/lib/reloadHolds';
 import { failAssistantMessage } from './finalizeMessage';
 import { updateMessage } from '../../hooks/utils/messageHelpers';
 import type { CommentSend } from '@/types/api';
@@ -33,6 +35,15 @@ export function readRetryNotice(event: SSEEvent): RetryNotice {
     recovery: event.recovery === 'resend' ? 'resend' : 'retry',
   };
 }
+
+/**
+ * A request whose stream dropped before its run's first frame. No run may exist
+ * to resume: a disconnect during setup cancels the turn, and before START leaves
+ * nothing on the server. So it goes again under its key, whose answer says what
+ * did happen: a new run, the copy that started, or a Retry of one the drop
+ * cancelled before it ran.
+ */
+export const DROPPED_BEFORE_RUN: RetryNotice = { autoRetry: true, attempt: null, maxRetries: null, recovery: 'resend' };
 
 /** What a turn sent, kept so a failure can send it again. */
 export interface TurnRequest {
@@ -134,6 +145,10 @@ function shouldAutoRetry(notice: RetryNotice, spent: number): boolean {
  * the minute a computer that is still starting can hold an attempt. */
 const autoRetryDelayMs = (spent: number): number => 1000 * 2 ** spent;
 
+/** How long a resend waits for a link, in slices so a stop is noticed within one. */
+const OFFLINE_CEILING_MS = 5 * 60 * 1000;
+const OFFLINE_SLICE_MS = 5 * 1000;
+
 export interface RetrySettlerDeps {
   setMessages: SetMessages;
   getMessages: () => readonly ChatMessage[];
@@ -188,24 +203,35 @@ export function settleRetryNotice(
   }
   const epoch = deps.sessionEpochRef.current;
   const tid = deps.threadIdRef.current;
-  setTimeout(() => {
+  const offlineDeadline = Date.now() + OFFLINE_CEILING_MS;
+  // A reload during the wait would lose a message the server may not have.
+  const release = holdReload();
+  const send = () => {
     // A stop during the wait already settled the bubble and the session.
     if (deps.wasStoppedRef.current) {
+      release();
       deps.abandoned();
       return;
     }
     // A newer turn, another thread or leaving the chat took the session, and
     // that owner manages the loading state; only this bubble is left to settle.
     if (deps.sessionEpochRef.current !== epoch || deps.threadIdRef.current !== tid) {
+      release();
       failReply(deps, bubbleId, deps.failedText);
       deps.abandoned();
       return;
     }
+    if (!isOnline() && Date.now() < offlineDeadline) {
+      void waitForOnline(OFFLINE_SLICE_MS).then(send);
+      return;
+    }
+    release();
     // The resend replaces the bubble in the same write that adds its own, so
     // the reply never shows as settled between attempts.
     const transcript = deps.getMessages();
     const at = transcript.findIndex((m) => m.id === bubbleId);
     deps.resend(next, at === -1 ? transcript.length : at, transcript, spent + 1);
-  }, autoRetryDelayMs(spent));
+  };
+  setTimeout(send, autoRetryDelayMs(spent));
   return true;
 }

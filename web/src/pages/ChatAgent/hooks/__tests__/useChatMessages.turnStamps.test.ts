@@ -79,6 +79,16 @@ function captureStreams(mock: Mock): OpenStream[] {
   return streams;
 }
 
+/** The drop's resend finds the first copy's run alive, which it adopts and reconnects to. */
+function resendAdopts(mock: Mock, runId: string) {
+  mock.mockImplementationOnce(async () => {
+    throw Object.assign(new Error('This request was already accepted'), {
+      status: 409,
+      errorInfo: { code: 'duplicate_request', message: 'already accepted', thread_id: 'th-1', run_id: runId, run_status: 'in_progress' },
+    });
+  });
+}
+
 /** The turn the transcript projects for the bubble of `role` showing `text`. */
 function turnOfText(messages: unknown[], role: 'user' | 'assistant', text: string): number {
   const entry = projectTurns(messages as MessageRecord[]).find(
@@ -615,10 +625,12 @@ describe('useChatMessages: a view that missed turns stamps the turn the server a
       // The POST names its run, then drops while the sandbox is still starting.
       const { onRunIdResolved } = mockSendStream.mock.calls[0][3] as { onRunIdResolved: (rid: string, tid: string) => void };
       onRunIdResolved('run-45', 'th-1');
+      resendAdopts(mockSendStream, 'run-45');
       streams[0].end({ disconnected: true });
       await send;
     });
-    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1));
+    // Past the 1s backoff before the send goes again.
+    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1), { timeout: 3000 });
     await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
 
     // The question, the send's bubble and the reconnect's.
@@ -659,10 +671,12 @@ describe('useChatMessages: a view that missed turns stamps the turn the server a
       await flush();
     });
     await act(async () => {
+      resendAdopts(mockSendStream, 'run-45');
       streams[0].end({ disconnected: true });
       await send;
     });
-    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1));
+    // Past the 1s backoff before the send goes again.
+    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1), { timeout: 3000 });
     await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
 
     const projected = projectTurns(live(hook) as MessageRecord[]);
@@ -698,10 +712,12 @@ describe('useChatMessages: a view that missed turns stamps the turn the server a
     });
     expect((live(hook) as MessageRecord[]).find((m) => m.content === 'also cover margins')?.queueError).toBeTruthy();
     await act(async () => {
+      resendAdopts(mockSendStream, 'run-45');
       streams[0].end({ disconnected: true });
       await send;
     });
-    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1));
+    // Past the 1s backoff before the send goes again.
+    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1), { timeout: 3000 });
     await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
 
     // The turn opens at the question, not at the steer typed into it.
@@ -742,10 +758,12 @@ describe('useChatMessages: a view that missed turns stamps the turn the server a
     });
     expect((live(hook) as MessageRecord[]).find((m) => m.content === 'also cover margins')?.steeringDelivered).toBe(true);
     await act(async () => {
+      resendAdopts(mockSendStream, 'run-45');
       streams[0].end({ disconnected: true });
       await send;
     });
-    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1));
+    // Past the 1s backoff before the send goes again.
+    await waitFor(() => expect(mockReconnect).toHaveBeenCalledTimes(1), { timeout: 3000 });
     await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
 
     expect(turnOfText(live(hook), 'user', 'go on')).toBe(45);

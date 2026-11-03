@@ -21,7 +21,6 @@ from fastapi import HTTPException
 from langgraph.types import Command
 
 from ptc_agent.core.project_context import ProjectContext, run_with_project
-from src.config.settings import get_sse_keepalive_interval
 from src.server.app import setup
 from src.server.database.conversation.threads_read import (
     read_thread_subagents_allowed,
@@ -189,6 +188,7 @@ async def astream_ptc_workflow(
     run_metadata: dict | None = None,
     extra_configurable: dict | None = None,
     named_model: NamedModel | None = None,
+    setup_over: asyncio.Event | None = None,
 ):
     """Async generator that streams PTC agent workflow events.
 
@@ -212,6 +212,9 @@ async def astream_ptc_workflow(
     from ``turn_route`` and has no default, so routing decides the workspace
     and the role in one place and no caller runs Home as an analyst by
     leaving one out.
+
+    ``setup_over`` is set once the run's stream is yielding, which keeps the
+    connection alive from there (``SetupKeepaliveResponse``).
     """
     workspace_id = route.workspace_id
     start_time = time.time()
@@ -335,16 +338,7 @@ async def astream_ptc_workflow(
                 ready, steering_event = await admit()
             else:
                 yield _turn_held({"status": "held", "reason": held_by})
-                waiting = asyncio.ensure_future(admit())
-                try:
-                    # The wait can outlast an edge proxy's idle cutoff, so the
-                    # stream shows it is alive until the turn is admitted.
-                    beat = get_sse_keepalive_interval()
-                    while not (await asyncio.wait({waiting}, timeout=beat))[0]:
-                        yield ":keepalive\n\n"
-                    ready, steering_event = waiting.result()
-                finally:
-                    waiting.cancel()
+                ready, steering_event = await admit()
                 yield _turn_held({"status": "released"})
             if not ready:
                 # Steered: the running turn, or the turn it becomes, has it.
@@ -1063,6 +1057,8 @@ async def astream_ptc_workflow(
         # via XREAD BLOCK. The workflow runs as a fully detached background
         # task — disconnect cannot reach it.
         async for event in stream_from_log(thread_id, run_id, last_event_id=None):
+            if setup_over is not None:
+                setup_over.set()
             yield event
 
     except (asyncio.CancelledError, GeneratorExit):

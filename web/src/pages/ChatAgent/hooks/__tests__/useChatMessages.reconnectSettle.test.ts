@@ -1452,8 +1452,17 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
     expect(steerCopies(hook)[0].turnIndex).toBe(1);
     await step(() => lose());
     expect(steerCopies(hook)[0]).toMatchObject({ queueError: 'Failed to send message' });
+    // The drop sends the message again, and the server answers with the run the
+    // first copy started. Its reader finds that run over with nothing heard, so
+    // the client asks once more and learns it completed.
+    mockSendStream.mockImplementationOnce(async () => {
+      throw duplicateOf('run-2');
+    });
+    mockSendStream.mockImplementationOnce(async () => {
+      throw duplicateOf('run-2', 'completed');
+    });
     await step(() => drop());
-    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2), { timeout: 5000 });
     await waitFor(() => expect(hook.result.current.isLoadingHistory).toBe(false));
 
     const [steer, ...extra] = steerCopies(hook);
@@ -1772,8 +1781,12 @@ describe('useChatMessages: a reconnect settles the bubble it continues', () => {
       const held = outcome === 'queued' ? { steering: true } : { queueError: 'Failed to send message' };
       // The view's own count, which nothing from the run has corrected.
       expect(steerCopies(hook)).toMatchObject([{ ...held, turnIndex: 1 }]);
+      // The drop sends the message again, and the server answers with the run the first copy started.
+      mockSendStream.mockImplementationOnce(async () => {
+        throw duplicateOf('run-2');
+      });
       await step(() => drop());
-      await waitFor(() => expect(mockReconnect).toHaveBeenCalled());
+      await waitFor(() => expect(mockReconnect).toHaveBeenCalled(), { timeout: 3000 });
       await waitFor(() => expect(hook.result.current.isLoadingHistory).toBe(false));
 
       expect(steerCopies(hook)).toMatchObject([{ ...held, turnIndex: 2 }]);
