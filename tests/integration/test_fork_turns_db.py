@@ -1142,6 +1142,96 @@ async def test_an_answer_no_run_followed_starts(thread, db_conn, named):
     assert row["status"] == "in_progress"
 
 
+async def test_an_answer_naming_a_pause_a_later_turn_went_past_is_refused(
+    thread, db_conn
+):
+    """A message sent while the card waited ran on from the pause, so the
+    pause is still under the pointer. Resumed there, the answer would put the
+    card's call through on a thread that already moved on."""
+    from src.server.handlers.checkpoint_handler import settle_resume_request
+
+    answer = await _answer(thread, named=True)
+    run_id, turn_index = await _start(thread.id, "q4")
+    await _run(thread.graph, thread.id, run_id, turn_index, "q4")
+
+    with pytest.raises(HTTPException) as refused:
+        await settle_resume_request(thread.id, answer)
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "stale_fork"
+
+
+async def test_an_answer_naming_its_pause_after_a_turn_that_wrote_nothing_starts(
+    thread, db_conn
+):
+    """The later turn failed before its first step, so the pointer still names
+    the pause and the answer resumes what the newest checkpoint holds."""
+    from src.server.database.runs.lifecycle import start_run
+    from src.server.handlers.checkpoint_handler import settle_resume_request
+
+    answer = await _answer(thread, named=True)
+    run_id, turn_index = await _start(thread.id, "q4")
+    await _settle(thread, run_id, turn_index, "error")
+
+    answer = await settle_resume_request(thread.id, answer)
+    row = await start_run(
+        run_id=str(uuid.uuid4()),
+        thread_id=thread.id,
+        request_key=str(uuid.uuid4()),
+        run_horizon=answer.resume_run_horizon,
+        metadata={"msg_type": "ptc"},
+    )
+    assert row["status"] == "in_progress"
+
+
+async def test_an_answer_naming_a_pause_under_a_flush_is_refused(thread, db_conn):
+    """A stop's flush wrote on top of the pause. Resumed at the pause, the
+    answer would run the step's finished calls again and drop the flush; the
+    answer that names no checkpoint resumes on top of it."""
+    from src.server.handlers.checkpoint_handler import settle_resume_request
+
+    answer = await _answer(thread, named=True)
+    flushed = await thread.graph.aupdate_state(
+        {"configurable": {"thread_id": thread.id}}, {"messages": []}
+    )
+    await db_conn.execute(
+        "UPDATE conversation_threads SET latest_checkpoint_id = %s "
+        "WHERE conversation_thread_id = %s",
+        (flushed["configurable"]["checkpoint_id"], thread.id),
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        await settle_resume_request(thread.id, answer)
+    assert refused.value.detail["code"] == "stale_fork"
+    await settle_resume_request(thread.id, await _answer(thread, named=False))
+
+
+async def test_an_answer_naming_a_pause_a_turn_went_past_unrecorded_is_refused(
+    thread, db_conn
+):
+    """The later turn wrote steps past the pause, but its finalize never read
+    them, so the pointer still names the pause."""
+    from src.server.database.runs.lifecycle import RunOutcome, finalize_run
+    from src.server.handlers.checkpoint_handler import settle_resume_request
+
+    answer = await _answer(thread, named=True)
+    run_id, turn_index = await _start(thread.id, "q4")
+    await thread.graph.ainvoke(
+        {"messages": [HumanMessage(content="q4")]},
+        {
+            "configurable": {"thread_id": thread.id},
+            "metadata": {"run_id": run_id, "turn_index": turn_index},
+        },
+    )
+    await finalize_run(
+        run_id=run_id, thread_id=thread.id, outcome=RunOutcome(status="error")
+    )
+    assert await _tip(db_conn, thread.id) == answer.checkpoint_id
+
+    with pytest.raises(HTTPException) as refused:
+        await settle_resume_request(thread.id, answer)
+    assert refused.value.detail["code"] == "stale_fork"
+
+
 async def test_an_answer_retransmit_that_waited_on_its_first_copy_reconnects(
     thread, test_db_pool, db_conn
 ):
