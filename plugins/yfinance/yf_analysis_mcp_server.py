@@ -232,13 +232,14 @@ def _search_news(yf_symbol: str, count: int) -> list[dict]:
     """News from Yahoo's search endpoint, in the shape ``get_news`` returns.
 
     yfinance reads news from an endpoint Yahoo has stopped serving (it answers
-    404, which yfinance turns into an empty list), while search still carries
-    headlines. Each item is reshaped into the ``content`` layout the primary
-    endpoint used, so callers see one format. Search cannot filter by tab.
+    404, which yfinance 1.x raises as ``YFDataException``; older releases
+    returned an empty list), while search still carries headlines. Each item
+    is reshaped into the ``content`` layout the primary endpoint used, so
+    callers see one format. Search cannot filter by tab.
     """
     try:
         items = yf.Search(yf_symbol, news_count=count, max_results=0).news
-    except Exception:  # noqa: BLE001 - the primary path already returned nothing
+    except Exception:  # noqa: BLE001 - the caller decides what no result means
         return []
     articles = []
     for item in items or []:
@@ -258,6 +259,26 @@ def _search_news(yf_symbol: str, count: int) -> list[dict]:
             }
         )
     return articles
+
+
+def _fetch_news(yf_symbol: str, count: int, tab: str) -> list[dict]:
+    """Ticker news, from search when the news endpoint is down or empty.
+
+    Press releases and unknown tabs have no search equivalent, so their errors
+    stand; an outage that search cannot cover also re-raises rather than
+    reading as no articles.
+    """
+    ticker = yf.Ticker(yf_symbol)
+    if tab.lower() not in ("news", "all"):
+        return ticker.get_news(count=count, tab=tab)
+    try:
+        articles = ticker.get_news(count=count, tab=tab)
+    except Exception:  # noqa: BLE001
+        articles = _search_news(yf_symbol, count)
+        if not articles:
+            raise
+        return articles
+    return articles or _search_news(yf_symbol, count)
 
 
 _OUT_GET_NEWS = output_model(
@@ -284,12 +305,8 @@ def get_news(ticker: str, count: int = 10, tab: str = "news") -> _OUT_GET_NEWS:
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
-        articles = yf.Ticker(yf_symbol).get_news(count=count, tab=tab)
-        if not articles and tab.lower() != "press releases":
-            articles = _search_news(yf_symbol, count)
-        if not articles:
-            return make_response([], source=SOURCE, symbol=symbol)
-        data = [clean_value(item) for item in articles]
+        articles = _fetch_news(yf_symbol, count, tab)
+        data = [clean_value(item) for item in articles or []]
         return make_response(data, source=SOURCE, symbol=symbol)
     except Exception as e:  # noqa: BLE001
         return make_error("upstream_error", safe_detail("News", e), symbol=symbol)
