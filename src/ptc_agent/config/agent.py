@@ -402,6 +402,9 @@ class AgentConfig(BaseModel):
     # with, None on any other turn; the run's row is stamped from it, so the
     # turn is counted as what admission let it run on.
     claude_code_hosted: str | None = Field(default=None, exclude=True)
+    # Which setup token the user saved it may sign in with, there or relayed
+    # to an own computer (``saved_token`` or ``stored_token``), None for none.
+    claude_code_saved: str | None = Field(default=None, exclude=True)
     # None permits standalone name resolution; [] means resolution rejected all candidates.
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)
     # Display names aligned index-for-index with ``fallback_llm_clients``

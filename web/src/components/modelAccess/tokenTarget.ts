@@ -74,8 +74,11 @@ export function useTokenRoutes(target: TokenTarget) {
       start: () => startClaudeCodeSignIn(),
       submit: async (code: string) => store(await submitClaudeCodeSignInCode(code)),
       remove: async () => {
-        await removeClaudeCodeToken();
-        await reread(queryKeys.features.claudeCode());
+        try {
+          await removeClaudeCodeToken();
+        } finally {
+          await reread(queryKeys.features.claudeCode());
+        }
       },
     };
   }

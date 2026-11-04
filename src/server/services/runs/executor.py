@@ -190,6 +190,14 @@ class LocalRunExecutor:
                 best = info
         return best
 
+    async def uncancelled_runs(self) -> list[TaskKey]:
+        """The runs this worker is running that no cancel has reached yet."""
+        async with self.task_lock:
+            return [
+                key for key, info in self.executions.items()
+                if info.status is LocalRunStatus.RUNNING and not info.explicit_cancel
+            ]
+
     async def has_active_tasks_for_workspace(self, workspace_id: str) -> bool:
         """Check if any active tasks exist for a workspace.
 

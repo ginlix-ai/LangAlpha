@@ -178,7 +178,7 @@ def world():
         serving(w.cache),
         patch("src.server.services.claude_code.flow.rows_available", side_effect=lambda: w.rows),
         patch("src.server.services.claude_code.flow.user_feature_enabled", new_callable=AsyncMock, side_effect=lambda *_: w.opted_in),
-        patch(f"{MACHINES}.backend_available", side_effect=lambda: w.backend),
+        patch("src.server.services.claude_code.hosted.backend_available", side_effect=lambda: w.backend),
         patch(f"{MACHINES}.get_computer", new_callable=AsyncMock, side_effect=lambda _: w.computer),
         patch(f"{MACHINES}.get_computer_roster", new_callable=AsyncMock, side_effect=lambda _: [_roster_row(w.computer)]),
         patch(f"{MACHINES}.tunnels_for", new_callable=AsyncMock, side_effect=lambda *_: {"tun-1": {"live": w.tunnel_live}}),

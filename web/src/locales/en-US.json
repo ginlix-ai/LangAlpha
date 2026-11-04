@@ -2554,7 +2554,8 @@
       "claudeCodePolicyBlocked": "Your organization's Claude Code policy keeps it from running on this computer",
       "claudeCodeHostedOff": "Choose in Settings how it runs on cloud computers",
       "claudeCodeNeedsApiKey": "Add your Anthropic API key in Settings to use it on cloud computers",
-      "claudeCodeApiKeyEndpoint": "Clear the Base URL on your Anthropic API key in Settings to use it on cloud computers"
+      "claudeCodeApiKeyEndpoint": "Clear the Base URL on your Anthropic API key in Settings to use it on cloud computers",
+      "claudeCodePaused": "Paused on cloud computers on this server"
     },
     "voice": {
       "start": "Start voice input",
@@ -2699,7 +2700,11 @@
         "api_key_endpoint": "Claude Code on cloud computers sends your Anthropic API key only to Anthropic, and yours is set to a custom Base URL. Clear the Base URL in Settings under Model access, or move this workspace to one of your computers.",
         "api_key_refused": "Anthropic refused your API key, or its account has no credit left. Check the key in Settings under Model access.",
         "busy": "Claude Code is busy on this server right now. Try again in a minute.",
-        "too_many_turns": "You've reached the limit on Claude Code threads running at once on cloud computers ({{n}}). Try again when one finishes."
+        "too_many_turns": "You've reached the limit on Claude Code threads running at once on cloud computers ({{n}}). Try again when one finishes.",
+        "hosted_paused": "Claude Code on cloud computers is paused on this server. It still runs on your own computers. Pick another model, or move this workspace to one of them.",
+        "stored_blocked": "Storing a setup token isn't available for your account, so Claude Code runs only on your own computers. Pick another model, or move this workspace to one of them.",
+        "stored_unattended": "Automations, wakeups and turns another agent sends don't run on the setup token LangAlpha stores for you. Choose your Anthropic API key in Settings under Model access, or run this workspace on a computer of yours with its own token.",
+        "choice_changed": "How Claude Code runs on cloud computers changed as this turn started. Send your message again."
       }
     }
   },
@@ -6693,6 +6698,7 @@
       "removeBody": "LangAlpha deletes the token. Claude Code models stay listed but won't run until you add a new token. Your own Claude Code sign-in isn't affected.",
       "removeConfirm": "Remove token",
       "removeFailed": "Couldn't remove the token. Try again.",
+      "turnsRunning": "Your token is deleted, but a Claude Code turn using it couldn't be stopped. Stop it in its thread.",
       "pasteHeading": "Already have a setup token? Paste it",
       "expiresBy": "Expires by <date>{{date}}</date>",
       "expired": "This token expired by <date>{{date}}</date>. Add a new one to keep using Claude Code.",
@@ -6753,7 +6759,26 @@
         "apiKey": "Also for cloud computers, with your Anthropic API key",
         "apiKeyDetail": "For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your API key, working on the cloud computer. Usage is billed to your Anthropic Console account, where Max, Ultra and Team plans include monthly API credits. Your Claude plan's limits aren't used.",
         "apiKeyEndpoint": "Your Anthropic API key is set to a custom Base URL, so Claude Code can't use it on cloud computers. Clear the Base URL on the key to use it.",
-        "needsApiKey": "Claude Code on cloud computers has no Anthropic API key to use. Add one, or save the one you have again, in Model access."
+        "needsApiKey": "Claude Code on cloud computers has no Anthropic API key to use. Add one, or save the one you have again, in Model access.",
+        "stored": "Also for cloud computers, with your setup token stored by LangAlpha",
+        "storedDetail": "For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your setup token, kept encrypted, working on the cloud computer. Your own computers without a token of their own run Claude Code themselves, with your token sent to them for each turn. Usage counts against your Claude plan.",
+        "paused": "Claude Code on cloud computers is paused on this server. Your choice is kept, and Claude Code still runs on your own computers.",
+        "blocked": "Storing a setup token isn't available for your account. Claude Code still runs on your own computers."
+      },
+      "consent": {
+        "title": "Let LangAlpha store your setup token?",
+        "encrypted": "LangAlpha keeps the token encrypted and uses it only to run Claude Code for your threads: on its servers for workspaces on cloud computers, and on your own computers that have no token of their own, which it sends the token to for each turn.",
+        "unattended": "Usage counts against your Claude plan. Automations, wakeups and turns another agent sends don't use this token.",
+        "terms": "Anthropic's terms for your Claude plan apply to this use, and you're responsible for following them. Anthropic may limit or suspend accounts that it finds break them.",
+        "undo": "You can switch back at any time, and LangAlpha deletes the token right away.",
+        "confirm": "Store my token",
+        "termsLink": "Read Anthropic's terms"
+      },
+      "leaveStored": {
+        "title": "Stop storing your setup token?",
+        "body": "LangAlpha deletes your stored setup token now, and Claude Code turns using it stop. Threads on cloud computers won't run on your Claude plan until you store a token again. Computers with their own token aren't affected.",
+        "confirm": "Delete token",
+        "failed": "Couldn't switch. Your token is still stored. Try again."
       }
     },
     "claude": {

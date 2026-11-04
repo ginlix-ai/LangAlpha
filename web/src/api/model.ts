@@ -123,18 +123,27 @@ export async function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
 
 /** Whether Claude Code runs for the user on cloud computers: it runs only on
  *  their own computers (`local`), or on cloud computers too, with their
- *  Anthropic API key (`api_key`). */
-export type ClaudeCodeCustodyMode = 'local' | 'api_key';
+ *  Anthropic API key (`api_key`) or on the setup token they let the server
+ *  store (`stored`). */
+export type ClaudeCodeCustodyMode = 'local' | 'api_key' | 'stored';
 
 /** `GET /api/v1/claude-code/custody`, and the answer to a choice made. */
 export interface ClaudeCodeCustody {
   mode: ClaudeCodeCustodyMode;
   /** An Anthropic API key is saved under Model access, the one `api_key` runs on. */
   api_key_saved: boolean;
+  /** What the server lets the user choose now. A mode chosen before its
+   *  switch went off is kept, and paused. */
+  offered: Exclude<ClaudeCodeCustodyMode, 'local'>[];
+  /** An operator turned storing a token off for this user: `stored` is never
+   *  offered, and the mode is `local`. */
+  blocked: boolean;
   /** The server's verdict for a turn on a cloud computer: what it runs on,
    *  else the reason it is refused for (a `claude_code_off` refusal reason). */
-  runs_on: 'api_key' | null;
+  runs_on: 'api_key' | 'stored_token' | null;
   refusal: string | null;
+  /** The version of the consent text storing a token needs accepted now. */
+  disclosure: string | null;
 }
 
 /** Null where this server offers no choice for cloud computers (404): a
@@ -150,8 +159,12 @@ export async function getClaudeCodeCustody(): Promise<ClaudeCodeCustody | null> 
   }
 }
 
-export async function setClaudeCodeCustody(mode: ClaudeCodeCustodyMode): Promise<ClaudeCodeCustody> {
-  const { data } = await api.put('/api/v1/claude-code/custody', { mode });
+/** A refusal carries the OAuth routes' `error` body (`readOAuthError`): a
+ *  mode not offered now (`unavailable`), storing blocked for the user
+ *  (`stored_blocked`), or `stored` without the current `disclosure`.
+ *  Leaving `stored` deletes the stored token before it answers. */
+export async function setClaudeCodeCustody(mode: ClaudeCodeCustodyMode, disclosure?: string): Promise<ClaudeCodeCustody> {
+  const { data } = await api.put('/api/v1/claude-code/custody', disclosure ? { mode, disclosure } : { mode });
   return data as ClaudeCodeCustody;
 }
 

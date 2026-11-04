@@ -10,6 +10,7 @@ vi.mock('@/api/features', () => ({
 }));
 
 import { getFeatures, setFeatureOverride } from '@/api/features';
+import { queryKeys } from '@/lib/queryKeys';
 import { useFeatures, useFeatureEnabled, useSetFeatureOverride } from '../useFeatures';
 
 const mockGetFeatures = getFeatures as unknown as ReturnType<typeof vi.fn>;
@@ -134,5 +135,26 @@ describe('useSetFeatureOverride', () => {
 
     expect(queryClient.getQueryState(['features', 'market_watch', 'status'])?.isInvalidated).toBe(true);
     expect(queryClient.getQueryState(['features', 'beta_thing', 'status'])?.isInvalidated).toBe(false);
+  });
+
+  it('reads the Claude Code choice again once Claude Code is toggled, which may drop a stored token', async () => {
+    const queryClient = freshQueryClient();
+    queryClient.setQueryData(queryKeys.user.claudeCodeCustody(), { mode: 'stored' });
+    mockSetFeatureOverride.mockResolvedValue(FEATURES);
+
+    const { result } = renderHookWithProviders(() => useSetFeatureOverride(), { queryClient });
+    await result.current.mutateAsync({ key: 'market_watch', enabled: false });
+    expect(queryClient.getQueryState(queryKeys.user.claudeCodeCustody())?.isInvalidated).toBe(false);
+    await result.current.mutateAsync({ key: 'claude_code_runtime', enabled: false });
+    expect(queryClient.getQueryState(queryKeys.user.claudeCodeCustody())?.isInvalidated).toBe(true);
+  });
+  it('reads the Claude Code status again where turning it off was refused after the token went', async () => {
+    const queryClient = freshQueryClient();
+    queryClient.setQueryData(queryKeys.features.claudeCodeStatus(), { state: 'signed_in' });
+    mockSetFeatureOverride.mockRejectedValue(new Error('500'));
+
+    const { result } = renderHookWithProviders(() => useSetFeatureOverride(), { queryClient });
+    await result.current.mutateAsync({ key: 'claude_code_runtime', enabled: false }).catch(() => {});
+    await waitFor(() => expect(queryClient.getQueryState(queryKeys.features.claudeCodeStatus())?.isInvalidated).toBe(true));
   });
 });

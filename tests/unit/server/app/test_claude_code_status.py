@@ -41,8 +41,7 @@ async def client():
 def _switches(*, runs=True, rows=True, opted_in=True):
     """The server's switches and the user's opt-in, as the flow and the store read them."""
     with (
-        patch(f"{FLOW}.backend_available", return_value=runs and rows),
-        patch(f"{SAVED}.backend_available", return_value=runs and rows),
+        patch("src.server.services.claude_code.hosted.backend_available", return_value=runs and rows),
         patch(f"{FLOW}.rows_available", return_value=rows),
         patch(f"{FLOW}.user_feature_enabled", new_callable=AsyncMock, return_value=opted_in),
     ):

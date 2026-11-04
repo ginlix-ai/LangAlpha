@@ -1006,6 +1006,23 @@ async def get_run(run_id: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
+async def cancel_requested_runs(run_ids: list[str]) -> set[str]:
+    """Of ``run_ids``, the runs still in progress that carry cancel intent."""
+    if not run_ids:
+        return set()
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT conversation_response_id FROM conversation_responses
+                WHERE conversation_response_id = ANY(%s::uuid[])
+                  AND status = 'in_progress' AND cancel_requested_at IS NOT NULL
+                """,
+                (run_ids,),
+            )
+            return {str(row["conversation_response_id"]) for row in await cur.fetchall()}
+
+
 async def get_run_brief(conn, run_id: str) -> Optional[Dict[str, Any]]:
     """A run's id, thread, request key and status, read on ``conn``.
 

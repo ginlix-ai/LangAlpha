@@ -2579,7 +2579,8 @@
       "claudeCodePolicyBlocked": "你所在组织的 Claude Code 策略不允许它在这台电脑上运行",
       "claudeCodeHostedOff": "请在设置中选择它在云端计算机上的运行方式",
       "claudeCodeNeedsApiKey": "在设置中添加你的 Anthropic API 密钥后，即可在云端计算机上使用",
-      "claudeCodeApiKeyEndpoint": "请在设置中清空 Anthropic API 密钥的 Base URL，才能在云端计算机上使用"
+      "claudeCodeApiKeyEndpoint": "请在设置中清空 Anthropic API 密钥的 Base URL，才能在云端计算机上使用",
+      "claudeCodePaused": "此服务器已暂停在云端计算机上运行"
     },
     "voice": {
       "start": "开启语音输入",
@@ -2724,7 +2725,11 @@
         "api_key_endpoint": "云端计算机上的 Claude Code 只会把你的 Anthropic API 密钥发送给 Anthropic，而你的密钥设置了自定义 Base URL。请在设置的“模型接入”中清空 Base URL，或把此工作区移到你自己的电脑上。",
         "api_key_refused": "Anthropic 拒绝了你的 API 密钥，或该账户已无余额。请在设置的“模型接入”中检查此密钥。",
         "busy": "此服务器上的 Claude Code 当前繁忙，请稍后再试。",
-        "too_many_turns": "你在云端计算机上同时运行的 Claude Code 对话已达上限（{{n}} 个），请等其中一个结束后再试。"
+        "too_many_turns": "你在云端计算机上同时运行的 Claude Code 对话已达上限（{{n}} 个），请等其中一个结束后再试。",
+        "hosted_paused": "此服务器已暂停在云端计算机上运行 Claude Code，在你自己的电脑上仍可运行。请选择其他模型，或把此工作区移到你自己的电脑上。",
+        "stored_blocked": "你的账户无法保存 setup token，因此 Claude Code 只能在你自己的电脑上运行。请选择其他模型，或把此工作区移到你自己的电脑上。",
+        "stored_unattended": "自动化、唤醒以及其他 Agent 发来的对话不会使用 LangAlpha 为你保存的 setup token 运行。请在设置的“模型接入”中改用你的 Anthropic API 密钥，或在你自己的、有独立 token 的电脑上运行此工作区。",
+        "choice_changed": "本轮开始时，云端计算机上 Claude Code 的运行方式发生了变化。请重新发送你的消息。"
       }
     }
   },
@@ -6605,6 +6610,7 @@
       "removeBody": "LangAlpha 将删除此 token。Claude Code 模型仍会列出，但在你添加新 token 前无法运行。你自己的 Claude Code 登录不受影响。",
       "removeConfirm": "移除 token",
       "removeFailed": "无法移除 token，请重试。",
+      "turnsRunning": "你的 token 已删除，但仍有一个使用它的 Claude Code 对话未能停止。请在该对话中手动停止。",
       "pasteHeading": "已有 setup token？直接粘贴",
       "expiresBy": "最晚于 <date>{{date}}</date> 到期",
       "expired": "此 token 最晚已于 <date>{{date}}</date> 过期。请添加新的 token 以继续使用 Claude Code。",
@@ -6665,7 +6671,26 @@
         "apiKey": "也用于云端计算机，使用你的 Anthropic API 密钥",
         "apiKeyDetail": "云端计算机上的工作区，由 LangAlpha 在自己的服务器上用你的 API 密钥运行 Claude Code，在云端计算机上完成工作。用量计入你的 Anthropic Console 账户，Max、Ultra 和 Team 套餐每月含 API 额度，不占用你 Claude 套餐的用量限额。",
         "apiKeyEndpoint": "你的 Anthropic API 密钥设置了自定义 Base URL，云端计算机上的 Claude Code 无法使用它。清空该密钥的 Base URL 后即可使用。",
-        "needsApiKey": "云端计算机上的 Claude Code 没有可用的 Anthropic API 密钥。请在“模型接入”中添加，或重新保存已有的密钥。"
+        "needsApiKey": "云端计算机上的 Claude Code 没有可用的 Anthropic API 密钥。请在“模型接入”中添加，或重新保存已有的密钥。",
+        "stored": "也用于云端计算机，使用由 LangAlpha 保存的 setup token",
+        "storedDetail": "云端计算机上的工作区，由 LangAlpha 在自己的服务器上用你加密保存的 setup token 运行 Claude Code，在云端计算机上完成工作。没有独立 token 的你自己的电脑在本机运行 Claude Code，每轮对话由 LangAlpha 把 token 发给它。用量计入你的 Claude 套餐。",
+        "paused": "此服务器已暂停在云端计算机上运行 Claude Code。你的选择会保留，Claude Code 在你自己的电脑上照常运行。",
+        "blocked": "你的账户无法保存 setup token。Claude Code 在你自己的电脑上照常运行。"
+      },
+      "consent": {
+        "title": "让 LangAlpha 保存你的 setup token？",
+        "encrypted": "LangAlpha 会加密保存此 token，只用于为你的对话运行 Claude Code：云端计算机上的工作区在 LangAlpha 的服务器上运行；没有独立 token 的你自己的电脑在本机运行，每轮对话由 LangAlpha 把 token 发给它。",
+        "unattended": "用量计入你的 Claude 套餐。自动化、唤醒以及其他 Agent 发来的对话不会使用此 token。",
+        "terms": "这种使用方式适用 Anthropic 为你的 Claude 套餐制定的条款，你需要自行确保遵守。Anthropic 可能会限制或停用它认定违反条款的账户。",
+        "undo": "你可以随时切换回来，LangAlpha 会立即删除此 token。",
+        "confirm": "保存我的 token",
+        "termsLink": "阅读 Anthropic 条款"
+      },
+      "leaveStored": {
+        "title": "停止保存你的 setup token？",
+        "body": "LangAlpha 会立即删除你已保存的 setup token，正在使用它的 Claude Code 会停止运行。在你重新保存 token 之前，云端计算机上的对话不会使用你的 Claude 套餐运行。有自己 token 的电脑不受影响。",
+        "confirm": "删除 token",
+        "failed": "切换失败，你的 token 仍处于保存状态。请重试。"
       }
     },
     "claude": {

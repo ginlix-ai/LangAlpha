@@ -888,6 +888,7 @@ function ChatInput({
         case 'no_token': return { unavailable: t('chat.modelSelector.claudeCodeSignedOut'), fix: () => navigate(tokenUrl) };
         case 'rejected': return { unavailable: t('chat.modelSelector.claudeCodeRejected'), fix: () => navigate(tokenUrl) };
         case 'needs_own_computer': return { unavailable: t('chat.modelSelector.claudeCodeNeedsOwnComputer') };
+        case 'hosted_paused': return { unavailable: t('chat.modelSelector.claudeCodePaused') };
         case 'hosted_off': return { unavailable: t('chat.modelSelector.claudeCodeHostedOff'), fix: () => navigate(CLAUDE_CODE_CHOICE_URL) };
         case 'needs_api_key': return { unavailable: t('chat.modelSelector.claudeCodeNeedsApiKey'), fix: () => navigate(ANTHROPIC_KEY_URL) };
         case 'api_key_endpoint': return { unavailable: t('chat.modelSelector.claudeCodeApiKeyEndpoint'), fix: () => navigate(ANTHROPIC_KEY_URL) };

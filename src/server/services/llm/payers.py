@@ -18,12 +18,13 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from src.llms.claude_code import backend_available, is_claude_code_model
+from src.llms.claude_code import is_claude_code_model
 from src.llms.llm import LLM as LLMFactory
 from src.server.database.api_keys import get_byok_configs_for_providers, is_byok_active
 from src.server.database.oauth_tokens import get_oauth_connection
 from src.server.dependencies.usage_limits import platform_gating_active
 from src.server.services.claude_code.flow import rows_on
+from src.server.services.claude_code.hosted import saved_token_runs
 from src.server.services.claude_code.saved import usable_token
 from src.server.services.claude_oauth import CLAUDE_PROVIDER
 from src.server.services.oauth_providers import SUBSCRIPTIONS
@@ -78,7 +79,7 @@ async def _claude_code(user_id: str) -> tuple[bool, bool | None]:
     only on the user's own computers, each signed in with a token of its own."""
     if not await rows_on(user_id):
         return False, None
-    if not backend_available():
+    if not await saved_token_runs(user_id):
         return True, None
     return True, await usable_token(user_id) is not None
 

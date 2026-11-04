@@ -60,7 +60,7 @@ async def _list(m: Machine, fake: FakeMessagesAPI, cache: Cache) -> dict:
     with (
         serving(cache),
         patch(f"{machines.__name__}.rows_on", new_callable=AsyncMock, return_value=True),
-        patch(f"{machines.__name__}.backend_available", return_value=False),
+        patch("src.server.services.claude_code.hosted.backend_available", return_value=False),
         patch(f"{machines.__name__}.get_computer", new_callable=AsyncMock, return_value=_computer()),
         patch(f"{machines.__name__}.get_computer_roster", new_callable=AsyncMock, return_value=[_computer()]),
         patch(f"{machines.__name__}.tunnels_for", new_callable=AsyncMock, return_value={}),
@@ -78,7 +78,7 @@ async def _admit(cache: Cache) -> None:
     with (
         serving(cache),
         patch("src.server.services.llm.claude_code.rows_available", return_value=True),
-        patch("src.server.services.llm.claude_code.backend_available", return_value=False),
+        patch("src.server.services.claude_code.hosted.backend_available", return_value=False),
         patch("src.server.database.computer.get_computer_for_workspace", new_callable=AsyncMock, return_value=_computer()),
         patch(f"{machines.__name__}.machine_of", new=AsyncMock(side_effect=AssertionError("admission dialed the machine"))),
     ):

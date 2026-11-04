@@ -179,3 +179,30 @@ async def test_listener_routes_task_targeted_nudge_to_registry_store():
     store.cancel_task.assert_awaited_once_with("t-1", "abc123")
     # A task nudge never falls through to the run-level cancel.
     btm.signal_cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_listener_stops_a_run_whose_intent_no_nudge_delivered():
+    """A nudge published while the listener was not subscribed is gone; the
+    run's row still says to stop, and the owner reads it on its own."""
+    listener = TurnCancelListener()
+    btm = MagicMock()
+    btm.uncancelled_runs = AsyncMock(return_value=[("t-1", "r-1"), ("t-2", "r-2")])
+    btm.signal_cancel = AsyncMock(return_value=True)
+
+    async def nothing_arrives(**_):
+        listener._stopping.set()
+        return None
+
+    pubsub = MagicMock(subscribe=AsyncMock(), unsubscribe=AsyncMock(), aclose=AsyncMock())
+    pubsub.get_message = nothing_arrives
+    client = MagicMock(pubsub=MagicMock(return_value=pubsub))
+    with (
+        patch("src.server.services.workspace_status_pubsub.get_shared_pubsub_client", AsyncMock(return_value=client)),
+        patch("src.server.services.runs.executor.LocalRunExecutor.get_instance", return_value=btm),
+        patch("src.server.database.runs.lifecycle.cancel_requested_runs", AsyncMock(return_value={"r-1"})) as stamped,
+    ):
+        await listener._run()
+
+    stamped.assert_awaited_once_with(["r-1", "r-2"])
+    btm.signal_cancel.assert_awaited_once_with("t-1", "r-1")

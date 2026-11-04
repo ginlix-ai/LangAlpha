@@ -580,7 +580,7 @@ async def _handle_send_message(
 
         # Resolve LLM config eagerly — credit check must happen before SSE stream starts
         from src.server.services.llm import thread_model
-        from src.server.services.llm.claude_code import require_claude_code_continues
+        from src.server.services.llm.claude_code import require_attended, require_claude_code_continues
         from src.server.services.thread_agent import thread_resolver
         from src.server.dependencies.usage_limits import enforce_credit_limit
         from ptc_agent.config.agent import CredentialSource
@@ -628,6 +628,9 @@ async def _handle_send_message(
             await require_claude_code_continues(
                 thread_id, config.llm.name if config.llm else None, request.checkpoint_id
             )
+        # A turn nobody started runs no stored setup token, refused before the
+        # stream so a server-posted turn reads the refusal.
+        require_attended(config, request)
 
         # is_byok is True only when the stamped credential_source confirms the user
         # supplied their own key (OAUTH or BYOK), not merely that a client object exists.

@@ -13,13 +13,16 @@ consent text a user accepted for ``stored``, and ``blocked_at`` and
 own writes never clear: the reason this is a table and not a preference.
 
 ``user_id`` references ``users`` with ``ON UPDATE CASCADE``, so a row follows
-``migrate_user_id`` to the user's new id and goes when the user does. Nothing reads
-the table unless an operator switch for cloud computers is on, and the
-previous build never reads it.
+``migrate_user_id`` to the user's new id and goes when the user does. No turn reads
+the table unless an operator switch for cloud computers is on; turning
+Claude Code off reads it on the platform, so a stored token goes with it.
+The previous build never reads it.
 
 Rollback: ``alembic downgrade 104`` drops the table. Every user then reads
 as ``local`` once upgraded again, and the previous build refuses every
-Claude Code turn on a cloud computer.
+Claude Code turn on a cloud computer. Setup tokens stored on the platform
+stay in the token store and operator blocks are lost, so purge them first
+(``scripts/ops/claude_code_custody.py purge --all``).
 """
 
 from alembic import op

@@ -19,6 +19,7 @@ from src.server.models.claude_code import ClaudeCodeCustody, ClaudeCodeStatus, C
 from src.server.services.claude_code import flow, hosted, saved
 from src.server.services.claude_code.flow import backend_on, pasted_code, pasted_token, require
 from src.server.services.claude_code.saved import SavedHome
+from src.server.services.oauth_signin import OAuthRefusal
 from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/claude-code", tags=["claude-code"])
@@ -64,8 +65,22 @@ async def get_custody(x_user_id: CurrentUserId):
     return current
 
 
+#: Why a choice is refused, by the reason ``hosted.choose`` gives.
+_CUSTODY_REFUSED = {
+    "unavailable": (409, "This server doesn't offer that choice right now."),
+    "stored_blocked": (403, "Storing a setup token isn't available for your account."),
+    "disclosure": (400, "Accept the current terms to store your setup token."),
+}
+
+
 @router.put("/custody", response_model=ClaudeCodeCustody)
 async def put_custody(body: CustodyBody, x_user_id: CurrentUserId):
-    chosen = await hosted.choose(x_user_id, body.mode) if await flow.rows_on(x_user_id) else None
+    try:
+        chosen = await hosted.choose(x_user_id, body.mode, body.disclosure) if await flow.rows_on(x_user_id) else None
+    except hosted.CustodyRefused as refused:
+        status, message = _CUSTODY_REFUSED[refused.reason]
+        raise OAuthRefusal(status, refused.reason, message, retryable=False) from None
+    except hosted.TurnsNotStopped:
+        raise flow.turns_running() from None
     require(chosen is not None, _NO_CHOICE)
     return chosen
