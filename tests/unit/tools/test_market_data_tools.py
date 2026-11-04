@@ -164,7 +164,6 @@ def _make_fake_financial_source(
     quote_data=None,
     cash_flow=None,
     screener_results=None,
-    sector_data=None,
 ):
     """Build a mock FinancialDataSource."""
     src = AsyncMock()
@@ -180,7 +179,6 @@ def _make_fake_financial_source(
     src.get_realtime_quote = AsyncMock(return_value=quote_data or [])
     src.get_cash_flows = AsyncMock(return_value=cash_flow or [])
     src.screen_stocks = AsyncMock(return_value=screener_results or [])
-    src.get_sector_performance = AsyncMock(return_value=sector_data or [])
     return src
 
 
@@ -1395,57 +1393,120 @@ class TestFetchCompanyOverview:
 # fetch_sector_performance
 # ---------------------------------------------------------------------------
 
+def _fund_bars(closes_by_day):
+    """Daily bars in the market-data shape, newest last, stamped at 16:00 ET."""
+    return [
+        {"time": int(datetime.fromisoformat(f"{day}T16:00:00-05:00").timestamp() * 1000),
+         "open": close, "high": close, "low": close, "close": close, "volume": 1}
+        for day, close in closes_by_day
+    ]
+
+
+def _sector_provider(bars_by_symbol):
+    provider = AsyncMock()
+
+    async def daily(symbol, **kwargs):
+        return bars_by_symbol.get(symbol, []), "ginlix-data", None
+
+    provider.get_daily_with_source = AsyncMock(side_effect=daily)
+    return provider
+
+
 class TestFetchSectorPerformance:
     @pytest.mark.asyncio
-    async def test_normal_sector_data(self):
-        """Normal data should produce formatted sector table."""
-        sector_data = [
-            {"sector": "Technology", "changePctStr": "+1.50%"},
-            {"sector": "Healthcare", "changePctStr": "-0.42%"},
-            {"sector": "Energy", "changePctStr": "+0.85%"},
+    async def test_each_sector_is_its_spdr_fund_close_to_close(self):
+        bars = {
+            "XLK": _fund_bars([("2026-10-29", 100.0), ("2026-10-30", 95.11)]),
+            "XLRE": _fund_bars([("2026-10-29", 40.0), ("2026-10-30", 40.104)]),
+            # A fund whose newest bar is an older session is left out.
+            "XLE": _fund_bars([("2026-10-28", 50.0), ("2026-10-29", 51.0)]),
+        }
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_sector_provider(bars)):
+            content, artifact = await fetch_sector_performance(date="2026-11-01")
+
+        assert artifact["date"] == "2026-10-30"
+        assert [(s["sector"], round(s["changePercentage"], 2)) for s in artifact["sectors"]] == [
+            ("Real Estate", 0.26),
+            ("Information Technology", -4.89),
         ]
-        financial = _make_fake_financial_source(sector_data=sector_data)
-        provider = _make_fake_financial_provider(financial=financial)
-
-        with patch(f"{_MKT_MOD}.get_financial_data_provider", return_value=provider):
-            content, artifact = await fetch_sector_performance()
-
-        assert "Sector Performance" in content
-        assert "Technology" in content
-        assert "Healthcare" in content
-        assert artifact["type"] == "sector_performance"
-        assert len(artifact["sectors"]) == 3
-        # Sorted descending by performance
-        assert artifact["sectors"][0]["sector"] == "Technology"
-        assert artifact["sectors"][-1]["sector"] == "Healthcare"
+        assert "S&P 500 sectors, 2026-10-30\n" in content
+        assert "| Information Technology | XLK | -4.89% |" in content
+        assert "_No bar for 2026-10-30: " in content and "Energy (XLE)" in content
 
     @pytest.mark.asyncio
-    async def test_empty_sector_data(self):
-        """Empty data should return 'No data available'."""
-        financial = _make_fake_financial_source(sector_data=[])
-        provider = _make_fake_financial_provider(financial=financial)
+    async def test_the_requested_date_bounds_every_fund_read(self):
+        provider = _sector_provider({"XLK": _fund_bars([("2025-01-14", 1.0), ("2025-01-15", 1.1)])})
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider):
+            await fetch_sector_performance(date="2025-01-15")
+        assert {c.kwargs["to_date"] for c in provider.get_daily_with_source.await_args_list} == {"2025-01-15"}
+        assert provider.get_daily_with_source.await_count == 11
 
-        with patch(f"{_MKT_MOD}.get_financial_data_provider", return_value=provider):
-            content, artifact = await fetch_sector_performance()
-
-        assert "No data available" in content or "No sector performance" in content
+    @pytest.mark.asyncio
+    async def test_no_fund_data_says_so(self):
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_sector_provider({})):
+            content, artifact = await fetch_sector_performance(date="2025-01-15")
+        assert "No sector fund data" in content
         assert artifact["sectors"] == []
 
     @pytest.mark.asyncio
-    async def test_with_date_parameter(self):
-        """Passing a date should be forwarded to provider.get_sector_performance."""
-        sector_data = [
-            {"sector": "Technology", "changePctStr": "+1.50%"},
-        ]
-        financial = _make_fake_financial_source(sector_data=sector_data)
-        provider = _make_fake_financial_provider(financial=financial)
-
-        with patch(f"{_MKT_MOD}.get_financial_data_provider", return_value=provider):
+    async def test_every_fund_read_failing_is_a_source_failure(self):
+        provider = AsyncMock()
+        provider.get_daily_with_source = AsyncMock(side_effect=RuntimeError("upstream 503"))
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider), \
+             patch(f"{_MKT_MOD}._mark_failure") as marked:
             content, artifact = await fetch_sector_performance(date="2025-01-15")
+        assert "11 of 11 fund reads failed (upstream 503)" in content
+        assert artifact["sectors"] == [] and marked.call_count == 1
 
-        assert "Technology" in content
-        assert artifact["type"] == "sector_performance"
-        financial.get_sector_performance.assert_awaited_once_with(target_date="2025-01-15")
+    @pytest.mark.asyncio
+    async def test_failed_reads_beside_empty_ones_are_still_a_failure(self):
+        async def daily(symbol, **kwargs):
+            if symbol == "XLK":
+                return [], "ginlix-data", None
+            raise RuntimeError("upstream 503")
+
+        provider = AsyncMock()
+        provider.get_daily_with_source = AsyncMock(side_effect=daily)
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider), \
+             patch(f"{_MKT_MOD}._mark_failure") as marked:
+            content, _ = await fetch_sector_performance(date="2025-01-15")
+        assert "10 of 11 fund reads failed (upstream 503)" in content and marked.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_fund_read_is_not_called_a_missing_bar(self):
+        bars = {"XLK": _fund_bars([("2026-10-29", 100.0), ("2026-10-30", 95.11)])}
+
+        async def daily(symbol, **kwargs):
+            if symbol == "XLE":
+                raise RuntimeError("upstream 503")
+            return bars.get(symbol, []), "ginlix-data", None
+
+        provider = AsyncMock()
+        provider.get_daily_with_source = AsyncMock(side_effect=daily)
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_sector_performance(date="2026-10-30")
+        assert "_Read failed: Energy (XLE)_" in content
+        no_bar = next(line for line in content.splitlines() if line.startswith("_No bar for"))
+        assert "XLE" not in no_bar
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("hour", "forming"), [(11, True), (17, False)], ids=["session", "after-hours"])
+    async def test_todays_session_reads_in_progress_until_the_regular_close(self, hour, forming):
+        bars = {"XLK": _fund_bars([("2026-11-03", 100.0), ("2026-11-04", 101.0)])}
+        midday = datetime(2026, 11, 4, hour, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        class _Midday(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return midday.astimezone(tz)
+
+        with patch(f"{_MKT_MOD}.datetime", _Midday), \
+             patch("src.data_client.normalize.datetime", _Midday), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_sector_provider(bars)):
+            content, artifact = await fetch_sector_performance()
+        assert artifact["date"] == "2026-11-04"
+        assert ("S&P 500 sectors, 2026-11-04 (in progress)" in content) is forming
+        assert artifact["in_progress"] is forming
 
 
 # ---------------------------------------------------------------------------
@@ -1890,6 +1951,15 @@ class TestFetchStockScreener:
         call_kwargs = financial.screen_stocks.call_args[1]
         assert call_kwargs["sector"] == "Technology"
         assert call_kwargs["marketCapMoreThan"] == 1_000_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_an_overview_sector_name_screens_under_the_screeners_name(self):
+        # The market overview names sectors by GICS ("Health Care"); the
+        # screener matches only its own vocabulary ("Healthcare").
+        provider, financial = self._make_screener_provider([{"symbol": "UNH", "sector": "Healthcare"}])
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            await fetch_stock_screener(sector="Health Care")
+        assert financial.screen_stocks.await_args.kwargs["sector"] == "Healthcare"
 
     @pytest.mark.asyncio
     async def test_empty_results(self):
@@ -3253,3 +3323,4 @@ async def test_an_overview_with_nothing_behind_it_is_unavailable(symbol, bars):
     metadata = update["extra"]["metadata"]
     assert (metadata["tool_outcome"], metadata["error_class"]) == ("unavailable", "no_data")
     assert update["error"] is None
+

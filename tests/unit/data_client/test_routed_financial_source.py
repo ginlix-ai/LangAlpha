@@ -134,7 +134,6 @@ async def test_no_default_degrades_to_empty():
 
     assert await routed.get_analyst_ratings("600519.SS") == []
     assert await routed.get_analyst_ratings("AAPL") == []
-    assert await routed.get_sector_performance() == []
 
 
 @pytest.mark.asyncio

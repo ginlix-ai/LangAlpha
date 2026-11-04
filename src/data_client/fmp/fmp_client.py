@@ -1,8 +1,4 @@
-"""FMP (Financial Modeling Prep) async client — targets the stable API.
-
-Responses pass through unchanged except for the sector performance snapshot;
-see :func:`_format_sector_change_pct`.
-"""
+"""FMP (Financial Modeling Prep) async client — targets the stable API."""
 
 import asyncio
 import json
@@ -105,25 +101,6 @@ def _retry_after(value: Optional[str]) -> Optional[float]:
 def _today_utc() -> date:
     """UTC equivalent of ``date.today()`` — the server runs in UTC; local-clock dates drift."""
     return datetime.now(timezone.utc).date()
-
-
-def _format_sector_change_pct(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Render sector snapshot's ``averageChange`` as a percentage string.
-
-    Stable returns ``averageChange`` as a float already in percent units (e.g.
-    ``1.42832`` means 1.43%, not 142%); the canonical shape downstream parses
-    is the same value as a percentage string under ``changePctStr`` (e.g.
-    ``"1.42832%"``). The numeric copy survives on the artifact under
-    ``changePercentage``, so string and numeric live alongside without ambiguity.
-
-    Returns a fresh dict — the source row may be held by the LRU cache, so
-    in-place mutation would leak the derived field back into cached responses.
-    """
-    if "averageChange" not in row or "changePctStr" in row:
-        return row
-    val = row["averageChange"]
-    formatted = f"{val:.5f}%" if isinstance(val, (int, float)) else str(val)
-    return {**row, "changePctStr": formatted}
 
 
 class FMPClient:
@@ -728,41 +705,6 @@ class FMPClient:
     async def get_company_screener(self, **filters) -> List[Dict]:
         params = {k: v for k, v in filters.items() if v is not None}
         return await self._make_request("company-screener", params=params)
-
-    # =====================================================================
-    # Sector Performance
-    # =====================================================================
-
-    async def get_sector_performance(
-        self, target_date: Optional[str] = None
-    ) -> List[Dict]:
-        """Daily snapshot of US sector performance (NASDAQ-listed names).
-
-        Stable's ``sector-performance-snapshot?date=`` requires a date and
-        returns ``[]`` on weekends/holidays; when no date is supplied we walk
-        back up to 7 calendar days to find the most recent trading day, which
-        matches v3's implicit "latest available" behaviour. The numeric
-        ``averageChange`` is rendered as a percentage string under
-        ``changePctStr`` (see :func:`_format_sector_change_pct`).
-
-        The endpoint is per-exchange and defaults to NASDAQ-listed constituents
-        only — the same scope v3's ``sectors-performance`` returned.
-        """
-        if target_date:
-            data = await self._make_request(
-                "sector-performance-snapshot", params={"date": target_date}
-            )
-            return [_format_sector_change_pct(row) for row in (data or [])]
-
-        today = _today_utc()
-        for offset in range(7):
-            probe = (today - timedelta(days=offset)).isoformat()
-            data = await self._make_request(
-                "sector-performance-snapshot", params={"date": probe}
-            )
-            if data:
-                return [_format_sector_change_pct(row) for row in data]
-        return []
 
     # =====================================================================
     # Technical Indicators

@@ -103,11 +103,6 @@ class FMPFinancialSource:
             for row in await fetch(symbol, **kwargs) or []
         ]
 
-    async def get_sector_performance(
-        self, target_date: str | None = None
-    ) -> list[dict[str, Any]]:
-        return await self._client.get_sector_performance(target_date)
-
     async def screen_stocks(self, **filters: Any) -> list[dict[str, Any]]:
         """A stock screen: funds and ETFs only when asked, on the country's own exchanges.
 

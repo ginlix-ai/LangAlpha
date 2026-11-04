@@ -13,11 +13,11 @@ from .currency import fmt_count
 from .display import resolve_ref, venue_local_time
 from .quote_format import build_live_stamp, current_price, print_time, quote_freshness
 from .utils import finite_or_none
-from src.data_client import get_financial_data_provider, get_market_data_provider
+from src.data_client import get_market_data_provider
 from src.data_client.freshness import measure_daily
 from src.data_client.instrument_clock import clock_for
 from src.data_client.market_data_provider import MarketNotCovered, snapshot_key
-from src.data_client.normalize import change_from, series_in_progress
+from src.data_client.normalize import bar_in_progress, change_from, series_in_progress, series_lineage
 from market_protocol import (
     CARET_INDEX_REGIONS,
     AssetClass,
@@ -33,78 +33,53 @@ from .prices import _calculate_price_statistics
 logger = logging.getLogger(__name__)
 
 
-def _format_sectors_as_table(sectors_data: List[Dict[str, Any]]) -> str:
-    """
-    Format sector performance data as a markdown table.
+# The S&P 500's eleven GICS sectors, each priced by its Select Sector SPDR fund.
+_SECTOR_FUNDS: Dict[str, str] = {
+    "XLK": "Information Technology",
+    "XLF": "Financials",
+    "XLV": "Health Care",
+    "XLY": "Consumer Discretionary",
+    "XLC": "Communication Services",
+    "XLI": "Industrials",
+    "XLP": "Consumer Staples",
+    "XLE": "Energy",
+    "XLU": "Utilities",
+    "XLRE": "Real Estate",
+    "XLB": "Materials",
+}
 
-    Args:
-        sectors_data: List of sector performance dictionaries
 
-    Returns:
-        Markdown-formatted table string
-    """
-    if not sectors_data or len(sectors_data) == 0:
-        return "No sector performance data available."
+# Calendar days back from the asked date: a long holiday weekend still leaves a session.
+_SECTOR_LOOKBACK_DAYS = 10
 
-    lines = []
 
-    # Header
-    lines.append("## Sector Performance")
-    lines.append("")
-
-    # Table header
-    lines.append("| Sector                      | Change    | Status    |")
-    lines.append("|-----------------------------|-----------|-----------|")
-
-    # Parse and sort sectors by performance
-    parsed_sectors = []
-    for sector in sectors_data:
-        sector_name = sector.get("sector", "N/A")
-        change_str = sector.get("changePctStr", "0%")
-
-        # Parse percentage (handle formats like "+1.50%" or "-0.42%")
-        try:
-            change_val = float(change_str.replace("%", "").replace("+", ""))
-        except (ValueError, AttributeError):
-            change_val = 0.0
-
-        parsed_sectors.append(
-            {"name": sector_name, "change_str": change_str, "change_val": change_val}
-        )
-
-    # Sort by performance (descending)
-    parsed_sectors.sort(key=lambda x: x["change_val"], reverse=True)
-
-    # Table rows
-    for sector in parsed_sectors:
-        name = sector["name"]
-        change_str = sector["change_str"]
-        change_val = sector["change_val"]
-
-        # Add status indicator
-        if change_val > 0:
-            status = "📈 Up"
-        elif change_val < 0:
-            status = "📉 Down"
-        else:
-            status = "➡️ Flat"
-
-        # Pad percentage for alignment
-        if not change_str.startswith("+") and not change_str.startswith("-"):
-            if change_val >= 0:
-                change_str = "+" + change_str
-
-        lines.append(f"| {name:27} | {change_str:>9} | {status:9} |")
-
-    # Summary
-    if parsed_sectors:
-        best = parsed_sectors[0]
-        worst = parsed_sectors[-1]
-
-        lines.append("")
-        lines.append(f"**Best Performing:** {best['name']} ({best['change_str']})")
-        lines.append(f"**Worst Performing:** {worst['name']} ({worst['change_str']})")
-
+def _format_sectors_as_table(
+    ranked: List[Tuple[str, float]], session: str, in_progress: bool, failed: List[str]
+) -> str:
+    """The sector table from *ranked* ``(fund, change)`` pairs, best first, with
+    the session it measures, the funds whose read *failed*, and the sectors it has
+    no bar for."""
+    when = f"{session} (in progress)" if in_progress else session
+    lines = [
+        f"## Sector Performance: S&P 500 sectors, {when}",
+        "Day change of each sector's Select Sector SPDR fund against its previous close.",
+        "",
+        "| Sector | Fund | Change |",
+        "|---|---|---|",
+        *(f"| {_SECTOR_FUNDS[fund]} | {fund} | {pct:+.2f}% |" for fund, pct in ranked),
+    ]
+    shown = dict(ranked)
+    missing = [f"{name} ({fund})" for fund, name in _SECTOR_FUNDS.items() if fund not in shown and fund not in failed]
+    if missing:
+        lines += ["", f"_No bar for {session}: {', '.join(missing)}_"]
+    if failed:
+        lines += ["", f"_Read failed: {', '.join(f'{_SECTOR_FUNDS[fund]} ({fund})' for fund in failed)}_"]
+    (best, best_pct), (worst, worst_pct) = ranked[0], ranked[-1]
+    lines += [
+        "",
+        f"**Best Performing:** {_SECTOR_FUNDS[best]} ({best_pct:+.2f}%)",
+        f"**Worst Performing:** {_SECTOR_FUNDS[worst]} ({worst_pct:+.2f}%)",
+    ]
     return "\n".join(lines)
 
 
@@ -146,97 +121,70 @@ def _get_index_name(symbol: str) -> str:
 
 async def fetch_sector_performance(
     date: Optional[str] = None,
+    config: Optional[RunnableConfig] = None,
 ) -> Tuple[str, Dict[str, Any]]:
+    """Each S&P 500 sector's day change on the last session on or before *date*
+    (default: the latest), from its Select Sector SPDR fund's daily closes.
+
+    Returns (content, sector_performance artifact). A fund with no bar for the
+    newest session among them is left out rather than shown for another day.
+    The change reads only the close, which settles at the regular close even
+    though the day's aggregate keeps taking after-hours volume.
     """
-    Fetch market sector performance.
+    provider = await get_market_data_provider()
+    user_id = _get_user_id(config)
+    end = date or _venue_today(["^GSPC"])
+    start = (datetime.strptime(end, "%Y-%m-%d").date() - timedelta(days=_SECTOR_LOOKBACK_DAYS)).isoformat()
 
-    Args:
-        date: Analysis date in YYYY-MM-DD format (default: latest available)
-
-    Returns:
-        Tuple of (content string, artifact dict with structured data for charts)
-    """
-
-    def _build_sector_artifact(
-        raw_results: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Build structured artifact from raw sector results."""
-        sectors = []
-        for sector in raw_results:
-            sector_name = sector.get("sector", "N/A")
-            change_str = sector.get("changePctStr", "0%")
-            try:
-                change_val = float(change_str.replace("%", "").replace("+", ""))
-            except (ValueError, AttributeError):
-                change_val = 0.0
-            sectors.append({"sector": sector_name, "changePercentage": change_val})
-        # Sort descending by performance
-        sectors.sort(key=lambda x: x["changePercentage"], reverse=True)
-        return {"type": "sector_performance", "sectors": sectors}
-
-    try:
-        provider = await get_financial_data_provider()
-
-        # Generate file-ready header
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        requested_date = date or _venue_today(["^GSPC"])
-        date_str = f" ({date})" if date else ""
-        header = f"""## Sector Performance Analysis{date_str}
-**Retrieved:** {timestamp}
-**Market:** US Stock Market
-
-"""
-
-        # Protocol path — passes date through to FMP's date-aware endpoint;
-        # yfinance ignores `target_date` and always returns today's snapshot.
-        if provider.financial is not None:
-            try:
-                results = await provider.financial.get_sector_performance(
-                    target_date=date
-                )
-                if results:
-                    logger.debug(f"Retrieved performance data for {len(results)} sectors")
-                    actual_date = results[0].get("date") if isinstance(results[0], dict) else None
-                    if actual_date and actual_date != requested_date:
-                        fallback_notice = (
-                            f"> ⚠️ **No data for {requested_date}** "
-                            f"(weekend / holiday / not yet published). "
-                            f"Showing the most recent available trading day: "
-                            f"**{actual_date}**.\n\n"
-                        )
-                        content = header + fallback_notice + _format_sectors_as_table(results)
-                    else:
-                        content = header + _format_sectors_as_table(results)
-                    return content, _build_sector_artifact(results)
-            except Exception:
-                logger.exception("Sector performance provider call failed")
-
-        logger.warning(
-            "No sector performance data found - endpoint may not be available on this FMP plan"
+    async def latest_bar(symbol: str) -> Optional[Dict[str, Any]]:
+        raw, source, _ = await provider.get_daily_with_source(
+            symbol, from_date=start, to_date=end, is_index=False, user_id=user_id,
         )
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        content = f"""## Sector Performance Analysis{date_str}
-**Retrieved:** {timestamp}
-**Status:** No data available
+        bars = _normalize_market_bars(raw, symbol)
+        if not bars:
+            return None
+        ref = resolve_ref(symbol, AssetClass.EQUITY)
+        _treatment, tier = series_lineage(source, ref)
+        forming = bar_in_progress(bars[0].get("date"), ref, "1day", tier=tier, regular_only=True)
+        return {**bars[0], "in_progress": forming}
 
-No sector performance data available for the specified period."""
-        return content, {"type": "sector_performance", "sectors": []}
-
-    except Exception as e:
-        logger.error(f"Error retrieving sector performance: {e}")
-        logger.warning("Sector performance endpoint may require a higher FMP API tier")
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        date_str = f" ({date})" if date else ""
-        content = f"""## Sector Performance Analysis{date_str}
-**Retrieved:** {timestamp}
-**Status:** Error
-
-Error retrieving sector performance data: {str(e)}"""
-        return content, {
+    results = await asyncio.gather(*map(latest_bar, _SECTOR_FUNDS), return_exceptions=True)
+    bars, errors = {}, {}
+    for symbol, result in zip(_SECTOR_FUNDS, results):
+        if isinstance(result, BaseException):
+            logger.warning(f"Sector fund {symbol} unavailable: {result}")
+            errors[symbol] = result
+        elif isinstance(result, dict) and result.get("changePercent") is not None:
+            bars[symbol] = result
+    session = max((bar["date"] for bar in bars.values()), default=None)
+    if session is None and errors:
+        # With no fund priced, a failed read may be what hid the session.
+        error = next(iter(errors.values()))
+        _mark_failure(error)
+        return (
+            f"## Sector Performance\nSector fund data unavailable: {len(errors)} of"
+            f" {len(_SECTOR_FUNDS)} fund reads failed ({error}).",
+            {"type": "sector_performance", "sectors": [], "error": str(error)},
+        )
+    if session is None:
+        return (
+            "## Sector Performance\nNo sector fund data available for the requested date.",
+            {"type": "sector_performance", "sectors": []},
+        )
+    shown = {fund: bar for fund, bar in bars.items() if bar["date"] == session}
+    ranked = sorted(
+        ((fund, bar["changePercent"]) for fund, bar in shown.items()), key=lambda kv: kv[1], reverse=True
+    )
+    forming = any(bar["in_progress"] for bar in shown.values())
+    return (
+        _format_sectors_as_table(ranked, session, forming, list(errors)),
+        {
             "type": "sector_performance",
-            "sectors": [],
-            "error": str(e),
-        }
+            "date": session,
+            "in_progress": forming,
+            "sectors": [{"sector": _SECTOR_FUNDS[fund], "changePercentage": pct} for fund, pct in ranked],
+        },
+    )
 
 
 # Foreign caret-index baskets derive from the protocol's region table, so
@@ -556,7 +504,7 @@ async def fetch_market_overview(
             # describe the same session; if the indices half came up empty,
             # let the sector provider resolve the requested date itself.
             sector_date = snapshot_date or (requested if date else None)
-            sec_content, sec_artifact = await fetch_sector_performance(date=sector_date)
+            sec_content, sec_artifact = await fetch_sector_performance(date=sector_date, config=config)
         else:
             sec_content, sec_artifact = None, None
 

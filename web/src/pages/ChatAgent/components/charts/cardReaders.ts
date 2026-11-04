@@ -127,6 +127,8 @@ export function indexRows(artifact: Record<string, unknown> | undefined): IndexR
 }
 
 const SECTOR_ABBREVIATIONS: Record<string, string> = {
+  'Information Technology': 'Info. Technology',
+  'Consumer Discretionary': 'Cons. Discretionary',
   'Consumer Cyclical': 'Cons. Cyclical',
   'Consumer Defensive': 'Cons. Defensive',
   'Communication Services': 'Comm. Services',

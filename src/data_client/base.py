@@ -172,9 +172,6 @@ class FinancialDataSource(Protocol):
     async def get_revenue_by_segment(
         self, symbol: str, segment_type: str = "product", **kwargs: Any
     ) -> list[dict[str, Any]]: ...
-    async def get_sector_performance(
-        self, target_date: str | None = None
-    ) -> list[dict[str, Any]]: ...
     async def screen_stocks(self, **filters: Any) -> list[dict[str, Any]]: ...
     async def search_stocks(
         self, query: str, limit: int = 50

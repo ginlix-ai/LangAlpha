@@ -16,6 +16,18 @@ from src.data_client.normalize import screen_row_units
 logger = logging.getLogger(__name__)
 
 
+# The market overview names S&P 500 sectors by GICS; FMP's screener files the
+# same companies under its own names, and matches no other spelling.
+_FMP_SECTORS = {
+    "information technology": "Technology",
+    "health care": "Healthcare",
+    "financials": "Financial Services",
+    "consumer discretionary": "Consumer Cyclical",
+    "consumer staples": "Consumer Defensive",
+    "materials": "Basic Materials",
+}
+
+
 # Mapping from snake_case parameter names to FMP camelCase API params
 _SCREENER_PARAM_MAP = {
     "market_cap_more_than": "marketCapMoreThan",
@@ -105,6 +117,8 @@ async def fetch_stock_screener(
     if country:
         country = country.strip().upper()
         country = _COUNTRY_ALIASES.get(country, country)
+    if sector:
+        sector = _FMP_SECTORS.get(sector.strip().lower(), sector)
     try:
         provider = await get_financial_data_provider()
         financial = provider.financial
