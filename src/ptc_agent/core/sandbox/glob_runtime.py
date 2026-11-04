@@ -10,7 +10,7 @@ import fnmatch
 import json
 import os
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 
 
 # The kernel's own limit: a longer chain fails to resolve, so no walk that
@@ -136,8 +136,10 @@ def find(
     excluded_dirs: list[str],
     history_children: dict[str, list[str]],
     mount: str,
+    denied: Sequence[str],
 ) -> list[str]:
-    """Files matching ``pattern`` below ``search_path``, newest first.
+    """Files matching ``pattern`` below ``search_path``, newest first, none
+    at or below a ``denied`` path, which is never walked into.
 
     Each pattern its brace groups expand to is matched on its own, as a shell
     globs each word a brace expands to, and a file several of them find is
@@ -150,7 +152,7 @@ def find(
     files: dict[str, str] = {}
     for each in patterns:
         for path in _find(
-            each, search_path, excluded_dirs, history_children, mount, listings
+            each, search_path, excluded_dirs, history_children, mount, listings, denied
         ):
             files.setdefault(os.path.normpath(path), path)
     return sorted(files.values(), key=_mtime, reverse=True)
@@ -171,6 +173,7 @@ def _find(
     history_children: dict[str, list[str]],
     mount: str,
     listings: dict[str, list[os.DirEntry]] | None,
+    denied: Sequence[str],
 ) -> list[str]:
     """Files matching ``pattern``, which holds no brace group, below
     ``search_path``.
@@ -184,10 +187,16 @@ def _find(
     for the next pattern's walk.
     """
     excluded = set(excluded_dirs)
+    # Matched as a Mac's disk matches names.
+    held = tuple(d.rstrip("/").casefold() for d in denied)
     history = {parent: set(names) for parent, names in history_children.items()}
     # ``mount`` is itself a link to the live mount under its hidden sibling,
     # where every earlier generation stays mounted too.
     mounts = (mount, os.path.join(os.path.dirname(mount), "." + os.path.basename(mount)))
+
+    def held_back(path: str) -> bool:
+        path = os.path.normpath(path).casefold()
+        return any(path == d or path.startswith(d + "/") for d in held)
 
     def history_hidden(parent: str, name: str) -> bool:
         return name in history.get(parent, ())
@@ -250,7 +259,7 @@ def _find(
     history_root = "/".join(literal) or "/"
 
     def kept(path: str) -> bool:
-        if not os.path.isfile(path):
+        if held_back(path) or not os.path.isfile(path):
             return False
         inner_dirs = os.path.relpath(path, search_path).split(os.sep)[:-1]
         if set(inner_dirs) & excluded:
@@ -286,6 +295,8 @@ def _find(
         root_chain = os.path.basename(history_root)
 
         def pruned(parent: str, name: str, path: str) -> bool:
+            if held_back(path):
+                return True
             if history_prunable and history_hidden(parent, name):
                 return True
             if not prunable or name not in excluded:

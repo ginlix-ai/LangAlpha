@@ -11,6 +11,7 @@ import type {
   NotificationVariant,
   WakeupArrival,
 } from '@/types/chat';
+import type { ArtifactCommentsShown } from '@/types/api';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import type { ChartSelectionSnapshot } from '@/pages/MarketView/stores/chartSelectionStore';
 
@@ -36,10 +37,11 @@ export interface AttachmentMeta {
 export function createUserMessage(
   message: string,
   turnIndex: number | undefined,
-  { attachments, widgetSnapshots, chartSelections, id }: {
+  { attachments, widgetSnapshots, chartSelections, artifactComments, id }: {
     attachments?: AttachmentMeta[] | null;
     widgetSnapshots?: WidgetContextSnapshot[] | null;
     chartSelections?: ChartSelectionSnapshot[] | null;
+    artifactComments?: ArtifactCommentsShown | null;
     id?: string;
   } = {},
 ): UserMessage {
@@ -66,13 +68,18 @@ export function createUserMessage(
   if (chartSelections && chartSelections.length > 0) {
     msg.chartSelections = chartSelections;
   }
+  if (artifactComments && artifactComments.comments.length > 0) {
+    msg.artifactComments = artifactComments;
+  }
   return msg;
 }
 
 /** Whether a user message carried more than its text: an attachment, a chart
- *  selection or a widget, which a send of its text alone would drop. */
+ *  selection, a widget or file comments, which a send of its text alone
+ *  would drop. */
 export function carriesContext(message: UserMessage): boolean {
-  return !!(message.attachments?.length || message.chartSelections?.length || message.widgetSnapshots?.length);
+  return !!(message.attachments?.length || message.chartSelections?.length || message.widgetSnapshots?.length
+    || message.artifactComments?.comments.length);
 }
 
 /** `turnIndex` as for createUserMessage. */

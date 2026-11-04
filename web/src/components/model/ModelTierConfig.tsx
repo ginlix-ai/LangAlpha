@@ -9,11 +9,15 @@ import { ModelSelector } from "./ModelSelector"
 import { useModelSlotCopy } from "./useModelSlotCopy"
 import type { ProviderModelsData } from "./types"
 import type { Payer } from "@/lib/modelPayer"
+import { isClaudeCodeModel } from "@/lib/claudeCode"
 import type { ModelMetadataEntry } from "@/hooks/useFilteredModels"
 
 export interface ModelTierConfigProps {
   /** Available models grouped by provider */
   models: Record<string, ProviderModelsData>
+  /** The models the Background slot offers: a model that runs a conversation
+   *  only (Claude Code) is not one. */
+  backgroundModels: Record<string, ProviderModelsData>
   /** Limit models to these providers (configured in Step 1) */
   filterProviders?: string[]
   /** Current primary model selection */
@@ -43,6 +47,7 @@ export interface ModelTierConfigProps {
 
 export function ModelTierConfig({
   models,
+  backgroundModels,
   filterProviders,
   primaryModel,
   onPrimaryModelChange,
@@ -60,6 +65,13 @@ export function ModelTierConfig({
     model ? t("settings.autoModel", { model }) : undefined
   const primaryAuto = autoLabel(auto?.primary)
   const backgroundAuto = autoLabel(auto?.background)
+  // An unset Background follows a saved primary, except one that runs a
+  // conversation only (Claude Code): then the deployment's Background model
+  // runs, so the slot names it, and an Auto beside it would say the same.
+  const followsPrimary = !!primaryModel && !isClaudeCodeModel(metadata?.[primaryModel])
+  // A saved Auto keeps its row even when Background does not follow the
+  // primary, so the slot still shows what is saved.
+  const offerAuto = auto && backgroundAuto && (followsPrimary || backgroundModel === BACKGROUND_AUTO)
 
   return (
     <div className="flex flex-col" style={{ gap: "24px" }}>
@@ -163,12 +175,12 @@ export function ModelTierConfig({
         description={copy.background.description}
         value={backgroundModel}
         onChange={onBackgroundModelChange}
-        models={models}
+        models={backgroundModels}
         filterProviders={filterProviders}
-        placeholder={auto && primaryModel
+        placeholder={auto && followsPrimary
           ? copy.backgroundSameAsDefault
           : (auto && backgroundAuto) || copy.background.placeholder}
-        autoOption={auto && primaryModel && backgroundAuto
+        autoOption={offerAuto
           ? { value: BACKGROUND_AUTO, label: backgroundAuto }
           : undefined}
         required={!auto}

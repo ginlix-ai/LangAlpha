@@ -40,10 +40,11 @@ def _backend(*, tier: str | None = None, sandbox_id: str | None = "sbx-1", **res
     backend.filesystem_config = SimpleNamespace(working_directory="/home/workspace")
     backend.livefs = None
     backend.settled_livefs = AsyncMock(return_value=None)
+    backend.config_folder = AsyncMock(return_value=None)
     backend.provider = "daytona"
     backend.channel = "daytona"
     backend.sandbox_id = sandbox_id
-    backend.sandbox = SimpleNamespace(resource_tier=tier)
+    backend.sandbox = SimpleNamespace(resource_tier=tier, call_filer=None)
     backend.start_code_job = AsyncMock(return_value=results.get("code"))
     backend.start_bash_job = AsyncMock(return_value=results.get("bash"))
     backend.stop_job = AsyncMock(return_value=True)

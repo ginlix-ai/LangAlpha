@@ -35,7 +35,6 @@ const props = (seq: number): FileViewerProps => ({
   onUndoRedoChange: () => {},
   onEditorTextSelect: () => {},
   onAddContext: null,
-  onContentMouseUp: () => {},
   onViewerLink: () => {},
   onAnchorLink: () => {},
 });

@@ -26,7 +26,11 @@ from ptc_agent.core.sandbox.runtime import (
 
 from src.config.settings import get_max_workflow_retries
 from src.server.database import conversation as qr_db
-from src.server.services.runs.pending_input import needs_resend, pending_input_stamp
+from src.server.services.runs.pending_input import (
+    can_retry,
+    needs_resend,
+    pending_input_stamp,
+)
 from .admission_gate import ADMISSION_CONFLICT_CODES, admission_conflict_detail
 
 if TYPE_CHECKING:
@@ -460,6 +464,7 @@ async def handle_workflow_error(
                 run_id=str(existing.get("conversation_response_id") or ""),
                 run_status=existing.get("status"),
                 run_thread_id=ex_thread,
+                retryable=can_retry(existing),
             )
             # The run is another message's turn: retrying it would rerun
             # that message, and adopting it shows this one as its query.

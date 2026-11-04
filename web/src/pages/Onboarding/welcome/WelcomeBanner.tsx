@@ -32,7 +32,7 @@ export function WelcomeBanner({ onDismiss }: { onDismiss: () => void }) {
         type="button"
         onClick={onDismiss}
         aria-label={t('common.close')}
-        className="shrink-0 rounded p-1 text-(--color-text-tertiary) transition-colors hover:bg-(--color-bg-hover)"
+        className="tap-target shrink-0 rounded p-1 text-(--color-text-tertiary) transition-colors hover:bg-(--color-bg-hover)"
       >
         <X size={14} />
       </button>

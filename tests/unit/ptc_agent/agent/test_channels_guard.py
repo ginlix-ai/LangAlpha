@@ -38,16 +38,17 @@ class _Mounted:
 
     def __init__(self) -> None:
         self.ran: list[str] = []
-        self.livefs = SimpleNamespace(prepare=self._prepare, report=self._report)
-
-    async def _prepare(self, call_id=None, context=None) -> None:
-        return None
+        self.livefs = SimpleNamespace(report=self._report)
+        self.sandbox = SimpleNamespace(call_filer=None)
 
     async def _report(self, call_id, output, context=None) -> str:
         return ""
 
     async def settled_livefs(self, workspace_id=None):
         return self.livefs
+
+    async def config_folder(self):
+        return None
 
     async def start_bash_job(self, command, *, call_id=None, **_):
         self.ran.append(command)

@@ -3,10 +3,11 @@
  * ways to pay switch, and what a pick, a search and a star do.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import type { ComponentProps } from 'react';
 import { ChatInputModelMenu } from '../chat-input.modelMenu';
+import type { ModelRowStatus } from '../chat-input.modelPicker';
 import { modelGroups } from '@/lib/modelGroups';
 import type { Payer } from '@/lib/modelPayer';
 
@@ -54,7 +55,7 @@ function open(overrides: Partial<ComponentProps<typeof ChatInputModelMenu>> = {}
         recent={[]}
         onToggleFavorite={onToggleFavorite}
         onSelectModel={onSelectModel}
-        needsSignIn={() => false}
+        rowStatus={() => ({})}
         dropdownDirection="up"
         container={null}
         {...overrides}
@@ -69,6 +70,13 @@ function open(overrides: Partial<ComponentProps<typeof ChatInputModelMenu>> = {}
 const rows = (dialog: HTMLElement) => within(dialog).queryAllByRole('row').map((r) => r.dataset.key).filter(Boolean);
 const tab = (dialog: HTMLElement, name: string) =>
   within(within(dialog).getByRole('radiogroup', { name: 'Model groups' })).getByRole('radio', { name });
+// The smallest element holding both: for a line under the name it is the
+// name's own block, apart from the star at the row's end.
+const holding = (a: Element, b: Element) => {
+  let node: Element | null = a;
+  while (node && !node.contains(b)) node = node.parentElement;
+  return node;
+};
 
 beforeEach(() => {
   onSelectModel.mockClear();
@@ -201,14 +209,107 @@ describe('a row', () => {
   // Still pickable, since the user may reconnect at any moment, but named as
   // needing sign-in before a send on it is refused.
   it('says a lapsed sign-in beside the name', () => {
-    const dialog = open({ needsSignIn: (m) => m === 'claude-opus-oauth' });
+    const dialog = open({ rowStatus: (m) => (m === 'claude-opus-oauth' ? { tag: 'Needs sign-in' } : {}) });
     fireEvent.click(tab(dialog, 'Anthropic'));
-    expect(within(within(dialog).getByRole('row')).getByText('Needs sign-in')).toBeInTheDocument();
+    const row = within(dialog).getByRole('row');
+    const hint = within(row).getByText('Needs sign-in');
+    // A short tag beside the name, as it always sat, not a line under it.
+    expect(holding(hint, within(row).getByText('Claude Opus 9')))
+      .toContainElement(within(row).getByRole('button', { name: 'Add Claude Opus 9 to favorites' }));
+    fireEvent.click(row);
+    expect(onSelectModel).toHaveBeenCalledWith('claude-opus-oauth');
   });
 
   it('checks the current model', () => {
     const dialog = open();
     expect(within(within(dialog).getByRole('row')).getByText('Current model')).toBeInTheDocument();
+  });
+});
+
+describe('Claude Code', () => {
+  const codeMetadata = {
+    ...metadata,
+    'claude-opus-code': { display_name: 'Claude Opus 9', provider: 'claude-code', access_type: 'oauth', sdk: 'claude-code' },
+  };
+  const codePayers: Record<string, Payer> = { ...payers, 'claude-opus-code': 'subscription:claude-code' };
+  const codeGroups = modelGroups({
+    models: {
+      'claude-code': { display_name: 'Claude Code', models: ['claude-opus-code'] },
+      anthropic: { display_name: 'Anthropic', models: ['claude-opus-oauth', 'claude-opus'] },
+      openai: { display_name: 'OpenAI', models: ['gpt-x'] },
+    },
+    payers: codePayers,
+  });
+  const SIGNED_OUT = 'Add a setup token for LangAlpha on the server to use this model';
+  const openCode = (signedOut: (m: string) => boolean = () => false) => open({
+    metadata: codeMetadata, payers: codePayers, groups: codeGroups,
+    rowStatus: (m): ModelRowStatus => (signedOut(m) ? { unavailable: SIGNED_OUT } : {}),
+  });
+
+  it('is a provider of its own, whose header no tag repeats', () => {
+    const dialog = openCode();
+    fireEvent.click(tab(dialog, 'Claude Code'));
+    expect(within(dialog).queryByRole('radiogroup', { name: 'Paid by' })).toBeNull();
+    expect(within(dialog).getAllByText('Claude Code')).toHaveLength(1);
+    expect(rows(dialog)).toEqual(['claude-opus-code']);
+    fireEvent.click(within(dialog).getByRole('row'));
+    expect(onSelectModel).toHaveBeenCalledWith('claude-opus-code');
+  });
+
+  // Among Favorites the tag is all that tells it from the same model on a key.
+  it('keeps its tag on a row beside other providers', () => {
+    const dialog = open({ metadata: codeMetadata, payers: codePayers, groups: codeGroups, favorites: ['gpt-x', 'claude-opus-code'] });
+    const row = within(dialog).getAllByRole('row').find((r) => r.dataset.key === 'claude-opus-code');
+    expect(row && within(row).getByText('Claude Code')).toBeInTheDocument();
+  });
+
+  // A row held back with nothing to fix from here (the token is still being
+  // checked) says so and takes no pick, by pointer or by Enter from the search.
+  it('says a signed-out server beside the name, and is no pick', () => {
+    const dialog = openCode((m) => m === 'claude-opus-code');
+    fireEvent.click(tab(dialog, 'Claude Code'));
+    const row = within(dialog).getByRole('row');
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+    expect(row).toHaveAccessibleName(`Claude Opus 9, ${SIGNED_OUT}`);
+    // A sentence, so it goes under the name rather than crowding it out, and
+    // the star stays on the name's line as on every other row.
+    const nameLine = holding(within(row).getByText('Claude Opus 9'), within(row).getByRole('button', { name: 'Add Claude Opus 9 to favorites' }));
+    expect(nameLine).not.toContainElement(within(row).getByText(SIGNED_OUT));
+    fireEvent.click(row);
+    expect(onSelectModel).not.toHaveBeenCalled();
+
+    const box = within(dialog).getByRole('searchbox');
+    fireEvent.change(box, { target: { value: 'opus' } });
+    expect(rows(dialog)[0]).toBe('claude-opus-code');
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(onSelectModel).toHaveBeenCalledWith('claude-opus-oauth');
+  });
+
+  // Without a working token, the row is the way to add one: it takes the user
+  // to it rather than picking a model every turn would refuse.
+  it('takes a row the user can fix to the fix, and never picks it', () => {
+    const fix = vi.fn();
+    const dialog = open({
+      metadata: codeMetadata, payers: codePayers, groups: codeGroups,
+      rowStatus: (m): ModelRowStatus => (m === 'claude-opus-code' ? { unavailable: SIGNED_OUT, fix } : {}),
+    });
+    fireEvent.click(tab(dialog, 'Claude Code'));
+    const row = within(dialog).getByRole('row');
+    expect(row).not.toHaveAttribute('aria-disabled');
+    expect(row).toHaveAccessibleName(`Claude Opus 9, ${SIGNED_OUT}`);
+    fireEvent.click(row);
+    expect(fix).toHaveBeenCalledTimes(1);
+    expect(onSelectModel).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  // The rail's dot says a subscription can run something now, so a group
+  // whose every row is held back shows none.
+  it('marks its tab as connected only while one of its rows can run', () => {
+    const dot = (dialog: HTMLElement) => tab(dialog, 'Claude Code').querySelector('span[aria-hidden].rounded-full');
+    expect(dot(openCode())).not.toBeNull();
+    cleanup();
+    expect(dot(openCode(() => true))).toBeNull();
   });
 });
 
@@ -224,7 +325,7 @@ describe('the pill', () => {
       <MemoryRouter>
         <ChatInputModelMenu
           selectedModel="gpt-x" metadata={metadata} payers={payers} groups={groups} favorites={[]} recent={[]}
-          onToggleFavorite={onToggleFavorite} onSelectModel={onSelectModel} needsSignIn={() => false}
+          onToggleFavorite={onToggleFavorite} onSelectModel={onSelectModel} rowStatus={() => ({})}
           dropdownDirection="up" container={null} disabled
         />
       </MemoryRouter>,
@@ -237,7 +338,7 @@ describe('the pill', () => {
       <MemoryRouter>
         <ChatInputModelMenu
           selectedModel={null} payers={{}} groups={[]} favorites={[]} recent={[]}
-          onToggleFavorite={onToggleFavorite} onSelectModel={onSelectModel} needsSignIn={() => false}
+          onToggleFavorite={onToggleFavorite} onSelectModel={onSelectModel} rowStatus={() => ({})}
           dropdownDirection="up" container={null}
         />
       </MemoryRouter>,

@@ -54,6 +54,26 @@ NULLABLE_STR: dict[str, Any] = {"type": ["string", "null"]}
 
 STR_LIST: dict[str, Any] = {"type": "array", "items": STR}
 
+# Echo keys of a bar series (data_client.normalize.series_labels).
+PRICE_TREATMENT: dict[str, Any] = {
+    "type": "string",
+    "enum": ["raw", "split_adjusted", "dividend_adjusted"],
+    "description": "Adjustment of the prices: raw, split_adjusted or dividend_adjusted.",
+}
+IN_PROGRESS: dict[str, Any] = {
+    "type": "string",
+    "description": "Date of the newest bar while it is still forming; omitted otherwise.",
+}
+VOLUME_NOTE: dict[str, Any] = {
+    "type": "string",
+    "description": "Why volume is unreliable; omitted when it is not.",
+}
+BAR_LABELS: dict[str, dict[str, Any]] = {
+    "price_treatment": PRICE_TREATMENT,
+    "in_progress": IN_PROGRESS,
+    "volume_note": VOLUME_NOTE,
+}
+
 
 def described(prop: dict[str, Any], description: str) -> dict[str, Any]:
     """A vocabulary entry under a call-site-specific description."""
@@ -64,6 +84,17 @@ def described(prop: dict[str, Any], description: str) -> dict[str, Any]:
 #: Two wordings are published today (``described(ERRORS, ...)`` keeps each
 #: server's bytes stable); unify them the next time the schemas may move.
 ERRORS: dict[str, Any] = described(RECORDS, "Error envelopes for symbols that failed.")
+
+#: ``make_response(truncated=True)``: present only on a read a cap cut short,
+#: naming the end it lost: price and rate history its oldest rows, a calendar
+#: its latest dates.
+TRUNCATED: dict[str, Any] = described(BOOL, "Present and true if a size cap cut the oldest rows.")
+TRUNCATED_LATEST: dict[str, Any] = described(
+    BOOL, "Present and true if a size cap cut the latest dates."
+)
+#: ``make_response(incomplete=True)``: present only when the source reports bars
+#: missing inside the window, which is not a cap.
+INCOMPLETE: dict[str, Any] = described(BOOL, "Present and true if bars in the window are missing.")
 
 #: The error arm's properties. Servers off the market-data envelope override
 #: ``detail`` — its wording and type drifted before the contract settled.

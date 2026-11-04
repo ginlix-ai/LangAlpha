@@ -24,8 +24,6 @@ const mocks = vi.hoisted(() => ({
     ginlixDataEnabled: false,
     subscribe: vi.fn(),
     unsubscribe: vi.fn(),
-    setPreviousClose: vi.fn(),
-    setDayOpen: vi.fn(),
   },
 }));
 
@@ -117,6 +115,8 @@ vi.mock('@/hooks/usePreferences', async () => {
 vi.mock('@/hooks/useAllModels', () => ({
   useAllModels: () => ({
     models: {},
+    slotModels: {},
+    claudeCodeState: 'off',
     payers: {},
     validModelNames: new Set<string>(),
     catalogModelNames: new Set<string>(),

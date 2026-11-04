@@ -19,9 +19,12 @@ vi.mock('../../utils/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/api')>()),
   renameComputer: vi.fn(async () => ({})),
   setComputerAlwaysOn: vi.fn(async () => ({})),
+  createComputer: vi.fn(async () => ({ computer_id: 'new-box', name: 'Lab box', status: 'running', is_primary: false })),
+  deleteComputer: vi.fn(async () => ({ workspaces_deleted: [] })),
 }));
 
 import { useComputerActions } from '../useComputerActions';
+import { patchComputerStatusInCaches } from '../../utils/warmWorkspace';
 import {
   invalidateMachine,
   invalidateMachineStorage,
@@ -31,6 +34,7 @@ import {
 const ID = '5319ad0e-7835-4ca6-9541-b7c2961a7bf6';
 const LISTS = queryKeys.computers.lists();
 const STORAGE = queryKeys.computers.storage(ID);
+const CLAUDE_CODE = queryKeys.features.claudeCodeComputers();
 
 /** A client holding both projections of the machine, neither stale. */
 function seeded() {
@@ -41,6 +45,7 @@ function seeded() {
   });
   client.setQueryData(STORAGE, { live: true, workspaces: [], other_bytes: 0 });
   client.setQueryData(queryKeys.workspaces.lists(), { workspaces: [], total: 0 });
+  client.setQueryData(CLAUDE_CODE, { computers: [] });
   return client;
 }
 
@@ -76,6 +81,37 @@ describe('useComputerActions', () => {
     await act(async () => { await run(result.current); });
     expect(invalidated(client, LISTS)).toBe(true);
     expect(invalidated(client, STORAGE)).toBe(false);
+  });
+
+  // An empty list is not polled, so nothing else would show the change.
+  it.each([
+    ['create', (a: ReturnType<typeof useComputerActions>) => a.create.mutateAsync({ name: 'Lab box' })],
+    ['remove', (a: ReturnType<typeof useComputerActions>) => a.remove.mutateAsync({
+      computerId: ID, name: 'Alpha Research', removeKey: false, workspaceIds: [], deleteFiles: false,
+    })],
+  ])("%s rereads Claude Code's list of the user's own computers", async (_name, run) => {
+    const client = seeded();
+    const { result } = renderHookWithProviders(() => useComputerActions(), { queryClient: client });
+    await act(async () => { await run(result.current); });
+    expect(invalidated(client, CLAUDE_CODE)).toBe(true);
+  });
+
+  // The list names each computer.
+  it("a rename rereads Claude Code's list too", async () => {
+    const client = seeded();
+    const { result } = renderHookWithProviders(() => useComputerActions(), { queryClient: client });
+    await act(async () => { await result.current.rename.mutateAsync({ computerId: ID, name: 'Beta' }); });
+    expect(invalidated(client, CLAUDE_CODE)).toBe(true);
+  });
+});
+
+describe('patchComputerStatusInCaches', () => {
+  // A machine coming up is the status stream's to tell Claude Code's list.
+  it("only patches the caches, leaving Claude Code's list alone", () => {
+    const client = seeded();
+    client.setQueryData(LISTS, { computers: [{ computer_id: ID, name: 'Alpha Research', status: 'stopped' }], total: 1 });
+    patchComputerStatusInCaches(client, ID, 'running');
+    expect(invalidated(client, CLAUDE_CODE)).toBe(false);
   });
 });
 

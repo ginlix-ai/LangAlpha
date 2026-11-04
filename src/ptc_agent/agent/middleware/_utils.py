@@ -1,6 +1,21 @@
 """Shared utility functions for middleware."""
 
 from langchain_core.messages import SystemMessage
+from langgraph.config import get_config
+
+
+def run_ids() -> tuple[str | None, str]:
+    """The thread of the graph run this is called in and which agent runs it,
+    for a log line: ``main``, or a subagent's ``task:<id>``. A subagent runs
+    on its parent's thread, so only the ``task:`` segment of its checkpoint
+    namespace tells its lines apart; the rest names the node, which says
+    nothing here. ``(None, "main")`` outside a run."""
+    try:
+        configurable = get_config().get("configurable") or {}
+    except RuntimeError:
+        return None, "main"
+    segments = (configurable.get("checkpoint_ns") or "").split("|")
+    return configurable.get("thread_id"), next((s for s in segments if s.startswith("task:")), "main")
 
 
 def append_to_system_message(

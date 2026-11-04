@@ -1,0 +1,16 @@
+/* The live file and, over it while one is picked, a published version. The
+   live frame stays laid out at its size under the version, unseen, so the
+   place read and a comment being written are where they were on the way back. */
+.artifact-frames {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.artifact-frames-layer {
+  position: absolute;
+  inset: 0;
+}
+.artifact-frames-layer[data-shown='false'] {
+  visibility: hidden;
+  pointer-events: none;
+}

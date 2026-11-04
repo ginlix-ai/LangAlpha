@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type RefObject, type SetStateAction } from 'react';
+import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useSkills } from '@/hooks/useSkills';
 import { BUILTIN_SLASH_COMMANDS, findTriggerIndex, slashRank } from './chat-input.helpers';
@@ -103,30 +104,22 @@ export function useSlashCommands({
     const before = message.slice(0, slashStart);
     const after = message.slice(cursorPos);
 
-    // All commands — including system actions like /compact — insert a pill and
+    // All commands — including system actions like /compact — insert a token and
     // defer execution to send. Nothing fires on mere selection; handleSend
     // dispatches action pills via onAction when the user actually sends.
     const inserted = `/${cmd.name} `;
-    setMessage(before + inserted + after);
+    // Committed before the caret moves: a timer waits behind keystrokes already
+    // queued, and would drag the caret back into what they typed.
+    flushSync(() => setMessage(before + inserted + after));
     close();
     setSlashCommands((prev) => {
       if (prev.some((c) => c.name === cmd.name)) return prev;
       return [...prev, cmd];
     });
     const newCursor = before.length + inserted.length;
-    setTimeout(() => {
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(newCursor, newCursor);
-      }
-    }, 0);
+    textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(newCursor, newCursor);
   }, [slashStart, message, setMessage, textareaRef, close]);
-
-  const removeCommand = useCallback((name: string) => {
-    setSlashCommands((prev) => prev.filter((c) => c.name !== name));
-    // Also remove /{command} text from the textarea
-    setMessage((prev) => prev.replace(new RegExp(`(^|\\s)/${name}(\\s|$)`), '$1$2').trim());
-  }, [setMessage]);
 
   /** Returns true when the menu consumed the key. */
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -159,6 +152,12 @@ export function useSlashCommands({
     setOpen(false);
   }, []);
 
+  /** Pills a send took, back beside any picked since. */
+  const restore = useCallback((commands: readonly SlashCommand[]) => {
+    if (commands.length === 0) return;
+    setSlashCommands((prev) => [...prev, ...commands.filter((cmd) => !prev.some((c) => c.name === cmd.name))]);
+  }, []);
+
   return {
     slashCommands,
     open,
@@ -167,12 +166,12 @@ export function useSlashCommands({
     listRef,
     filtered,
     selectCommand,
-    removeCommand,
     pruneRemoved,
     detectTrigger,
     handleKeyDown,
     close,
     reset,
+    restore,
   };
 }
 

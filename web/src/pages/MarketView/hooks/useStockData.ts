@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { mapSnapshotToStockQuote, fetchCompanyOverview, fetchAnalystData } from '../utils/api';
 import { useQuote } from '@/lib/quotes';
@@ -6,7 +6,6 @@ import { isIndexFamilySpelling, isUSEquity } from '@/lib/bars/exchanges';
 import { fetchMarketStatus } from '@/lib/marketUtils';
 import type { StockInfo, RealTimePrice, SnapshotData } from '@/types/market';
 import type { CompanyOverviewArtifact } from '@/lib/quotes/overview';
-import type { ConnectionStatus } from './useMarketDataWS';
 
 /** Market status shape returned by fetchMarketStatus */
 interface MarketStatusData {
@@ -18,9 +17,8 @@ interface MarketStatusData {
 
 interface UseStockDataOptions {
     selectedStock: string | null;
-    wsStatus: ConnectionStatus;
-    setPreviousClose?: (symbol: string, price: number) => void;
-    setDayOpen?: (symbol: string, price: number) => void;
+    /** The socket is connected and has a current print for this symbol. */
+    streamsLive: boolean;
 }
 
 interface AnalystOverlayData {
@@ -56,9 +54,7 @@ export interface UseStockDataReturn {
  */
 export function useStockData({
     selectedStock,
-    wsStatus,
-    setPreviousClose,
-    setDayOpen
+    streamsLive,
 }: UseStockDataOptions): UseStockDataReturn {
     // 1. Stock Quote & Snapshot — sourced from the unified quote layer so this
     //    symbol shares one cache entry (and one poll) with the sidebar watchlist
@@ -66,8 +62,10 @@ export function useStockData({
     const { quote, isLoading: quoteLoading } = useQuote(selectedStock, {
         isIndex: isIndexFamilySpelling(selectedStock),
         // The socket streams US equities only, so it stands in for the poll
-        // only there; a CN/HK listing or an index keeps polling every 60s.
-        refetchInterval: wsStatus === 'connected' && isUSEquity(selectedStock) ? false : 60000,
+        // only there, and only while it is printing this symbol: once its
+        // print ages out the header reads this row again, which must be fresh.
+        // A CN/HK listing or an index keeps polling every 60s.
+        refetchInterval: streamsLive && isUSEquity(selectedStock) ? false : 60000,
         staleTime: 1000 * 10, // 10s fresh cache
     });
 
@@ -81,17 +79,6 @@ export function useStockData({
         if (!quoteLoading) return mapSnapshotToStockQuote(selectedStock, null);
         return null;
     }, [selectedStock, quote, quoteLoading]);
-
-    // Seed the WS refs (previousClose / dayOpen) from the resolved snapshot.
-    useEffect(() => {
-        if (!selectedStock || !quote) return;
-        if (quote.previous_close != null && setPreviousClose) {
-            setPreviousClose(selectedStock, quote.previous_close);
-        }
-        if (quote.open != null && setDayOpen) {
-            setDayOpen(selectedStock, quote.open);
-        }
-    }, [quote, selectedStock, setPreviousClose, setDayOpen]);
 
     // 2. Company Overview
     const { data: overviewData = null, isLoading: overviewLoading } = useQuery({

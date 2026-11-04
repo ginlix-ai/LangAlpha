@@ -25,8 +25,9 @@ from ptc_agent.config.agent import SubagentModel, SubagentsConfig
 from src.llms.preferences import resolve_tuning
 
 from . import logger, user_models
-from .availability import model_on_plan, model_resolves
+from .availability import model_on_plan
 from .capabilities import TierPermits, gate_search
+from .claude_code import role_resolves
 from .clients import LLMRole
 
 #: The user's rows, their bases and the base names offered to them.
@@ -155,7 +156,8 @@ async def _demote_unservable(
 ) -> ResolvedSubagents:
     """Pinned models this turn cannot run, as Inherit.
 
-    By name for every pin, since a name the manifest lacks fails the build.
+    By name for every pin, since a name the manifest lacks fails the build,
+    and so does a Claude Code row, which runs only as a thread's own model.
     By plan only for a model the user chose, a plugin's pin included since
     the user installed it: a deployment's own pin is the operator's call, and
     gating it would change the turn of a user who never touched their
@@ -168,7 +170,7 @@ async def _demote_unservable(
         defn = definitions[name]
         if not defn.model:
             continue
-        if model_resolves(model_pref, defn.model) and (
+        if role_resolves(model_pref, defn.model) and (
             not plan_gated(defn, bases.get(name))
             or await model_on_plan(
                 user_id, defn.model, model_pref=model_pref, permits=permits,

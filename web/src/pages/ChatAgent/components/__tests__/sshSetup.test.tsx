@@ -40,6 +40,9 @@ import {
 } from '../../utils/api';
 import CreateComputerDialog from '../CreateComputerDialog';
 
+const claudeCode = vi.hoisted(() => ({ enabled: true }));
+vi.mock('@/hooks/useClaudeCode', () => ({ useClaudeCodeStatus: () => ({ enabled: claudeCode.enabled }) }));
+
 const mockProviders = getComputerProviders as Mock;
 const mockMint = createSshPairing as Mock;
 const mockStatus = getSshPairing as Mock;
@@ -166,6 +169,33 @@ describe('pairing', () => {
       },
       files_backup: true,
     });
+  });
+
+  it("says Claude Code models won't run where an organization's Claude Code policy is installed, and still adds the machine", async () => {
+    claudeCode.enabled = true;
+    mockStatus.mockResolvedValue({ ...READY, probe: probe({ claude_code_blocked: true }) });
+    const user = userEvent.setup();
+    open();
+    await pickSsh(user);
+    const summary = await screen.findByTestId('ssh-ready');
+    expect(within(summary).getByTestId('ssh-claude-code-policy')).toHaveTextContent(
+      "Your organization's Claude Code policy is installed on this computer, so Claude Code models won't run here.",
+    );
+    expect(screen.getByRole('button', { name: 'Add computer' })).toBeEnabled();
+  });
+
+  it.each([
+    [false, true],
+    [true, false],
+  ] as const)("says nothing of a Claude Code policy to a user Claude Code is off for, or on a machine with none (on %s, blocked %s)", async (enabled, blocked) => {
+    claudeCode.enabled = enabled;
+    mockStatus.mockResolvedValue({ ...READY, probe: probe({ claude_code_blocked: blocked }) });
+    const user = userEvent.setup();
+    open();
+    await pickSsh(user);
+    await screen.findByTestId('ssh-ready');
+    expect(screen.queryByTestId('ssh-claude-code-policy')).not.toBeInTheDocument();
+    claudeCode.enabled = true;
   });
 
   it('backs up the workspace files unless the user unticks it', async () => {

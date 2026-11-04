@@ -5,7 +5,7 @@
  * every send until the user changes Settings.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHookWithProviders } from '@/test/utils';
 import type { ConfiguredProvider } from '../useConfiguredProviders';
 import type { PlatformModelsResponse } from '@/types/platform';
 
@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   providers: [] as ConfiguredProvider[],
   byokEnabled: true,
   customModels: [] as Array<{ name: string; model_id: string; provider: string }>,
+  features: [],
 }));
 
 // The providers' own lists are read through React Query; none is read here.
@@ -53,6 +54,12 @@ vi.mock('../usePreferences', () => ({
 vi.mock('../useConfiguredProviders', () => ({
   useConfiguredProviders: () => ({ providers: h.providers, byokEnabled: h.byokEnabled, isLoading: false }),
 }));
+// Flags are read through React Query; settled here, so only the hook's own
+// reads are in flight.
+vi.mock('../useFeatures', async (importActual) => ({
+  ...(await importActual<typeof import('../useFeatures')>()),
+  useFeatures: () => ({ data: h.features, isLoading: false }),
+}));
 vi.mock('../usePlatformModels', async (importActual) => ({
   ...(await importActual<typeof import('../usePlatformModels')>()),
   usePlatformModels: () => ({ platform: h.platform, isLoading: false }),
@@ -68,7 +75,7 @@ const KEY_A = key('prov-a');
 const KEY_B = key('prov-b');
 
 function offPlan(): string[] {
-  const { result } = renderHook(() => useAllModels());
+  const { result } = renderHookWithProviders(() => useAllModels());
   return [...result.current.offPlanModels].sort();
 }
 

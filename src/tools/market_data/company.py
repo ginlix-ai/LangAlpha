@@ -16,11 +16,15 @@ import asyncio
 from langchain_core.runnables import RunnableConfig
 
 from .currency import DisplaySpec, fmt_count, fmt_money, fmt_price
-from .fiscal_periods import (
-    fiscal_period_lookup,
-    infer_fiscal_period,
-    match_filing_to_fiscal_period,
+from .earnings import (
+    EarningsReport,
+    diluted_eps,
+    earnings_lines,
+    earnings_surprises,
+    join_earnings,
+    next_earnings_lines,
 )
+from .fiscal_periods import fiscal_period_lookup, period_name
 from .display import (
     _is_us_clock,
     _market_status_line,
@@ -35,11 +39,13 @@ from .quote_format import (
     stamp_provider_quote,
     stamp_quote,
 )
+from .sec_filings import PeriodicFiling, fetch_periodic_filings
 from .segments import SegmentBreakdown, fetch_segments, segment_lines
 from .utils import finite_or_none, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
 from src.data_client.freshness import FreshnessLabel
 from src.data_client.ginlix_data.directory import display_names
+from src.data_client.normalize import minor_unit_places
 from market_protocol import AssetClass, InstrumentRef
 
 from ._shared import _fmp_request, _get_user_id, _mark_failure, _mark_no_data, _safe_result
@@ -57,6 +63,7 @@ _RATINGS = (
     ("strongBuy", "Strong Buy"), ("buy", "Buy"), ("hold", "Hold"),
     ("sell", "Sell"), ("strongSell", "Strong Sell"),
 )
+_FORM_LABELS = {"10-K": "**10-K** (Annual)", "10-Q": "**10-Q** (Quarterly)"}
 # A snapshot's market_status -> the "Market Status:" label.
 _STATUS_LABELS = {
     "early_trading": "Pre-Market",
@@ -97,16 +104,16 @@ def _margin(stmt: Dict, ratio_key: str, numerator_key: str) -> Optional[float]:
     return None
 
 
-def _diluted_eps(stmt: Dict) -> Optional[float]:
-    # FMP's stable statements spell it ``epsDiluted``, as CN rows do; yfinance
-    # rows, and CN rows from a ginlix-data that predates the stable spellings,
-    # keep the v3 ``epsdiluted``.
-    value = stmt.get("epsDiluted")
-    return value if value is not None else stmt.get("epsdiluted")
-
-
 def _first(rows: Any) -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
+
+
+def _quote_precision(cur: DisplaySpec, symbol: str) -> DisplaySpec:
+    """`cur` widened by the places a minor-unit listing needs in its major unit.
+
+    A 0.35p move is £0.0035: at the currency's own two places it would read +0.00.
+    """
+    return cur._replace(decimals=cur.decimals + minor_unit_places(symbol))
 
 
 def _plus(value: float) -> str:
@@ -138,7 +145,7 @@ class CompanyInputs:
     name: str
     name_en: Optional[str]
     income: List[Dict[str, Any]]
-    earnings: List[Dict[str, Any]]
+    earnings: List[EarningsReport]
     cash_flow: List[Dict[str, Any]]
     performance: Optional[Dict[str, Any]]
     metrics: Optional[Dict[str, Any]]
@@ -153,8 +160,7 @@ class CompanyInputs:
     cash_flow_cur: Optional[str]
     fiscal: Dict[str, str]
     snapshot: Optional[Dict[str, Any]] = None
-    filings_10q: List[Dict[str, Any]] = field(default_factory=list)
-    filings_10k: List[Dict[str, Any]] = field(default_factory=list)
+    filings: List[PeriodicFiling] = field(default_factory=list)
     recent_grades: List[Dict[str, Any]] = field(default_factory=list)
     pt_summary: List[Dict[str, Any]] = field(default_factory=list)
     share_float: Optional[Dict[str, Any]] = None
@@ -237,8 +243,7 @@ async def _gather_company(
     }
     if extended:
         calls.update({
-            "filings_10q": _fmp_request("get_sec_filings", symbol, filing_type="10-Q", limit=3),
-            "filings_10k": _fmp_request("get_sec_filings", symbol, filing_type="10-K", limit=2),
+            "filings": fetch_periodic_filings(profile.get("cik")),
             "grades": _fmp_request("get_stock_grades", symbol, limit=10),
             "pt_summary": _fmp_request("get_price_target_summary", symbol),
             "snapshot": _snapshot(symbol, user_id),
@@ -259,6 +264,7 @@ async def _gather_company(
     income, cash_flow = listed("income"), listed("cash_flow")
     cur = _symbol_currency(ref)
     stmt_cur = _reported_currency(income, _reported_currency(cash_flow, cur.currency))
+    fiscal = fiscal_period_lookup(income)
     inputs = CompanyInputs(
         symbol=symbol,
         ref=ref,
@@ -267,7 +273,14 @@ async def _gather_company(
         name=profile.get("nameLocal") or local_name or profile.get("companyName", symbol),
         name_en=profile.get("companyName") or directory_en,
         income=income,
-        earnings=listed("earnings"),
+        # Earnings rows are consensus figures per listed security, in its
+        # trading currency; the statements are per ordinary share, in theirs.
+        # A depositary share can stand for several ordinary shares (a BP ADS
+        # is six), so an ADR's statement EPS never sits beside it.
+        earnings=join_earnings(
+            listed("earnings"), income, fiscal,
+            eps_currency=None if profile.get("isAdr") else cur.currency,
+        ),
         cash_flow=cash_flow,
         performance=_first(listed("performance")),
         metrics=_first(listed("metrics")),
@@ -278,11 +291,10 @@ async def _gather_company(
         segments=listed("segments") or SegmentBreakdown(None, None),
         stmt_cur=stmt_cur,
         cash_flow_cur=_reported_currency(cash_flow, stmt_cur),
-        fiscal=fiscal_period_lookup(income),
+        fiscal=fiscal,
     )
     if extended:
-        inputs.filings_10q = listed("filings_10q")
-        inputs.filings_10k = listed("filings_10k")
+        inputs.filings = listed("filings")
         inputs.recent_grades = listed("grades")
         inputs.pt_summary = listed("pt_summary")
         inputs.snapshot = _safe_result(got.get("snapshot"), None)
@@ -394,26 +406,16 @@ def _company_artifact(inp: CompanyInputs) -> Dict[str, Any]:
                 "grossProfit": stmt.get("grossProfit"),
                 "operatingIncome": stmt.get("operatingIncome"),
                 "ebitda": stmt.get("ebitda"),
-                "epsDiluted": _diluted_eps(stmt),
+                "epsDiluted": diluted_eps(stmt),
                 "grossMargin": _margin(stmt, "grossProfitRatio", "grossProfit"),
                 "operatingMargin": _margin(stmt, "operatingIncomeRatio", "operatingIncome"),
                 "netMargin": _margin(stmt, "netIncomeRatio", "netIncome"),
             }
             for stmt in reversed(inp.income)
         ]
-    reported = [e for e in inp.earnings if e.get("epsActual") is not None]
-    if reported:
-        artifact["earningsSurprises"] = [
-            {
-                "period": lookup.get(e.get("fiscalDateEnding"), e.get("date", "")),
-                "date": e.get("date"),
-                "epsActual": e.get("epsActual"),
-                "epsEstimate": e.get("epsEstimated"),
-                "revenueActual": e.get("revenueActual"),
-                "revenueEstimate": e.get("revenueEstimated"),
-            }
-            for e in reversed(reported)
-        ]
+    surprises = earnings_surprises(inp.earnings)
+    if surprises:
+        artifact["earningsSurprises"] = surprises
     if inp.cash_flow:
         artifact["cashFlow"] = [
             {
@@ -452,7 +454,32 @@ def _quote_detail_rows(
     return rows
 
 
-def _snapshot_price_lines(snap: Dict[str, Any], status: str, cur: DisplaySpec) -> List[str]:
+# market_status -> what its last trade is called, and the session whose change it carries.
+_EXTENDED_SESSIONS = {
+    "early_trading": ("Pre-Market", "early_trading"),
+    "late_trading": ("After-Hours", "late_trading"),
+    # After the late session ends its print is still the last trade.
+    "closed": ("Last Extended-Hours", "late_trading"),
+}
+
+
+def _extended_session(snap: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """``(label, session)`` for a last trade that is an extended-hours print.
+
+    Outside the regular session the last trade is one, and stays one after the
+    late session ends, so a closed market still names it rather than letting it
+    pass as the day's price beside the close. Only a snapshot that names its
+    session (ginlix-data's US rows) is labeled, and only when that session
+    moved the price: an odd-lot print a cent off the close is no extended trade.
+    """
+    named = _EXTENDED_SESSIONS.get(snap.get("market_status") or "")
+    last, close = finite_or_none(snap.get("last_trade_price")), finite_or_none(snap.get("price"))
+    if named is None or last is None or close is None or last == close:
+        return None
+    return None if finite_or_none(snap.get(f"{named[1]}_change")) == 0 else named
+
+
+def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
     """Regular close, the extended-hours print off it, and the day's move."""
     out = []
     reg_close = snap.get("price")  # session.close = regular session close
@@ -463,27 +490,27 @@ def _snapshot_price_lines(snap: Dict[str, Any], status: str, cur: DisplaySpec) -
         if reg_change is not None and reg_change_pct is not None:
             sign = _plus(reg_change)
             out.append(
-                f"**Regular Close:** {fmt_price(reg_close, cur)} ({sign}{reg_change:.2f} / {sign}{reg_change_pct:.3f}%)"
+                f"**Regular Close:** {fmt_price(reg_close, cur)} ({sign}{reg_change:.{cur.decimals}f} / {sign}{reg_change_pct:.3f}%)"
             )
         else:
             out.append(f"**Regular Close:** {fmt_price(reg_close, cur)}")
 
-    is_extended = status in ("early_trading", "late_trading")
-    if is_extended and last_price is not None and reg_close is not None and last_price != reg_close:
-        ext_label = "Pre-Market" if status == "early_trading" else "After-Hours"
-        ext_change = snap.get(f"{status}_change")
-        ext_change_pct = snap.get(f"{status}_change_percent")
+    extended = _extended_session(snap)
+    if extended is not None:
+        ext_label, session = extended
+        ext_change = snap.get(f"{session}_change")
+        ext_change_pct = snap.get(f"{session}_change_percent")
         if ext_change is not None and ext_change_pct is not None:
             sign = _plus(ext_change)
             out.append(
-                f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{ext_change:.2f} / {sign}{ext_change_pct:.3f}% from close)"
+                f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{ext_change:.{cur.decimals}f} / {sign}{ext_change_pct:.3f}% from close)"
             )
         else:
             diff = last_price - reg_close
             diff_pct = (diff / reg_close * 100) if reg_close else 0
             sign = _plus(diff)
             out.append(
-                f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{diff:.2f} / {sign}{diff_pct:.2f}% from close)"
+                f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{diff:.{cur.decimals}f} / {sign}{diff_pct:.2f}% from close)"
             )
 
     total_change = snap.get("change")
@@ -491,7 +518,7 @@ def _snapshot_price_lines(snap: Dict[str, Any], status: str, cur: DisplaySpec) -
     if total_change is not None and total_change_pct is not None:
         sign = _plus(total_change)
         out.append(
-            f"**Day Change (from prev close):** {sign}{total_change:.2f} / {sign}{total_change_pct:.3f}%"
+            f"**Day Change (from prev close):** {sign}{total_change:.{cur.decimals}f} / {sign}{total_change_pct:.3f}%"
         )
     return out + [""]
 
@@ -524,7 +551,7 @@ def _provider_price_line(fmp: Dict[str, Any], cur: DisplaySpec) -> Optional[str]
     change = finite_or_none(fmp.get("change"))
     change_pct = finite_or_none(fmp.get("changePercentage"))
     move = [
-        *([f"{_plus(change)}{change:.2f}"] if change is not None else []),
+        *([f"{_plus(change)}{change:.{cur.decimals}f}"] if change is not None else []),
         *([f"{_plus(change_pct)}{change_pct:.2f}%"] if change_pct is not None else []),
     ]
     line = f"**Price:** {fmt_price(price, cur)}"
@@ -538,7 +565,7 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
     fmp = inp.quote
     if snap is None and fmp is None:
         return []
-    cur = inp.cur
+    cur = _quote_precision(inp.cur, inp.symbol)
     session_name, current_time_et = get_market_session()
     status = snap.get("market_status", "") if snap is not None else ""
     label = _STATUS_LABELS.get(status, session_name.replace("_", " ").title())
@@ -556,7 +583,7 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
     out.append("")
 
     if snap is not None:
-        out += _snapshot_price_lines(snap, status, cur)
+        out += _snapshot_price_lines(snap, cur)
         # The snapshot has no 52-week range or average volume; the provider quote does.
         fmp = fmp or {}
         rows = _quote_detail_rows(
@@ -669,134 +696,28 @@ def _metrics_lines(inp: CompanyInputs) -> List[str]:
     return out + [""]
 
 
-def _filing_day(filing: Dict[str, Any]) -> str:
-    day = filing.get("filingDate", "N/A")
-    return day.split(" ")[0] if day and " " in day else day
-
-
 def _filing_lines(inp: CompanyInputs) -> List[str]:
-    if not (inp.filings_10q or inp.filings_10k):
+    """The latest 10-K and three 10-Qs, each named by the period it covers."""
+    shown = [f for f in inp.filings if f["form"] == "10-K"][:1]
+    shown += [f for f in inp.filings if f["form"] == "10-Q"][:3]
+    if not shown:
         return []
-    lookup = inp.fiscal
     out = [
         "### SEC Filing Dates",
         "",
         "| Filing Type | Filing Date | Fiscal Period |",
         "|-------------|-------------|---------------|",
     ]
-    for filing in inp.filings_10k[:1]:  # Just the latest
-        # A 10-K includes Q4, so it is labeled with the latest fiscal Q4.
-        fiscal_period = next(
-            (f"{name} (Annual)" for _, name in sorted(lookup.items(), reverse=True) if name.startswith("Q4")),
-            "Annual",
-        )
-        out.append(f"| **10-K** | {_filing_day(filing)} | {fiscal_period} |")
-    for filing in inp.filings_10q[:3]:  # Last 3 quarterly reports
-        filing_date = _filing_day(filing)
-        fiscal_period = match_filing_to_fiscal_period(filing_date, inp.earnings, lookup)
-        out.append(f"| **10-Q** (Quarterly) | {filing_date} | {fiscal_period} |")
-    out.append("")
-    # US stocks carry no exchange suffix (.SH, .SZ, .HK, etc.).
-    if "." not in inp.symbol or inp.symbol.endswith(".US"):
-        out += [
-            "*Tip: Use `get_sec_filing` tool to fetch complete earnings call transcripts and SEC filings.*",
-            "",
-        ]
-    return out
-
-
-def _next_earnings_lines(inp: CompanyInputs) -> List[str]:
-    # Upcoming = not yet reported AND not in the past. A missing epsActual on a
-    # past row means "never populated", not "upcoming".
-    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    upcoming = [
-        cal
-        for cal in inp.earnings
-        if cal.get("epsActual") is None and cal.get("date") and str(cal.get("date")) >= today_iso
-    ]
-    if not upcoming:
-        return []
-    upcoming.sort(key=lambda x: x.get("date", "9999-99-99"))
-    nxt = upcoming[0]
-    lookup, earn_cur = inp.fiscal, _earnings_currency(inp)
-    fiscal_ending = nxt.get("fiscalDateEnding", "N/A")
-    eps_estimate = nxt.get("epsEstimated")
-    rev_estimate = nxt.get("revenueEstimated")
-    period_name = lookup.get(fiscal_ending)
-    if not period_name and fiscal_ending != "N/A":
-        period_name = infer_fiscal_period(fiscal_ending, lookup)
-    time_desc = {
-        "amc": " (After Market Close)",
-        "bmo": " (Before Market Open)",
-    }.get(nxt.get("time", ""), "")
-    out = [
-        "### Next Earnings Report",
+    for filing in shown:
+        end = filing["periodOfReport"]
+        name = period_name(end, inp.fiscal)
+        label = f"{name}, ended {end}" if name else (f"Period ended {end}" if end else "N/A")
+        out.append(f"| {_FORM_LABELS[filing['form']]} | {filing['filingDate']} | {label} |")
+    return out + [
         "",
-        f"**Report Date:** {nxt.get('date', 'N/A')}{time_desc}",
-        f"**Fiscal Period:** {period_name or 'N/A'}",
-        f"**Fiscal Period End:** {fiscal_ending}",
+        "*Tip: Use `get_sec_filing` tool to fetch complete earnings call transcripts and SEC filings.*",
+        "",
     ]
-    if eps_estimate is not None:
-        out.append(f"**EPS Estimate:** {fmt_price(eps_estimate, earn_cur)}")
-    if rev_estimate is not None:
-        out.append(f"**Revenue Estimate:** {fmt_money(rev_estimate, earn_cur)}")
-    return out + [""]
-
-
-def _earnings_currency(inp: CompanyInputs) -> Optional[str]:
-    """Earnings rows are consensus figures in the listing's trading currency,
-    not the statements': TSM's EPS is USD per ADS while it reports in TWD."""
-    return inp.cur.currency
-
-
-def _earnings_lines(inp: CompanyInputs) -> List[str]:
-    reported = [e for e in inp.earnings if e.get("epsActual") is not None]
-    if not reported:
-        return []
-    lookup, earn_cur = inp.fiscal, _earnings_currency(inp)
-    latest = reported[0]
-    announce_date = latest.get("date", "N/A")
-    fiscal_ending = latest.get("fiscalDateEnding")
-    eps_actual, eps_estimate = latest.get("epsActual"), latest.get("epsEstimated")
-    revenue_actual, revenue_estimate = latest.get("revenueActual"), latest.get("revenueEstimated")
-    fiscal_label = lookup.get(fiscal_ending, "") if fiscal_ending else ""
-    latest_label = f"{announce_date} ({fiscal_label})" if fiscal_label else announce_date
-    out = ["### Earnings Performance", "", f"**Latest Quarter ({latest_label}):**", ""]
-
-    if eps_estimate and eps_estimate != 0:
-        eps_surprise = ((eps_actual - eps_estimate) / abs(eps_estimate)) * 100
-        out.append(
-            f"- **EPS:** {fmt_price(eps_actual, earn_cur)} actual vs {fmt_price(eps_estimate, earn_cur)} estimate ({format_percentage(eps_surprise)} surprise)"
-        )
-    else:
-        out.append(f"- **EPS:** {fmt_price(eps_actual, earn_cur)} (no estimate available)")
-    if revenue_actual is not None:
-        if revenue_estimate and revenue_estimate != 0:
-            rev_surprise = ((revenue_actual - revenue_estimate) / abs(revenue_estimate)) * 100
-            out.append(
-                f"- **Revenue:** {fmt_money(revenue_actual, earn_cur)} actual vs "
-                f"{fmt_money(revenue_estimate, earn_cur)} estimate "
-                f"({format_percentage(rev_surprise)} surprise)"
-            )
-        else:
-            out.append(f"- **Revenue:** {fmt_money(revenue_actual, earn_cur)} (no estimate available)")
-
-    if len(reported) > 1:
-        out += [
-            "",
-            "**Recent Earnings Trend:**",
-            "",
-            "| Date | Fiscal Period | EPS | Revenue |",
-            "|------|---------------|-----|---------|",
-        ]
-        for quarter in reported[:4]:
-            q_fiscal_ending = quarter.get("fiscalDateEnding")
-            q_label = lookup.get(q_fiscal_ending, "N/A") if q_fiscal_ending else "N/A"
-            out.append(
-                f"| {quarter.get('date', 'N/A')} | {q_label} | {fmt_price(quarter.get('epsActual'), earn_cur)}"
-                f" | {fmt_money(quarter.get('revenueActual'), earn_cur)} |"
-            )
-    return out + [""]
 
 
 def _cash_flow_lines(inp: CompanyInputs) -> List[str]:
@@ -888,6 +809,8 @@ def _company_text(inp: CompanyInputs) -> str:
     """The agent's markdown overview, led by a live stamp while the venue is open."""
     cur, price = inp.cur, inp.price
     profile = inp.profile
+    extended = inp.has_snapshot and _extended_session(inp.snapshot) is not None
+    price_note = " (extended-hours trade; see Quote)" if extended else ""
     market_cap = fmt_money(profile.get("marketCap"), cur)
     out = [
         f"## Company Overview: {inp.symbol}",
@@ -897,7 +820,7 @@ def _company_text(inp: CompanyInputs) -> str:
         "",
         f"Company: {inp.name} ({inp.symbol})",
         f"Sector: {profile.get('sector') or 'N/A'} | Industry: {profile.get('industry') or 'N/A'}",
-        f"Market Cap: {market_cap} | Current Price: {fmt_price(price, cur)}"
+        f"Market Cap: {market_cap} | Current Price: {fmt_price(price, _quote_precision(cur, inp.symbol))}{price_note}"
         if price
         else f"Market Cap: {market_cap}",
         "",
@@ -906,8 +829,8 @@ def _company_text(inp: CompanyInputs) -> str:
         *_performance_lines(inp),
         *_metrics_lines(inp),
         *_filing_lines(inp),
-        *_next_earnings_lines(inp),
-        *_earnings_lines(inp),
+        *next_earnings_lines(inp.earnings, inp.cur.currency),
+        *earnings_lines(inp.earnings, inp.cur.currency),
         *_cash_flow_lines(inp),
         *_analyst_lines(inp),
         *segment_lines(inp.segments, inp.fiscal, inp.stmt_cur),

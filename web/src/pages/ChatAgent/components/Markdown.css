@@ -1,0 +1,63 @@
+/* Scrolling is for the screen. An export lays these out for paper and clips what
+   does not fit on purpose, and takes both back in ExportPreviewModal.css. */
+@media screen {
+  /* A display formula has no place to break, so past the column's width it
+     scrolls by itself rather than being clipped by the message around it. */
+  :where(.markdown-root) .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-block: 0.25em;
+  }
+
+  .markdown-table-scroller[data-more='right'] {
+    mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+  }
+  .markdown-table-scroller[data-more='left'] {
+    mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent);
+  }
+  .markdown-table-scroller[data-more='both'] {
+    mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+  }
+}
+
+.markdown-table-scroller:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+
+/* A footnote mark sits inside a line of text, so its hit area stops short of the
+   marks and links on the lines above and below. */
+.markdown-root a[data-footnote-ref],
+.markdown-root a[data-footnote-backref] {
+  --tap-target-w: 28px;
+  --tap-target-h: 28px;
+}
+
+.markdown-root mark {
+  padding: 0 2px;
+  border-radius: 2px;
+  background-color: var(--color-accent-soft);
+  color: inherit;
+}
+
+.markdown-root kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--color-border-muted);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background-color: var(--color-bg-code);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.markdown-mermaid {
+  padding: 1rem;
+  overflow-x: auto;
+}
+.markdown-mermaid > div {
+  display: flex;
+  justify-content: center;
+}
+.markdown-mermaid svg {
+  height: auto;
+}

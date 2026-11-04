@@ -349,7 +349,7 @@ class OrderReconciler:
             )
             for row in abandoned:
                 logger.info(
-                    "[OrderReconcile] attempt %s: proposed, run ended unasked; refused",
+                    "[OrderReconcile] attempt %s: proposed, no answer can reach it; refused",
                     row["attempt_id"],
                 )
             lapsed = await lapse_unspent_approvals(

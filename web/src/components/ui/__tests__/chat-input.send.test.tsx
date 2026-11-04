@@ -3,7 +3,7 @@
  * conversation) calls: it does what Enter does, and says whether there was
  * anything to send.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, act, screen } from '@testing-library/react';
 import { createRef } from 'react';
 import { MemoryRouter } from 'react-router';
@@ -39,6 +39,48 @@ function renderInput(disabled = false) {
   return { ref, box, onSend };
 }
 
+describe('ChatInput: the return key', () => {
+  const keyboardUp = () => {
+    vi.stubGlobal('visualViewport', { height: 400, scale: 1 });
+    Object.defineProperty(document.documentElement, 'clientHeight', { configurable: true, value: 800 });
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(document.documentElement, 'clientHeight');
+  });
+
+  it('sends with a hardware keyboard, and keeps the box focused for the next message', () => {
+    const { box, onSend } = renderInput();
+    box.focus();
+    fireEvent.change(box, { target: { value: 'first' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(box);
+  });
+
+  it('is a line break with an on-screen keyboard up, whose return key has no shift', () => {
+    keyboardUp();
+    const { box, onSend } = renderInput();
+    fireEvent.change(box, { target: { value: 'first' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(box.value).toBe('first');
+  });
+
+  it('closes the on-screen keyboard on a send, which is covering where the answer lands', () => {
+    keyboardUp();
+    const { ref, box, onSend } = renderInput();
+    box.focus();
+    fireEvent.change(box, { target: { value: 'first' } });
+    act(() => {
+      ref.current!.send();
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).not.toBe(box);
+  });
+});
+
 describe('ChatInput: send() on the handle', () => {
   it('sends what is written and returns true', () => {
     const { ref, box, onSend } = renderInput();
@@ -49,7 +91,7 @@ describe('ChatInput: send() on the handle', () => {
     });
     expect(sent).toBe(true);
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0][0]).toBe('what moved the market today');
+    expect(onSend.mock.calls[0][0].message).toBe('what moved the market today');
     expect(box.value).toBe('');
   });
 

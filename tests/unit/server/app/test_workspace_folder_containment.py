@@ -53,7 +53,7 @@ from src.server.app.workspace_files.crud import (
 )
 from src.server.app.workspace_files.crud import DeleteFilesRequest, WriteFileRequest
 from src.server.app.workspace_files.file_refs import ResolveFileRefRequest
-from src.server.app.workspace_files.serve import serve_workspace_file
+from src.server.app.workspace_files.serve import _owner_visible, serve_workspace_file
 from src.server.database.workspace_folders import moving_path
 
 WS_A = "ws-folder-a"
@@ -66,9 +66,9 @@ B_SECRET = b"sibling-workspace-bytes"
 A_REPORT = b"<html><body>a report</body></html>"
 
 _SERVE_DBWS = "src.server.app.workspace_files.serve.db_get_workspace"
-_SERVE_FP = "src.server.app.workspace_files.serve.FilePersistenceService"
+_SERVE_FP = "src.server.services.warm_files.FilePersistenceService"
 _SERVE_WD = "src.server.app.workspace_files.serve.work_dir_for"
-_SERVE_WSMGR = "src.server.app.workspace_files.serve.WorkspaceManager"
+_SERVE_WSMGR = "src.server.services.warm_files.WorkspaceManager"
 _SERVE_VAULT = "src.server.app.workspace_files.serve.get_vault_secrets_for_redaction"
 
 _SHARE_WD = "src.server.app.share_access.work_dir_for"
@@ -677,7 +677,7 @@ async def test_the_workspace_serves_its_own_files(computer) -> None:
         _warm(mgr, computer.sandbox)
         fp.get_file_content = AsyncMock(return_value=None)
         response = await serve_workspace_file(
-            WS_A, "work/report.html", inject_theme=False
+            WS_A, "work/report.html", visible=_owner_visible
         )
     assert response.status_code == 200
     assert response.body == A_REPORT

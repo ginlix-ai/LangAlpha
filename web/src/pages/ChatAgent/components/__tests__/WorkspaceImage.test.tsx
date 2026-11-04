@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
 import { runAuthResets } from '@/lib/authResets';
@@ -75,6 +75,23 @@ describe('WorkspaceImage — __wsref__ downloader selection', () => {
     await waitFor(() => expect(sharedDownloader).toHaveBeenCalledWith('results/charts/plain.png'));
     expect(downloadWorkspaceFile).not.toHaveBeenCalled();
   });
+
+  it('reads the same path again under another scope: a version or link holds its own bytes', async () => {
+    const first = vi.fn(() => Promise.resolve('blob:v1'));
+    const second = vi.fn(() => Promise.resolve('blob:v2'));
+    const page = (imageScope: string, downloadFile: (p: string) => Promise<string>) => (
+      <WorkspaceProvider workspaceId={null} downloadFile={downloadFile} imageScope={imageScope}>
+        <WorkspaceImage src="scoped/chart.png" alt="chart" />
+      </WorkspaceProvider>
+    );
+
+    const view = render(page('share:c:v1', first));
+    await waitFor(() => expect(screen.getByAltText('chart')).toHaveAttribute('src', 'blob:v1'));
+
+    view.rerender(page('share:c:v2', second));
+    await waitFor(() => expect(screen.getByAltText('chart')).toHaveAttribute('src', 'blob:v2'));
+    expect(second).toHaveBeenCalledWith('scoped/chart.png');
+  });
 });
 
 describe('WorkspaceImage reads a destination the way a link does', () => {
@@ -143,6 +160,20 @@ describe('WorkspaceImage reads a destination the way a link does', () => {
     await waitFor(() =>
       expect(screen.getByText('broken.png could not be loaded')).toBeInTheDocument(),
     );
+  });
+
+  // The download can succeed with bytes the browser cannot decode.
+  it('names the file when what it fetched will not draw', async () => {
+    const fetched = vi.fn(() => Promise.resolve('blob:undecodable'));
+    const first = renderInWorkspace('results/charts/undecodable.png', { workspaceId: null, downloadFile: fetched });
+
+    fireEvent.error(await screen.findByRole('img'));
+    expect(screen.getByText('undecodable.png could not be loaded')).toBeInTheDocument();
+
+    // The file may be repaired by the next time it is shown.
+    first.unmount();
+    renderInWorkspace('results/charts/undecodable.png', { workspaceId: null, downloadFile: fetched });
+    await waitFor(() => expect(fetched).toHaveBeenCalledTimes(2));
   });
 });
 

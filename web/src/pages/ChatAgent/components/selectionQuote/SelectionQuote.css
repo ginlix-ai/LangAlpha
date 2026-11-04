@@ -1,0 +1,96 @@
+.selection-quote-toolbar,
+.selection-quote-popover {
+  position: fixed;
+  z-index: 50;
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-muted);
+  box-shadow: var(--shadow-card);
+}
+
+.selection-quote-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 8px;
+  user-select: none;
+}
+
+.selection-quote-popover {
+  width: 380px;
+  padding: 12px;
+  border-radius: 12px;
+}
+
+.selection-quote-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--color-icon-muted);
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
+}
+
+.selection-quote-icon-sm {
+  width: 28px;
+  height: 28px;
+}
+
+.selection-quote-toolbar .selection-quote-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.selection-quote-toolbar .selection-quote-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* A finger needs the room the pointer doesn't. */
+@media (pointer: coarse) {
+  .selection-quote-toolbar .selection-quote-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .selection-quote-toolbar .selection-quote-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.selection-quote-icon:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
+}
+
+.selection-quote-icon:disabled {
+  opacity: 0.4;
+}
+
+.selection-quote-text {
+  display: -webkit-box;
+  overflow: hidden;
+  padding-left: 10px;
+  border-left: 2px solid var(--color-border-default);
+  color: var(--color-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.selection-quote-thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 96px;
+  border-radius: 8px;
+}
+
+/* The quoted text, once writing the reply has moved the real selection away. */
+::highlight(selection-quote) {
+  background-color: var(--color-quote-highlight);
+}

@@ -1,8 +1,9 @@
 """Canonical instrument identity: to_canonical / to_legacy_api / to_display.
 
 Instrument keys are ``symbol.MIC`` (ISO 10383): ``AAPL.XNAS``, ``0700.XHKG``;
-synthetic segments ``SPX.INDEX``, ``BTC-USD.CRYPTO``, ``EUR-USD.FX``. The MIC
-is *listing* identity; feeds stay consolidated tape (``FeedScope.COMPOSITE``).
+synthetic segments ``SPX.INDEX``, ``BTC-USD.CRYPTO``, ``EUR-USD.FX``; futures
+on CME Globex, ``GC=F.GLBX``. The MIC is *listing* identity; feeds stay
+consolidated tape (``FeedScope.COMPOSITE``).
 
 Suffix→MIC is a documented heuristic: a Yahoo/FMP suffix cannot always name
 the venue (``.DE`` can't tell XETR from XFRA) and a bare US ticker cannot name
@@ -54,6 +55,9 @@ US_DEFAULT_MIC = "XNYS"
 # fall back to US, the routing token is ``other``.
 UNKNOWN_MIC = "XXXX"
 
+# ISO 10383 MIC of CME Globex, also the id of its calendar.
+FUTURES_MIC = "GLBX"
+
 _MICS: dict[str, _MicInfo] = {
     "XNYS": _MicInfo("XNYS", "America/New_York", "USD", "us", suffix=""),
     "XNAS": _MicInfo("XNYS", "America/New_York", "USD", "us", suffix=""),
@@ -81,6 +85,8 @@ _MICS: dict[str, _MicInfo] = {
     "XSES": _MicInfo("XSES", "Asia/Singapore", "SGD", "sg", suffix="SI"),
     "XBOM": _MicInfo("XBOM", "Asia/Kolkata", "INR", "in", suffix="BO"),
     "XNSE": _MicInfo("XBOM", "Asia/Kolkata", "INR", "in", suffix="NS"),
+    # CME Globex, where CME Group's futures trade (GC=F, CL=F, ES=F).
+    FUTURES_MIC: _MicInfo(FUTURES_MIC, "America/Chicago", "USD", "futures"),
     UNKNOWN_MIC: _MicInfo("XNYS", "America/New_York", "USD", "other", suffix=None),
 }
 
@@ -141,6 +147,33 @@ _SYNTHETIC_SEGMENTS = frozenset({"INDEX", "CRYPTO", "FX"})
 
 ALWAYS_24_7 = "ALWAYS_24_7"
 WEEKDAYS_24_5 = "WEEKDAYS_24_5"
+
+# Active ISO 4217 currency and precious-metal codes, plus offshore yuan. A pair
+# with both legs here is a rate (EUR-USD, USD-KZT, XAU-USD); any other pair is
+# crypto. Yahoo numbers a coin whose ticker is a currency code (Ronin is
+# RON14101-USD), so the two never share a spelling.
+_FIAT = frozenset("""
+    AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB
+    BRL BSD BTN BWP BYN BZD CAD CDF CHF CLP CNH CNY COP CRC CUP CVE CZK DJF DKK
+    DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG
+    HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT
+    LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR
+    MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB
+    RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT
+    TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VES VND VUV WST XAF XAG XAU XCD
+    XCG XDR XOF XPD XPF XPT YER ZAR ZMW ZWG
+""".split())
+# What vendors quote a coin in: money, a dollar stablecoin, or another coin.
+_CRYPTO_QUOTES = _FIAT | {"USDT", "USDC", "BTC", "ETH"}
+# The quotes a one-run spelling (BTCUSDT) ends in, longest first.
+_RUN_QUOTES = ("USDT", "USDC", "USD")
+# FMP spells a coin as one run (BTCUSD), the shape its commodity codes take
+# too (RTYUSD, MGCUSD), so a bare run names a coin only on these bases.
+_CRYPTO_RUN_BASES = frozenset({
+    "BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "LTC", "BNB", "AVAX", "DOT",
+    "LINK", "SHIB", "TRX", "TON", "BCH", "XLM", "UNI", "ATOM", "ETC", "XMR",
+    "NEAR", "SUI", "PEPE", "USDT", "USDC",
+})
 
 # ---------------------------------------------------------------------------
 # Index families
@@ -564,14 +597,46 @@ def _index(spelling: str) -> InstrumentRef:
     return _index_ref(_INDEX_ALIASES.get(bare, bare))
 
 
+def _run_legs(run: str) -> tuple[str, str] | None:
+    """``(base, quote)`` of a pair spelled as one run: BTCUSDT, SHIBUSD, USDJPY."""
+    for quote in _RUN_QUOTES:
+        if run.endswith(quote) and len(run) - len(quote) >= 2:
+            return run[: -len(quote)], quote
+    return (run[:3], run[3:]) if len(run) == 6 else None
+
+
+def _bare_pair_segment(s: str) -> str | None:
+    """``CRYPTO`` or ``FX`` when the bare spelling *s* names a pair, else None.
+
+    Yahoo spells a coin BTC-USD and FMP spells pairs as one run (BTCUSD,
+    EURUSD). No US listing is spelled either way: a share class has a
+    one-letter leg (BRK-B), and a ticker runs to five letters.
+    """
+    if "-" in s:
+        base, _, quote = s.partition("-")
+        if len(base) < 2 or not (base.isascii() and base.isalnum()):
+            return None
+    else:
+        legs = _run_legs(s)
+        if legs is None:
+            return None
+        base, quote = legs
+        if base not in _CRYPTO_RUN_BASES and base not in _FIAT:
+            return None
+    if quote not in _CRYPTO_QUOTES:
+        return None
+    return "FX" if base in _FIAT and quote in _FIAT else "CRYPTO"
+
+
 def _pair_ref(symbol: str, segment: str) -> InstrumentRef:
     """Crypto/FX pair: ``BTC-USD.CRYPTO`` / ``EUR-USD.FX``.
 
-    A six-letter run splits here, so the key ``USDJPY.FX`` names the pair the
-    spelling ``USDJPY`` does, quoted in yen, not a second one quoted in dollars.
+    A run splits here, so the key ``USDJPY.FX`` names the pair the spelling
+    ``USDJPY`` does, quoted in yen, not a second one quoted in dollars, and
+    ``BTCUSD`` is the pair ``BTC-USD`` names.
     """
-    if "-" not in symbol and len(symbol) == 6:
-        symbol = f"{symbol[:3]}-{symbol[3:]}"  # EURUSD → EUR-USD
+    if "-" not in symbol and (legs := _run_legs(symbol)) is not None:
+        symbol = "-".join(legs)  # EURUSD → EUR-USD
     for leg in symbol.split("-"):
         _require_stem(leg)
     asset_class = AssetClass.CRYPTO if segment == "CRYPTO" else AssetClass.FX
@@ -621,6 +686,12 @@ def to_canonical(
             return _pair_ref(sym, segment)
         return _venue_ref(sym, segment, asset_class=asset_class)
 
+    if s.endswith("=F"):
+        # Yahoo's futures spelling names a contract on CME Globex, whatever
+        # the endpoint's hint says.
+        _refuse_pair_hint(s, asset_class)
+        return _venue_ref(s, FUTURES_MIC)
+
     if asset_class in _PAIR_CLASSES or s.endswith("=X"):
         # An =X suffix is an FX spelling whatever the hint says, so VOD.L=X is
         # refused like VOD.L with an FX hint rather than minted as VOD.L.FX,
@@ -634,6 +705,11 @@ def to_canonical(
             # Yahoo names a USD-based rate by its quote alone: JPY=X is USD-JPY.
             sym = f"USD-{sym}"
         return _pair_ref(sym, "CRYPTO" if pair_class is AssetClass.CRYPTO else "FX")
+
+    # A pair spelled without a hint, or reaching a stocks endpoint (the
+    # provider chain hints every non-index request as equity).
+    if asset_class in (None, AssetClass.EQUITY) and (segment := _bare_pair_segment(s)):
+        return _pair_ref(s, segment)
 
     is_index = (
         asset_class is AssetClass.INDEX

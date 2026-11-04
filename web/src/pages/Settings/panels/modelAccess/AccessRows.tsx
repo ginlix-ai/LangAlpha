@@ -8,7 +8,7 @@ import type { KeyPlace } from '@/hooks/useProviderCatalog';
 import { useAvailableModels } from '@/hooks/useProviderModels';
 import { isKnownEndpoint, useKnownHosts } from '@/components/modelAccess/endpointTrust';
 import { regionTag } from '@/components/modelAccess/optionLabels';
-import { QuietNote, StatusLabel, type AccessStatus } from '@/components/modelAccess/parts';
+import { QuietNote, StatusActions, type RowStatus } from '@/components/modelAccess/parts';
 import { keyDetail } from './keyDetail';
 
 /** One connection's row: its mark and name, what it is, its live status, Manage. */
@@ -18,6 +18,7 @@ export function AccessRow({
   tag,
   unverified = false,
   detail,
+  wrapDetail = false,
   status,
   action,
 }: {
@@ -27,16 +28,19 @@ export function AccessRow({
   tag?: string | null;
   /** Reached through an endpoint we cannot vouch for, most often a proxy. */
   unverified?: boolean;
-  detail?: string | null;
-  /** `withdrawn`: a key for a provider the catalog no longer has. */
-  status: AccessStatus | 'refused' | 'withdrawn';
+  detail?: React.ReactNode;
+  /** A detail worded as a sentence, which wraps rather than loses its end. */
+  wrapDetail?: boolean;
+  status: RowStatus;
   action: React.ReactNode;
 }) {
   const { t } = useTranslation();
   return (
-    <li className="flex items-center gap-3 px-4 py-3">
+    // Too narrow for the name and its detail beside the status and actions,
+    // the status and actions take a line of their own under them.
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
       <BrandMark name={name} art={llmProviderArt(provider)} size="sm" className="rounded-md" />
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-[1_1_12rem] flex-col gap-0.5">
         <span className="flex min-w-0 items-baseline gap-2">
           <span className="truncate text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
           {tag && <span className="shrink-0 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{tag}</span>}
@@ -44,19 +48,14 @@ export function AccessRow({
         </span>
         {detail && (
           // A masked key reads as one in the code face; an account or URL does not.
-          <span className={cn('truncate text-xs', detail.includes('...') && 'font-mono')} style={{ color: 'var(--color-text-tertiary)' }}>
+          <span className={cn('text-xs', wrapDetail ? 'wrap-break-word' : 'truncate', typeof detail === 'string' && detail.includes('...') && 'font-mono')} style={{ color: 'var(--color-text-tertiary)' }}>
             {detail}
           </span>
         )}
       </div>
-      {status === 'refused' || status === 'withdrawn' ? (
-        <span className="text-xs" style={{ color: 'var(--color-warning)' }}>
-          {t(status === 'refused' ? 'modelAccess.status.keyRefused' : 'modelAccess.status.withdrawn')}
-        </span>
-      ) : (
-        <StatusLabel status={status} className="shrink-0" />
-      )}
-      <div className="shrink-0">{action}</div>
+      <StatusActions status={status}>
+        <div className="shrink-0">{action}</div>
+      </StatusActions>
     </li>
   );
 }
@@ -67,7 +66,7 @@ export function KeyRow({ p, place, onManage }: { p: ConfiguredProvider; place?: 
   const listable = !p.is_custom && p.access_type !== 'local';
   const list = useAvailableModels(listable ? p.provider : null);
   const knownHosts = useKnownHosts();
-  const status: AccessStatus | 'refused' = list.isLoading
+  const status: RowStatus = list.isLoading
     ? 'working'
     : list.data?.status === 'fallback' && list.data.reason === 'unauthorized'
       ? 'refused'
@@ -88,7 +87,7 @@ export function KeyRow({ p, place, onManage }: { p: ConfiguredProvider; place?: 
 export function Group({ title, children, empty }: { title: string; children: React.ReactNode[]; empty: string }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <h4 className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{title}</h4>
+      <h3 className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{title}</h3>
       {children.length > 0 ? (
         <ul className="divide-y rounded-lg" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)', borderColor: 'var(--color-border-muted)' }}>
           {children}

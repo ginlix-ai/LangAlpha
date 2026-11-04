@@ -1143,6 +1143,23 @@ async def test_bad_tuning_is_rejected_on_either_level(client, model_preference):
 
 
 @pytest.mark.asyncio
+async def test_the_summary_after_a_break_is_set_for_the_account_and_never_per_model(client):
+    async with _prefs_endpoint() as upsert:
+        refused = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"model_preference": {"profiles": {"some-model": {"cold_compaction": True}}}},
+        )
+        saved = await client.put(
+            "/api/v1/users/me/preferences", json={"model_preference": {"cold_compaction": False}}
+        )
+
+    assert refused.status_code == 400
+    assert "unknown settings ['cold_compaction']" in refused.json()["detail"]
+    assert saved.status_code == 200
+    upsert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_valid_tuning_is_accepted_on_the_account_level(client):
     async with _prefs_endpoint() as upsert:
         resp = await client.put(

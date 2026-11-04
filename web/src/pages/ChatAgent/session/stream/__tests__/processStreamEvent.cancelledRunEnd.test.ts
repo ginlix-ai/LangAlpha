@@ -34,6 +34,8 @@ function setup() {
     pendingPTCBackfillRef: { current: new Map() },
     subagentHistory: { toolCalls: new Map() },
     setTokenUsage: vi.fn(),
+    setNextSummary: vi.fn(),
+    nextSummaryOwedRef: { current: false },
     t: (k: string) => k,
   };
   const deps = { clearModelStatus: () => {}, armReportBack: vi.fn(), refreshWorkspaces: vi.fn() };
@@ -95,6 +97,24 @@ describe('live: the stream of a run cancelled from elsewhere', () => {
     expect(bubble()).toMatchObject({ isStreaming: false, stopped: true });
     const apply = rt.setTokenUsage.mock.calls[0][0] as (prev: null) => Record<string, unknown>;
     expect(apply(null)).toMatchObject({ totalInput: 1200, totalOutput: 340, fromServer: true });
+  });
+
+  it('takes what the next send summarizes from the same frame, and leaves it owed when the frame could not say', () => {
+    const { process, rt } = setup();
+
+    process({ ...runEnd('cancelled'), next_summary: { reason: 'cold', at: 1_700_000_000_000, now: 1_700_000_000_000 } } as SSEEvent);
+    process({ ...runEnd('cancelled'), next_summary: { reason: 'rebuild', at: 1_700_000_000_000, now: 1_700_000_000_000 } } as SSEEvent);
+    process({ ...runEnd('cancelled'), next_summary: null } as SSEEvent);
+    expect(rt.nextSummaryOwedRef.current).toBe(false);
+
+    process(runEnd('cancelled'));
+
+    expect(rt.setNextSummary.mock.calls).toEqual([
+      [{ reason: 'cold', at: 1_700_000_000_000, now: 1_700_000_000_000 }],
+      [{ reason: 'rebuild', at: 1_700_000_000_000, now: 1_700_000_000_000 }],
+      [null],
+    ]);
+    expect(rt.nextSummaryOwedRef.current).toBe(true);
   });
 
   it('leaves a run that completed for its owner to settle', () => {

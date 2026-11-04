@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from contextlib import suppress
 
 from src.config.settings import (
+    get_checkpoint_flush_timeout,
     get_max_concurrent_workflows,
     get_workflow_result_ttl,
     get_abandoned_workflow_timeout,
@@ -188,6 +189,14 @@ class LocalRunExecutor:
             if best is None or info.created_at > best.created_at:
                 best = info
         return best
+
+    async def uncancelled_runs(self) -> list[TaskKey]:
+        """The runs this worker is running that no cancel has reached yet."""
+        async with self.task_lock:
+            return [
+                key for key, info in self.executions.items()
+                if info.status is LocalRunStatus.RUNNING and not info.explicit_cancel
+            ]
 
     async def has_active_tasks_for_workspace(self, workspace_id: str) -> bool:
         """Check if any active tasks exist for a workspace.
@@ -789,15 +798,33 @@ class LocalRunExecutor:
             )
 
     async def _flush_checkpoint(self, thread_id: str, run_id: str) -> None:
-        """Resolve the run's graph and flush its checkpoint on user stop."""
+        """Resolve the run's graph and flush its checkpoint on user stop.
+
+        Only a run that wrote a step has one in flight to discard. One stopped
+        before that leaves the thread as the run before it did, and on a card
+        that run paused for, a write on top would plan the waiting call again
+        under a new interrupt id, so the user's answer would miss it and the
+        card be asked again. The ownership read and the flush share the one
+        deadline the next send's admission allows the stop.
+        """
+        from src.server.utils.checkpoint_helpers import newest_checkpoint
+
         async with self.task_lock:
             task_info = self.executions.get((thread_id, run_id))
             graph = task_info.graph if task_info else None
 
         if not graph:
             return
-
-        await teardown.flush_checkpoint(graph, thread_id)
+        try:
+            async with asyncio.timeout(get_checkpoint_flush_timeout()):
+                newest = await newest_checkpoint(graph.checkpointer, thread_id)
+                if newest is None or newest.run_id != run_id:
+                    return
+                await teardown.flush_checkpoint(graph, thread_id)
+        except TimeoutError:
+            logger.warning(
+                f"[LocalRunExecutor] Checkpoint flush timed out for {thread_id}"
+            )
 
     def _track_orphan_collector(
         self, thread_id: str, run_id: str, task: asyncio.Task
@@ -884,14 +911,21 @@ class LocalRunExecutor:
         """
         if self.event_storage_backend != "redis":
             return
+        from src.server.services.thread_status import UNREAD, read_next_summary
+
         token_totals = None
+        next_summary = UNREAD
         closing_frames: list[str] = []
         if outcome is not None:
             from src.server.database.conversation.usage import (
                 get_thread_token_totals,
             )
 
-            token_totals = await get_thread_token_totals(thread_id)
+            # An interrupted run resumes where it stopped, past its turn start.
+            token_totals, next_summary = await asyncio.gather(
+                get_thread_token_totals(thread_id),
+                read_next_summary(thread_id) if outcome != "interrupted" else asyncio.sleep(0),
+            )
             # Ahead of ``run_end``: a gateway stops reading there, and every
             # reader of the stream, a reconnect included, then sees it once.
             returned = await stream_writer.steering_returned_frame(thread_id, run_id)
@@ -901,6 +935,7 @@ class LocalRunExecutor:
             thread_id, run_id, outcome,
             error_frame=error_frame,
             token_totals=token_totals,
+            next_summary=next_summary,
             closing_frames=closing_frames,
             redis_event_ttl=self.redis_event_ttl,
             max_stored_messages=self.max_stored_messages,

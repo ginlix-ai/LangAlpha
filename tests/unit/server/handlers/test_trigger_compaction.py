@@ -802,6 +802,41 @@ async def test_manual_offload_writes_its_marker_with_the_ids(base_config):
         "offloaded_reads": 1,
     }
 
+
+@pytest.mark.asyncio
+async def test_manual_offload_stamps_what_it_leaves_and_answers_with_the_next_summary(base_config):
+    from ptc_agent.agent.middleware.compaction import Measure
+    from ptc_agent.agent.middleware.compaction.rebuild import LAST_ANSWER_KEY
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.handlers.thread_maintenance import ThreadAgent, trigger_offload
+
+    stub_resolve = _stub_thread_agent()
+    stub_resolve.state.values = {
+        "_cached_input_tokens": 9_000,
+        LAST_ANSWER_KEY: {"threshold": 2_000, "claude": False, "claude_model": False},
+    }
+    measure = AsyncMock(return_value=3_000)
+
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub_resolve),
+        patch(
+            "ptc_agent.agent.middleware.compaction.offload_tool_args",
+            new=AsyncMock(return_value=(set(), {"r1"})),
+        ),
+        patch.object(ThreadAgent, "ask", measure),
+        patch.object(tl_db, "get_latest_attempt", AsyncMock(return_value=None)),
+    ):
+        result = await trigger_offload("thread-1")
+
+    (ask, values), _ = measure.await_args
+    assert isinstance(ask, Measure)
+    assert (values["_offloaded_read_result_ids"], values["_cached_input_tokens"]) == ({"r1"}, 0)
+    update = stub_resolve.graph.aupdate_state.await_args.args[1]
+    assert update[LAST_ANSWER_KEY]["offloaded"] == {"tokens": 3_000, "summary": None}
+    assert result["next_summary"] == {"reason": "threshold"}
+
+
 # ---------------------------------------------------------------------------
 # Gate: reject manual /compact + /offload while a workflow is streaming
 # ---------------------------------------------------------------------------
@@ -1343,3 +1378,518 @@ async def test_the_session_is_acquired_with_the_workspace_id_as_a_str(base_confi
 
     assert received == [str(workspace_id)]
     assert isinstance(received[0], str)
+
+def _claude_code_compaction():
+    """What the CLI compacting a session of two answers, one in two records,
+    writes: a summary, keeping the last tool result and answer."""
+    from ptc_agent.agent.claude_code.compaction import SessionCompaction
+
+    entries = [
+        {"type": "user", "uuid": "u1"},
+        {"type": "assistant", "uuid": "a1", "message": {"id": "m1"}},
+        {"type": "assistant", "uuid": "a2", "message": {"id": "m1"}},
+        {"type": "user", "uuid": "u2"},
+        {"type": "user", "uuid": "u3", "isMeta": True},
+        {"type": "assistant", "uuid": "a3", "message": {"id": "m2"}},
+    ]
+    boundary = {"type": "system", "subtype": "compact_boundary", "uuid": "b",
+                "compactMetadata": {"preservedMessages": {"uuids": ["u2", "a3"]}}}
+    summary = {"type": "user", "uuid": "s", "isCompactSummary": True, "message": {"content": "the summary"}}
+    return SessionCompaction(entries, [{"session_id": "sess", "entries": [boundary, summary]}])
+
+
+def _claude_code_config(base_config):
+    from src.llms.llm import create_llm
+
+    config = base_config.model_copy(deep=True)
+    config.llm_client = create_llm("claude-sonnet-5-5-code")
+    return config
+
+
+async def _compact_claude_code_thread(base_config, held_model, *, compaction=None, resolve=None, claude_replied=True,
+                                     waiting=False):
+    """Compact a thread holding ``held_model`` that resolves to a Claude
+    Code row; the stub agent, the ask, the resolve and the outcome. A
+    ``waiting`` thread holds a question Claude Code deferred, unanswered."""
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    stub = _stub_thread_agent()
+    calls = [{"name": "AskUserQuestion", "args": {}, "id": "t1", "type": "tool_call"}] if waiting else []
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("hello", tool_calls=calls,
+                                                      response_metadata={"claude_message_id": "msg_1"} if claude_replied else {})]
+    deferral = {"uuid": "d1", "type": "attachment", "attachment": {"type": "hook_deferred_tool", "toolUseID": "t1"}}
+    stub.state.values["claude_session"] = {"session_id": "sess", "entries": [deferral]}
+    stub.graph.turn.compact_between_turns = (
+        AsyncMock(side_effect=compaction) if isinstance(compaction, BaseException) or callable(compaction)
+        else AsyncMock(return_value=compaction)
+    )
+    ask = _asked()
+    resolve = resolve or AsyncMock(return_value=_claude_code_config(base_config))
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(ASK, new=ask),
+        patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": held_model, "msg_type": "ptc", "workspace_id": "ws-1"}),
+        patch(f"{HANDLER}._resolver", new_callable=AsyncMock),
+        patch(f"{THREAD_MODEL}.resolve_turn_config", new=resolve),
+    ):
+        try:
+            outcome = await trigger_compaction("thread-1", user_id="user-1")
+        except HTTPException as e:
+            outcome = e
+    return stub, ask, resolve, outcome
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held_model", ["claude-sonnet-5-5-code", None])
+async def test_a_claude_code_thread_is_compacted_by_claude_code(base_config, held_model):
+    """The CLI compacts its own session, which the write installs beside the
+    thread's messages, and the marker shows the compact in replay. A thread
+    holding no model runs the account default, which may be a Claude Code row."""
+    stub, ask, resolve, outcome = await _compact_claude_code_thread(
+        base_config, held_model, compaction=_claude_code_compaction()
+    )
+    ask.assert_not_awaited()
+    assert resolve.await_args.kwargs["fall_back"] is (held_model is None)
+    assert {k: outcome[k] for k in ("original_message_count", "new_message_count", "summary_text", "source")} == {
+        "original_message_count": 4, "new_message_count": 3, "summary_text": "the summary", "source": "provider",
+    }
+    written = stub.graph.aupdate_state.await_args.args[1]
+    assert written["claude_session"] == _claude_code_compaction().writes
+    assert [r["props"]["original_message_count"] for r in written["ui"]] == [4]
+    assert "messages" not in written
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_compactions_summary_request_lands_in_the_usage_records(base_config, usage_rows):
+    """On the compact's row, as an API thread's summary calls do."""
+    from claude_agent_sdk import ResultMessage
+
+    from ptc_agent.agent.claude_code import compaction as compaction_module
+    from ptc_agent.agent.claude_code.cli import RuntimeSpec
+
+    async def compacted(state):
+        result = ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=0,
+                               session_id="s", model_usage={"claude-test": {"inputTokens": 200, "outputTokens": 300,
+                                                                            "cacheReadInputTokens": 1000,
+                                                                            "cacheCreationInputTokens": 0}})
+        spec = RuntimeSpec(system_prompt="s", model="claude-test", tools=[], billing={"billing_type": "oauth"})
+        await compaction_module._metered(spec, result)
+        return _claude_code_compaction()
+
+    with patch("src.server.database.api_keys.is_byok_active", new=AsyncMock(return_value=False)):
+        _, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", compaction=compacted)
+    assert outcome["summary_text"] == "the summary"
+    (row,) = usage_rows
+    assert (row["status"], row["is_byok"], row["token_usage"]["between_turns"]) == ("completed", True, "compact")
+    tokens = row["token_usage"]["by_model"]["claude-test"]
+    assert (tokens["input_tokens"], tokens["cached_tokens"], tokens["output_tokens"]) == (1200, 1000, 300)
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_session_with_nothing_to_summarize_is_left_as_it_is(base_config):
+    from ptc_agent.agent.middleware.compaction.compact import NOTHING_TO_COMPACT
+
+    stub, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code")
+    assert outcome.status_code == 400 and outcome.detail == NOTHING_TO_COMPACT
+    stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_thread_whose_model_does_not_resolve_is_not_compacted_by_another(base_config):
+    """Only Claude Code compacts a Claude Code session: a failed resolve does
+    not fall back to the base config, whose model would rewrite the record."""
+    resolve = AsyncMock(side_effect=RuntimeError("db blip"))
+    stub, ask, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", resolve=resolve)
+    assert outcome.status_code == 500
+    ask.assert_not_awaited()
+    stub.graph.turn.compact_between_turns.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_model_that_fails_to_resolve_is_answered_without_the_failures_text(base_config, caplog):
+    """It is this server's failure, which the log keeps: what it says can name
+    a database, a path or a credential."""
+    leaked = "connection to postgresql://app:hunter2@db.example.internal:5432/app refused"
+    resolve = AsyncMock(side_effect=RuntimeError(leaked))
+    with caplog.at_level("WARNING"):
+        _, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", resolve=resolve)
+    assert (outcome.status_code, outcome.detail) == (500, "Failed to trigger compaction")
+    assert leaked in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kind", "status"), [("plan_exhausted", 429), ("api_error", 502), ("startup_failed", 502)])
+async def test_a_compaction_the_cli_fails_answers_with_the_status_its_failure_carried(base_config, kind, status):
+    """Not "nothing to compact", and not this server's own failure: the
+    status a turn that failed the same way streams."""
+    from src.llms.claude_code import ClaudeTurnFailed
+
+    failure = ClaudeTurnFailed(kind, "API Error: 429 rate limited")
+    _, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", compaction=failure)
+    assert isinstance(outcome, HTTPException)
+    assert outcome.status_code == status and outcome.detail == f"Failed to trigger compaction: {failure}"
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_failure_is_answered_without_the_credentials_its_text_carried(base_config):
+    from src.llms.claude_code import ClaudeTurnFailed
+
+    failure = ClaudeTurnFailed("api_error", "the provider said Authorization: Bearer abcdefgh12345 for sk-abcdefgh12345")
+    _, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", compaction=failure)
+    assert outcome.status_code == 502 and outcome.detail.startswith("Failed to trigger compaction: api_error: the provider said")
+    assert "abcdefgh12345" not in outcome.detail and "[REDACTED]" in outcome.detail
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_whose_login_anthropic_refused_is_refused_as_admission_refuses_the_turn(base_config):
+    from src.llms.claude_code import ClaudeTurnFailed
+
+    _, _, _, outcome = await _compact_claude_code_thread(
+        base_config, "claude-sonnet-5-5-code", compaction=ClaudeTurnFailed("auth_failed", "401 invalid token")
+    )
+    assert outcome.status_code == 400
+    assert {k: outcome.detail[k] for k in ("type", "reason")} == {"type": "claude_code_off", "reason": "signed_out"}
+
+
+@pytest.mark.asyncio
+async def test_a_thread_another_model_last_replied_on_is_not_compacted_by_claude_code(base_config):
+    """A held model that cannot run falls back to the account default, which
+    may be Claude Code: its session, if any, is not the one the thread runs on."""
+    stub, ask, _, outcome = await _compact_claude_code_thread(
+        base_config, "an-api-model", compaction=_claude_code_compaction(), claude_replied=False
+    )
+    assert outcome.detail["type"] == "claude_code_compacts_itself"
+    ask.assert_not_awaited()
+    stub.graph.turn.compact_between_turns.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_thread_claude_code_last_replied_on_is_not_summarized_by_another_model(base_config):
+    """A thread following a Claude Code default holds no model of its own: a
+    failed resolve falls back to the base config, whose summary would be
+    written through a graph that drops Claude's session."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    stub = _stub_thread_agent()
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("hello", response_metadata={"claude_message_id": "msg_1"})]
+    ask = _asked()
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(ASK, new=ask),
+        patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": None, "msg_type": "ptc", "workspace_id": "ws-1"}),
+        patch(f"{HANDLER}._resolver", new_callable=AsyncMock),
+        patch(f"{THREAD_MODEL}.resolve_turn_config", new=AsyncMock(side_effect=RuntimeError("db blip"))),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await trigger_compaction("thread-1", user_id="user-1")
+    assert refused.value.detail["type"] == "claude_code_compacts_itself"
+    ask.assert_not_awaited()
+    stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_thread_is_not_offloaded(base_config):
+    from src.server.handlers.thread_maintenance import trigger_offload
+
+    stub = _stub_thread_agent()
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": "claude-haiku-5-5-code"}),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await trigger_offload("thread-1")
+    assert refused.value.detail["type"] == "claude_code_compacts_itself"
+    stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_thread_claude_code_last_replied_on_is_not_offloaded(base_config):
+    """A thread following a Claude Code default holds no model of its own, so
+    Claude's last reply is what marks it."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.server.handlers.thread_maintenance import trigger_offload
+
+    stub = _stub_thread_agent()
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("hello", response_metadata={"claude_message_id": "msg_1"})]
+    stub.state.values = {}
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": None}),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await trigger_offload("thread-1")
+    assert refused.value.detail["type"] == "claude_code_compacts_itself"
+    stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_between_turns_reads_when_the_previous_run_settled():
+    """A run cancelled mid-call refreshed the provider's cache without a stamp
+    in the checkpoint, so the build's cache clock reads the ledger, as a
+    turn's does; a failed read leaves it unknown."""
+    from datetime import UTC, datetime
+
+    from src.server.handlers.thread_maintenance import _previous_run
+
+    settled = datetime(2026, 3, 1, 14, 31, tzinfo=UTC)
+    latest = "src.server.database.runs.lifecycle.get_latest_attempt"
+    with patch(latest, new=AsyncMock(return_value={"status": "cancelled", "usage_settled_at": settled})):
+        assert (await _previous_run("t-1")).previous_run_settled_at == settled
+    refused = {"status": "error", "usage_settled_at": datetime(2026, 3, 1, 15, 0, tzinfo=UTC), "metadata": {"pending_input": {}}}
+
+    async def _latest(thread_id, *, without_key=None):
+        return {"status": "completed", "usage_settled_at": settled} if without_key == "pending_input" else refused
+
+    with patch(latest, new=_latest):
+        assert (await _previous_run("t-1")).previous_run_settled_at == settled
+    with patch(latest, new=AsyncMock(side_effect=RuntimeError("pool down"))):
+        assert (await _previous_run("t-1")).previous_run_settled_at is None
+
+
+async def _compact_by_the_user(base_config, ask, summarizer=None):
+    """Manual /compact by user-1 on a thread resolving to ``base_config``,
+    ``ask`` and ``summarizer`` standing in for the agent's model chain and
+    the summarizer alone."""
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=_stub_thread_agent()),
+        patch(ASK, new=ask),
+        patch(
+            COMPACT_MESSAGES,
+            new=summarizer or AsyncMock(side_effect=AssertionError("the summarizer alone ran")),
+        ),
+        patch("src.server.database.api_keys.is_byok_active", new=AsyncMock(return_value=False)),
+        patch(f"{THREAD_MODEL}.resolve_turn_config", new=AsyncMock(return_value=base_config)),
+    ):
+        return await trigger_compaction("thread-1", user_id="user-1")
+
+
+def _spending(spend, answer=None, *, billing_type="platform", error=None):
+    """A stand-in for the agent's model chain or the summarizer that calls the
+    model once, then answers ``answer`` (a fresh compaction by default) or
+    raises ``error``."""
+
+    async def _call(*_args, **_kwargs):
+        await spend(billing_type)
+        if error is not None:
+            raise error
+        return answer if answer is not None else _compaction()
+
+    return AsyncMock(side_effect=_call)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("billing_type", "is_byok"), [("platform", False), ("byok", True), ("oauth", True)]
+)
+async def test_the_summary_calls_land_in_the_usage_records_as_a_turns_do(
+    base_config, usage_rows, spend, billing_type, is_byok
+):
+    """On a row of their own: no run is open between turns to hold them. It is
+    the thread's, in its workspace, under the caller, split by whose key ran
+    the calls as a turn's row is, and says it is the compact's."""
+    from uuid import UUID
+
+    await _compact_by_the_user(base_config, _spending(spend, billing_type=billing_type))
+
+    (row,) = usage_rows
+    assert (row["user_id"], row["conversation_thread_id"], row["workspace_id"]) == (
+        "user-1",
+        "thread-1",
+        "ws-1",
+    )
+    assert UUID(row["conversation_response_id"])
+    assert (row["msg_type"], row["status"], row["is_byok"]) == ("ptc", "completed", is_byok)
+    usage = row["token_usage"]
+    assert usage["between_turns"] == "compact"
+    tokens = usage["by_model"]["claude-test"]
+    assert (tokens["input_tokens"], tokens["cached_tokens"], tokens["output_tokens"]) == (
+        1200,
+        1000,
+        300,
+    )
+    (call,) = usage["per_call_costs"]
+    assert call["billing_type"] == billing_type
+
+
+@pytest.mark.asyncio
+async def test_the_callers_own_callbacks_still_see_the_summary_calls(base_config, usage_rows, spend):
+    """The tracker joins the callbacks of the runnable config around it, so a
+    caller tracing the operation still sees its calls."""
+    from langchain_core.callbacks import AsyncCallbackHandler
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    class _Observer(AsyncCallbackHandler):
+        ended = 0
+
+        async def on_llm_end(self, *_args, **_kwargs) -> None:
+            self.ended += 1
+
+    observer = _Observer()
+    token = var_child_runnable_config.set({"callbacks": [observer]})
+    try:
+        await _compact_by_the_user(base_config, _spending(spend))
+    finally:
+        var_child_runnable_config.reset(token)
+
+    assert observer.ended == 1
+    (row,) = usage_rows
+    assert row["token_usage"]["by_model"]["claude-test"]["output_tokens"] == 300
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_fails_to_write_is_reported_lost(base_config, usage_rows, spend, caplog):
+    """The writer reports a failed insert by returning False, and the calls
+    have no other place to land, so the loss is logged rather than passed
+    over as a success."""
+    from src.server.services.persistence.usage import UsagePersistenceService
+
+    with patch.object(UsagePersistenceService, "persist_usage", AsyncMock(return_value=False)):
+        await _compact_by_the_user(base_config, _spending(spend))
+
+    assert "compact row not written for thread_id=thread-1; 1 record(s) are unrecoverable" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_summarizer_alone_is_recorded_too(base_config, usage_rows, spend):
+    """An agent that compacts nothing leaves the summary to the summarizer,
+    whose calls are the compact's as much as the agent's would be."""
+    await _compact_by_the_user(
+        base_config,
+        _asked(error=NoCompaction("the agent has no compaction to ask")),
+        summarizer=_spending(spend),
+    )
+
+    (row,) = usage_rows
+    assert row["token_usage"]["between_turns"] == "compact"
+    assert row["token_usage"]["by_model"]["claude-test"]["output_tokens"] == 300
+
+
+@pytest.mark.asyncio
+async def test_a_compact_that_fails_after_calling_the_model_records_the_calls(
+    base_config, usage_rows, spend
+):
+    with pytest.raises(HTTPException) as caught:
+        await _compact_by_the_user(
+            base_config, _spending(spend, error=RuntimeError("provider down"))
+        )
+
+    assert caught.value.status_code == 500
+    (row,) = usage_rows
+    assert row["status"] == "error"
+    assert row["token_usage"]["by_model"]["claude-test"]["input_tokens"] == 1200
+
+
+@pytest.mark.asyncio
+async def test_a_summary_that_fails_to_install_is_recorded_as_an_error(
+    base_config, usage_rows, spend
+):
+    """The row is written once the compact has ended, so its status is the
+    compact's, not only its model call's."""
+    with (
+        patch(f"{HANDLER}._update_graph_state", new=AsyncMock(side_effect=RuntimeError("lock lost"))),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await _compact_by_the_user(base_config, _spending(spend))
+
+    assert caught.value.status_code == 500
+    (row,) = usage_rows
+    assert row["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_fails_to_price_keeps_the_calls_billing_type(
+    base_config, usage_rows, spend
+):
+    with patch(
+        "src.utils.tracking.core.calculate_cost_from_per_call_records",
+        side_effect=RuntimeError("no rate card"),
+    ):
+        await _compact_by_the_user(base_config, _spending(spend, billing_type="byok"))
+
+    (row,) = usage_rows
+    assert row["is_byok"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_stop_as_the_summary_arrives_records_the_call(base_config, usage_rows, spend):
+    """The call's end is reported in a shielded callback the Stop does not
+    wait for, so the record has to land before the row is written, however
+    long the tracker takes over it."""
+    import time
+
+    from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
+
+    on_llm_end = PerCallTokenTracker.on_llm_end
+
+    def _slow_end(self, *args, **kwargs):
+        time.sleep(0.2)
+        return on_llm_end(self, *args, **kwargs)
+
+    async def _stopped(*_args, **_kwargs):
+        await spend(stopped=True)
+
+    with (
+        patch.object(PerCallTokenTracker, "on_llm_end", _slow_end),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await _compact_by_the_user(base_config, AsyncMock(side_effect=_stopped))
+
+    assert caught.value.status_code == 409
+    (row,) = usage_rows
+    assert row["status"] == "cancelled"
+    assert row["token_usage"]["by_model"]["claude-test"]["output_tokens"] == 300
+
+
+@pytest.mark.asyncio
+async def test_a_compact_that_calls_no_model_records_nothing(base_config, usage_rows):
+    with pytest.raises(HTTPException) as caught:
+        await _compact_by_the_user(
+            base_config, _asked(error=ValueError("Cannot determine valid cutoff point"))
+        )
+
+    assert caught.value.status_code == 400
+    assert usage_rows == []
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_thread_waiting_on_the_user_is_refused_before_the_cli_compacts(base_config):
+    """The compaction's CLI would load the session with the call pending and
+    nothing to run it, and run until the compaction budget."""
+    stub, ask, _, outcome = await _compact_claude_code_thread(
+        base_config, "claude-sonnet-5-5-code", compaction=_claude_code_compaction(), waiting=True
+    )
+    assert outcome.status_code == 409
+    assert {k: outcome.detail[k] for k in ("code", "verb")} == {"code": "awaiting_input", "verb": "compact"}
+    stub.graph.turn.compact_between_turns.assert_not_awaited()
+    stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_api_thread_waiting_on_the_user_is_compacted_as_before(base_config):
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    stub = _stub_thread_agent()
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("", tool_calls=[{"name": "ask_user", "args": {}, "id": "t1", "type": "tool_call"}])]
+    ask = _asked()
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(ASK, new=ask),
+    ):
+        result = await trigger_compaction("thread-1")
+    ask.assert_awaited_once()
+    assert result["summary_text"] == "ok"

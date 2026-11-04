@@ -11,10 +11,20 @@ import {
 } from '@/types/sse';
 import { deliveredNoticeRow } from '../wakeupEvents';
 import { reportRow, senderProvenance } from '../provenance';
+import { readArtifactCommentsShown } from '../../components/artifactComments/artifactCommentSend';
 
-/** A delivery's entries, typed once where the loose event shapes are read. */
+/** A delivery's entries, typed once where the loose event shapes are read. A
+ *  steer's file comments are read here too, and dropped when unreadable. A
+ *  comment send's content is the block the agent read, so its note takes its
+ *  place, as on a replayed query. */
 export function steeringDeliveredEntries(event: { messages?: readonly unknown[] }): readonly SteeringDeliveredEntry[] {
-  return (event.messages ?? []) as readonly SteeringDeliveredEntry[];
+  return (event.messages ?? []).map((raw) => {
+    const entry = raw as SteeringDeliveredEntry;
+    if (!isDeliveredSteer(entry) || entry.artifact_comments === undefined) return entry;
+    const { artifact_comments: loose, ...steer } = entry;
+    const shown = readArtifactCommentsShown(loose);
+    return shown ? { ...steer, content: shown.note, artifact_comments: shown } : steer;
+  });
 }
 
 /** Which kind of row an id is minted for: each id scheme names it. */
@@ -58,7 +68,8 @@ export function deliveredEntryRow(
       ...(turnIndex !== undefined ? { turnIndex } : {}),
     });
   }
-  if (!entry.content) return null;
+  // A comment send's note may be empty: its comments are the message.
+  if (!entry.content && !entry.artifact_comments) return null;
   const provenance = senderProvenance({ origin: entry.origin, platform: entry.platform });
   return {
     id: rowId('user'),
@@ -71,6 +82,7 @@ export function deliveredEntryRow(
     turnIndex,
     ...(provenance ? { provenance } : {}),
     ...(entry.request_key ? { requestKey: entry.request_key } : {}),
+    ...(entry.artifact_comments ? { artifactComments: entry.artifact_comments } : {}),
   };
 }
 
@@ -103,6 +115,11 @@ function claimDeliveredSteers(
     const m = next[i] as UserMessage & { queueError?: unknown };
     const claimed: typeof m = { ...m, steering: false, steeringDelivered: true };
     delete claimed.queueError;
+    // What the server delivered of a comment send, which replay draws too.
+    if (entry.artifact_comments) {
+      claimed.content = entry.content;
+      claimed.artifactComments = entry.artifact_comments;
+    }
     if (joinTurn && turn !== undefined) claimed.turnIndex = turn;
     if (next === messages) next = [...messages];
     next[i] = claimed;

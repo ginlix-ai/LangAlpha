@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { includeIgnoreFile } from 'eslint/config'
 import js from '@eslint/js'
@@ -162,9 +163,10 @@ const motionSelectors = [
 export default [
   // Skip what git ignores. Flat config never reads .gitignore itself, so build
   // output or local tooling in a checkout would fail lint where a fresh clone
-  // passes.
+  // passes. The repo root's file also covers web/ in a checkout; web/ on its
+  // own has no root file, and nothing untracked for it to skip.
   ...includeIgnoreFile(
-    [resolve(import.meta.dirname, '../.gitignore'), resolve(import.meta.dirname, '.gitignore')],
+    [resolve(import.meta.dirname, '../.gitignore'), resolve(import.meta.dirname, '.gitignore')].filter(existsSync),
     { gitignoreResolution: true },
   ),
 

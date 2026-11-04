@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input';
 import { Loader } from '@/components/ui/loader';
 import { formatBytes } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useLocale } from '@/hooks/useLocale';
 import type { SshTarget } from '@/types/api';
 
@@ -369,6 +370,22 @@ function ManualView({ state, busy }: { state: SshSetupState; busy: boolean }) {
   );
 }
 
+/** That Claude Code models won't run on the machine, which an
+ *  organization's Claude Code policy is installed on, for a user they are on
+ *  for. Mounted only for such a machine, so no other summary reads the flag. */
+function ClaudeCodeBlockedNote() {
+  const { t } = useTranslation();
+  if (!useClaudeCodeStatus().enabled) return null;
+  return (
+    <span data-testid="ssh-claude-code-policy">
+      {t(
+        'computer.ssh.claudeCodePolicy',
+        "Your organization's Claude Code policy is installed on this computer, so Claude Code models won't run here.",
+      )}
+    </span>
+  );
+}
+
 export function ReadySummary({
   step,
   ready,
@@ -450,6 +467,7 @@ export function ReadySummary({
         </div>
         {facts.length > 0 && <span>{facts.join(' · ')}</span>}
         {access && <span>{access}</span>}
+        {probe.claude_code_blocked && <ClaudeCodeBlockedNote />}
       </div>
 
       {keeps ? (

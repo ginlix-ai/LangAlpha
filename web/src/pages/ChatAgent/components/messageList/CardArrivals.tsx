@@ -17,6 +17,11 @@ export interface ArrivingCard {
   /** When the call's result reached this page; absent from history and from
    *  a reconnect's replay. */
   settledAt?: number;
+  /** Later calls the same card draws (a reply joining a reply line). Each
+   *  changes the card in place rather than arriving, and its row leaves as
+   *  rows leave, except a row that was its block's only item: the block goes
+   *  with it in the commit, and its space closes into the card's box. */
+  joins?: readonly { call: string; settledAt?: number }[];
 }
 
 interface CardArrivalsProps {
@@ -49,9 +54,18 @@ interface Landing {
   rows: Array<{ row: Drawn; block: Drawn | null }>;
 }
 
+/** A card a later call joined, with the blocks that held that call's rows. */
+interface Joining {
+  key: string;
+  /** The card's box before the commit. */
+  box: Place;
+  blocks: Drawn[];
+}
+
 interface Snapshot {
   height: number;
   landings: Landing[];
+  joinings: Joining[];
 }
 
 /** A landing card's box as the commit drew it. */
@@ -154,11 +168,33 @@ export class CardArrivals extends React.Component<CardArrivalsProps> {
     // The calls this render told their rows to hand over: a card that lands
     // with nothing to hand it its row would leave the row with nowhere to go.
     const landing = this.props.cards.filter((card) => !drawn.has(card.key) && this.calls.has(card.call));
-    if (landing.length === 0) return null;
+    const joinedBefore = new Map(prev.cards.map((card) => [card.key, new Set((card.joins ?? []).map((j) => j.call))]));
+    const joining = this.props.cards.flatMap((card) => {
+      const before = joinedBefore.get(card.key);
+      const calls = before ? (card.joins ?? []).filter((j) => !before.has(j.call) && this.fresh(j.settledAt)).map((j) => j.call) : [];
+      return calls.length > 0 ? [{ key: card.key, calls }] : [];
+    });
+    if (landing.length === 0 && joining.length === 0) return null;
     const origin = list.getBoundingClientRect();
     const rows = Array.from(list.querySelectorAll<HTMLElement>('[data-call-row]'));
+    const boxes = Array.from(list.querySelectorAll<HTMLElement>('[data-card-arrival]'));
     return {
       height: origin.height,
+      joinings: joining.flatMap(({ key, calls }) => {
+        const box = boxes.find((el) => el.dataset.cardArrival === key);
+        if (!box) return [];
+        const blocks = new Set<HTMLElement>();
+        for (const row of rows) {
+          if (!row.dataset.callRow?.split(' ').some((call) => calls.includes(call))) continue;
+          const block = row.closest<HTMLElement>('[data-activity-block]');
+          if (block) blocks.add(block);
+        }
+        return [{
+          key,
+          box: placeIn(origin, box),
+          blocks: [...blocks].map((block) => ({ ...placeIn(origin, block), node: block, look: block })),
+        }];
+      }),
       landings: landing.map(({ key, call }) => ({
         key,
         rows: rows.filter((el) => el.dataset.callRow?.split(' ').includes(call)).map((row) => {
@@ -179,6 +215,23 @@ export class CardArrivals extends React.Component<CardArrivalsProps> {
     // Every read before the first write, so the commit is laid out once.
     const origin = list.getBoundingClientRect();
     const boxes = Array.from(list.querySelectorAll<HTMLElement>('[data-card-arrival]'));
+    // A joined card whose call's block went with its row takes that block's
+    // space back as a landing card takes its row's: the box starts reaching
+    // down over the gap and the block, which shows fading where it was, and
+    // closes to the card. Measured before any arrival writes.
+    let given = 0;
+    const joins: Array<{ box: HTMLElement; content: HTMLElement; from: number; ghost: { look: HTMLElement; top: number } }> = [];
+    for (const { key, box: before, blocks } of snapshot.joinings) {
+      const gone = blocks.filter((block) => !block.node.isConnected);
+      const box = boxes.find((el) => el.dataset.cardArrival === key);
+      const content = box?.firstElementChild;
+      if (!box || !(content instanceof HTMLElement) || gone.length === 0) continue;
+      const place = placeIn(origin, box);
+      const reach = Math.max(0, Math.max(...gone.map((block) => block.top + block.height)) - (before.top + before.height));
+      if (reach < 1) continue;
+      given += reach;
+      joins.push({ box, content, from: place.height + reach, ghost: { look: gone[0].look, top: gone[0].top - place.top } });
+    }
     const drawnLooks = new Set<HTMLElement>();
     const plans: Plan[] = [];
     for (const { key, rows } of snapshot.landings) {
@@ -206,10 +259,12 @@ export class CardArrivals extends React.Component<CardArrivalsProps> {
         gap: listChild ? parseFloat(getComputedStyle(listChild).marginTop) || 0 : 0,
       });
     }
+    for (const join of joins) this.close(join);
     if (plans.length === 0) return;
     // What the commit added to the list is what the cards start short of, so
-    // the list keeps the height it was drawn at.
-    const starts = splitGrowth(plans, origin.height - snapshot.height);
+    // the list keeps the height it was drawn at. A joined card's reach has
+    // already taken back what its block's going took away.
+    const starts = splitGrowth(plans, origin.height - snapshot.height + given);
     let shift = 0;
     plans.forEach((plan, i) => {
       const ghost = plan.source && plan.drawsLook
@@ -224,6 +279,43 @@ export class CardArrivals extends React.Component<CardArrivalsProps> {
   override componentWillUnmount(): void {
     for (const stop of this.running) stop();
     this.running.clear();
+  }
+
+  /** Whether a call settling at `settledAt` is landing in front of the reader. */
+  private fresh(settledAt: number | undefined): boolean {
+    return this.props.live && this.props.motionSafe && !isPageUnseen() && isFreshArrival([settledAt]);
+  }
+
+  /** A joined card's box closing from over the block that went to the card,
+   *  the block fading and lifting where it was, as a landing card's row does.
+   *  The card is already on screen, so it plays no entrance. */
+  private close({ box, content, from, ghost }: { box: HTMLElement; content: HTMLElement; from: number; ghost: { look: HTMLElement; top: number } }): void {
+    box.style.position = 'relative';
+    box.style.height = `${from}px`;
+    const fading = asGhost(ghost.look, ghost.top);
+    box.append(fading);
+    const leave = typeof fading.animate === 'function'
+      ? fading.animate(
+        [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateY(${-RISE_OUT_PX}px)` }],
+        { duration: DURATION.exit * 1000, easing: cssEase(EASE_OUT), fill: 'forwards' },
+      )
+      : null;
+    const drop = () => fading.remove();
+    if (leave) leave.finished.then(drop, drop);
+    else drop();
+    let stopFollow = () => {};
+    const land = () => {
+      this.running.delete(stop);
+      box.style.position = '';
+      box.style.height = '';
+    };
+    const stop = () => {
+      stopFollow();
+      fading.remove();
+      land();
+    };
+    this.running.add(stop);
+    stopFollow = followHeight(box, content, { from, leg: () => TWEEN.fold, onLand: land });
   }
 
   /** `ghost` is what the card takes the place of, `top` px from the box's top. */
@@ -302,10 +394,8 @@ export class CardArrivals extends React.Component<CardArrivalsProps> {
     // A row hands its place over only to a card that will arrive in it: any
     // other leaves as rows leave. Decided here, where the rows read it, and
     // the snapshot of this commit lands exactly these.
-    const { cards, live, motionSafe } = this.props;
-    const calls = new Set(live && motionSafe && !isPageUnseen()
-      ? cards.filter((card) => isFreshArrival([card.settledAt])).map((card) => card.call)
-      : []);
+    const { cards } = this.props;
+    const calls = new Set(cards.filter((card) => this.fresh(card.settledAt)).map((card) => card.call));
     if (calls.size !== this.calls.size || [...calls].some((call) => !this.calls.has(call))) this.calls = calls;
     return (
       <CardCallsContext value={this.calls}>

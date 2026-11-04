@@ -5,6 +5,12 @@ import { workspaceRelativePath } from '../../../utils/agentPaths';
 // Built off the same base as the API client (api/client.ts).
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 
+/** A prefix the server handed out, absolute or a path on the API base, with no trailing slash. */
+function absolutePrefix(prefix: string): string {
+  const base = /^https?:\/\//i.test(prefix) ? prefix : `${API_BASE}${prefix}`;
+  return base.replace(/\/+$/, '');
+}
+
 function encodePathSegments(filePath: string, root?: string | null): string {
   // A served path is read the same way every other reference is: a sandbox
   // root (`/home/workspace/x`, `file:///home/daytona/x`, or the computer's
@@ -16,10 +22,22 @@ function encodePathSegments(filePath: string, root?: string | null): string {
     .join('/');
 }
 
+/**
+ * The page bridge an HTML file is served with (`?inject=`): `view` reads it
+ * themed, `comments` is the owner's live view, which takes comments too.
+ * Without one the bytes are served as they are, for a PDF render or a download.
+ */
+export type ServeInject = 'view' | 'comments';
+
 export interface ServeUrlOptions {
-  injectTheme?: boolean;
+  inject?: ServeInject;
   /** The computer's root, which an absolute path may start with. */
   root?: string | null;
+  /**
+   * The bytes the address is for (`?h=`), so the agent's edit loads the file
+   * again rather than the copy the browser keeps for a minute.
+   */
+  revision?: string;
 }
 
 /** The ?format=pdf query string, with the optional render knobs appended. */
@@ -44,9 +62,49 @@ export function pdfQuery(scale?: number, pageNumbers?: boolean, branding?: boole
 export function buildServeUrl(
   prefix: string,
   filePath: string,
-  { injectTheme = false, root }: ServeUrlOptions = {},
+  { inject, root, revision }: ServeUrlOptions = {},
 ): string {
-  const base = /^https?:\/\//i.test(prefix) ? prefix : `${API_BASE}${prefix}`;
-  const url = `${base.replace(/\/+$/, '')}/${encodePathSegments(filePath, root)}`;
-  return injectTheme ? `${url}?inject=theme` : url;
+  const url = `${absolutePrefix(prefix)}/${encodePathSegments(filePath, root)}`;
+  const query = new URLSearchParams();
+  if (inject) query.set('inject', inject);
+  if (revision) query.set('h', revision);
+  const search = query.toString();
+  return search ? `${url}?${search}` : url;
+}
+
+// The part of a served address that names its route and credential: the
+// owner's grant, or a shared thread's serve route (links.js reads it the same).
+const SERVE_PREFIX = /^.*?\/(?:wsfiles\/g\/[^/]+|api\/v1\/public\/shared\/[^/]+\/files\/serve)\//;
+
+/**
+ * Where a frame that left its view goes back with it: `doc`, another file
+ * under the same serve prefix as `framed`, with `framed`'s view, or null when
+ * it is not one or already has it (its document then speaks no bridge for
+ * another reason). Both are absolute. A link carries the view before it is
+ * followed; a script that sets location, or a refresh, cannot.
+ */
+export function withServeView(doc: string, framed: string): string | null {
+  let to: URL;
+  let from: URL;
+  try {
+    to = new URL(doc);
+    from = new URL(framed);
+  } catch {
+    return null;
+  }
+  const view = from.searchParams.getAll('inject').at(-1);
+  const prefix = SERVE_PREFIX.exec(from.pathname)?.[0];
+  if (!view || !prefix || to.origin !== from.origin || !to.pathname.startsWith(prefix)) return null;
+  if (to.searchParams.getAll('inject').at(-1) === view) return null;
+  to.searchParams.set('inject', view);
+  return to.href;
+}
+
+/**
+ * The serve prefix of one published version under an artifact grant's or a
+ * visitor's base: `buildServeUrl` joins the version's own paths to it, so the
+ * entry's relative URLs, `../` included, resolve within the version.
+ */
+export function versionPrefix(base: string, seq: number): string {
+  return `${absolutePrefix(base)}/v/${seq}/`;
 }

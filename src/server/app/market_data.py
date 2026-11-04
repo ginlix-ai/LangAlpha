@@ -9,7 +9,7 @@ from typing import NamedTuple, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from src.server.utils.api import CurrentUserId
+from src.server.dependencies.principal import DataReadUserId
 
 from src.server.models.market_data import (
     IntradayDataPoint,
@@ -316,7 +316,7 @@ async def _get_batch_intraday(
 )
 async def get_stock_intraday(
     symbol: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     interval: str = Query("1min", description="Data interval (1min, 5min, 15min, 30min, 1hour, 4hour)"),
     from_date: Optional[str] = Query(None, alias="from", description="Start date (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, alias="to", description="End date (YYYY-MM-DD)"),
@@ -333,7 +333,7 @@ async def get_stock_intraday(
 )
 async def get_index_intraday(
     symbol: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     interval: str = Query("1min", description="Data interval (1min, 5min, 1hour)"),
     from_date: Optional[str] = Query(None, alias="from", description="Start date (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, alias="to", description="End date (YYYY-MM-DD)"),
@@ -350,7 +350,7 @@ async def get_index_intraday(
 )
 async def get_stock_daily(
     symbol: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     from_date: Optional[str] = Query(None, alias="from", description="Start date (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, alias="to", description="End date (YYYY-MM-DD)"),
 ) -> DailyResponse:
@@ -375,7 +375,7 @@ async def get_stock_daily(
 )
 async def get_index_daily(
     symbol: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     from_date: Optional[str] = Query(None, alias="from", description="Start date (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, alias="to", description="End date (YYYY-MM-DD)"),
 ) -> DailyResponse:
@@ -399,7 +399,7 @@ async def get_index_daily(
 )
 async def get_batch_stocks_intraday(
     request: BatchIntradayRequest,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
 ) -> BatchIntradayResponse:
     """Get intraday data for multiple stocks."""
     return await _get_batch_intraday(request, user_id, is_index=False)
@@ -413,7 +413,7 @@ async def get_batch_stocks_intraday(
 )
 async def get_batch_indexes_intraday(
     request: BatchIntradayRequest,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
 ) -> BatchIntradayResponse:
     """Get intraday data for multiple indexes."""
     return await _get_batch_intraday(request, user_id, is_index=True)
@@ -431,7 +431,7 @@ async def get_batch_indexes_intraday(
     description="Search for stocks by symbol or company name using keywords.",
 )
 async def search_stocks(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     query: str = Query(..., description="Search query (symbol or company name)", min_length=1),
     limit: int = Query(50, description="Maximum number of results to return", ge=1, le=100),
     exchange: list[str] = Query(default=[], description="Filter by exchange short names (e.g., NASDAQ, NYSE)"),
@@ -521,7 +521,7 @@ async def search_stocks(
     summary="Get company overview",
     description="Retrieve comprehensive company overview data including quote, performance, analyst ratings, financials, and revenue breakdown.",
 )
-async def get_company_overview(symbol: str, user_id: CurrentUserId) -> CompanyOverviewResponse:
+async def get_company_overview(symbol: str, user_id: DataReadUserId) -> CompanyOverviewResponse:
     """Get company overview data for a stock symbol."""
     if not symbol or not symbol.strip():
         raise HTTPException(status_code=422, detail="Symbol is required")
@@ -604,7 +604,7 @@ def _remeasured(quote: Optional[dict], symbol: str) -> Optional[dict]:
 )
 async def get_analyst_data(
     symbol: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     grade_limit: int = Query(50, description="Maximum number of grade records to return", ge=1, le=200),
 ) -> AnalystDataResponse:
     """Get analyst data for a stock symbol."""
@@ -707,7 +707,7 @@ _MAX_BATCH_SNAPSHOT_SYMBOLS = 250
     description="Retrieve real-time snapshot data for multiple stock symbols.",
 )
 async def get_stock_snapshots(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     symbols: str = Query(..., description="Comma-separated stock symbols (max 250)"),
 ) -> SnapshotResponse:
     """Get batch snapshots for stocks."""
@@ -721,7 +721,7 @@ async def get_stock_snapshots(
     description="Retrieve real-time snapshot data for multiple index symbols.",
 )
 async def get_index_snapshots(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     symbols: str = Query(..., description="Comma-separated index symbols (e.g. GSPC,IXIC,DJI)"),
 ) -> SnapshotResponse:
     """Get batch snapshots for indexes."""
@@ -819,7 +819,7 @@ async def _get_batch_snapshots(
     summary="Get single stock snapshot",
     description="Retrieve real-time snapshot data for a single stock symbol.",
 )
-async def get_single_stock_snapshot(symbol: str, user_id: CurrentUserId) -> SnapshotData:
+async def get_single_stock_snapshot(symbol: str, user_id: DataReadUserId) -> SnapshotData:
     """Get snapshot for a single stock — same cache path as the batch endpoint."""
     requested = _requested(symbol)
     ref = _price_ref(requested, equity=True)
@@ -850,7 +850,7 @@ async def get_single_stock_snapshot(symbol: str, user_id: CurrentUserId) -> Snap
     description="Alias for /market-status for backward compatibility.",
 )
 async def get_market_status_alias(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     market: str = Query("us", description="Market region: us, cn or hk"),
 ) -> MarketStatusResponse:
     """Alias for get_market_status."""
@@ -864,7 +864,7 @@ async def get_market_status_alias(
     description="Retrieve the current market status (open, closed, extended hours).",
 )
 async def get_market_status(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     market: str = Query("us", description="Market region: us, cn or hk"),
 ) -> MarketStatusResponse:
     """Get current market status for *market*."""

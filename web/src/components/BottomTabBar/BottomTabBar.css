@@ -9,6 +9,10 @@
   pointer-events: none;
 }
 
+html[data-keyboard-open] :is(.bottom-tab-bar, .langalpha-fab) {
+  display: none;
+}
+
 .bottom-tab-bar-pill {
   pointer-events: auto;
   display: flex;

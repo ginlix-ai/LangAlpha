@@ -1,11 +1,13 @@
 """ChatAnthropic variant that uses OAuth Bearer auth (auth_token) instead of API key (X-Api-Key)."""
 
 from functools import cached_property
-from typing import Any
+from typing import Any, ClassVar
 
 import anthropic
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import LanguageModelInput
+
+from src.llms.cache_markers import with_ttl
 
 # Required by Anthropic's API for OAuth subscription tokens to access Sonnet/Opus.
 _CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -24,6 +26,12 @@ class ChatAnthropicOAuth(ChatAnthropic):
     falling back to the ``ANTHROPIC_API_KEY`` environment variable, and prepends
     the Claude Code identity to the system prompt (required for Sonnet/Opus access).
     """
+
+    #: How long every cache entry this client writes lives. A subscription's
+    #: turns are paced by a person, and a 5-minute entry has usually expired by
+    #: the next message, so the whole prefix is written again each time; an
+    #: hour keeps it.
+    cache_ttl: ClassVar[str] = "1h"
 
     @property
     def _client_params(self) -> dict[str, Any]:
@@ -65,4 +73,4 @@ class ChatAnthropicOAuth(ChatAnthropic):
             payload["system"] = [identity_block, {"type": "text", "text": system}]
         else:
             payload["system"] = [identity_block]
-        return payload
+        return with_ttl(payload, self.cache_ttl)

@@ -23,7 +23,7 @@ from src.data_client.base import MoverRow
 from src.data_client.freshness import is_live
 from src.data_client.ginlix_data.directory import fill_quote_names
 from src.data_client.market_data_provider import snapshot_key
-from src.data_client.ginlix_data.pagination import paginate_cursor
+from src.data_client.ginlix_data.pagination import follow_cursor
 from src.observability import stamp_tool_provider
 from market_protocol import AssetClass, display_spelling
 
@@ -86,7 +86,7 @@ async def fetch_options_chain(
                 underlying, user_id=user_id, **p,
             )
 
-        results = await paginate_cursor(_fetch_page, filters, limit=limit)
+        results, truncated = await follow_cursor(_fetch_page, filters, limit=limit)
 
         # Batch-fetch snapshots for pricing data
         snapshot_map: Dict[str, Dict] = {}
@@ -116,6 +116,11 @@ async def fetch_options_chain(
         lines.append(f"**Retrieved:** {timestamp}")
         if contract_type:
             lines.append(f"**Type:** {contract_type.upper()}")
+        if truncated:
+            lines.append(
+                f"**More contracts match than the {len(results)} shown.** "
+                "Raise limit or narrow the expiry or strike filters to see the rest."
+            )
         lines.append("")
 
         # Each contract carries its snapshot's session (close, change,
@@ -124,9 +129,9 @@ async def fetch_options_chain(
             {**c, "session": snapshot_map.get(c.get("ticker"), {}).get("session") or None}
             for c in results
         ]
-        if not contracts:
+        if not contracts and not truncated:
             lines.append("No contracts found matching the given criteria.")
-        else:
+        elif contracts:
             lines.append("| Ticker | Type | Strike | Expiry | Close | Chg% | Volume |")
             lines.append("|--------|------|--------|--------|-------|------|--------|")
             for c in contracts:
@@ -156,6 +161,7 @@ async def fetch_options_chain(
             "underlying": underlying,
             "contract_type": contract_type,
             "market_status": market_status,
+            "truncated": truncated,
             "currency": cur.currency,
             "as_of_ts": int(retrieved_at.timestamp() * 1000),
         }

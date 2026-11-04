@@ -98,7 +98,7 @@ export interface StructuredError {
 }
 
 /** The one 429 this service raises on its own: the concurrency gate in
- *  ``enforce_chat_limit``. Never travels through the quota service, so it
+ *  ``chat_limit_for``. Never travels through the quota service, so it
  *  arrives without a message and we supply one. */
 const OUR_OWN_LIMIT = 'burst_limit';
 

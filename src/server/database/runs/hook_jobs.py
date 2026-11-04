@@ -10,9 +10,9 @@ makes it testable as data.
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, NotRequired, Optional, TypedDict
 
+from src.config import env
 from src.server.contracts.status import to_public
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
-
 
 
 @dataclass
@@ -23,6 +23,8 @@ class HookJob:
     idempotency_key: str
     payload: Dict[str, Any] = field(default_factory=dict)
     ordering_key: Optional[str] = None
+    #: Seconds before the row is first due; None is due at once.
+    delay_seconds: Optional[float] = None
 
 
 # Payload contracts between the decision table below and the executors in
@@ -75,6 +77,29 @@ class UserFeedPayload(TypedDict):
     last_seen_run_seq: NotRequired[int]
 
 
+class PushPayload(TypedDict):
+    """A settle the user's phones may hear of. Whether they do, and what it
+    says, the ``push`` executor decides from the run row and the thread."""
+
+    user_id: str
+    thread_id: str
+    workspace_id: Optional[str]
+    run_id: str
+    run_seq: Optional[int]
+    status: str  # the CAS-adopted run status: completed, error or interrupted
+    interrupt_reason: Optional[str]
+
+
+#: How long a finished turn's push waits for a client to mark the thread
+#: seen, so a turn watched on the web or another phone does not buzz this one.
+#: An interrupted run cannot be marked seen, so its push goes at once.
+PUSH_SEEN_GRACE_SECONDS = 8.0
+
+
+#: Run metadata key for where an attempt ran ({"platform", ...}), stamped at
+#: START by ``request_prep.surface_stamp``.
+SURFACE_META = "surface"
+
 #: Run metadata key for how a wake turn ended quietly: {"changed"}.
 WAKEUP_QUIET_META = "wakeup_quiet"
 
@@ -103,6 +128,7 @@ def build_finalize_jobs(
     automation_id: Optional[str] = None,
     superseded: bool = False,
     last_seen_run_seq: Optional[int] = None,
+    push_enabled: bool = False,
 ) -> Callable[[str], List[HookJob]]:
     """The one decision table mapping a run's final status to its hook jobs.
 
@@ -150,6 +176,43 @@ def build_finalize_jobs(
                     hook_type="user_feed",
                     idempotency_key=f"{run_id}:user_feed",
                     payload=feed,
+                )
+            )
+
+        if (
+            push_enabled
+            and user_id
+            and not superseded
+            and final_status != "cancelled"
+        ):
+            # A stop, or a run that was never the firing's turn, is news to
+            # nobody. Which other settles reach a phone is the executor's call
+            # (``services/push/notify.push_owed``), from the run row.
+            jobs.append(
+                HookJob(
+                    hook_type="push",
+                    idempotency_key=f"{run_id}:push",
+                    payload=PushPayload(
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        workspace_id=workspace_id,
+                        run_id=run_id,
+                        run_seq=run_seq,
+                        status=final_status,
+                        interrupt_reason=(
+                            interrupt_reason
+                            if final_status == "interrupted"
+                            else None
+                        ),
+                    ),
+                    delay_seconds=(
+                        None
+                        if final_status == "interrupted"
+                        else PUSH_SEEN_GRACE_SECONDS
+                    ),
+                    # A thread's pushes reach APNs in run order, so an older
+                    # one sent slowly can't land after, and replace, a newer.
+                    ordering_key=f"push:{thread_id}",
                 )
             )
 
@@ -259,4 +322,5 @@ def build_finalize_jobs_from_run_row(
         # Stamped by the finalize itself, which the post-CAS row carries.
         superseded=bool(meta.get("superseded")),
         last_seen_run_seq=last_seen_run_seq,
+        push_enabled=env.APNS_ENABLED,
     )

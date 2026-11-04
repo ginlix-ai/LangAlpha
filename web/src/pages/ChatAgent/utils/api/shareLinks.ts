@@ -6,11 +6,9 @@
  * working without naming these.
  */
 import { api } from '@/api/client';
-import { apiErrorObject, apiErrorStatus } from '@/api/errors';
 import type {
   FileGrant,
   ShareLink,
-  ShareLinkFiles,
   ShareLinkTarget,
   SharedLinksResponse,
 } from '@/types/api';
@@ -26,12 +24,11 @@ export async function getShareLink(code: string): Promise<ShareLink> {
   return data;
 }
 
-export async function getShareLinkFiles(workspaceId: string, code: string): Promise<ShareLinkFiles> {
-  const { data } = await api.get<ShareLinkFiles>(`/api/v1/workspaces/${workspaceId}/share-links/${code}/files`);
-  return data;
-}
-
-export type ShareLinkPatch = { shared: true; files: string[] } | { shared: false };
+/**
+ * Stop sharing. A file is shared by publishing its artifact, which cuts the
+ * version visitors see, and an app link is never shared, so this only stops.
+ */
+export type ShareLinkPatch = { shared: false };
 
 export async function patchShareLink(workspaceId: string, code: string, patch: ShareLinkPatch): Promise<ShareLink> {
   const { data } = await api.patch<ShareLink>(`/api/v1/workspaces/${workspaceId}/share-links/${code}`, patch);
@@ -81,27 +78,4 @@ export function parseShareLinkHref(
   const code = url.origin === origin ? /^\/a\/([0-9A-Za-z]+)\/?$/.exec(url.pathname)?.[1] : undefined;
   if (!code || url.searchParams.has('as')) return null;
   return { code, path: url.searchParams.get('path')?.replace(/^\/+/, '') ?? null };
-}
-
-/** Which 409 a share PATCH answered: the reviewed list no longer matches the file, or the link changed during the request. */
-export type ShareConflict = 'files_changed' | 'link_changed';
-
-export function shareConflictIn(err: unknown): ShareConflict | null {
-  if (apiErrorStatus(err) !== 409) return null;
-  const code = apiErrorObject(err)?.code;
-  return code === 'files_changed' || code === 'link_changed' ? code : null;
-}
-
-/** Which cap a file's list went over: a count of files, or their total bytes. */
-export interface ShareCap {
-  code: 'too_many_files' | 'too_many_bytes';
-  limit: number;
-}
-
-/** The cap a 422 names, or null for any other error. */
-export function shareCapIn(err: unknown): ShareCap | null {
-  if (apiErrorStatus(err) !== 422) return null;
-  const { code, limit } = apiErrorObject(err) ?? {};
-  if (code !== 'too_many_files' && code !== 'too_many_bytes') return null;
-  return { code, limit: typeof limit === 'number' ? limit : 0 };
 }

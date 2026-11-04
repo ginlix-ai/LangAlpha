@@ -2,9 +2,11 @@
 and the ledger metadata a failed model call leaves on its run."""
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from src.config import settings as app_settings
+from src.llms.claude_code import ClaudeTurnFailed
+from src.server.services.llm.claude_code import claude_code_refusal
 from src.server.services.oauth_health import subscription_token_refusal
 from src.server.utils.error_sanitization import sanitize_error_text
 
@@ -142,6 +144,21 @@ def model_call_failure(
     }
 
 
+#: The Claude Code failures that were the answer the turn got, from Anthropic
+#: or the machine's Claude Code, by ``ClaudeTurnFailed.kind``: the status
+#: the frame carries and the hints it offers. Any other kind is either refused
+#: as admission refuses (``auth_failed``, ``policy_blocked``) or this
+#: service's own failure.
+_CLAUDE_CODE_ANSWERS: Dict[str, Tuple[Optional[int], Tuple[str, ...]]] = {
+    # The user's own plan is spent, not the provider down.
+    "plan_exhausted": (429, ("try_another_model",)),
+    # No status: could be anything.
+    "api_error": (None, ("api_key", "model_access", "provider_status", "try_another_model")),
+    "model_unavailable": (None, ("try_another_model",)),
+    "startup_failed": (None, ("try_another_model",)),
+}
+
+
 def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
     """Classify a chat-stream exception as ``upstream`` or ``internal``.
 
@@ -149,12 +166,16 @@ def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
     a LangChain exception caused by ``anthropic.InternalServerError``) is
     still recognized as upstream. Returns a dict with ``kind``,
     ``status_code`` (when carried on the exception or parseable from its
-    message), and ``provider_module`` (the matched SDK prefix, or None).
+    message), and ``provider_module`` (the matched SDK prefix, or None);
+    a Claude Code failure the turn was answered with adds its ``hints``.
     """
     seen: set[int] = set()
     current: Optional[BaseException] = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
+        if isinstance(current, ClaudeTurnFailed) and current.kind in _CLAUDE_CODE_ANSWERS:
+            status, hints = _CLAUDE_CODE_ANSWERS[current.kind]
+            return {"kind": "upstream", "status_code": status, "provider_module": None, "hints": list(hints)}
         module = getattr(type(current), "__module__", "") or ""
         for prefix in _UPSTREAM_MODULE_PREFIXES:
             if module == prefix or module.startswith(prefix + "."):
@@ -205,13 +226,14 @@ def failure_kind_metadata(exc: BaseException) -> Dict[str, Any]:
     could carry no frame (its quota spent) sent none, and the row's own
     error item is then the only place the failure is worded.
 
-    ``{}`` for the turn's time limit: its own frame is worded for the user and
-    carries no kind, and the reload replays it unchanged.
+    ``{}`` for the turn's time limit and a Claude Code token refused mid-turn:
+    their frames are worded for the user and carry no kind, and the reload
+    replays them unchanged.
     """
     # Lazy: sse_producer imports this module.
     from src.server.services.runs.sse_producer import TurnTimeLimitError
 
-    if isinstance(exc, TurnTimeLimitError):
+    if isinstance(exc, TurnTimeLimitError) or claude_code_refusal(exc, None) is not None:
         return {}
     return {"error_kind": failure_kind(exc)["kind"]}
 
@@ -222,6 +244,7 @@ def error_event_data(
     *,
     exc: Optional[BaseException] = None,
     credential_source: Any = None,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The ``error`` frame's data.
 
@@ -232,7 +255,12 @@ def error_event_data(
     status and then filtered by who holds the credential (see
     ``user_owns_credential``), so a platform-billed turn never asks the user
     to check a key they do not have.
+
+    A Claude Code turn whose token Anthropic refused gets the admission
+    refusal's shape instead, ``model`` naming the turn's row.
     """
+    if exc is not None and (refusal := claude_code_refusal(exc, model)):
+        return {"thread_id": thread_id, "error": refusal["message"], **refusal}
     data: Dict[str, Any] = {
         "thread_id": thread_id,
         "error": sanitize_error_text(error_message),
@@ -252,7 +280,9 @@ def error_event_data(
             # provider outages, not the user's credentials; showing
             # "check your API key" first on a 503 is misleading.
             status = info.get("status_code")
-            if status in (401, 403):
+            if "hints" in info:
+                hints = info["hints"]
+            elif status in (401, 403):
                 hints = ["api_key", "model_access", "try_another_model"]
             elif status == 404:
                 hints = ["model_access", "try_another_model"]

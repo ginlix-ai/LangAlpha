@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.data_client.base import FetchResult
+
 from .conftest import assert_error, assert_ok_envelope
 
 _MOD = "plugins.langalpha_market_data.options_mcp_server"
@@ -125,7 +127,7 @@ class TestGetOptionsPrices:
     async def test_success_ascending_and_underlying_currency(self):
         import plugins.langalpha_market_data.options_mcp_server as mod
 
-        fetch = AsyncMock(return_value=list(_OPT_ROWS_DESC))
+        fetch = AsyncMock(return_value=FetchResult(list(_OPT_ROWS_DESC)))
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
             result = await mod.get_options_prices(_OPT, "2025-01-01", "2025-01-31", interval="1day")
 
@@ -142,7 +144,7 @@ class TestGetOptionsPrices:
     async def test_interval_alias_normalized(self):
         import plugins.langalpha_market_data.options_mcp_server as mod
 
-        fetch = AsyncMock(return_value=list(_OPT_ROWS_DESC))
+        fetch = AsyncMock(return_value=FetchResult(list(_OPT_ROWS_DESC)))
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
             result = await mod.get_options_prices(_OPT, "2025-01-01", "2025-01-31", interval="1d")
 
@@ -154,7 +156,7 @@ class TestGetOptionsPrices:
         """Options prices serve the full canonical vocab (incl. 1week)."""
         import plugins.langalpha_market_data.options_mcp_server as mod
 
-        fetch = AsyncMock(return_value=list(_OPT_ROWS_DESC))
+        fetch = AsyncMock(return_value=FetchResult(list(_OPT_ROWS_DESC)))
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
             result = await mod.get_options_prices(_OPT, "2025-01-01", "2025-03-31", interval="1week")
 
@@ -230,3 +232,29 @@ class TestGetOptionsSnapshot:
             result = await mod.get_options_snapshot(_OPT)
 
         assert_error(result, "upstream_error")
+
+
+class TestTruncatedOptionsPrices:
+    @pytest.mark.asyncio
+    async def test_the_page_cap_reaches_the_envelope(self):
+        import plugins.langalpha_market_data.options_mcp_server as mod
+
+        fetch = AsyncMock(return_value=FetchResult(list(_OPT_ROWS_DESC), True))
+        with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
+            result = await mod.get_options_prices(_OPT, "2025-01-01", "2025-01-31")
+
+        assert_ok_envelope(result, count=2)
+        assert result["truncated"] is True
+
+
+class TestTruncatedOptionsChain:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("more", [True, False])
+    async def test_more_contracts_than_limit_reaches_the_envelope(self, more):
+        import plugins.langalpha_market_data.options_mcp_server as mod
+
+        fetch = AsyncMock(return_value={"results": [_CONTRACT], "truncated": more})
+        with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_chain", new=fetch):
+            result = await mod.get_options_chain("AAPL", limit=1)
+
+        assert result.get("truncated", False) is more

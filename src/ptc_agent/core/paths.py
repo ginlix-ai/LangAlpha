@@ -32,6 +32,39 @@ def computer_roots(own: str | None) -> tuple[str, ...]:
     return tuple(dict.fromkeys([own, *stock] if own else stock))
 
 
+#: LangAlpha's own folder in a user's own computer's config home
+#: (``$XDG_CONFIG_HOME`` when absolute, else ``~/.config``), outside the
+#: computer root and refused to the agent's own tools. Each computer's Claude
+#: Code setup token is the file named by its computer id in the second folder.
+LANGALPHA_CONFIG_DIR: str = "langalpha"
+CLAUDE_CODE_TOKEN_DIR: str = f"{LANGALPHA_CONFIG_DIR}/claude-code"
+
+
+def langalpha_config_dir(home: str, config_home: str | None = None) -> str:
+    """LangAlpha's folder in the config home of a login whose home is ``home``
+    and whose ``$XDG_CONFIG_HOME`` is ``config_home``; a relative one is
+    ignored, as the XDG spec has it."""
+    base = config_home if config_home and config_home.startswith("/") else home.rstrip("/") + "/.config"
+    return f"{base.rstrip('/')}/{LANGALPHA_CONFIG_DIR}"
+
+
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+#: How a command or a listing spells LangAlpha's config folder: the folder of
+#: the default config home or of one named by the variable, as a whole path
+#: component, and a Claude Code token file under any config home, a custom one
+#: included, by its folder and its name (a computer id, or a staged copy of
+#: one). A workspace folder named like them holds no file so named. Text
+#: matching is all a tool call's arguments and output allow, so this stands
+#: beside the exact path `langalpha_config_dir` gives the file tools; matched
+#: case-insensitively, as a Mac's disk matches names.
+LANGALPHA_CONFIG_SPELLINGS: re.Pattern[str] = re.compile(
+    rf"(?:(?<![\w.-])\.config|\$xdg_config_home|\$\{{xdg_config_home\}})/{re.escape(LANGALPHA_CONFIG_DIR)}(?![\w.-])"
+    rf"|{re.escape(CLAUDE_CODE_TOKEN_DIR)}/(?:\.staged\.)?{_UUID}",
+    re.IGNORECASE,
+)
+
+
 # Reused sandboxes retain root-level tools until migration; name-based filters
 # must recognize it alongside _internal.
 LEGACY_ROOT_TOOLS_DIR: str = "tools"
@@ -135,11 +168,18 @@ class SandboxLayout:
     MCP_TOKENS_FILE: ClassVar[str] = "_internal/.mcp_tokens.json"
     EGRESS_RELAY_FILE: ClassVar[str] = "_internal/.egress_relay.json"
     VAULT_SECRETS_FILE: ClassVar[str] = "_internal/.vault_secrets.json"
+    # The token the `la` CLI calls the API with, as the computer's user.
+    CLI_TOKEN_FILE: ClassVar[str] = "_internal/.cli_token.json"
+    # The `la` shim, shipped with the internal packages; on every job's PATH.
+    CLI_BIN_DIR: ClassVar[str] = "_internal/src/la/bin"
     # An MCP check's files, which hold a copy of the server's vault secrets.
     MCP_CHECK_PREFIX: ClassVar[str] = "_internal/.mcp_check_"
     # Folders of the owner's set aside out of a workspace folder's way, and
     # deleted workspaces' folders waiting to go or kept for the owner.
     LEFTOVERS_DIR: ClassVar[str] = "_internal/leftovers"
+    # What the Claude Code runtime keeps on a user's own computer: the CLI
+    # release it runs and each turn's private config dir.
+    CLAUDE_CODE_DIR: ClassVar[str] = "_internal/claude-code"
 
     #: Relative names the uploaded sandbox client reads back out of the
     #: emitted block. Only these are emitted: the emission rides
@@ -258,6 +298,10 @@ class SandboxLayout:
         return self.join(self.INTERNAL_SRC_DIR)
 
     @property
+    def claude_code(self) -> str:
+        return self.join(self.CLAUDE_CODE_DIR)
+
+    @property
     def packs(self) -> str:
         return self.join(self.PACKS_DIR)
 
@@ -282,10 +326,18 @@ class SandboxLayout:
         return self.join(self.VAULT_SECRETS_FILE)
 
     @property
+    def cli_token(self) -> str:
+        return self.join(self.CLI_TOKEN_FILE)
+
+    @property
+    def cli_bin(self) -> str:
+        return self.join(self.CLI_BIN_DIR)
+
+    @property
     def credential_files(self) -> tuple[str, ...]:
         """The files the server writes credentials to for the computer's
         processes; an MCP check's copies match ``MCP_CHECK_PREFIX``."""
-        return (self.mcp_tokens, self.egress_relay, self.vault_secrets)
+        return (self.mcp_tokens, self.egress_relay, self.vault_secrets, self.cli_token)
 
     @property
     def setup_dirs(self) -> tuple[str, ...]:

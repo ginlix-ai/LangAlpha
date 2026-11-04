@@ -13,6 +13,8 @@ Two detection modes:
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Sequence
 
 import structlog
 from langchain.agents.middleware import AgentMiddleware
@@ -20,7 +22,7 @@ from langchain_core.messages import ToolMessage
 
 logger = structlog.get_logger(__name__)
 
-_BLOCKED_RESPONSE = (
+BLOCKED_RESPONSE = (
     "<system_warning>Access denied. The path you requested is inside a protected "
     "system directory. This directory contains internal system files managed by the "
     "platform. Do not attempt to access, read, modify, or disclose files in this "
@@ -41,12 +43,19 @@ class ProtectedPathMiddleware(AgentMiddleware):
 
     Reads protected paths from config's ``denied_directories`` list and derives
     short fragments for substring matching in tool args and output.
+    ``denied_patterns`` covers what no configured directory can name: a folder
+    on a user's own computer, which text only spells.
 
     Runs in the shared middleware stack so it applies to both the main agent
     and all subagents.
     """
 
-    def __init__(self, denied_directories: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        denied_directories: list[str] | None = None,
+        denied_patterns: Sequence[re.Pattern[str]] = (),
+    ) -> None:
+        self._patterns = tuple(denied_patterns)
         # Build match fragments from full paths, e.g.:
         #   "/home/workspace/_internal" → ["_internal/", "_internal\\", "_internal"]
         fragments: set[str] = set()
@@ -55,7 +64,8 @@ class ProtectedPathMiddleware(AgentMiddleware):
             if basename:
                 fragments.add(f"{basename}/")
                 fragments.add(f"{basename}\\")
-        self._fragments = tuple(sorted(fragments, key=len, reverse=True))
+        # Case-insensitive, as a Mac's disk matches names.
+        self._fragments = tuple(sorted({f.casefold() for f in fragments}, key=len, reverse=True))
 
         if self._fragments:
             logger.debug(
@@ -64,7 +74,8 @@ class ProtectedPathMiddleware(AgentMiddleware):
             )
 
     def _references_protected(self, text: str) -> bool:
-        return any(frag in text for frag in self._fragments)
+        folded = text.casefold()
+        return any(frag in folded for frag in self._fragments) or any(p.search(text) for p in self._patterns)
 
     def _args_reference_protected(self, args: dict) -> bool:
         for value in args.values():
@@ -75,7 +86,7 @@ class ProtectedPathMiddleware(AgentMiddleware):
     def _make_blocked(self, tool_call_id: str, tool_name: str) -> ToolMessage:
         logger.warning("Protected path access blocked", tool=tool_name)
         return ToolMessage(
-            content=_BLOCKED_RESPONSE, tool_call_id=tool_call_id, status="error"
+            content=BLOCKED_RESPONSE, tool_call_id=tool_call_id, status="error"
         )
 
     def _maybe_warn_output(self, result: ToolMessage, tool_name: str) -> ToolMessage:

@@ -180,12 +180,6 @@ export interface ActionCommand {
   aliases?: string[];
 }
 
-export interface MsgSelectionTooltipData {
-  x: number;
-  y: number;
-  text: string;
-}
-
 export interface ChatViewProps {
   workspaceId: string;
   threadId: string;

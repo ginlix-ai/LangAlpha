@@ -319,35 +319,6 @@
   }
 
   /* ====== Selection Tooltip ("Add to context") ====== */
-  .file-panel-selection-tooltip {
-    position: absolute;
-    z-index: 60;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    border-radius: 8px;
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border-muted);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-    backdrop-filter: blur(12px);
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--color-text-primary);
-    white-space: nowrap;
-    transition: background var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
-    user-select: none;
-  }
-  /* The hover tint is translucent and the chip sits over the text it was
-     raised for, so it layers over the opaque fill rather than replacing it. */
-  .file-panel-selection-tooltip:hover {
-    background-image: linear-gradient(var(--color-bg-hover), var(--color-bg-hover));
-    border-color: var(--color-border-elevated);
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-  }
-
   /* ====== Right-click Context Menu ====== */
   .file-panel-context-menu {
     position: fixed;
@@ -409,6 +380,8 @@
     padding: 0.125rem 0.5rem 0.125rem 0.75rem;
     border-bottom: 1px solid var(--color-border-muted);
     flex-shrink: 0;
+    /* What sits in it can fold to the panel's width (CommentTools.css). */
+    container: file-crumbs / inline-size;
   }
   .file-panel-crumb-trail {
     display: flex;
@@ -418,7 +391,11 @@
     flex: 0 1 auto;
     overflow: hidden;
   }
+  /* Short on room, the folders give way before the name: it is what the row is
+     there to say, and each folder stays a tap target with an ellipsis. */
   .file-panel-crumb {
+    flex: 0 1000 auto;
+    min-width: 1.5em;
     max-width: 9rem;
     padding: 1px 3px;
     border: 0;
@@ -431,11 +408,26 @@
     text-overflow: ellipsis;
     cursor: pointer;
   }
+  /* The trail clips a .tap-target's box, so a finger gets the row's height and
+     what width a folder can spare. Any wider and a deep path has no room left
+     for the name. */
+  @media (pointer: coarse) {
+    .file-panel-crumb-trail {
+      align-self: stretch;
+    }
+    .file-panel-crumb:not(.is-file) {
+      align-self: stretch;
+      min-width: 2rem;
+    }
+  }
   .file-panel-crumb:hover {
     color: var(--color-text-primary);
     background-color: var(--color-bg-hover);
   }
   .file-panel-crumb.is-file {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: none;
     color: var(--color-text-primary);
     cursor: default;
   }
@@ -498,13 +490,12 @@
     .chat-split-right { min-width: 0; width: 100%; }
     .chat-split-divider { display: none; }
 
-    /* Add bottom padding to scrollable areas inside the mobile overlay
-       so content doesn't get clipped behind the floating bottom tab bar */
-    .mobile-panel-overlay [class*="overflow-y-auto"],
-    .mobile-panel-overlay [class*="overflow-auto"],
+    /* The overlay ends above the tab bar already (.app-main reserves it), and a
+       thread hides the bar. Only the home indicator can still sit over it, and a
+       viewer that fills its box must not lose height to anything else. */
     .mobile-panel-overlay .file-panel-content,
     .mobile-panel-overlay .file-panel-tree-list {
-      padding-bottom: var(--bottom-tab-height);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
     }
   }
 /* A reference's target inside the open file. The tint is annotation, so it
@@ -603,4 +594,70 @@
 }
 .file-focus-chip-close:hover {
   color: var(--color-text-primary);
+}
+
+/* "● changed since · Update" after a published file's version chip: the live
+   file has moved on from what visitors see (or, with the warning dot, a link
+   visitors can't open). Quiet text; the Update is the one act in it, a
+   link-weight button rather than a second chip. */
+.file-panel-artifact-drift {
+  display: inline-flex;
+  min-width: 0;
+  /* The row's first give, before the file's name. */
+  flex-shrink: 1000;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+.file-panel-artifact-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-status-modified);
+}
+.file-panel-artifact-dot[data-tone='warning'] {
+  background-color: var(--color-warning);
+}
+/* The words show whole or not at all: the moment they would clip they drop
+   out (ArtifactCrumbs), still measured, and the dot's title says them. A word
+   cut to its first letter reads as a glitch. */
+.file-panel-artifact-drift-words {
+  min-width: 0;
+  overflow: hidden;
+}
+.file-panel-artifact-drift-words::after {
+  content: '·';
+  margin-left: 4px;
+}
+.file-panel-artifact-drift[data-dropped] {
+  flex-shrink: 0;
+}
+.file-panel-artifact-drift[data-dropped] .file-panel-artifact-drift-words {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* A crowded row keeps some of the file's name: the version and the comment
+   controls beside it are about that file. */
+.file-panel-crumbs:has(.artifact-version-chip, .file-panel-artifact-drift) .file-panel-crumb-trail {
+  min-width: 4.5rem;
+}
+.file-panel-artifact-update {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  border-radius: 3px;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.file-panel-artifact-update:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.file-panel-artifact-update:disabled {
+  cursor: default;
+  opacity: 0.6;
 }

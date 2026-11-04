@@ -91,7 +91,7 @@ class ProvisioningMixin:
         # may name someone else's sandbox. NULL means nothing to destroy.
         computer_id = binding.computer_id
         durable_sandbox_id = binding.provider_ref
-        await self._revoke_data_token(computer_id)
+        await self._revoke_computer_tokens(computer_id)
         await self._revoke_livefs(computer_id)
         # Its previews end with it rather than at expiry, on every path that
         # retires a machine, the sweep's included.
@@ -299,7 +299,7 @@ class ProvisioningMixin:
         # built it has bound it.
         token = (
             asyncio.ensure_future(
-                self._keep_data_token(binding.computer_id, user_id, sandbox)
+                self._keep_computer_tokens(binding.computer_id, user_id, sandbox)
             )
             if reusing_sandbox
             else None
@@ -695,7 +695,7 @@ class ProvisioningMixin:
         # A rebuild no turn follows (a spec change, a platform-secret
         # rotation) would otherwise leave the new sandbox without a token
         # until the sweep reached it.
-        await self._keep_data_token(binding.computer_id, user_id, session.sandbox)
+        await self._keep_computer_tokens(binding.computer_id, user_id, session.sandbox)
         return session
 
     async def _stamp_sandbox_config(self, binding: ComputerBinding) -> None:

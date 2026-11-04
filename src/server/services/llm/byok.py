@@ -65,6 +65,20 @@ def call_endpoint(provider: str, holding: str, mc, *, custom: bool) -> str:
     return holding if custom else provider
 
 
+async def stored_key(user_id: str, slug: str, *, _byok_cache: dict | None = None) -> dict | None:
+    """The key stored under ``slug`` alone, read through a request's
+    ``_byok_cache`` when it holds the slug, with the tri-state contract
+    ``walk_byok_candidates`` documents: a direct read fills a miss."""
+    if _byok_cache is not None and slug in _byok_cache:
+        return _byok_cache[slug]
+    from src.server.database.api_keys import get_byok_config_for_provider
+
+    found = await get_byok_config_for_provider(user_id, slug)
+    if _byok_cache is not None:
+        _byok_cache[slug] = found
+    return found
+
+
 async def walk_byok_candidates(
     user_id,
     provider,

@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import ExcelJS from 'exceljs';
 import i18n from '@/i18n';
-import type { ContextPayload } from '../../filePanel/types';
+import type { ChipContext } from '@/components/ui/chat-input.types';
 import ExcelViewer from '../ExcelViewer';
 import type { GridRowProps } from '../excel/GridRow';
 import { openpyxlWorkbook } from '../excel/__tests__/openpyxlFixture';
@@ -194,7 +194,7 @@ describe('ExcelViewer', () => {
   });
 
   it('hands a whole column to the composer as one line that names it, not its cells', async () => {
-    const onAddContext = vi.fn<(p: ContextPayload) => void>();
+    const onAddContext = vi.fn<(p: ChipContext) => void>();
     await open({ filePath: 'models/dcf.xlsx', onAddContext });
     fireEvent.mouseDown(screen.getByTitle('Select column B'));
     fireEvent.click(screen.getByText('Add'));
@@ -220,7 +220,7 @@ describe('ExcelViewer', () => {
   });
 
   it('hands a selected range to the composer as a locator plus a TSV block', async () => {
-    const onAddContext = vi.fn<(p: ContextPayload) => void>();
+    const onAddContext = vi.fn<(p: ChipContext) => void>();
     await open({ filePath: 'models/dcf.xlsx', onAddContext });
     fireEvent.mouseDown(cell('A4'));
     fireEvent.mouseDown(cell('B5'), { shiftKey: true });
@@ -238,7 +238,7 @@ describe('ExcelViewer', () => {
   });
 
   it('drops the old grid, selection and offer the moment new bytes arrive', async () => {
-    const onAddContext = vi.fn<(p: ContextPayload) => void>();
+    const onAddContext = vi.fn<(p: ChipContext) => void>();
     const { rerender } = await open({ filePath: 'models/dcf.xlsx', onAddContext });
     fireEvent.mouseDown(cell('A4'));
     expect(screen.getByText('Add')).toBeInTheDocument();
@@ -285,7 +285,7 @@ describe('ExcelViewer', () => {
   });
 
   it('clips a link that runs past the sheet to the cells it has, and says so in the snippet', async () => {
-    const onAddContext = vi.fn<(p: ContextPayload) => void>();
+    const onAddContext = vi.fn<(p: ChipContext) => void>();
     await open({ filePath: 'models/dcf.xlsx', onAddContext, focusCell: 'Model!B5:B900' });
     await waitFor(() => expect(nameBox()).toBe('B5:B900'));
     fireEvent.click(screen.getByText('Add'));
@@ -296,7 +296,7 @@ describe('ExcelViewer', () => {
   });
 
   it('reads a link into a covered cell as the merge that draws it', async () => {
-    const onAddContext = vi.fn<(p: ContextPayload) => void>();
+    const onAddContext = vi.fn<(p: ChipContext) => void>();
     render(<ExcelViewer data={merged} filePath="models/dcf.xlsx" onAddContext={onAddContext} focusCell="Model!B2" />);
     await screen.findByText('Units (M)');
     // Nothing is offered under the opening selection, so the chip appearing is

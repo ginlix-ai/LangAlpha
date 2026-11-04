@@ -10,7 +10,7 @@
  * `contentProjection.ts`: the stream code reads turns from here and must not
  * load the render stack to do it.
  */
-import { isSteeringContinuation, isSteeringUserMessage, type MessageLike } from './messagePredicates';
+import { isSteeringContinuation, isSteeringUserMessage, opensTurn, type MessageLike } from './messagePredicates';
 import type { MessageRecord } from './types';
 
 /** The fields the projection reads, structural for the same reason as `MessageLike`. */
@@ -113,8 +113,12 @@ export function hiddenOpenerTurns(projected: readonly ProjectedMessage<TurnLike>
  * after it, and a parked message has not opened one yet.
  */
 export function newestTurn(messages: readonly TurnLike[]): number | null {
+  return newestProjected(projectTurns(messages));
+}
+
+function newestProjected(projected: readonly ProjectedMessage<TurnLike>[]): number | null {
   let newest: number | null = null;
-  for (const { message, turnIndex } of projectTurns(messages)) {
+  for (const { message, turnIndex } of projected) {
     if (message.role === 'assistant' && turnIndex !== null && (newest === null || turnIndex > newest)) newest = turnIndex;
   }
   return newest;
@@ -171,6 +175,42 @@ export function messageTimeMs(value: unknown): number | undefined {
       : typeof value === 'string' ? Date.parse(value)
         : NaN;
   return Number.isFinite(ms) ? ms : undefined;
+}
+
+/**
+ * When each turn started, epoch ms. A turn's clock starts at the message that
+ * opened it, the later of two on one count; a steer rides a turn it did not
+ * open, and its replayed time is not history time. A turn with no row of its
+ * own to take its clock from (a report-back whose row names no source, or one
+ * attached live) starts at its first reply, the nearest thing.
+ */
+export function turnStartTimes(entries: readonly ProjectedMessage<TurnLike & { timestamp?: unknown }>[]): Map<number, number> {
+  const opened = new Map<number, number>();
+  const firstReply = new Map<number, number>();
+  for (const { message, turnIndex } of entries) {
+    if (turnIndex === null) continue;
+    if (message.role === 'user') {
+      if (!opensTurn(message)) continue;
+      const ts = messageTimeMs(message.timestamp);
+      if (ts !== undefined) opened.set(turnIndex, ts);
+      else opened.delete(turnIndex);
+      firstReply.delete(turnIndex);
+    } else if (message.role === 'assistant' && !firstReply.has(turnIndex)) {
+      const ts = messageTimeMs(message.timestamp);
+      if (ts !== undefined) firstReply.set(turnIndex, ts);
+    }
+  }
+  for (const [turnIndex, ts] of firstReply) {
+    if (!opened.has(turnIndex)) opened.set(turnIndex, ts);
+  }
+  return opened;
+}
+
+/** When the newest turn started, by {@link turnStartTimes}; undefined with no turn. */
+export function newestTurnStart(messages: readonly (TurnLike & { timestamp?: unknown })[]): number | undefined {
+  const projected = projectTurns(messages);
+  const newest = newestProjected(projected);
+  return newest === null ? undefined : turnStartTimes(projected).get(newest);
 }
 
 /**

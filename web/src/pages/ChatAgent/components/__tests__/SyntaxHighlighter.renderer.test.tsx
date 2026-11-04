@@ -39,7 +39,6 @@ type Shape = { wrapLines?: boolean; [prop: string]: unknown };
 const shapes: Array<[string, Shape]> = [
   ['chat', { wrapLongLines: true, customStyle: { margin: 0, padding: '1rem' }, codeTagProps: { style: { backgroundColor: 'transparent' } } }],
   ['file viewer', { showLineNumbers: true, wrapLines: true }],
-  ['numbered long lines', { showLineNumbers: true, wrapLongLines: true }],
   ['bare', {}],
 ];
 
@@ -69,6 +68,19 @@ describe('highlightRenderer', () => {
       });
     }
   }
+
+  // The one shape drawn differently on purpose: the library's flex row makes each
+  // token a column, so a long line breaks apart instead of wrapping.
+  it('keeps a wrapped, numbered line as one run of text beside its number', () => {
+    const html = draw('python', 'values = field(default_factory=list)\n', oneDark, { showLineNumbers: true, wrapLongLines: true, wrapLines: true }, createHighlightRenderer());
+    const row = document.createElement('div');
+    row.innerHTML = html;
+    const line = row.querySelector<HTMLElement>('code > span')!;
+    expect(line.style.display).toBe('flex');
+    expect(line.children).toHaveLength(2);
+    expect(line.children[0].className).toContain('linenumber');
+    expect(line.children[1].textContent).toBe('values = field(default_factory=list)\n');
+  });
 
   it('shares one style object between tokens with the same classes', () => {
     const rows = [{ type: 'element' as const, tagName: 'span' as const, properties: { className: [] }, children: [

@@ -16,7 +16,13 @@ harness wrote rather than the user, and it takes one shape per model:
 
 A tool result is never merged into. Harness text inside a tool result would sit
 under the provenance label that says "untrusted", so after a tool batch the
-text is a standalone message instead.
+text is a standalone message instead. Nor is a summary: a provider's own
+summary goes out as its block alone, which would leave behind any text merged
+into it.
+
+A row that carries text a tool returned (``USER_ROLE_KINDS``) takes the
+reminder shape on every carrier: on an operator role that text would read as
+the operator's own.
 
 Composing the request is one pass through this module, and it hands back the
 site the cache breakpoint may go on.
@@ -44,7 +50,8 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
     update_text,
 )
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
-from ptc_agent.agent.middleware.runtime_context.turn import MARKET_WATCH_ROW_KIND
+from ptc_agent.agent.middleware.runtime_context.turn import LAST_STEP_ROW_KIND, MARKET_WATCH_ROW_KIND
+from ptc_agent.agent.transcript.classify import is_summary_message
 
 logger = logging.getLogger(__name__)
 
@@ -206,12 +213,14 @@ def _carry(
             continue
         if per_call and turn_scoped and _append_turn_scoped(carried, text):
             continue
-        if shape in _OPERATOR_SHAPES and _append_operator_text(
-            carried, text, shape, RUNTIME_UPDATE_SOURCE
+        if (
+            shape in _OPERATOR_SHAPES
+            and _row_kind(message) not in USER_ROLE_KINDS
+            and _append_operator_text(carried, text, shape, RUNTIME_UPDATE_SOURCE)
         ):
             continue
         block = frame_reminder(text)
-        if carried and isinstance(carried[-1], HumanMessage):
+        if carried and isinstance(carried[-1], HumanMessage) and not is_summary_message(carried[-1]):
             carried[-1] = _with_text_block(carried[-1], block)
             site = PinSite(len(carried) - 1, len(carried[-1].content) - 1)
         else:
@@ -240,6 +249,9 @@ def may_hold_breakpoint(message: Any) -> bool:
 #: Row kinds true for one model call only, superseded by the next copy.
 _PER_CALL_KINDS = frozenset({MARKET_WATCH_ROW_KIND})
 
+#: Row kinds carrying text a tool returned, which go out in the user role.
+USER_ROLE_KINDS = frozenset({LAST_STEP_ROW_KIND})
+
 #: The wire value of a turn-scoped system message's ``clear_at``.
 CLEAR_AT_NEXT_USER_MESSAGE = "next_user_message"
 
@@ -258,9 +270,13 @@ def spent_stamps(messages: list[Any]) -> set[int]:
     }
 
 
-def _is_per_call_row(message: Any) -> bool:
+def _row_kind(message: Any) -> str | None:
     meta = (message.additional_kwargs or {}).get(RUNTIME_UPDATE_KEY)
-    return isinstance(meta, dict) and meta.get("kind") in _PER_CALL_KINDS
+    return meta.get("kind") if isinstance(meta, dict) else None
+
+
+def _is_per_call_row(message: Any) -> bool:
+    return _row_kind(message) in _PER_CALL_KINDS
 
 
 def _is_input(message: Any) -> bool:

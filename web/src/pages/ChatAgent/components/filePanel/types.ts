@@ -1,3 +1,4 @@
+import type { RectAnchor, SelectionAnchor } from '../selectionQuote/quoteAnchor';
 import type { FileLocation } from '../../utils/fileLocation';
 import type { MemoryTier } from '../../utils/agentPaths';
 import type { BackupResponse } from '@/types/api';
@@ -11,13 +12,11 @@ export interface TreeNode {
   files: string[];
 }
 
-export interface SelectionTooltipData {
-  x: number;
-  y: number;
-  text: string;
+/** A quote from a file, with the source lines it could be traced to. */
+export type FileQuoteAnchor = (SelectionAnchor | RectAnchor) & {
   lineStart?: number | null;
   lineEnd?: number | null;
-}
+};
 
 export interface ContextMenuData {
   x: number;
@@ -25,23 +24,6 @@ export interface ContextMenuData {
   filePath: string;
 }
 
-export interface ContextPayload {
-  path?: string;
-  snippet?: string;
-  label?: string;
-  /**
-   * Where inside the file the snippet came from, when lines are the wrong unit
-   * — a spreadsheet range writes `Model!B4:D9`. Fragment syntax without the
-   * leading `#`, so the composer can write `@path#locator` and the link it
-   * makes reopens exactly what was referenced.
-   */
-  locator?: string;
-  lineStart?: number | null;
-  lineEnd?: number | null;
-  lineCount?: number;
-  /** What made the snippet, when it is not a file's text: `chat`, `paste`, `chart`. */
-  source?: string;
-}
 
 export interface EditorTextSelectData {
   text: string;
@@ -70,6 +52,18 @@ export interface ApiAdapter {
    *  URL is this plus the encoded path). Omitted, the owner's grant serves it. */
   servePrefix?: string;
 }
+
+/**
+ * Who the panel shows the files to, decided once by the panel and handed to
+ * whatever acts on it. Only the owner publishes, comments, and has a file's
+ * record made by looking at it. A read-only panel is the owner looking at a
+ * sibling's files, served under the grant like their own but changed in no
+ * way, a record included. A share's visitor reads under the share's prefix.
+ */
+export type PanelAccess =
+  | { kind: 'owner' }
+  | { kind: 'readOnly' }
+  | { kind: 'share'; servePrefix: string };
 
 export type { UnsavedFile, UnsavedReason } from '@/types/api';
 
@@ -137,6 +131,11 @@ export type PanelTarget =
     seq?: number;
     /** Open in a tab of its own rather than the preview slot. */
     pin?: boolean;
+    /**
+     * A comment on the file to bring forward once its pin is placed, its card
+     * open: a chat line naming it was clicked. HTML files only.
+     */
+    comment?: string | null;
   }
   /** A dev server the agent started in the sandbox; it opens as a tab in the
    *  Files panel. `seq` counts the asks, so the same port twice is two. */
@@ -177,10 +176,10 @@ export function stampTarget(target: UnsequencedTarget, seq: number): PanelTarget
 
 export function fileTarget(
   path: string,
-  { location = null, pin = false }: { location?: FileLocation | null; pin?: boolean },
+  { location = null, pin = false, comment = null }: { location?: FileLocation | null; pin?: boolean; comment?: string | null },
   seq: number,
 ): PanelTarget {
-  return stampTarget({ kind: 'file', path, location, pin }, seq);
+  return stampTarget({ kind: 'file', path, location, pin, ...(comment && { comment }) }, seq);
 }
 
 /** `''` is the workspace root, not the absence of a folder. */

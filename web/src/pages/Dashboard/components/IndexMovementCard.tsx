@@ -229,7 +229,10 @@ function IndexStackWidget({ indices }: { indices: IndexData[] }) {
             key={i}
             onClick={() => goTo(i)}
             aria-label={t('dashboard.widgets.marketsOverview.showIndex', { name: indices[i]?.name })}
-            className="rounded-full transition-all"
+            // Half of the 6px gap each side, so the dots' boxes meet and never
+            // overlap. Down over the 16px between widgets and up only over the
+            // 8px gap (30px, centered 4px low), since the card above opens.
+            className="tap-target rounded-full transition-all [--tap-target-h:30px] [--tap-target-w:calc(100%+6px)] [--tap-target-y:4px]"
             style={{
               width: i === current ? 18 : 6,
               height: 6,

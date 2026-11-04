@@ -34,6 +34,7 @@ from ptc_agent.core.paths import (
 from ptc_agent.core.sandbox import path_locks as _path_locks
 from ptc_agent.core.sandbox.grep_render import render_grep_json
 from ptc_agent.core.sandbox.livefs_runtime.protocol import MOUNT
+from ptc_agent.core.sandbox.path_resolution import held_back, rg_excluded
 from ptc_agent.core.sandbox.retry import RetryPolicy
 from ptc_agent.core.sandbox.runtime import (
     RuntimeState,
@@ -905,6 +906,7 @@ async def aglob_files(
             "excluded_dirs": excluded_dirs,
             "history_children": history_children,
             "mount": MOUNT,
+            "denied": list(held_back()),
         }
         cmd = (
             f"python3 -I -c \"import base64; exec(base64.b64decode('{_GLOB_SCRIPT_B64}').decode())\" "
@@ -994,9 +996,7 @@ async def agrep_content(
         if type:
             cmd.extend(["--type", type])
 
-        cmd.append(pattern)
         search_path = sandbox._normalize_search_path(path)
-        cmd.append(search_path)
 
         # The search path is absolute, so what rg prints is the same from any
         # directory. A directory that is gone (a folder mid-move, or one the
@@ -1008,6 +1008,8 @@ async def agrep_content(
             folder=folder or sandbox._normalize_search_path("."),
             root=sandbox._work_dir,
         )
+        cmd.extend(rg_excluded(held_back(), cwd))
+        cmd.extend([pattern, search_path])
         cmd_str = (
             f"lost=; cd {shlex.quote(cwd)} 2>/dev/null || lost={_GREP_CWD_MISSING}; "
             + " ".join(shlex.quote(c) for c in cmd)

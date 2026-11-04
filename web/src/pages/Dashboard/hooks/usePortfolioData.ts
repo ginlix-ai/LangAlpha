@@ -8,8 +8,9 @@ import {
   updatePortfolioHolding,
 } from '../utils/api';
 import { useQuotes, snapshotToStockPrice } from '@/lib/quotes';
+import { quotePlaces } from '@/lib/bars/currencyDisplay';
 import type { PortfolioHoldingPayload, PortfolioHoldingUpdatePayload } from '../utils/portfolio';
-import type { StockPrice } from '@/types/market';
+import type { ExtendedSessionFields, StockPrice } from '@/types/market';
 
 export interface PortfolioRow {
   user_portfolio_id?: string | number;
@@ -23,9 +24,9 @@ export interface PortfolioRow {
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
   quoteAvailable?: boolean;
-  previousClose?: number | null;
-  earlyTradingChangePercent?: number | null;
-  lateTradingChangePercent?: number | null;
+  /** Places its prices print up to (lib/bars `quotePlaces`), from the quote's own currency and asset class, not the holding's. */
+  places: number;
+  session?: ExtendedSessionFields;
   [key: string]: unknown;
 }
 
@@ -136,9 +137,8 @@ export function usePortfolioData() {
         quoteAvailable,
         unrealizedPlPercent: plPct,
         isPositive: quoteAvailable && plPct != null ? plPct >= 0 : true,
-        previousClose: p.previousClose ?? null,
-        earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
-        lateTradingChangePercent: p.lateTradingChangePercent ?? null,
+        session: p.session,
+        places: p.places ?? quotePlaces(sym, {}),
       };
     });
   }, [holdings, symbols, quotes]);

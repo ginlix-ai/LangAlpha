@@ -26,6 +26,9 @@ OAUTH_RESOURCE_AUDIENCES: tuple[str, ...] = tuple(
     for aud in os.getenv("OAUTH_RESOURCE_AUDIENCE", "").split(",")
     if aud.strip()
 )
+# The issuer's public client the `la` CLI signs in with (PKCE, loopback
+# redirect). Unset, `la login` takes a personal access token instead.
+OAUTH_CLI_CLIENT_ID: str = os.getenv("OAUTH_CLI_CLIENT_ID", "").strip()
 
 # TLS mode for the app-data and checkpointer pools. "prefer" negotiates TLS when the
 # server offers it and falls back to plaintext when it doesn't — the only value that
@@ -64,12 +67,14 @@ SERVER_BASE_URL: str = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
 PUBLIC_APP_URL: str = (os.getenv("PUBLIC_APP_URL", "") or SERVER_BASE_URL).rstrip("/")
 
 # Where this server serves previews that a browser cannot open directly (a
-# private E2B computer's ports): a scheme and host, each preview a subdomain
-# of it. Unset turns the preview proxy off.
+# private E2B computer's ports) and the pages the agent publishes: a scheme and
+# host, each preview and page a subdomain of it. Unset turns the preview proxy
+# off, and pages are served sandboxed from the API origin instead.
 PREVIEW_PROXY_BASE_URL: str = os.getenv("PREVIEW_PROXY_BASE_URL", "").strip()
 
-# Origins allowed to frame a proxied preview, as a CSP frame-ancestors source
-# list. Unset sends none, which leaves framing to the preview itself.
+# Origins allowed to frame a proxied preview or a published page, as a CSP
+# frame-ancestors source list. Unset sends none, which leaves framing to the
+# preview itself.
 PREVIEW_PROXY_FRAME_ANCESTORS: str = os.getenv("PREVIEW_PROXY_FRAME_ANCESTORS", "").strip()
 
 # Where this deployment serves its OAuth client metadata document (CIMD). An
@@ -135,6 +140,26 @@ AUTOMATION_WEBHOOK_SECRET: str = os.getenv("AUTOMATION_WEBHOOK_SECRET", "")
 # list_message_targets, which deliver to the messaging channels connected to
 # the user's account. Unset, neither tool exists.
 CHANNEL_GATEWAY_URL: str = os.getenv("CHANNEL_GATEWAY_URL", "").strip().rstrip("/")
+
+# Apple Push Notification service, for the iOS app. Push is on only when the
+# key id, the team id, the .p8 key (inline PEM, whose newlines may arrive as
+# literal ``\n``, or a path) and the app's bundle ids are all set; the key file
+# is read on first send.
+APNS_KEY_ID: str = os.getenv("APNS_KEY_ID", "").strip()
+APNS_TEAM_ID: str = os.getenv("APNS_TEAM_ID", "").strip()
+APNS_PRIVATE_KEY: str = os.getenv("APNS_PRIVATE_KEY", "").replace("\\n", "\n").strip()
+APNS_PRIVATE_KEY_PATH: str = os.getenv("APNS_PRIVATE_KEY_PATH", "").strip()
+# The APNs topics a device may register under: the bundle ids of the app
+# builds this server pushes to. No default, since they name one team's apps.
+APNS_BUNDLE_IDS: tuple[str, ...] = tuple(
+    b.strip() for b in os.getenv("APNS_BUNDLE_IDS", "").split(",") if b.strip()
+)
+APNS_ENABLED: bool = bool(
+    APNS_KEY_ID
+    and APNS_TEAM_ID
+    and (APNS_PRIVATE_KEY or APNS_PRIVATE_KEY_PATH)
+    and APNS_BUNDLE_IDS
+)
 
 # Host IP for local LLM providers (Ollama, LM Studio, vLLM).
 # In Docker, "localhost" means the container — use host.docker.internal to reach the host.

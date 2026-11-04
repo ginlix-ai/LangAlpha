@@ -140,6 +140,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }
               <input
                 ref={searchInputRef}
                 type="text"
+                aria-label={t('dashboard.searchLabel')}
                 placeholder={t('dashboard.searchPlaceholder')}
                 value={searchValue}
                 onChange={(e) => { setSearchValue(e.target.value); setShowDropdown(e.target.value.trim() !== ''); }}

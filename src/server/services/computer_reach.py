@@ -27,7 +27,7 @@ from ptc_agent.agent.tools.computer_reach import (
     ComputerUnreachable,
     file_refusal,
 )
-from ptc_agent.core.paths import lexical_path
+from ptc_agent.core.paths import langalpha_config_dir, lexical_path
 from ptc_agent.core.project_context import (
     MachinePaths,
     ProjectContext,
@@ -81,8 +81,8 @@ class _Reached:
     #: The last wake, running or done. A call that stops waiting leaves it
     #: running, and the next call waits on it rather than starting another.
     wake: asyncio.Task[Session] | None = None
-    #: The session the login home was read for, and that home.
-    home: tuple[Session, str | None] | None = None
+    #: The session the machine's paths were read for, and those paths.
+    paths: tuple[Session, MachinePaths] | None = None
     #: When a call last counted as use of the computer.
     stamped: float = float("-inf")
 
@@ -264,7 +264,7 @@ class TurnComputers:
                 workspace_id="",
                 dir_name=None,
                 sibling_dir_names=tuple(folders),
-                machine=MachinePaths(home=await self._home(computer_id, session)),
+                machine=await self._paths(computer_id, session),
             ),
             root=_root(row),
         )
@@ -273,24 +273,30 @@ class TurnComputers:
             await self._keep_alive(computer_id, session)
         return target, folders
 
-    async def _home(self, computer_id: str, session: Session) -> str | None:
+    async def _paths(self, computer_id: str, session: Session) -> MachinePaths:
         """The home of the user a computer's commands run as, once per session,
-        which opens the whole machine to a file call; None where a file call
-        would run as someone else, whose files stay held to the root and
-        ``/tmp``."""
+        which opens the whole machine to a file call, with LangAlpha's config
+        folder there held back; neither where a file call would run as
+        someone else, whose files stay held to the root and ``/tmp``."""
         sandbox = session.sandbox
         if sandbox is None or sandbox.runtime is None or not sandbox.files_as_command_user:
-            return None
+            return MachinePaths()
         record = self._record(computer_id)
-        if record.home is not None and record.home[0] is session:
-            return record.home[1]
+        if record.paths is not None and record.paths[0] is session:
+            return record.paths[1]
         try:
             home = (await sandbox.runtime.login_home()) or None
+            denied = (
+                (langalpha_config_dir(home, (await sandbox.runtime.login_config_home()) or None),)
+                if home
+                else ()
+            )
+            paths = MachinePaths(home=home, denied=denied)
         except Exception as e:  # noqa: BLE001 - held to the root, the call still runs
             logger.warning("Could not read the home of %s: %s", computer_id, e)
-            return None
-        record.home = (session, home)
-        return home
+            return MachinePaths()
+        record.paths = (session, paths)
+        return paths
 
     async def attach(self, files: Sequence[tuple[str, str]]) -> list[Attached]:
         """The files a send names, each by a computer and its whole path there.

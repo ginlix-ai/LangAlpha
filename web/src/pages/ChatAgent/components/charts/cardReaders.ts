@@ -6,7 +6,7 @@
  * `cardWords`.
  */
 import type { RefObject } from 'react';
-import { resolveCurrency, isIndexListing, quoteCurrency, timezoneForSymbol, type ChartBar } from '@/lib/bars';
+import { resolveCurrency, isIndexListing, quoteCurrency, quotePlaces, timezoneForSymbol, type ChartBar } from '@/lib/bars';
 import { resolveDualName } from '@/lib/displayName';
 import { parseCalendarDay } from '@/lib/format';
 import { asQuoteTier, hasFreshnessFields, isLiveRow, type FreshnessFields } from '@/lib/freshness';
@@ -202,6 +202,8 @@ export interface StockPrices {
   symbol?: string;
   /** What the figures print in, or null for an index, whose level is points. */
   currency: string | null;
+  /** Places its prices print up to (lib/bars `quotePlaces`), so a sub-dollar close keeps its digits. */
+  places: number;
   /** The venue's zone, the clock every bar's time is written in. */
   tz: string;
   /** What `chartBars` are drawn at, as the bars API names it: `1day`, `1hour`. */
@@ -219,7 +221,7 @@ export interface StockPrices {
   high?: number;
   low?: number;
   avgVolume?: number;
-  /** The daily return's standard deviation, as a fraction. */
+  /** The daily return's standard deviation, in percent. */
   volatility?: number;
   ma20?: number;
   ma50?: number;
@@ -240,10 +242,12 @@ export function readStockPrices(artifact: Record<string, unknown>): StockPrices 
   const days = chartBars(sentRows, tz);
   const intraday = chartBars(artifact.chart_ohlcv, tz);
   const interval = text(artifact.chart_interval) ?? 'daily';
+  const lastClose = sentRows.length ? finite(sentRows[sentRows.length - 1].close) : undefined;
   return {
     symbol,
     // The tool stamps its currency; an older artifact falls back to the suffix.
     currency: quoteCurrency(text(artifact.price_currency), symbol),
+    places: quotePlaces(symbol, { currency: text(artifact.price_currency), assetClass: text(artifact.asset_class), price: lastClose }),
     tz,
     // The tool says `daily` where the bars API says `1day`.
     interval: interval === 'daily' ? '1day' : interval,
@@ -253,7 +257,7 @@ export function readStockPrices(artifact: Record<string, unknown>): StockPrices 
         first: barDay(sentRows[0], tz),
         mid: barDay(sentRows[Math.floor((sentRows.length - 1) / 2)], tz),
         last: barDay(sentRows[sentRows.length - 1], tz),
-        lastClose: finite(sentRows[sentRows.length - 1].close),
+        lastClose,
       }
       : null,
     chartBars: inTimeOrder(intraday.length ? intraday : days),
@@ -303,6 +307,8 @@ export interface QuoteDisplay extends FreshnessFields {
    *  whose level is points whatever its venue stamps. */
   currency: string | null;
   isIndex: boolean;
+  /** Places its prices print at (lib/bars `quotePlaces`). */
+  places: number;
 }
 
 /**
@@ -335,6 +341,11 @@ function quoteDisplay(q: Record<string, unknown>): QuoteDisplay {
     tier: asQuoteTier(q.tier),
     freshness: asFreshness(q.freshness),
     isIndex,
+    places: quotePlaces(symbol, {
+      currency: text(q.currency),
+      assetClass: text(q.asset_class),
+      price: finite(q.previous_close) ?? finite(q.price),
+    }),
   };
   const leadsWithClose = status === 'early_trading' || status === 'late_trading' || status === 'closed';
   if (leadsWithClose && regularClose != null) {

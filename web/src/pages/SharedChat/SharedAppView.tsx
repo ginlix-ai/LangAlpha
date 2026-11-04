@@ -1,5 +1,6 @@
 import React from 'react';
 import { APP_PREVIEW_SANDBOX } from '../ChatAgent/components/viewers/html/sandbox';
+import { HostedFrame } from '../ChatAgent/components/viewers/HostedFrame';
 import { ShareTopBar } from './ShareTopBar';
 import type { SharedAppMetadata } from './api';
 import './SharePage.css';
@@ -18,7 +19,7 @@ export default function SharedAppView({ metadata }: SharedAppViewProps): React.R
     <div className="share-page">
       <ShareTopBar name={metadata.title} />
       <div className="share-content">
-        <iframe src={metadata.url} className="share-frame" title={metadata.title} sandbox={APP_PREVIEW_SANDBOX} />
+        <HostedFrame src={metadata.url} className="share-frame" title={metadata.title} sandbox={APP_PREVIEW_SANDBOX} />
       </div>
     </div>
   );

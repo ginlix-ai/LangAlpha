@@ -801,20 +801,77 @@ def provider_cutoff(messages: list[AnyMessage], cutoff_index: int) -> int:
     return 0
 
 
-def turn_start_cut(messages: list[AnyMessage]) -> int:
+def _complete_step_end(messages: Sequence[AnyMessage]) -> int:
+    """Right after the newest model step in ``messages``, the human messages
+    after it aside, when that step is complete: an answer that called no tool,
+    or one whose every call has its result. 0 when it is not, or there is none.
+    """
+    i = len(messages) - 1
+    while i >= 0 and isinstance(messages[i], HumanMessage):
+        i -= 1
+    end = i + 1
+    while i >= 0 and isinstance(messages[i], ToolMessage):
+        i -= 1
+    if i < 0 or not isinstance(messages[i], AIMessage):
+        return 0
+    calls = messages[i].tool_calls
+    if not calls:
+        return end if end == i + 1 else 0
+    answered = {m.tool_call_id for m in messages[i + 1 : end]}
+    return end if all(call["id"] in answered for call in calls) else 0
+
+
+def turn_start_cut(messages: Sequence[AnyMessage], *, after_tools: bool = False) -> int:
     """Where a summary that keeps no turn ends on a turn's first call: right
     after the last answer, which called no tool, with the user's new message
     after it; 0 anywhere else. Mid-loop there is none, since a kept tool
     result needs the call it answers, and that call its thinking.
+
+    ``after_tools`` takes a complete tool group as that answer too, as a
+    turn cancelled mid-tool leaves once PatchToolCalls has answered its calls.
+    Only a run's first call may: mid-run the same shape, with a row after the
+    results, is a step whose answer is still to come. A group that steering
+    opened (its ``Task(action="resume")``) is not one: it runs before the run's
+    first call, after the user's message, which a cut there would summarize.
     """
-    for i in range(len(messages) - 1, 0, -1):
-        message = messages[i]
-        if isinstance(message, ToolMessage):
-            return 0
-        if isinstance(message, AIMessage):
-            following = messages[i + 1] if i + 1 < len(messages) else None
-            return i + 1 if not message.tool_calls and isinstance(following, HumanMessage) else 0
-    return 0
+    end = _complete_step_end(messages)
+    if not 0 < end < len(messages):
+        return 0
+    if isinstance(messages[end - 1], AIMessage):
+        return end
+    if not after_tools:
+        return 0
+    return 0 if _steered(messages, end) else end
+
+
+def step_cut(messages: Sequence[AnyMessage]) -> int:
+    """Where a summary that keeps no turn ends mid-turn: right after the
+    results of the newest step, the human messages after them aside, which
+    stay after the summary; 0 unless that step called tools and has every
+    result. Its calls and results go with the summary (see ``carry``). A
+    step steering made is not the agent's, and the user's message before it
+    must stay word for word, so it has no cut either.
+    """
+    end = _complete_step_end(messages)
+    if not end or not isinstance(messages[end - 1], ToolMessage):
+        return 0
+    return 0 if _steered(messages, end) else end
+
+
+def _steered(messages: Sequence[AnyMessage], end: int) -> bool:
+    """Whether the step ending at ``end`` is one steering opened (its
+    ``Task(action="resume")``), not one the agent's model made."""
+    step = next(m for m in reversed(messages[:end]) if isinstance(m, AIMessage))
+    return (step.additional_kwargs or {}).get("lc_source") == "steering"
+
+
+def settled_end(messages: Sequence[AnyMessage]) -> int:
+    """Where a summary of all of ``messages`` ends between turns: their end,
+    when their newest step is complete; 0 while a tool call in it has no
+    result, as after a turn cancelled mid-tool, since only the next turn's
+    start answers it.
+    """
+    return len(messages) if _complete_step_end(messages) else 0
 
 
 def strip_orphan_tool_messages(tail: list[AnyMessage]) -> list[AnyMessage]:

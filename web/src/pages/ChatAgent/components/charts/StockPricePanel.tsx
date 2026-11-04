@@ -131,7 +131,7 @@ export function StockPriceChart({ data }: PanelProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   // Held across renders: the chart is drawn from these, and a new array would redraw it.
   const prices = useMemo(() => readStockPrices(data), [data]);
-  const { symbol, interval, chartBars, currency } = prices;
+  const { symbol, interval, chartBars, currency, places } = prices;
   const daily = interval === '1day';
 
   useEffect(() => {
@@ -171,8 +171,9 @@ export function StockPriceChart({ data }: PanelProps): React.ReactElement {
         meta={firstDay && lastDay ? formatCalendarDayRange(firstDay, lastDay, locale) : undefined}
       >
         <div className="term-line" style={{ marginBottom: 10 }}>
-          {lastClose != null && <span className="term-big term-hero">{formatMoney(lastClose, currency, locale)}</span>}
+          {lastClose != null && <span className="term-big term-hero">{formatMoney(lastClose, currency, locale, { upTo: places })}</span>}
           <TermChange value={prices.changePct} />
+          {prices.changePct != null && <span className="term-t3 term-label">{t('toolArtifact.period')}</span>}
           {/* The chart below may be drawn from another publisher than the daily close. */}
           {prices.chartFreshness && (
             <FreshnessBadge freshness={prices.chartFreshness} source={prices.chartSource} chartSymbol={symbol ?? ''} />
@@ -206,13 +207,13 @@ function StockStats({ prices }: { prices: StockPrices }): React.ReactElement | n
   const locale = useLocale();
   const { t } = useTranslation();
   const { high, low, avgVolume, volatility, ma20, ma50 } = prices;
-  const money = (n: number) => formatMoney(n, prices.currency, locale);
+  const money = (n: number) => formatMoney(n, prices.currency, locale, { upTo: prices.places });
 
   const pairs = [
     high != null && [t('toolArtifact.periodHigh'), money(high)] as const,
     low != null && [t('toolArtifact.periodLow'), money(low)] as const,
     avgVolume != null && [t('toolArtifact.avgVolume'), compactNumberFixed2(avgVolume, locale)] as const,
-    volatility != null && [t('toolArtifact.volatility'), `${(volatility * 100).toFixed(1)}%`] as const,
+    volatility != null && [t('toolArtifact.volatility'), `${volatility.toFixed(2)}%`] as const,
     ma20 != null && ['MA20', money(ma20)] as const,
     ma50 != null && ['MA50', money(ma50)] as const,
   ].filter((p) => !!p);

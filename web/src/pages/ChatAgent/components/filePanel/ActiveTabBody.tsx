@@ -4,7 +4,8 @@ import type { OpenFileHandler } from '../../utils/fileLocation';
 import type { MarketWatchState } from '../../session/marketWatchEvents';
 import { SandboxSettingsContent } from '../SandboxSettingsPanel';
 import type { SubagentInfo } from '../ToolCallDetailView';
-import type { ApiAdapter, ChartTabSpec, ContextPayload, PanelTarget } from './types';
+import type { ContextPayload } from '@/components/ui/chat-input.types';
+import type { ApiAdapter, ChartTabSpec, PanelTarget } from './types';
 import type { FileTab, FileTabsApi } from './useFileTabs';
 import { ChartTab } from './ChartTab';
 import { StoreTab } from './StoreTab';
@@ -40,7 +41,7 @@ interface ActiveTabBodyProps {
   canUpload: boolean;
 }
 
-/** What fills the viewer slot for the active tab. Preview panes are rendered beside this, always mounted. */
+/** What fills the viewer slot for the active tab. Preview panes are rendered beside this, kept mounted. */
 export function ActiveTabBody({
   activeTab, tabs, workspaceId, apiAdapter, target, onTargetMemoryHandled, onTargetMemoHandled, marketWatch,
   threadId, isActive, onOpenFile, onOpenSubagentTask, transcript, onAddContext,

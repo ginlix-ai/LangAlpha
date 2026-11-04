@@ -214,6 +214,122 @@ async def test_the_key_goes_on_the_deletes_connection(machine):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_its_claude_code_token_goes_before_the_tunnel_and_never_stops_the_rest(machine, monkeypatch, fails):
+    machine["link"] = link = _Link(_said("removed\n"))
+
+    async def remove(on, computer_id):
+        machine["events"].append(("claude code token", computer_id, on))
+        if fails:
+            raise RuntimeError("the machine said no")
+        return True
+
+    monkeypatch.setattr("src.server.services.claude_code.machine.remove_for_removed_computer", remove)
+    left = await _leave(_computer(tunnel="tun-1"))
+
+    assert machine["events"][:4] == [
+        ("link", "dev", "tun-1"), ("owed", "c-1"), ("claude code token", "c-1", link), ("release", "c-1", link),
+    ]
+    assert left.key is not None and left.tunnel_released is True
+
+
+def _kept_answer(monkeypatch, file, **found):
+    """The computer's last kept Claude Code answer naming ``file`` and what
+    else the machine said (``found``), None for none kept; the computers
+    whose answer was then dropped."""
+    from src.server.services.claude_code import machine as claude_code
+
+    answer = None if file is None else claude_code.MachineAnswer(file, **found)
+    forgotten: list[str] = []
+    monkeypatch.setattr(claude_code, "read_answer", AsyncMock(return_value=answer))
+    monkeypatch.setattr(claude_code, "forget_answer", AsyncMock(side_effect=forgotten.append))
+    return forgotten
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file", ["works", "refused", "unknown", "invalid"])
+async def test_a_token_a_machine_not_reached_last_held_is_told_with_its_path(machine, monkeypatch, file):
+    forgotten = _kept_answer(monkeypatch, file)
+
+    left = await _leave(_computer())
+
+    assert left.token.model_dump() == {
+        "outcome": "unreached",
+        "path": "~/.config/langalpha/claude-code/c-1",
+    }
+    assert forgotten == ["c-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("folder", "path"),
+    [
+        ("~/cfg/langalpha/claude-code", "~/cfg/langalpha/claude-code/c-1"),
+        ("/srv/cfg/langalpha/claude-code", "/srv/cfg/langalpha/claude-code/c-1"),
+    ],
+)
+async def test_a_token_is_told_in_the_folder_the_machine_last_named(machine, monkeypatch, folder, path):
+    """A login's own XDG_CONFIG_HOME keeps the token there, as its last answer said."""
+    _kept_answer(monkeypatch, "works", folder=folder)
+
+    left = await _leave(_computer())
+
+    assert left.token.model_dump() == {"outcome": "unreached", "path": path}
+
+
+@pytest.mark.asyncio
+async def test_a_token_left_where_perl_is_missing_is_still_told(machine, monkeypatch):
+    _kept_answer(monkeypatch, "no_perl", present=True)
+
+    left = await _leave(_computer())
+
+    assert left.token.model_dump() == {"outcome": "unreached", "path": "~/.config/langalpha/claude-code/c-1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file", [None, "none", "no_perl"])
+async def test_a_machine_not_reached_that_held_no_token_tells_none(machine, monkeypatch, file):
+    _kept_answer(monkeypatch, file)
+
+    left = await _leave(_computer())
+
+    assert left.token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("file", "error", "told"),
+    [
+        ("works", None, None),
+        ("works", RuntimeError("a symlink in its place"), "failed"),
+        ("none", RuntimeError("could not read its folder"), None),
+        ("works", TimeoutError(), "unreached"),
+        ("works", asyncssh.DisconnectError(11, "bye"), "unreached"),
+    ],
+    ids=["removed", "refused-there", "refused-there-holding-none", "timeout", "disconnect"],
+)
+async def test_a_reached_machine_tells_its_token_when_its_removal_did_not_take_it(
+    machine, monkeypatch, file, error, told
+):
+    """Lost under the removal, the machine may still hold it; one that answered
+    but could not delete it holds it, and the owner has no other way to it."""
+    _kept_answer(monkeypatch, file)
+    machine["link"] = _Link(_said("removed\n"))
+
+    async def remove(on, computer_id):
+        if error is not None:
+            raise error
+        return True
+
+    monkeypatch.setattr("src.server.services.claude_code.machine.remove_for_removed_computer", remove)
+    left = await _leave(_computer())
+
+    assert (left.token.model_dump() if left.token else None) == (
+        told and {"outcome": told, "path": "~/.config/langalpha/claude-code/c-1"}
+    )
+
+
+@pytest.mark.asyncio
 async def test_another_computer_on_the_login_keeps_it_and_is_named(machine):
     machine["link"] = link = _Link()
     machine["others"] = [_computer("c-2", name="Studio Mac")]

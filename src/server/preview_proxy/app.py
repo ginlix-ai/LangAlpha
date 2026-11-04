@@ -22,6 +22,7 @@ from opentelemetry.context import _SUPPRESS_INSTRUMENTATION_KEY
 from src.server.preview_proxy.activity import PreviewActivity
 from src.server.preview_proxy.headers import request_headers, response_headers
 from src.server.preview_proxy.limits import SandboxSlots
+from src.server.preview_proxy.artifacts import serve_artifact
 from src.server.preview_proxy.ws import relay_websocket
 from src.server.services.preview_base import PreviewBase
 from src.server.services.preview_capabilities import (
@@ -146,8 +147,9 @@ async def _until_disconnect(receive: Any) -> None:
 
 class PreviewProxy:
     """Serves ``<port>-<token>.<base>`` by forwarding to the sandbox port the
-    capability opens, with the header the sandbox requires. Every request it
-    does not claim goes on to *app*."""
+    capability opens, with the header the sandbox requires, and
+    ``artifact-<id>.<base>`` from an artifact's published versions
+    (``artifacts.py``). Every request it does not claim goes on to *app*."""
 
     def __init__(
         self,
@@ -218,6 +220,20 @@ class PreviewProxy:
     async def _serve(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         websocket = scope["type"] == "websocket"
         host = _header(scope, b"host") or ""
+        artifact_id = self.base.parse_artifact(host)
+        if artifact_id is not None:
+            # A version is files, so there is nothing for a socket to reach.
+            if websocket:
+                await send({"type": "websocket.close", "code": 1008})
+            else:
+                await serve_artifact(
+                    scope,
+                    receive,
+                    send,
+                    artifact_id=artifact_id,
+                    frame_ancestors=self._frame_ancestors,
+                )
+            return
         capability: Capability | None = None
         status = 404
         try:

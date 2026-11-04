@@ -15,6 +15,7 @@ from typing import Any
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.agent.subagents.merge import turn_roster
 
+from src.llms.claude_code import is_claude_code_model
 from src.llms.preferences import (
     Tuning,
     compaction_profile_for,
@@ -40,6 +41,7 @@ from .availability import (
 from . import logger
 
 from .capabilities import PlanTier, gate_capabilities
+from .claude_code import drop_claude_code_roles, require_runnable
 from .clients import resolve_clients
 from .subagents import (
     demote_clientless,
@@ -89,19 +91,41 @@ def saved_default_model(model_pref: dict, slot: str) -> str | None:
 
     An unset Background default is the primary one, as Settings says ("Same as
     Primary model"), unless the user chose Auto for it, which keeps the
-    deployment's Background model even beside a saved primary.
+    deployment's Background model even beside a saved primary. A Claude Code
+    primary is never followed: a Background job is one chat model call, which
+    such a row does not make (``drop_claude_code_roles``).
     """
     saved = model_pref.get(_SLOT_MODEL_MAP[slot][1])
     if saved or slot != "background" or model_pref.get("background_follows") == "deployment":
         return saved or None
-    return model_pref.get("preferred_model") or None
+    primary = model_pref.get("preferred_model")
+    return None if is_claude_code_model(primary) else primary or None
+
+
+def deployment_llm():
+    """The deployment's own ``LLMConfig``, or None when it names no model."""
+    from src.server.app import setup
+
+    return setup.agent_config.llm if setup.agent_config and setup.agent_config.llm else None
+
+
+def plan_exempt_models(llm, slot: str) -> frozenset[str]:
+    """The deployment's own models a turn in ``slot`` runs whatever the plan.
+
+    They are the operator's call, as a subagent's own pin is, and pass where
+    they would run unasked: the main model anywhere, the Background model only
+    in the Background slot and the roles that inherit it, not as a primary
+    turn's own model.
+    """
+    if not llm:
+        return frozenset()
+    main = frozenset({llm.name})
+    return main | {slot_model(llm, "background")} if slot == "background" else main
 
 
 def system_default_models() -> dict[str, str]:
     """The deployment's default models, as the models API publishes them."""
-    from src.server.app import setup
-
-    llm = setup.agent_config.llm if setup.agent_config and setup.agent_config.llm else None
+    llm = deployment_llm()
     return {
         "default_model": llm.name if llm else "",
         "background_model": (llm.background or "") if llm else "",
@@ -296,17 +320,14 @@ async def gate_models_by_plan(
     not ask. Every saved model reads as unset instead
     (``drop_off_plan_models``), the Default included, so a turn that names
     none runs the deployment's, as the composer starts on it. The
-    deployment's defaults are the operator's call, as a subagent's own pin
-    is, and pass where they would run unasked: its main model anywhere, its
-    Background only in the Background slot and the roles that inherit it,
-    not as a primary turn's own model.
+    deployment's own defaults pass where they would run unasked
+    (``plan_exempt_models``).
     """
     llm = base_config.llm
-    main = frozenset({llm.name}) if llm else frozenset()
-    background = main | {slot_model(llm, "background")} if llm else frozenset()
-    exempt = {key: background for key in _MODEL_PREF_KEYS}
+    main = plan_exempt_models(llm, "primary")
+    exempt = {key: plan_exempt_models(llm, "background") for key in _MODEL_PREF_KEYS}
     exempt["preferred_model"] = exempt["fallback_models"] = main
-    named_exempt = background if slot == "background" else main
+    named_exempt = plan_exempt_models(llm, slot)
     byok_cache: dict[str, dict | None] = {}
 
     async def on_plan(name: str) -> bool:
@@ -392,6 +413,8 @@ def apply_compaction(
     from ptc_agent.config.agent import COMPACTION_PROFILES
 
     config.compaction.native = not custom and tuning.native_compaction is not False
+    if tuning.cold_compaction is False:
+        config.compaction.cold_compact_tokens = 0
     profile = tuning.compaction_profile
     if not isinstance(profile, str):
         profile = compaction_profile_for(entry)
@@ -528,6 +551,14 @@ async def resolve_llm_config(
         model_pref, dropped = drop_dead_models(saved_pref, role_keys)
         if dropped:
             logger.info(f"[CHAT] Ignoring saved models not in the manifest for user={user_id}: {dropped}")
+        # Chief of Staff does not run on a Claude Code row either, so its turn
+        # reads such a default as unset and runs the deployment's model, as a
+        # Background job does (one chat model call, which such a row does not
+        # make); a Claude Code row named for the turn is refused.
+        model_pref, _ = drop_claude_code_roles(
+            model_pref,
+            [*role_keys, _SLOT_MODEL_MAP[slot][1]] if role == "chief_of_staff" or slot == "background" else role_keys,
+        )
 
         # One tier read for every plan gate the turn runs.
         permits = PlanTier(user_id)
@@ -545,6 +576,14 @@ async def resolve_llm_config(
 
         await load_user_context(config, user_id, workspace_id, model_pref)
         selection = select_model(config, model_pref, slot, request_model)
+        if is_claude_code_model(selection.effective_model):
+            config.claude_code_hosted, config.claude_code_saved = await require_runnable(
+                config, selection.effective_model, role, user_id=user_id, workspace_id=workspace_id,
+                thread_id=thread_id,
+            )
+            # A Claude Code turn stops when its plan runs out rather than move
+            # to another model.
+            config.llm.fallback = []
 
         # The model running this turn is settled here: everything below tunes it
         # rather than choosing it. Tuning reads go through the per-model resolver so

@@ -4,13 +4,14 @@
 import { api } from '@/api/client';
 import { displaySpelling } from '@/lib/bars/exchanges';
 
-interface MarketStatusData {
+export interface MarketStatusData {
   market?: string;
   afterHours?: boolean;
   earlyHours?: boolean;
   [key: string]: unknown;
 }
 
+/** The extended-session fields, in either spelling: a display row's camelCase or the raw snapshot's snake_case. */
 interface ExtendedHoursRow {
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
@@ -28,20 +29,14 @@ interface ExtendedHoursRow {
   regular_trading_change?: number | null;
   previousClose?: number | null;
   previous_close?: number | null;
-  [key: string]: unknown;
 }
 
-interface ExtendedHoursInfo {
-  extPct: number | null;
-  extLabel: string | null;
-  extType: 'pre' | 'post' | null;
-  extPrice: number | null;
-  extChange: number | null;
-  /** The close the extended move is measured against: regular close for post, prev close for pre. */
-  extAnchor: number | null;
-  prevClose: number | null;
-  /** Official regular-session close (prevClose + regular_trading_change); null when the row lacks it. */
-  regularClose: number | null;
+/** A quote row as {@link sessionQuote} reads it: its own figures, and its extended-session fields beside them. */
+export interface SessionRow {
+  price?: number | null;
+  change?: number | null;
+  changePercent?: number | null;
+  session?: ExtendedHoursRow | null;
 }
 
 /** One row of `GET /api/v1/market-data/search/stocks`. */
@@ -72,78 +67,105 @@ export function normalizeIndexKey(symbol: string): string {
   return String(symbol ?? '').trim().replace(/^\^/, '').toUpperCase();
 }
 
+export interface SessionQuote {
+  /**
+   * The row's big number and its change. In an extended session it is the
+   * last official close (market convention): today's regular close after
+   * hours with its change against the previous close, the previous close
+   * before the open with no change yet. Otherwise it is the row's own price.
+   */
+  headline: { price: number | null; change: number | null; pct: number | null };
+  /** The extended-hours print against its own anchor, when the venue is in one and the row carries it. */
+  ext: {
+    type: 'pre' | 'post';
+    label: string;
+    price: number;
+    change: number | null;
+    pct: number;
+  } | null;
+}
+
 /**
- * Compute extended-hours display info from market status and a data row.
- * Accepts both camelCase (snapshot-enriched rows) and snake_case (raw snapshot) field names.
+ * Split a quote into its official close and its extended-hours move, the one
+ * rule the stock header and every watchlist or portfolio row follow, so the
+ * extended move is never counted inside the headline change as well. The
+ * headline defaults to the row's own figures. A live tick (`livePrice`)
+ * stands in for the row's extended price.
  */
-export function getExtendedHoursInfo(
+export function sessionQuote(
   marketStatus: MarketStatusData | null,
-  data: ExtendedHoursRow | null,
-  { shortLabels = false } = {},
-): ExtendedHoursInfo {
+  row: SessionRow | null,
+  {
+    previousClose,
+    livePrice = null,
+    shortLabels = false,
+  }: {
+    previousClose?: number | null;
+    livePrice?: number | null;
+    shortLabels?: boolean;
+  } = {},
+): SessionQuote {
+  const asIs: SessionQuote = { headline: { price: row?.price ?? null, change: row?.change ?? null, pct: row?.changePercent ?? null }, ext: null };
+  const data = row?.session ?? null;
   const isRegularOpen = marketStatus?.market === 'open' && !marketStatus?.afterHours && !marketStatus?.earlyHours;
   const isPreMarket = marketStatus?.earlyHours === true;
-
   const earlyPct = data?.earlyTradingChangePercent ?? data?.early_trading_change_percent ?? null;
   const latePct = data?.lateTradingChangePercent ?? data?.late_trading_change_percent ?? null;
+  // An unknown session splits nothing, and a pre-market session without an
+  // early move never falls back to the previous evening's late move.
+  const type: 'pre' | 'post' | null = isPreMarket
+    ? (earlyPct != null ? 'pre' : null)
+    : marketStatus != null && !isRegularOpen && latePct != null ? 'post' : null;
+  if (!type) return asIs;
+  const label = type === 'pre' ? (shortLabels ? 'PM' : 'Pre-Market') : (shortLabels ? 'AH' : 'After-Hours');
+  const rawPct = (type === 'pre' ? earlyPct : latePct) as number;
 
-  const extPct = isPreMarket && earlyPct != null
-    ? earlyPct
-    : !isRegularOpen && latePct != null
-      ? latePct
-      : null;
-
-  const extLabel = isPreMarket && earlyPct != null
-    ? (shortLabels ? 'PM' : 'Pre-Market')
-    : !isRegularOpen && latePct != null
-      ? (shortLabels ? 'AH' : 'After-Hours')
-      : null;
-
-  const extType: 'pre' | 'post' | null = extLabel ? (isPreMarket && earlyPct != null ? 'pre' : 'post') : null;
-
-  const prevClose = data?.previousClose ?? data?.previous_close ?? null;
+  const rowPrev = data?.previousClose ?? data?.previous_close ?? null;
   // Prefer the provider-exact close; the change fields are served at reduced
   // precision (1dp), so deriving the close from them is off by cents.
   const regularChange = data?.regularTradingChange ?? data?.regular_trading_change ?? null;
   const regularClose = data?.regularClose ?? data?.regular_close
-    ?? (prevClose != null && regularChange != null
-      ? Math.round((prevClose + regularChange) * 100) / 100
-      : null);
+    ?? (rowPrev != null && regularChange != null ? rowPrev + regularChange : null);
+  const prev = previousClose ?? rowPrev;
+  const settledClose = type === 'post' ? regularClose : prev;
+  if (settledClose == null) return asIs;
 
   // The extended moves are declared against different closes: early
   // (pre-market) vs the previous daily close, late (after-hours) vs today's
   // regular close. Anchoring both on prevClose produced nonsense post prices.
-  const extAnchor = extType === 'post' ? (regularClose ?? prevClose) : prevClose;
+  const anchor = type === 'post' ? regularClose : rowPrev;
 
-  // Extended price precedence: minute-aggregate close (the consolidated last
-  // sale — what the chart's bars show; the provider's last_trade and the
-  // change fields derived from it can track an odd-lot print that doesn't
-  // update the official last) → exact dollar change → rounded percent. When
-  // the aggregate close is used, the whole triple is re-derived from it so
-  // price/change/percent stay one coherent statement.
-  const lastMinuteClose = data?.lastMinuteClose ?? data?.last_minute_close ?? null;
-  const extDollar = extType === 'post'
+  // Extended price precedence: the live tick, then the minute-aggregate close
+  // (the consolidated last sale — what the chart's bars show; the provider's
+  // last_trade and the change fields derived from it can track an odd-lot
+  // print that doesn't update the official last) → exact dollar change →
+  // rounded percent. When a print is used, the whole triple is re-derived
+  // from it so price/change/percent stay one coherent statement. Nothing is
+  // rounded here: a sub-dollar move rounded to the cent reads 0.00% on a +2%
+  // print.
+  const printed = livePrice ?? data?.lastMinuteClose ?? data?.last_minute_close ?? null;
+  const extDollar = type === 'post'
     ? (data?.lateTradingChange ?? data?.late_trading_change ?? null)
-    : extType === 'pre'
-      ? (data?.earlyTradingChange ?? data?.early_trading_change ?? null)
-      : null;
+    : (data?.earlyTradingChange ?? data?.early_trading_change ?? null);
   let extPrice: number | null;
   let extChange: number | null;
-  let displayPct = extPct;
-  if (extType && lastMinuteClose != null && extAnchor != null) {
-    extPrice = lastMinuteClose;
-    extChange = Math.round((lastMinuteClose - extAnchor) * 100) / 100;
-    displayPct = Math.round((extChange / extAnchor) * 10000) / 100;
+  let extPct = rawPct;
+  if (printed != null && anchor != null) {
+    extPrice = printed;
+    extChange = printed - anchor;
+    if (anchor) extPct = (extChange / anchor) * 100;
   } else {
-    extChange = extDollar ?? (extPct != null && extAnchor != null
-      ? Math.round(extAnchor * (extPct / 100) * 100) / 100
-      : null);
-    extPrice = extAnchor != null && extChange != null
-      ? Math.round((extAnchor + extChange) * 100) / 100
-      : null;
+    extChange = extDollar ?? (anchor != null ? anchor * (rawPct / 100) : null);
+    extPrice = livePrice ?? (anchor != null && extChange != null ? anchor + extChange : null);
   }
+  if (extPrice == null) return asIs;
 
-  return { extPct: displayPct, extLabel, extType, extPrice, extChange, extAnchor, prevClose, regularClose };
+  const settledChange = type === 'post' && prev != null ? settledClose - prev : null;
+  const settledPct = settledChange != null && prev ? (settledChange / prev) * 100 : null;
+  return {
+    headline: { price: settledClose, change: settledChange, pct: settledPct },
+    ext: { type, label, price: extPrice, change: extChange, pct: extPct },
+  };
 }
 
 /**

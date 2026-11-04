@@ -53,11 +53,16 @@ MARKET_TARGET_INFLIGHT_QUOTA = 3
 # A wakeup's notice rides out refusals the same way, and a market-wide move
 # fires every price wakeup on the venue together, so it gets the same share.
 WAKEUP_INFLIGHT_QUOTA = 3
+# A push job waits on APNs once per device, and every finished turn makes one,
+# so an APNs that hangs would otherwise fill every slot with them and stall
+# steers and report-backs for everyone.
+PUSH_INFLIGHT_QUOTA = 3
 _INFLIGHT_QUOTAS = {
     "task_report_back": TASK_RB_INFLIGHT_QUOTA,
     "command_report_back": COMMAND_RB_INFLIGHT_QUOTA,
     "market_target": MARKET_TARGET_INFLIGHT_QUOTA,
     "wakeup": WAKEUP_INFLIGHT_QUOTA,
+    "push": PUSH_INFLIGHT_QUOTA,
 }
 # How long shutdown waits for the loop, and then for its in-flight jobs.
 STOP_GRACE = 10.0

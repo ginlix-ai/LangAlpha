@@ -88,6 +88,7 @@ export function ComposerPopover({
           answers any click by focusing its textarea, and the panel closes
           when focus leaves it. */}
       <Dialog
+        data-composer-panel
         aria-label={label}
         className="flex min-h-0 flex-col outline-hidden"
         onClick={(e) => e.stopPropagation()}

@@ -34,12 +34,15 @@ def test_market_watch_is_cataloged_enabled_opt_in():
     assert spec.tradeoffs  # experiments state their cost
 
 
-def test_scratchpad_is_cataloged_enabled_opt_in():
+def test_scratchpad_is_on_unless_the_user_stored_false():
     spec = FEATURES["scratchpad"]
     assert spec.enabled is True
-    assert spec.gate is FeatureGate.OPT_IN
+    assert spec.gate is FeatureGate.OPT_OUT
     assert spec.label and spec.description
     assert spec.tradeoffs
+    assert effective_flags(None)["scratchpad"] is True
+    assert effective_flags({"scratchpad": False})["scratchpad"] is False
+    assert default_feature_enabled("scratchpad") is True
 
 
 def test_claude_code_runtime_is_off_until_a_deployment_enables_it_and_a_user_opts_in(monkeypatch):

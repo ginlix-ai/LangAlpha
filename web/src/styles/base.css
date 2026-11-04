@@ -54,6 +54,35 @@ button,
   cursor: default;
 }
 
+/* ---------- Touch hit area ---------- */
+
+/* A control drawn small on purpose keeps its size and takes a finger across
+   44px. Only under a coarse pointer, so a mouse's target and the desktop layout
+   do not move. The box is centered rather than inset by a negative margin, which
+   would have to know the control's own size. Zero specificity on the position,
+   so a control that places itself stays where it is.
+
+   The box lies over whatever is beside the control, and a later control's box
+   lies over an earlier one's, so one that sits closer than 44px to another
+   control keeps to the room it has: --tap-target-w and -h set the box, and -x
+   and -y move it off a neighbor. An ancestor's overflow clips it too. A disabled
+   control takes no box, since it would only make a dead zone of its neighbors'
+   ground. */
+@media (pointer: coarse) {
+  :where(.tap-target) {
+    position: relative;
+  }
+  .tap-target:not(:disabled)::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, var(--tap-target-w, 44px));
+    height: max(100%, var(--tap-target-h, 44px));
+    transform: translate(calc(-50% + var(--tap-target-x, 0px)), calc(-50% + var(--tap-target-y, 0px)));
+  }
+}
+
 /* ---------- App base ---------- */
 
 * {

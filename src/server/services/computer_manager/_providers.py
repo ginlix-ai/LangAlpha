@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from ptc_agent.core.sandbox.providers._ssh_transport import Machine
 from ptc_agent.core.sandbox.runtime import (
     HostUnavailablePolicy,
     SandboxGoneError,
@@ -198,6 +199,26 @@ class ProviderMixin:
             yield await provider.get(sandbox_id)
         finally:
             await provider.close()
+
+    async def machine_link(self, computer: Dict[str, Any]) -> Machine:
+        """An own computer's machine, for work on the machine itself rather
+        than in the computer (its Claude Code token), dialed once here so one
+        out of reach says so at once. Never started, so the computer's state
+        stays as it is.
+
+        Raises:
+            SandboxTransientError: The machine could not be reached.
+        """
+        from ptc_agent.core.sandbox.providers.ssh import SSHProvider
+
+        binding = self._binding_from_computer("", computer)
+        if binding.kind != "ssh" or not binding.provider_ref:
+            raise SandboxTransientError(f"Computer {binding.computer_id} is not an SSH computer that is set up")
+        provider = self._provider_for(binding)
+        assert isinstance(provider, SSHProvider)
+        machine = provider.machine(binding.provider_ref)
+        await machine.link()
+        return machine
 
     async def keep_sandbox_alive(
         self,

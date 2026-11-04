@@ -106,10 +106,10 @@ export function isGuidanceLevel(value: unknown): value is GuidanceLevel {
 }
 
 /**
- * The settings a user may set per account or per model.
+ * The settings a user may set per model, and per account beneath them.
  *
- * The typed twin of `Tuning` in `src/llms/preferences.py`. `null` is the wire
- * value that deletes an override, so every field admits it.
+ * The typed twin of `PROFILE_FIELDS` in `src/llms/preferences.py`. `null` is the
+ * wire value that deletes an override, so every field admits it.
  */
 export interface ModelProfile {
   prompt_guidance?: GuidanceLevel | null;
@@ -119,7 +119,17 @@ export interface ModelProfile {
   native_compaction?: boolean | null;
 }
 
-export type TuningField = keyof ModelProfile;
+/** The account's settings: a profile's, and those it holds for every model
+ *  (`ACCOUNT_FIELDS` on the Python side), which no profile sets. */
+export interface AccountTuning extends ModelProfile {
+  /** Summarize a long thread before the first send after a break. Absent or
+   *  null is on. */
+  cold_compaction?: boolean | null;
+}
+
+export type TuningField = keyof AccountTuning;
+
+const ACCOUNT_FIELDS: ReadonlySet<TuningField> = new Set(['cold_compaction']);
 
 /** Same order as `TUNING_FIELDS` on the Python side. */
 export const TUNING_FIELDS: readonly TuningField[] = [
@@ -128,6 +138,7 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   'reasoning_effort',
   'fast_mode',
   'native_compaction',
+  'cold_compaction',
 ];
 
 /** What the server runs when neither the account nor the model declares a
@@ -181,14 +192,14 @@ function text(value: string | null | undefined): string | null {
  * subagent role models). Presence, not truthiness: a field the profile carries
  * wins even when its value is empty, because clearing a field deletes the key
  * rather than storing a blank. The two are pinned together by
- * `tests/fixtures/tuning_precedence.json`.
+ * `__tests__/__fixtures__/tuning_precedence.json`.
  */
 export function resolveTuningField<K extends TuningField>(
-  account: ModelProfile,
+  account: AccountTuning,
   profile: ModelProfile,
   field: K,
-): ModelProfile[K] {
-  return field in profile ? profile[field] : account[field];
+): AccountTuning[K] {
+  return field in profile && !ACCOUNT_FIELDS.has(field) ? (profile as AccountTuning)[field] : account[field];
 }
 
 /**
@@ -197,7 +208,7 @@ export function resolveTuningField<K extends TuningField>(
  * The twin of `resolve_tuning` in `src/llms/preferences.py`, which owns the
  * same precedence for the turns this UI never starts (schedules, automations,
  * subagent role models). The two are pinned together by
- * `tests/fixtures/tuning_precedence.json`. `inherited` is the extra layer the
+ * `__tests__/__fixtures__/tuning_precedence.json`. `inherited` is the extra layer the
  * server applies at resolve time rather than storing, so a control can name
  * what "Default" will actually do instead of saying only "Default".
  *
@@ -207,7 +218,7 @@ export function resolveTuningField<K extends TuningField>(
  * with a level no turn will ever run.
  */
 export function resolveTuning(
-  account: ModelProfile,
+  account: AccountTuning,
   profile: ModelProfile,
   meta?: {
     reasoning_efforts?: string[];

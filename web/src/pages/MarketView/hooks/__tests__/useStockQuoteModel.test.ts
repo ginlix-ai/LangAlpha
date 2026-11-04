@@ -47,8 +47,9 @@ describe('deriveStockQuote', () => {
     expect(q.headline.tone).toBe('negative');
   });
 
-  it('status: a live feed wins, a closed phase reads closed, anything else delayed', () => {
-    expect(deriveStockQuote({ ...base, wsStatus: 'connected', wsHasData: true, marketPhase: 'closed' }).status).toBe('live');
+  it('status: a closed phase wins over a live feed, a live feed reads live, anything else delayed', () => {
+    expect(deriveStockQuote({ ...base, wsStatus: 'connected', wsHasData: true, marketPhase: 'closed' }).status).toBe('closed');
+    expect(deriveStockQuote({ ...base, wsStatus: 'connected', wsHasData: true, marketPhase: 'post' }).status).toBe('live');
     expect(deriveStockQuote({ ...base, marketPhase: 'closed' }).status).toBe('closed');
     expect(deriveStockQuote({ ...base, marketPhase: 'post' }).status).toBe('delayed');
     expect(deriveStockQuote({ ...base }).status).toBe('delayed');

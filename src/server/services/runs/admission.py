@@ -388,6 +388,7 @@ async def resolve_retry_of(request: ChatRequest, thread_id: str):
             detail="retry_of_run_id cannot be combined with fork_from_turn",
         )
     from src.server.database.runs import lifecycle as tl_db
+    from src.server.services.runs.pending_input import can_retry
 
     prev = await tl_db.get_run(request.retry_of_run_id)
     if prev is None or str(prev["conversation_thread_id"]) != thread_id:
@@ -408,7 +409,7 @@ async def resolve_retry_of(request: ChatRequest, thread_id: str):
                 "latest_status": latest["status"] if latest else None,
             },
         )
-    if prev["status"] != "error":
+    if not can_retry(prev):
         raise HTTPException(
             status_code=409,
             detail={

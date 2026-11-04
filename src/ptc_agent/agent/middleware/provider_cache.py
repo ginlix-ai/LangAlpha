@@ -26,6 +26,10 @@ def breakpoint_marker(model: Any) -> tuple[str, dict[str, Any]] | None:
     content blocks to Anthropic, which caches nothing without one, so a Claude
     model there takes the same marker. None for everything else — automatic
     prefix matchers don't need the pin and must not see a foreign marker.
+
+    The lifetime is the route's, not the marker's: ``ChatAnthropicOAuth`` sends
+    every marker in its request with a 1-hour TTL, since Anthropic refuses a
+    request whose lifetimes are out of order.
     """
     if isinstance(model, ChatAnthropic):
         return "cache_control", {"type": "ephemeral"}

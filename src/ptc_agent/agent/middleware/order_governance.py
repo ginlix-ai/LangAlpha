@@ -45,6 +45,7 @@ from ptc_agent.agent.middleware.direct_mcp import (
 )
 from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from ptc_agent.agent.middleware.tool.error_handling import format_tool_error
+from ptc_agent.agent.pending_calls import pending_calls
 
 # What the interrupt payload calls itself, and the artifact key a receipt
 # rides under. Both are read by the client.
@@ -141,10 +142,20 @@ class OrderLedger(Protocol):
         """
         ...
 
+    async def abandon(self, message_id: str, tool_call_id: str) -> None:
+        """Refuse this call's attempt if it is still proposed: the thread went
+        on without the call, so no answer to its card may place it."""
+        ...
+
 
 def _order_of(stamp: Mapping[str, Any] | None) -> dict[str, Any] | None:
     order = (stamp or {}).get("order")
     return order if isinstance(order, dict) else None
+
+
+def places_order(tool: BaseTool) -> bool:
+    """Whether the binder stamped ``tool`` as one that places an order."""
+    return _order_of(direct_tool_meta(tool)) is not None
 
 
 def _describe(tool_call: Mapping[str, Any], stamp: Mapping[str, Any]) -> str:
@@ -208,16 +219,20 @@ class OrderGovernanceMiddleware(AgentMiddleware):
     # -- proposal and verdict ------------------------------------------------
 
     def _order_calls(self, state: Any) -> tuple[AIMessage | None, list[dict[str, Any]]]:
+        """The last assistant message and its order calls still waiting on a result."""
         messages = (state or {}).get("messages") or []
-        last_ai = next(
-            (m for m in reversed(messages) if isinstance(m, AIMessage)), None
-        )
-        if last_ai is None or not last_ai.tool_calls:
-            return None, []
-        calls = [
-            call for call in last_ai.tool_calls if call.get("name") in self._stamps
-        ]
-        return last_ai, calls
+        at, pending = pending_calls(messages)
+        calls = [call for call in pending if call.get("name") in self._stamps]
+        return (messages[at], calls) if calls else (None, [])
+
+    async def abandon(self, message: AIMessage, calls: Sequence[Mapping[str, Any]]) -> None:
+        """Refuse the proposals of ``message``'s ``calls``, which a later run
+        cut off with their cards unanswered."""
+        if not message.id:
+            return
+        for call in calls:
+            if call.get("name") in self._stamps:
+                await self._ledger.abandon(message.id, call["id"])
 
     def _blocked(
         self,

@@ -36,6 +36,8 @@ const h = vi.hoisted(() => ({
   threadId: 'thread-xyz', // mutated per-test to exercise the new-chat case
   pendingInterrupt: null as unknown, // mutated per-test to exercise input gating
   preferences: null as unknown, // the user's preferences, set per-test
+  nextSummary: null as unknown, // what the next send summarizes first, set per-test
+  setNextSummaryFor: vi.fn(),
 }));
 
 // API spies — compaction calls straight into the ChatAgent api module. (Stop is
@@ -89,6 +91,11 @@ vi.mock('@/pages/ChatAgent/hooks/useChatMessages', () => ({
     isCompacting: false,
     setIsCompacting: h.setIsCompacting,
     tokenUsage: null,
+    nextSummary: h.nextSummary,
+    forThread: (tid: string) => ({
+      setNextSummary: (next: unknown) => h.setNextSummaryFor(tid, next),
+      insertNotification: h.insertNotification,
+    }),
     insertNotification: h.insertNotification,
     handleEditMessage: h.handleEditMessage,
     handleRegenerate: h.handleRegenerate,
@@ -149,6 +156,14 @@ import MarketChatPanel from '../MarketChatPanel';
 import { useChatMessages } from '@/pages/ChatAgent/hooks/useChatMessages';
 import { chartSelectionStore } from '../../stores/chartSelectionStore';
 import { userLocalStorage } from '@/lib/userStorage';
+import type { ComposerSend } from '@/components/ui/chat-input.types';
+
+type OnSend = (send: ComposerSend) => void;
+
+/** What the composer hands over for a plain send, plus any slash commands. */
+function composed(message: string, commands: unknown[] = []): ComposerSend {
+  return { text: message, files: [], mentions: [], commands: commands as ComposerSend['commands'], message, modelOptions: { model: null, reasoningEffort: null, fastMode: null } };
+}
 
 type PanelProps = React.ComponentProps<typeof MarketChatPanel>;
 
@@ -292,6 +307,7 @@ describe('MarketChatPanel', () => {
     h.isLoading = false;
     h.messages = [{ id: 'm1', role: 'assistant' }];
     h.preferences = null;
+    h.nextSummary = null;
     ml.props = null;
     ml.actions = null;
     ml.folders = null;
@@ -418,10 +434,8 @@ describe('MarketChatPanel', () => {
       h.handleSendMessage.mockImplementationOnce(() => {
         h.isLoading = true;
       });
-      const onSend = ci.props!.onSend as (
-        m: string, att: unknown[], cmds: unknown[], opts: unknown,
-      ) => void;
-      act(() => onSend('and the next quarter?', [], [], {}));
+      const onSend = ci.props!.onSend as OnSend;
+      act(() => onSend(composed('and the next quarter?')));
       glide();
       expect(layout.top).toBe(600);
       nextFrame();
@@ -525,10 +539,8 @@ describe('MarketChatPanel', () => {
         h.handleSendMessage.mockImplementationOnce(() => {
           h.isLoading = true;
         });
-        const onSend = ci.props!.onSend as (
-          m: string, att: unknown[], cmds: unknown[], opts: unknown,
-        ) => void;
-        act(() => onSend('and the next quarter?', [], [], {}));
+        const onSend = ci.props!.onSend as OnSend;
+        act(() => onSend(composed('and the next quarter?')));
         glide();
         expect(layout.top).toBe(1200);
         nextFrame();
@@ -643,6 +655,35 @@ describe('MarketChatPanel', () => {
     expect(ml.props!.dispatcherContext).toBeNull();
   });
 
+  it('says the next send summarizes first, and every turn it starts carries the skip', async () => {
+    h.nextSummary = { reason: 'cold', at: 1, now: 1 };
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: 'Skip' }));
+    expect(screen.getByText('Your next message will include the whole conversation, which costs more.')).toBeInTheDocument();
+
+    const a = ml.actions!;
+    act(() => (ci.props!.onSend as OnSend)(composed('hi')));
+    (a.onWidgetSendPrompt as (text: string) => void)('from a widget');
+    (a.onEditMessage as (id: string, c: string) => void)('m1', 'edited');
+    (a.onRegenerate as (id: string) => void)('m1');
+    (a.onRetry as () => void)();
+    expect(h.handleSendMessage.mock.calls.map((call) => (call[3] as Record<string, unknown>).keepFullContext)).toEqual([true, true]);
+    expect(h.handleEditMessage).toHaveBeenCalledWith('m1', 'edited', undefined, true);
+    expect(h.handleRegenerate).toHaveBeenCalledWith('m1', undefined, true);
+    expect(h.handleRetry).toHaveBeenCalledWith(undefined, true);
+  });
+
+  it('takes what an offload leaves as the next summary, and clears it after a summary', async () => {
+    const after = { reason: 'threshold' };
+    api.offloadThread.mockResolvedValueOnce({ offloaded_args: 1, offloaded_reads: 0, next_summary: after });
+    renderPanel();
+    const onAction = ci.props!.onAction as (cmd: { name: string }) => void;
+    await act(async () => onAction({ name: 'offload' }));
+    expect(h.setNextSummaryFor).toHaveBeenLastCalledWith('thread-xyz', after);
+    await act(async () => onAction({ name: 'compact' }));
+    expect(h.setNextSummaryFor).toHaveBeenLastCalledWith('thread-xyz', null);
+  });
+
   it('wires the stop button to the hook hard-cancel (stopWorkflow)', async () => {
     renderPanel();
     expect(typeof ci.props!.onStop).toBe('function');
@@ -672,13 +713,11 @@ describe('MarketChatPanel', () => {
 
   it('forwards typed slash commands as skill + subagent contexts on send', () => {
     renderPanel();
-    const onSend = ci.props!.onSend as (
-      m: string, att: unknown[], cmds: unknown[], opts: unknown,
-    ) => void;
-    onSend('draw a trend line', [], [
+    const onSend = ci.props!.onSend as OnSend;
+    onSend(composed('draw a trend line', [
       { type: 'skill', name: 'deep-research', skillName: 'deep-research' },
       { type: 'subagent', name: 'subagent' },
-    ], {});
+    ]));
 
     expect(h.handleSendMessage).toHaveBeenCalledTimes(1);
     const contexts = h.handleSendMessage.mock.calls[0][1] as Array<Record<string, unknown>>;
@@ -707,11 +746,9 @@ describe('MarketChatPanel', () => {
     chartSelectionStore.confirm(id, '');
 
     renderPanel();
-    const onSend = ci.props!.onSend as (
-      m: string, att: unknown[], cmds: unknown[], opts: unknown,
-    ) => void;
+    const onSend = ci.props!.onSend as OnSend;
     // clearAll() after send notifies the chip subscriber → wrap to flush in act.
-    act(() => onSend('analyze', [], [], {}));
+    act(() => onSend(composed('analyze')));
 
     expect(h.handleSendMessage).toHaveBeenCalledTimes(1);
     const attachmentMeta = h.handleSendMessage.mock.calls[0][2] as Array<Record<string, unknown>>;
@@ -727,12 +764,10 @@ describe('MarketChatPanel', () => {
 
   it('does not double-inject chart-annotation when typed explicitly', () => {
     renderPanel();
-    const onSend = ci.props!.onSend as (
-      m: string, att: unknown[], cmds: unknown[], opts: unknown,
-    ) => void;
-    onSend('annotate', [], [
+    const onSend = ci.props!.onSend as OnSend;
+    onSend(composed('annotate', [
       { type: 'skill', name: 'chart-annotation', skillName: 'chart-annotation' },
-    ], {});
+    ]));
 
     const contexts = h.handleSendMessage.mock.calls[0][1] as Array<Record<string, unknown>>;
     const chartCtx = contexts.filter((c) => c.name === 'chart-annotation');
@@ -777,8 +812,7 @@ describe('MarketChatPanel', () => {
   });
 
   describe('the Subagents toggle', () => {
-    type OnSend = (m: string, att: unknown[], cmds: unknown[], opts: unknown) => void;
-
+    
     it("hands the composer a new thread's setting, and a flip rides the next PTC send", () => {
       h.threadId = '__default__';
       renderPanel();
@@ -786,7 +820,7 @@ describe('MarketChatPanel', () => {
 
       act(() => { void (ci.props!.onToggleSubagents as (next: boolean) => Promise<boolean>)(false); });
       expect(ci.props!.subagentsAllowed).toBe(false);
-      act(() => (ci.props!.onSend as OnSend)('Build me a DCF', [], [], {}));
+      act(() => (ci.props!.onSend as OnSend)(composed('Build me a DCF')));
       expect(h.handleSendMessage.mock.calls[0][3]).toMatchObject({ subagentsAllowed: false });
     });
 
@@ -795,7 +829,7 @@ describe('MarketChatPanel', () => {
       h.preferences = { other_preference: { subagents_default: false } };
       renderPanel();
       expect(ci.props!.subagentsAllowed).toBe(false);
-      act(() => (ci.props!.onSend as OnSend)('Build me a DCF', [], [], {}));
+      act(() => (ci.props!.onSend as OnSend)(composed('Build me a DCF')));
       expect((h.handleSendMessage.mock.calls[0][3] as Record<string, unknown>).subagentsAllowed).toBeUndefined();
     });
 
@@ -804,7 +838,7 @@ describe('MarketChatPanel', () => {
       renderPanel(ALL);
       await vi.waitFor(() => expect(ci.props).not.toBeNull());
       act(() => { void (ci.props!.onToggleSubagents as (next: boolean) => Promise<boolean>)(false); });
-      act(() => (ci.props!.onSend as OnSend)('What is AAPL doing?', [], [], {}));
+      act(() => (ci.props!.onSend as OnSend)(composed('What is AAPL doing?')));
       expect(h.handleSendMessage.mock.calls[0][3]).toMatchObject({ subagentsAllowed: false });
     });
   });

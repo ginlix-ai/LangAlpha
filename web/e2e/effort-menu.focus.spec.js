@@ -98,7 +98,8 @@ async function openMenuByKeyboard(page) {
 test.beforeEach(async ({ page }) => {
   await mockAPI(page, { ...preferenceRoutes(), ...overrides });
   await page.goto('/dashboard');
-  await expect(page.locator(TRIGGER)).toBeVisible();
+  // The pill waits on the models request, which a cold dev server can take 7s to send.
+  await expect(page.locator(TRIGGER)).toBeVisible({ timeout: 15000 });
 });
 
 test.describe('the effort list on a keyboard', () => {

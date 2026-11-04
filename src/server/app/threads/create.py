@@ -30,7 +30,8 @@ from src.server.models.conversation import (
     ThreadCreateResponse,
 )
 from src.server.services.thread_title import schedule_title_generation
-from src.server.utils.api import CurrentUserId
+from src.server.dependencies.principal import RunPrincipal, assert_reaches
+from src.server.utils.thread_stamp import stamped_title
 
 from ._deps import SSE_HEADERS, logger, router
 
@@ -89,7 +90,7 @@ def _legacy_sse_response(
 
 @router.post("", status_code=201, response_model=ThreadCreateResponse)
 async def create_thread_endpoint(
-    request: ThreadCreateRequest, http_request: Request, x_user_id: CurrentUserId
+    request: ThreadCreateRequest, http_request: Request, principal: RunPrincipal
 ):
     """Create a thread and return it as a plain 201.
 
@@ -97,6 +98,7 @@ async def create_thread_endpoint(
     still gets the title persisted, and the durable truth is always readable
     via GET /threads/{id}.
     """
+    x_user_id = principal.user_id
     workspace = await requested_workspace(x_user_id, request.workspace_id)
 
     # Same credit gate the follow-up /messages call enforces — a quota-blocked
@@ -118,6 +120,7 @@ async def create_thread_endpoint(
     # Decided where the message path decides it, so the thread is born in the
     # workspace its runs will actually use.
     route = turn_route(x_user_id, workspace)
+    await assert_reaches(principal, workspace_id=route.workspace_id)
     await route.bind(x_user_id, workspace)
     workspace_id = route.workspace_id
 
@@ -126,7 +129,7 @@ async def create_thread_endpoint(
     # same stamp ensure_thread_exists would apply, which is also the CAS
     # expectation the title generator swaps against.
     named_title = request.title
-    stamped_title = named_title if named_title is not None else request.first_query[:255]
+    title_stamp = named_title if named_title is not None else stamped_title(request.first_query)
 
     thread_id = str(uuid4())
     try:
@@ -135,7 +138,7 @@ async def create_thread_endpoint(
             workspace_id=workspace_id,
             current_status="completed",
             thread_index=None,
-            title=stamped_title,
+            title=title_stamp,
             platform=request.platform,
             subagents_allowed=request.subagents_allowed,
             reasoning_effort=request.reasoning_effort,
@@ -149,7 +152,7 @@ async def create_thread_endpoint(
         thread_id=thread_id,
         user_id=x_user_id,
         first_query=request.first_query,
-        expected_title=stamped_title,
+        expected_title=title_stamp,
         timezone=request.timezone,
     )
 
@@ -157,7 +160,7 @@ async def create_thread_endpoint(
         thread_id=thread_id,
         workspace_id=str(workspace_id),
         thread_index=row["thread_index"],
-        title=stamped_title,
+        title=title_stamp,
         msg_type=row["msg_type"],
         subagents_allowed=row["subagents_allowed"],
         reasoning_effort=row.get("reasoning_effort"),

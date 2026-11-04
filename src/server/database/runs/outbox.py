@@ -30,6 +30,7 @@ from src.server.database.runs.hook_jobs import (  # noqa: F401
     BurstReleasePayload,
     HookJob,
     NeedsInputWakePayload,
+    PushPayload,
     ReportBackPayload,
     UserFeedPayload,
     WatchClearPayload,
@@ -63,7 +64,8 @@ async def enqueue_hooks(
     ON CONFLICT DO NOTHING on idempotency_key: re-finalizing after a lost
     race never double-registers an effect. Each row is dated by the clock,
     not by the transaction, so jobs one transaction writes on a key run in
-    the order written.
+    the order written. A job with ``delay_seconds`` is first due that long
+    after the write, through the same ``next_retry_at`` a nack's backoff sets.
     """
     async with conn.cursor() as cur:
         for job in jobs:
@@ -71,9 +73,12 @@ async def enqueue_hooks(
                 """
                 INSERT INTO hook_outbox (
                     run_id, conversation_thread_id, hook_type,
-                    payload, ordering_key, idempotency_key, created_at
+                    payload, ordering_key, idempotency_key, created_at,
+                    next_retry_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp())
+                VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp(),
+                        -- NULL with no delay: make_interval is strict.
+                        clock_timestamp() + make_interval(secs => %s::float8))
                 ON CONFLICT (idempotency_key) DO NOTHING
                 """,
                 (
@@ -83,6 +88,7 @@ async def enqueue_hooks(
                     SafeJson(job.payload),
                     job.ordering_key,
                     job.idempotency_key,
+                    job.delay_seconds,
                 ),
             )
 
@@ -294,7 +300,7 @@ async def claim_outbox_jobs(
                               OR {_STEER_SAFETY_NET_SQL}))
                         OR (o.status = 'claimed'
                             AND o.lease_expires_at <= NOW()
-                            AND o.attempts < %s)
+                            AND {_spent_sql("o")} < %s)
                       )
                       AND NOT EXISTS (
                         SELECT 1 FROM hook_outbox p
@@ -346,7 +352,7 @@ async def claim_outbox_jobs(
                                   OR {_STEER_SAFETY_NET_SQL}))
                             OR (o.status = 'claimed'
                                 AND o.lease_expires_at <= NOW()
-                                AND o.attempts < %s)
+                                AND {_spent_sql("o")} < %s)
                         )
                         AND (
                             o.ordering_key IS NULL
@@ -484,7 +490,7 @@ async def park_exhausted_jobs(*, max_attempts: int = 5) -> List[Dict[str, Any]]:
                         WHERE status = 'claimed'
                           AND hook_type NOT IN {_sql_list(("steer", *ALERT_HOOK_TYPES))}
                           AND lease_expires_at <= NOW()
-                          AND attempts >= %s
+                          AND {_spent_sql()} >= %s
                         RETURNING *
                     ),
                     comp AS ({_DEAD_REPORT_BACK_COMPENSATION_SQL})
@@ -812,6 +818,15 @@ def _fence_params(job_id: str, attempts: int, max_attempts: int) -> Dict[str, An
     return {"job_id": job_id, "attempts": attempts, "max": max_attempts}
 
 
+def _spent_sql(a: str = "") -> str:
+    """The attempts a job has spent toward the ceiling: its claims, less the
+    parks that found its thread waiting on the user (``waited``, see
+    ``defer_claimed_job``). ``attempts`` itself only grows, the fence token.
+    ``a`` is the hook_outbox alias, if any."""
+    c = f"{a}." if a else ""
+    return f"({c}attempts - COALESCE(({c}payload->>'waited')::int, 0))"
+
+
 async def nack_outbox_job(
     job_id: str, *, attempts: int, max_attempts: int = 5
 ) -> Optional[str]:
@@ -837,7 +852,8 @@ async def nack_outbox_job(
                     WITH bumped AS (
                         UPDATE hook_outbox
                         SET status = CASE
-                                WHEN attempts >= %s THEN 'dead' ELSE 'pending'
+                                WHEN {_spent_sql()} >= %s THEN 'dead'
+                                ELSE 'pending'
                             END,
                             -- A steer backs off in its payload (see
                             -- _STEER_DUE_SQL), so a build that cannot run it
@@ -856,7 +872,8 @@ async def nack_outbox_job(
                             END,
                             lease_expires_at = NULL,
                             completed_at = CASE
-                                WHEN attempts >= %s THEN NOW() ELSE completed_at
+                                WHEN {_spent_sql()} >= %s THEN NOW()
+                                ELSE completed_at
                             END
                         WHERE hook_outbox_id = %s AND status = 'claimed'
                           AND attempts = %s
@@ -1108,7 +1125,7 @@ async def release_deferred_notifications(conn, thread_id: str) -> int:
 
 
 async def defer_claimed_job(
-    job_id: str, *, attempts: int, max_attempts: int = 5
+    job_id: str, *, attempts: int, max_attempts: int = 5, waits_on_user: bool = False
 ) -> Optional[str]:
     """Park a CLAIMED job back to deferred (``next_retry_at='infinity'``).
 
@@ -1127,7 +1144,14 @@ async def defer_claimed_job(
     the caller stops either way and its fenced ack no-ops. A turn's hold on
     the job is dropped: a job its executor holds was never confirmed, so the
     next live turn may take it in again.
+
+    ``waits_on_user`` is for a thread's report held by a card that only the
+    user's answer clears: each stop short of it releases the job again, so
+    the claim that found the card still waiting is not spent (``waited``).
+    Steers and alerts keep their own ceilings.
     """
+    waits = f"(%(waits)s AND hook_type IN {_THREAD_REPORT_TYPES_SQL})"
+    spent = f"({_spent_sql()} - {waits}::int)"
     async with pool.get_db_connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -1141,19 +1165,23 @@ async def defer_claimed_job(
                     WITH parked AS (
                         UPDATE hook_outbox
                         SET status = CASE
-                                WHEN attempts >= %s THEN 'dead' ELSE 'pending'
+                                WHEN {spent} >= %(max)s THEN 'dead' ELSE 'pending'
                             END,
                             next_retry_at = CASE
-                                WHEN attempts >= %s THEN NOW()
+                                WHEN {spent} >= %(max)s THEN NOW()
                                 ELSE 'infinity'::timestamptz
                             END,
                             lease_expires_at = NULL,
                             completed_at = CASE
-                                WHEN attempts >= %s THEN NOW() ELSE completed_at
+                                WHEN {spent} >= %(max)s THEN NOW() ELSE completed_at
                             END,
-                            payload = payload - 'steered_run_id' - 'due_at'
-                        WHERE hook_outbox_id = %s AND status = 'claimed'
-                          AND attempts = %s
+                            payload = (payload - 'steered_run_id' - 'due_at')
+                                || CASE WHEN {waits} THEN jsonb_build_object(
+                                    'waited',
+                                    COALESCE((payload->>'waited')::int, 0) + 1
+                                ) ELSE '{{}}'::jsonb END
+                        WHERE hook_outbox_id = %(job_id)s AND status = 'claimed'
+                          AND attempts = %(attempts)s
                         RETURNING *
                     ),
                     dead_rows AS (
@@ -1162,7 +1190,7 @@ async def defer_claimed_job(
                     comp AS ({_DEAD_REPORT_BACK_COMPENSATION_SQL})
                     SELECT status FROM parked
                     """,
-                    (max_attempts, max_attempts, max_attempts, job_id, attempts),
+                    {**fence, "waits": waits_on_user},
                 )
                 row = await cur.fetchone()
                 return row["status"] if row else None
@@ -1521,13 +1549,14 @@ async def requeue_job_with_key(
                 WITH bumped AS (
                     UPDATE hook_outbox
                     SET status = CASE
-                            WHEN attempts >= %s THEN 'dead' ELSE 'pending'
+                            WHEN {_spent_sql()} >= %s THEN 'dead' ELSE 'pending'
                         END,
                         ordering_key = %s,
                         created_at = clock_timestamp(),
                         lease_expires_at = NULL, next_retry_at = NOW(),
                         completed_at = CASE
-                            WHEN attempts >= %s THEN NOW() ELSE completed_at
+                            WHEN {_spent_sql()} >= %s THEN NOW()
+                            ELSE completed_at
                         END
                     WHERE hook_outbox_id = %s AND status = 'claimed'
                       AND attempts = %s
@@ -1569,6 +1598,30 @@ async def merge_job_payload(
                 (SafeJson(patch), list(remove or []), job_id),
             )
             return cur.rowcount > 0
+
+
+async def add_to_job_payload_list(job_id: str, key: str, values: List[str]) -> None:
+    """Union ``values`` into the string list at ``payload[key]``, against the
+    row as it stands, so two owners of a job (one whose lease lapsed) each add
+    what they did rather than overwrite the other's."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE hook_outbox
+                SET payload = jsonb_set(
+                    COALESCE(payload, '{}'::jsonb),
+                    ARRAY[%(key)s],
+                    (SELECT COALESCE(jsonb_agg(v ORDER BY v), '[]'::jsonb)
+                     FROM (SELECT jsonb_array_elements_text(
+                                      COALESCE(payload->%(key)s, '[]'::jsonb)) AS v
+                           UNION
+                           SELECT unnest(%(values)s::text[])) AS s)
+                )
+                WHERE hook_outbox_id = %(job_id)s
+                """,
+                {"key": key, "values": list(values), "job_id": job_id},
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2508,9 +2561,10 @@ async def settle_run_steers(
                 cur, params, _IS_USER_SQL, due=False, claimed_too=True
             )
         elif final_status == "cancelled" and user_cancel:
-            await _end_thread_steers(
+            returned = await _end_thread_steers(
                 cur, params, f"{_IS_USER_SQL} AND NOT ({_KEPT_BY_STOP_SQL})", "returned"
             )
+            await _give_back_comments(conn, returned)
             await _end_thread_steers(cur, params, f"NOT ({_KEPT_BY_STOP_SQL})", "dropped")
             await _repark_thread_steers(cur, params, _KEPT_BY_STOP_SQL, due=False)
         else:
@@ -2608,12 +2662,37 @@ async def stop_hand_off_steers(thread_id: str, run_id: str) -> List[str]:
 
 
 def _returned_entry(row: Dict[str, Any]) -> Dict[str, Any]:
+    """A user's steer as the user reads it. One carrying file comments is the
+    note they typed and the comments' chips, never the block the agent reads."""
     payload = row.get("payload") or {}
-    return {
-        "content": payload.get("content") or "",
+    shown = payload.get("artifact_comments")
+    entry = {
+        "content": (shown.get("note") or "") if shown else payload.get("content") or "",
         "request_key": payload.get("request_key"),
         "timestamp": payload.get("timestamp"),
     }
+    if shown:
+        entry["artifact_comments"] = shown
+    return entry
+
+
+async def _give_back_comments(conn, returned: List[Dict[str, Any]]) -> None:
+    """The file comments of steers that end unread, with the steers' ending:
+    marked ``sent``, they would never go out again."""
+    from src.server.database.artifacts.delivery import release_unread
+
+    carrying = [
+        r["payload"]
+        for r in returned
+        if (r.get("payload") or {}).get("artifact_comments")
+        and r["payload"].get("request_key")
+    ]
+    if carrying:
+        await release_unread(
+            conn,
+            user_id=carrying[0].get("user_id"),
+            request_keys=[p["request_key"] for p in carrying],
+        )
 
 
 # Not held by the run being stopped. A row it holds is already in its
@@ -2643,6 +2722,7 @@ async def cancel_run_steers(
         returned = await _end_thread_steers(
             cur, params, f"{free} AND {_IS_USER_SQL}", "returned"
         )
+        await _give_back_comments(conn, returned)
         await _end_thread_steers(cur, params, free, "dropped")
     returned.sort(key=lambda r: r["created_at"])
     return [

@@ -46,7 +46,13 @@ from data_client.ginlix_data import (
     get_ginlix_mcp_client,
 )
 from data_client.market_data_provider import symbol_market
-from data_client.normalize import minor_unit_places, normalize_bars, populated, scale_price
+from data_client.normalize import (
+    minor_unit_places,
+    normalize_bars,
+    populated,
+    scale_price,
+    series_labels,
+)
 from data_client.ginlix_data.cn_source import GinlixDataCnSource
 from data_client.ginlix_data.directory import NameDirectory
 from market_protocol import (
@@ -59,6 +65,7 @@ from market_protocol import (
     to_legacy_api,
 )
 from market_protocol.enums import AssetClass
+from market_protocol.symbology import FUTURES_MIC
 
 try:
     from _envelope import (
@@ -84,10 +91,13 @@ from mcp_servers._dates import (
     intraday_window,
 )
 from mcp_servers._schemas import (
+    BAR_LABELS,
+    INCOMPLETE,
     OBJECT,
     RECORDS,
     RECORDS_BY_KEY,
     STR,
+    TRUNCATED,
     described,
     envelope_schema,
     output_model,
@@ -187,6 +197,12 @@ def _display_rows(
     return normalized
 
 
+def _series_labels(env: dict, ref: Optional[InstrumentRef], interval: str) -> dict:
+    """:func:`series_labels` for an ascending envelope."""
+    newest = env["data"][-1]["date"] if env["data"] else None
+    return series_labels(env["source"], ref, interval, newest)
+
+
 _names = NameDirectory(_ginlix.get_instruments_v2, deadline=2.0)
 _cn = GinlixDataCnSource(_ginlix)
 
@@ -219,8 +235,10 @@ async def _fetch_stock_series(
         _names.display_names(resolved[1]),
         _fetch_stock_bars(resolved, interval, start_date, end_date),
     )
-    if ok is not None and name:
-        ok["name"] = name
+    if ok is not None:
+        ok.update(_series_labels(ok, resolved[4], ok["interval"]))
+        if name:
+            ok["name"] = name
     return ok, err
 
 
@@ -257,8 +275,12 @@ async def _fetch_stock_bars(
             except ValueError:
                 end = datetime.now(_tz.utc)
             cn_start = (end - timedelta(days=_CN_DEFAULT_DAILY_DAYS)).strftime("%Y-%m-%d")
+        incomplete = False
         try:
-            bars = (await _cn.get_daily(legacy, cn_start, end_date)).bars
+            fetched = await _cn.get_daily(legacy, cn_start, end_date)
+            # The series' coverage flag marks sessions missing inside the window
+            # (a refetch that failed), not a cap cutting either end.
+            bars, incomplete = fetched.bars, fetched.truncated
         except httpx.HTTPError as exc:
             # An upstream miss (a 503, a 429, a dropped connection) is expected and
             # the chain answers instead, so one line is enough.
@@ -275,6 +297,7 @@ async def _fetch_stock_bars(
                 "interval": canonical,
                 "currency": currency,
                 "timezone": timezone,
+                "incomplete": incomplete,
             }, None
 
     # The legacy spelling of a family index is bare (GSPC), which every vendor
@@ -313,14 +336,15 @@ async def _fetch_stock_bars(
     elif ginlix_result is not None:
         # Already-normalized display rows, descending → flip to ascending.
         tier = {
-            "data": list(reversed(ginlix_result)),
+            "data": list(reversed(ginlix_result.bars)),
             "source": "ginlix-data",
             "symbol": display,
             "interval": canonical,
             "currency": currency,
             "timezone": timezone,
+            "truncated": ginlix_result.truncated,
         }
-        if populated(ginlix_result):
+        if populated(ginlix_result.bars):
             return tier, None
         # No bars is a miss too: Massive answers a range older than its history
         # with none (AAPL in 1995), which FMP still holds. The empty answer
@@ -360,6 +384,7 @@ async def _fetch_stock_bars(
         return miss or (None, make_error(
             "upstream_error", "FMP fetch failed.", symbol=display, interval=canonical
         ))
+    truncated = getattr(rows, "truncated", False)
     if window is not None:
         rows = window.rows(rows or [])
 
@@ -373,6 +398,7 @@ async def _fetch_stock_bars(
         "interval": canonical,
         "currency": currency,
         "timezone": timezone,
+        "truncated": truncated,
     }, None
 
 
@@ -390,7 +416,7 @@ _OUT_GET_STOCK_DATA = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={"name": _NAME_ECHO},
+        echo={**BAR_LABELS, "name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": INCOMPLETE},
     ),
 )
 
@@ -402,24 +428,26 @@ async def get_stock_data(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> _OUT_GET_STOCK_DATA:
-    """Fetch OHLCV price bars for a stock; use for historical charts/analysis.
+    """Fetch OHLCV price bars for a stock.
 
-    Intervals: 1min|5min|15min|30min|1hour|4hour|1day (aliases like "1d"/"daily"
-    accepted). start_date and end_date are required for intraday.
+    Intervals: 1min|5min|15min|30min|1hour|4hour|1day. Intraday needs start_date
+    and end_date.
 
     Args:
         symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH", LSE "VOD.L".
-        interval: Bar size; one of the intervals above.
-        start_date: "YYYY-MM-DD" (append " HH:MM" for intraday time filtering).
-        end_date: "YYYY-MM-DD" (append " HH:MM" for intraday time filtering).
+        interval: See above.
+        start_date: "YYYY-MM-DD[ HH:MM]".
+        end_date: Same format.
 
     Returns:
         dict: {symbol, interval, currency, timezone, count, data, source,
-        name?}. data: list of {date, open, high, low, close, volume} ascending
-        (oldest first); date exchange-local "YYYY-MM-DD" (daily) or
-        "YYYY-MM-DD HH:MM:SS" (intraday); prices in `currency` major units.
-        name: local-language company name, CN and HK listings only. On error:
-        {error: <code>, detail}.
+        price_treatment, name?, in_progress?, truncated?, incomplete?}. data:
+        list of {date, open, high, low, close, volume} ascending (oldest first);
+        date exchange-local "YYYY-MM-DD[ HH:MM:SS]"; prices in `currency` major
+        units. price_treatment: raw|split_adjusted|dividend_adjusted.
+        in_progress: date of a forming last bar; some daily feeds omit it.
+        truncated: true if a size cap cut the oldest bars. incomplete: true if
+        bars in the window are missing. On error: {error: <code>, detail}.
     """
     env, err = await _fetch_stock_series(symbol, interval, start_date, end_date)
     if err is not None:
@@ -432,7 +460,10 @@ _OUT_GET_ASSET_DATA = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={"asset_type": STR, "name": _NAME_ECHO},
+        echo={
+            "asset_type": STR, **BAR_LABELS, "name": _NAME_ECHO,
+            "truncated": TRUNCATED, "incomplete": INCOMPLETE,
+        },
     ),
 )
 
@@ -447,22 +478,24 @@ async def get_asset_data(
 ) -> _OUT_GET_ASSET_DATA:
     """Fetch OHLCV bars for a stock, commodity, crypto, or forex pair.
 
-    Intervals: 1min|5min|1hour|1day (stock adds 15min|30min|4hour); dates
-    required for intraday.
+    Intervals: 1min|5min|1hour|1day; intraday needs dates.
 
     Args:
-        symbol: Stock "AAPL", commodity "GCUSD", crypto "BTCUSD", forex "EURUSD".
-        asset_type: One of stock|commodity|crypto|forex.
-        interval: Bar size; see intervals above.
-        from_date: "YYYY-MM-DD" (append " HH:MM" for intraday time filtering).
-        to_date: "YYYY-MM-DD" (append " HH:MM" for intraday time filtering).
+        symbol: Commodity "GCUSD", crypto "BTCUSD", forex "EURUSD".
+        asset_type: stock|commodity|crypto|forex.
+        interval: See above.
+        from_date: "YYYY-MM-DD[ HH:MM]".
+        to_date: Same format.
 
     Returns:
         dict: {symbol, asset_type, interval, currency, timezone, count, data,
-        source, name?}. data: list of {date, open, high, low, close, volume}
-        ascending (oldest first); date exchange-local "YYYY-MM-DD[ HH:MM:SS]";
-        prices in `currency` major units. name: local-language company name,
-        CN and HK stock listings only. On error: {error: <code>, detail}.
+        source, price_treatment, name?, in_progress?, truncated?, incomplete?}.
+        data: list of {date, open, high, low, close, volume} ascending; date
+        exchange-local "YYYY-MM-DD[ HH:MM:SS]"; prices in `currency` major
+        units. price_treatment: raw|split_adjusted|dividend_adjusted.
+        in_progress: date of a forming last bar. truncated: true if a size cap
+        cut the oldest bars. incomplete: true if bars in the window are missing.
+        On error: {error: <code>, detail}.
     """
     at = asset_type.lower().strip()
     if at not in {"stock", "commodity", "crypto", "forex"}:
@@ -482,7 +515,16 @@ async def get_asset_data(
     # commodity / crypto / forex — FMP direct (the provider chain and ginlix
     # cover equities/indexes only). Currency + timezone from canonical identity.
     hint = {"crypto": AssetClass.CRYPTO, "forex": AssetClass.FX}.get(at)
-    display, _legacy, currency, timezone, _ref = _resolve(symbol, asset_class=hint)
+    display, _legacy, currency, timezone, ref = _resolve(symbol, asset_class=hint)
+    # FMP spells a pair as one run (BTCUSD, EURUSD), however the caller did,
+    # so the BTC-USD this tool answers with can be sent back.
+    pair = ref is not None and ref.asset_class in (AssetClass.CRYPTO, AssetClass.FX)
+    fmp_symbol = ref.symbol.replace("-", "") if pair else symbol
+    if at == "commodity" and ref is not None:
+        # A commodity keeps CME Globex hours, settling at its 16:00 Chicago halt,
+        # and adjusts for nothing. FMP labels it in New York time, the zone the
+        # ref keeps.
+        ref = ref.model_copy(update={"mic": FUTURES_MIC, "calendar_id": FUTURES_MIC})
     canonical, err = _resolve_interval(interval, _ASSET_INTERVALS, symbol=display)
     if err is not None:
         return err
@@ -516,9 +558,9 @@ async def get_asset_data(
             else:
                 lo, hi = daily_days(from_date, to_date)
                 if at == "crypto":
-                    rows = await client.get_crypto_price(symbol, from_date=lo, to_date=hi)
+                    rows = await client.get_crypto_price(fmp_symbol, from_date=lo, to_date=hi)
                 else:
-                    rows = await client.get_forex_price(symbol, from_date=lo, to_date=hi)
+                    rows = await client.get_forex_price(fmp_symbol, from_date=lo, to_date=hi)
         elif at == "commodity":
             # FMP labels a commodity in New York time, the zone its envelope
             # states, so its labels stand.
@@ -532,29 +574,31 @@ async def get_asset_data(
             window = intraday_window(from_date, to_date, timezone, labels=NEW_YORK)
             if at == "crypto":
                 rows = await client.get_crypto_intraday_chart(
-                    symbol, canonical, from_date=window.from_day, to_date=window.to_day
+                    fmp_symbol, canonical, from_date=window.from_day, to_date=window.to_day
                 )
             else:
                 rows = await client.get_forex_intraday_chart(
-                    symbol, canonical, from_date=window.from_day, to_date=window.to_day
+                    fmp_symbol, canonical, from_date=window.from_day, to_date=window.to_day
                 )
     except Exception as e:  # noqa: BLE001
         return error_from_exception(
             e, "FMP fetch failed.", symbol=display, interval=canonical
         )
+    truncated = getattr(rows, "truncated", False)
     if window is not None and isinstance(rows, list):
         rows = window.rows(rows)
 
-    data = _display_rows(rows or [], symbol, intraday=intraday)
-    return make_response(
-        data,
-        source="fmp",
-        symbol=display,
-        interval=canonical,
-        currency=currency,
-        timezone=timezone,
-        asset_type=at,
-    )
+    env = {
+        "data": _display_rows(rows or [], symbol, intraday=intraday),
+        "source": "fmp",
+        "symbol": display,
+        "interval": canonical,
+        "currency": currency,
+        "timezone": timezone,
+        "truncated": truncated,
+        "asset_type": at,
+    }
+    return make_response(**env, **_series_labels(env, ref, canonical))
 
 
 _OUT_GET_SHORT_DATA = output_model(

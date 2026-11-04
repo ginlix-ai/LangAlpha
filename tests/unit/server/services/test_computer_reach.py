@@ -15,7 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from ptc_agent.agent.tools.computer_reach import ComputerTarget, ComputerUnreachable
-from ptc_agent.core.project_context import ProjectContext, current_project, project_bound
+from ptc_agent.core.project_context import MachinePaths, ProjectContext, current_project, project_bound
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from src.server.services import computer_reach
@@ -359,7 +359,7 @@ SSH_ROWS = [
 ]
 
 
-def _machine(root, files=None, home=None, *, files_as_command_user=True):
+def _machine(root, files=None, home=None, *, files_as_command_user=True, config_home=""):
     """A computer at ``root`` with the real path rules, holding ``files``."""
     layout = SandboxLayout(root)
     files = files if files is not None else {}
@@ -413,7 +413,10 @@ def _machine(root, files=None, home=None, *, files_as_command_user=True):
     sandbox.adownload_file_bytes_capped = download
     sandbox.aupload_file_bytes = upload
     sandbox.execute_bash_command = execute_bash_command
-    runtime = SimpleNamespace(login_home=AsyncMock(return_value=home)) if home else None
+    runtime = (
+        SimpleNamespace(login_home=AsyncMock(return_value=home), login_config_home=AsyncMock(return_value=config_home))
+        if home else None
+    )
     sandbox.runtime = runtime
     return SimpleNamespace(sandbox=sandbox)
 
@@ -462,7 +465,32 @@ async def test_a_machine_of_the_users_own_is_reached_with_its_login_home():
         ),
     ):
         target = await TurnComputers(USER, HOME_ID, OWN).reach("Studio Mac")
-    assert target.project.machine.home == "/Users/studio"
+    assert target.project.machine == MachinePaths(
+        home="/Users/studio", denied=("/Users/studio/.config/langalpha",)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config_home", "denied"),
+    [
+        ("/Users/studio/cfg", "/Users/studio/cfg/langalpha"),
+        ("cfg", "/Users/studio/.config/langalpha"),
+    ],
+)
+async def test_a_machine_that_names_a_config_home_is_reached_with_langalphas_folder_there_denied(config_home, denied):
+    mac = _machine(MAC_ROOT, home="/Users/studio", config_home=config_home)
+    with (
+        patch.object(computer_reach, "get_computer_roster", AsyncMock(return_value=SSH_ROWS)),
+        patch.object(computer_reach, "get_computer", AsyncMock(return_value={"status": "running"})),
+        patch.object(computer_reach, "get_computer_folders", AsyncMock(return_value={})),
+        patch(
+            "src.server.services.workspace_manager.WorkspaceManager.get_instance",
+            return_value=_manager(mac),
+        ),
+    ):
+        target = await TurnComputers(USER, HOME_ID, OWN).reach("Studio Mac")
+    assert target.project.machine == MachinePaths(home="/Users/studio", denied=(denied,))
 
 
 async def _reach_kind(kind):

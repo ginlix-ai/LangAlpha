@@ -1,7 +1,7 @@
-.PHONY: help configup down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-market-protocol test-all lint data-probe setup-db migrate
+.PHONY: help config up down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-bridge test-market-protocol test-all lint data-probe setup-db migrate
 
 help: ## Show available targets
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
 config: ## Interactive setup wizard (LLM, data, sandbox, web search/fetch)
 	@bash scripts/configure.sh
@@ -29,15 +29,16 @@ endif
 # ---------------------------------------------------------------------------
 # Manual development (without Docker for backend/frontend)
 # ---------------------------------------------------------------------------
-install: ## Install all dependencies (backend + CLI + frontend; observability extra if .env enables OTel)
+install: ## Install all dependencies (backend + frontend + the CLI computers get; observability extra if .env enables OTel)
 	@if [ -f .env ] && grep -qE "^OTEL_EXPORTER_OTLP_ENDPOINT=." .env; then \
 		echo "→ OTEL_EXPORTER_OTLP_ENDPOINT set in .env — installing observability extra"; \
-		uv sync --group dev --extra test --extra cli --extra observability; \
+		uv sync --group dev --extra test --extra observability; \
 	else \
 		echo "→ OTel endpoint unset — skipping observability extra (set OTEL_EXPORTER_OTLP_ENDPOINT in .env to enable)"; \
-		uv sync --group dev --extra test --extra cli; \
+		uv sync --group dev --extra test; \
 	fi
 	cd web && pnpm install
+	cd cli && pnpm install --frozen-lockfile && pnpm build
 
 dev: ## Start backend with hot-reload (requires DB + Redis running)
 	uv run python server.py --reload
@@ -63,10 +64,14 @@ daytona-snapshots: ## Build the Daytona sandbox snapshots for every resource tie
 test-web: ## Run frontend unit tests
 	cd web && pnpm vitest run
 
+BRIDGE := ../src/server/preview_proxy/bridge
+test-bridge: ## Typecheck and test the preview page bridge against the viewer's protocol, on web's toolchain
+	cd web && pnpm exec tsc -p $(BRIDGE) && pnpm exec tsc -p $(BRIDGE)/tsconfig.test.json && pnpm exec vitest run --root $(BRIDGE)
+
 test-market-protocol: ## Run the market-protocol package suite in its own environment
 	cd libs/market-protocol && uv run pytest -v --tb=short
 
-test-all: test test-web test-market-protocol ## Run all tests (backend + frontend + market-protocol)
+test-all: test test-web test-bridge test-market-protocol ## Run all tests (backend + frontend + page bridge + market-protocol)
 	$(MAKE) test-sandbox PROVIDER=memory
 
 # ---------------------------------------------------------------------------

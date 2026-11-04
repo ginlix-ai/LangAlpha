@@ -64,6 +64,9 @@ def _make_request():
     # generator. request_key is likewise threaded into start_run.
     req.retry_of_run_id = None
     req.request_key = None
+    # A truthy one would claim page comments in the DB.
+    req.artifact_comment_ids = None
+    req.artifact_comments = None
     return req
 
 

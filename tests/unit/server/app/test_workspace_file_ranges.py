@@ -290,6 +290,6 @@ def test_a_ranged_download_is_described_to_script_from_another_origin() -> None:
 
     from src.server.app.setup import app
 
-    cors = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+    cors = next(m for m in app.user_middleware if issubclass(m.cls, CORSMiddleware))
     exposed = set(cors.kwargs["expose_headers"])
     assert {"Content-Range", "Accept-Ranges", "ETag"} <= exposed

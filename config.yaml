@@ -286,6 +286,18 @@ market_watch:
 
 
 # =============================================================================
+# CLAUDE CODE ON CLOUD COMPUTERS
+# =============================================================================
+# The runtime's own switch is features.claude_code_runtime above. A turn on a
+# cloud computer runs its Claude Code CLI in the worker that owns the turn.
+claude_code:
+  hosted_api_key: false        # Run them on the user's own Anthropic API key
+  stored_custody: false        # Run them on a setup token the user lets the server store
+  worker_cli_slots: 8          # CLIs one worker runs at once; a turn waits 30 s for one
+  hosted_turns_per_user: 3     # Turns one user runs at once on cloud computers
+
+
+# =============================================================================
 # MARKET INSIGHT CONFIGURATION
 # =============================================================================
 market_insight:

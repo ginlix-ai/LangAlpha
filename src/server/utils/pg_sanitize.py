@@ -49,6 +49,15 @@ def normalize_uuid(value: object) -> str | None:
         return None
 
 
+def uuid_text(value: str) -> str:
+    """``normalize_uuid`` as a model field's validator: a value that is not a
+    UUID is the client's 422 rather than the insert's 500."""
+    normalized = normalize_uuid(value.strip())
+    if normalized is None:
+        raise ValueError("not a UUID")
+    return normalized
+
+
 def _drop_non_finite(value: Any) -> Any:
     """Recursively replace non-finite floats (NaN/Inf) with None."""
     if isinstance(value, float):

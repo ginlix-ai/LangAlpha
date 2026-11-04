@@ -81,6 +81,15 @@ class CompactionConfig(BaseModel):
     truncate_args_idle_minutes: int | None = None
     truncate_args_keep_messages: int = 20
     truncate_args_max_length: int = 2000
+    #: The least context at which a turn start under the threshold rebuilds
+    #: a thread whose system prompt a deploy changed, once its prompt cache
+    #: has expired (see ``compaction.rebuild``); 0 never does.
+    rebuild_floor_tokens: int = 150_000
+    #: The least context at which a turn start under the threshold
+    #: summarizes a Claude thread whose prompt cache has expired, keeping the
+    #: tail where its prompt is not due (see ``compaction.rebuild``); 0
+    #: never does.
+    cold_compact_tokens: int = 300_000
 
     #: Which named preset the numbers above came from, stamped by
     #: ``resolve_llm_config``. None means they are the deployment's own YAML
@@ -389,6 +398,13 @@ class AgentConfig(BaseModel):
     subagent_models: dict[str, SubagentModel] = Field(
         default_factory=dict, exclude=True
     )
+    # What a Claude Code turn on a cloud computer was admitted to sign in
+    # with, None on any other turn; the run's row is stamped from it, so the
+    # turn is counted as what admission let it run on.
+    claude_code_hosted: str | None = Field(default=None, exclude=True)
+    # Which setup token the user saved it may sign in with, there or relayed
+    # to an own computer (``saved_token`` or ``stored_token``), None for none.
+    claude_code_saved: str | None = Field(default=None, exclude=True)
     # None permits standalone name resolution; [] means resolution rejected all candidates.
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)
     # Display names aligned index-for-index with ``fallback_llm_clients``

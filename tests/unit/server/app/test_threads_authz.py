@@ -12,7 +12,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from ptc_agent.config.agent import CredentialSource
-from tests.conftest import create_test_app
+from tests.conftest import create_test_app, pin_chat_limit
 
 THREADS_MOD = "src.server.app.threads.messaging"
 
@@ -50,11 +50,11 @@ def _app_for(user_id: str):
     IDOR guard is the only thing under test.
     """
     from src.server.app.threads import router
-    from src.server.dependencies.usage_limits import ChatAuthResult, enforce_chat_limit
+    from src.server.dependencies.usage_limits import ChatAuthResult
 
     app = create_test_app(router)
-    app.dependency_overrides[enforce_chat_limit] = lambda: ChatAuthResult(
-        user_id=user_id, access_tier=0
+    pin_chat_limit(
+        app, ChatAuthResult(user_id=user_id, access_tier=0)
     )
     return app
 

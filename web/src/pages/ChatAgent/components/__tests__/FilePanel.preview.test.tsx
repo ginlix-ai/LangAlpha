@@ -18,6 +18,12 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
     getPreviewUrl: vi.fn(async () => ({ url: 'https://8050-sandbox.example.com/' })),
   };
 });
+// In a browser the app's address goes into a frame host of its own, which
+// jsdom cannot load; framing it directly keeps the address on the frame.
+vi.mock('@/pages/ChatAgent/components/viewers/frameHost', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  framedDirectly: () => true,
+}));
 vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { status: 'running', name: 'ws' } }) }));
 vi.mock('@/contexts/ThemeContext', () => ({ useTheme: () => ({ theme: 'dark' }) }));
 vi.mock('@/pages/ChatAgent/components/FilePanelMemo', () => ({

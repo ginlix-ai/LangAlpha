@@ -63,7 +63,13 @@ async def test_a_session_is_a_first_party_principal(client):
     resp = await client.get("/api/v1/auth/principal", headers=_bearer(session_token()))
 
     assert resp.status_code == 200
-    assert resp.json() == {"user_id": USER_ID, "auth": "session", "client_id": None, "scopes": []}
+    assert resp.json() == {
+        "user_id": USER_ID,
+        "auth": "session",
+        "client_id": None,
+        "scopes": [],
+        "computer_id": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -76,6 +82,7 @@ async def test_an_outside_app_is_named_with_what_it_may_do(client):
         "auth": "oauth",
         "client_id": CLIENT_ID,
         "scopes": ["data:read"],
+        "computer_id": None,
     }
 
 

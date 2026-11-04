@@ -8,7 +8,7 @@ import { ErrorBanner } from '@/components/ui/error-banner';
 import { Loader } from '@/components/ui/loader';
 import LogoLoading from '@/components/ui/logo-loading';
 import ChatInput, { type ChatInputHandle } from '@/components/ui/chat-input';
-import type { ComposerScope } from '@/components/ui/chat-input.types';
+import type { ComposerScope, ComposerSend } from '@/components/ui/chat-input.types';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -17,6 +17,7 @@ import { compactNumber } from '@/lib/format';
 import { readTurnEndScroll } from '@/lib/turnEndScroll';
 import { LiveMessageList } from '../../ChatAgent/components/MessageList';
 import { MessageActionsProvider, type MessageActions } from '../../ChatAgent/components/messageList/MessageActionsContext';
+import { usePublishFile } from '../../ChatAgent/components/chatView/usePublishFile';
 import { SubagentTelemetryContext, useHistoryTelemetry } from '../../ChatAgent/components/SubagentTelemetryContext';
 import { ChartSurfaceContext, type ChartSurface } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
@@ -27,11 +28,12 @@ import { useThreadModel } from '../../ChatAgent/hooks/useThreadModel';
 import { useThreadSubagents } from '../../ChatAgent/hooks/useThreadSubagents';
 import { useThreadTuning } from '../../ChatAgent/hooks/useThreadTuning';
 import { ThreadNotices } from '../../ChatAgent/components/chatView/ThreadNotices';
+import { useNextSummary } from '../../ChatAgent/hooks/useNextSummaryHint';
 import { DispatchStatusProvider } from '../../ChatAgent/hooks/usePTCDispatchStatus';
 import { useStreamFollow } from '../../ChatAgent/components/chatView/transcriptFollow';
 import { useTranscriptFollow } from '../../ChatAgent/components/chatView/useTranscriptFollow';
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
-import { appendPathSuffix, getPreviewUrl, summarizeThread, offloadThread } from '../../ChatAgent/utils/api';
+import { appendPathSuffix, getPreviewUrl, summarizeThread, offloadThread, type NextSummary } from '../../ChatAgent/utils/api';
 import { attachmentsToContexts } from '../../ChatAgent/utils/fileUpload';
 import type { SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
 import { useToolCallLookup } from '../../ChatAgent/components/chatView/toolCallLookup';
@@ -72,12 +74,6 @@ interface ActionCommandLike {
   name: string;
   type?: string;
 }
-interface ModelOptionsLike {
-  model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-}
-
 interface AttachmentItem {
   dataUrl: string;
   file: { name: string; size: number };
@@ -385,19 +381,11 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   }, [symbol]);
 
   const readComposerOptions = useCallback(() => chatInputRef.current?.getModelOptions?.(), []);
-  const chat = useChatMessages(
-    activeWorkspaceId,
-    initialThreadId,
-    null,                       // updateTodoListCard
-    null,                       // updateSubagentCard
-    null,                       // finalizePendingTodos
-    null,                       // onFileArtifact
-    handlePreview,              // onPreviewUrl
-    null,                       // clearSubagentCards
-    null,                       // onWorkspaceCreated
-    platformValue,
+  const chat = useChatMessages(activeWorkspaceId, initialThreadId, {
+    onPreviewUrl: handlePreview,
+    platform: platformValue,
     readComposerOptions,
-  );
+  });
 
   const {
     messages,
@@ -435,7 +423,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     setIsCompacting,
     compactionTokens,
     tokenUsage,
-    insertNotification,
+    forThread,
     // Feedback thumbs. Send, edit, regenerate and retry come from
     // useTranscriptFollow below.
     handleThumbUp,
@@ -480,8 +468,10 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   const showTranscript = messages.length > 0 || isLoading || isLoadingHistory;
   const follow = useStreamFollow(messagesContainer, transcript, { live: isLoading, loading: isLoadingHistory });
+  // What the next send summarizes first, which every turn the reader starts carries.
+  const { summary: summaryHint, starters: summarized } = useNextSummary(chat);
   const { handleSendMessage, handleEditMessage, handleRegenerate, handleRetry } = useTranscriptFollow(
-    chat,
+    { ...chat, ...summarized },
     follow,
     () => messagesContainer,
     readTurnEndScroll(preferences),
@@ -489,12 +479,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   // Send: shape attachments + chart screenshot like ChatAgent does.
   const handleSend = useCallback(
-    (
-      message: string,
-      attachments: AttachmentItem[] = [],
-      slashCommands: SlashCommandLike[] = [],
-      modelOptions: ModelOptionsLike = {},
-    ) => {
+    ({ message, files, commands, modelOptions }: ComposerSend) => {
+      const attachments = files as unknown as AttachmentItem[];
+      const slashCommands = commands as SlashCommandLike[];
       // The drawing tools are always bound; inject the chart-annotation skill
       // every send for its drawing guide and to tell the agent which ticker +
       // timeframe "the chart" is (chart_id = SYMBOL:timeframe — drawing on the
@@ -589,6 +576,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   // the input's action verbs do the same thing here.
   const handleAction = useCallback((cmd: ActionCommandLike) => {
     if (!threadId || threadId === '__default__') return;
+    const thread = forThread(threadId);
 
     const surfaceActionError = (err: unknown, fallbackKey: string, busyKey = 'chat.compactBusy') => {
       const resp = (err as { response?: { status?: number; data?: unknown } } | undefined)?.response;
@@ -597,14 +585,14 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         const obj = detail as { code?: string; message?: string };
         // A user Stop cancels the backend call; the shared cancellation wrapper
         // returns 409 {code: "request_cancelled"} — report a clean stop, not an error.
-        if (obj.code === 'request_cancelled') { insertNotification(t('chat.compactionStopped'), 'info'); return; }
-        if (obj.code === 'workflow_active') { insertNotification(t(busyKey), 'warning'); return; }
-        if (typeof obj.message === 'string' && obj.message.length > 0) { insertNotification(obj.message, 'warning'); return; }
-        insertNotification(t(fallbackKey), 'warning');
+        if (obj.code === 'request_cancelled') { thread.insertNotification(t('chat.compactionStopped'), 'info'); return; }
+        if (obj.code === 'workflow_active') { thread.insertNotification(t(busyKey), 'warning'); return; }
+        if (typeof obj.message === 'string' && obj.message.length > 0) { thread.insertNotification(obj.message, 'warning'); return; }
+        thread.insertNotification(t(fallbackKey), 'warning');
         return;
       }
-      if (typeof detail === 'string' && detail.length > 0) { insertNotification(detail, 'warning'); return; }
-      insertNotification(t(fallbackKey), 'warning');
+      if (typeof detail === 'string' && detail.length > 0) { thread.insertNotification(detail, 'warning'); return; }
+      thread.insertNotification(t(fallbackKey), 'warning');
     };
 
     if (cmd.name === 'compact') {
@@ -612,8 +600,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       summarizeThread(threadId)
         .then((data: Record<string, unknown>) => {
           setIsCompacting?.(false);
+          thread.setNextSummary(null);
           const detail = (data.summary_text as string | undefined) || undefined;
-          insertNotification(t('chat.compactedNotification', { from: data.original_message_count }), 'info', detail);
+          thread.insertNotification(t('chat.compactedNotification', { from: data.original_message_count }), 'info', detail);
         })
         .catch((err: unknown) => { surfaceActionError(err, 'chat.compactionError'); setIsCompacting?.(false); });
     } else if (cmd.name === 'offload') {
@@ -621,14 +610,15 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       offloadThread(threadId)
         .then((data: Record<string, unknown>) => {
           setIsCompacting?.(false);
-          insertNotification(t('chat.offloadedNotification', {
+          thread.setNextSummary((data.next_summary as NextSummary | null | undefined) ?? null);
+          thread.insertNotification(t('chat.offloadedNotification', {
             args: (data.offloaded_args as number) || 0,
             reads: (data.offloaded_reads as number) || 0,
           }));
         })
         .catch((err: unknown) => { surfaceActionError(err, 'chat.compactionError', 'chat.offloadBusy'); setIsCompacting?.(false); });
     }
-  }, [threadId, setIsCompacting, insertNotification, t]);
+  }, [threadId, setIsCompacting, forThread, t]);
 
   // Subagent navigation — chips deep-link to ChatAgent for full subagent view.
   const handleOpenSubagentTask = useCallback((info: SubagentInfo) => {
@@ -693,6 +683,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     handleSendMessage(text, null, null, {});
   });
 
+  const { onPublishFile, dialog: publishDialog } = usePublishFile(activeWorkspaceId);
   const messageActions = useMemo<MessageActions>(() => ({
     onOpenSubagentTask: stableOpenSubagentTask,
     onToolCallDetailClick: stableToolCallDetail,
@@ -717,6 +708,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     onThumbDown: stableThumbDown,
     onWidgetSendPrompt: stableWidgetSendPrompt,
     onRevealMessage: follow.reveal,
+    onPublishFile,
   }), [
     stableOpenSubagentTask, stableToolCallDetail,
     stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
@@ -724,7 +716,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
     stableRejectSecretaryAction, stableResumeCreditPause, stableApproveToolCall, stableRejectToolCall,
     stableEditMessage, stableRegenerate, stableRetry, editDrafts,
-    stableThumbUp, stableThumbDown, stableWidgetSendPrompt, follow.reveal,
+    stableThumbUp, stableThumbDown, stableWidgetSendPrompt, follow.reveal, onPublishFile,
   ]);
 
   // In the Chief of Staff, carry the source thread/workspace into a PTC-agent
@@ -873,6 +865,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
                     />
                   </DispatchStatusProvider>
                 </MessageActionsProvider>
+                {publishDialog}
               </SubagentTelemetryContext>
             </ChartSurfaceContext>
             {messageError && (
@@ -910,7 +903,8 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         || threadModel.retired
         || threadModel.lapsed
         || threadModel.offer
-        || threadSubagents.offer !== null) && (
+        || threadSubagents.offer !== null
+        || summaryHint.reason) && (
         <div style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {hasActiveSubagents && !isLoading && (
             <div style={bannerStyle('transparent')}>
@@ -942,7 +936,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
               )}
             </div>
           )}
-          <ThreadNotices model={threadModel} subagents={threadSubagents} />
+          <ThreadNotices model={threadModel} subagents={threadSubagents} summary={summaryHint} />
         </div>
       )}
 
@@ -952,7 +946,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       {/* Input */}
       <ChatInput
         ref={chatInputRef}
-        onSend={handleSend as never}
+        onSend={handleSend}
         disabled={isLoadingHistory || !!pendingInterrupt}
         onStop={handleStop}
         onAction={handleAction}

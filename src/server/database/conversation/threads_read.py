@@ -15,6 +15,7 @@ from src.server.contracts.status import (
 )
 from src.server.database import pool
 from src.server.database.conversation import _sql
+from src.server.database.home_workspace import get_home_workspace_id
 from src.server.utils.pg_sanitize import normalize_uuid
 
 logger = logging.getLogger(__name__)
@@ -254,8 +255,10 @@ async def get_threads_for_user(
     sort_by: str = "updated_at",
     sort_order: str = "desc",
     platform_prefix: Optional[str] = None,
+    computer_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Get all threads for a user across all workspaces.
+    """Get all threads for a user across all workspaces, or across those on
+    ``computer_id`` other than Home, which a computer's token never reaches.
 
     Archived threads are always excluded — the cross-workspace recency view
     has no archived counterpart (the workspace listing serves that). Pinning
@@ -281,6 +284,9 @@ async def get_threads_for_user(
     if platform_prefix:
         where_extra = " AND t.platform LIKE %s ESCAPE '\\'"
         extra_params.append(f"{_like_escape(platform_prefix)}%")
+    if computer_id is not None:
+        where_extra += " AND w.computer_id = %s::uuid AND w.workspace_id <> %s::uuid"
+        extra_params += [computer_id, get_home_workspace_id(user_id)]
 
     try:
         async with pool.get_db_connection() as conn:
@@ -495,6 +501,25 @@ async def get_thread_lifecycle_rows(
     as_of_seq = int(fetched[0].get("as_of_seq") or 0)
     # The LEFT JOIN yields one all-NULL row when both branches are empty.
     return [r for r in fetched if r.get("branch")], as_of_seq
+
+
+async def count_threads_needing_attention(user_id: str) -> int:
+    """Threads with an unseen ending or waiting on the user, as the thread
+    list badges them: the number an app icon shows. Counted over the
+    snapshot with no cap on its unseen branch (``LIMIT NULL``), so a long
+    unseen backlog is counted in full, not as the feed's first page."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT count(*) FROM ({_LIFECYCLE_SNAPSHOT_SQL}) s
+                WHERE s.branch = 'unseen'
+                   OR (s.branch = 'live' AND s.latest_run_status = 'interrupted')
+                """,
+                (user_id, None),
+            )
+            (count,) = await cur.fetchone()
+    return count
 
 
 async def get_thread_with_summary(

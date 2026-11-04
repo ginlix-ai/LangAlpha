@@ -568,6 +568,8 @@ describe('useChatMessages – /turns entries named by turn_index', () => {
 
   it.each([
     ['in its own words', { status: 409, errorInfo: { code: 'turn_conflict', message: 'Refresh the thread and resend.' } }, 'Refresh the thread and resend.'],
+    ['as a model the user cannot run, in its own words', { status: 400, errorInfo: { type: 'claude_code_off', message: 'Claude Code is off for this account.' } },
+      'Claude Code is off for this account.'],
     ['as busy, in the view\'s words', { status: 409, errorInfo: { code: 'running', message: 'A turn is still running.' } },
       { message: 'chat.busyRunning', kind: 'notice' }],
     ['with the action it offers', { status: 402, errorInfo: { message: 'Add a key.', link: { url: '/settings', label: 'Settings' } } },

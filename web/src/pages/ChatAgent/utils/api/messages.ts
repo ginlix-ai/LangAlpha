@@ -3,9 +3,10 @@
  * status, thread watch, reconnect, turns, and the v2 thread mux.
  */
 import { api } from '@/api/client';
-import type { WorkflowRunStatus } from '@/types/api';
+import type { ArtifactCommentSendFields, CommentSend, WorkflowRunStatus } from '@/types/api';
 import type { CancelOutcome, HeldSteer } from '../cancelOutcome';
 import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
+import { PING_STREAM_BEAT_MS, RUN_STREAM_BEAT_MS, watchStreamSilence } from '@/lib/streamSilence';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
 
 /**
@@ -76,6 +77,14 @@ export interface SendChatMessageOptions extends StreamTurnOptions {
   /** Only steer a running turn: with none running the server refuses the
    *  send as `not_running` instead of starting one. */
   steerOnly?: boolean;
+  /** File comments the message sends, which the server takes under the
+   *  request key: a retransmit under the same key sends them once. The
+   *  message is then the note typed with them, and may be empty. Where the
+   *  person reads sets how much the agent answers in the chat and how much
+   *  under each comment. */
+  artifactComments?: CommentSend | null;
+  /** Start this turn without the summary a cold thread would get first. */
+  keepFullContext?: boolean;
 }
 
 export type SendHitlResponseOptions = StreamTurnOptions;
@@ -121,18 +130,26 @@ export async function sendChatMessageStream(
     requestKey = null,
     threadSettings = {},
     steerOnly = false,
+    artifactComments = null,
+    keepFullContext = false,
   }: SendChatMessageOptions = {},
 ) {
   // For checkpoint replay (regenerate/retry), send empty messages
   const messages = checkpointId && !message ? [] : [{ role: 'user', content: message }];
   const body: Record<string, unknown> = {
-    workspace_id: workspaceId,
     messages,
     locale,
     timezone,
   };
+  // A send to a thread may leave the workspace out: the server reads it off the thread.
+  if (workspaceId) body.workspace_id = workspaceId;
   if (requestKey) body.request_key = requestKey;
   if (steerOnly) body.steer_only = true;
+  if (artifactComments?.ids.length) {
+    const fields: ArtifactCommentSendFields = { artifact_comment_ids: [...artifactComments.ids], reading: artifactComments.reading };
+    Object.assign(body, fields);
+  }
+  if (keepFullContext) body.keep_full_context = true;
   if (additionalContext) {
     body.additional_context = additionalContext;
   }
@@ -181,6 +198,7 @@ export async function sendRetryStream(
   requestKey: string | null = null,
   runId: string | null = null,
   additionalContext: Record<string, unknown>[] | null = null,
+  keepFullContext = false,
 ) {
   const body: Record<string, unknown> = { workspace_id: workspaceId };
   if (llmModel) body.llm_model = llmModel;
@@ -189,6 +207,7 @@ export async function sendRetryStream(
   if (requestKey) body.request_key = requestKey;
   if (runId) body.run_id = runId;
   if (additionalContext) body.additional_context = additionalContext;
+  if (keepFullContext) body.keep_full_context = true;
   return await postSSEStream(`/api/v1/threads/${threadId}/retry`, body, { onEvent, onRunIdResolved, signal });
 }
 
@@ -285,6 +304,18 @@ export type { ReportBackSignal } from '../reportBackSignal';
 /** Tokens a thread has used, as the server counts them. */
 export type ThreadTokenTotals = { input_tokens: number; output_tokens: number };
 
+/**
+ * What a thread's next send summarizes before it runs (`next_summary` on the
+ * status and on a run's closing frame): the context at its threshold, which
+ * nothing skips; a long thread after a break, once the provider's cache
+ * expires at `at`, which a send can skip (`keepFullContext`); or a summary
+ * that runs from `at` as a break's does, or at once without one, but cannot
+ * be skipped. `at` and `now`, the time of the reading, are epoch ms on the
+ * server's clock.
+ */
+type From = { at: number; now: number };
+export type NextSummary = { reason: 'threshold' } | ({ reason: 'cold' } & From) | { reason: 'rebuild' } | ({ reason: 'rebuild' } & From);
+
 /** Full workflow status for a thread (the `/status` response); the report-back
  *  fields are optional here (the full status may omit them). */
 export type WorkflowStatusResponse = Partial<ThreadReportBackStatus> & {
@@ -304,6 +335,7 @@ export type WorkflowStatusResponse = Partial<ThreadReportBackStatus> & {
   // live one, whose calls the reconnect replays from its stream. null when the
   // backend's read failed.
   token_totals?: ThreadTokenTotals | null;
+  next_summary?: NextSummary | null;
   // The user's steers an errored turn left queued, oldest first: the next
   // turn on the thread reads them. Absent on older backends.
   pending_steers?: HeldSteer[];
@@ -632,7 +664,9 @@ export async function reconnectToWorkflowStream(
   return await streamFetch(
     `/api/v1/threads/${threadId}/messages/stream${queryParam}`,
     { method: 'GET', headers: { ...authHeaders }, ...(signal ? { signal } : {}) },
-    onEvent
+    onEvent,
+    undefined,
+    { beatMs: RUN_STREAM_BEAT_MS },
   );
 }
 
@@ -690,14 +724,31 @@ export async function openThreadMuxStream(
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) onLine(line);
+  let silent = false;
+  let silentOnReturn = false;
+  const silence = watchStreamSilence(PING_STREAM_BEAT_MS, (onReturn) => {
+    silent = true;
+    silentOnReturn = onReturn;
+    void reader.cancel().catch(() => undefined);
+  });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      silence.heard();
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) onLine(line);
+    }
+  } finally {
+    silence.stop();
   }
+  // The caller's retry resumes from its cursors, as after any other drop. Coming
+  // back to a dead socket says nothing against the link, so it ends the read as a
+  // close does, or each app switch would lengthen the wait after the next.
+  if (silentOnReturn) return;
+  if (silent) throw new Error('mux stream went silent');
   if (buffer) onLine(buffer);
 }
 

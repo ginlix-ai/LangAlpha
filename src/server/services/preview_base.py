@@ -1,7 +1,9 @@
-"""Where a deployment serves previews, and whether its settings can work.
+"""Where a deployment serves previews and published artifact versions, and
+whether its settings can work.
 
-The base is deployment configuration: each capability is a subdomain of it,
-and it must sit on a registrable domain of its own, apart from the app's.
+The base is deployment configuration: each capability and each artifact is a
+subdomain of it, and it must sit on a registrable domain of its own, apart
+from the app's.
 """
 
 from __future__ import annotations
@@ -31,6 +33,12 @@ __all__ = [
 # ``<port>-<token>``, the token as a capability is minted: 32 lowercase base32
 # characters, lowercase because a hostname is case-insensitive.
 _LABEL = re.compile(r"^(\d{1,5})-([a-z2-7]{32})$")
+# ``artifact-<artifact id>``, the origin an artifact's published versions run
+# on. The id is a lowercase UUID; a capability label starts with a digit, so
+# neither reads as the other.
+_ARTIFACT_LABEL = re.compile(
+    r"^artifact-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
 
 
 class PreviewProxyConfigurationError(RuntimeError):
@@ -68,6 +76,23 @@ class PreviewBase:
         if match is None:
             return None
         return int(match.group(1)), match.group(2)
+
+    def artifact_url(self, artifact_id: str, grant: str) -> str:
+        """Where a viewer frames an artifact's versions from: its own origin,
+        the grant in the path."""
+        authority = f"artifact-{artifact_id}.{self.host}"
+        if self.port is not None:
+            authority = f"{authority}:{self.port}"
+        return f"{self.scheme}://{authority}/g/{grant}/"
+
+    def parse_artifact(self, host: str | None) -> str | None:
+        """The artifact id an artifact host names; None for anything else."""
+        name = _hostname(host)
+        suffix = "." + self.host
+        if name is None or not name.endswith(suffix):
+            return None
+        match = _ARTIFACT_LABEL.match(name[: -len(suffix)])
+        return match.group(1) if match else None
 
 
 def _hostname(host: str | None) -> str | None:
@@ -217,10 +242,10 @@ def check_preview_proxy_config(
     required, whatever the default provider is, since a computer is built
     from its own kind's settings on any deployment. A base that contains the
     app's own host would claim every request to the app as a preview. A base
-    on the app's site would let preview code read cookies the app scopes to
-    its domain and set ones the app then receives, so the base must be a
-    registrable domain of its own; only local names, which share no cookies a
-    deployment cares about, are exempt.
+    on the app's site would let preview or artifact code read cookies the app
+    scopes to its domain and set ones the app then receives, so the base must
+    be a registrable domain of its own; only local names, which share no
+    cookies a deployment cares about, are exempt.
     """
     base = preview_base()
     if base is None:

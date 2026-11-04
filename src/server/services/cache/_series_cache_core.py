@@ -28,10 +28,15 @@ from src.server.services.cache._ohlcv_envelope import (
     _parse_envelope,
     adopt_v3_envelope,
     canonical_series_key,
+    extend_series,
+    fetch_window,
+    fill_keeps_stored,
     is_settled_complete,
     pin_key,
+    refill_from,
     series_identity,
     splice_is_discontinuous,
+    union_window,
     watermark_to_date_str,
 )
 
@@ -376,7 +381,8 @@ class _SeriesCacheCore:
         *, phase: str, clock, base_ttl: int,
     ) -> Tuple[List[Dict[str, Any]], bool, Dict[str, Any]]:
         """Full fetch honoring the series pin, stored under *cache_key*;
-        returns ``(bars, truncated, envelope)``.
+        returns ``(bars, truncated, envelope)``, *bars* being the stored series
+        (the fetch extended by what the stored series holds before it).
 
         The pinned publisher goes first, then the normal fallback chain (which
         re-pins on store). The pin is read and checked against the chain's
@@ -388,7 +394,6 @@ class _SeriesCacheCore:
         fill its publisher and revision, as a delta refresh's does.
         """
         provider = await self._provider()
-        stored = _parse_envelope(await self._cache_client().get(cache_key))
         pinned = await self._pinned_publisher(symbol, interval, is_index)
         current = bool(pinned) and self._pin_is_current(provider, pinned, symbol, interval, is_index)
         if pinned and not current:
@@ -397,11 +402,13 @@ class _SeriesCacheCore:
                 pinned, symbol, interval,
             )
         fetched: Optional[_FetchResult] = None
+        head_answered = False
         if current:
             try:
                 fetched = await self._fetch_from(
                     provider, pinned, symbol, interval, from_date, to_date, is_index, user_id,
                 )
+                head_answered = True
             except Exception as e:
                 self._logger.warning(
                     "Pinned publisher %s failed for %s %s (%s) — falling back to chain",
@@ -427,20 +434,44 @@ class _SeriesCacheCore:
                     raise
                 fetched = pinned_empty
         bars, source, truncated = fetched
+        # Read after the fetch, not before it: another worker may have widened
+        # the series meanwhile, and extending the older read would undo that.
+        raw = await self._cache_client().get(cache_key)
+        stored = _parse_envelope(raw)
         header = (stored or {}).get("header") or {}
+        series, window = extend_series(stored, bars, source, from_date)
+        names = provider.source_names_for(
+            symbol, self._capability, interval=interval, is_index=is_index,
+        )
+        head = names[0] if names else None
+        if fill_keeps_stored(stored, bars, series, source, head):
+            self._logger.info(
+                "Fill for %s %s from=%s reached less than the %d cached bars, keeping them",
+                symbol, interval, from_date, len(stored["bars"]),
+            )
+            # Only the head's own answer for a start says it has nothing older
+            # (the chain names an all-empty answer for the first source that
+            # gave it); after a head failure, or an empty default answer, a
+            # later request asks again.
+            window = stored["window"]
+            if from_date is not None and (head_answered or (head and source == head)):
+                window = union_window(window, fetch_window(from_date))
+            kept = await self._keep_series(cache_key, {**raw, "window": window}, stored)
+            return stored["bars"], bool(stored.get("truncated")), kept
         envelope = await self._store_fill(
-            cache_key, symbol, interval, is_index, bars, source, truncated,
+            cache_key, symbol, interval, is_index, series, source, truncated,
             phase=phase, clock=clock, base_ttl=base_ttl, pin=_PinRead(pinned, current),
             publisher=header.get("publisher"), revision=header.get("revision", 0),
-            rebuilt=self._history_moved(stored, bars),
+            rebuilt=self._history_moved(stored, bars), window=window,
         )
-        return bars, truncated, envelope
+        return series, truncated, envelope
 
     async def _store_fill(
         self, cache_key: str, symbol: str, interval: str, is_index: bool,
         bars: List[Dict[str, Any]], source: Optional[str], truncated: bool,
         *, phase: str, clock, base_ttl: int, pin: Optional[_PinRead] = None,
         publisher: Optional[str] = None, revision: int = 0, rebuilt: bool = False,
+        window: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Write one fetched series, then its pin; returns the stored envelope.
 
@@ -477,7 +508,7 @@ class _SeriesCacheCore:
             data_date=clock.current_trading_date(),
             instrument_key=instrument_key, schema=schema,
             publisher=publisher, revision=revision + max(rev_bump, int(rebuilt)),
-            lineage=lineage,
+            lineage=lineage, window=window,
         )
         await self._cache_client().set(cache_key, envelope, ttl=ttl)
         if source and may_repin:
@@ -488,8 +519,8 @@ class _SeriesCacheCore:
 
     async def _keep_series(
         self, cache_key: str, raw: Dict[str, Any], envelope: Dict[str, Any],
-    ) -> None:
-        """Rewrite the stored series unchanged but for ``fetched_at``.
+    ) -> Dict[str, Any]:
+        """Rewrite the stored series unchanged but for ``fetched_at``; returns it.
 
         A refresh that produced nothing still asked upstream, so restamping
         paces the next soft-TTL retry instead of letting every read spawn
@@ -505,10 +536,11 @@ class _SeriesCacheCore:
         else:
             kept["fetched_at"] = now
         await self._cache_client().set(cache_key, kept, ttl=ttl)
+        return kept
 
     async def _retry_head(
         self, provider, head: str, cache_key: str, symbol: str, interval: str,
-        is_index: bool, user_id: Optional[str],
+        is_index: bool, user_id: Optional[str], from_date: Optional[str] = None,
     ) -> Optional[_FetchResult]:
         """The whole series from *head*, or None while it stays out.
 
@@ -520,7 +552,7 @@ class _SeriesCacheCore:
         """
         try:
             fetched = await self._fetch_from(
-                provider, head, symbol, interval, None, None, is_index, user_id,
+                provider, head, symbol, interval, from_date, None, is_index, user_id,
             )
         except Exception as e:
             self._logger.info(
@@ -566,6 +598,8 @@ class _SeriesCacheCore:
 
                 watermark = envelope["watermark"] if envelope else None
                 existing_bars = envelope["bars"] if envelope else []
+                window = (envelope or {}).get("window")
+                start = refill_from(envelope, clock.tz)
                 header = (envelope or {}).get("header") or {}
                 publisher = header.get("publisher")
                 revision = header.get("revision", 0)
@@ -585,6 +619,7 @@ class _SeriesCacheCore:
                     pin = _PinRead(pinned, pinned == chain[0])
                     refill = await self._retry_head(
                         provider, chain[0], cache_key, symbol, interval, is_index, user_id,
+                        start,
                     )
                     if refill is None and publisher not in chain:
                         rerouted = True
@@ -610,13 +645,19 @@ class _SeriesCacheCore:
                 rebuilt = False
                 if refill is not None:
                     delta, source, truncated = refill
-                    merged = delta
-                    rebuilt = self._history_moved(envelope, merged)
+                    merged, window = extend_series(envelope, delta, source, start)
+                    rebuilt = self._history_moved(envelope, delta)
                 elif rerouted or (envelope and envelope.get("truncated")):
-                    # Truncated base or re-routed publisher — full re-fetch instead of delta
-                    delta, source, truncated = await fetch(None)
-                    merged = delta
-                    rebuilt = self._history_moved(envelope, merged)
+                    # Truncated base or re-routed publisher — full re-fetch instead of delta.
+                    # A truncated series refills on the default window: asking again
+                    # for the window that came back cut would come back cut again,
+                    # every refresh, and the older bars it holds are kept in front.
+                    whole = None if envelope and envelope.get("truncated") else start
+                    delta, source, truncated = await fetch(whole)
+                    merged, window = extend_series(
+                        envelope, delta, source, whole, cut=whole is None, tz=clock.tz,
+                    )
+                    rebuilt = self._history_moved(envelope, delta)
                 else:
                     # Normal delta refresh. Watermark is Unix ms; the delta
                     # from_date window is exchange-local for the symbol.
@@ -633,13 +674,13 @@ class _SeriesCacheCore:
                                 "→ full re-fetch (revision %d → %d)",
                                 self._log_discontinuity, cache_key, revision, revision + 1,
                             )
-                            delta, source, truncated = await fetch(None)
-                            merged = delta
+                            delta, source, truncated = await fetch(start)
+                            merged, window = extend_series(envelope, delta, source, start)
                             revision += 1
                         else:
                             merged = _merge_bars(existing_bars, delta, watermark)
                     else:
-                        merged = delta
+                        merged, window = extend_series(envelope, delta, source, delta_from)
 
                 if not merged and existing_bars:
                     # A full re-fetch that answered empty (an upstream 500
@@ -655,6 +696,7 @@ class _SeriesCacheCore:
                     cache_key, symbol, interval, is_index, merged, source, truncated,
                     phase=phase, clock=clock, base_ttl=get_ohlcv_ttl(interval),
                     pin=pin, publisher=publisher, revision=revision, rebuilt=rebuilt,
+                    window=window,
                 )
                 self._logger.debug(
                     "%s for %s: fetched %d bars, total %d, phase=%s, complete=%s",

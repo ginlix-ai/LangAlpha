@@ -87,9 +87,16 @@ def make_response(
     currency: Optional[str] = None,
     timezone: Optional[str] = None,
     count: Optional[int] = None,
+    truncated: bool = False,
+    incomplete: bool = False,
     **extra: Any,
 ) -> dict[str, Any]:
-    """Build the standard success envelope around a `data` payload."""
+    """Build the standard success envelope around a `data` payload.
+
+    ``truncated`` lands as ``truncated: true`` only when a size cap cut the
+    read short, and ``incomplete`` as ``incomplete: true`` only when bars
+    inside the window are missing; a whole read carries neither key.
+    """
     resp: dict[str, Any] = {}
     if symbol is not None:
         resp["symbol"] = symbol
@@ -102,6 +109,10 @@ def make_response(
     resp["count"] = _auto_count(data) if count is None else count
     resp["data"] = data
     resp["source"] = source
+    if truncated:
+        resp["truncated"] = True
+    if incomplete:
+        resp["incomplete"] = True
     resp.update(extra)
     return resp
 

@@ -24,6 +24,7 @@ import { useThreadDeleteConfirm } from './threadDeleteAction';
 import { deleteThreadRow } from '../hooks/deleteThreadRow';
 import ChatInput from '../../../components/ui/chat-input';
 import type { ChatInputHandle } from '../../../components/ui/chat-input';
+import type { ComposerSend, ContextPayload } from '../../../components/ui/chat-input.types';
 import { attachmentsToContexts } from '../utils/fileUpload';
 import FilePanel, { SYSTEM_DIR_PREFIXES } from './FilePanel';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
@@ -203,8 +204,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const containerWidthRef = useRef<number>(0);
   const DIVIDER_WIDTH = 4; // px -- matches w-[4px] divider
   const chatInputRef = useRef<ChatInputHandle>(null);
-  const handleAddContext = useCallback((ctx: Record<string, unknown>) => {
-    chatInputRef.current?.addContext(ctx as any); // TODO: type properly
+  const handleAddContext = useCallback((ctx: ContextPayload) => {
+    chatInputRef.current?.addContext(ctx);
   }, []);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -681,7 +682,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
             <div className="w-full relative z-20">
               <ChatInput
                 ref={chatInputRef}
-                onSend={handleSendMessage as any} // TODO: type properly — ChatInput expects strict ReadyAttachment[]
+                onSend={({ message, files, commands, modelOptions }: ComposerSend) => handleSendMessage(message, files, commands, modelOptions)}
                 disabled={isSendingMessage || !workspaceId}
                 files={ownFiles}
                 dropdownDirection="down"
@@ -690,6 +691,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 // the account-level skills, hiding the workspace's own and
                 // still offering ones it has disabled.
                 selectedWorkspaceId={workspaceId}
+                inHome={isHome}
                 minRows={2}
               />
             </div>
@@ -706,15 +708,18 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 }}
                 onClick={handleToggleFilePanel}
               >
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2.5">
+                {/* The card takes the pointer; its title is its button for the
+                    keyboard, and the click reaches the card. A button around the
+                    file rows below would nest them. */}
+                <button type="button" className="flex items-center justify-between mb-3 text-left" aria-expanded={showFilePanel}>
+                  <span className="flex items-center gap-2.5">
                     <Folder className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
                     <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('workspace.files')}</span>
-                  </div>
-                  <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                  </span>
+                  <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                     {showFilePanel ? t('common.close') : t('thread.viewAll')}
-                  </div>
-                </div>
+                  </span>
+                </button>
                 {/* Show first two user file names -- system dirs (.agents/, code/, etc.) are excluded */}
                 {files.length > 0 && (
                   <div className="flex flex-col gap-0.5">
@@ -724,9 +729,10 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                     }).slice(0, 2).map((filePath, index) => {
                       const fileName = filePath.split('/').pop();
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={index}
-                          className="flex items-center gap-2 text-[0.8125rem] rounded-md px-1 py-1 -mx-1 transition-colors hover:bg-foreground/5"
+                          className="flex items-center gap-2 text-left text-[0.8125rem] rounded-md px-1 py-1 -mx-1 transition-colors hover:bg-foreground/5"
                           style={{ color: 'var(--color-text-tertiary)' }}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -740,7 +746,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                         >
                           <FileText className="h-3.5 w-3.5 shrink-0" />
                           <span className="truncate">{fileName}</span>
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -889,7 +895,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 filesLoading={panelFilesLoading}
                 filesError={panelFilesError}
                 onRefreshFiles={refreshPanelFiles}
-                onAddContext={handleAddContext as any} // TODO: type properly
+                onAddContext={handleAddContext}
+                agentName={isHome ? t('agents.chiefOfStaff') : t('agents.analyst')}
                 showSystemFiles={showSystemFiles}
                 onToggleSystemFiles={() => {
                   setShowSystemFiles((v) => {

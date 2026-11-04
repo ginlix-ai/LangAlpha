@@ -356,6 +356,8 @@ def _exports(spec: JobSpec) -> str:
     words = [_q(f"{k}={v}") for k, v in spec.env.items()]
     if spec.pythonpath:
         words.append(_q(f"PYTHONPATH={spec.pythonpath}") + '"${PYTHONPATH:+:$PYTHONPATH}"')
+    if spec.path:
+        words.append(_q(f"PATH={spec.path}") + '"${PATH:+:$PATH}"')
     return f"export {' '.join(words)}; " if words else ""
 
 

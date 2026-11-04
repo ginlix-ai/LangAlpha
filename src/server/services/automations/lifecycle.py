@@ -20,6 +20,7 @@ import httpx
 from fastapi import HTTPException
 
 from src.config import settings
+from src.llms.claude_code import is_claude_code_model
 from src.llms.llm import get_configured_llm_models
 from src.llms.preferences import custom_model_names
 from src.server.database import automation as auto_db
@@ -41,6 +42,7 @@ from src.server.models.automation import (
 from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_settlement import Outcome, settle
 from src.server.services.llm import user_models
+from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, relayed_token, require_claude_code_continues
 from src.server.utils.api import (
     raise_not_found,
     require_thread_owner,
@@ -180,6 +182,59 @@ async def _require_pin_in(
         f"{_place(user_id, there)}",
         field="conversation_thread_id",
     )
+
+
+async def _check_claude_code_continues(name: str | None, pin: str | None) -> None:
+    """Refuse a Claude Code row continuing a thread another model last
+    replied on, which every firing would be refused."""
+    if not (pin and is_claude_code_model(name)):
+        return
+    try:
+        await require_claude_code_continues(pin, name)
+    except HTTPException as exc:
+        raise AutomationRefusal(exc.detail["message"], field="llm_model") from None
+
+
+async def _check_claude_code_hosted(
+    user_id: str, name: str | None, workspace_id: str | None, conn=None, pref: dict[str, Any] | None = None,
+) -> None:
+    """Refuse a Claude Code row in a workspace on a cloud computer where the
+    user's choice for cloud computers refuses its turns, placed as admission
+    places them (``placement``), or runs them on the setup token they stored,
+    which runs no automation (``require_attended``), so every firing would fail;
+    on an own computer, where admission would relay that token to it by its
+    last answer. A row naming no model is judged on the default its firing
+    runs (``select_model``): the user's saved one in ``pref``, else the
+    deployment's; Home's Chief of Staff runs no Claude Code default. Nothing
+    is read where no choice is offered. Read on ``conn``, the caller's."""
+    from src.server.services.claude_code.hosted import choice_offered, placement
+    from src.server.services.claude_code.machine import read_answer
+    from src.server.services.llm.config import deployment_llm, saved_default_model
+
+    if not (workspace_id and choice_offered()):
+        return
+    if not name and not is_home_id(user_id, workspace_id):
+        if pref is None:
+            pref = await user_models.get_model_preference(user_id)
+        name = saved_default_model(pref, "primary") or getattr(deployment_llm(), "name", None)
+    if not (name and is_claude_code_model(name)):
+        return
+    where = await placement(user_id, workspace_id, conn=conn)
+    if where.own_computer is not None:
+        answer = await read_answer(str(where.own_computer["computer_id"]))
+        if await relayed_token(user_id, answer, conn=conn) == "stored_token":
+            raise AutomationRefusal(CLAUDE_CODE_OFF["stored_unattended"], field="llm_model")
+        return
+    state = where.hosted
+    if state is not None and (state.refusal or state.runs_on == "stored_token"):
+        raise AutomationRefusal(CLAUDE_CODE_OFF[state.refusal or "stored_unattended"], field="llm_model")
+
+
+def _check_home_model(user_id: str, name: str | None, workspace_id: str | None) -> None:
+    """Refuse a Claude Code row in Home, whose Chief of Staff does not run on
+    it, so every firing would fail until the automation is disabled."""
+    if name and workspace_id and is_claude_code_model(name) and is_home_id(user_id, workspace_id):
+        raise AutomationRefusal(CLAUDE_CODE_OFF["chief_of_staff"], field="llm_model")
 
 
 async def _check_model(user_id: str, name: str, pref: dict[str, Any] | None) -> None:
@@ -334,8 +389,12 @@ async def create_automation(
         await _require_pin_in(
             user_id, str(data.conversation_thread_id), workspace_id, conn
         )
+    _check_home_model(user_id, data.llm_model, workspace_id)
+    await _check_claude_code_hosted(user_id, data.llm_model, workspace_id, conn, model_pref)
     if data.llm_model:
         await _check_model(user_id, data.llm_model, model_pref)
+        if data.thread_strategy == "continue" and data.conversation_thread_id:
+            await _check_claude_code_continues(data.llm_model, str(data.conversation_thread_id))
     if data.delivery_config and not delivery_checked:
         methods = await check_delivery(user_id, data.delivery_config.methods)
         delivery = DeliveryConfig(methods=methods)
@@ -467,6 +526,18 @@ async def update_automation(
     # must not block an edit to anything else.
     if update.llm_model and update.llm_model != current.get("llm_model"):
         await _check_model(user_id, update.llm_model, model_pref)
+    # A model and a place are judged together, so a move into Home is too.
+    moved_to = normalize_uuid(update_kwargs.get("workspace_id")) or stored_in
+    runs_on = update_kwargs.get("llm_model", current.get("llm_model"))
+    if runs_on != current.get("llm_model") or moved_to != stored_in:
+        _check_home_model(user_id, runs_on, moved_to)
+        await _check_claude_code_hosted(user_id, runs_on, moved_to, conn, model_pref)
+    pinned = update_kwargs.get("conversation_thread_id", stored_pin)
+    strategy = update.thread_strategy or current.get("thread_strategy")
+    if strategy == "continue" and (runs_on, pinned, strategy) != (
+        current.get("llm_model"), stored_pin, current.get("thread_strategy")
+    ):
+        await _check_claude_code_continues(runs_on, pinned)
     # Likewise only a chat not already saved.
     delivery = update_kwargs.get("delivery_config")
     if isinstance(delivery, dict) and delivery.get("methods") and not delivery_checked:

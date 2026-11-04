@@ -33,6 +33,7 @@ from src.server.models.user import (
     WatchlistWithItemsResponse,
 )
 from src.server.services.onboarding import maybe_complete_onboarding
+from src.server.dependencies.principal import DataReadUserId
 from src.server.utils.api import CurrentUserId, handle_api_exceptions, raise_not_found
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ async def _resolve_watchlist_id(watchlist_id: str, user_id: str) -> str:
 
 @router.get("/watchlists", response_model=WatchlistsResponse)
 @handle_api_exceptions("list watchlists", logger)
-async def list_watchlists(user_id: CurrentUserId):
+async def list_watchlists(user_id: DataReadUserId):
     watchlists = await db_get_user_watchlists(user_id)
 
     return WatchlistsResponse(
@@ -92,7 +93,7 @@ async def create_watchlist(
 @handle_api_exceptions("get watchlist", logger)
 async def get_watchlist(
     watchlist_id: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
 ):
     """Get a watchlist with all its items. 404 if not found or not owned by the caller."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
@@ -167,7 +168,7 @@ async def delete_watchlist(
 @handle_api_exceptions("list watchlist items", logger)
 async def list_watchlist_items(
     watchlist_id: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
 ):
     """List items in a watchlist. 404 if watchlist not found or not owned by the caller."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
@@ -232,7 +233,7 @@ async def add_watchlist_item(
 async def get_watchlist_item(
     watchlist_id: str,
     item_id: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
 ):
     """Get a single item. 404 if not found or belongs to a different watchlist."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)

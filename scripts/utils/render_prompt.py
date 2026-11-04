@@ -136,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-ask-user", action="store_true", help="Disable ask-user guidelines."
     )
     p.add_argument(
+        "--claude-code",
+        action="store_true",
+        help="Render as for a Claude Code turn (one question per AskUserQuestion call).",
+    )
+    p.add_argument(
         "--channels",
         action="store_true",
         help="Render as if a messaging service is connected (the Over Chat section).",
@@ -327,6 +332,7 @@ def render(args: argparse.Namespace) -> str:
         storage_enabled=args.storage,
         ask_user_enabled=not args.no_ask_user,
         channels_enabled=args.channels,
+        claude_code=args.claude_code,
         current_time=current_time,
         thread_id=args.thread_id,
         max_concurrent_task_units=args.max_concurrent_tasks,

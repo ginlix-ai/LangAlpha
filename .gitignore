@@ -100,8 +100,6 @@ posts/
 
 docs/libs
 docs/superpowers/
-docs/api/
-docs/api/environments/production.yml
 docs/videos/
 .worktrees/
 .superpowers/

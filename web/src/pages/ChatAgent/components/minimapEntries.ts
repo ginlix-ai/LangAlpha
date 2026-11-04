@@ -2,8 +2,9 @@ import { registerAuthReset } from '@/lib/authResets';
 import { clip, flattenMarkdown } from '@/lib/plainLine';
 import type { Attachment } from '@/types/sse';
 import type { MessageRecord } from './messageList/types';
-import { assistantText } from './messageList/messageText';
+import { assistantText, userMessageText } from './messageList/messageText';
 import { isReportRow } from './messageList/messagePredicates';
+import { sentMessageWords } from './messageList/sentMessage';
 
 export interface TurnEntry {
   id: string;
@@ -64,7 +65,7 @@ function flatOf(message: MessageRecord, raw: (limit: number) => string, max: num
 }
 
 function promptOf(message: MessageRecord): string {
-  const text = flatOf(message, () => (typeof message.content === 'string' ? message.content : ''), PROMPT_MAX);
+  const text = flatOf(message, () => sentMessageWords(userMessageText(message)), PROMPT_MAX);
   if (text) return clip(text, PROMPT_MAX);
   // Two shapes reach here: the history `Attachment` (name) and the upload-time
   // `AttachmentMeta` a live send stores as-is (the name is on the File).

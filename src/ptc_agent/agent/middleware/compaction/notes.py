@@ -6,7 +6,9 @@ written as it happens. A summary paraphrases, so the notes are what keeps those
 exact. Two runtime-context rows ask for them: one shortly before each summary,
 to checkpoint what the notes lack while the history they draw on is still in
 view, and a check-in once a run of tool calls goes by with no write to them,
-so they keep pace with the work rather than wait for the summary. After a
+so they keep pace with the work rather than wait for the summary. A summary
+mid-turn that keeps no turn, the one that rebuilds a stale system prompt, is
+preceded by a step of its own on the notes (see ``rebuild_notes_ask``). After a
 summary, it names the note files and sends the agent back to read them; their
 text is not copied in, so the summary stays a summary and the notes stay the
 one place each entry lives. Only the main agent gets any of this: a subagent
@@ -17,6 +19,7 @@ notes folder.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import posixpath
 import re
@@ -30,22 +33,28 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
+    ToolCallRequest,
 )
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
+from langgraph.types import Command
 
+from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.compaction.measure import context_tokens
 from ptc_agent.agent.middleware.compaction.utils import read_ahead
 from ptc_agent.agent.middleware.runtime_context.changes import UPDATE_SCHEMA_VERSION
 from ptc_agent.agent.middleware.runtime_context.durable import (
     DurableUpdate,
     build_update_message,
+    written_row,
     last_stated,
     messages_in_view,
     runtime_update_from_message,
 )
+from ptc_agent.agent.middleware.runtime_context.frozen_prompt import pinned_static
 from ptc_agent.agent.middleware.runtime_context.turn import (
     NOTES_CHECK_IN_ROW_KIND,
     NOTES_DUE_ROW_KIND,
+    REBUILD_NOTES_ROW_KIND,
 )
 from ptc_agent.agent.transcript.classify import is_summary_message
 from ptc_agent.core.paths import WorkspaceLayout
@@ -76,7 +85,9 @@ NOTES_DUE_LOWEST = 0.5
 NOTES_CHECK_IN_CALLS = 30
 # The tools that name the notes folder without writing to it.
 _READ_ONLY_TOOLS = frozenset({"Read", "Glob", "Grep"})
-_NOTES_ROW_KINDS = frozenset({NOTES_DUE_ROW_KIND, NOTES_CHECK_IN_ROW_KIND})
+_NOTES_ROW_KINDS = frozenset({NOTES_DUE_ROW_KIND, NOTES_CHECK_IN_ROW_KIND, REBUILD_NOTES_ROW_KIND})
+# The static prompt's scratchpad section, which says what the notes are for.
+_PROMPT_SECTION = "<thread_scratchpad>"
 
 # The files a summary names; older ones are counted, not named.
 _MAX_NAMED = 20
@@ -252,6 +263,10 @@ class NotesDueMiddleware(AgentMiddleware):
     mark under the current summary, from a call measured below it: a summary
     and the tail it keeps can start past the mark, and an ask on the first
     call after it would draw only on what that summary paraphrased.
+
+    A Claude thread pinned to a prompt from before the scratchpad was on is
+    sent no section that explains the notes, so until a rebuild takes the
+    new prompt it is treated as ``NotesOffMiddleware`` treats a thread.
     """
 
     state_schema = NotesDueState
@@ -267,6 +282,7 @@ class NotesDueMiddleware(AgentMiddleware):
         self._token_threshold = compaction._token_threshold
         self._estimate = compaction._estimate(model)
         self._view = compaction.view
+        self._model = model
         self._notes_folder = _notes_pattern(scratchpad.notes_subdir)
 
     def wrap_model_call(
@@ -274,27 +290,57 @@ class NotesDueMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        return handler(_without_answered(request))
+        return handler(_notes_rows_sent(request))
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        return await handler(_without_answered(request))
+        return await handler(_notes_rows_sent(request))
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Log each successful call on the notes by the check-in's own rule
+        (``_writes_notes``, which counts a Bash ``cat`` of a note too), with
+        the row it follows, so the rows asked and the note calls after them can
+        be counted from the logs."""
+        result = await handler(request)
+        if _writes_notes(request.tool_call, self._notes_folder) and _succeeded(result):
+            thread_id, agent = run_ids()
+            logger.info(
+                "[Notes] call tool=%s after=%s thread_id=%s agent=%s",
+                request.tool_call.get("name"),
+                _answered_row(request.state or {}, self._notes_folder, request.tool_call.get("id")),
+                thread_id,
+                agent,
+            )
+        return result
 
     async def abefore_model(self, state: Any, runtime: Any = None) -> dict[str, Any] | None:
-        fill = await self._fill(state)
+        view = await self._view(state.get("messages") or [], state)
+        fill = await self._fill(state, view)
         # At 1.0 the summary runs on this very call, too late to write anything.
         if fill >= 1.0:
             return None
         update: dict[str, Any] = {}
-        since = _summary_id(state)
+        since = summary_id(state)
         if fill < notes_due_at(self._token_threshold):
             if state.get("_notes_below_mark", _UNNAMED) != since:
                 update["_notes_below_mark"] = since
+        # The mark is kept either way: a model switch takes the new prompt
+        # without a summary, and the stretch it is in still started below.
+        if not explains_notes(state, self._model, view):
+            return update or None
         row = self._notes_due(state, fill, since) or self._check_in(state)
         if row is not None:
+            thread_id, agent = run_ids()
+            logger.info(
+                "[Notes] asked kind=%s fill=%.2f thread_id=%s agent=%s", row.kind, fill, thread_id, agent
+            )
             update["messages"] = [build_update_message(row)]
         return update or None
 
@@ -302,16 +348,15 @@ class NotesDueMiddleware(AgentMiddleware):
         # Sync fallback: the async agent won't call this but the protocol requires it.
         return None
 
-    async def _fill(self, state: Any) -> float:
+    async def _fill(self, state: Any, view: list[Any]) -> float:
         """The context's share of the threshold as the summary trigger reads
-        it (``context_tokens``), over the view compaction sends, without the
-        attachments it removed or the results it hid.
+        it (``context_tokens``), over ``view``, the view compaction sends,
+        without the attachments it removed or the results it hid.
 
         The count runs short of the trigger's by the system prompt, which
         state does not hold, so where no usage is reported the reminder comes
         late by that much rather than never.
         """
-        view = await self._view(state.get("messages") or [], state)
         await read_ahead(view)
         reading = await context_tokens(state, view, self._estimate)
         return reading.tokens / self._token_threshold
@@ -350,11 +395,50 @@ class NotesDueMiddleware(AgentMiddleware):
                 f"{count} tool calls have run since the last write to your "
                 f"checkpoint notes in `{self._scratchpad.notes_dir}/`."
             ),
-            provenance={"source": "harness", "summary": _summary_id(state)},
+            provenance={"source": "harness", "summary": summary_id(state)},
         )
 
 
-def _summary_id(state: Any) -> str | None:
+def rebuild_notes_ask(view: Sequence[Any], notes_dir: str, state: Any) -> AnyMessage | None:
+    """The row asking the agent to bring its notes up to date on the step
+    before a summary that keeps no turn mid-turn, or None when an ask to write
+    them the agent has not acted on is already in ``view``: NotesDue judges
+    the fill without the system prompt, so it can write one on this very call.
+    A check-in does not count, since it lets the agent skip writing, and this
+    ask is the one that says the summary keeps no turn.
+
+    It names the summary it was asked under, as the reminder does, so a call
+    after a later summary goes without it (``_without_answered``).
+    """
+    last = max((i for i, m in enumerate(view) if isinstance(m, AIMessage)), default=-1)
+    if any((row := _notes_row(m)) is not None and row.kind != NOTES_CHECK_IN_ROW_KIND for m in view[last + 1 :]):
+        return None
+    return written_row(
+        DurableUpdate(
+            kind=REBUILD_NOTES_ROW_KIND,
+            schema_version=UPDATE_SCHEMA_VERSION,
+            text="",
+            provenance={"source": "harness", "summary": summary_id(state), "notes_dir": notes_dir},
+        )
+    )
+
+
+def last_step_wrote_notes(view: Sequence[Any], thread_id: str | None) -> bool:
+    """Whether the newest answer in ``view`` wrote the thread's notes: a call
+    on them (``_writes_notes``) whose result reports success, so they need no
+    step of their own before a summary."""
+    at = next((i for i in range(len(view) - 1, -1, -1) if isinstance(view[i], AIMessage)), None)
+    if at is None or not thread_id:
+        return False
+    results = {m.tool_call_id: m for m in view[at + 1 :] if isinstance(m, ToolMessage)}
+    folder = _notes_pattern(thread_notes_subdir(thread_id))
+    return any(
+        _writes_notes(call, folder) and call["id"] in results and _succeeded(results[call["id"]])
+        for call in view[at].tool_calls
+    )
+
+
+def summary_id(state: Any) -> str | None:
     """The id of the summary the current context starts from, None before any."""
     event = state.get("_summarization_event")
     return getattr(event["summary_message"], "id", None) if event else None
@@ -379,6 +463,61 @@ class NotesOffMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         return await handler(_without_notes_rows(request))
+
+
+def _succeeded(result: Any) -> bool:
+    """Whether a tool's result reports success. Tools report a refusal in their
+    result rather than as an error: the file tools as text that starts with
+    ``ERROR``, the JSON tools as ``"success": false``, either inside a
+    ``Command`` that carries the result."""
+    if isinstance(result, Command):
+        update = result.update if isinstance(result.update, dict) else {}
+        return all(_succeeded(m) for m in update.get("messages") or () if isinstance(m, ToolMessage))
+    if not isinstance(result, ToolMessage):
+        return True
+    text = str(result.content).lstrip()
+    if result.status == "error" or text.startswith("ERROR"):
+        return False
+    try:
+        reported = json.loads(text) if text.startswith("{") else None
+    except (ValueError, RecursionError):
+        return True
+    return not (isinstance(reported, dict) and reported.get("success") is False)
+
+
+def _answered_row(state: Mapping[str, Any], folder: re.Pattern[str], call_id: str | None) -> str:
+    """The kind of the notes row the note call ``call_id`` in the newest answer
+    follows, or ``none`` when an earlier successful note call came after it.
+
+    Only rows the model's requests still carry count: a row a summary has
+    answered is kept out of them (``_without_answered``), so a call after it
+    is not an answer to it. The note calls of one answer run together and see
+    the same state, so only the first of them follows the row.
+    """
+    messages = state.get("messages") or []
+    asking = max((i for i, m in enumerate(messages) if isinstance(m, AIMessage)), default=len(messages))
+    if asking < len(messages):
+        batch = [call.get("id") for call in messages[asking].tool_calls if _writes_notes(call, folder)]
+        if batch and batch[0] != call_id:
+            return "none"
+    current = summary_id(state)
+    gone = unanswered_notes_rows(state)
+    legacy = current is not None and "_unanswered_notes_rows" not in state
+    failed: set[str] = set()
+    for message in reversed(messages[:asking]):
+        if isinstance(message, ToolMessage) and not _succeeded(message):
+            failed.add(message.tool_call_id)
+        elif (row := _notes_row(message)) is not None:
+            # ``_without_answered``'s rule for a call that answers from the
+            # current summary: an older summary's row stays unless that
+            # summary answered it, or the thread predates the record.
+            if row.provenance.get("summary") == current or not (legacy or message.id in gone):
+                return row.kind
+        elif isinstance(message, AIMessage) and any(
+            _writes_notes(call, folder) and call.get("id") not in failed for call in message.tool_calls
+        ):
+            return "none"
+    return "none"
 
 
 def _notes_row(message: Any) -> DurableUpdate | None:
@@ -468,7 +607,7 @@ def suppressed_notes_rows(state: Mapping[str, Any], kept: Sequence[Any]) -> set[
     # TODO(2026-11-25): delete 30 days after this ships, once the threads written before it have aged out.
     if (
         "_unanswered_notes_rows" not in state
-        and (summary := _summary_id(state)) is not None
+        and (summary := summary_id(state)) is not None
     ):
         return {
             m.id
@@ -496,7 +635,7 @@ def _without_answered(request: ModelRequest) -> ModelRequest:
     state = request.state or {}
     current = next((m.id for m in messages if is_summary_message(m)), None)
     gone = unanswered_notes_rows(state)
-    if current != _summary_id(state):
+    if current != summary_id(state):
         answered = max((i for i, m in enumerate(messages) if isinstance(m, AIMessage)), default=-1)
     # TODO(2026-11-25): delete 30 days after this ships, once the threads written before it have aged out.
     elif current is not None and "_unanswered_notes_rows" not in state:
@@ -513,6 +652,22 @@ def _without_answered(request: ModelRequest) -> ModelRequest:
             and (i >= answered or m.id in gone)
         },
     )
+
+
+def explains_notes(state: Any, model: Any, view: Sequence[Any]) -> bool:
+    """Whether the static prompt a call to ``model`` sending ``view`` goes
+    out with has the scratchpad section: the build's always does where the
+    notes rows run, so only a pinned one (``pinned_static``) can lack it."""
+    pinned = pinned_static(state, model, view)
+    return pinned is None or _PROMPT_SECTION in pinned
+
+
+def _notes_rows_sent(request: ModelRequest) -> ModelRequest:
+    """``request`` with the notes rows its static prompt can explain."""
+    explained = explains_notes(
+        getattr(request, "state", None), getattr(request, "model", None), request.messages or []
+    )
+    return _without_answered(request) if explained else _without_notes_rows(request)
 
 
 def _without_notes_rows(request: ModelRequest) -> ModelRequest:

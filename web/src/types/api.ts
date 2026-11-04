@@ -1,6 +1,7 @@
 /** Core API types — User, Workspace, Thread, and response wrappers */
 
 import type { CommandFailureReason, CommandTool } from './commands';
+import type { ArtifactCommentSendFields } from './artifacts';
 
 // --- User ---
 
@@ -73,7 +74,7 @@ export interface FeatureState {
   key: string;
   label: string;
   description: string;
-  /** Honest cost of opting in to an experimental feature; English-only, null when none. */
+  /** Honest cost of opting in to an experimental feature, null when none. */
   tradeoffs: string | null;
   enabled: boolean;
   gate: 'none' | 'opt_in' | 'opt_out' | 'plan';
@@ -390,6 +391,8 @@ export interface ComputerRemoveResponse {
   key: ComputerKeyRemoval | null;
   /** What happened to LangAlpha's files on an SSH computer's machine; null unless delete_files was asked. */
   files?: ComputerFilesRemoval | null;
+  /** A Claude Code token left on an SSH computer's machine; null when none is, absent from an older backend. */
+  token?: ComputerTokenRemoval | null;
   /** The named workspaces it deleted, not one moved off it meanwhile; absent from an older backend. */
   workspaces_deleted?: string[];
 }
@@ -400,6 +403,13 @@ export interface ComputerFilesRemoval {
   root_kept: boolean;
   /** ~/.langalpha stays, since another computer on the login uses it. */
   runtime_kept: boolean;
+}
+
+export interface ComputerTokenRemoval {
+  /** The machine was not reached (unreached), or answered but could not delete it (failed); either way it last held a token file of the computer's. */
+  outcome: 'unreached' | 'failed';
+  /** The token file on the machine, for deleting it by hand. */
+  path: string;
 }
 
 export interface ComputerKeyRemoval {
@@ -551,6 +561,9 @@ export interface SshProbeResult {
   model?: string;
   /** Answered by LangAlpha's helper (remote control of a Mac) rather than the machine's own sshd. */
   helper: boolean;
+  /** Whether an organization's Claude Code policy is installed there, which
+   *  keeps Claude Code from running. Absent from an older server. */
+  claude_code_blocked?: boolean;
 }
 
 export type SshProbeErrorCode =
@@ -611,8 +624,9 @@ export interface ReorderItem {
 
 // --- Thread ---
 
-/** An agent that hands turns to a workspace's thread. */
-export type DispatchingAgent = 'chief_of_staff';
+/** An agent that hands turns to a workspace's thread. `cli` is a computer's
+ *  agent through the `la` CLI, and `id` the thread whose command sent it. */
+export type DispatchingAgent = 'chief_of_staff' | 'cli';
 
 /**
  * Who initiated a thread, or one turn of it (a query row's metadata carries
@@ -770,8 +784,6 @@ interface ShareLinkBase {
   title: string | null;
   shared: boolean;
   shared_at: string | null;
-  /** The confirmed list while shared, null otherwise. */
-  shared_files: string[] | null;
   created_at: string;
 }
 
@@ -780,6 +792,8 @@ export interface FileShareLink extends ShareLinkBase {
   /** Workspace-relative entry path. */
   path: string;
   port: null;
+  /** The file's artifact record, which this link is the code of. */
+  artifact_id?: string;
 }
 
 export interface AppShareLink extends ShareLinkBase {
@@ -787,6 +801,7 @@ export interface AppShareLink extends ShareLinkBase {
   /** The optional entry path on the served app. */
   path: string | null;
   port: number;
+  artifact_id?: null;
 }
 
 /** One item's stable `/a/<code>` link. Private unless `shared`. */
@@ -795,26 +810,6 @@ export type ShareLink = FileShareLink | AppShareLink;
 export type ShareLinkTarget =
   | { kind: 'file'; path: string }
   | { kind: 'app'; port: number };
-
-export type ShareFileReason = 'entry' | 'page' | 'style' | 'markdown' | 'script';
-
-export interface ShareFileEntry {
-  path: string;
-  size: number;
-  reason: ShareFileReason;
-}
-
-export interface ShareLinkDrift {
-  added: string[];
-  removed: string[];
-}
-
-/** The current file list for a file link, with the drift against what was confirmed. */
-export interface ShareLinkFiles {
-  files: ShareFileEntry[];
-  total_size: number;
-  drift: ShareLinkDrift | null;
-}
 
 export interface SharedLinksResponse {
   links: ShareLink[];
@@ -827,6 +822,10 @@ export interface FileGrant {
   /** Seconds the grant has left when it is answered. */
   expires_in: number;
 }
+
+// --- Artifacts ---
+
+export type * from './artifacts';
 
 // --- Workspace Files ---
 
@@ -985,7 +984,7 @@ export interface SSEEventData {
 
 // --- Chat Message Send Body ---
 
-export interface ChatMessageBody {
+export interface ChatMessageBody extends ArtifactCommentSendFields {
   workspace_id: string;
   messages: Array<{ role: string; content: string }>;
   locale: string;

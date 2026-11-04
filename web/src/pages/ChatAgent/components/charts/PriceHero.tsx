@@ -22,6 +22,8 @@ export function DualName({ first, second }: { first: React.ReactNode; second?: s
 export interface PriceFigures {
   /** What the money prints in; null for an index, whose level is points. */
   currency: string | null;
+  /** Places its prices and their changes print at (lib/bars `quotePlaces`). */
+  places: number;
   price?: number | null;
   change?: number | null;
   changePct?: number | null;
@@ -59,9 +61,9 @@ export function PriceHero({
   const { t } = useTranslation();
   const locale = useLocale();
   const narrow = useCardNarrow();
-  const { currency, ext } = figures;
-  const money = (n: number): string => formatMoney(n, currency, locale);
-  const signed = (n: number): string => formatMoney(n, currency, locale, { signed: true });
+  const { currency, places: upTo, ext } = figures;
+  const money = (n: number): string => formatMoney(n, currency, locale, { upTo });
+  const signed = (n: number): string => formatMoney(n, currency, locale, { signed: true, upTo });
   const pairs = [
     figures.open != null && ([t('toolArtifact.open'), money(figures.open)] as const),
     figures.prevClose != null && ([t('toolArtifact.prevClose'), money(figures.prevClose)] as const),

@@ -9,7 +9,7 @@ not take the account-wide value down with it.
 
 import pytest
 
-from src.llms.preferences import TUNING_FIELDS, resolve_tuning_field
+from src.llms.preferences import ACCOUNT_FIELDS, PROFILE_FIELDS, resolve_tuning_field
 
 
 class TestPrecedence:
@@ -63,7 +63,12 @@ class TestMalformedBagsDegradeToAccountWide:
 
 
 class TestEveryTuningFieldUsesTheSameRule:
-    @pytest.mark.parametrize("field", TUNING_FIELDS)
+    @pytest.mark.parametrize("field", PROFILE_FIELDS)
     def test_each_declared_field_resolves_through_the_profile(self, field):
         pref = {field: "account-wide", "profiles": {"m1": {field: "per-model"}}}
         assert resolve_tuning_field(pref, "m1", field) == "per-model"
+
+    @pytest.mark.parametrize("field", sorted(ACCOUNT_FIELDS))
+    def test_an_account_field_a_profile_stored_anyway_is_not_read(self, field):
+        pref = {field: False, "profiles": {"m1": {field: True}}}
+        assert resolve_tuning_field(pref, "m1", field) is False

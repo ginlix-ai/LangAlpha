@@ -182,6 +182,28 @@ async def test_a_source_a_deploy_adds_or_retires_is_a_row(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_turning_the_scratchpad_on_reaches_a_thread_as_a_row(monkeypatch):
+    """The flag flips between turns: the build gains the prompt's section and
+    the baseline's <scratchpad> element. The thread keeps its prompt and its
+    frozen block, and the element reaches it as a change row."""
+    wire = Wire([reply(1, text="Hello."), reply(2, text="Noted.")]).install(monkeypatch)
+    saver = InMemorySaver()
+    folder = "/home/workspace/acme/.agents/scratchpad/b1b2c3d4/"
+    on = "You are a test agent.\n\n<thread_scratchpad>\nKeep notes.\n</thread_scratchpad>"
+    await _agent(saver, Sources(), "You are a test agent.").ainvoke({"messages": [HumanMessage("Hi.")]}, _cfg())
+    await _agent(saver, Sources(blocks={"scratchpad": folder}), on).ainvoke(
+        {"messages": [HumanMessage("Again.")]}, _cfg()
+    )
+
+    assert all_breaks(wire) == []
+    assert _system(wire.payloads[1]) == _system(wire.payloads[0])
+    assert "<thread_scratchpad>" not in _system(wire.payloads[1])
+    row = json.dumps(wire.payloads[1]["messages"][-1])
+    assert "no copy in your system prompt" in row
+    assert f'<scratchpad path=\\"{folder}\\" notes=\\"{folder}note/\\"/>' in row
+
+
+@pytest.mark.asyncio
 async def test_a_static_prompt_a_deploy_changes_stays_pinned_for_the_thread(monkeypatch):
     """The second turn's build renders a new static prompt. The thread keeps
     sending the one its thinking was produced under; a new thread takes the

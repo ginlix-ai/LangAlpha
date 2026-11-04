@@ -5,6 +5,7 @@ MCP config and redacts them in text and bytes content.
 """
 
 import os
+import secrets
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -146,6 +147,11 @@ class TestRedact:
         r = self._make_redactor({})
         result = r.redact("refresh gxsr_token789.extra found")
         assert result == "refresh [REDACTED:SANDBOX_TOKEN] found"
+
+    def test_redacts_claude_setup_tokens_by_shape(self):
+        token = "-".join(["sk", "ant", "oat01", secrets.token_urlsafe(48)])
+        result = self._make_redactor({}).redact(f"saved {token}\n")
+        assert result == "saved [REDACTED:CLAUDE_SETUP_TOKEN]\n"
 
     def test_longer_secret_replaced_first(self):
         """When one secret is a prefix of another, longer replaces first."""

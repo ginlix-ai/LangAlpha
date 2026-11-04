@@ -14,6 +14,7 @@ import PastPlanCard from '../PastPlanCard';
 import WorkflowRunCard from '../WorkflowRunCard';
 import SubagentRun, { type SubagentRunMember } from './SubagentRun';
 import AnalystHandoffRun, { type AnalystHandoffMember } from './AnalystHandoffRun';
+import { ArtifactCommentReplyLines, type CommentReplyMember } from '../artifactComments/ArtifactCommentReplyLine';
 import { WORKFLOW_TASK_TYPE } from '../../session/subagents/workflowRunState';
 import { SubagentStopNotices } from '../SubagentStopNotice';
 import type { CreditPauseState, PendingToolCallChunk, PTCAgentProposalState, SubagentTaskRecord, ToolApprovalState } from '@/types/chat';
@@ -105,6 +106,8 @@ interface TextBlockProps {
 const HOLDS_FOR_PROSE = new Set<RenderBlock['type']>([
   'activity', 'subagent_task', 'html_widget', 'compact_artifact', 'notification',
 ]);
+
+type RunKind = 'pill' | 'line' | 'subagent' | 'analyst';
 
 /** Whitespace between two blocks, such as the "\n\n" a model writes between
  *  two tool calls. It draws nothing, so it is treated as nothing: it neither
@@ -261,8 +264,11 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
     block.proposal ?? ptcAgentProposals[block.segment.proposalId!];
 
   /** Blocks drawn as one row or group with their like neighbours. */
-  const runKind = (block: RenderBlock): 'pill' | 'subagent' | 'analyst' | null => {
-    if (block.type === 'compact_artifact') return block.card?.kind === 'pill' ? 'pill' : null;
+  const runKind = (block: RenderBlock): RunKind | null => {
+    if (block.type === 'compact_artifact') {
+      const kind = block.card?.kind;
+      return kind === 'pill' || kind === 'line' ? kind : null;
+    }
     if (block.type === 'subagent_task') {
       const id = block.segment.subagentId;
       // A workflow run has a card of its own and breaks a run of spawns.
@@ -293,12 +299,51 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
     above = i;
   }
 
-  // The cards a row can hand its place to as its call lands.
+  // What the message draws, in order: one element per block, except that a
+  // run of consecutive blocks of one kind (pills, reply lines, subagent
+  // spawns, analyst hand-offs) sharing a fold and visibility state is gathered
+  // into one element.
+  const drawn: Array<{ kind: RunKind | null; members: number[] }> = [];
+  for (let i = 0; i < renderBlocks.length; i++) {
+    if (heldForProse[i] || isBlankText(renderBlocks[i])) continue;
+    const kind = runKind(renderBlocks[i]);
+    const members = [i];
+    for (let j = i + 1; kind && j < renderBlocks.length; j++) {
+      if (isBlankText(renderBlocks[j])) continue;
+      if (
+        runKind(renderBlocks[j]) !== kind
+        || heldForProse[j]
+        || blockFolds[j] !== blockFolds[i]
+        || blockIsVisible[j] !== blockIsVisible[i]
+      ) break;
+      members.push(j);
+    }
+    drawn.push({ kind, members });
+    i = members[members.length - 1];
+  }
+
+  // The cards a row can hand its place to as its call lands: a call's own
+  // card, and a run of reply lines, in the place of its first reply's row. A
+  // reply joining a line already drawn changes that line's sentence instead,
+  // and its row leaves as rows leave, or, as its block's only item, its
+  // block's space closes into the line (CardArrivals, `joins`).
   const arrivingCards: ArrivingCard[] = [];
-  renderBlocks.forEach((block, i) => {
-    if (heldForProse[i] || !blockIsVisible[i] || block.type !== 'compact_artifact' || block.card?.kind !== 'call') return;
-    arrivingCards.push({ key: block.key, call: block.toolCallId, settledAt: block.proc._settledAt as number | undefined });
-  });
+  for (const { kind, members } of drawn) {
+    const [first] = members;
+    const block = renderBlocks[first];
+    if (!blockIsVisible[first] || block.type !== 'compact_artifact') continue;
+    if (kind === 'line' || (kind === null && block.card?.kind === 'call')) {
+      const joins = kind === 'line'
+        ? members.slice(1).flatMap((idx) => {
+          const member = renderBlocks[idx];
+          return member.type === 'compact_artifact'
+            ? [{ call: member.toolCallId, settledAt: member.proc._settledAt as number | undefined }]
+            : [];
+        })
+        : undefined;
+      arrivingCards.push({ key: block.key, call: block.toolCallId, settledAt: block.proc._settledAt as number | undefined, joins });
+    }
+  }
 
   const renderBlock = (block: RenderBlock, blockIdx: number): React.ReactElement | null => {
 
@@ -526,9 +571,6 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
   return (
     <CardArrivals cards={arrivingCards} live={fold === 'live' || !!isStreaming} motionSafe={motionSafe} className="sibling-space-y-3">
       {(() => {
-        // One element per block, except that a run of consecutive blocks of
-        // one kind (pills, subagent spawns, analyst hand-offs) sharing a fold
-        // and visibility state is gathered into one element.
         const wrap = (blockIdx: number, content: React.ReactElement) => {
           const key = renderBlocks[blockIdx].key;
           if (blockFolds[blockIdx]) {
@@ -537,26 +579,8 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
           return blockIsVisible[blockIdx] ? content : null;
         };
         const out: React.ReactNode[] = [];
-        for (let blockIdx = 0; blockIdx < renderBlocks.length; blockIdx++) {
-          if (heldForProse[blockIdx]) continue;
-          const block = renderBlocks[blockIdx];
-          if (isBlankText(block)) continue;
-          const kind = runKind(block);
+        for (const { kind, members: run } of drawn) {
           if (kind) {
-            const first = blockIdx;
-            const run: number[] = [];
-            let j = first;
-            for (; j < renderBlocks.length; j++) {
-              if (isBlankText(renderBlocks[j])) continue;
-              if (
-                runKind(renderBlocks[j]) !== kind
-                || heldForProse[j]
-                || blockFolds[j] !== blockFolds[first]
-                || blockIsVisible[j] !== blockIsVisible[first]
-              ) break;
-              run.push(j);
-            }
-            blockIdx = j - 1;
             // Keyed by the first member, so a block joining the run later grows
             // it without remounting the ones already there.
             const firstKey = renderBlocks[run[0]].key;
@@ -573,6 +597,19 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
                   pausing={creditPausePending}
                   onOpen={readOnly ? undefined : onOpenSubagentTask}
                 />
+              );
+            } else if (kind === 'line') {
+              const members: CommentReplyMember[] = run.flatMap((idx) => {
+                const b = renderBlocks[idx];
+                return b.type === 'compact_artifact' && b.card?.kind === 'line'
+                  ? [{ key: b.key, reply: b.card.reply, openCall: () => onToolCallDetailClick?.(b.toolCallId) }]
+                  : [];
+              });
+              // The run arrives in its first reply's row's place (CardArrivals).
+              content = (
+                <div key={firstKey} data-card-arrival={firstKey}>
+                  <ArtifactCommentReplyLines members={members} />
+                </div>
               );
             } else if (kind === 'analyst') {
               const members: AnalystHandoffMember[] = run.map((idx) => {
@@ -599,7 +636,8 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
             if (content) out.push(wrap(run[0], content));
             continue;
           }
-          const content = renderBlock(block, blockIdx);
+          const [blockIdx] = run;
+          const content = renderBlock(renderBlocks[blockIdx], blockIdx);
           // Missing artifact renderers and pending proposals must not leave a
           // spaced fold shell behind when they have nothing to display.
           if (content === null) continue;

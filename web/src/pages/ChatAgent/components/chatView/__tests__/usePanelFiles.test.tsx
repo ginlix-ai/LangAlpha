@@ -60,7 +60,7 @@ describe('usePanelFiles', () => {
     expect(result.current.panelAccess).toMatchObject({ readOnly: false, isHome: true, onReturnHome: null });
     act(() => result.current.setOverride(SIBLING));
     expect(result.current.shownWorkspaceId).toBe(SIBLING);
-    expect(result.current.panelAccess).toMatchObject({ readOnly: true, singleFileMode: true, canShare: false, isHome: false });
+    expect(result.current.panelAccess).toMatchObject({ readOnly: true, singleFileMode: true, isHome: false });
 
     act(() => result.current.panelAccess.onReturnHome?.());
     expect(result.current.shownWorkspaceId).toBe(HOME);

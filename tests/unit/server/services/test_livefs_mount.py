@@ -95,7 +95,7 @@ def server(monkeypatch):
             WS_A: [(f"workspaces/{WS_A}/transcripts", FOLDER_A.transcripts)],
         },
         expires_at=_in(59),
-        mint=AsyncMock(return_value=MintedToken("lfs1.comp-test-1.fresh", _in(60))),
+        mint=AsyncMock(return_value=MintedToken("lfs1.comp-test-1.fresh", _in(60), _in(0))),
         settling=False,
         #: The sandbox that took the current token, as its row says.
         held_by="sb-test-1",
@@ -585,6 +585,30 @@ async def test_a_reconnect_the_rows_say_is_served_is_handed_the_mount(clock, mon
         await manager._keep_livefs(COMPUTER, USER, reconnected, WS_A)
     serve.assert_not_awaited()
     assert await reconnected.livefs.ready(WS_A)
+
+
+@pytest.mark.parametrize("mounts", [True, False], ids=["mounts", "never-mounts"])
+@pytest.mark.asyncio
+async def test_every_sandbox_the_host_loads_files_its_calls_for_its_computer(
+    monkeypatch, mounts
+):
+    """Whatever mounts it: a save through the mount reads the filing, and so
+    does a call the ``la`` CLI makes, which names its thread only through it."""
+    from src.server.services.livefs import history_files
+
+    open_call = AsyncMock()
+    monkeypatch.setattr(mount.outcomes, "open_call", open_call)
+    monkeypatch.setattr(mount, "view", AsyncMock(return_value=None))
+    monkeypatch.setattr(history_files, "computer_history", AsyncMock(return_value=None))
+    sandbox = _Sandbox()
+    sandbox.mounts_livefs = mounts
+    sandbox.history = None
+    context = CallContext(workspace_id=WS_A, thread_id="thread-test-1", timezone="Asia/Tokyo")
+
+    await _manager()._load_livefs(COMPUTER, USER, sandbox)
+    await sandbox.call_filer("c0ffee00c0ffee00", context)
+
+    open_call.assert_awaited_once_with(COMPUTER, "c0ffee00c0ffee00", context)
 
 
 @pytest.mark.parametrize(
@@ -1404,23 +1428,6 @@ async def test_a_command_still_running_on_a_forgotten_machine_mints_nothing():
 
     serve.assert_not_awaited()
     renew.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_a_command_files_who_it_runs_for_only_with_both_its_id_and_context(
-    monkeypatch,
-):
-    open_call = AsyncMock()
-    monkeypatch.setattr(mount.outcomes, "open_call", open_call)
-    sandbox = _Sandbox()
-    handle = _handle(_serving(sandbox, WS_A), sandbox)
-    context = CallContext(workspace_id=WS_A, thread_id="thread-test-1", timezone="Asia/Tokyo")
-
-    await handle.prepare("c0ffee00c0ffee00", context)
-    await handle.prepare("c0ffee00c0ffee01")
-    await handle.prepare(None, context)
-
-    open_call.assert_awaited_once_with(COMPUTER, "c0ffee00c0ffee00", context)
 
 
 @pytest.mark.asyncio

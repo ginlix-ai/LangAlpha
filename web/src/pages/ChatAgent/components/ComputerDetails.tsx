@@ -29,6 +29,7 @@ import { COMPUTER_NAME_MAX, computerNameTakenMessage } from '../utils/computerNa
 import { MakePrimaryButton } from './MakePrimaryDialog';
 import { providerCanBePrimary, providerManagesSpec } from './providerUi';
 import { ComputerFacts } from './computerFacts';
+import { ComputerClaudeCode } from './ComputerClaudeCode';
 import {
   ComputerNotes,
   ComputerSpecRows,
@@ -149,6 +150,8 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
               )}
             </ComputerSpecRows>
           </section>
+
+          <ComputerClaudeCode computerId={computer.computer_id} actions={actions} />
 
           <section className="computer-details-group">
             <h3 className="computer-details-title">{t('computer.card.storage', 'Storage')}</h3>

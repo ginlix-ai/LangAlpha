@@ -156,6 +156,9 @@
    touch, where there is no hover to show it. */
 .widget-card__attach--view {
   opacity: 0;
+  /* The hit area rises over the gap above the card, since just under the title
+     are the body's first controls (the news tabs). */
+  --tap-target-y: -10px;
 }
 .widget-frame:hover .widget-card__attach--view,
 .widget-card__attach--view:focus-visible {
@@ -249,6 +252,14 @@
 
 /* ── A bare widget: the body draws its own cards ── */
 
+/* The index stack's dots sit at the foot of the body, and their hit area runs on
+   past it, over the gap to the next widget. The stack clips its own swipe. */
+@media (pointer: coarse) {
+  .widget-frame--fit > .widget-card[data-bare] > .widget-card__body {
+    overflow: visible;
+  }
+}
+
 /* Outside edit mode a bare widget (the index tiles) has no edge, no padding
    and no title; only its paperclip remains, over the top right corner. An
    untitled one (an embed with its own heading) keeps the edge and padding
@@ -321,6 +332,11 @@
 :root:is([data-card-style='balanced'], [data-card-style='quiet']) .dash-chips .term-chip[aria-pressed='true'] {
   border-color: var(--color-term-text-tertiary);
 }
+/* 11px on the dashboard in every card style; a chat card keeps its own size.
+   Written to outrank the card styles' relative sizes (termCardStyles.css). */
+:root :is(.term-card.widget-card .term-chip, .term-card.widget-card .term-table.dash-table th, .widget-term .term-more) {
+  font-size: 0.6875rem;
+}
 .dash-chips .term-chip:focus-visible,
 .dash-range:focus-visible,
 .dash-link:focus-visible {
@@ -343,7 +359,7 @@
 }
 .dash-range {
   font-family: var(--term-words);
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   letter-spacing: calc(0.06em * var(--term-track));
   text-transform: var(--term-case);
 }
@@ -358,7 +374,7 @@
   border: 1px solid var(--color-term-edge);
   border-radius: 4px;
   color: var(--color-term-text-tertiary);
-  font-size: 0.65625rem;
+  font-size: 0.6875rem;
 }
 .dash-field > input {
   width: 7ch;
@@ -439,18 +455,22 @@ select.dash-field[data-set] {
   width: 18px;
   height: 18px;
   transform: translateY(-50%);
+  /* Just the padding reserved above, moved in from the cell's edge that would
+     clip it: past that is the cell's own text, a headline that opens its story. */
+  --tap-target-w: 1.5rem;
+  --tap-target-x: -3px;
 }
 /* Words that wrap rather than cut: a held row's second line. */
 .dash-sub {
   display: block;
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   color: var(--color-term-text-tertiary);
 }
 .dash-ext {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   color: var(--color-term-text-tertiary);
 }
 
@@ -469,7 +489,7 @@ button.term-more:hover,
   align-items: center;
   gap: 0.375rem;
   font-family: var(--term-words);
-  font-size: 0.65625rem;
+  font-size: 0.6875rem;
   letter-spacing: calc(0.04em * var(--term-track));
   text-transform: var(--term-case);
   color: var(--color-term-text-secondary);

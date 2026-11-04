@@ -1058,11 +1058,24 @@ async def get_workspaces_for_user(
     sort_by: str = "custom",
     include_home: bool = False,
     conn=None,
+    computer_id: str | None = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
+    """``computer_id`` keeps the page to what that computer's token reaches:
+    the workspaces on it other than Home, which is out of a computer's reach
+    wherever it sits."""
     try:
         status_filter = "" if include_deleted else "AND status != 'deleted'"
         home_filter = "" if include_home else f"AND {EXCLUDE_HOME}"
-        params = {"user_id": user_id, "home_id": get_home_workspace_id(user_id)}
+        computer_filter = (
+            ""
+            if computer_id is None
+            else f"AND computer_id = %(computer_id)s::uuid AND {EXCLUDE_HOME}"
+        )
+        params = {
+            "user_id": user_id,
+            "home_id": get_home_workspace_id(user_id),
+            "computer_id": computer_id,
+        }
 
         # Every order ends on workspace_id, appended below: rows that tie would
         # otherwise come back in any order, which shifts an offset page and
@@ -1081,7 +1094,7 @@ async def get_workspaces_for_user(
                 f"""
                 SELECT COUNT(*) as total
                 FROM workspaces
-                WHERE user_id = %(user_id)s {status_filter} {home_filter}
+                WHERE user_id = %(user_id)s {status_filter} {home_filter} {computer_filter}
                 """,
                 params,
             )
@@ -1098,7 +1111,7 @@ async def get_workspaces_for_user(
                        (SELECT c.root_dir FROM computers c
                         WHERE c.computer_id = workspaces.computer_id) AS computer_root_dir
                 FROM workspaces
-                WHERE user_id = %(user_id)s {status_filter} {home_filter}
+                WHERE user_id = %(user_id)s {status_filter} {home_filter} {computer_filter}
                 ORDER BY {order_clause}, workspace_id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,

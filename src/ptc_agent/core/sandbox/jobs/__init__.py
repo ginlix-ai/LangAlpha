@@ -137,6 +137,8 @@ class JobSpec:
     env: Mapping[str, str] = field(default_factory=dict)
     # Prepended to the computer's own PYTHONPATH, which it keeps.
     pythonpath: str | None = None
+    # Prepended to the computer's own PATH, likewise.
+    path: str | None = None
     # Written before the launch, each replaced whole so a retried launch never
     # lets a running job read half a file.
     files: tuple[tuple[str, bytes], ...] = ()

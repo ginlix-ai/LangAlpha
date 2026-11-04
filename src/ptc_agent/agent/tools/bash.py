@@ -249,6 +249,7 @@ def create_execute_bash_tool(
         call = CommandCall("Bash", command, description, config, tool_call_id, session)
         return await _guarded(
             command,
+            working_dir,
             lambda call_id: _run(
                 call,
                 working_dir,
@@ -271,12 +272,12 @@ def create_execute_bash_tool(
         if refused is not None:
             return refused, {"mcp_trace": []}
         call = CommandCall("Bash", command, description, config, None, session)
-        return await _guarded(command, lambda call_id: _run(call, working_dir, call_id))
+        return await _guarded(command, working_dir, lambda call_id: _run(call, working_dir, call_id))
 
-    async def _guarded(command: str, run: Any) -> tuple[str, dict[str, Any]]:
+    async def _guarded(command: str, working_dir: str | None, run: Any) -> tuple[str, dict[str, Any]]:
         return await run_guarded(
             backend,
-            command,
+            f"{working_dir}\n{command}" if working_dir else command,
             call_context,
             run,
             memory_error=_MEMORY_ROUTE_ERROR,

@@ -1941,7 +1941,12 @@ async def test_remove_of_a_hosted_computer_has_no_key_to_report(
         resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
 
     assert resp.status_code == 200
-    assert resp.json() == {"key": None, "files": None, "workspaces_deleted": []}
+    assert resp.json() == {
+        "key": None,
+        "files": None,
+        "token": None,
+        "workspaces_deleted": [],
+    }
     # Naming none, the computer must be empty: nothing on it is deleted.
     mock_computer_manager.remove_computer_with_workspaces.assert_awaited_once_with(
         COMPUTER_ID, [], delete_files=False
@@ -2027,6 +2032,27 @@ async def test_remove_asked_to_delete_files_passes_it_on_and_reports_them(
         COMPUTER_ID, ["ws-a"], delete_files=True
     )
     assert leave.await_args.kwargs["delete_files"] is True
+
+
+@pytest.mark.asyncio
+async def test_remove_reports_a_claude_code_token_left_on_the_machine(
+    client, computer, mock_computer_manager
+):
+    from src.server.models.computer import ComputerTokenRemoval
+    from src.server.services.ssh_removal import MachineLeft
+
+    token = ComputerTokenRemoval(
+        outcome="unreached", path=f"~/.config/langalpha/claude-code/{COMPUTER_ID}"
+    )
+    leave = AsyncMock(
+        return_value=MachineLeft(key=None, tunnel_released=False, token=token)
+    )
+    get_row, get_manager = _removing(_ssh_row(computer), mock_computer_manager)
+    with get_row, get_manager, patch("src.server.app.computers.leave_machine", leave):
+        resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
+
+    assert resp.status_code == 200
+    assert resp.json()["token"] == token.model_dump()
 
 
 @pytest.mark.asyncio
@@ -3164,3 +3190,21 @@ async def test_make_primary_is_refused_on_another_users_computer(
     assert resp.status_code == 403
     make_primary_patches.flip.assert_not_awaited()
     make_primary_patches.claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_computer_token_cannot_create_a_computer():
+    """A computer it made would hold a token of its own, which outlives
+    revoking this one."""
+    from src.server.app.computers import router
+    from tests.unit.server.dependencies.reach_world import act_as_computer
+
+    app = create_test_app(router)
+    act_as_computer(app)
+    with patch("src.server.app.computers._sandbox_config") as config:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/api/v1/computers", json={"name": "Spare"})
+
+    assert resp.status_code == 403
+    assert "add or pair a computer" in resp.json()["detail"]["message"]
+    config.assert_not_called()

@@ -10,6 +10,7 @@ import { continuationChain } from './continuedBubbles';
 import { readRetryNotice } from './autoRetry';
 import { noteLiveRun } from '../latestRun';
 import type { StructuredError } from '@/utils/rateLimitError';
+import { claudeCodeRefusal } from '@/lib/claudeCode';
 import { applyAnnotationArtifact } from '@/pages/MarketView/stores/chartAnnotationStore';
 import type { AssistantMessage, ChatMessage } from '@/types/chat';
 import { CREDIT_STOP_ERROR_TYPE, isDeliveredNotice, isDeliveredReport, isDeliveredSteer } from '@/types/sse';
@@ -89,6 +90,9 @@ export interface StreamRouterDeps {
   armReportBack: (owed?: boolean | null) => void;
   /** Re-read the user's workspaces after an agent changed one. */
   refreshWorkspaces: () => void;
+  /** Re-read the user's Claude Code tokens, after Anthropic refused the one
+   *  a turn ran on mid-turn. */
+  refreshClaudeCode: () => void;
   /** Hears the turn the server admitted the run to, before the run's bubbles
    *  take it, while they still carry the turn the view counted. */
   onAdmittedTurn?: (bubbleId: string, turnIndex: number) => void;
@@ -288,6 +292,11 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     if (eventType === 'run_end' && !isSubagent) {
       const counted = event.token_totals;
       if (counted) rt.setTokenUsage((prev) => withServerTotals(prev, counted));
+      // A frame without the field could not read it, and the stream's end
+      // reads the status for it instead.
+      const told = 'next_summary' in event;
+      if (told) rt.setNextSummary(event.next_summary ?? null);
+      rt.nextSummaryOwedRef.current = !told;
       if (event.outcome === 'cancelled') {
         settleStoppedBubble({ assistantMessageId, refs, setMessages: setMessagesForHandlers });
       } else if (event.outcome === 'error' && !refs.retryNotice && !turnShowsFailure()) {
@@ -463,7 +472,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         return fold.messages;
       });
       if (clearedErrors.length > 0) rt.setMessageError((prev) => (clearedErrors.includes(prev) ? null : prev));
-      for (const key of settledKeys) rt.requestKeyRef.current.settle(key);
+      for (const key of settledKeys) rt.requestKeyRef.current.settle(key, 'accepted');
 
       // 3. Create new assistant message placeholder (steering continuation — not a new backend turn),
       //    above any steer still waiting. Random suffix: the turn's first bubble uses the same
@@ -839,6 +848,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // as a notice: the server's name the CLI's commands, and the reply's
       // Retry sends the message again.
       const busyCode = event.error_type === 'admission_conflict' && isBusyCode(event.code) ? event.code : null;
+      // A Claude Code refusal the server's next read of the tokens says:
+      // Settings and the picker take that now.
+      if (event.type === 'claude_code_off' && claudeCodeRefusal(event.reason, rt.workspaceId).reread) deps.refreshClaudeCode();
       // Only the frame that ends the server's own retries carries `max_retries`.
       const errorMessage = busyCode !== null
         ? rt.t(BUSY_REPLY_KEYS[busyCode])
@@ -857,7 +869,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       const kind = event.error_kind as 'upstream' | 'internal' | undefined;
       const structured: StructuredError | undefined = busyCode !== null
         ? { message: errorMessage as string, kind: 'notice' }
-        : readStreamFailure(event, errorMessage as string);
+        : readStreamFailure(event, errorMessage as string, rt.workspaceId, rt.t);
 
       // A server older than this view frames its time limit, then the same
       // stop again as an internal error: the card already says it, and a

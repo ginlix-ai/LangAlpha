@@ -3,6 +3,7 @@ import { readTypedTicker } from '@/lib/marketUtils';
 import type { InlineCardProps } from './cardReaders';
 import { InlineAutomationCard } from './InlineAutomationCards';
 import { InlinePreviewCard } from './InlinePreviewCard';
+import { ArtifactCommentReplyCard } from '../artifactComments/ArtifactCommentReplyLine';
 import { InlineChartAnnotationCard } from './InlineChartAnnotationCard';
 import { InlineQuoteCard } from './InlineQuoteCard';
 import { InlineStockPriceCard } from './InlineStockPriceCard';
@@ -70,6 +71,7 @@ export const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<InlineCardP
   market_movers: InlineMarketMoversCard,
   automations: InlineAutomationCard,
   preview_url: InlinePreviewCard,
+  artifact_comment: ArtifactCommentReplyCard,
   web_search: InlineWebSearchCard,
   chart_annotation: InlineChartAnnotationCard,
   order_receipt: OrderReceiptCard,

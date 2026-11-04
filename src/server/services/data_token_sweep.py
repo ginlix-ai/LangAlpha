@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
@@ -50,6 +52,65 @@ def _lock_key(computer_id: str) -> int:
     from src.server.database.sql_fences import advisory_key
 
     return advisory_key("computer_data_token", computer_id)
+
+
+@asynccontextmanager
+async def running_sandbox(row: dict[str, Any]) -> AsyncIterator[Any | None]:
+    """The runtime of the sandbox a computer row names, detached from any
+    session, or None when it is not running: the row can say running after
+    an auto-stop no stop path saw, and a token minted for it goes unused."""
+    from ptc_agent.core.sandbox.runtime import RuntimeState
+    from src.server.services.computer_manager import ComputerManager
+
+    manager = ComputerManager.get_instance()
+    async with manager._detached_runtime(
+        str(row["provider_ref"]), binding=manager._binding_from_computer("", row)
+    ) as runtime:
+        yield runtime if await runtime.get_state() == RuntimeState.RUNNING else None
+
+
+def token_writer(runtime: Any, path: str) -> Callable[[dict[str, Any]], Awaitable[bool]]:
+    """Writes a token file at ``path`` in a sandbox ``running_sandbox``
+    found running, unless it stopped since: E2B resumes a sandbox it
+    attaches to, so a stop that paused it meanwhile must not be undone."""
+    from ptc_agent.core.sandbox import _shared
+    from ptc_agent.core.sandbox.runtime import RuntimeState
+
+    async def write(payload: dict[str, Any]) -> bool:
+        if await runtime.refresh_state() != RuntimeState.RUNNING:
+            return False
+        return await _shared.publish_token_file(runtime, path, payload)
+
+    return write
+
+
+async def keeps_running(row: dict[str, Any]) -> bool:
+    """Whether the idle reaper would leave the computer running: always-on,
+    used within the idle limit of its own provider, or with work in
+    flight, failing toward active as the reaper does. Settings no
+    provider can be built from rule out a write as well."""
+    if row.get("is_always_on"):
+        return True
+    from src.server.services.computer_manager import ComputerManager
+    from src.server.services.runs.executor import LocalRunExecutor
+
+    try:
+        # The reaper's own limit, so a computer it is about to stop for
+        # being idle is not the one thing keeping it awake at the provider.
+        idle_timeout = ComputerManager.get_instance()._idle_timeout_for(row)
+    except ValueError:
+        return False
+    last_activity = row.get("last_activity")
+    if last_activity is not None:
+        if last_activity.tzinfo is None:
+            last_activity = last_activity.replace(tzinfo=UTC)
+        idle_seconds = (datetime.now(UTC) - last_activity).total_seconds()
+        if idle_seconds <= idle_timeout:
+            return True
+
+    return await LocalRunExecutor.get_instance().has_active_tasks_for_computer(
+        str(row["computer_id"])
+    )
 
 
 class DataTokenSweeper:
@@ -195,41 +256,12 @@ class DataTokenSweeper:
         row = await db.load_in_service(computer_id)
         if row is None:
             return False
-        if row.get("status") != "starting" and not await self._keeps_running(row):
+        if row.get("status") != "starting" and not await keeps_running(row):
             return False
         return await self._write_when_free(computer_id, row, wait_s=REWRITE_WAIT_S)
 
-    @staticmethod
-    async def _keeps_running(row: dict[str, Any]) -> bool:
-        """Whether the idle reaper would leave the computer running: always-on,
-        used within the idle limit of its own provider, or with work in
-        flight, failing toward active as the reaper does. Settings no
-        provider can be built from rule out a write as well."""
-        if row.get("is_always_on"):
-            return True
-        from src.server.services.computer_manager import ComputerManager
-        from src.server.services.runs.executor import LocalRunExecutor
-
-        try:
-            # The reaper's own limit, so a computer it is about to stop for
-            # being idle is not the one thing keeping it awake at the provider.
-            idle_timeout = ComputerManager.get_instance()._idle_timeout_for(row)
-        except ValueError:
-            return False
-        last_activity = row.get("last_activity")
-        if last_activity is not None:
-            if last_activity.tzinfo is None:
-                last_activity = last_activity.replace(tzinfo=UTC)
-            idle_seconds = (datetime.now(UTC) - last_activity).total_seconds()
-            if idle_seconds <= idle_timeout:
-                return True
-
-        return await LocalRunExecutor.get_instance().has_active_tasks_for_computer(
-            str(row["computer_id"])
-        )
-
     async def _sweep_one(self, row: dict[str, Any]) -> bool:
-        if not await self._keeps_running(row):
+        if not await keeps_running(row):
             return False
         return await self._write_when_free(str(row["computer_id"]), row)
 
@@ -252,14 +284,8 @@ class DataTokenSweeper:
 
     async def _write_locked(self, computer_id: str, row: dict[str, Any]) -> bool:
         from ptc_agent.core.paths import SandboxLayout
-        from ptc_agent.core.sandbox._shared import (
-            REPLACE_UNLESS_NEWER_SCRIPT,
-            publish_private_file,
-        )
-        from ptc_agent.core.sandbox.runtime import RuntimeState
         from src.server.database import computer_data_tokens as db
         from src.server.services import data_tokens
-        from src.server.services.computer_manager import ComputerManager
 
         sandbox_id = str(row["provider_ref"])
         # Read again under the lock: a turn's start or a sibling's pass since
@@ -268,34 +294,14 @@ class DataTokenSweeper:
         if not data_tokens.due(current, sandbox_id):
             return False
 
-        manager = ComputerManager.get_instance()
-        async with manager._detached_runtime(
-            sandbox_id, binding=manager._binding_from_computer("", row)
-        ) as runtime:
-            # The row can say running while the sandbox is not, after an
-            # auto-stop no stop path saw; a token minted for it goes unused.
-            if await runtime.get_state() != RuntimeState.RUNNING:
+        async with running_sandbox(row) as runtime:
+            if runtime is None:
                 return False
             path = SandboxLayout(await runtime.fetch_working_dir()).mcp_tokens
-
-            async def write(payload: dict[str, Any]) -> bool:
-                # Again after the mint: E2B resumes a sandbox it attaches to,
-                # so a stop that paused it meanwhile must not be undone here.
-                if await runtime.refresh_state() != RuntimeState.RUNNING:
-                    return False
-                return await publish_private_file(
-                    runtime,
-                    path,
-                    payload,
-                    what="sandbox token file",
-                    script=REPLACE_UNLESS_NEWER_SCRIPT,
-                    args=(str(payload["iat_ms"]),),
-                )
-
             return await data_tokens.push(
                 computer_id,
                 str(row["user_id"]),
                 sandbox_id,
-                write,
+                token_writer(runtime, path),
                 generation=current.generation,
             )

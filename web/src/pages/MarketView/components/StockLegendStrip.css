@@ -61,7 +61,7 @@
 
 .legend-lead-status {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 4px;
   font-size: 0.6875rem;
   color: var(--color-text-secondary);
@@ -72,6 +72,12 @@
   height: 6px;
   border-radius: 50%;
   background: var(--color-text-tertiary);
+  flex-shrink: 0;
+  transform: translateY(calc(3px - 0.5cap));
+}
+
+@supports not (height: 1cap) {
+  .legend-lead-dot { transform: translateY(calc(3px - 0.36em)); }
 }
 
 .legend-lead-status--live .legend-lead-dot { background: var(--color-profit); }

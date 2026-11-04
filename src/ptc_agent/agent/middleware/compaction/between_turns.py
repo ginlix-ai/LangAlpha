@@ -42,7 +42,13 @@ class HandOff:
     provider."""
 
 
-Ask = Compact | HandOff
+@dataclass(frozen=True)
+class Measure:
+    """The context the next turn start reads (``context_tokens``), of the
+    view the state makes now."""
+
+
+Ask = Compact | HandOff | Measure
 
 
 class NoCompaction(RuntimeError):
@@ -54,7 +60,7 @@ class Asked:
     """An ask on its way through the model node, and what answered it."""
 
     ask: Ask
-    answer: Compaction | HumanMessage | None = None
+    answer: Compaction | HumanMessage | int | None = None
     answered: bool = False
 
 
@@ -74,13 +80,14 @@ async def ask_between_turns(
     *,
     thread_id: str,
     store: Any | None = None,
-) -> Compaction | HumanMessage | None:
+) -> Compaction | HumanMessage | int | None:
     """``ask`` answered by the ``CompactionMiddleware`` in ``agent``'s model
     chain, ``state`` being the thread's checkpoint values.
 
     A ``Compact`` answers with the compaction to install, a ``HandOff`` with
     the summary message to put in place of the view's opening one, or None
-    when that summary is not one only its provider can read. The calls made
+    when that summary is not one only its provider can read, and a
+    ``Measure`` with the context's size, calling no model. The calls made
     for it report to the callbacks of the caller's runnable config, which bill
     and trace them, as a turn's summarizer call reports to the turn's.
 

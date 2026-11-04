@@ -18,6 +18,7 @@ from src.server.services.commands.control import (
     delete_thread_ending_commands,
     request_running_stops,
 )
+from src.server.services.llm.claude_code import require_claude_code_continues
 from src.server.services.llm.thread_model import require_selectable_model
 from src.server.services.thread_lifecycle import project_lifecycle
 from src.server.services.thread_lifecycle_feed import (
@@ -30,6 +31,11 @@ from src.server.services.thread_lifecycle_feed import (
     publish_thread_unarchived,
 )
 from src.server.services.workspace_manager import prune_thread_dirs_soon
+from src.server.dependencies.principal import (
+    ReadPrincipal,
+    ReadUserId,
+    WorkspaceWriteUserId,
+)
 # require_thread_owner is called through the module (auth_api.…) so a single
 # definition-site patch governs every route — a consumer-site patch that stops
 # intercepting after a move would silently bypass auth in tests.
@@ -78,7 +84,7 @@ def _lifecycle_fields(row: dict) -> dict:
 
 @router.get("", response_model=WorkspaceThreadsListResponse)
 async def list_threads(
-    x_user_id: CurrentUserId,
+    principal: ReadPrincipal,
     workspace_id: Optional[str] = Query(None, description="Filter by workspace ID"),
     limit: int = Query(20, ge=1, le=100, description="Max threads per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
@@ -104,6 +110,7 @@ async def list_threads(
     When workspace_id is provided, returns threads for that workspace.
     Otherwise returns all threads for the authenticated user.
     """
+    x_user_id = principal.user_id
     try:
         if archived and not workspace_id:
             raise HTTPException(
@@ -132,6 +139,7 @@ async def list_threads(
                 sort_by=sort_by,
                 sort_order=sort_order,
                 platform_prefix=platform_prefix,
+                computer_id=principal.computer_id,
             )
 
         thread_items = [
@@ -178,7 +186,7 @@ async def list_threads(
 
 
 @router.get("/{thread_id}")
-async def get_thread(thread_id: str, x_user_id: CurrentUserId):
+async def get_thread(thread_id: str, x_user_id: ReadUserId):
     """Get thread metadata. Used by frontend to resolve workspaceId from threadId."""
     await auth_api.require_thread_owner(thread_id, x_user_id)
     thread = await get_thread_by_id(thread_id)
@@ -276,7 +284,7 @@ def _target_out(row: dict, now: datetime) -> MarketWatchTarget:
 
 
 @router.get("/{thread_id}/market-watch", response_model=MarketWatchResponse)
-async def get_market_watch(thread_id: str, x_user_id: CurrentUserId):
+async def get_market_watch(thread_id: str, x_user_id: ReadUserId):
     """Current market-watch symbols and price targets for a thread."""
     await auth_api.require_thread_owner(thread_id, x_user_id)
     if not await user_feature_enabled(x_user_id, "market_watch"):
@@ -315,7 +323,7 @@ async def cancel_market_watch_target(
 
 
 @router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
-async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
+async def delete_thread_endpoint(thread_id: str, x_user_id: WorkspaceWriteUserId):
     """
     Delete a thread and all its queries/responses.
 
@@ -420,7 +428,7 @@ def _thread_list_item(row: dict) -> WorkspaceThreadListItem:
 
 @router.patch("/{thread_id}", response_model=WorkspaceThreadListItem)
 async def update_thread_endpoint(
-    thread_id: str, request: ThreadUpdateRequest, x_user_id: CurrentUserId
+    thread_id: str, request: ThreadUpdateRequest, x_user_id: WorkspaceWriteUserId
 ):
     """Update user-editable thread fields: title, pin, archive, model,
     subagent switch, effort, fast mode.
@@ -448,6 +456,7 @@ async def update_thread_endpoint(
             # is the turn's question, since a lapsed one comes back.
             if request.llm_model is not None:
                 await require_selectable_model(x_user_id, request.llm_model)
+                await require_claude_code_continues(thread_id, request.llm_model)
             updates["llm_model"] = request.llm_model
             switched_from = (await get_thread_auth_meta(thread_id) or {}).get("llm_model")
         if "subagents_allowed" in provided:

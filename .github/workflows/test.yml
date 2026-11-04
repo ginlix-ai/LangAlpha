@@ -28,6 +28,19 @@ jobs:
           name: backend-unit-results
           path: test-results/
 
+  # The scripts Claude Code runs on a user's own computer, on a real Mac:
+  # BSD tools, bash 3.2, no flock, no sha256sum, no /proc. The Linux job
+  # emulates that userland; this one is the real thing.
+  claude-code-scripts-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv sync --group dev --extra test --extra claude-code
+      - run: uv run pytest -v --tb=short -m macos_scripts tests/unit/ptc_agent/agent/claude_code
+
   # libs/market-protocol installs as a package of its own, so its suite runs in
   # its own environment: inside the backend's, a dependency it forgot to
   # declare would still import. It runs on the package's Python floor and on
@@ -142,6 +155,34 @@ jobs:
           header: hotpath-metrics
           path: comment_body.md
 
+  # langalpha, the CLI: the same bundle every computer runs and npm ships, on
+  # the Node floor the package declares and on the image's Node.
+  cli:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 24]
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: cli/package.json
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+      - run: node scripts/check-package.mjs
+
+  # web/ is a package that installs, type-checks, lints, tests and builds on
+  # its own, so this job runs from an export of that directory alone, with the
+  # rest of the repo out of reach: a config, source or test that resolves a
+  # path outside web/ fails here rather than in a build that copies only web/.
   frontend-unit:
     runs-on: ubuntu-latest
     defaults:
@@ -149,6 +190,10 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: checkout
+      - run: git -C checkout archive HEAD web | tar -xf -
+        working-directory: .
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -179,6 +224,23 @@ jobs:
           VITE_SUPABASE_URL: https://example.supabase.co
           VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-key
       - run: node scripts/check-critical-path.mjs
+
+  # The page bridge the server splices into agent HTML is plain script typed
+  # against the viewer's message protocol in web/, and tested on web's Vitest.
+  # It borrows web's install from outside; web never reads the bridge.
+  preview-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: make test-bridge
 
   # The desktop shell is ~2000 lines of URL policy whose whole job is REFUSING
   # things: a blob that is not really our origin, a scheme that is not a browser

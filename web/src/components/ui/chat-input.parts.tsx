@@ -329,11 +329,11 @@ export function MentionAutocompleteList({
           return (
             <div
               key={filePath}
-              className={`mention-autocomplete-item ${idx === activeIndex ? 'active' : ''}`}
+              className={cn('mention-autocomplete-item', idx === activeIndex && 'bg-accent/15')}
               onMouseDown={(e) => { e.preventDefault(); onSelect(filePath); }}
               onMouseEnter={() => onHover(idx)}
             >
-              <FileText className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+              <FileText className="h-4 w-4 shrink-0 text-(--color-icon-muted)" />
               <span className="file-name">{name}</span>
               {dir && <span className="file-path">{dir}/</span>}
             </div>
@@ -367,11 +367,11 @@ export function SlashCommandList({
         commands.map((cmd, idx) => (
           <div
             key={cmd.name}
-            className={`mention-autocomplete-item ${idx === activeIndex ? 'active' : ''}`}
+            className={cn('mention-autocomplete-item', idx === activeIndex && 'bg-accent/15')}
             onMouseDown={(e) => { e.preventDefault(); onSelect(cmd); }}
             onMouseEnter={() => onHover(idx)}
           >
-            {getSlashCommandIcon(cmd, 'h-4 w-4 shrink-0 slash-cmd-icon')}
+            {getSlashCommandIcon(cmd, 'h-4 w-4 shrink-0 text-(--color-icon-muted)')}
             <span className="slash-cmd-name">/{cmd.name}</span>
             <span className="slash-cmd-desc">{cmd.description}</span>
           </div>

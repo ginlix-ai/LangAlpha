@@ -176,7 +176,9 @@ if mode == 'providers':
 elif mode == 'models':
     p = sys.argv[3]
     fam = {p} | {k for k, c in pc.items() if c.get('parent_provider') == p}
-    for m in sorted(n for n, v in md.items() if v.get('provider') in fam and 'embedding' not in n):
+    # A Claude Code row runs only for a user who opted in, so it is never a deployment default.
+    for m in sorted(n for n, v in md.items() if v.get('provider') in fam and 'embedding' not in n
+                    and pc[v['provider']].get('sdk') != 'claude-code'):
         print(m)
 PYEOF
 }
@@ -310,7 +312,7 @@ printf "  ${BOLD}1${NC}) Yahoo Finance — free, no API key needed\n"
 printf "  ${BOLD}2${NC}) FMP (Financial Modeling Prep) — high-quality data (free tier available)\n"
 printf "  ${BOLD}3${NC}) Both — FMP + Yahoo Finance MCP servers\n"
 printf "\n"
-info "See README > Data Provider Fallback Chain for details."
+info "See README > Get started > Optional keys for details."
 printf "\n"
 data=$(prompt_choice "Choice" "1")
 

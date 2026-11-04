@@ -19,6 +19,7 @@ from src.server.models.workflow import RetryRequest
 from src.server.services.runs import admission
 from src.server.services.runs.pending_input import (
     PendingInput,
+    can_retry,
     input_rerun_request,
     read_pending_input,
 )
@@ -61,6 +62,27 @@ def _failed_run(**metadata):
 )
 def test_read_pending_input(metadata, pending):
     assert read_pending_input(_failed_run(**metadata)) == pending
+
+
+@pytest.mark.parametrize(
+    "status, metadata, retryable",
+    [
+        ("error", {}, True),
+        ("cancelled", {"pending_input": {"checkpoint_id": None}}, True),
+        (
+            "cancelled",
+            {"pending_input": {"checkpoint_id": None}, "cancelled_by_user": True},
+            False,
+        ),
+        # The graph took its input, so a rerun would answer it twice.
+        ("cancelled", {}, False),
+        ("completed", {"pending_input": {"checkpoint_id": None}}, False),
+        ("in_progress", {}, False),
+    ],
+    ids=["failed", "dropped", "stopped", "ran", "completed", "running"],
+)
+def test_can_retry(status, metadata, retryable):
+    assert can_retry({"status": status, "metadata": metadata}) is retryable
 
 
 @pytest.mark.asyncio
@@ -405,6 +427,7 @@ async def test_retry_route_reruns_a_pending_input_and_replays_otherwise(
     pending, replays_from
 ):
     from src.server.app.threads import messaging
+    from src.server.dependencies.principal import Principal
 
     # START recorded the build options a retry body cannot carry.
     metadata = {"subagents_enabled": ["research"]}
@@ -427,12 +450,16 @@ async def test_retry_route_reruns_a_pending_input_and_replays_otherwise(
          ) as checkpoint, \
          patch(GET_QUERY, new=AsyncMock(return_value={"content": "what moved NVDA?"})):
         await messaging.retry_thread(
-            "t-1", auth, RetryRequest(workspace_id="ws-1", run_id="run-1")
+            "t-1",
+            Principal("u-1", "session"),
+            AsyncMock(return_value=auth),
+            RetryRequest(workspace_id="ws-1", run_id="run-1", keep_full_context=True),
         )
 
     request = send.await_args.args[0]
     assert send.await_args.kwargs == {"retry_of_run_id": "run-1"}
     assert request.subagents_enabled == ["research"]
+    assert request.keep_full_context is True
     if pending and not pending.get("replay"):
         # A new thread's first send has no checkpoint to look up at all.
         checkpoint.assert_not_awaited()
@@ -442,6 +469,87 @@ async def test_retry_route_reruns_a_pending_input_and_replays_otherwise(
         checkpoint.assert_awaited_once_with("t-1", replays_from)
         assert request.messages == []
         assert request.checkpoint_id == "cp-tip"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata, runs_again",
+    [
+        ({"pending_input": {"checkpoint_id": None}}, True),
+        ({"pending_input": {"checkpoint_id": None}, "cancelled_by_user": True}, False),
+        ({}, False),
+    ],
+    ids=["dropped-in-setup", "stopped", "ran"],
+)
+async def test_retry_route_on_a_cancelled_run(metadata, runs_again):
+    from src.server.app.threads import messaging
+    from src.server.dependencies.principal import Principal
+
+    cancelled = {**_failed_run(**metadata), "status": "cancelled"}
+    send = AsyncMock(return_value="stream")
+    auth = SimpleNamespace(user_id="u-1", burst_slot_id=None)
+
+    with patch.object(messaging.auth_api, "require_thread_owner", new=AsyncMock()), \
+         patch.object(messaging, "_assert_stream_transport_ready", new=AsyncMock()), \
+         patch.object(messaging, "_handle_send_message", new=send), \
+         patch(
+             "src.server.database.runs.lifecycle.get_latest_attempt",
+             new=AsyncMock(return_value=cancelled),
+         ), \
+         patch(
+             "src.server.handlers.checkpoint_handler.get_retry_checkpoint",
+             new=AsyncMock(return_value="cp-tip"),
+         ), \
+         patch(GET_QUERY, new=AsyncMock(return_value={"content": "what moved NVDA?"})):
+        call = messaging.retry_thread(
+            "t-1",
+            Principal("u-1", "session"),
+            AsyncMock(return_value=auth),
+            RetryRequest(workspace_id="ws-1", run_id="run-1"),
+        )
+        if runs_again:
+            await call
+        else:
+            with pytest.raises(HTTPException) as refused:
+                await call
+            assert refused.value.status_code == 409
+
+    assert send.await_count == (1 if runs_again else 0)
+
+
+@pytest.mark.parametrize(
+    "status, metadata, chains",
+    [
+        ("error", {}, True),
+        ("cancelled", {"pending_input": {"checkpoint_id": None}}, True),
+        (
+            "cancelled",
+            {"pending_input": {"checkpoint_id": None}, "cancelled_by_user": True},
+            False,
+        ),
+    ],
+    ids=["failed", "dropped-in-setup", "stopped"],
+)
+@pytest.mark.asyncio
+async def test_a_retry_chains_only_onto_a_run_it_may_rerun(status, metadata, chains):
+    prev = {
+        **_failed_run(**metadata),
+        "status": status,
+        "conversation_thread_id": "t-1",
+    }
+    request = SimpleNamespace(retry_of_run_id="run-1", fork_from_turn=None)
+    with patch(
+        "src.server.database.runs.lifecycle.get_run", new=AsyncMock(return_value=prev)
+    ), patch(
+        "src.server.database.runs.lifecycle.get_latest_attempt",
+        new=AsyncMock(return_value=prev),
+    ):
+        if chains:
+            assert await admission.resolve_retry_of(request, "t-1") == prev
+        else:
+            with pytest.raises(HTTPException) as refused:
+                await admission.resolve_retry_of(request, "t-1")
+            assert refused.value.status_code == 409
 
 
 @pytest.mark.asyncio

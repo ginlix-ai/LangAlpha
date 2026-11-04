@@ -18,6 +18,9 @@ from zoneinfo import ZoneInfo
 #: The FMP client's undated daily window: this many days back to the end, today (UTC) if none.
 _FMP_DAILY_LOOKBACK_DAYS = 500
 
+#: An event calendar given one bound, or none, spans this many days.
+_CALENDAR_SPAN_DAYS = 7
+
 #: FMP labels a currency or crypto pair's intraday bars, and a commodity's, in New York time.
 NEW_YORK = "America/New_York"
 
@@ -47,6 +50,45 @@ def calendar_days(
     if days[0] and days[1] and days[0] > days[1]:
         raise DateBoundError("from is after to")
     return days[0], days[1]
+
+
+def upcoming_days(from_date: Optional[str], to_date: Optional[str]) -> tuple[str, str]:
+    """An event calendar's bounds, which are always sent in full.
+
+    An absent start is yesterday (UTC), so a US evening, when UTC has already
+    turned over, still reads the rest of its own day; before an end earlier
+    than that, it is a week before the end. An absent end is a week after the
+    start. No lone bound can reverse the window.
+
+    FMP answers a calendar read with no bounds from the past three months.
+    """
+    days = calendar_days(from_date, to_date)
+    lo, hi = (date.fromisoformat(day) if day else None for day in days)
+    yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+    span = timedelta(days=_CALENDAR_SPAN_DAYS)
+    try:
+        if lo:
+            start = lo
+        elif hi and hi < yesterday:
+            start = hi - span
+        else:
+            start = yesterday
+        return start.isoformat(), (hi or start + span).isoformat()
+    except OverflowError:
+        raise DateBoundError("date is out of range") from None
+
+
+def rates_days(from_date: Optional[str], to_date: Optional[str]) -> tuple[Optional[str], str]:
+    """A rates read's bounds: an absent end is today (UTC).
+
+    FMP's own undated answer stops a few days short of the newest rate, so the
+    end is always sent.
+    """
+    lo, hi = calendar_days(from_date, to_date)
+    today = datetime.now(timezone.utc).date().isoformat()
+    if lo and not hi and lo > today:
+        raise DateBoundError(f"from is after to, which is today ({today}) unless given")
+    return lo, hi or today
 
 
 def _day(value: Optional[str], what: str) -> Optional[date]:

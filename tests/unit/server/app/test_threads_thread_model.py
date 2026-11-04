@@ -16,7 +16,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from ptc_agent.config.agent import CredentialSource
-from tests.conftest import create_test_app
+from tests.conftest import create_test_app, pin_chat_limit
 from src.server.services.llm.thread_model import NamedModel
 
 THREADS_MOD = "src.server.app.threads.messaging"
@@ -43,11 +43,11 @@ def _empty_async_gen(*_args, **_kwargs):
 
 def _app():
     from src.server.app.threads import router
-    from src.server.dependencies.usage_limits import ChatAuthResult, enforce_chat_limit
+    from src.server.dependencies.usage_limits import ChatAuthResult
 
     app = create_test_app(router)
-    app.dependency_overrides[enforce_chat_limit] = lambda: ChatAuthResult(
-        user_id=USER, access_tier=0
+    pin_chat_limit(
+        app, ChatAuthResult(user_id=USER, access_tier=0)
     )
     return app
 
@@ -312,3 +312,22 @@ async def test_keep_named_model_keeps_only_a_named_model(named_model, remembers)
         remember.assert_awaited_once_with("t-1", "m-a", seen="m-pin")
     else:
         remember.assert_not_awaited()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("wake", "asked"), [({"wakeup": {"v": 1, "notices": []}}, True), ({}, False)])
+async def test_a_wake_turn_asks_whether_it_may_run_unattended(wake, asked):
+    """A wakeup's turn never runs on a stored setup token (``require_attended``),
+    asked before the stream with the resolved turn and its request."""
+    from src.server.services.llm.claude_code import unattended
+
+    attended = MagicMock()
+    with (
+        _send_stubs(owner_id=USER, stored_model="m-pin", turn_model="m-pin"),
+        patch(f"{THREADS_MOD}._get_service_token", return_value="svc-token"),
+        patch("src.server.services.llm.claude_code.require_attended", attended),
+    ):
+        resp = await _send(headers={"X-Service-Token": "svc-token"}, tuning=wake)
+
+    assert resp.status_code == 200
+    attended.assert_called_once()
+    assert unattended(attended.call_args.args[1]) is asked

@@ -31,6 +31,9 @@ class DisplaySpec(NamedTuple):
     decimals: int
     # An index level is points, not money: it prints with no currency prefix.
     bare: bool = False
+    # Zeros past the second decimal are dropped: a coin carries eight places
+    # for SHIB's $0.00000464, which would pad BTC to $76,810.32810000.
+    trim: bool = False
 
 
 # What the formatters accept for their second argument: a resolved spec, a bare
@@ -86,7 +89,11 @@ def fmt_price(
     grouping = "," if group else ""
     sign, value = _sign(value, dec)
     prefix = "" if spec.bare else currency_symbol(spec.currency)
-    return f"{sign}{prefix}{value:{grouping}.{dec}f}"
+    text = f"{value:{grouping}.{dec}f}"
+    if spec.trim and dec > 2:
+        whole, _, places = text.partition(".")
+        text = f"{whole}.{places.rstrip('0').ljust(2, '0')}"
+    return f"{sign}{prefix}{text}"
 
 
 def _scaled(value: float, prefix: str) -> str:

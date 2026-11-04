@@ -34,6 +34,10 @@ class LeakDetectionMiddleware(AgentMiddleware):
 
     # Matches sandbox access tokens (gxsa_...) and refresh tokens (gxsr_...)
     _SANDBOX_TOKEN_RE = re.compile(r"gxs[ar]_[A-Za-z0-9_.\-]+")
+    # Matches Claude Code setup tokens (sk-ant-oat01-...), the shape the CLI
+    # signs in with, wherever a tool printed one: a token file on the user's
+    # own computer is readable by any command there.
+    _SETUP_TOKEN_RE = re.compile(r"sk-ant-oat\d+-[A-Za-z0-9_-]+")
 
     def __init__(
         self,
@@ -124,6 +128,7 @@ class LeakDetectionMiddleware(AgentMiddleware):
                 content = content.replace(value, f"[REDACTED:{name}]")
         # Pattern-based redaction for prefixed sandbox tokens (catches refreshed tokens)
         content = self._SANDBOX_TOKEN_RE.sub("[REDACTED:SANDBOX_TOKEN]", content)
+        content = self._SETUP_TOKEN_RE.sub("[REDACTED:CLAUDE_SETUP_TOKEN]", content)
         return content
 
     def wrap_tool_call(self, request, handler):

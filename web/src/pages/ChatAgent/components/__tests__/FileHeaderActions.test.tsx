@@ -1,8 +1,12 @@
+import type React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
 import { toast } from '@/components/ui/use-toast';
+import type { ArtifactDestinations } from '@/types/api';
+import { ArtifactCommentSendContext } from '../artifactComments/sendContext';
+import type { PanelAccess } from '../filePanel/types';
 import FileHeaderActions, {
   getFileExtension,
   isMarkdownFile,
@@ -32,16 +36,49 @@ vi.mock('@/hooks/useWorkspaceFileGrant', () => ({
     refetch: vi.fn(),
   }),
 }));
-vi.mock('@/hooks/useShareLink', () => ({
-  useShareLink: (workspaceId: string | null) => ({
-    data: workspaceId ? { code: 'abc123abc123' } : undefined,
-  }),
+const bindMutate = vi.fn();
+const unbindMutate = vi.fn();
+let artifactRecord: { artifact_id: string; shared: boolean; bound_thread_id: string | null; url?: string } | null = null;
+let destinations: ArtifactDestinations | undefined;
+// Which workspace each view asked to make a record in, null for none.
+const ownedAsks: (string | null)[] = [];
+const byPathAsks: { workspaceId: string | null; path: string | null }[] = [];
+vi.mock('@/hooks/useArtifact', () => ({
+  artifactPathKey: (path: string) => path,
+  // The owner's record, made for the file in front: what "open in new tab" opens.
+  useOwnedArtifact: (workspaceId: string | null) => {
+    ownedAsks.push(workspaceId);
+    return { record: workspaceId ? { code: 'abc123abc123', url: '/a/abc123abc123' } : undefined };
+  },
+  useArtifactByPath: (workspaceId: string | null, path: string | null) => {
+    byPathAsks.push({ workspaceId, path });
+    return { data: workspaceId ? artifactRecord : undefined };
+  },
+  useArtifactDestinations: (artifactId: string | null) => ({ data: artifactId ? destinations : undefined }),
+  useArtifactBinding: () => ({ bind: { mutate: bindMutate }, unbind: { mutate: unbindMutate } }),
 }));
 
-// The dialog owns its own queries; here it only has to say which file it was opened for.
-vi.mock('../ShareLinkDialog', () => ({
-  default: ({ open, filePath }: { open: boolean; filePath: string }) =>
-    open ? <div role="dialog">share {filePath}</div> : null,
+const besideThread = { thread_id: 'th-1', title: 'Beside', workspace_id: 'ws-123', usable: true, home: false };
+/** Where the server says the file's comments go: `bound` to the thread beside, else to a new thread. */
+function answerFor(bound: boolean): ArtifactDestinations {
+  return {
+    default: bound ? { rule: 'bound', thread: besideThread, workspace_id: 'ws-123' } : { rule: 'new', thread: null, workspace_id: 'ws-123' },
+    bound: bound ? besideThread : null,
+    beside: besideThread,
+    creator: null,
+  };
+}
+
+/** The header beside a chat on thread `th-1`. */
+function besideChat(ui: React.ReactElement): React.ReactElement {
+  return (
+    <ArtifactCommentSendContext value={{ besideThreadId: 'th-1', running: false, send: vi.fn() }}>
+      {ui}
+    </ArtifactCommentSendContext>
+  );
+}
+vi.mock('@/hooks/usePreferences', () => ({
+  usePreferences: () => ({ preferences: null, isLoading: false, isLoaded: true }),
 }));
 
 vi.mock('@/components/ui/dropdown-menu', () => ({
@@ -75,6 +112,7 @@ const defaultProps = {
   onOpenExportModal: vi.fn(),
   triggerDownloadFn: vi.fn().mockResolvedValue(undefined),
   readFileFullFn: vi.fn().mockResolvedValue({ content: '# Hello' }),
+  access: { kind: 'owner' } as PanelAccess,
   editorRef: { current: null },
   canUndo: false,
   canRedo: false,
@@ -295,7 +333,7 @@ describe('FileHeaderActions', () => {
         {...defaultProps}
         selectedFile="results/report.html"
         fileMime="text/html"
-        servePrefix="/api/v1/public/shared/tok-1/files/serve/"
+        access={{ kind: 'share', servePrefix: '/api/v1/public/shared/tok-1/files/serve/' }}
       />,
     );
     fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
@@ -328,7 +366,7 @@ describe('FileHeaderActions', () => {
     await waitFor(() => {
       expect(exportServedPdfMock).toHaveBeenCalledWith(expect.objectContaining({
         servedUrl: '/api/v1/wsfiles/g/grant-1/results/report.html',
-        openUrl: `${window.location.origin}/a/abc123abc123`,
+        openUrl: '/a/abc123abc123',
       }));
     });
   });
@@ -354,16 +392,79 @@ describe('FileHeaderActions', () => {
     });
   });
 
-  it('offers no share button unless the panel can share', () => {
+  it('offers no Publish unless the panel is the owner\'s', () => {
     render(<FileHeaderActions {...defaultProps} />);
-    expect(screen.queryByTitle('filePanel.copyShareLink')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('artifact.publish')).not.toBeInTheDocument();
   });
 
-  it('opens the share dialog for the selected file', () => {
-    render(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" canShare />);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTitle('filePanel.copyShareLink'));
-    expect(screen.getByRole('dialog')).toHaveTextContent('share results/report.html');
+  it("opens the panel's Publish dialog", () => {
+    const openPublish = vi.fn();
+    render(<FileHeaderActions {...defaultProps} selectedFile="results/data.csv" openPublish={openPublish} />);
+    fireEvent.click(screen.getByTitle('artifact.publish'));
+    expect(openPublish).toHaveBeenCalledWith('results/data.csv');
+  });
+
+  it("opens Publish from an HTML file's menu, which says where comments go and binds them to the thread beside", () => {
+    artifactRecord = { artifact_id: 'art-1', shared: false, bound_thread_id: null };
+    destinations = answerFor(false);
+    const openPublish = vi.fn();
+    render(besideChat(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" openPublish={openPublish} />));
+    fireEvent.click(screen.getByRole('button', { name: /artifact\.publishEllipsis/ }));
+    expect(openPublish).toHaveBeenCalledWith('results/report.html');
+    expect(screen.getByText('artifact.commentsGoNew')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /pageViewer\.comments\.bindHere/ }));
+    expect(bindMutate).toHaveBeenCalledWith(
+      { workspaceId: 'ws-123', path: 'results/report.html', threadId: 'th-1' },
+      expect.anything(),
+    );
+    expect(screen.queryByRole('button', { name: /artifact\.unbind/ })).not.toBeInTheDocument();
+    artifactRecord = null;
+  });
+
+  it('unbinds a file bound to the thread beside, and offers no second bind there', () => {
+    artifactRecord = { artifact_id: 'art-1', shared: true, bound_thread_id: 'th-1' };
+    destinations = answerFor(true);
+    render(besideChat(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" openPublish={vi.fn()} />));
+    expect(screen.getByText('artifact.commentsGoHere')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /pageViewer\.comments\.bindHere/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /artifact\.unbind/ }));
+    expect(unbindMutate).toHaveBeenCalledWith('art-1', expect.anything());
+    artifactRecord = null;
+  });
+
+  // A link inside the frame moved it to another file: the comment box and the
+  // toolbar are about that one now, and so is the menu beside them.
+  it("keys the HTML file's menu on the document the frame shows", () => {
+    artifactRecord = { artifact_id: 'art-2', shared: false, bound_thread_id: null };
+    destinations = answerFor(false);
+    byPathAsks.length = 0;
+    const openPublish = vi.fn();
+    render(besideChat(
+      <FileHeaderActions
+        {...defaultProps}
+        selectedFile="results/report.html"
+        artifactDoc="results/appendix.html"
+        openPublish={openPublish}
+      />,
+    ));
+    expect(byPathAsks).toContainEqual({ workspaceId: 'ws-123', path: 'results/appendix.html' });
+    expect(byPathAsks).not.toContainEqual({ workspaceId: 'ws-123', path: 'results/report.html' });
+    fireEvent.click(screen.getByRole('button', { name: /artifact\.publishEllipsis/ }));
+    expect(openPublish).toHaveBeenCalledWith('results/appendix.html');
+    fireEvent.click(screen.getByRole('button', { name: /pageViewer\.comments\.bindHere/ }));
+    expect(bindMutate).toHaveBeenLastCalledWith(
+      { workspaceId: 'ws-123', path: 'results/appendix.html', threadId: 'th-1' },
+      expect.anything(),
+    );
+    artifactRecord = null;
+  });
+
+  it('offers no bind and says nothing of where comments go until the server has answered for the file', () => {
+    artifactRecord = null;
+    render(besideChat(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" openPublish={vi.fn()} />));
+    expect(screen.queryByRole('button', { name: /pageViewer\.comments\.bindHere/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/artifact\.commentsGo/)).not.toBeInTheDocument();
   });
 
   it('switches an HTML file between its page and its source', () => {
@@ -389,7 +490,7 @@ describe('FileHeaderActions', () => {
     render(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" fileMime="text/html" />);
     fireEvent.click(screen.getByRole('button', { name: 'filePanel.openInNewTab' }));
     expect(open).toHaveBeenCalledWith(
-      `${window.location.origin}/a/abc123abc123`,
+      '/a/abc123abc123',
       '_blank',
       'noopener,noreferrer',
     );
@@ -403,7 +504,7 @@ describe('FileHeaderActions', () => {
         {...defaultProps}
         selectedFile="results/report.html"
         fileMime="text/html"
-        servePrefix="/api/v1/public/shared/tok-1/files/serve/"
+        access={{ kind: 'share', servePrefix: '/api/v1/public/shared/tok-1/files/serve/' }}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'filePanel.openInNewTab' }));
@@ -412,6 +513,27 @@ describe('FileHeaderActions', () => {
       '_blank',
       'noopener,noreferrer',
     );
+    open.mockRestore();
+  });
+
+  // A read-only look at a sibling's files changes nothing there, a record
+  // included: it reads one the file already has and offers its page, and
+  // offers none for a file never recorded.
+  it('makes no record for a read-only look, and opens one the file already has', () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    ownedAsks.length = 0;
+    artifactRecord = null;
+    const props = { ...defaultProps, selectedFile: 'results/report.html', fileMime: 'text/html', access: { kind: 'readOnly' } as PanelAccess };
+    const { rerender } = render(<FileHeaderActions {...props} />);
+    expect(ownedAsks.every((ws) => ws === null)).toBe(true);
+    expect(screen.queryByRole('button', { name: 'filePanel.openInNewTab' })).not.toBeInTheDocument();
+
+    artifactRecord = { artifact_id: 'art-3', shared: false, bound_thread_id: null, url: '/a/sibling00001' };
+    rerender(<FileHeaderActions {...props} fileContent="<p>again</p>" />);
+    fireEvent.click(screen.getByRole('button', { name: 'filePanel.openInNewTab' }));
+    expect(open).toHaveBeenCalledWith('/a/sibling00001', '_blank', 'noopener,noreferrer');
+    expect(ownedAsks.every((ws) => ws === null)).toBe(true);
+    artifactRecord = null;
     open.mockRestore();
   });
 

@@ -7,11 +7,15 @@ errors, and GBX→major-unit price conversion. Upstream fetches are mocked.
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from .conftest import assert_error, assert_ok_envelope
+from src.data_client.base import FetchResult
+
+from .conftest import assert_error, assert_ok_envelope, frozen_clock
 
 _MOD = "plugins.langalpha_market_data.price_data_mcp_server"
 
@@ -88,7 +92,7 @@ class TestGetStockData:
 
         client = _fmp_client()
         with patch.object(mod._ginlix, "fetch_stock_data",
-                          new=AsyncMock(return_value=list(_GINLIX_ROWS_DESC))), \
+                          new=AsyncMock(return_value=FetchResult(list(_GINLIX_ROWS_DESC)))), \
              patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await mod.get_stock_data(
                 "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-05",
@@ -105,7 +109,7 @@ class TestGetStockData:
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
-        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=[])), \
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=FetchResult([]))), \
              patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await mod.get_stock_data(
                 "AAPL", interval="1day", start_date="1995-01-03", end_date="1995-01-31",
@@ -120,7 +124,7 @@ class TestGetStockData:
 
         client = _fmp_client()
         client.get_stock_price = AsyncMock(side_effect=RuntimeError("429"))
-        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=[])), \
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=FetchResult([]))), \
              patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await mod.get_stock_data(
                 "AAPL", interval="1day", start_date="2026-10-17", end_date="2026-10-18",
@@ -351,13 +355,21 @@ class TestGetAssetData:
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
-        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+        # A commodity's day settles at 17:00 New York, 17:15 on a delayed series.
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 16, 30, tzinfo=_NY)):
             result = await mod.get_asset_data("GCUSD", asset_type="commodity")
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 17, 16, tzinfo=_NY)):
+            settled = await mod.get_asset_data("GCUSD", asset_type="commodity")
 
         assert_ok_envelope(result, source="fmp", currency="USD", count=2)
         assert result["asset_type"] == "commodity"
+        assert result["price_treatment"] == "raw"
+        assert result["in_progress"] == "2025-01-03"
+        assert "in_progress" not in settled
         assert result["data"][0]["date"] == "2025-01-02"  # ascending
-        client.get_commodity_price.assert_awaited_once()
+        assert client.get_commodity_price.await_count == 2
 
     @pytest.mark.asyncio
     async def test_crypto_intraday_canonical_symbol(self):
@@ -385,6 +397,26 @@ class TestGetAssetData:
 
         assert_ok_envelope(result, symbol="EUR-USD")
         client.get_forex_price.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("symbol", "asset_type", "method", "fmp_symbol"),
+        [
+            ("BTC-USD", "crypto", "get_crypto_price", "BTCUSD"),
+            ("EURUSD=X", "forex", "get_forex_price", "EURUSD"),
+            ("EUR-USD", "forex", "get_forex_price", "EURUSD"),
+        ],
+    )
+    async def test_the_spelling_it_answers_with_reaches_fmp_as_fmps(
+        self, symbol, asset_type, method, fmp_symbol,
+    ):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            await mod.get_asset_data(symbol, asset_type=asset_type)
+
+        assert getattr(client, method).await_args.args[0] == fmp_symbol
 
     @pytest.mark.asyncio
     async def test_stock_routes_through_stock_path(self):
@@ -672,3 +704,110 @@ class TestNormalization:
         assert _as_float("10.5") == 10.5
         assert _as_float("not_a_number") is None
         assert _as_float(42) == 42.0
+
+
+class TestTruncatedTier:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("truncated", [True, False])
+    async def test_the_tier_s_page_cap_reaches_the_envelope(self, truncated):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        fetched = FetchResult(list(_GINLIX_ROWS_DESC), truncated)
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=fetched)):
+            result = await mod.get_stock_data(
+                "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-05",
+            )
+
+        assert_ok_envelope(result, source="ginlix-data")
+        assert result.get("truncated", False) is truncated
+
+
+class TestTruncatedFmpTier:
+    @pytest.mark.asyncio
+    async def test_an_fmp_answer_a_cap_cut_says_so_after_the_window_filter(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+        from src.data_client.fmp.fmp_client import Walk
+
+        cut = Walk([{"date": "2025-01-02 10:00:00", "open": 1, "high": 1, "low": 1, "close": 1,
+                     "volume": 1}])
+        cut.truncated = True
+        client = _fmp_client(intraday=cut)
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await mod.get_stock_data(
+                "VOD.L", interval="5min", start_date="2024-12-01", end_date="2025-01-03",
+            )
+
+        assert_ok_envelope(result, source="fmp")
+        assert result["truncated"] is True
+
+
+# ---------------------------------------------------------------------------
+# Series labels: price treatment and the bar still forming
+# ---------------------------------------------------------------------------
+
+_NY = ZoneInfo("America/New_York")
+
+
+class TestSeriesLabels:
+    @pytest.mark.asyncio
+    async def test_last_bar_of_a_running_session_is_in_progress(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 11, 0, tzinfo=_NY)):
+            result = await mod.get_stock_data("AAPL", interval="1day")
+
+        assert result["price_treatment"] == "split_adjusted"
+        assert result["in_progress"] == "2025-01-03"
+
+    @pytest.mark.asyncio
+    async def test_settled_series_names_only_its_treatment(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 20, 1, tzinfo=_NY)):
+            result = await mod.get_stock_data("AAPL", interval="1day")
+
+        assert result["price_treatment"] == "split_adjusted"
+        assert "in_progress" not in result
+
+    @pytest.mark.asyncio
+    async def test_cn_intraday_from_fmp_is_unadjusted(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        rows = [{"date": "2025-01-02 10:30:00", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
+        client = _fmp_client(intraday=rows)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                patch.object(mod._names, "display_names", new=AsyncMock(return_value=(None, None))):
+            result = await mod.get_stock_data(
+                "600519.SH", interval="1hour", start_date="2025-01-02", end_date="2025-01-02"
+            )
+
+        assert_ok_envelope(result, source="fmp", count=1)
+        assert result["price_treatment"] == "raw"
+        assert "volume" in result["volume_note"]
+
+    @pytest.mark.asyncio
+    async def test_only_cn_intraday_from_fmp_carries_a_volume_note(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
+            us_daily = await mod.get_stock_data("AAPL", interval="1day")
+
+        assert "volume_note" not in us_daily
+
+    @pytest.mark.asyncio
+    async def test_asset_bars_carry_the_labels(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        rows = [{"date": "2025-01-03", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
+        client = _fmp_client(crypto=rows)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 23, 0, tzinfo=ZoneInfo("UTC"))):
+            result = await mod.get_asset_data("BTCUSD", asset_type="crypto")
+
+        assert result["in_progress"] == "2025-01-03"
+        assert "price_treatment" in result

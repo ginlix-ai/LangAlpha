@@ -20,6 +20,7 @@ from src.server.models.user import (
     PortfolioHoldingUpdate,
     PortfolioResponse,
 )
+from src.server.dependencies.principal import DataReadUserId
 from src.server.utils.api import CurrentUserId, handle_api_exceptions, raise_not_found
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ router = APIRouter(prefix="/api/v1/users/me/portfolio", tags=["Portfolio"])
 
 @router.get("", response_model=PortfolioResponse)
 @handle_api_exceptions("list portfolio", logger)
-async def list_portfolio(user_id: CurrentUserId):
+async def list_portfolio(user_id: DataReadUserId):
     holdings = await db_get_user_portfolio(user_id)
 
     return PortfolioResponse(
@@ -91,7 +92,7 @@ async def add_portfolio_holding(
 @handle_api_exceptions("get portfolio holding", logger)
 async def get_portfolio_holding(
     holding_id: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
 ):
     """Get a single holding. 404 if not found or not owned by the caller."""
     holding = await db_get_portfolio_holding(holding_id, user_id)

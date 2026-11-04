@@ -9,8 +9,8 @@ Covers:
 - provenance_metadata: the display labels a turn's query row carries
 """
 
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -303,6 +303,147 @@ class TestEnsureThread:
         assert prior.last_turn_at == datetime(2026, 3, 1, 14, 30, tzinfo=UTC)
 
     @pytest.mark.asyncio
+    async def test_the_previous_run_settled_when_the_ledger_says(self):
+        """A run cancelled mid-call refreshed the provider's cache but stamped
+        nothing in the checkpoint; its settle time reaches the turn's build."""
+        from src.server.handlers.chat.request_prep import ensure_thread
+
+        request = MagicMock()
+        request.external_thread_id = None
+        request.platform = None
+        request.origin = None
+        request.subagents_allowed = None
+        started = datetime(2026, 3, 1, 14, 30, tzinfo=UTC)
+        settled = datetime(2026, 3, 1, 14, 31, tzinfo=UTC)
+
+        with (
+            patch(
+                f"{PREP}.qr_db.get_thread_by_id",
+                new_callable=AsyncMock,
+                return_value={"updated_at": settled},
+            ),
+            patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock),
+            patch(
+                f"{PREP}.tl_db.get_latest_attempt",
+                new_callable=AsyncMock,
+                return_value={"created_at": started, "status": "cancelled", "usage_settled_at": settled},
+            ),
+        ):
+            prior = await ensure_thread(
+                request, "t-1", "ws-1", "u-1", initial_query=""
+            )
+
+        assert prior.last_run_settled_at == settled
+        ctx = build_turn_context(
+            MagicMock(origin=None, timezone=None, locale=None), prior, user_profile=None
+        )
+        assert ctx.previous_run_settled_at == settled
+
+    @pytest.mark.asyncio
+    async def test_an_attempt_whose_input_never_reached_the_graph_leaves_the_cache_clock(self):
+        """It made no model call, so the cache counts from the attempt before."""
+        from src.server.handlers.chat.request_prep import ensure_thread
+
+        request = MagicMock()
+        request.external_thread_id = None
+        request.platform = None
+        request.origin = None
+        request.subagents_allowed = None
+        called = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
+        refused = datetime(2026, 3, 1, 14, 31, tzinfo=UTC)
+
+        async def _latest(_thread_id, before_turn=None, without_key=None):
+            if without_key == "pending_input":
+                return {"created_at": called, "status": "completed", "usage_settled_at": called}
+            return {
+                "created_at": refused,
+                "status": "error",
+                "usage_settled_at": refused,
+                "metadata": {"pending_input": {"checkpoint_id": None}},
+            }
+
+        with (
+            patch(
+                f"{PREP}.qr_db.get_thread_by_id",
+                new_callable=AsyncMock,
+                return_value={"updated_at": refused},
+            ),
+            patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock),
+            patch(f"{PREP}.tl_db.get_latest_attempt", new=_latest),
+            patch("src.server.database.runs.lifecycle.get_latest_attempt", new=_latest),
+        ):
+            prior = await ensure_thread(
+                request, "t-1", "ws-1", "u-1", initial_query=""
+            )
+
+        assert (prior.last_turn_at, prior.last_run_settled_at) == (refused, called)
+
+    @pytest.mark.asyncio
+    async def test_a_forks_cache_clock_reads_the_newest_attempt(self):
+        """A regenerate soon after the attempt it discards finds the cache
+        that attempt refreshed, so its settle time is the one that counts."""
+        from src.server.handlers.chat.request_prep import ensure_thread
+
+        request = MagicMock()
+        request.external_thread_id = None
+        request.platform = None
+        request.origin = None
+        request.subagents_allowed = None
+        request.fork_from_turn = 3
+        request.checkpoint_id = "ckpt-3"
+        before = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        discarded = datetime(2026, 3, 4, 9, 0, tzinfo=UTC)
+
+        async def _latest(_thread_id, before_turn=None):
+            stamp = before if before_turn is not None else discarded
+            return {"created_at": stamp, "status": "completed", "usage_settled_at": stamp}
+
+        with (
+            patch(
+                f"{PREP}.qr_db.get_thread_by_id",
+                new_callable=AsyncMock,
+                return_value={"updated_at": discarded},
+            ),
+            patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock),
+            patch(f"{PREP}.tl_db.get_latest_attempt", new=_latest),
+        ):
+            prior = await ensure_thread(
+                request, "t-1", "ws-1", "u-1", initial_query=""
+            )
+
+        assert (prior.last_turn_at, prior.last_run_settled_at) == (before, discarded)
+
+    @pytest.mark.asyncio
+    async def test_a_run_settled_before_the_ledger_stamped_it_counts_from_its_duration(self):
+        from src.server.handlers.chat.request_prep import ensure_thread
+
+        request = MagicMock()
+        request.external_thread_id = None
+        request.platform = None
+        request.origin = None
+        request.subagents_allowed = None
+        started = datetime(2026, 3, 1, 14, 30)
+
+        with (
+            patch(
+                f"{PREP}.qr_db.get_thread_by_id",
+                new_callable=AsyncMock,
+                return_value={"updated_at": started},
+            ),
+            patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock),
+            patch(
+                f"{PREP}.tl_db.get_latest_attempt",
+                new_callable=AsyncMock,
+                return_value={"created_at": started, "status": "completed", "execution_time": 42.5},
+            ),
+        ):
+            prior = await ensure_thread(
+                request, "t-1", "ws-1", "u-1", initial_query=""
+            )
+
+        assert prior.last_run_settled_at == started + timedelta(seconds=42.5)
+
+    @pytest.mark.asyncio
     async def test_a_fork_measures_from_the_turn_before_the_fork(self):
         """An edit of turn 3 discards turns 3 and later; the history the model
         reads ends at turn 2, so that is the prior turn."""
@@ -334,7 +475,9 @@ class TestEnsureThread:
                 request, "t-1", "ws-1", "u-1", initial_query=""
             )
 
-        latest.assert_awaited_once_with("t-1", before_turn=3)
+        # The newest attempt is read beside the predecessor: it is what last
+        # refreshed the provider's cache over the history the fork keeps.
+        assert latest.await_args_list == [call("t-1", before_turn=3), call("t-1")]
         assert prior.last_turn_at == before
 
     @pytest.mark.asyncio
@@ -485,6 +628,15 @@ class TestBuildTurnContext:
 
         # The display-only keys never reach the model's context.
         assert ctx.origin == "agent"
+
+    def test_the_send_carries_its_skip_and_when_the_server_received_it(self):
+        """The cold summary a send can skip is judged at its arrival, ahead of
+        admission and the workspace's start."""
+        request = self._request()
+        request.keep_full_context = True
+        ctx = build_turn_context(request, PriorThread(), user_profile=None, sent_at=1_700.0)
+
+        assert (ctx.keep_full_context, ctx.sent_at) == (True, 1_700.0)
 
     def test_a_manual_follow_up_carries_no_origin(self):
         """A person replying in an automation's thread is waiting; the thread's origin must not say otherwise."""

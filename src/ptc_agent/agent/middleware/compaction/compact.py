@@ -17,7 +17,6 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
-from uuid import uuid4
 
 from langchain_core.messages import AnyMessage
 
@@ -29,7 +28,7 @@ from src.llms.model_spec import summary_reasoning_effort
 from src.llms.provider_compaction import deferred_text, readable_text
 
 from ptc_agent.agent.state import ensure_message_ids
-from ptc_agent.agent.middleware.runtime_context.durable import build_update_message
+from ptc_agent.agent.middleware.runtime_context.durable import written_row
 from ptc_agent.agent.middleware.runtime_context.restate import summary_note_row
 from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
@@ -153,9 +152,7 @@ class Compaction:
         note = deferred_text(summary)
         if note is None:
             return None
-        row = build_update_message(summary_note_row(note, summary.id, datetime.now(tz=UTC)))
-        row.id = str(uuid4())
-        return row
+        return written_row(summary_note_row(note, summary.id, datetime.now(tz=UTC)))
 
     @property
     def unsent(self) -> set[str]:
@@ -243,6 +240,7 @@ class Summarizer:
         window: Window,
         progress: Progress | None = None,
         own: Own | None = None,
+        carried: bool = False,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, ``messages`` being the
         agent's checkpoint list (what ``window`` trimmed of it aside), by
@@ -257,6 +255,7 @@ class Summarizer:
         ``notes_dir``, the main agent's scratchpad, are listed while the
         summary is written, and the summary names them after its pointer.
         ``progress`` hears how much of the summary has been written.
+        ``carried`` says the step it ends on is sent after it (see ``carry``).
         """
         to_summarize, preserved = partition_at_cutoff(view, cutoff)
         kept = keeps_turns(preserved)
@@ -274,7 +273,8 @@ class Summarizer:
 
         async def render(trimmed: list[AnyMessage]) -> list[AnyMessage]:
             trimmed = await aoffload_base64_content(backend, trimmed, thread_id=thread_id)
-            return build_summary_request(summary_prompt("transcript", kept, notes=bool(notes_dir)), trimmed, turns)
+            prompt = summary_prompt("transcript", kept, notes=bool(notes_dir), carried=carried)
+            return build_summary_request(prompt, trimmed, turns)
 
         remaining = budget - (time.monotonic() - started)
         # The notes are listed beside the summary and within its budget, so

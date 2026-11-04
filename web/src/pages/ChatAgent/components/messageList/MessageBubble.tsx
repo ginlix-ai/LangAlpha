@@ -9,6 +9,7 @@ import { DURATION, EASE_COLLAPSE } from '@/lib/motion';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
 import { CitationMetadataProvider } from '../CitationMetadataContext';
 import TextMessageContent, { TurnErrorCard } from '../TextMessageContent';
+import { SentMessageBody } from './SentMessageBody';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { countDedupedSources, type CreditPauseState, type MessageProvenance, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState } from '@/types/chat';
 import { TextShimmer } from '@/components/ui/text-shimmer';
@@ -24,14 +25,19 @@ import { useEditDraft, useEditDraftStore } from '../../hooks/utils/editDrafts';
 import { isSteeringUserMessage } from './messagePredicates';
 import { UserBubble } from './UserBubble';
 import { MessageTime } from './MessageTime';
-import { assistantText } from './messageText';
+import { assistantText, userMessageText } from './messageText';
+import { EditMessageField } from './EditMessageField';
+import { sentMessageForCopy, sentMessageWords } from './sentMessage';
 import { TurnFileCards } from './TurnFileCards';
+import type { ArtifactCommentsShown } from '@/types/api';
+import { CommentSendBody } from '../artifactComments/CommentSendBody';
 import { InPlaceSwap } from '@/components/ui/crossfade';
 import { CollapseClockContext, isFreshSend, playEntrance, turnEndDelays } from './transcriptMotion';
 import { useMessageTyping, useProseReport } from './proseTyping';
 import type { TurnFile } from '../../utils/turnFiles';
 import { projectMessageContent, type ContentProjection } from './contentProjection';
 import { isImeComposing } from '@/lib/ime';
+import { onScreenKeyboardUp } from '@/lib/visualViewport';
 import { EMPTY_OBJ } from './types';
 import type { ContentSegmentRecord, FeedbackResult, FoldState, MessageRecord, ToolCallProcessRecord } from './types';
 
@@ -273,18 +279,14 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   const failure = hasError ? message.structuredError as StructuredError | undefined : undefined;
   const hasBody = !(projection.textCount === 0 && projection.blocks.every((block) => block.type === 'text'));
   const isSteering = isSteeringUserMessage(message);
+  // A send of file comments draws them under its note.
+  const artifactComments = isUser ? message.artifactComments as ArtifactCommentsShown | undefined : undefined;
   // A message shows when it was sent and a reply when its turn ended. A
   // steering bubble shows none: replayed, its time is not history time.
   // It sits on the row's inner side, so the buttons keep their place at the
   // edge whatever its length: before a user's buttons, after a reply's.
   const shownAt = isUser ? (isSteering ? undefined : message.timestamp) : completedAt;
   const shownTime = <MessageTime value={shownAt} />;
-  const resizeTextarea = () => {
-    const el = editTextareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = el.scrollHeight + 'px';
-  };
   const handleStartEdit = useStableHandler(() => {
     draftStore.markFocus(draftKey);
     draftStore.put({ ...draftKey, text: originalText });
@@ -296,7 +298,6 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   useLayoutEffect(() => {
     const el = editTextareaRef.current;
     if (!isEditing || !el) return;
-    resizeTextarea();
     const active = document.activeElement;
     const key = { turnIndex, original: originalText, messageId };
     if (draftStore.takeFocus(key) && (!active || active === document.body)) {
@@ -328,7 +329,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   }, [isEditing]);
 
   const handleCopy = useStableHandler(() => {
-    const text = assistantText(message);
+    const text = isUser ? sentMessageForCopy(userMessageText(message)) : assistantText(message);
     // Confirm only after the write lands (it can reject when the document
     // loses focus); rapid re-copies reset the shared timer instead of
     // stacking timers that would cut the newer indicator short.
@@ -358,7 +359,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (isImeComposing(e)) return;
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !onScreenKeyboardUp()) {
       e.preventDefault();
       handleSubmitEdit();
     } else if (e.key === 'Escape') {
@@ -388,7 +389,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     inert={!showActions || undefined}
     className={`flex gap-1 transition-opacity ${
       showActions
-        ? (isMobile ? 'opacity-70' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100')
+        ? (isMobile ? '' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100')
         : 'opacity-0 pointer-events-none'
     } ${
       // The top margin belongs to the user placement only: under a bubble the
@@ -402,7 +403,9 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         they're injected mid-turn and have no turn checkpoint of their
         own, so an edit fork would target the NEXT turn and leave the
         original steering text in the agent's context. */}
-    {isUser && onEditMessage && !isSteering && (
+    {/* Nor does a send of file comments: an edit sends text, and the
+        comments it carried are no longer queued to go again. */}
+    {isUser && onEditMessage && !isSteering && !artifactComments && (
       <button
         onClick={handleStartEdit}
         className={ACTION_BUTTON}
@@ -482,64 +485,78 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   </div>
   ) : null;
 
+  // The message's own words: a pending send's shimmer, else its segments or
+  // its text.
+  const words = isPendingDelivery ? (
+    <TextShimmer
+      as="span"
+      className="text-sm [--base-color:var(--color-text-secondary)] [--base-gradient-color:var(--color-text-primary)]"
+      duration={1.5}
+    >
+      {sentMessageWords((message.content as string) || '')}
+    </TextShimmer>
+  ) : (
+    <>
+    {/* Render content segments in chronological order. A call streaming
+        before any of them draws too, or the turn's first call would show
+        nothing until it landed. */}
+    {isUser && typeof message.content === 'string' ? (
+      <SentMessageBody content={message.content} isStreaming={message.isStreaming as boolean} onOpenFile={onOpenFile} />
+    ) : ((message.contentSegments as ContentSegmentRecord[] | undefined)?.length ?? 0) > 0 || projection.preparingToolCall !== null ? (
+      <CitationMetadataProvider toolCallProcesses={(message.toolCallProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}>
+      <MessageContentSegments
+        contentProjection={projection}
+        segments={(message.contentSegments as ContentSegmentRecord[] | undefined)?.length ? message.contentSegments as ContentSegmentRecord[] : NO_SEGMENTS}
+        reasoningProcesses={(message.reasoningProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        toolCallProcesses={(message.toolCallProcesses as Record<string, ToolCallProcessRecord>) || EMPTY_OBJ}
+        todoListProcesses={(message.todoListProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        subagentTasks={(message.subagentTasks as Record<string, SubagentTaskRecord>) || EMPTY_OBJ}
+        userQuestions={(message.userQuestions as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        workspaceProposals={(message.workspaceProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        questionProposals={(message.questionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        pendingToolCallChunks={(message.pendingToolCallChunks as Record<string, PendingToolCallChunk> | undefined) ?? EMPTY_OBJ}
+        isStreaming={message.isStreaming as boolean}
+        fold={fold}
+        isTurnTail={isTurnTail}
+        isSubagentView={isSubagentView}
+        ptcAgentProposals={(message.ptcAgentProposals as Record<string, PTCAgentProposalState>) || EMPTY_OBJ}
+        secretaryActionProposals={(message.secretaryActionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        creditPauses={(message.creditPauses as Record<string, CreditPauseState>) || EMPTY_OBJ}
+        toolApprovals={(message.toolApprovals as Record<string, ToolApprovalState>) || EMPTY_OBJ}
+        htmlWidgetProcesses={(message.htmlWidgetProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        readOnly={readOnly}
+        dispatcherContext={dispatcherContext}
+        messageId={replyId}
+      />
+      </CitationMetadataProvider>
+    ) : (
+      // Fallback for messages without segments (backward compatibility) - main chat shows text only
+      ((message.contentType as string) === 'text' || !(message.contentType as string)) && (
+        <SegmentlessText
+          messageId={replyId}
+          content={message.content as string}
+          isStreaming={message.isStreaming as boolean}
+          onOpenFile={onOpenFile}
+        />
+      )
+    )}
+    </>
+  );
+
   // A user's message goes in its bubble, a reply sits on the page itself; the
   // content is the same either way.
   const bubbleContent = (
     <>
       <OverflowCollapse enabled={isUser} maxHeight={USER_MESSAGE_COLLAPSE_PX}>
-      {isPendingDelivery ? (
-        <TextShimmer
-          as="span"
-          className="text-sm [--base-color:var(--color-text-secondary)] [--base-gradient-color:var(--color-text-primary)]"
-          duration={1.5}
+      {artifactComments ? (
+        <CommentSendBody
+          shown={artifactComments}
+          pending={isPendingDelivery}
+          refused={!!message.queueError || !!message.unadmitted}
         >
-          {(message.content as string) || ''}
-        </TextShimmer>
-      ) : (
-      <>
-      {/* Render content segments in chronological order. A call streaming
-          before any of them draws too, or the turn's first call would show
-          nothing until it landed. */}
-      {((message.contentSegments as ContentSegmentRecord[] | undefined)?.length ?? 0) > 0 || projection.preparingToolCall !== null ? (
-        <CitationMetadataProvider toolCallProcesses={(message.toolCallProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}>
-        <MessageContentSegments
-          contentProjection={projection}
-          segments={(message.contentSegments as ContentSegmentRecord[] | undefined)?.length ? message.contentSegments as ContentSegmentRecord[] : NO_SEGMENTS}
-          reasoningProcesses={(message.reasoningProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          toolCallProcesses={(message.toolCallProcesses as Record<string, ToolCallProcessRecord>) || EMPTY_OBJ}
-          todoListProcesses={(message.todoListProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          subagentTasks={(message.subagentTasks as Record<string, SubagentTaskRecord>) || EMPTY_OBJ}
-          userQuestions={(message.userQuestions as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          workspaceProposals={(message.workspaceProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          questionProposals={(message.questionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          pendingToolCallChunks={(message.pendingToolCallChunks as Record<string, PendingToolCallChunk> | undefined) ?? EMPTY_OBJ}
-          isStreaming={message.isStreaming as boolean}
-          fold={fold}
-          isTurnTail={isTurnTail}
-          isSubagentView={isSubagentView}
-          ptcAgentProposals={(message.ptcAgentProposals as Record<string, PTCAgentProposalState>) || EMPTY_OBJ}
-          secretaryActionProposals={(message.secretaryActionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          creditPauses={(message.creditPauses as Record<string, CreditPauseState>) || EMPTY_OBJ}
-          toolApprovals={(message.toolApprovals as Record<string, ToolApprovalState>) || EMPTY_OBJ}
-          htmlWidgetProcesses={(message.htmlWidgetProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-          readOnly={readOnly}
-          dispatcherContext={dispatcherContext}
-          messageId={replyId}
-        />
-        </CitationMetadataProvider>
-      ) : (
-        // Fallback for messages without segments (backward compatibility) - main chat shows text only
-        ((message.contentType as string) === 'text' || !(message.contentType as string)) && (
-          <SegmentlessText
-            messageId={replyId}
-            content={message.content as string}
-            isStreaming={message.isStreaming as boolean}
-            onOpenFile={onOpenFile}
-          />
-        )
-      )}
-      </>
-      )}
+          {words}
+        </CommentSendBody>
+      ) : words}
       </OverflowCollapse>
 
       {/* The failure, once, after what the turn produced, which still reads as
@@ -617,17 +634,11 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
                 color: 'var(--color-text-primary)',
               }}
             >
-              <textarea
-                ref={editTextareaRef}
+              <EditMessageField
+                textareaRef={editTextareaRef}
                 value={editContent}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
-                  draftStore.put({ ...draftKey, text: e.target.value });
-                  resizeTextarea();
-                }}
+                onChange={(text) => draftStore.put({ ...draftKey, text })}
                 onKeyDown={handleEditKeyDown}
-                className="w-full bg-transparent text-sm resize-none leading-relaxed overflow-hidden"
-                style={{ color: 'var(--color-text-primary)' }}
-                rows={1}
               />
             </div>
 

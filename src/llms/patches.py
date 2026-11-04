@@ -294,3 +294,27 @@ def _patch_langchain_anthropic_header_betas():
         ChatAnthropic._get_request_payload = _patched
     except Exception as e:
         logger.warning(f"Failed to patch langchain_anthropic header betas: {e}")
+
+
+def _patch_langchain_anthropic_cache_scope():
+    """Place a request's cache markers as the call's scope says
+    (``src.llms.cache_markers.cache_scope``); a call outside any scope goes
+    out as built. The subscription client builds on this method, so it gets
+    the scope before its own hour."""
+    try:
+        from langchain_anthropic.chat_models import ChatAnthropic
+
+        from src.llms.cache_markers import scoped
+
+        original = ChatAnthropic._get_request_payload
+        if getattr(original, "_places_scoped_markers", False):
+            return
+
+        @functools.wraps(original)
+        def _patched(self, input_, *, stop=None, **kwargs):
+            return scoped(original(self, input_, stop=stop, **kwargs))
+
+        _patched._places_scoped_markers = True
+        ChatAnthropic._get_request_payload = _patched
+    except Exception as e:
+        logger.warning(f"Failed to patch langchain_anthropic cache scope: {e}")

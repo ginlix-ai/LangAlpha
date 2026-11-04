@@ -586,6 +586,32 @@ describe('useChatMessages — stopWorkflow gives the user\'s steers back', () =>
     expect(resend.requestKey).not.toBe(keys[0]);
   });
 
+  it('gives back the note of a returned steer carrying comments, and says the comments wait again', async () => {
+    const { result, keys } = await runningTurnWithSteers(['steer one']);
+    const heard: unknown[] = [];
+    const stop = result.current.watchCommentSends((_comments: unknown, outcome: unknown) => { heard.push(outcome); });
+    mockCancel.mockResolvedValue({
+      cancelled: true,
+      message: 'ok',
+      returned_steers: [{
+        content: 'my note',
+        request_key: keys[0],
+        artifact_comments: {
+          note: 'my note',
+          reading: 'chat',
+          comments: [{ comment_id: 'c1', artifact_id: 'a1', workspace_id: 'ws', number: 3, path: 'r.html', anchor_label: 'x', excerpt: 'y' }],
+        },
+      }],
+    });
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+    stop();
+
+    expect(result.current.returnedSteering).toBe('my note');
+    expect(heard).toContain('returned');
+  });
+
   it('leaves the composer alone when the stop returns no steers', async () => {
     const { result } = await runningTurnWithSteers([]);
     mockCancel.mockResolvedValue({ cancelled: true, message: 'ok' });

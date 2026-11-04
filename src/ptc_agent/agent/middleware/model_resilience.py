@@ -39,6 +39,7 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage, AnyMessage
 from langgraph.types import Command
 
+from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.thinking_binding import (
     UNSENT_THINKING_KEY,
     UnsentThinkingState,
@@ -47,15 +48,21 @@ from ptc_agent.agent.middleware.thinking_binding import (
 )
 
 from src.llms.error_classification import (
+    UnfinishedReplyError,
     extract_status_code,
     is_context_overflow,
     is_mid_stream_error,
     is_retryable_error,
     is_stalled_stream,
+    refuses_input,
 )
 from src.llms.input_transformations import INPUT_TRANSFORMATIONS, REPEATED, thinking_drops
 from src.llms.provider_compaction import is_compaction_request
-from src.llms.reasoning_payload import strip_all_reasoning
+from src.llms.reasoning_payload import (
+    is_unfinished_reply,
+    strip_all_reasoning,
+    strip_reasoning_references,
+)
 from src.observability.langsmith_run import stamp_run
 
 if TYPE_CHECKING:
@@ -104,15 +111,6 @@ def _last_message_id(request: ModelRequest) -> str | None:
     return getattr(messages[-1], "id", None) if messages else None
 
 
-def _thread_id() -> str | None:
-    try:
-        from langgraph.config import get_config
-
-        return (get_config().get("configurable") or {}).get("thread_id")
-    except Exception:
-        return None
-
-
 def _stripped_ids(sent: list[AnyMessage], stripped: list[AnyMessage]) -> list[str]:
     """The ids of the messages in ``sent`` the strip changed or removed."""
     kept = {id(message) for message in stripped}
@@ -149,13 +147,23 @@ def _report_drops(response: ModelResponse, model: str, sent: list[AnyMessage]) -
         if not counts:
             continue
         log = logger.info if set(counts) <= _BY_DESIGN_DROPS | {REPEATED} else logger.warning
+        thread_id, agent = run_ids()
         log(
             "[ModelResilience] earlier thinking dropped by the provider",
             model=model,
-            thread_id=_thread_id(),
+            thread_id=thread_id,
+            agent=agent,
             **counts,
         )
         stamp_run(thinking_dropped=counts)
+
+
+def _refuse_unfinished(response: Any) -> None:
+    """Raise for an answer whose stream ended before its response did, so the
+    loop retries it rather than the thread keeping it (``is_unfinished_reply``)."""
+    result = getattr(getattr(response, "model_response", response), "result", None)
+    if any(is_unfinished_reply(message) for message in result or ()):
+        raise UnfinishedReplyError("the stream ended before the response completed")
 
 
 def _summarize_error(exc: BaseException) -> str:
@@ -526,8 +534,15 @@ class ModelResilienceMiddleware(AgentMiddleware):
         return status, is_retryable_error(exc, status)
 
     @staticmethod
-    def _escalate_reasoning(request: ModelRequest) -> ModelRequest | None:
+    def _escalate_reasoning(
+        request: ModelRequest, *, references_only: bool = False
+    ) -> ModelRequest | None:
         """Rebuild the request without any reasoning payload.
+
+        ``references_only`` answers a server that could not find an item the
+        input names: only reasoning sent by id alone can be missing, so that is
+        all it strips, and the rest of the history keeps its reasoning. With no
+        such item it strips everything, as for a 400.
 
         ``None`` when there is nothing to strip, so the caller never spends a
         call re-sending an identical request. Retrying in place is safe: a
@@ -542,7 +557,11 @@ class ModelResilienceMiddleware(AgentMiddleware):
         ``thinking.budget_tokens`` succeeds once thinking is off, turning a
         surfaced error into a silently thinking-free answer.
         """
-        messages = strip_all_reasoning(request.messages)
+        messages = request.messages
+        if references_only:
+            messages = strip_reasoning_references(messages)
+        if messages is request.messages:
+            messages = strip_all_reasoning(messages)
         if messages is request.messages:
             return None
         return request.override(messages=messages)
@@ -555,11 +574,14 @@ class ModelResilienceMiddleware(AgentMiddleware):
         ``None`` means give up on this candidate. A reasoning-payload 400 is the
         one non-retryable status worth another call: the provider rejected the
         history's reasoning blocks, and the same request without them can
-        succeed. Detected structurally, a 400 plus "we did send reasoning",
-        rather than by matching provider error prose, which drifts between API
-        versions and fails silently when it does. The cost is one wasted call
-        when an unrelated 400 coincides with reasoning in history, on a turn that
-        is already failing anyway.
+        succeed. So is a 404 naming the request's ``input``, an item there the
+        server does not hold, which strips only the reasoning sent by id.
+        Detected structurally, the status plus "we did send reasoning", rather
+        than by matching provider error prose, which drifts between API versions
+        and fails silently when it does. The cost is
+        one wasted call when an unrelated refusal coincides with reasoning in
+        history, on a turn that is already failing anyway. An answer the strip
+        bought is remembered for the thread, so the next call skips the wasted one.
 
         A mid-stream failure is excluded because that repair cannot apply to it.
         Stripping reasoning answers a request rejected during validation, before
@@ -573,7 +595,9 @@ class ModelResilienceMiddleware(AgentMiddleware):
         full count, whether or not its first chunk had arrived: each attempt
         waits out the whole bound before failing, so the full count held one
         candidate for most of an hour before its fallback, and stalls seen in
-        prod repeated at the same point on every attempt.
+        prod repeated at the same point on every attempt. A stream the server
+        closed before its response finished gets one too: a cut that repeats on
+        a fresh connection is the server's limit, and each attempt is billed.
 
         A context overflow gets nothing, with compaction or without: the same
         request is over the window on every attempt, with or without its
@@ -584,22 +608,26 @@ class ModelResilienceMiddleware(AgentMiddleware):
         status, retryable = self._classify(exc)
         if is_context_overflow(exc):
             return status, None
-        if retryable and is_stalled_stream(exc) and attempts > 1:
+        if retryable and attempts > 1 and (
+            is_stalled_stream(exc) or isinstance(exc, UnfinishedReplyError)
+        ):
             retryable = False
         if retryable and attempts <= self.max_retries:
             return status, _Recovery(delay=self._calculate_delay(attempts - 1))
+        missing_item = status == 404 and refuses_input(exc)
         if (
             not escalated
-            and status == 400
+            and (status == 400 or missing_item)
             and not is_mid_stream_error(exc)
             and not _as_sent.get()
         ):
-            stripped = self._escalate_reasoning(req)
+            stripped = self._escalate_reasoning(req, references_only=missing_item)
             if stripped is not None:
                 logger.warning(
-                    "[ModelResilience] retrying without reasoning after a 400",
+                    "[ModelResilience] retrying without reasoning after a refused request",
+                    status=status,
                     model=_model_display_name(req.model),
-                    thread_id=_thread_id(),
+                    thread_id=run_ids()[0],
                     error=(str(exc) or type(exc).__name__)[:_STRIP_ERROR_MAX_CHARS],
                 )
                 return status, _Recovery(request=stripped)
@@ -655,6 +683,7 @@ class ModelResilienceMiddleware(AgentMiddleware):
                 attempts += 1
                 try:
                     response = handler(req)
+                    _refuse_unfinished(response)
                     return self._answered(response, name, index, request, stripped)
                 except Exception as exc:
                     status, recovery = self._decide(
@@ -712,6 +741,7 @@ class ModelResilienceMiddleware(AgentMiddleware):
                 attempts += 1
                 try:
                     response = await handler(req)
+                    _refuse_unfinished(response)
                     return self._answered(response, name, index, request, stripped)
                 except Exception as exc:
                     status, recovery = self._decide(

@@ -8,7 +8,7 @@ import StockHeader from './components/StockHeader';
 import MarketChart from './components/MarketChart';
 import type { MarketChartHandle } from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
-import type { ComposerScope } from '../../components/ui/chat-input.types';
+import type { ComposerScope, ComposerSend } from '../../components/ui/chat-input.types';
 import MarketChatPanel from './components/MarketChatPanel';
 import MarketSidebarPanel from './components/MarketSidebarPanel';
 import { INTERVALS } from './utils/chartConstants';
@@ -97,7 +97,7 @@ function MarketViewInner() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { prices: wsPrices, connectionStatus: wsStatus, dataLevel: wsDataLevel, ginlixDataEnabled, subscribe: wsSubscribe, unsubscribe: wsUnsubscribe, setPreviousClose, setDayOpen } = useMarketDataWSContext();
+  const { prices: wsPrices, connectionStatus: wsStatus, dataLevel: wsDataLevel, ginlixDataEnabled, subscribe: wsSubscribe, unsubscribe: wsUnsubscribe } = useMarketDataWSContext();
   // A chart link is the page's opening state, not a correction applied after
   // it: MarketChatPanel reads a symbol or workspace that changes after its
   // mount as a scope change the user made, and drops the forwarded `?thread`
@@ -111,6 +111,8 @@ function MarketViewInner() {
     () => displaySpelling(openingRoute.symbol || loadPref('symbol', 'GOOGL')) || 'GOOGL',
   );
   const [selectedStockDisplay, setSelectedStockDisplay] = useState<SymbolDisplayOverride | null>(null);
+  const wsHasData = wsPrices.has(selectedStock);
+  const streamsLive = wsStatus === 'connected' && wsHasData;
 
   const {
     stockInfo,
@@ -120,12 +122,7 @@ function MarketViewInner() {
     overviewLoading,
     overlayData,
     marketStatus,
-  } = useStockData({
-    selectedStock,
-    wsStatus,
-    setPreviousClose,
-    setDayOpen
-  });
+  } = useStockData({ selectedStock, streamsLive });
 
   const [chartMeta, setChartMeta] = useState<Record<string, unknown> | null>(null);
   // Venue market phase reported by the chart's bars responses (calendar-derived
@@ -346,7 +343,6 @@ function MarketViewInner() {
   // Display price: prefer WS live data over REST. useStockData only returns
   // the rows of the symbol on screen, so a switch shows dashes, not the last one's.
   const displayPrice = wsPrices.get(selectedStock) || realTimePrice;
-  const wsHasData = !!wsPrices.get(selectedStock);
   const quote = useStockQuoteModel({
     symbol: selectedStock,
     stockInfo,
@@ -428,13 +424,17 @@ function MarketViewInner() {
     if (displayPrice) {
       // The header's own currency: the row's code, or none for an index level.
       const code = quote.currency;
-      parts.push(`Real-time price: ${formatMoney(displayPrice.price, code, 'en-US')} (${formatMoney(displayPrice.change, code, 'en-US', { signed: true })} / ${displayPrice.changePercent.toFixed(2)}%)`);
+      const upTo = quote.places;
+      const change = displayPrice.change != null && displayPrice.changePercent != null
+        ? ` (${formatMoney(displayPrice.change, code, 'en-US', { signed: true, upTo })} / ${displayPrice.changePercent.toFixed(2)}%)`
+        : '';
+      parts.push(`Real-time price: ${formatMoney(displayPrice.price, code, 'en-US', { upTo })}${change}`);
     }
 
     setChartImageDesc(parts.join('\n'));
-  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice, quote.currency]);
+  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice, quote.currency, quote.places]);
 
-  const handleSendMessage = useCallback(async (message: string, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort, fastMode }: { model?: string; reasoningEffort?: string | null; fastMode?: boolean | null } = {}) => {
+  const handleSendMessage = useCallback(async (message: string, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort, fastMode }: { model?: string | null; reasoningEffort?: string | null; fastMode?: boolean | null } = {}) => {
     // Build additional_context from chart image + file attachments.
     // The drawing tools are always bound; the chart-annotation skill rides
     // every send for its drawing guide and to tell the agent which ticker +
@@ -593,6 +593,7 @@ function MarketViewInner() {
           Page-wide, so the chat and watchlist columns stay draggable too; it
           overlaps the header rather than pushing it down (App.css). */}
       <div className="chrome-drag-strip" aria-hidden="true" />
+      <h1 className="sr-only">{t('marketView.pageHeading', { symbol: selectedStock })}</h1>
       {isMobile ? (
         <div className="market-mobile-layout">
           <StockHeader
@@ -651,7 +652,7 @@ function MarketViewInner() {
               </div>
             )}
             <ChatInput
-              onSend={(...args: any[]) => { (handleSendMessage as any)(...args); setChatExpanded(false); }}
+              onSend={(send: ComposerSend) => { void handleSendMessage(send.message, send.files as unknown as AttachmentItem[], [], send.modelOptions); setChatExpanded(false); }}
               scope={scope}
               onScopeChange={setScope}
               model={threadModel.model}

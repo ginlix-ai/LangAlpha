@@ -1,0 +1,116 @@
+/* An HTML file's comment controls, in its crumb row. */
+.page-comment-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: none;
+  border: 1px solid var(--color-border-muted);
+  cursor: pointer;
+}
+.page-comment-mode-btn:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
+}
+/* A published version is read only: the mode waits for the live file. */
+.page-comment-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* On: dark, the neutral primary, so the mode reads as held down. */
+.page-comment-mode-btn.is-on,
+.page-comment-mode-btn.is-on:hover {
+  color: var(--color-btn-primary-text);
+  background-color: var(--color-btn-primary-bg);
+  border-color: var(--color-btn-primary-bg);
+}
+
+/* No gap: each count brings its room inside the width it opens. */
+.page-comment-list-btn {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+}
+/* Replies the owner has not read: the unread mark's amber, as a small chip.
+   `pre` keeps the space between the number and its words, which sit in flex
+   items of their own so the number can roll alone. */
+.page-comment-unread-badge {
+  display: inline-flex;
+  align-items: baseline;
+  padding: 0 6px;
+  border-radius: 9999px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: pre;
+  color: var(--color-text-on-accent);
+  background-color: var(--color-accent-primary);
+  border: 1px solid var(--color-accent-primary);
+}
+
+/* What waits for a send, with Send all: the dashed edge queued wears on pins
+   and cards, holding the count and the button. As tall as the crumb row's
+   list button, or the bar's buttons; the button sits 2px in, its corners
+   concentric with the edge's. */
+.page-comment-queue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 2px 0 8px;
+  border: 1px dashed var(--color-text-secondary);
+  border-radius: 6px;
+}
+.page-comment-queue[data-bar] {
+  height: 30px;
+}
+.page-comment-queue-count {
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: pre;
+  color: var(--color-text-primary);
+}
+.page-comment-queue-send {
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 4px;
+}
+.page-comment-queue[data-bar] .page-comment-queue-send {
+  height: 24px;
+  padding: 0 8px;
+}
+/* Send all's outcome, for a moment, where the queue was. */
+.page-comment-queue-outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 16rem;
+  height: 26px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+.page-comment-queue-outcome[data-bar] {
+  max-width: 24rem;
+  height: 30px;
+}
+/* A narrow panel keeps the count's number and the button's arrow (the
+   crumb row is the `file-crumbs` container, FilePanel.css). */
+.page-comment-queue-number {
+  display: none;
+}
+@container file-crumbs (max-width: 520px) {
+  .page-comment-queue-words {
+    display: none;
+  }
+  .page-comment-queue-number {
+    display: inline;
+  }
+}

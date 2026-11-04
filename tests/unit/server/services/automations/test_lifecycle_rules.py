@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from src.server.database.home_workspace import get_home_workspace_id
@@ -144,12 +145,73 @@ class TestModelOnCreate:
 
     @pytest.mark.asyncio
     @patch(f"{_LIFECYCLE}.auto_db")
+    async def test_a_claude_code_model_is_refused_in_home_and_not_in_a_workspace(self, mock_auto_db, models):
+        """Chief of Staff, which runs Home's automations, does not run on one."""
+        models.return_value = ("system", {"model_id": "claude-haiku-5-5"})
+        with pytest.raises(AutomationRefusal) as exc:
+            await create_automation(OWNER, _create_data(llm_model="claude-haiku-5-5-code"))
+        assert exc.value.field == "llm_model"
+        mock_auto_db.create_automation.assert_not_called()
+
+        mock_auto_db.create_automation = AsyncMock(return_value=_row(llm_model="claude-haiku-5-5-code"))
+        workspace = str(uuid.uuid4())
+        with patch(f"{_LIFECYCLE}._placement", AsyncMock(return_value=workspace)):
+            await create_automation(OWNER, _create_data(llm_model="claude-haiku-5-5-code", workspace_id=workspace))
+        mock_auto_db.create_automation.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.auto_db")
     async def test_no_model_skips_the_check(self, mock_auto_db, models):
         mock_auto_db.create_automation = AsyncMock(return_value=_row())
 
         await create_automation(OWNER, _create_data())
 
         models.assert_not_awaited()
+
+
+class TestClaudeCodeOnAPinnedThread:
+    """A Claude Code row cannot continue a thread another model last replied
+    on, so an automation that would is refused when saved."""
+
+    CODE = "claude-haiku-5-5-code"
+
+    @staticmethod
+    def _another_model_replied():
+        refused = HTTPException(400, detail={"message": "Start a new thread.", "reason": "other_model"})
+        return patch(f"{_LIFECYCLE}.require_claude_code_continues", AsyncMock(side_effect=refused))
+
+    @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.auto_db")
+    async def test_creating_one_is_refused(self, mock_auto_db, models):
+        models.return_value = ("system", {"model_id": "claude-haiku-5-5"})
+        workspace, pin = str(uuid.uuid4()), str(uuid.uuid4())
+        with (
+            patch(f"{_LIFECYCLE}._placement", AsyncMock(return_value=workspace)),
+            patch(f"{_LIFECYCLE}.require_target_ownership", AsyncMock()),
+            patch(f"{_LIFECYCLE}._require_pin_in", AsyncMock()),
+            self._another_model_replied() as continues,
+            pytest.raises(AutomationRefusal) as exc,
+        ):
+            await create_automation(OWNER, _create_data(
+                llm_model=self.CODE, workspace_id=workspace, thread_strategy="continue", conversation_thread_id=pin,
+            ))
+        assert exc.value.field == "llm_model"
+        continues.assert_awaited_once_with(pin, self.CODE)
+        mock_auto_db.create_automation.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.auto_db")
+    async def test_switching_one_to_claude_code_is_refused(self, mock_auto_db, models):
+        models.return_value = ("system", {"model_id": "claude-haiku-5-5"})
+        pin = str(uuid.uuid4())
+        mock_auto_db.get_automation = AsyncMock(return_value=_row(
+            workspace_id=str(uuid.uuid4()), thread_strategy="continue", conversation_thread_id=pin,
+        ))
+        with self._another_model_replied() as continues, pytest.raises(AutomationRefusal) as exc:
+            await update_automation(AUTOMATION_ID, OWNER, {"llm_model": self.CODE})
+        assert exc.value.field == "llm_model"
+        continues.assert_awaited_once_with(pin, self.CODE)
+        mock_auto_db.update_automation.assert_not_called()
 
 
 class TestModelOnUpdate:
@@ -160,6 +222,20 @@ class TestModelOnUpdate:
 
         with pytest.raises(AutomationRefusal) as exc:
             await update_automation(AUTOMATION_ID, OWNER, {"llm_model": "no-such-model"})
+
+        assert exc.value.field == "llm_model"
+        mock_auto_db.update_automation.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.auto_db")
+    async def test_moving_a_claude_code_automation_into_home_is_refused(self, mock_auto_db, models):
+        workspace = str(uuid.uuid4())
+        mock_auto_db.get_automation = AsyncMock(
+            return_value=_row(workspace_id=workspace, llm_model="claude-haiku-5-5-code")
+        )
+
+        with pytest.raises(AutomationRefusal) as exc:
+            await update_automation(AUTOMATION_ID, OWNER, {"workspace_id": HOME})
 
         assert exc.value.field == "llm_model"
         mock_auto_db.update_automation.assert_not_called()

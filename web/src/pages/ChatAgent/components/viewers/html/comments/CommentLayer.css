@@ -1,0 +1,233 @@
+/* The comment layer sits in the viewer's overlay, the same box as the frame,
+   so a rect the page reports in its viewport is a position here as it is.
+   The layer lets every pointer through; what is drawn on it takes them back. */
+.page-comments {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* What a click would pick, in the comment layer's pick color: blue, which a
+   page's own greys cannot pass for in either theme, and which keeps amber
+   for what a comment marks. A grey that suited the app's theme vanished over
+   a page in the other one. One element for the spot under the pointer and
+   the spot picked, placed by transform so it glides from box to box; picking
+   settles it further out, with a stronger fill, where it is. A fresh show,
+   and a page scrolling under it, place it at once (`data-still`): the glide
+   is for moving between boxes, not for trailing the page. */
+.page-comments-outline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  border-radius: 3px;
+  pointer-events: none;
+  outline: 1.5px solid var(--color-info);
+  outline-offset: 1px;
+  background: color-mix(in srgb, var(--color-info) 10%, transparent);
+  opacity: 0;
+  transition-property: opacity, outline-color, outline-offset, background-color, transform, width, height;
+  transition-duration: var(--motion-exit), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick);
+  transition-timing-function: var(--ease-out);
+}
+.page-comments-outline[data-shown] {
+  opacity: 1;
+  transition-duration: var(--motion-quick);
+}
+.page-comments-outline[data-still] {
+  transition-property: opacity, outline-color, outline-offset, background-color;
+}
+.page-comments-outline[data-picked] {
+  outline-offset: 2px;
+  background-color: color-mix(in srgb, var(--color-info) 16%, transparent);
+}
+.page-comments-outline-label {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: -2px;
+  max-width: min(16rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-muted);
+  transition: opacity var(--motion-exit) var(--ease-out);
+}
+/* The box names the picked spot; the chip would only repeat it. */
+.page-comments-outline[data-picked] .page-comments-outline-label {
+  opacity: 0;
+}
+
+/* The word a click on text would take, under the pointer: a fill in the
+   outline's blue, which shows the words a click selects without boxing in
+   the element around them, in the hue a drag's text selection takes by
+   default. It snaps from word to word, as a text cursor does. */
+.page-comments-word {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  border-radius: 3px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-info) 30%, transparent);
+}
+
+/* An area: the rectangle being dragged out, and the area a comment is on
+   once it holds several elements. Dashed amber, the annotation colour, as
+   it marks what the comment is about; the faint fill keeps a thin dash
+   readable over a busy page. Live, it follows the pointer exactly; released,
+   it glides onto the elements it took. */
+.page-comments-area {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  border: 1.5px dashed var(--color-accent-primary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-accent-primary) 7%, transparent);
+  pointer-events: none;
+  opacity: 0;
+  transition-property: opacity, transform, width, height;
+  transition-duration: var(--motion-exit), var(--motion-quick), var(--motion-quick), var(--motion-quick);
+  transition-timing-function: var(--ease-out);
+}
+.page-comments-area[data-shown] {
+  opacity: 1;
+  transition-duration: var(--motion-quick);
+  animation: overlay-fade-in var(--motion-quick) var(--ease-out);
+}
+.page-comments-area[data-live],
+.page-comments-area[data-still] {
+  transition-property: opacity;
+}
+
+/* Every pin, in one layer: faded out while the document under them is being
+   replaced, and dimmed while the page scrolls. A frame scrolls on its own
+   compositor a frame ahead of anything drawn over it, so a pin trails its spot
+   by a frame mid-scroll; dimmed, it reads as catching up. Out on the exit
+   beat, back on quick. */
+.page-comment-pins {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+.page-comment-pins[data-scrolling] {
+  opacity: 0.4;
+  transition-duration: var(--motion-exit);
+}
+.page-comment-pins[data-hidden] {
+  opacity: 0;
+  transition-duration: var(--motion-exit);
+}
+.page-comment-pins[data-hidden] .page-comment-pin {
+  pointer-events: none;
+}
+
+/* A pin's place: a bubble's box whose bottom-left corner is the spot. The
+   layer's presence fades and scales it about that corner. A pin under the
+   pointer, or open, comes up over a neighbour it overlaps. The pin itself is
+   drawn by PinBadge.css. */
+.page-comment-pin-slot {
+  position: absolute;
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+.page-comment-pin-slot[data-open] {
+  z-index: 2;
+}
+.page-comment-pin-slot:hover,
+.page-comment-pin-slot:focus-within {
+  z-index: 3;
+}
+
+/* The popover's anchor: the pin's bubble, so the box opens beside it. */
+.page-comments-anchor {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+}
+
+/* A card the chat brought forward rings once as it lands, then settles. */
+@keyframes page-comment-arrival {
+  from { outline: 2px solid var(--color-accent-primary); outline-offset: 2px; }
+  to { outline: 2px solid transparent; outline-offset: 2px; }
+}
+.page-comment-box[data-arrival][data-state='open'] {
+  animation:
+    pop-in var(--motion-quick) var(--ease-out),
+    page-comment-arrival var(--motion-reveal) var(--ease-reveal) var(--motion-quick) backwards;
+}
+
+/* The offer to comment on selected words: it drops out of the selection's
+   end, or rises from it when it sits above. Placed by its right edge, so the
+   pop's transform is its own. */
+.page-comments-select {
+  --pop-y: -0.25rem;
+  position: absolute;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  transform-origin: 100% 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-default);
+  box-shadow: var(--shadow-card);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: pop-in var(--motion-quick) var(--ease-out);
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.page-comments-select[data-side='top'] {
+  --pop-y: 0.25rem;
+  transform-origin: 100% 100%;
+}
+.page-comments-select:hover {
+  background: var(--color-bg-hover);
+}
+
+/* The mode's hint, centred by a full-width row so the row's own motion is
+   the only transform on it. */
+.page-comments-hint-row {
+  position: absolute;
+  z-index: 5;
+  top: 10px;
+  right: 12px;
+  left: 12px;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.page-comments-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-muted);
+  box-shadow: var(--shadow-card);
+}
+
+/* Too narrow for a strip of page beside it, the list takes the frame's width. */
+.page-comments[data-narrow] .page-comments-panel {
+  left: 8px;
+  width: auto;
+}

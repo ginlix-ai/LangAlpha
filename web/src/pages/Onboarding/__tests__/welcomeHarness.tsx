@@ -106,14 +106,14 @@ export async function framerMock(importOriginal: () => Promise<typeof import('@/
 export function composerMock() {
   const StubComposer = forwardRef<
     Pick<ChatInputHandle, 'giveBack' | 'setValue' | 'send' | 'getModelOptions'>,
-    Pick<ChatInputProps, 'onSend' | 'disabled' | 'placeholder'>
-  >(function StubComposer({ onSend, disabled, placeholder }, ref) {
+    Pick<ChatInputProps, 'onSend' | 'disabled' | 'placeholder' | 'inHome'>
+  >(function StubComposer({ onSend, disabled, placeholder, inHome }, ref) {
     const [value, setValue] = useState('');
     // As the real one does, the box empties on a send, and sends nothing
     // while it is shut or holds nothing.
     const send = () => {
       if (disabled || (!value.trim() && composerSend.attachments.length === 0)) return false;
-      onSend(value, composerSend.attachments, [], composerSend.options);
+      onSend({ text: value, files: composerSend.attachments, mentions: [], commands: [], message: value, modelOptions: composerSend.options });
       setValue('');
       return true;
     };
@@ -130,6 +130,7 @@ export function composerMock() {
       <div>
         <textarea
           data-testid="composer"
+          data-in-home={inHome ? '' : undefined}
           aria-label="Message"
           value={value}
           disabled={disabled}

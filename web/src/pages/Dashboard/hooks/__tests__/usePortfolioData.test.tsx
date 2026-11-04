@@ -83,4 +83,25 @@ describe('usePortfolioData', () => {
       unrealizedPlPercent: null,
     });
   });
+
+  it("prints a holding at its quote's places, whatever currency the holding was saved in", async () => {
+    mockGetPortfolio.mockResolvedValue({
+      holdings: [
+        { user_portfolio_id: '1', symbol: '510300.SH', quantity: 100, average_cost: 4, currency: 'CNY' },
+        { user_portfolio_id: '2', symbol: 'VOD.L', quantity: 100, average_cost: 1 },
+      ],
+    });
+    mockGetSnapshotStocks.mockResolvedValue({
+      snapshots: [
+        { symbol: '510300.SH', price: 4.092, change: 0.012, change_percent: 0.29, currency: 'CNY', asset_class: 'fund' },
+        { symbol: 'VOD.L', price: 1.172, change: 0.0035, change_percent: 0.3, currency: 'GBP', asset_class: 'stock' },
+      ],
+    });
+
+    const { result } = renderHookWithProviders(() => usePortfolioData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const places = Object.fromEntries(result.current.rows.map((row) => [row.symbol, row.places]));
+    expect(places).toEqual({ '510300.SH': 3, 'VOD.L': 4 });
+  });
 });

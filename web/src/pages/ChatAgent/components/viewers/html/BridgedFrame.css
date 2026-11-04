@@ -1,0 +1,62 @@
+/* `--page-ground` is the colour the document paints behind itself, as its
+   bridge reported it. Drawn behind the frame and under the cover, so a load
+   or a swap on a dark document does not flash the app's own ground. */
+.bridged-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  /* Clipped, not hidden: a hidden box still scrolls for a focused child, and
+     a pin scrolled out of view would carry the frame off with it. */
+  overflow: clip;
+  background-color: var(--page-ground, var(--color-bg-page));
+}
+
+.bridged-frame-doc {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  /* Visible only until the page paints its own ground. */
+  background: var(--page-ground, var(--color-bg-page));
+  transition: opacity var(--motion-quick) var(--ease-reveal);
+}
+/* The next document builds itself over the one on screen, then fades in;
+   the one it replaces is only ever looked at. Not at no opacity: a frame no one
+   can see is not drawn, nor one covered by another, and either way it would
+   first show the picture it last drew, from before it was scrolled back to
+   where the reader was. */
+.bridged-frame-doc[data-state='pending'] {
+  opacity: 0.01;
+  pointer-events: none;
+}
+.bridged-frame-doc[data-state='leaving'] {
+  pointer-events: none;
+}
+
+/* What the app draws over the document sits here, above the frame and outside
+   it. The layer itself lets every pointer through to the page; whatever is
+   drawn on it takes them back with pointer-events: auto. */
+.bridged-frame-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.bridged-frame-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--page-ground, var(--color-bg-page));
+}
+/* A first load's cover leaves faster than anything arrives, the document
+   already under it. */
+.bridged-frame-cover[data-state='closed'] {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-exit) var(--ease-out);
+}

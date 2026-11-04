@@ -10,18 +10,18 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from tests.conftest import create_test_app
+from tests.conftest import create_test_app, pin_chat_limit
 
 USER = "usr-plan-gate-001"
 
 
 async def _send(access_tier, flagged=None):
     from src.server.app.threads import router
-    from src.server.dependencies.usage_limits import ChatAuthResult, enforce_chat_limit
+    from src.server.dependencies.usage_limits import ChatAuthResult
 
     app = create_test_app(router)
-    app.dependency_overrides[enforce_chat_limit] = lambda: ChatAuthResult(
-        user_id=USER, access_tier=access_tier, burst_slot_id="slot-1"
+    pin_chat_limit(
+        app, ChatAuthResult(user_id=USER, access_tier=access_tier, burst_slot_id="slot-1")
     )
     release = AsyncMock()
     with (

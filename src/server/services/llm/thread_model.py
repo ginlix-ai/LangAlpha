@@ -16,6 +16,7 @@ from typing import TypeVar
 
 from fastapi import HTTPException
 
+from src.llms.claude_code import is_claude_code_model
 from src.server.database.conversation import threads_read, threads_write
 
 from . import logger, user_models
@@ -186,8 +187,9 @@ async def carry_default_change(
     if scope != "existing_threads":
         return 0
     old, new = effective_default_model(before), effective_default_model(after)
-    # With no old default no thread can be on it.
-    if not old or old == new:
+    # With no old default no thread can be on it. Nor does a thread move onto
+    # a Claude Code row, which continues only threads it replied on.
+    if not old or old == new or is_claude_code_model(new):
         return 0
     moved = await threads_write.reassign_thread_llm_models(user_id, old, new, conn=conn)
     logger.info(

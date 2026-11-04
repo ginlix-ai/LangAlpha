@@ -41,6 +41,23 @@ describe('CompanyOverviewPanel', () => {
     expect(screen.getByText(/apply to companies, not to an index/)).toBeInTheDocument();
   });
 
+  it('prints a pence listing\'s quote at the places it trades in, and its EPS at two', () => {
+    render(
+      <CompanyOverviewPanel
+        {...props}
+        symbol="VOD.L"
+        data={{
+          symbol: 'VOD.L', currency: 'GBP',
+          quote: { price: 1.172, change: 0.0035, changePct: 0.3, previousClose: 1.1685, yearLow: 0.85235, yearHigh: 1.32072, eps: 0.0571 },
+        }}
+      />,
+    );
+    expect(screen.getByText('£1.172')).toBeInTheDocument();
+    expect(screen.getByText('+£0.0035 (+0.30%)')).toBeInTheDocument();
+    expect(screen.getByText('£0.8524 - £1.3207')).toBeInTheDocument();
+    expect(screen.getByText('£0.06')).toBeInTheDocument();
+  });
+
   it('an index the payload does not label is still read from its code', () => {
     render(<CompanyOverviewPanel {...props} data={{ symbol: '000300.SH', currency: 'CNY', quote: { price: 4439.14 } }} />);
     expect(screen.getByText('4,439.14')).toBeInTheDocument();

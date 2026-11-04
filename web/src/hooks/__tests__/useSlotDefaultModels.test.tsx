@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHookWithProviders } from '@/test/utils';
 import { useDefaultModel, useSlotDefaultModels } from '../useSlotDefaultModels';
+import { useTurnModels } from '../useTurnModels';
 
 const mocks = vi.hoisted(() => ({
   preferences: null as unknown,
@@ -32,6 +33,7 @@ vi.mock('../useAllModels', () => ({
   useAllModels: () => ({
     systemDefaults: { default_model: 'model-deployment', background_model: 'model-background' },
     offPlanModels: mocks.offPlanModels,
+    metadata: { 'model-code': { provider: 'claude-code', sdk: 'claude-code' } },
     platform: mocks.platform,
     rawApiResponse: mocks.catalog,
     isLoading: mocks.modelsLoading,
@@ -58,6 +60,17 @@ describe('useDefaultModel', () => {
     mocks.offPlanModels = new Set(['model-paid']);
     const { result } = renderHookWithProviders(() => useDefaultModel());
     expect(result.current).toBe('model-deployment');
+  });
+
+  // The server reads a saved Claude Code Default as unset on a Chief of Staff
+  // turn, and runs the deployment's; an analyst's turn runs it.
+  it("starts a Chief of Staff turn on the deployment's Default over a saved Claude Code one", () => {
+    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
+    const { result } = renderHookWithProviders(() => ({
+      home: useTurnModels(true).defaultModel,
+      analyst: useTurnModels(false).defaultModel,
+    }));
+    expect(result.current).toEqual({ home: 'model-deployment', analyst: 'model-code' });
   });
 
   it('leaves the saved Default as Settings reads it', () => {

@@ -70,6 +70,17 @@ class TestCnDailyBranch:
         daily.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("gap", [True, False])
+    async def test_sessions_missing_inside_the_window_say_incomplete_not_truncated(self, gap):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        fetched = FetchResult(bars=_CN_BARS, truncated=gap)
+        with patch.object(mod._cn, "get_daily", return_value=fetched):
+            result = await mod.get_stock_data("600519.SS", interval="1day")
+
+        assert result.get("incomplete", False) is gap and "truncated" not in result
+
+    @pytest.mark.asyncio
     async def test_undated_cn_daily_gets_a_bounded_default_window(self):
         # Undated, the route answers with the instrument's whole listed history
         # (thousands of bars), where every other source is bounded.
@@ -115,7 +126,7 @@ class TestCnDailyBranch:
         ginlix_rows = [
             {"date": "2025-01-02", "open": 100, "high": 105, "low": 99, "close": 103, "volume": 1000},
         ]
-        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=ginlix_rows)):
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=FetchResult(ginlix_rows))):
             result = await mod.get_stock_data("AAPL", interval="1day")
 
         assert "name" not in result
@@ -203,7 +214,7 @@ class TestCnDailyBranch:
             {"date": "2025-01-02", "open": 100, "high": 105, "low": 99, "close": 103, "volume": 1000},
         ]
         with patch.object(mod._cn, "get_daily", return_value=FetchResult(bars=_CN_BARS)) as daily, \
-                patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=ginlix_rows)):
+                patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=FetchResult(ginlix_rows))):
             result = await mod.get_stock_data("AAPL", interval="1day")
 
         assert_ok_envelope(result, symbol="AAPL", source="ginlix-data", count=2)

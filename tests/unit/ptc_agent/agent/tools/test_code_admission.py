@@ -329,9 +329,12 @@ class TestExecuteCodeTool:
             livefs = None
             provider = "docker"
             channel = "docker"
-            sandbox = None
+            sandbox = SimpleNamespace(call_filer=None)
 
             async def settled_livefs(self, workspace_id=None):
+                return None
+
+            async def config_folder(self):
                 return None
 
             async def start_code_job(self, code, *, wait_s, **_):
@@ -392,7 +395,6 @@ class TestExecuteCodeTool:
 
         seen: list = []
         backend = self._backend(redis, seen, outcome(output="ok"))
-        backend.sandbox = None
         tool = create_execute_code_tool(backend, None)
         out = await tool.ainvoke({"code": "print(1)"})
 

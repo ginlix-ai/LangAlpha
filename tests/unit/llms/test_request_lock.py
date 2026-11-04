@@ -131,7 +131,7 @@ def _graph_build_of(model_name: str, client: Any) -> dict[str, Any]:
         patch("ptc_agent.agent.agent.create_agent", side_effect=capture),
     ):
         PTCAgent(config).create_agent(llm=client, thread_id="lock-thread", sandbox=sandbox, mcp_registry=MagicMock(),
-                                      user_id="lock-user", tool_summary="")
+                                      user_id="lock-user", tool_summary="", claude_code_launcher=MagicMock())
     model, kw = built[0]
     prompt = str(kw.get("system_prompt"))
     assert "MagicMock" not in prompt, "a stub leaked into the prompt, so its digest would not be stable"

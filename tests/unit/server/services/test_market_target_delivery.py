@@ -143,6 +143,10 @@ def _env(env: Env):
         patch(f"{MT_DB}.mark_delivered", new=env.mark),
         patch(f"{TL_DB}.find_run_by_request_key", new=AsyncMock(side_effect=_cycle(earlier))),
         patch(f"{TL_DB}.get_latest_attempt", new=AsyncMock(side_effect=_latest)),
+        patch(
+            "src.server.services.report_back.notify_turn._card_waits",
+            new=AsyncMock(return_value=False),
+        ),
         patch(f"{CONV}.get_thread_by_id", new=AsyncMock(return_value=env.thread)),
         patch(f"{WS_DB}.get_workspace", new=AsyncMock(return_value=env.workspace)),
         patch(

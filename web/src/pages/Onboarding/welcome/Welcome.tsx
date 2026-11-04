@@ -685,12 +685,14 @@ export function WelcomeFlow({
     mode === 'new' ? (
       <ChatInput
         ref={composerRef}
+        // Its first message opens a Chief of Staff thread in Home.
+        inHome
         disabled={!composerOpen}
         placeholder={t(
           composerOpen ? 'onboarding.welcome.chat.composer.start' : 'onboarding.welcome.chat.composer.waiting',
         )}
-        onSend={(message, attachments, _commands, options) => {
-          if (composerOpen) void handOff({ task: message.trim(), attachments, options });
+        onSend={({ message, files, modelOptions }) => {
+          if (composerOpen) void handOff({ task: message.trim(), attachments: files, options: modelOptions });
         }}
       />
     ) : null;

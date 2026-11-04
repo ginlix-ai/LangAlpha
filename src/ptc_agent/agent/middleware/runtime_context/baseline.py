@@ -733,10 +733,7 @@ class BaselineContextMiddleware(AgentMiddleware):
         the old middlewares re-write the whole history at the write rate.
         """
         try:
-            epoch = BaselineEpoch.from_state(
-                state_get(getattr(request, "state", None), STATE_BASELINE)
-            )
-            block = self._cached_block(epoch)
+            _, block = self.frozen_block(getattr(request, "state", None))
         except Exception:  # noqa: BLE001 - context is never worth failing a turn for
             logger.warning("[Baseline] render failed; sending the call without it", exc_info=True)
             return await handler(request)
@@ -750,6 +747,12 @@ class BaselineContextMiddleware(AgentMiddleware):
             if tagged is not None:
                 system_message = SystemMessage(content=tagged)
         return await handler(request.override(system_message=system_message))
+
+    def frozen_block(self, state: Any) -> tuple[str, str]:
+        """The epoch frozen in ``state`` as one block, and a key naming that
+        epoch, for a carrier that has to know whether the model already holds it."""
+        epoch = BaselineEpoch.from_state(state_get(state, STATE_BASELINE))
+        return f"{epoch.epoch}:{epoch.built_at}", self._cached_block(epoch)
 
     def _cached_block(self, epoch: BaselineEpoch) -> str:
         scratchpad = epoch.blocks.get("scratchpad")

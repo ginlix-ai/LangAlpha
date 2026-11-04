@@ -16,7 +16,7 @@ from src.server.models.calendar import (
     EconomicEvent,
 )
 from src.server.services.cache.earnings_cache_service import EarningsCacheService
-from src.server.utils.api import CurrentUserId
+from src.server.dependencies.principal import DataReadUserId
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +28,27 @@ _earnings_cache = EarningsCacheService()
 def _default_dates(
     from_date: Optional[str], to_date: Optional[str]
 ) -> tuple[str, str]:
-    """Fill in missing dates with today → today+7."""
-    today = date.today()
-    if not from_date:
-        from_date = today.isoformat()
-    if not to_date:
-        to_date = (today + timedelta(days=7)).isoformat()
+    """Fill in missing dates with today and the week after the start; a date given
+    must be an ISO day, and the range must not end before it starts."""
+    try:
+        first = date.fromisoformat(from_date) if from_date else date.today()
+        last = date.fromisoformat(to_date) if to_date else first + timedelta(days=7)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="from and to must be YYYY-MM-DD") from None
+    from_date, to_date = first.isoformat(), last.isoformat()
+    if first > last:
+        raise HTTPException(status_code=422, detail="from is after to")
     return from_date, to_date
 
 
 @router.get("/economic", response_model=EconomicCalendarResponse)
 async def get_economic_calendar(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     from_date: Optional[str] = Query(
         None, alias="from", description="Start date (YYYY-MM-DD). Defaults to today."
     ),
     to_date: Optional[str] = Query(
-        None, alias="to", description="End date (YYYY-MM-DD). Defaults to today+7."
+        None, alias="to", description="End date (YYYY-MM-DD). Defaults to 7 days after from."
     ),
 ) -> EconomicCalendarResponse:
     """Get upcoming and past economic data releases (GDP, CPI, etc.)."""
@@ -75,12 +79,12 @@ async def get_economic_calendar(
 
 @router.get("/earnings", response_model=EarningsCalendarResponse)
 async def get_earnings_calendar(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     from_date: Optional[str] = Query(
         None, alias="from", description="Start date (YYYY-MM-DD). Defaults to today."
     ),
     to_date: Optional[str] = Query(
-        None, alias="to", description="End date (YYYY-MM-DD). Defaults to today+7."
+        None, alias="to", description="End date (YYYY-MM-DD). Defaults to 7 days after from."
     ),
 ) -> EarningsCalendarResponse:
     """Get upcoming and past earnings announcements with EPS and revenue data."""
@@ -106,8 +110,9 @@ async def get_earnings_calendar(
             items = raw or []
             events = [EarningsEvent(**item) for item in items]
 
-            # Populate cache
-            await _earnings_cache.set(items, from_date, to_date)
+            # Populate cache; a cut read is served but not kept
+            if not getattr(raw, "truncated", False):
+                await _earnings_cache.set(items, from_date, to_date)
 
             return EarningsCalendarResponse(data=events, count=len(events))
         finally:

@@ -128,6 +128,9 @@ class _Untouchable:
     async def settled_livefs(self, workspace_id=None):
         return None
 
+    async def config_folder(self):
+        return None
+
     def __getattr__(self, name: str):
         raise AssertionError(f"the sandbox was touched: {name}")
 
@@ -162,13 +165,14 @@ class TestShellGuards:
 
 
 class _Mount:
-    """A serving file mount recording, in order, what a command asked of it."""
+    """A serving file mount recording, in order, what a command asked of it
+    and its sandbox's filer."""
 
     def __init__(self) -> None:
         self.events: list[tuple] = []
 
-    async def prepare(self, call_id=None, context=None) -> None:
-        self.events.append(("prepare", call_id, context))
+    async def file(self, call_id, context) -> None:
+        self.events.append(("file", call_id, context))
 
     async def report(self, call_id: str, output: str, context=None) -> str:
         self.events.append(("report", call_id))
@@ -184,11 +188,15 @@ class _Mounted:
     def __init__(self) -> None:
         self.mount = _Mount()
         self.livefs = self.mount
+        self.sandbox = SimpleNamespace(call_filer=self.mount.file)
         self.asked_for: list[str | None] = []
 
     async def settled_livefs(self, workspace_id=None):
         self.asked_for.append(workspace_id)
         return self.livefs
+
+    async def config_folder(self):
+        return None
 
     async def start_bash_job(self, command, *, call_id=None, wait_s=None, **_):
         self.mount.events.append(("run", call_id))

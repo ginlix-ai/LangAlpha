@@ -290,6 +290,37 @@ async def test_terminal_handshake_requires_two_empty_rounds():
 
 
 @pytest.mark.asyncio
+async def test_failed_read_sends_no_keepalive():
+    """Reads that keep failing must look dead, or the client stays on this reader."""
+    cache = _make_cache(
+        [
+            RuntimeError("redis blip"),
+            [(b"k", [(b"1-0", {b"event": b"id: 1\ndata: x\n\n"})])],
+            [],
+            [],
+        ]
+    )
+    checks = iter([False, True, True])
+
+    async def terminal() -> bool:
+        return next(checks)
+
+    with patch(
+        "src.server.handlers.chat.run_stream_reader.get_cache_client",
+        return_value=cache,
+    ):
+        out = []
+        async for ev in _stream_from_redis_log(
+            stream_key="k",
+            terminal_check=terminal,
+            last_event_id=0,
+        ):
+            out.append(ev)
+
+    assert "id: 1" in out[0]
+
+
+@pytest.mark.asyncio
 async def test_attach_detach_hooks_fire():
     cache = _make_cache([[], []])
     attach_calls = []

@@ -17,15 +17,15 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Optional
 
-import httpx
 from fastapi import Depends, HTTPException
 
 from src.config.settings import HOST_MODE, AUTH_SERVICE_URL
 from src.server.utils.api import get_current_user_id
+from src.server.utils.http_client import get_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -81,32 +81,12 @@ def _burst_reap_horizon() -> int:
     return get_workflow_timeout() + _BURST_REAP_MARGIN
 
 # -- the declared surface other modules call this one through ------------------
-# The three below are the whole of how this service talks to the quota service:
-# whose client, whether to talk at all, and what it authenticates with. They are
-# public because the credit gate's port needs the same three, and a borrowed
-# underscore name is a dependency no refactor here can see.
-
-# Shared httpx client (created lazily, async-safe)
-_http_client: Optional[httpx.AsyncClient] = None
-_http_client_lock = asyncio.Lock()
-
-
-async def get_http_client() -> httpx.AsyncClient:
-    """The shared client. One per process, closed at shutdown."""
-    global _http_client
-    async with _http_client_lock:
-        if _http_client is None:
-            _http_client = httpx.AsyncClient(timeout=5.0)
-        return _http_client
-
-
-async def close_http_client() -> None:
-    """Close the shared httpx client. Call during application shutdown."""
-    global _http_client
-    async with _http_client_lock:
-        if _http_client is not None:
-            await _http_client.aclose()
-            _http_client = None
+# Three names are the whole of how this service talks to the quota service:
+# whose client (``get_http_client``, kept in ``src.server.utils.http_client``
+# so the auth layer borrows it without importing this module), whether to talk
+# at all, and what it authenticates with. They are public because the credit
+# gate's port needs the same three, and a borrowed underscore name is a
+# dependency no refactor here can see.
 
 
 def platform_gating_active() -> bool:
@@ -160,7 +140,7 @@ def quota_service_unavailable() -> HTTPException:
 
 @dataclass
 class ChatAuthResult:
-    """Auth + tier data collected by enforce_chat_limit for downstream gates."""
+    """Auth + tier data collected by ``chat_limit_for`` for downstream gates."""
     user_id: str
     is_byok: bool = False
     has_oauth: bool = False
@@ -259,11 +239,9 @@ async def release_burst_slot(
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
 
-async def enforce_chat_limit(
-    user_id: str = Depends(get_current_user_id),
-) -> ChatAuthResult:
+async def chat_limit_for(user_id: str) -> ChatAuthResult:
     """
-    FastAPI dependency: burst guard + BYOK/OAuth/tier collection.
+    Burst guard + BYOK/OAuth/tier collection.
 
     In OSS mode (HOST_MODE="oss"), BYOK is still checked so custom models work;
     burst guard and platform tier checks are skipped.
@@ -1017,6 +995,17 @@ async def spec_entitlement_lost(user_id: str, tier: str) -> bool:
     return await _scope_entitlement_lost(user_id, entitlement[0])
 
 
+ChatLimit = Callable[[str], Awaitable[ChatAuthResult]]
+
+
+def chat_limiter() -> ChatLimit:
+    """``chat_limit_for``, handed to a turn's route rather than taken as a
+    sub-dependency: the route takes it only once the caller's body is checked,
+    so a refused body never holds a burst slot, and FastAPI resolves every
+    sub-dependency before the dependent's own checks run."""
+    return chat_limit_for
+
+
 # Annotated types for cleaner endpoint signatures
-ChatRateLimited = Annotated[ChatAuthResult, Depends(enforce_chat_limit)]
+ChatLimiter = Annotated[ChatLimit, Depends(chat_limiter)]
 ComputerLimitCheck = Annotated[str, Depends(enforce_computer_limit)]

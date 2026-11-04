@@ -125,7 +125,7 @@ RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
     mcp==2.0.0 fastapi \
     pandas requests aiohttp "httpx[http2]" \
     numpy scipy scikit-learn statsmodels \
-    yfinance \
+    yfinance exchange-calendars==4.13.2 \
     matplotlib seaborn plotly \
     pillow opencv-python-headless scikit-image \
     openpyxl xlrd python-docx pypdf \

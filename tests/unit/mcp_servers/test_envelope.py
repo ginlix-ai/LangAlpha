@@ -110,3 +110,10 @@ class TestMakeError:
         env = make_error("not_found", "d")
         assert env["error"] == "not_found"
         assert env["detail"] == "d"
+
+
+class TestMakeResponseTruncated:
+    def test_a_cut_read_says_so_and_a_whole_one_carries_no_key(self):
+        assert make_response([1], source="x", truncated=True)["truncated"] is True
+        assert "truncated" not in make_response([1], source="x")
+        assert "truncated" not in make_response([1], source="x", truncated=False)

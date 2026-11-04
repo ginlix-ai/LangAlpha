@@ -62,13 +62,14 @@ def steer_text(groups: Sequence[tuple[str, Sequence[str]]]) -> str:
     """The steers as the model reads them: a block per run of one sender's
     messages (``sender_runs``), in the order given, then one ask to answer
     them all."""
-    blocks = [_block(sender, contents) for sender, contents in groups]
+    blocks = [sender_block(sender, contents) for sender, contents in groups]
     count = sum(len(contents) for _, contents in groups)
     noun = "message" if count == 1 else "messages"
     return "\n\n".join([*blocks, f"Address the {noun} above as you continue this turn."])
 
 
-def _block(sender: str, contents: Sequence[str]) -> str:
+def sender_block(sender: str, contents: Sequence[str]) -> str:
+    """One run of a sender's messages, in the line naming who sent them."""
     name = sender_name(sender)
     what = "a new message" if len(contents) == 1 else "new messages"
     behalf = " on the user's behalf" if sender in _ON_USERS_BEHALF else ""

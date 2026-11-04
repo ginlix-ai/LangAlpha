@@ -1,4 +1,5 @@
 from src.llms.patches import (
+    _patch_langchain_anthropic_cache_scope,
     _patch_langchain_anthropic_compaction_block,
     _patch_langchain_anthropic_context_management,
     _patch_langchain_anthropic_header_betas,
@@ -11,6 +12,7 @@ from src.llms.extension.dashscope import _install_responses_stream_bridge
 _patch_langchain_anthropic_usage_metadata()
 _patch_langchain_anthropic_context_management()
 _patch_langchain_anthropic_header_betas()
+_patch_langchain_anthropic_cache_scope()
 _patch_langchain_anthropic_compaction_block()
 _patch_langchain_anthropic_input_transformations()
 _patch_langchain_openai_compaction_trigger()

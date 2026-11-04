@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from src.server.services.llm import thread_model
+from src.server.services.llm import claude_code, thread_model
 
 _MOD = "src.server.services.llm.thread_model"
 SYSTEM = {"default_model": "sys-main", "background_model": "sys-background"}
@@ -225,6 +225,16 @@ async def test_only_existing_threads_scope_moves_anything(saved_scope, apply_to)
 
 
 @pytest.mark.asyncio
+async def test_no_thread_moves_onto_a_claude_code_default():
+    """Claude Code continues only threads it replied on, so moving existing
+    threads onto it would fail every one of them."""
+    after = {"preferred_model": "claude-sonnet-5-5-code", "default_model_scope": "existing_threads"}
+    moved, reassign = await _carry(after, None)
+    assert moved == 0
+    reassign.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_the_saved_scope_moves_threads_when_the_write_names_none():
     after = {"preferred_model": "m-b", "default_model_scope": "existing_threads"}
     moved, reassign = await _carry(after, None)
@@ -258,3 +268,56 @@ async def test_no_old_default_moves_nothing():
     )
     assert moved == 0
     reassign.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replies", "refused"),
+    [
+        ([], False),
+        (["claude"], False),
+        (["claude", "other"], True),
+        (["other", "claude"], False),
+    ],
+)
+async def test_claude_code_is_refused_on_a_thread_another_model_last_replied_on(replies, refused):
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    messages = [HumanMessage("ask")]
+    for who in replies:
+        meta = {"claude_message_id": "msg_1"} if who == "claude" else {}
+        messages += [AIMessage("reply", response_metadata=meta), HumanMessage("next")]
+    reader = MagicMock()
+    reader.aget_state = AsyncMock(return_value=SimpleNamespace(values={"messages": messages}))
+    with (
+        patch("src.server.services.history.reader.CheckpointHistoryReader.get_instance", return_value=reader),
+        patch("src.server.utils.checkpoint_helpers.get_checkpointer", return_value=MagicMock()),
+        patch("src.server.utils.checkpoint_helpers.turn_base_checkpoint_id", AsyncMock(return_value=None)),
+    ):
+        await claude_code.require_claude_code_continues("t-1", "claude-sonnet-5-5")
+        reader.aget_state.assert_not_awaited()
+        if not refused:
+            await claude_code.require_claude_code_continues("t-1", "claude-sonnet-5-5-code")
+            return
+        with pytest.raises(HTTPException) as exc:
+            await claude_code.require_claude_code_continues("t-1", "claude-sonnet-5-5-code")
+    assert exc.value.status_code == 400
+    assert exc.value.detail["type"] == "claude_code_off"
+
+
+@pytest.mark.asyncio
+async def test_claude_code_is_judged_on_the_checkpoint_the_turn_starts_from():
+    from types import SimpleNamespace
+
+    reader = MagicMock()
+    reader.aget_state = AsyncMock(return_value=SimpleNamespace(values={"messages": []}))
+    with (
+        patch("src.server.services.history.reader.CheckpointHistoryReader.get_instance", return_value=reader),
+        patch("src.server.utils.checkpoint_helpers.get_checkpointer", return_value=MagicMock()),
+        patch("src.server.utils.checkpoint_helpers.turn_base_checkpoint_id", AsyncMock(return_value="base-1")),
+    ):
+        await claude_code.require_claude_code_continues("t-1", "claude-sonnet-5-5-code", "fork-1")
+        await claude_code.require_claude_code_continues("t-1", "claude-sonnet-5-5-code")
+    assert [c.args for c in reader.aget_state.await_args_list] == [("t-1", "fork-1"), ("t-1", "base-1")]

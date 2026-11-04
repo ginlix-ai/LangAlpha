@@ -241,7 +241,7 @@ export function EnabledToggle({
       aria-label={enabled ? t('mcp.row.disableAria', { name }) : t('mcp.row.enableAria', { name })}
       disabled={disabled}
       onClick={onToggle}
-      className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
+      className="tap-target relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
       style={{
         backgroundColor: enabled ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',
       }}

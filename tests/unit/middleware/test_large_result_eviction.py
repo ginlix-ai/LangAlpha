@@ -14,8 +14,8 @@ from ptc_agent.agent.middleware.large_result_eviction import (
     NUM_CHARS_PER_TOKEN,
     TOOLS_EXCLUDED_FROM_EVICTION,
     LargeResultEvictionMiddleware,
-    _create_content_preview,
-    _detect_extension,
+    content_preview,
+    detect_extension,
 )
 
 
@@ -55,11 +55,11 @@ def _make_tool_request(tool_name: str = "CustomTool") -> MagicMock:
 
 
 class TestCreateContentPreview:
-    """Tests for _create_content_preview."""
+    """Tests for content_preview."""
 
     def test_short_content_returns_all(self):
         content = "line1\nline2\nline3"
-        preview = _create_content_preview(content, head_lines=5, tail_lines=5)
+        preview = content_preview(content, head_lines=5, tail_lines=5)
         assert "line1" in preview
         assert "line2" in preview
         assert "line3" in preview
@@ -68,7 +68,7 @@ class TestCreateContentPreview:
     def test_long_content_shows_head_and_tail(self):
         lines = [f"line{i}" for i in range(100)]
         content = "\n".join(lines)
-        preview = _create_content_preview(content, head_lines=3, tail_lines=3)
+        preview = content_preview(content, head_lines=3, tail_lines=3)
         assert "line0" in preview
         assert "line1" in preview
         assert "line2" in preview
@@ -80,27 +80,27 @@ class TestCreateContentPreview:
         """Content with exactly head+tail lines should not truncate."""
         lines = [f"line{i}" for i in range(10)]
         content = "\n".join(lines)
-        preview = _create_content_preview(content, head_lines=5, tail_lines=5)
+        preview = content_preview(content, head_lines=5, tail_lines=5)
         assert "truncated" not in preview
 
 
 class TestDetectExtension:
-    """Tests for _detect_extension."""
+    """Tests for detect_extension."""
 
     def test_json_object(self):
-        assert _detect_extension('{"key": "value"}') == ".json"
+        assert detect_extension('{"key": "value"}') == ".json"
 
     def test_json_array(self):
-        assert _detect_extension('[1, 2, 3]') == ".json"
+        assert detect_extension('[1, 2, 3]') == ".json"
 
     def test_json_with_whitespace(self):
-        assert _detect_extension("  \n  {\"k\": 1}") == ".json"
+        assert detect_extension("  \n  {\"k\": 1}") == ".json"
 
     def test_markdown_content(self):
-        assert _detect_extension("# Title\nSome text") == ".md"
+        assert detect_extension("# Title\nSome text") == ".md"
 
     def test_plain_text(self):
-        assert _detect_extension("Just plain text") == ".md"
+        assert detect_extension("Just plain text") == ".md"
 
 
 # ---------------------------------------------------------------------------

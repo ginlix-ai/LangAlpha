@@ -156,7 +156,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
           }}
         >
           <ChatInput
-            onSend={handleSend}
+            onSend={({ message, files, commands, modelOptions }) => handleSend(message, files, commands, modelOptions)}
             disabled={isLoading}
             scope={scope}
             onScopeChange={setScope}

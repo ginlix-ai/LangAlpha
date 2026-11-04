@@ -113,7 +113,13 @@ with sync_playwright() as p:
 # file on descriptor 9 and then calls ``lock <seconds to wait>``.
 LOCK_FILE = ".bootstrap.lock"
 LOCK_SH = """lock() {
-  if command -v flock >/dev/null 2>&1; then flock -w "$1" 9; return; fi
+  if command -v flock >/dev/null 2>&1; then
+    if flock --help 2>&1 | grep -q -- -w; then flock -w "$1" 9; return; fi
+    # BusyBox flock has no -w: try again each second until the wait is up.
+    _lock_end=$(( $(date +%s) + $1 ))
+    until flock -n 9; do [ "$(date +%s)" -lt "$_lock_end" ] || return 1; sleep 1; done
+    return
+  fi
   # macOS has no flock(1). Perl takes the same flock(2) lock on descriptor 9,
   # and the lock stays with this shell's copy of it after perl exits.
   perl -MFcntl=:flock -e 'open(my $f, ">&=", 9) or exit 1; my $end = time + shift;

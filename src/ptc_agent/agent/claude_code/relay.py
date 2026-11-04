@@ -75,7 +75,14 @@ class ClaudeStreamRelay(BaseChatModel):
             raise RuntimeError("feed() the step's events first")
         conv = _converter()
         block_start = None
+        written = None
         async for raw in self._events:
+            # The converter reads the usage the message ends on, which does
+            # not split the cache it wrote by its life; the usage it starts on does.
+            if raw.get("type") == "message_start":
+                written = ((raw.get("message") or {}).get("usage") or {}).get("cache_creation")
+            elif raw.get("type") == "message_delta" and written and (usage := raw.get("usage")) and "cache_creation" not in usage:
+                raw = {**raw, "usage": {**usage, "cache_creation": written}}
             event = construct_type(type_=BetaRawMessageStreamEvent, value=raw)
             msg, block_start = conv._make_message_chunk_from_anthropic_event(
                 event, stream_usage=True, coerce_content_to_string=False, block_start_event=block_start

@@ -6,8 +6,10 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 
-from ptc_agent.agent.claude_code.launcher import LocalLauncher
-from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, RuntimeSpec, build_claude_code_graph
+from ptc_agent.agent.claude_code.launcher import Launcher
+from ptc_agent.agent.claude_code.cli import RuntimeSpec
+from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules
+from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, build_claude_code_graph
 
 
 @tool("Bash")
@@ -21,13 +23,13 @@ def spec(model: str) -> RuntimeSpec:
     return RuntimeSpec(system_prompt="You are a test agent. Keep replies short.", model=model, tools=[bash], billing=billing)
 
 
-def new_graph():
-    return build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver())
+def new_graph(entry=()):
+    return build_claude_code_graph(ToolNode([bash]), entry=entry, checkpointer=InMemorySaver())
 
 
-async def run_turn(spec: RuntimeSpec, launcher: LocalLauncher, graph, thread: str, messages: list,
-                   callbacks: list | None = None) -> dict:
-    turn = ClaudeTurn(spec, launcher, identity="test-user", thread_key=thread)
+async def run_turn(spec: RuntimeSpec, launcher: Launcher, graph, thread: str, messages: list,
+                   callbacks: list | None = None, baseline=None, compaction: CompactionRules = NO_RULES) -> dict:
+    turn = ClaudeTurn(spec, launcher, identity="test-user", thread_key=thread, baseline=baseline, compaction=compaction)
     config = {"configurable": {"thread_id": thread, TURN_KEY: turn}, "callbacks": callbacks or []}
     try:
         await graph.ainvoke({"messages": messages}, config)

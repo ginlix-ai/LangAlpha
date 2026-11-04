@@ -372,3 +372,43 @@ class TestHandOffOnSwitch:
         run.ask.assert_awaited_once()
         run.update.assert_not_awaited()
         assert run.runner.released == [("thread-1", "handoff")]
+
+    @pytest.mark.asyncio
+    async def test_the_hand_off_calls_land_in_the_usage_records(self, usage_rows, spend):
+        """On a row of their own, as a manual /compact's do: the thread's, in
+        its workspace, under the user who switched."""
+        opaque = _opaque()
+        written = with_summary_text(opaque, "Goal: chart AAPL.")
+        thread = _Thread(opaque, {"m-new": _claude(), "m-old": _gpt()})
+
+        async def _ask(*_args, **_kwargs):
+            await spend()
+            return written
+
+        run = await _switch(thread, ask=AsyncMock(side_effect=_ask))
+
+        assert run.said is True
+        (row,) = usage_rows
+        assert (row["user_id"], row["conversation_thread_id"], row["workspace_id"]) == (
+            "user-1",
+            "thread-1",
+            "ws-1",
+        )
+        assert (row["msg_type"], row["status"]) == ("ptc", "completed")
+        assert row["token_usage"]["between_turns"] == "handoff"
+        assert row["token_usage"]["by_model"]["claude-test"]["output_tokens"] == 300
+
+    @pytest.mark.asyncio
+    async def test_a_hand_off_timed_out_after_a_call_records_the_call(self, usage_rows, spend):
+        async def _spend_then_stall(*_args, **_kwargs):
+            await spend()
+            await asyncio.sleep(10)
+
+        thread = _Thread(_opaque(), {"m-new": _claude(), "m-old": _gpt()})
+
+        run = await _switch(thread, timeout=0.05, ask=AsyncMock(side_effect=_spend_then_stall))
+
+        run.update.assert_not_awaited()
+        (row,) = usage_rows
+        assert row["status"] == "error"
+        assert row["token_usage"]["by_model"]["claude-test"]["input_tokens"] == 1200

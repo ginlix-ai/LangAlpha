@@ -380,12 +380,6 @@ def load_from_dict(
 CONFIG_TEMPLATE = """# PTC Agent Configuration
 # Place this file in ~/.ptc-agent/agent_config.yaml or your project root
 
-# CLI Configuration (for ptc-cli)
-# --------------------------------
-cli:
-  theme: "auto"  # auto, dark, light
-  # palette: "nord"  # emerald, cyan, amber, teal, nord, gruvbox, catppuccin, tokyo_night
-
 # LLM Configuration
 # -----------------
 # Model name from src/llms/manifest/models.json

@@ -353,7 +353,7 @@ class EdgarToolsParser(BaseSECParser):
         statement_methods = [
             ("balance_sheet", "balance_sheet"),
             ("income_statement", "income_statement"),
-            ("cash_flow_statement", "cashflow_statement"),  # Note: cashflow not cash_flow
+            ("cash_flow_statement", "cash_flow_statement"),
         ]
 
         for key, method_name in statement_methods:

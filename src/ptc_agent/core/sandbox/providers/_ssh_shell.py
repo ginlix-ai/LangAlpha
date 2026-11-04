@@ -41,7 +41,7 @@ TERM_GRACE_S = 3
 # address sshd matched the key's from= against.
 HELLO = (
     'printf "%s\\n" "$(id -u)" "$(id -un)" "$HOME" "$(uname -s)" "$(uname -m)" '
-    '"${SSH_CONNECTION%% *}"'
+    '"${SSH_CONNECTION%% *}" "${XDG_CONFIG_HOME:-}"'
 )
 SUDO_CHECK = "LC_ALL=C sudo -n true </dev/null 2>&1 >/dev/null\n"
 

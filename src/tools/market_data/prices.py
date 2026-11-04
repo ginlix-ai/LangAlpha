@@ -21,7 +21,7 @@ from .quote_format import FRESHNESS_WORDS, build_live_stamp
 from .utils import finite_or_none, format_percentage
 from src.data_client import get_market_data_provider
 from src.data_client.freshness import Freshness, FreshnessLabel, measure_bars, measure_daily
-from src.data_client.normalize import series_lineage
+from src.data_client.normalize import series_in_progress, series_lineage
 from src.data_client.ginlix_data.directory import display_names
 from src.observability import stamp_tool_provider
 from market_protocol import AssetClass, PriceTreatment
@@ -77,6 +77,8 @@ def _format_price_data_as_table(data: List[Dict[str, Any]]) -> str:
     total_volume = 0
     for record in data:
         date = record.get("date", "N/A")
+        if record.get("in_progress"):
+            date = f"{date} (in progress)"
         open_price = record.get("open")
         high_price = record.get("high")
         low_price = record.get("low")
@@ -153,6 +155,7 @@ def _calculate_price_statistics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
         # Aggregated OHLC
         "period_open": finite_or_none(first_day.get("open")),
         "period_close": finite_or_none(last_day.get("close")),
+        "period_close_in_progress": bool(last_day.get("in_progress")),
         "period_high": max(highs) if highs else None,
         "period_low": min(lows) if lows else None,
         # Price range
@@ -250,7 +253,8 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     if period_open is not None:
         metrics_rows.append(("Period Open", fmt_price(period_open, cur)))
     if period_close is not None:
-        metrics_rows.append(("Period Close", fmt_price(period_close, cur)))
+        label = "Period Close (in progress)" if stats.get("period_close_in_progress") else "Period Close"
+        metrics_rows.append((label, fmt_price(period_close, cur)))
     if period_high is not None:
         metrics_rows.append(("Period High", fmt_price(period_high, cur)))
     if period_low is not None:
@@ -477,6 +481,8 @@ async def fetch_daily_prices(
                 results = _normalize_market_bars(raw_bars, symbol)
 
         stamp_tool_provider(daily_source)
+        if results and series_in_progress(daily_source, ref, results[0].get("date"), "1day"):
+            results[0] = {**results[0], "in_progress": True}
         if not results:
             logger.warning(f"No price data found for {symbol}")
             _mark_no_data()
@@ -625,6 +631,8 @@ No price data available for the specified period."""
             # The chart renders the axis and tooltips off this — without it the
             # client falls back to a suffix guess and a CNY series reads as USD.
             **({"price_currency": ref.price_currency} if ref is not None else {}),
+            # A CN fund prints a tenth of a fen finer than a stock (3 places).
+            **({"asset_class": ref.asset_class.value} if ref is not None else {}),
             "ohlcv": ohlcv,
             "chart_ohlcv": chart_ohlcv,
             "chart_interval": chart_interval,

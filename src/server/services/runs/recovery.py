@@ -169,6 +169,13 @@ class RecoveryScanner:
         self._sweep_tick += 1
         if self._sweep_tick % _SETTLE_SWEEP_EVERY_N_SCANS == 1:
             await self.settle_abandoned_usage()
+            from src.server.services.artifacts.comments import (
+                release_abandoned_claims,
+            )
+
+            await release_abandoned_claims(
+                assume_dead=assume_dead and not wg.guard_enabled()
+            )
 
         if not open_runs and not open_task_runs:
             return 0

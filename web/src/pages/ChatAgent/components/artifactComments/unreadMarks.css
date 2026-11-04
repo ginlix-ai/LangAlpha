@@ -1,0 +1,25 @@
+/* Unread, in the chat: a comment holds something the agent posted that the
+   owner has not read. The mark is the amber dot the file's pins and tab
+   carry. */
+
+/* On a comment's number, its top level with the digit's: a mark on the
+   number rather than a stop between words. It takes room of its own, because
+   the word after a number can sit right against it ("3和4"); framer sets that
+   room, and tweens it as the dot comes and goes. */
+.comment-unread-dot {
+  display: inline-block;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-accent-primary);
+  vertical-align: calc(0.72em - 6px);
+}
+
+/* A reply's first lines under the line naming it. Two lines, cut with an
+   ellipsis, until it is opened. */
+.comment-reply-excerpt.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}

@@ -370,11 +370,27 @@ describe('StockHeader market status badge', () => {
     expect(screen.getByText('Closed')).toBeInTheDocument();
   });
 
-  it('stays on Delayed during pre/post phases and when the phase is unknown', () => {
+  it('names the pre and post sessions from the phase, and stays on Delayed when the phase is unknown', () => {
     const { rerender } = render(<Header inputs={{ symbol: '0700.HK', marketPhase: 'post' }} />);
-    expect(screen.getByText('HK Delayed')).toBeInTheDocument();
+    expect(screen.getByText('HK After hours')).toBeInTheDocument();
+    rerender(<Header inputs={{ symbol: '0700.HK', marketPhase: 'pre' }} />);
+    expect(screen.getByText('HK Pre-market')).toBeInTheDocument();
     rerender(<Header inputs={{ symbol: '0700.HK', marketPhase: null }} />);
     expect(screen.getByText('HK Delayed')).toBeInTheDocument();
+  });
+
+  it('names an extended session over a live feed and keeps the pulsing dot', () => {
+    const { container } = render(
+      <Header inputs={{ wsStatus: 'connected', wsHasData: true, marketPhase: 'post' }} wsDataLevel="second" />,
+    );
+    expect(screen.getByText('After hours')).toBeInTheDocument();
+    expect(container.querySelector('.data-source-dot--live')).not.toBeNull();
+  });
+
+  it('keeps the feed word in the regular session, so a delayed price never reads Live', () => {
+    render(<Header inputs={{ marketPhase: 'open', snapshot: { symbol: 'AMD', price: 120, source: 'fmp', tier: 'delayed_15m' } }} />);
+    expect(screen.getByText('Delayed 15 min')).toBeInTheDocument();
+    expect(screen.queryByText('Live')).not.toBeInTheDocument();
   });
 
   it('reads the session label from the provider-declared tier, never the transport', () => {
@@ -400,11 +416,12 @@ describe('StockHeader market status badge', () => {
     expect(screen.getByText('Quote: FMP · Freshness not declared')).toBeInTheDocument();
   });
 
-  it('a live WS feed wins over a stale closed phase', () => {
-    render(
+  it('a closed phase wins over a live WS feed', () => {
+    const { container } = render(
       <Header inputs={{ wsStatus: 'connected', wsHasData: true, marketPhase: 'closed' }} wsDataLevel="second" />,
     );
-    expect(screen.getByText('Live')).toBeInTheDocument();
+    expect(screen.getByText('Closed')).toBeInTheDocument();
+    expect(container.querySelector('.data-source-dot--closed')).not.toBeNull();
   });
 });
 

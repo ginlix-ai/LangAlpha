@@ -27,6 +27,14 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 
 from src.server.services.persistence.sync_result import BackupIncomplete
+from src.server.dependencies.principal import (
+    ReadPrincipal,
+    ReadUserId,
+    WorkspaceWritePrincipal,
+    WorkspaceWriteUserId,
+    assert_reaches,
+    pin_computer,
+)
 from src.server.utils.api import CurrentUserId, require_workspace_owner
 from src.server.dependencies.usage_limits import (
     COMPUTER_COUNT_QUOTA,
@@ -46,7 +54,11 @@ from src.server.database.workspace_names import (
     WorkspaceNameInvalid,
     WorkspaceNameTaken,
 )
-from src.server.database.home_workspace import is_home_row, is_unbound
+from src.server.database.home_workspace import (
+    get_home_workspace_id,
+    is_home_row,
+    is_unbound,
+)
 from src.server.database.workspace_move import (
     cancel_workspace_move as db_cancel_workspace_move,
     get_latest_workspace_move,
@@ -199,7 +211,7 @@ def _workspace_to_response(workspace: dict) -> WorkspaceResponse:
 @router.post("", response_model=WorkspaceResponse, status_code=201)
 async def create_workspace(
     request: WorkspaceCreate,
-    x_user_id: CurrentUserId,
+    principal: WorkspaceWritePrincipal,
 ):
     """
     Create a workspace on the caller's computer.
@@ -221,6 +233,10 @@ async def create_workspace(
     Returns:
         Created workspace details
     """
+    x_user_id = principal.user_id
+    computer_id = pin_computer(
+        principal, str(request.computer_id) if request.computer_id else None
+    )
     try:
         manager = WorkspaceManager.get_instance()
         workspace = await manager.create_workspace(
@@ -228,7 +244,7 @@ async def create_workspace(
             name=request.name,
             description=request.description,
             config=request.config,
-            computer_id=str(request.computer_id) if request.computer_id else None,
+            computer_id=computer_id,
         )
 
         logger.info(
@@ -254,13 +270,16 @@ async def create_workspace(
 
 
 @router.post("/home", response_model=WorkspaceResponse)
-async def get_home_workspace(x_user_id: CurrentUserId):
+async def get_home_workspace(principal: ReadPrincipal):
     """Get or create the user's Home, where work in no particular workspace runs.
 
     Its id derives from the user id, so it never changes and a client may keep
     it. Idempotent, and safe to call on every app load. The row is made here;
     Home joins the user's computer on its first start or turn.
     """
+    x_user_id = principal.user_id
+    # Before the row is made: a computer's token never reaches Home.
+    await assert_reaches(principal, workspace_id=get_home_workspace_id(x_user_id))
     try:
         workspace = await get_or_create_home_workspace(x_user_id)
         return _workspace_to_response(workspace)
@@ -295,7 +314,7 @@ async def reorder_workspaces(
 
 @router.get("", response_model=WorkspaceListResponse)
 async def list_workspaces(
-    x_user_id: CurrentUserId,
+    principal: ReadPrincipal,
     limit: int = Query(20, ge=1, le=100, description="Maximum results"),
     offset: int = Query(0, ge=0, description="Number to skip"),
     sort_by: Literal["activity", "name", "custom"] = Query(
@@ -318,11 +337,12 @@ async def list_workspaces(
     """
     try:
         workspaces, total = await get_workspaces_for_user(
-            user_id=x_user_id,
+            user_id=principal.user_id,
             limit=limit,
             offset=offset,
             sort_by=sort_by,
             include_home=include_home,
+            computer_id=principal.computer_id,
         )
 
         return WorkspaceListResponse(
@@ -339,7 +359,7 @@ async def list_workspaces(
 
 # Declared before the `/{workspace_id}` routes so `/quota` isn't captured as an id.
 @router.get("/quota", response_model=WorkspaceQuotaResponse)
-async def get_workspace_quota(x_user_id: CurrentUserId):
+async def get_workspace_quota(x_user_id: ReadUserId):
     """Per-capability count quotas for the spec pickers, always-on and New computer.
 
     Platform mode only — every field is null in OSS mode, so the UI just omits the
@@ -360,7 +380,7 @@ async def get_workspace_quota(x_user_id: CurrentUserId):
 
 
 @router.get("/{workspace_id}/events")
-async def workspace_status_events(workspace_id: str, x_user_id: CurrentUserId):
+async def workspace_status_events(workspace_id: str, x_user_id: ReadUserId):
     """Push workspace lifecycle status changes to the client via SSE.
 
     Replaces the previous 4-second interval polling on the frontend. The
@@ -423,7 +443,7 @@ async def workspace_status_events(workspace_id: str, x_user_id: CurrentUserId):
 
 
 @router.get("/{workspace_id}", response_model=WorkspaceResponse)
-async def get_workspace(workspace_id: str, x_user_id: CurrentUserId):
+async def get_workspace(workspace_id: str, x_user_id: ReadUserId):
     """
     Get workspace details.
 
@@ -451,7 +471,7 @@ async def get_workspace(workspace_id: str, x_user_id: CurrentUserId):
 async def update_workspace(
     workspace_id: str,
     request: WorkspaceUpdate,
-    x_user_id: CurrentUserId,
+    x_user_id: WorkspaceWriteUserId,
 ):
     """
     Update workspace metadata.
@@ -536,7 +556,7 @@ def _schedule_warm_restart(
 @router.post("/{workspace_id}/start", response_model=WorkspaceActionResponse)
 async def start_workspace(
     workspace_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: WorkspaceWriteUserId,
     lazy: bool = Query(
         False,
         description=(
@@ -661,7 +681,7 @@ async def start_workspace(
 @router.post("/{workspace_id}/archive", response_model=WorkspaceActionResponse)
 async def archive_workspace(
     workspace_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: WorkspaceWriteUserId,
 ):
     """
     Archive a stopped workspace (moves sandbox to object storage).
@@ -975,7 +995,7 @@ async def refresh_workspace(
 @router.delete("/{workspace_id}", status_code=204)
 async def delete_workspace(
     workspace_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: WorkspaceWriteUserId,
     delete_files: bool = Query(
         False,
         description=(

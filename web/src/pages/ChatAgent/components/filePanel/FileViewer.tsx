@@ -8,13 +8,16 @@ import ImageLightbox from '../ImageLightbox';
 import DocumentErrorBoundary from '../viewers/DocumentErrorBoundary';
 import { stripLineNumbers } from '../toolDisplayConfig';
 import type { OpenFileHandler } from '../../utils/fileLocation';
-import type { ContextPayload, EditorTextSelectData } from './types';
+import type { ContextPayload } from '@/components/ui/chat-input.types';
+import type { FrameLinkHandler } from '../viewers/html/liveFrame';
+import type { EditorTextSelectData } from './types';
 import { EXT_TO_LANG, LARGE_TOOL_RESULTS_PREFIX, getFileExtension } from './fileMeta';
 import { imageMime, type FileBody } from './fileBody';
 import { FileErrorDisplay, type FileError } from './fileErrors';
 import { DocumentErrorFallback, DocumentLoadingFallback } from './fallbacks';
 import type { useFileFocus } from './useFileFocus';
 import type { DownloadState } from '../../utils/downloadNotice';
+import type { HtmlArtifactView } from '../viewers/html/ArtifactFrames';
 
 const PdfViewer = React.lazy(() => import('../viewers/PdfViewer'));
 const CsvViewer = React.lazy(() => import('../viewers/CsvViewer'));
@@ -72,11 +75,14 @@ export interface FileViewerProps {
   onEditorTextSelect?: (data: EditorTextSelectData | null) => void;
 
   onAddContext?: ((ctx: ContextPayload) => void) | null;
-  onContentMouseUp?: () => void;
   /** Left out, a link to another workspace file renders as plain text. */
   onViewerLink?: OpenFileHandler;
+  /** Where a link in a framed HTML document to another workspace file opens. */
+  onFrameLink?: FrameLinkHandler;
   /** The serve prefix a share was handed; omitted, the owner's grant serves HTML. */
   servePrefix?: string;
+  /** The owner's comments and versions on an HTML file. Left out, the file shows alone. */
+  htmlArtifact?: HtmlArtifactView | null;
 }
 
 /** The open file, rendered by whichever viewer its bytes belong to. */
@@ -206,6 +212,8 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
             anchor={focus.htmlAnchor}
             anchorSeq={focus.seq}
             source={props.htmlSource}
+            artifact={props.htmlArtifact ?? null}
+            onOpenLink={props.onFrameLink}
           />
         </DocumentErrorBoundary>
       </Suspense>
@@ -215,7 +223,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
   if (isEditing) return editor;
 
   return (
-    <div className="p-4" onMouseUp={props.onContentMouseUp}>
+    <div className="p-4">
       {body?.mime === 'image' && imageUrl ? (
         <>
           <img src={imageUrl} alt={fileName} className="max-w-full rounded cursor-pointer" onClick={() => setLightboxOpen(true)} />

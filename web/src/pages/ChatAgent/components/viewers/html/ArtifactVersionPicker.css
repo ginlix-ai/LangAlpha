@@ -1,0 +1,15 @@
+/* In the crumb row the picker reads as the port chip beside an app's name,
+   and opens. */
+.artifact-version-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.artifact-version-chip:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+.artifact-version-chip:disabled {
+  cursor: default;
+}

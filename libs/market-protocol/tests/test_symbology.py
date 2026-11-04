@@ -15,6 +15,7 @@ from market_protocol import (
     index_families,
     is_family_index,
     market_home,
+    market_of,
     parse_instrument_key,
     to_canonical,
     to_display,
@@ -188,7 +189,7 @@ class TestJunkInput:
         ("spelling", "key"),
         [
             ("BRK.B", "BRK.B.XXXX"), ("BRK-B", "BRK-B.XNYS"), ("M&M.NS", "M&M.XNSE"),
-            ("ES=F", "ES=F.XNYS"), ("^GSPC", "SPX.INDEX"), ("I:SPX", "SPX.INDEX"),
+            ("ES=F", "ES=F.GLBX"), ("^GSPC", "SPX.INDEX"), ("I:SPX", "SPX.INDEX"),
             ("EURUSD=X", "EUR-USD.FX"), ("BTC-USD.CRYPTO", "BTC-USD.CRYPTO"),
             # Surrounding whitespace is trimmed, as a pasted symbol carries it.
             (" aapl\n", "AAPL.XNAS"),
@@ -807,3 +808,58 @@ class TestVenueHelpers:
             "N225", "FTSE", "GDAXI", "FCHI", "STOXX50E",
         }
         assert all(is_family_index(ref) and ref == to_canonical(ref.instrument_key) for ref in refs)
+
+
+class TestBarePairsAndFutures:
+    """Bare pair and futures spellings reach their own venues, under the equity
+    hint the provider chain passes too, so none trades on the NYSE calendar."""
+
+    @pytest.mark.parametrize(
+        ("spelling", "key"),
+        [
+            ("BTC-USD", "BTC-USD.CRYPTO"), ("BTCUSD", "BTC-USD.CRYPTO"),
+            ("BTCUSDT", "BTC-USDT.CRYPTO"), ("SHIB-USD", "SHIB-USD.CRYPTO"),
+            ("PEPE24478-USD", "PEPE24478-USD.CRYPTO"), ("ETH-BTC", "ETH-BTC.CRYPTO"),
+            ("EUR-USD", "EUR-USD.FX"), ("EURUSD", "EUR-USD.FX"), ("USDJPY", "USD-JPY.FX"),
+            ("USD-KZT", "USD-KZT.FX"), ("XAU-USD", "XAU-USD.FX"), ("USD-XCG", "USD-XCG.FX"),
+            ("XDR-USD", "XDR-USD.FX"), ("USDTUSD", "USDT-USD.CRYPTO"), ("USDCUSD", "USDC-USD.CRYPTO"),
+            # Yahoo numbers a coin whose ticker is a currency code.
+            ("RON14101-USD", "RON14101-USD.CRYPTO"),
+        ],
+    )
+    def test_a_pair_spelling_is_a_pair(self, spelling, key):
+        for hint in (None, AssetClass.EQUITY):
+            ref = to_canonical(spelling, asset_class=hint)
+            assert ref.instrument_key == key
+            assert ref.tz == "UTC"
+        assert to_canonical(spelling).calendar_id == (
+            "WEEKDAYS_24_5" if key.endswith(".FX") else "ALWAYS_24_7"
+        )
+
+    @pytest.mark.parametrize(
+        ("spelling", "key"),
+        [
+            # A share class, and FMP commodity codes shaped like a coin run.
+            ("BRK-B", "BRK-B.XNYS"), ("BF-A", "BF-A.XNYS"),
+            ("RTYUSD", "RTYUSD.XNYS"), ("GCUSD", "GCUSD.XNYS"),
+        ],
+    )
+    def test_a_listing_shaped_like_a_pair_stays_a_listing(self, spelling, key):
+        assert to_canonical(spelling).instrument_key == key
+
+    @pytest.mark.parametrize("spelling", ["GC=F", "ES=F", "CL=F"])
+    def test_a_futures_contract_trades_on_globex(self, spelling):
+        ref = to_canonical(spelling, asset_class=AssetClass.EQUITY)
+        assert (ref.instrument_key, ref.calendar_id) == (f"{spelling}.GLBX", "GLBX")
+        assert market_of(ref) == "futures"
+        assert to_legacy_api(ref) == spelling
+
+    def test_a_pair_hint_on_a_futures_contract_is_refused(self):
+        with pytest.raises(ValueError):
+            to_canonical("GC=F", asset_class=AssetClass.CRYPTO)
+
+    @pytest.mark.parametrize("spelling", ["KZT=X", "EURUSD=X", "BTC-USD", "GC=F"])
+    def test_the_legacy_spelling_resolves_back_to_the_same_instrument(self, spelling):
+        # The provider chain carries to_legacy_api's spelling and re-reads it.
+        ref = to_canonical(spelling)
+        assert to_canonical(to_legacy_api(ref), asset_class=AssetClass.EQUITY) == ref

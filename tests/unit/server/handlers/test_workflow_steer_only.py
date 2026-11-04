@@ -43,6 +43,8 @@ def _make_request(steer_only: bool = True):
     # DB call) and the retry-chain resolution before wait_or_steer.
     req.request_key = None
     req.retry_of_run_id = None
+    req.artifact_comment_ids = None
+    req.artifact_comments = None
     return req
 
 
@@ -236,7 +238,6 @@ async def _run_to_admission(
         patch(f"{PTC}.wait_or_steer", side_effect=_wait) as mock_wos,
         patch(f"{MUTATION_RUNNER}.get_instance", return_value=runner),
         patch(f"{PTC}.handle_workflow_error", _error_path),
-        patch(f"{PTC}.get_sse_keepalive_interval", return_value=0.01),
     ):
         mock_setup.agent_config = MagicMock()
         mock_btm_cls.get_instance.return_value = _make_manager()
@@ -254,9 +255,7 @@ async def _run_to_admission(
         try:
             async for event in gen:
                 order.append(
-                    _frame(event)[0] if event.startswith("id: 0")
-                    else "keepalive" if event == ":keepalive\n\n"
-                    else "other"
+                    _frame(event)[0] if event.startswith("id: 0") else "other"
                 )
                 frames.append(event)
         except Exception:
@@ -328,17 +327,3 @@ async def test_a_409_from_admission_still_surfaces_after_the_held_frame():
     ]
     assert order == ["turn_held", "wait_or_steer"]
     assert errors == [refusal]
-
-
-@pytest.mark.asyncio
-async def test_a_long_held_wait_keeps_the_stream_alive_until_released():
-    """A hand-off can hold a send for minutes, longer than an edge proxy lets
-    a silent stream live, so keepalives flow between held and released."""
-    holding_verb = AsyncMock(return_value="handoff")
-
-    frames, _, order, _ = await _run_to_admission(holding_verb, wait_seconds=0.05)
-
-    assert order[:2] == ["turn_held", "wait_or_steer"]
-    assert order[-1] == "turn_held"
-    assert set(order[2:-1]) == {"keepalive"}
-    assert _frame(frames[-1]) == ("turn_held", {"status": "released"})

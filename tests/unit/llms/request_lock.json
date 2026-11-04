@@ -35,14 +35,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -67,6 +67,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -167,14 +168,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -199,6 +200,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -309,14 +311,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -341,6 +343,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -405,6 +408,86 @@
    "url": "https://api.anthropic.com/v1/messages"
   }
  },
+ "claude-haiku-5-5-code": {
+  "client": "ClaudeCodeTarget",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesDueMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "bdb73edd33e4848d52de81f14315ca9ff4062c55dfe291d49660084f37d60431",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "ShowWidget",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "reply_to_comment",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "claude-haiku-5-5-code",
+   "pricing_model_id": "claude-haiku-5-5",
+   "pricing_provider": "claude-code",
+   "provider_route": "claude-code",
+   "reasoning_effort": "medium"
+  },
+  "request": null
+ },
  "claude-haiku-5-5-oauth": {
   "client": "ChatAnthropicOAuth",
   "graph_build": {
@@ -441,14 +524,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -473,6 +556,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -583,14 +667,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -615,6 +699,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -679,6 +764,86 @@
    "url": "https://api.anthropic.com/v1/messages"
   }
  },
+ "claude-opus-5-5-code": {
+  "client": "ClaudeCodeTarget",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesDueMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "56260f1ac844604bac8df7d99ac3d48f62d5e004e34dfb85e6ece08298570bce",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "ShowWidget",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "reply_to_comment",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "claude-opus-5-5-code",
+   "pricing_model_id": "claude-opus-5-5",
+   "pricing_provider": "claude-code",
+   "provider_route": "claude-code",
+   "reasoning_effort": "medium"
+  },
+  "request": null
+ },
  "claude-opus-5-5-oauth": {
   "client": "ChatAnthropicOAuth",
   "graph_build": {
@@ -715,14 +880,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -747,6 +912,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -857,14 +1023,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -889,6 +1055,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -953,6 +1120,86 @@
    "url": "https://api.anthropic.com/v1/messages"
   }
  },
+ "claude-sonnet-5-5-code": {
+  "client": "ClaudeCodeTarget",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesDueMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "56260f1ac844604bac8df7d99ac3d48f62d5e004e34dfb85e6ece08298570bce",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "ShowWidget",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "reply_to_comment",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "claude-sonnet-5-5-code",
+   "pricing_model_id": "claude-sonnet-5-5",
+   "pricing_provider": "claude-code",
+   "provider_route": "claude-code",
+   "reasoning_effort": "medium"
+  },
+  "request": null
+ },
  "claude-sonnet-5-5-oauth": {
   "client": "ChatAnthropicOAuth",
   "graph_build": {
@@ -989,14 +1236,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -1021,6 +1268,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1131,14 +1379,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -1163,6 +1411,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1258,14 +1507,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -1290,6 +1539,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1395,14 +1645,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -1427,6 +1677,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1532,14 +1783,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -1564,6 +1815,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1669,14 +1921,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -1701,6 +1953,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1800,14 +2053,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -1832,6 +2085,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -1931,14 +2185,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -1963,6 +2217,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2062,14 +2317,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -2094,6 +2349,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2193,14 +2449,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -2225,6 +2481,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2324,14 +2581,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -2356,6 +2613,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2455,14 +2713,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -2487,6 +2745,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2585,14 +2844,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -2617,6 +2876,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2717,14 +2977,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -2749,6 +3009,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2847,14 +3108,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -2879,6 +3140,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -2979,14 +3241,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -3011,6 +3273,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3109,14 +3372,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -3141,6 +3404,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3241,14 +3505,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -3273,6 +3537,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3371,14 +3636,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -3403,6 +3668,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3503,14 +3769,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -3535,6 +3801,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3633,14 +3900,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -3665,6 +3932,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3766,14 +4034,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -3798,6 +4066,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -3899,14 +4168,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -3931,6 +4200,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4032,14 +4302,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -4064,6 +4334,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4165,14 +4436,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -4197,6 +4468,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4298,14 +4570,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -4330,6 +4602,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4431,14 +4704,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -4463,6 +4736,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4564,14 +4838,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -4596,6 +4870,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4697,14 +4972,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -4729,6 +5004,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4828,14 +5104,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -4860,6 +5136,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -4959,14 +5236,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -4991,6 +5268,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5088,14 +5366,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -5120,6 +5398,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5212,14 +5491,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -5244,6 +5523,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5341,14 +5621,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -5373,6 +5653,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5465,14 +5746,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -5497,6 +5778,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5594,14 +5876,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -5626,6 +5908,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5718,14 +6001,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -5750,6 +6033,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5842,14 +6126,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -5874,6 +6158,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -5971,14 +6256,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -6003,6 +6288,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6100,14 +6386,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -6132,6 +6418,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6229,14 +6516,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "system_prompt_sha256": "65c7c3deab38ee84522565a747820b853082392fbbcf79c19afb2bf474d6de3b",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -6261,6 +6548,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6358,14 +6646,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -6390,6 +6678,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]
@@ -6487,14 +6776,14 @@
     "PatchToolCallsMiddleware",
     "TurnContextMiddleware",
     "BaselineContextMiddleware",
-    "NotesOffMiddleware",
+    "NotesDueMiddleware",
     "RowCarrierMiddleware",
     "SystemPinMiddleware",
     "ReasoningCompatibilityMiddleware"
    ],
    "model_is_the_client": true,
    "state_schema": "MainAgentState",
-   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "system_prompt_sha256": "9ec7a8264c56cff7f57212cbc05507720fe4f30d555fb9dd395dfe6de9150ecd",
    "tools": [
     "AskUserQuestion",
     "Bash",
@@ -6519,6 +6808,7 @@
     "get_quote",
     "get_sec_filing",
     "manage_chart_annotations",
+    "reply_to_comment",
     "schedule_wakeup",
     "screen_stocks"
    ]

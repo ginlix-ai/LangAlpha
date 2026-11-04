@@ -16,6 +16,9 @@ export const queryKeys = {
     me:          () => [...queryKeys.user.all, 'me'],
     preferences: () => [...queryKeys.user.all, 'preferences'],
     apiKeys:     () => [...queryKeys.user.all, 'api-keys'],
+    // Under the keys: it says whether an Anthropic key is saved, so a key
+    // saved or removed reads it again.
+    claudeCodeCustody: () => [...queryKeys.user.apiKeys(), 'claude-code-custody'],
     // Its own entry, not part of preferences: the server keeps it apart so the
     // agent, which can write preferences, cannot raise it.
     tradingPermission: () => [...queryKeys.user.all, 'trading-permission'],
@@ -26,6 +29,12 @@ export const queryKeys = {
   features: {
     all:  ['features'],
     list: () => [...queryKeys.features.all, 'list'],
+    /** What a read keyed under one flag is keyed by: toggling the flag rereads it. */
+    of: (key: string) => [...queryKeys.features.all, key],
+    /** Every Claude Code read: a token change can move any of them. */
+    claudeCode: () => queryKeys.features.of('claude_code_runtime'),
+    claudeCodeStatus: () => [...queryKeys.features.claudeCode(), 'status'],
+    claudeCodeComputers: () => [...queryKeys.features.claudeCode(), 'computers'],
   },
   platform: {
     all:    ['platform'],
@@ -70,17 +79,58 @@ export const queryKeys = {
   fileGrants: {
     all:       ['fileGrants'],
     workspace: (wsId: string) => [...queryKeys.fileGrants.all, wsId],
+    // Apart from `workspace`, so renewing the shared grant mints none of these.
+    own:       (wsId: string, mount: number) => [...queryKeys.fileGrants.all, 'own', wsId, mount],
   },
-  // Stable `/a/<code>` links for files and apps, grouped by workspace. A share
-  // or stop rewrites the cached entries holding that code under `links`, then
-  // re-reads the link's file list and the workspace's shared list.
+  // A workspace file's record, its versions and comments. The `artifact_comment`
+  // user event and a turn's end read the comments, the record (its `unread` and
+  // `open_comments`) and the destination thread's queue again; the `artifact`
+  // event reads the record, versions and status again. Never invalidate `all`
+  // in one go: the grant sits under it, and a new grant reloads open frames.
+  artifacts: {
+    all:         ['artifacts'],
+    // The record a file tab reads, by path, before it knows the id (null for a
+    // file never recorded). Events carry workspace and path, so they reach it.
+    allByPath:   ['artifacts', 'path'],
+    // Every path read in a workspace: an event's path is canonical, while a
+    // tab may have asked by another spelling of it.
+    pathsIn:     (wsId: string) => [...queryKeys.artifacts.allByPath, wsId],
+    byPath:      (wsId: string, path: string) => [...queryKeys.artifacts.pathsIn(wsId), path],
+    // The owner's get-or-create of a file's record. Beside the reads by path,
+    // not under them, so an event that reads those again never makes one.
+    ensured:     (wsId: string, path: string) => [...queryKeys.artifacts.all, 'ensured', wsId, path],
+    allDetails:  ['artifacts', 'detail'],
+    detail:      (artifactId: string) => [...queryKeys.artifacts.allDetails, artifactId],
+    versions:    (artifactId: string) => [...queryKeys.artifacts.all, 'versions', artifactId],
+    // Reads the computer, so it is fetched on demand (crumb, Publish dialog)
+    // rather than on every record change.
+    status:      (artifactId: string) => [...queryKeys.artifacts.all, 'status', artifactId],
+    leftOut:     (artifactId: string) => [...queryKeys.artifacts.all, 'left-out', artifactId],
+    // The answer under one report of what the page loaded, beneath `status`, so
+    // anything that reads a file's status again reads this too.
+    statusWith:  (artifactId: string, loaded: readonly string[], earlier: readonly string[]) =>
+      [...queryKeys.artifacts.status(artifactId), loaded, earlier],
+    // The owner's comment destination setting changes every file's answer.
+    allDestinations: ['artifacts', 'destinations'],
+    // A bind or unbind changes the answer for every thread beside.
+    destinationsOf: (artifactId: string) => [...queryKeys.artifacts.allDestinations, artifactId],
+    destinations: (artifactId: string, besideThreadId: string | null) =>
+      [...queryKeys.artifacts.destinationsOf(artifactId), besideThreadId ?? ''],
+    grant:       (artifactId: string) => [...queryKeys.artifacts.all, 'grant', artifactId],
+    allComments: ['artifacts', 'comments'],
+    comments:    (artifactId: string) => [...queryKeys.artifacts.allComments, artifactId],
+    allQueued:   ['artifacts', 'queued'],
+    queued:      (threadId: string) => [...queryKeys.artifacts.allQueued, threadId],
+  },
+  // Stable `/a/<code>` links for files and apps, grouped by workspace. A stop
+  // rewrites the cached entries holding that code under `links`, then re-reads
+  // the workspace's shared list.
   shareLinks: {
     all:         ['shareLinks'],
     byWorkspace: (wsId: string) => [...queryKeys.shareLinks.all, wsId],
     links:       (wsId: string) => [...queryKeys.shareLinks.byWorkspace(wsId), 'link'],
     // `key` is the normalized entry path for a file, the port for an app.
     link:        (wsId: string, kind: string, key: string) => [...queryKeys.shareLinks.links(wsId), kind, key],
-    files:       (wsId: string, code: string) => [...queryKeys.shareLinks.byWorkspace(wsId), 'files', code],
     shared:      (wsId: string) => [...queryKeys.shareLinks.byWorkspace(wsId), 'shared'],
   },
   // What an `/s/` or `/a/` page resolves to. The visitor flag is part of the

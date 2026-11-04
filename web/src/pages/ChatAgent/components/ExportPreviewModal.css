@@ -460,6 +460,14 @@
   overflow-x: hidden !important;
   max-width: 100% !important;
 }
+/* What Markdown.css does for a screen's scrolling: nothing on paper scrolls. */
+:is(.print-preview-active, .export-preview-content) .katex-display {
+  overflow: visible;
+  padding-block: 0;
+}
+:is(.print-preview-active, .export-preview-content) .markdown-table-scroller[data-more] {
+  mask-image: none;
+}
 .print-preview-active table {
   max-width: 100% !important;
   table-layout: auto !important;

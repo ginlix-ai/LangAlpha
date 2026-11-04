@@ -566,12 +566,6 @@ class Handle:
                 await tracker.keep_token(self._serve, self._renew)
         return tracker.serves(sandbox, workspace_id)
 
-    async def prepare(
-        self, call_id: str | None = None, context: CallContext | None = None
-    ) -> None:
-        if call_id and context is not None:
-            await outcomes.open_call(self._computer_id, call_id, context)
-
     async def report(
         self, call_id: str, output: str, context: CallContext | None = None
     ) -> str:

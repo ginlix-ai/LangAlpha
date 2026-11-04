@@ -5,7 +5,9 @@ read — the in_progress slot always sorts newest), checkpoint metadata, and
 the report-back slice. Read-only: nothing here transitions run state.
 """
 
+import asyncio
 import logging
+import time
 from typing import Optional
 
 from fastapi import HTTPException
@@ -13,6 +15,7 @@ from fastapi import HTTPException
 from src.server.utils.checkpoint_helpers import (
     build_checkpoint_config,
     get_checkpointer,
+    turn_base_checkpoint_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,96 @@ def extract_state_values(checkpoint_tuple) -> dict:
 
     # Return the channel values as state
     return channel_values
+
+
+#: How long ``read_next_summary`` waits on the reads it makes itself, which a
+#: run's closing frame waits on; past it, the frame goes out without a hint.
+NEXT_SUMMARY_READ_TIMEOUT_S = 1.0
+
+#: What ``read_next_summary`` answers when its read failed or ran out of time,
+#: as against None, nothing to summarize: a run's closing frame then leaves
+#: the hint out, and the client reads the status for it.
+UNREAD = object()
+
+
+async def _claude_session(thread_id: str, checkpoint_id: Optional[str]) -> dict:
+    """Claude's session records at ``checkpoint_id`` (the newest when None),
+    replayed from the checkpoints' writes: the channel keeps no value of its
+    own in a checkpoint, so a raw read of one has none."""
+    from langgraph.graph import START, StateGraph
+
+    from ptc_agent.agent.claude_code.session import SessionState
+
+    graph = (
+        StateGraph(SessionState)
+        .add_node("noop", lambda state: {})
+        .add_edge(START, "noop")
+        .compile(checkpointer=get_checkpointer())
+    )
+    snapshot = await graph.aget_state(build_checkpoint_config(thread_id, checkpoint_id))
+    return snapshot.values.get("claude_session") or {}
+
+
+async def read_next_summary(
+    thread_id: str,
+    *,
+    latest: Optional[dict] = None,
+    values: Optional[dict] = None,
+) -> Optional[dict] | object:
+    """What the thread's next send summarizes first, for the composer:
+    ``{"reason": "threshold"}``, or ``{"reason": "cold" | "rebuild", "at": <epoch ms>, "now": <epoch ms>}``
+    once the cache expires at ``at``, or None (see ``rebuild.next_summary``).
+    ``now`` is this server's clock at the read, so a client waits ``at - now``
+    from when the reading arrives rather than reading ``at`` on its own clock.
+    Read from the main agent's checkpointed ``values`` and the settle time of
+    ``latest``, the thread's latest run attempt, each read when not passed,
+    or of the latest that made a call (``cache_clock_attempt``), the inputs
+    its turn start reads. Unpassed, the values are the checkpoint the next
+    turn starts from (``turn_base_checkpoint_id``), which is not the newest
+    after a fork stopped before its first step, read after ``latest``: a run
+    commits its last checkpoint before its terminal row, so a ledger that
+    shows it over is never read with the state from before its answer. A
+    Claude Code thread whose last answer was Claude Code's reads its
+    session's records there and the rules that turn ran under instead
+    (``claude_code.compaction.next_summary``). A failed or slow read answers
+    ``UNREAD`` rather than fail or hold up its caller."""
+    from src.server.contracts.run_times import run_settled_at
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.services.runs.pending_input import cache_clock_attempt
+    from ptc_agent.agent.claude_code.session import RULES_KEY
+    from ptc_agent.agent.middleware.compaction.rebuild import next_summary
+
+    try:
+        async with asyncio.timeout(NEXT_SUMMARY_READ_TIMEOUT_S):
+            if latest is None:
+                latest = await tl_db.get_latest_attempt(thread_id)
+            base = None
+            if values is None:
+                base = await turn_base_checkpoint_id(get_checkpointer(), thread_id)
+                values = extract_state_values(await get_checkpoint_tuple(thread_id, base))
+            rules = values.get(RULES_KEY)
+            if rules and rules.get("at", 0) < (values.get("_last_model_response_at") or 0):
+                rules = None
+            records = await _claude_session(thread_id, base) if rules else None
+            clock = await cache_clock_attempt(thread_id, latest)
+        settled_at = run_settled_at(clock)
+        if rules:
+            # Only a Claude Code thread loads the SDK, which a backend without
+            # the claude-code extra lacks (see the package docstring).
+            from ptc_agent.agent.claude_code import compaction as claude_code
+
+            found = claude_code.next_summary(rules, records, settled_at=settled_at)
+        else:
+            found = next_summary(values, settled_at=settled_at)
+    except Exception:
+        logger.debug("next summary read failed for thread %s", thread_id, exc_info=True)
+        return UNREAD
+    if found is None:
+        return None
+    at = found.get("at")
+    if at is None:
+        return {"reason": found["reason"]}
+    return {"reason": found["reason"], "at": round(at * 1000), "now": round(time.time() * 1000)}
 
 
 async def read_thread_runtime_status(
@@ -179,6 +272,15 @@ async def read_thread_runtime_status(
 
         token_totals = await get_thread_token_totals(thread_id, live_run_id=run_id)
 
+        # An interrupted run resumes where it stopped, past its turn start.
+        next_summary = (
+            None
+            if run_id or status == "interrupted"
+            else await read_next_summary(thread_id, latest=latest)
+        )
+        if next_summary is UNREAD:
+            next_summary = None
+
         response = {
             "thread_id": thread_id,
             "run_id": run_id,
@@ -186,6 +288,7 @@ async def read_thread_runtime_status(
             "can_reconnect": can_reconnect,
             "latest_turn_index": latest_turn_index,
             "token_totals": token_totals,
+            "next_summary": next_summary,
             "last_update": last_update,
             "progress": checkpoint_info,
             "active_tasks": active_tasks,

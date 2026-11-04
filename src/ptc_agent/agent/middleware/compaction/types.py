@@ -82,6 +82,14 @@ class OffloadSettings:
         )
 
 
+class RebuildArm(TypedDict):
+    """What the call that asks for the notes ahead of a summary that keeps no
+    turn stores, so the next call writes that summary: the summary it asked
+    under, which a later one spends (see ``rebuild``)."""
+
+    summary: str | None
+
+
 class CompactionState(UnsentThinkingState):
     """State for the compaction middleware.
 
@@ -118,6 +126,17 @@ class CompactionState(UnsentThinkingState):
     _cached_input_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _cached_output_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _last_model_response_at: Annotated[NotRequired[float], PrivateStateAttr]
+    #: What the newest answer leaves for a read between turns (see
+    #: ``rebuild.answer_reading``).
+    _last_answer: Annotated[NotRequired[dict[str, Any]], PrivateStateAttr]
+    #: Set when a run starts and cleared by its first model call, which
+    #: alone may take a turn that ended on tool results as a turn start (see
+    #: ``utils.turn_start_cut``). Main agent only.
+    _run_first_call: Annotated[NotRequired[bool], PrivateStateAttr]
+    #: Set by the call that asked for the notes ahead of a summary that keeps
+    #: no turn, so the next call writes it whatever the context's size;
+    #: cleared by the call after. Main agent only.
+    _rebuild_armed: Annotated[NotRequired[RebuildArm | None], PrivateStateAttr]
     _window: Annotated[NotRequired[WindowState], PrivateStateAttr]
     #: The summary anchor and cut the server last refused a trim at, so the
     #: next turns do not ask again until a summary or a trim moves them.

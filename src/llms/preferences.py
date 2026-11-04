@@ -100,11 +100,23 @@ class Tuning:
     #: Whether a model whose provider can compact the conversation itself
     #: does. None leaves it on.
     native_compaction: bool | None = None
+    #: Whether a Claude thread whose prompt cache expired is summarized at
+    #: its next turn start from ``cold_compact_tokens``. None leaves it on.
+    #: The account's alone (``ACCOUNT_FIELDS``).
+    cold_compaction: bool | None = None
 
 
-#: Settings a per-model profile may override. Derived from :class:`Tuning` so
-#: the field list and the type cannot drift apart.
+#: Every setting :class:`Tuning` holds. Derived from it so the field list and
+#: the type cannot drift apart.
 TUNING_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(Tuning))
+
+#: Settings the account holds for every model: no per-model profile may set
+#: them, and one a profile stored anyway is not read, so the account's switch
+#: is the whole answer.
+ACCOUNT_FIELDS: frozenset[str] = frozenset({"cold_compaction"})
+
+#: Settings a per-model profile may override.
+PROFILE_FIELDS: tuple[str, ...] = tuple(f for f in TUNING_FIELDS if f not in ACCOUNT_FIELDS)
 
 
 class TuningError(ValueError):
@@ -145,7 +157,7 @@ def validate_tuning(
                 field, f"{where}.{field} must be one of {sorted(valid)}"
             )
 
-    for field in ("fast_mode", "native_compaction"):
+    for field in ("fast_mode", "native_compaction", "cold_compaction"):
         flag = values.get(field)
         if flag is not None and not isinstance(flag, bool):
             raise TuningError(field, f"{where}.{field} must be a boolean")
@@ -188,14 +200,15 @@ def custom_model_names(model_pref: dict[str, Any]) -> set[str]:
 
 
 def resolve_tuning_field(model_pref: dict[str, Any], model: str | None, field: str) -> Any:
-    """Per-model override, else the account-wide value.
+    """Per-model override, else the account-wide value; the account's alone
+    for a field in ``ACCOUNT_FIELDS``.
 
     Every tuning field resolves this way, so a caller that knows which model is
     running gets the same precedence whether it is picking a compaction
     threshold or a prompt guidance level.
     """
     profiles = model_pref.get("profiles")
-    if model and isinstance(profiles, dict):
+    if model and field in PROFILE_FIELDS and isinstance(profiles, dict):
         profile = profiles.get(model)
         if isinstance(profile, dict) and field in profile:
             return profile[field]
@@ -207,7 +220,7 @@ def resolve_tuning(model_pref: dict[str, Any], model: str | None) -> Tuning:
 
     The typed twin of ``resolveTuning`` in ``web/src/lib/modelTuning.ts``; the
     two implement one precedence rule and are pinned together by
-    ``tests/fixtures/tuning_precedence.json``.
+    ``web/src/lib/__tests__/__fixtures__/tuning_precedence.json``.
     """
     return Tuning(
         **{f: resolve_tuning_field(model_pref, model, f) for f in TUNING_FIELDS}

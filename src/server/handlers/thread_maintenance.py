@@ -13,11 +13,15 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from fastapi import HTTPException
 
+from ptc_agent.agent.middleware.runtime_context import TurnContext
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.core.project_context import ProjectContext
+from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed, claude_replied_last, is_claude_code_model
+from src.server.contracts.run_times import run_settled_at
 from src.server.handlers.cancellation import cancellation_as_http
 from src.server.services.history.projector import context_window_record
 from src.server.services.thread_agent import thread_route
@@ -49,22 +53,31 @@ class ThreadAgent:
     backend: Any
     project: ProjectContext | None
 
-    async def ask(self, ask):
+    async def ask(self, ask, values: dict | None = None):
         """``ask`` answered by the agent's own model chain
-        (``ask_between_turns``), with the project bound as a run binds it.
-        Raises ``NoCompaction`` when the agent compacts nothing (compaction
-        off in its config)."""
+        (``ask_between_turns``), with the project bound as a run binds it, on
+        ``values``, the thread's state by default. Raises ``NoCompaction`` when
+        the agent compacts nothing (compaction off in its config)."""
         from ptc_agent.agent.middleware.compaction import ask_between_turns
         from ptc_agent.core.project_context import project_bound
 
         with project_bound(self.project):
             return await ask_between_turns(
                 self.graph.agent,
-                self.state.values,
+                self.state.values if values is None else values,
                 ask,
                 thread_id=self.thread_id,
                 store=setup.store,
             )
+
+    async def compact_claude_code(self):
+        """The CLI's own compaction of the thread's Claude Code session
+        (``ClaudeTurn.compact_between_turns``), with the project bound as a
+        run binds it; None when there is nothing to compact."""
+        from ptc_agent.core.project_context import project_bound
+
+        with project_bound(self.project):
+            return await self.graph.turn.compact_between_turns(self.state.values)
 
     async def write(self, values: dict, verb: str) -> None:
         await _update_graph_state(self.graph, self.state, values, self.thread_id, verb)
@@ -177,6 +190,8 @@ async def _thread_agent(
         session=session,
         config=effective_config,
         checkpointer=checkpointer,
+        # Only a summary reads the cache clock (see ``_previous_run``).
+        turn_context=await _previous_run(thread_id) if verb == "compact" else None,
         **inputs.build_kwargs(),
     )
 
@@ -308,6 +323,22 @@ async def _hold_thread_mutation(thread_id: str, verb: str):
         raise HTTPException(status_code=503, detail=str(e))
 
 
+async def _previous_run(thread_id: str) -> TurnContext:
+    """What a turn's build knows of the thread's previous run, which a call
+    between turns needs too: when it settled, by the run ledger, which a
+    cancelled call refreshed the provider's cache at without a stamp in the
+    checkpoint. A failed read leaves it unknown."""
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.services.runs.pending_input import cache_clock_attempt
+
+    try:
+        attempt = await cache_clock_attempt(thread_id, await tl_db.get_latest_attempt(thread_id))
+    except Exception:
+        logger.debug("previous run read failed for thread %s", thread_id, exc_info=True)
+        return TurnContext()
+    return TurnContext(previous_run_settled_at=run_settled_at(attempt))
+
+
 async def _resolver(user_id: str, thread_id: str, meta: dict, route):
     """``thread_resolver`` for a call between turns, which no composer
     started, so the thread's row sets its effort and fast mode."""
@@ -343,6 +374,192 @@ async def _summarize(agent: ThreadAgent, config):
     )
 
 
+@asynccontextmanager
+async def _recorded(agent: ThreadAgent, user_id: str | None, verb: str):
+    """Record the model calls made inside in the usage records, as a turn's
+    are. They find the token tracker a turn gets on the runnable config around
+    them, which ``ask_between_turns`` and the summarizer both call the model
+    under, and land on a row of their own: no run is open between turns to
+    hold them. The row is the thread's, under the caller, with ``verb`` on
+    its token usage to tell it from a turn's, and is written once the
+    operation has ended, so its status is the operation's.
+
+    The tracker runs inline: a call's end is reported in a callback shielded
+    from cancellation, which on an executor thread could still be running
+    when a Stop or a timeout reads the tracker."""
+    from langchain_core.callbacks import BaseCallbackManager
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    from src.utils.tracking import TokenTrackingManager
+
+    tracker = TokenTrackingManager.initialize_tracking(thread_id=agent.thread_id)
+    tracker.run_inline = True
+    ambient = var_child_runnable_config.get() or {}
+    callbacks = ambient.get("callbacks")
+    if isinstance(callbacks, BaseCallbackManager):
+        callbacks = callbacks.copy()
+        callbacks.add_handler(tracker)
+    else:
+        callbacks = [*(callbacks or ()), tracker]
+    token = var_child_runnable_config.set({**ambient, "callbacks": callbacks})
+    status = "error"
+    try:
+        yield
+        status = "completed"
+    except asyncio.CancelledError:
+        status = "cancelled"
+        raise
+    finally:
+        var_child_runnable_config.reset(token)
+        records = tracker.get_per_call_records()
+        if records and user_id:
+            # A Stop landing here still owes the calls that answered.
+            await asyncio.shield(_record_usage(agent, user_id, verb, records, status))
+
+
+async def _record_usage(
+    agent: ThreadAgent, user_id: str, verb: str, records: list, status: str
+) -> None:
+    from src.server.services.persistence.usage import UsagePersistenceService
+
+    usage = UsagePersistenceService(
+        thread_id=agent.thread_id, workspace_id=agent.workspace_id, user_id=user_id
+    )
+    await usage.track_llm_usage(records)
+    if usage._token_usage is not None:
+        usage._token_usage["between_turns"] = verb
+    # The calls' own billing types, for when pricing fails and the row
+    # falls back to the hint, as a turn's falls back to its key's.
+    is_byok = not any(r.get("billing_type", "platform") == "platform" for r in records)
+    if not await usage.persist_usage(response_id=str(uuid4()), status=status, is_byok=is_byok):
+        logger.error(
+            "[usage] %s row not written for thread_id=%s; %d record(s) are unrecoverable",
+            verb,
+            agent.thread_id,
+            len(records),
+        )
+
+
+def _refuse_claude_code(on_claude_code: bool) -> None:
+    """Refuse an offload on a Claude Code thread, or a summary its own model does not make. Claude Code manages its own
+    session, and the thread's messages are only the record replay and
+    transcripts read, so rewriting them changes nothing Claude sees, while a
+    write through the ordinary graph drops what the runtime keeps beside them.
+    Called inside the mutation fence, which orders it against a model switch."""
+    if on_claude_code:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "claude_code_compacts_itself",
+                "message": "Claude Code manages this thread's context itself.",
+            },
+        )
+
+
+def _refuse_while_awaiting_user(agent: ThreadAgent) -> None:
+    """Refuse a compaction while a call Claude Code deferred waits for the
+    user: the compaction's CLI would load the session with that call pending
+    and nothing to run it, and run until the compaction budget."""
+    from ptc_agent.agent.claude_code.session import awaiting_user
+
+    if awaiting_user(agent.state.values.get("claude_session"), agent.messages):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "awaiting_input",
+                "verb": "compact",
+                "message": "Cannot compact while a question or approval is waiting on this thread. Answer or dismiss it, then try again.",
+            },
+        )
+
+
+def _claude_code_failure(e: ClaudeTurnFailed, model: str) -> HTTPException:
+    """A compaction the CLI failed, answered as a turn that failed the same
+    way is: in admission's words for what admission refuses, else with the
+    status its answer carried."""
+    from src.server.services.llm.claude_code import claude_code_refusal
+    from src.server.services.runs.stream_errors import classify_stream_exception
+    from src.server.utils.error_sanitization import sanitize_error_text
+
+    refusal = claude_code_refusal(e, model)
+    if refusal is not None:
+        return HTTPException(status_code=400, detail=refusal)
+    failure = classify_stream_exception(e)
+    status = failure["status_code"] or (502 if failure["kind"] == "upstream" else 500)
+    return HTTPException(status_code=status, detail=f"Failed to trigger compaction: {sanitize_error_text(str(e))}")
+
+
+async def _compaction_config(thread_id: str, user_id: str | None) -> tuple[Any, AgentRole]:
+    """The config and role a manual compaction runs on, resolved as the
+    thread's next turn would be. A summary changes no answer, so it runs on
+    the default rather than wait on a reconnect, except that only Claude Code
+    compacts a Claude Code session: a thread holding one of its models falls
+    back neither to the default nor to the base config."""
+    agent_cfg = setup.agent_config
+    if not (user_id and agent_cfg is not None):
+        return agent_cfg, "analyst"
+    meta, route = await thread_route(thread_id, user_id)
+    on_claude_code = is_claude_code_model(meta.get("llm_model"))
+    try:
+        from src.server.services.llm import thread_model
+
+        agent_cfg = await thread_model.resolve_turn_config(
+            user_id,
+            thread_id,
+            named=None,
+            held=meta.get("llm_model"),
+            fall_back=not on_claude_code,
+            resolve=await _resolver(user_id, thread_id, meta, route),
+        )
+    except HTTPException:
+        # 402 insufficient credits, 403 revoked key, etc. are intentional
+        # user-facing signals — don't silently downgrade to platform config.
+        raise
+    except Exception as e:
+        if on_claude_code:
+            from src.server.services.runs.stream_errors import classify_stream_exception
+
+            logger.warning(f"[compact] resolving the Claude Code model failed for user {user_id}", exc_info=True)
+            status = 502 if classify_stream_exception(e)["kind"] == "upstream" else 500
+            raise HTTPException(status_code=status, detail="Failed to trigger compaction") from e
+        logger.warning(
+            f"[compact] resolve_llm_config failed for user {user_id}: {e}; "
+            "falling back to base agent_config"
+        )
+        agent_cfg = setup.agent_config
+    return agent_cfg, route.role
+
+
+async def _installed(
+    agent: ThreadAgent,
+    update: dict,
+    *,
+    original_count: int,
+    new_count: int,
+    summary_text: str,
+    source: str,
+    **marker: Any,
+) -> dict:
+    """Write a compaction's ``update`` with the marker replay shows for it,
+    and the response the client reads. Action "summarize" is the wire
+    protocol's; ``marker`` names the summary replay reads the "View summary"
+    panel from, when the thread's messages hold one."""
+    props = {
+        "action": "summarize",
+        "signal": "complete",
+        "original_message_count": original_count,
+        "new_message_count": new_count,
+        "summary_length": len(summary_text),
+        "source": source,
+    }
+    await agent.write({**update, "ui": [context_window_record(props, **marker)]}, "compact")
+    logger.info(
+        f"Manual compaction completed for thread {agent.thread_id}: "
+        f"{original_count} -> {new_count} messages"
+    )
+    return {"success": True, "thread_id": agent.thread_id, **props, "summary_text": summary_text}
+
+
 @cancellation_as_http("compact")
 async def trigger_compaction(
     thread_id: str,
@@ -354,10 +571,13 @@ async def trigger_compaction(
     Sent as the agent's own model call (``ask_between_turns``), built and
     resolved as the thread's next turn would be, so a provider that compacts
     the conversation itself does here as it does mid-turn, from its cache, and
-    the summary runs on the model and credential the thread's turns do.
+    the summary runs on the model and credential the thread's turns do. A
+    Claude Code thread's session is compacted by the CLI itself, and its
+    messages, the record replay reads, stay as they are.
     """
     try:
         from ptc_agent.agent.middleware.compaction import Compact, NoCompaction
+        from ptc_agent.agent.middleware.compaction.compact import NOTHING_TO_COMPACT
 
         # The mutation fence FIRST — before any graph state reads or writes:
         # exclusive T(thread) refuses while a fenced run or tail writer is
@@ -369,39 +589,28 @@ async def trigger_compaction(
             _hold_thread_mutation(thread_id, "compact") as mutation,
             AsyncExitStack() as held,
         ):
-            agent_cfg = setup.agent_config
-            role: AgentRole = "analyst"
-            if user_id and agent_cfg is not None:
-                meta, route = await thread_route(thread_id, user_id)
-                role = route.role
-                try:
-                    from src.server.services.llm import thread_model
-
-                    agent_cfg = await thread_model.resolve_turn_config(
-                        user_id,
-                        thread_id,
-                        named=None,
-                        held=meta.get("llm_model"),
-                        # A summary changes no answer, so it runs on the
-                        # default rather than waiting on a reconnect.
-                        fall_back=True,
-                        resolve=await _resolver(user_id, thread_id, meta, route),
-                    )
-                except HTTPException:
-                    # 402 insufficient credits, 403 revoked key, etc. are intentional
-                    # user-facing signals — don't silently downgrade to platform config.
-                    raise
-                except Exception as e:
-                    logger.warning(
-                        f"[compact] resolve_llm_config failed for user {user_id}: {e}; "
-                        "falling back to base agent_config"
-                    )
-                    agent_cfg = setup.agent_config
-
+            agent_cfg, role = await _compaction_config(thread_id, user_id)
             agent = await _thread_agent(
                 thread_id, "compact", config=agent_cfg,
                 checkpointer=mutation.saver, user_id=user_id, held=held, role=role,
             )
+            await held.enter_async_context(_recorded(agent, user_id, "compact"))
+            # Only Claude Code compacts a thread Claude last replied on, and it
+            # compacts no other: its session would not be the one the thread runs on.
+            on_claude_code = isinstance(getattr(agent_cfg, "llm_client", None), ClaudeCodeTarget)
+            _refuse_claude_code(on_claude_code != claude_replied_last(agent.messages))
+            if on_claude_code:
+                _refuse_while_awaiting_user(agent)
+                try:
+                    session = await agent.compact_claude_code()
+                except ClaudeTurnFailed as e:
+                    raise _claude_code_failure(e, agent_cfg.llm_client.model) from e
+                if session is None:
+                    raise HTTPException(status_code=400, detail=NOTHING_TO_COMPACT)
+                return await _installed(
+                    agent, session.update(), original_count=session.original_count,
+                    new_count=session.new_count, summary_text=session.summary_text, source="provider",
+                )
             try:
                 try:
                     compaction = await agent.ask(Compact())
@@ -412,45 +621,16 @@ async def trigger_compaction(
 
             # The view that was compacted, as automatic compaction counts it,
             # not every message the checkpoint has kept since the thread began.
-            original_count = compaction.original_count
-            new_message_count = len(compaction.messages)
-            summary_text = compaction.summary.text
-            summary_length = len(summary_text)
-            summary_source = compaction.summary.source
-
-            # The marker rides the write that installs the summary. Action
-            # "summarize" is the wire protocol's. Replay reads the text for
-            # the "View summary" panel from the summary the marker names.
-            marker = context_window_record(
-                {
-                    "action": "summarize",
-                    "signal": "complete",
-                    "original_message_count": original_count,
-                    "new_message_count": new_message_count,
-                    "summary_length": summary_length,
-                    "source": summary_source,
-                },
+            return await _installed(
+                agent,
+                compaction.update(agent.state.values),
+                original_count=compaction.original_count,
+                new_count=len(compaction.messages),
+                summary_text=compaction.summary.text,
+                source=compaction.summary.source,
                 summary_message_id=compaction.event["summary_message"].id,
                 replaced=await _summary_since_the_turn(thread_id, agent.state),
             )
-            await agent.write(
-                {**compaction.update(agent.state.values), "ui": [marker]}, "compact"
-            )
-
-            logger.info(
-                f"Manual compaction completed for thread {thread_id}: "
-                f"{original_count} -> {new_message_count} messages"
-            )
-
-            return {
-                "success": True,
-                "thread_id": thread_id,
-                "original_message_count": original_count,
-                "new_message_count": new_message_count,
-                "summary_length": summary_length,
-                "summary_text": summary_text,
-                "source": summary_source,
-            }
 
     except HTTPException:
         raise
@@ -458,9 +638,11 @@ async def trigger_compaction(
         # CancelledError (user Stop / client disconnect) is handled by the
         # @cancellation_as_http wrapper, which sees it after the mutation
         # fence releases.
+        from src.server.utils.error_sanitization import sanitize_error_text
+
         logger.exception(f"Error triggering compaction for thread {thread_id}: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to trigger compaction: {str(e)}"
+            status_code=500, detail=f"Failed to trigger compaction: {sanitize_error_text(str(e))}"
         )
 
 
@@ -479,14 +661,23 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
         thread_id: The thread/conversation ID to offload
 
     Returns:
-        Dict with success, thread_id, message_count, offloaded_args, offloaded_reads
+        Dict with success, thread_id, message_count, offloaded_args,
+        offloaded_reads, and next_summary, what the next send summarizes
+        first after the offload (see ``read_next_summary``)
     """
     try:
         from ptc_agent.agent.middleware.compaction import (
+            Measure,
             OffloadSettings,
             offload_tool_args,
             record_offloads,
         )
+        from ptc_agent.agent.middleware.compaction.rebuild import (
+            LAST_ANSWER_KEY,
+            offloaded_reading,
+        )
+        from src.server.database.conversation import get_thread_auth_meta
+        from src.server.services.thread_status import UNREAD, read_next_summary
 
         # Same fence as /compact — /offload also writes checkpoint state and
         # could race a running workflow's _offloaded_tool_call_ids updates.
@@ -496,10 +687,13 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             _hold_thread_mutation(thread_id, "offload") as mutation,
             AsyncExitStack() as held,
         ):
+            _refuse_claude_code(is_claude_code_model((await get_thread_auth_meta(thread_id) or {}).get("llm_model")))
             agent = await _thread_agent(
                 thread_id, "offload", checkpointer=mutation.saver, user_id=user_id, held=held
             )
             messages, state = agent.messages, agent.state
+            # A thread following a Claude Code default holds no model of its own.
+            _refuse_claude_code(claude_replied_last(messages))
 
             # Set: resolving the graph above refuses to run without it.
             settings = OffloadSettings.from_config(setup.agent_config.compaction)
@@ -530,27 +724,34 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                     "offloaded_reads": offloaded_reads,
                 }
             )
-            await agent.write(
-                {
-                    **record_offloads(
-                        state.values, offloaded_arg_ids, offloaded_read_ids
-                    ),
-                    "ui": [marker],
-                },
-                "offload",
-            )
+            update = record_offloads(state.values, offloaded_arg_ids, offloaded_read_ids)
+            # The cuts zero the measurement the composer's hint reads, so
+            # what they leave is measured as the next turn start will read it.
+            # A failed measure leaves the hint unsaid, as a zeroed one is.
+            if update:
+                after = {**state.values, **update}
+                try:
+                    reading = offloaded_reading(after, await agent.ask(Measure(), after))
+                except Exception:
+                    logger.debug(f"Offload measure failed for thread {thread_id}", exc_info=True)
+                    reading = None
+                if reading is not None:
+                    update[LAST_ANSWER_KEY] = reading
+            await agent.write({**update, "ui": [marker]}, "offload")
 
             logger.info(
                 f"Manual offload completed for thread {thread_id}: "
                 f"{offloaded_args} tool args, {offloaded_reads} read results"
             )
 
+            next_summary = await read_next_summary(thread_id, values={**state.values, **update})
             return {
                 "success": True,
                 "thread_id": thread_id,
                 "message_count": len(messages),
                 "offloaded_args": offloaded_args,
                 "offloaded_reads": offloaded_reads,
+                "next_summary": None if next_summary is UNREAD else next_summary,
             }
 
     except HTTPException:
@@ -682,6 +883,8 @@ async def _hand_off(
                     thread_id, "handoff", config=config,
                     checkpointer=mutation.saver, user_id=user_id, held=held, role=role,
                 )
+                # Ends with ``held``, after the write and outside the timeout.
+                await held.enter_async_context(_recorded(agent, user_id, "handoff"))
                 try:
                     written = await agent.ask(HandOff())
                 except NoCompaction:

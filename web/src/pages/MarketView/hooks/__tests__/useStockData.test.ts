@@ -11,7 +11,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React from 'react';
 
 import type { SnapshotData } from '@/types/market';
-import type { ConnectionStatus } from '../useMarketDataWS';
 
 const quoteState = vi.hoisted(() => ({
   bySymbol: new Map<string, { quote: unknown; isLoading: boolean }>(),
@@ -45,10 +44,10 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return React.createElement(QueryClientProvider, { client: qc }, children);
 }
 
-function renderStock(selectedStock: string, wsStatus: ConnectionStatus = 'connected') {
+function renderStock(selectedStock: string, streamsLive = true) {
   return renderHook(
-    (props: { selectedStock: string; wsStatus: ConnectionStatus }) => useStockData(props),
-    { wrapper, initialProps: { selectedStock, wsStatus } },
+    (props: { selectedStock: string; streamsLive: boolean }) => useStockData(props),
+    { wrapper, initialProps: { selectedStock, streamsLive } },
   );
 }
 
@@ -78,8 +77,8 @@ describe('useStockData quote polling', () => {
     },
   );
 
-  it('polls a US equity once the socket is down', () => {
-    renderStock('AAPL', 'reconnecting');
+  it('polls a US equity once the socket is down or its print has aged out', () => {
+    renderStock('AAPL', false);
     expect(lastRefetchInterval()).toBe(60000);
   });
 });
@@ -92,7 +91,7 @@ describe('useStockData on a ticker switch', () => {
     expect(result.current.snapshotData?.currency).toBe('USD');
 
     quoteState.bySymbol.set('600519.SH', { quote: undefined, isLoading: true });
-    rerender({ selectedStock: '600519.SH', wsStatus: 'connected' });
+    rerender({ selectedStock: '600519.SH', streamsLive: true });
 
     expect(result.current.stockInfo).toBeNull();
     expect(result.current.realTimePrice).toBeNull();
@@ -105,7 +104,7 @@ describe('useStockData on a ticker switch', () => {
 
     const row: SnapshotData = { symbol: '600519.SH', price: 1500, currency: 'CNY', name: '贵州茅台' };
     quoteState.bySymbol.set('600519.SH', { quote: row, isLoading: false });
-    rerender({ selectedStock: '600519.SH', wsStatus: 'connected' });
+    rerender({ selectedStock: '600519.SH', streamsLive: true });
 
     expect(result.current.stockInfo?.Symbol).toBe('600519.SH');
     expect(result.current.realTimePrice?.price).toBe(1500);

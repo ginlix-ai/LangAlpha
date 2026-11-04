@@ -97,7 +97,9 @@ def _no_bundled_agents(monkeypatch):
 def unknown(monkeypatch) -> set[str]:
     """Model names the manifest lacks; every other name resolves."""
     names: set[str] = set()
-    monkeypatch.setattr(turn_subagents, "model_resolves", lambda _pref, name: name not in names)
+    from src.server.services.llm import claude_code
+
+    monkeypatch.setattr(claude_code, "model_resolves", lambda _pref, name: name not in names)
     return names
 
 
@@ -296,6 +298,19 @@ async def test_a_pin_the_manifest_lacks_runs_as_inherit_whoever_set_it(
 
     assert resolved.definitions["macro"].model is None
     assert resolved.definitions["macro-desk"].model is None
+    on_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_pin_on_a_claude_code_row_runs_as_inherit_whoever_set_it(rows, plugin_rows, on_plan):
+    """A subagent never runs on the Claude Code runtime, whichever writer pinned it."""
+    rows += [_custom("macro-desk", model="claude-sonnet-5-5-code")]
+    plugin_rows += [_plugin_row("desk", model="claude-haiku-5-5-code")]
+
+    resolved = await _resolve()
+
+    assert resolved.definitions["macro-desk"].model is None
+    assert resolved.definitions["desk"].model is None
     on_plan.assert_not_awaited()
 
 

@@ -7,11 +7,14 @@ from langchain_openai.chat_models._client_utils import StreamChunkTimeoutError
 
 from src.llms.error_classification import (
     NON_RETRYABLE_STATUSES,
+    UnfinishedReplyError,
     extract_status_code,
     is_context_overflow,
     is_programming_error,
     is_retryable_error,
+    is_mid_stream_error,
     is_stalled_stream,
+    refuses_input,
 )
 
 
@@ -354,3 +357,41 @@ class TestContextOverflow:
     )
     def test_other_failures_are_not(self, exc):
         assert not is_context_overflow(exc)
+
+
+class TestRefusesInput:
+    """OpenAI's SDK sets ``param`` from the error body; a 404 on ``input``
+    names an item the request sent that the server does not hold."""
+
+    def _sdk_error(self, param):
+        exc = Exception("Error code: 404")
+        exc.status_code = 404
+        exc.param = param
+        return exc
+
+    def test_the_param_on_the_error(self):
+        assert refuses_input(self._sdk_error("input"))
+
+    def test_found_through_the_cause_chain(self):
+        try:
+            try:
+                raise self._sdk_error("input")
+            except Exception as inner:
+                raise RuntimeError("model call failed") from inner
+        except RuntimeError as outer:
+            assert refuses_input(outer)
+
+    @pytest.mark.parametrize("param", [None, "model", "previous_response_id"])
+    def test_any_other_param_is_not(self, param):
+        assert not refuses_input(self._sdk_error(param))
+
+    def test_prose_naming_input_is_not(self):
+        assert not refuses_input(Exception("param: input"))
+
+
+class TestUnfinishedReplyError:
+    def test_is_retried_on_the_same_model(self):
+        assert is_retryable_error(UnfinishedReplyError("cut"))
+
+    def test_counts_as_a_failure_inside_an_open_stream(self):
+        assert is_mid_stream_error(UnfinishedReplyError("cut"))

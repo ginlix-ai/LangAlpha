@@ -20,11 +20,31 @@ from __future__ import annotations
 import asyncio
 import copy
 from collections.abc import Mapping, Sequence
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
+
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from typing_extensions import NotRequired
 
 from langgraph.channels import DeltaChannel
 
+from ptc_agent.agent.claude_code.relay import anthropic_content
+from ptc_agent.agent.pending_calls import pending_calls
+
 SESSION_SNAPSHOT_FREQUENCY = 250
+#: How long a step waits for the CLI's records behind the messages it commits.
+SETTLE_TIMEOUT_S = 10.0
+#: The state key holding the rules a Claude Code turn ran under
+#: (``CompactionRules.reading``), which ``compaction.next_summary`` reads
+#: between turns. Here rather than there because this module loads without
+#: the SDK, and the server reads the key on every thread to learn whether it
+#: needs the SDK at all.
+RULES_KEY = "_claude_code_rules"
+#: The record the CLI writes for a call a PreToolUse hook deferred.
+_DEFERRED = "hook_deferred_tool"
+#: What a record the CLI writes carries besides its own content, as a result
+#: it records takes it from the call's deferral, whose place in the chain
+#: (``uuid``) it takes too, so the records written after it still lead to it.
+_RECORD_KEYS = ("uuid", "parentUuid", "isSidechain", "timestamp", "userType", "entrypoint", "cwd", "sessionId", "version", "gitBranch")
 
 
 class SessionDrift(RuntimeError):
@@ -36,18 +56,61 @@ class SessionDrift(RuntimeError):
     """
 
 
+class ToolDefinition(TypedDict):
+    """A tool as a session offers it to Claude, kept for the session's life."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    read_only: bool
+
+
+class SessionPin(TypedDict):
+    """The system prompt and tool definitions a session runs on, byte for byte.
+
+    Claude's thinking is bound to the prefix in front of it, so every turn of
+    a session is launched from these rather than from what the current build
+    would send: a deploy that changes the prompt or a tool reaches a session
+    only where its prefix is rewritten anyway. The build's prompt sources and
+    ``prompt_version`` are kept beside them, to tell a deploy's change from
+    a change of per-turn inputs (``compaction.py``).
+    """
+
+    system_prompt: str
+    tools: list[ToolDefinition]
+    source_digest: NotRequired[str]
+    prompt_version: NotRequired[int]
+
+
 class SessionRecords(TypedDict, total=False):
-    """The channel's value: Claude's session id and its transcript, in write order."""
+    """The channel's value: Claude's session id, its transcript in write order,
+    the prompt and tools it runs on, the baseline epoch it was handed, and
+    whether the CLI compacted it on a pin the build of that run did not send,
+    which leaves it due the move that compaction was for (``repin_due``)."""
 
     session_id: str
     entries: list[dict[str, Any]]
+    pinned: SessionPin
+    baseline: str
+    repin_due: bool
 
 
 class SessionWrite(TypedDict):
-    """One write to the channel: records the CLI appended, in its order."""
+    """One write to the channel: records the CLI appended, in its order, and
+    the pin or baseline epoch the session holds from this write on, and
+    whether a pin it writes is one the session is due to move from."""
 
     session_id: str
     entries: list[dict[str, Any]]
+    pinned: NotRequired[SessionPin | None]
+    baseline: NotRequired[str]
+    repin_due: NotRequired[bool]
+
+
+def compacted(entry: Mapping[str, Any]) -> bool:
+    """Whether a record is the CLI compacting the session, which summarizes
+    away the turn its baseline was sent in."""
+    return entry.get("subtype") == "compact_boundary" or bool(entry.get("isCompactSummary"))
 
 
 def session_records_reducer(
@@ -59,32 +122,133 @@ def session_records_reducer(
     retried mirror batch harmless; one without (titles, mode markers) is
     appended as written. Folding two batches separately or together gives
     the same value, which ``DeltaChannel`` requires to replay its writes.
-    A write naming another session id starts that session over: the CLI
-    mints a new id only when it starts a new session, and nothing of the old
-    one is resumed after that.
+    A write naming another session id starts that session over, pin and
+    baseline included: the CLI mints a new id only when it starts a new
+    session, and nothing of the old one is resumed after that. A write's pin
+    and baseline apply ahead of its records, and a compaction among them
+    voids the baseline. The pin holds: the CLI records the prompt and tools
+    of the launch that compacted on its next request and replays that record
+    from then on, whatever a later launch passes, so the session goes on
+    running on the pin it was launched with. A write that names a pin says
+    whether the session is due to move from it, so a new pin clears it.
     """
-    session_id = (state or {}).get("session_id")
-    entries = list((state or {}).get("entries") or [])
+    state = state or {}
+    session_id = state.get("session_id")
+    entries = list(state.get("entries") or [])
+    pinned, baseline, due = state.get("pinned"), state.get("baseline"), state.get("repin_due", False)
     seen = {e["uuid"] for e in entries if e.get("uuid")}
     for w in (w for item in writes for w in ([item] if isinstance(item, dict) else item)):
         if session_id and w["session_id"] != session_id:
-            entries, seen = [], set()
+            entries, seen, pinned, baseline, due = [], set(), None, None, False
         session_id = w["session_id"]
+        pinned, baseline = w.get("pinned", pinned), w.get("baseline", baseline)
+        if "pinned" in w:
+            due = w.get("repin_due", False)
         for entry in w["entries"]:
             uid = entry.get("uuid")
             if uid in seen:
                 continue
             if uid:
                 seen.add(uid)
+            if compacted(entry):
+                baseline = None
             entries.append(entry)
     out: SessionRecords = {"entries": entries}
     if session_id:
         out["session_id"] = session_id
+    if pinned:
+        out["pinned"] = pinned
+    if baseline:
+        out["baseline"] = baseline
+    if due:
+        out["repin_due"] = True
     return out
+
+
+def pending_deferral(records: SessionRecords | None) -> str | None:
+    """The call the session holds deferred, which the CLI asks for again as it
+    resumes: the last one a PreToolUse hook put off, unless a result for it
+    followed, as the CLI itself reads the session. It never resumes more."""
+    entries = (records or {}).get("entries") or []
+    for i in range(len(entries) - 1, -1, -1):
+        if (tool_use_id := _deferred_call(entries[i])) is not None:
+            return None if any(_answers(e, tool_use_id) for e in entries[i + 1 :]) else tool_use_id
+    return None
+
+
+def awaiting_user(records: SessionRecords | None, messages: Sequence[BaseMessage]) -> bool:
+    """Whether a call the CLI deferred still waits for the user: the session
+    holds it deferred and the thread has no result for it yet."""
+    held = pending_deferral(records)
+    return held is not None and any(c["id"] == held for c in pending_calls(messages)[1])
+
+
+def resume_from(records: SessionRecords | None, messages: Sequence[BaseMessage]) -> tuple[list[dict[str, Any]], ToolMessage | None]:
+    """The records a new CLI resumes on, and the result it is handed for the
+    call the session holds deferred, which it asks for first.
+
+    It is handed the result only when the turn carries on from it. With a
+    message after the result (the run it resumed stopped before its CLI took
+    it, and the user wrote again), the call ran, so the session holds the
+    result in place of the deferral (``answered_in``) and the CLI goes on to
+    the prompt. With no result, the thread went on without the call. The CLI
+    is then resumed on a session with no record of the deferral, so it answers
+    the call as cut off, as it does a call a CLI that died held, and goes on
+    to the prompt. Left deferred, either would have the CLI ask Claude to
+    carry on from the call, in a query of its own the turn ends on, and the
+    prompt would never reach Claude.
+    """
+    entries = (records or {}).get("entries") or []
+    if (held := pending_deferral(records)) is None:
+        return entries, None
+    at = next((i for i, m in enumerate(messages) if isinstance(m, ToolMessage) and m.tool_call_id == held), None)
+    if at is None:
+        return [e for e in entries if _deferred_call(e) != held], None
+    if any(isinstance(m, HumanMessage) for m in messages[at + 1 :]):
+        return answered_in(entries, messages[at]), None
+    return entries, messages[at]
+
+
+def answered_in(entries: Sequence[Mapping[str, Any]], message: ToolMessage) -> list[dict[str, Any]]:
+    """``entries`` with the deferral of the call ``message`` answers in place of
+    the record the CLI writes for a result it is handed, for a launch that
+    must not ask for the call again: a compaction's CLI waits on a deferred
+    call with nothing to run it, and one handed the result first asks Claude
+    to carry on."""
+    content = anthropic_content(message)
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+    result = {"tool_use_id": message.tool_call_id, "type": "tool_result", "content": blocks,
+              **({"is_error": True} if message.status == "error" else {})}
+    return [
+        {**{k: e[k] for k in _RECORD_KEYS if k in e}, "type": "user",
+         "message": {"role": "user", "content": [result]}, "toolUseResult": blocks,
+         "sourceToolAssistantUUID": e.get("parentUuid")}
+        if _deferred_call(e) == message.tool_call_id else dict(e)
+        for e in entries
+    ]
+
+
+def _deferred_call(entry: Mapping[str, Any]) -> str | None:
+    """The call a record says a PreToolUse hook deferred, when it is such a record."""
+    attachment = entry.get("attachment") if entry.get("type") == "attachment" else None
+    return attachment.get("toolUseID") if isinstance(attachment, dict) and attachment.get("type") == _DEFERRED else None
+
+
+def _answers(entry: Mapping[str, Any], tool_use_id: str) -> bool:
+    content = (entry.get("message") or {}).get("content") if entry.get("type") == "user" else None
+    return any(isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == tool_use_id
+               for b in (content if isinstance(content, list) else ()))
 
 
 def session_channel() -> DeltaChannel:
     return DeltaChannel(session_records_reducer, snapshot_frequency=SESSION_SNAPSHOT_FREQUENCY)
+
+
+class SessionState(TypedDict):
+    """A checkpoint's Claude session alone, for a read that needs no other
+    channel: a status read through it takes about half the time."""
+
+    claude_session: NotRequired[Annotated[SessionRecords, session_channel()]]
 
 
 class Arrivals:
@@ -138,15 +302,36 @@ class CheckpointSessionStore:
         #: (session id, record), in the order the CLI wrote them.
         self._pending: list[tuple[str, dict[str, Any]]] = []
         self.arrived = Arrivals("session records")
+        #: The record of each tool result, by tool use id, including the ones
+        #: the CLI writes without saying so on its stream (a cut-off call's).
+        self.results = Arrivals("tool result records")
+        #: Each result's (record, block), by tool use id.
+        self.result_blocks: dict[str, tuple[str, dict[str, Any]]] = {}
+        #: The record of each call a hook deferred, by tool use id.
+        self.deferrals = Arrivals("deferred call records")
 
     async def append(self, key: dict[str, Any], entries: list[dict[str, Any]]) -> None:
         if key.get("subpath"):
             raise SessionDrift(f"the CLI wrote a {key['subpath']} transcript, which a turn never keeps")
-        self._pending.extend((key["session_id"], e) for e in copy.deepcopy(entries))
+        entries = copy.deepcopy(entries)
+        self._pending.extend((key["session_id"], e) for e in entries)
         await self.arrived.add({e["uuid"]: e["uuid"] for e in entries if e.get("uuid")})
+        results = {}
+        for e in entries:
+            content = (e.get("message") or {}).get("content") if e.get("type") == "user" and e.get("uuid") else None
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    self.result_blocks[block["tool_use_id"]] = (e["uuid"], block)
+                    results[block["tool_use_id"]] = e["uuid"]
+        await self.results.add(results)
+        await self.deferrals.add({call: e["uuid"] for e in entries if (call := _deferred_call(e)) and e.get("uuid")})
 
     async def load(self, key: dict[str, Any]) -> None:
         return None
+
+    def pending(self) -> list[dict[str, Any]]:
+        """The records appended since the last drain."""
+        return [e for _, e in self._pending]
 
     def drain(self, through: Sequence[str] = ()) -> list[SessionWrite]:
         """The records appended since the last drain, as channel writes.

@@ -89,6 +89,12 @@
   border-radius: 1rem;
 }
 
+/* At any width: a tablet keeps the composer's desktop inset, and the pan that
+   would have revealed it is gone (lib/visualViewport.ts). */
+html[data-keyboard-open] .dashboard-floating-chat-wrapper {
+  bottom: calc(var(--keyboard-overlap) + 8px) !important;
+}
+
 @media (max-width: 767px) {
   .dashboard-container { height: auto; min-height: 100%; overflow-y: auto; }
   .dashboard-floating-chat-wrapper { bottom: calc(var(--bottom-tab-height, 0px) + 8px) !important; }

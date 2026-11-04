@@ -19,7 +19,7 @@ from ptc_agent.agent.tools.computer_reach import (
     ran_elsewhere,
 )
 from ptc_agent.agent.tools import computer_reach
-from ptc_agent.core.paths import SandboxLayout
+from ptc_agent.core.paths import SandboxLayout, langalpha_config_dir
 from ptc_agent.core.project_context import (
     MachinePaths,
     ProjectContext,
@@ -436,7 +436,7 @@ OWN_MAC = ComputerTarget(
         workspace_id="",
         dir_name=None,
         sibling_dir_names=("semis",),
-        machine=MachinePaths(home=MAC_HOME),
+        machine=MachinePaths(home=MAC_HOME, denied=(langalpha_config_dir(MAC_HOME),)),
     ),
     root=MAC_ROOT,
 )
@@ -481,12 +481,50 @@ async def test_the_file_tools_reach_the_whole_of_a_machine_of_the_users_own(path
         # every prefix test above.
         ("//mnt/livefs/user/memory/notes.md", "ERROR: Memory, memos, the profile, automations and workflows are the same on every computer"),
         (f"/{MAC_ROOT}/_internal/x", f'ERROR: The file tools do not reach /{MAC_ROOT}/_internal/x on computer "Studio Mac".'),
+        # LangAlpha's own config there holds its Claude Code tokens.
+        ("~/.config/langalpha/claude-code/c1", 'ERROR: The file tools do not reach ~/.config/langalpha/claude-code/c1 on computer "Studio Mac".'),
+        (f"{MAC_HOME}/.config/langalpha", f'ERROR: The file tools do not reach {MAC_HOME}/.config/langalpha on computer "Studio Mac".'),
+        # A Mac's disk matches names whatever their case.
+        (f"{MAC_HOME}/.Config/LangAlpha/Claude-Code/c1", f'ERROR: The file tools do not reach {MAC_HOME}/.Config/LangAlpha/Claude-Code/c1 on computer "Studio Mac".'),
     ],
 )
 async def test_a_machine_of_the_users_own_still_refuses_what_no_turn_may_touch(path, says):
     tools = _tools(_Reach(OWN_MAC), build=lambda _t: {"Read": _read("there")})
     msg = await _call(tools.wrap(_read("here")), {"file_path": path, "computer": "Studio Mac"})
     assert says in msg.content
+
+
+def _xdg_mac(config_home: str) -> ComputerTarget:
+    return ComputerTarget(
+        computer_id=MAC.computer_id,
+        name=MAC.name,
+        session=SimpleNamespace(sandbox=_mac_sandbox()),
+        project=ProjectContext(
+            workspace_id="",
+            dir_name=None,
+            sibling_dir_names=("semis",),
+            machine=MachinePaths(home=MAC_HOME, denied=(langalpha_config_dir(MAC_HOME, config_home),)),
+        ),
+        root=MAC_ROOT,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config_home", "path", "refused"),
+    [
+        (f"{MAC_HOME}/cfg", f"{MAC_HOME}/cfg/langalpha/claude-code/c1", True),
+        (f"{MAC_HOME}/cfg", f"{MAC_HOME}/cfg/langalpha", True),
+        (f"{MAC_HOME}/cfg", f"{MAC_HOME}/cfg/other/settings.json", False),
+        # A relative one is ignored, as the XDG spec has it: ~/.config holds them.
+        ("cfg", f"{MAC_HOME}/.config/langalpha/claude-code/c1", True),
+        ("cfg", f"{MAC_ROOT}/cfg/langalpha/claude-code/c1", False),
+    ],
+)
+async def test_where_the_machine_names_a_config_home_langalphas_folder_there_is_refused(config_home, path, refused):
+    tools = _tools(_Reach(_xdg_mac(config_home)), build=lambda _t: {"Read": _read("there")})
+    msg = await _call(tools.wrap(_read("here")), {"file_path": path, "computer": "Studio Mac"})
+    assert (msg.content == f"there:{path}:None") is not refused, msg.content
 
 
 def test_a_search_there_reads_tilde_as_the_login_home():

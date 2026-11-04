@@ -10,7 +10,7 @@ from fastapi import File, UploadFile
 from pydantic import BaseModel
 from src.llms.preferences import (
     MOVED_MODEL_KEYS,
-    TUNING_FIELDS,
+    PROFILE_FIELDS,
     TuningError,
     validate_tuning,
 )
@@ -18,7 +18,7 @@ from src.utils.storage import get_public_url, upload_bytes
 
 from src.server.auth.jwt_bearer import get_current_auth_info, AuthInfo
 from src.server.database.pool import get_db_connection
-from src.server.dependencies.principal import CurrentPrincipal
+from src.server.dependencies.principal import CurrentPrincipal, ReadUserId
 from src.server.database.user import (
     create_user as db_create_user,
     create_user_from_auth,
@@ -40,6 +40,7 @@ from src.server.services.llm.custom_catalog import (
     validate_custom_models,
     validate_custom_providers,
 )
+from src.server.services.llm.payers import ModelPayer, model_payers
 from src.server.services.llm.thread_model import (
     DEFAULT_MODEL_KEYS,
     DEFAULT_MODEL_SCOPES,
@@ -77,22 +78,56 @@ class AuthSyncRequest(BaseModel):
 
 class AuthPrincipalResponse(BaseModel):
     user_id: str
-    auth: Literal["session", "oauth"]
+    auth: Literal["session", "service", "oauth", "pat", "computer"]
     client_id: Optional[str] = None
     scopes: list[str]
+    # The computer a computer's token belongs to.
+    computer_id: Optional[str] = None
 
 
 @router.get("/auth/principal", response_model=AuthPrincipalResponse)
 async def get_auth_principal(principal: CurrentPrincipal):
-    """Who is calling: a first-party session, or an outside app and what it may do.
-
-    The one route an outside app's token reaches until routes declare scopes.
-    """
+    """Who is calling and, for a token, what it may do. Every token reaches
+    it, whatever its scopes, so a client can show who it signed in as."""
     return AuthPrincipalResponse(
         user_id=principal.user_id,
         auth=principal.auth,
         client_id=principal.client_id,
         scopes=list(principal.scopes),
+        computer_id=principal.computer_id,
+    )
+
+
+class CliAuthResponse(BaseModel):
+    # False on a server that asks no credential (oss mode).
+    auth_required: bool
+    # Where `la login` signs in, the issuer's discovery document beside it;
+    # null when this server takes no sign-in from the CLI.
+    issuer: Optional[str] = None
+    client_id: Optional[str] = None
+    # What `la login` asks the issuer for besides who the user is: the API
+    # scopes where this server reads them from the token itself, none where
+    # the platform grants them from the user's consent and plan.
+    scopes: list[str]
+    personal_access_tokens: bool
+
+
+@router.get("/auth/cli", response_model=CliAuthResponse)
+async def get_cli_auth():
+    """How the ``la`` CLI signs in to this server. Public: the CLI asks before
+    it holds any credential."""
+    from src.config.env import AUTH_SERVICE_URL, OAUTH_CLI_CLIENT_ID, OAUTH_RESOURCE_ISSUER
+    from src.config.settings import HOST_MODE
+    from src.server.auth.oauth_resource import oauth_resource_enabled
+    from src.server.services.cli_tokens import SCOPES
+
+    signs_in = oauth_resource_enabled() and bool(OAUTH_CLI_CLIENT_ID)
+    return CliAuthResponse(
+        auth_required=HOST_MODE != "oss",
+        issuer=OAUTH_RESOURCE_ISSUER if signs_in else None,
+        client_id=OAUTH_CLI_CLIENT_ID if signs_in else None,
+        scopes=[] if AUTH_SERVICE_URL else list(SCOPES),
+        personal_access_tokens=bool(AUTH_SERVICE_URL),
     )
 
 
@@ -371,12 +406,12 @@ def _validate_model_tuning(model_pref: dict, effective: dict) -> None:
                 )
             # Anything outside the tuning set is a typo that would sit in the
             # row forever doing nothing, so it is rejected at the boundary.
-            unknown = set(profile) - set(TUNING_FIELDS)
+            unknown = set(profile) - set(PROFILE_FIELDS)
             if unknown:
                 raise HTTPException(
                     status_code=400,
                     detail=f"profiles[{model}]: unknown settings {sorted(unknown)}; "
-                           f"allowed: {sorted(TUNING_FIELDS)}",
+                           f"allowed: {sorted(PROFILE_FIELDS)}",
                 )
             # One entry, resolved the way the resolver resolves it: a custom
             # model shadows a built-in of the same name, so reading the
@@ -657,6 +692,23 @@ async def delete_preferences(user_id: CurrentUserId):
 
     logger.info(f"Cleared preferences and reset onboarding for user {user_id}")
     return {"success": True, "message": "Preferences cleared"}
+
+
+class UserModelsResponse(BaseModel):
+    models: list[ModelPayer]
+
+
+@router.get(
+    "/users/me/models",
+    response_model=UserModelsResponse,
+    response_model_exclude_unset=True,
+)
+async def list_my_models(user_id: ReadUserId):
+    """The models this user can pick and who pays for each, for the ``la``
+    CLI's model list. ``/api/v1/models`` is the deployment's catalog, the same
+    for everyone, and cannot say whose key or plan a model runs on. A row
+    leaves out what it has no answer for (``plan``, ``signed_in``, ``needs``)."""
+    return UserModelsResponse(models=await model_payers(user_id))
 
 
 @router.post("/users/me/avatar", response_model=dict)

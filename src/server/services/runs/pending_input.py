@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
 
+from src.server.contracts.status import is_user_stop
 from src.server.contracts.turn_kinds import WAKE_QUERY_TYPE
 from src.server.models.chat import ChatMessage, ChatRequest, ReportSource
 from src.server.models.workflow import RetryRequest
@@ -138,6 +139,37 @@ def read_pending_input(run: Optional[Mapping[str, Any]]) -> Optional[PendingInpu
         resend=pending.get("resend") is True,
         context=pending.get("context") is True,
     )
+
+
+def can_retry(run: Mapping[str, Any]) -> bool:
+    """Whether ``/retry`` may run this attempt again.
+
+    A failed run, or one a disconnect cancelled before the graph took its
+    input: nothing ran, and the client whose connection died during setup
+    still wants its answer. One the user stopped stays stopped.
+    """
+    status = run.get("status")
+    if status == "error":
+        return True
+    return (
+        status == "cancelled"
+        and read_pending_input(run) is not None
+        and not is_user_stop(run)
+    )
+
+
+async def cache_clock_attempt(
+    thread_id: str, latest: Optional[Mapping[str, Any]]
+) -> Optional[Mapping[str, Any]]:
+    """The attempt whose settle time the thread's prompt cache counts from
+    (``run_settled_at``): ``latest``, its newest attempt, unless that one's
+    input never reached the graph, so it made no model call and refreshed no
+    cache; then the newest attempt whose input did, read again."""
+    if read_pending_input(latest) is None:
+        return latest
+    from src.server.database.runs import lifecycle as tl_db
+
+    return await tl_db.get_latest_attempt(thread_id, without_key=PENDING_INPUT_KEY)
 
 
 def needs_resend(stamp: Mapping[str, Any]) -> bool:
@@ -284,4 +316,5 @@ async def input_rerun_request(
         llm_model=body.llm_model if body else None,
         reasoning_effort=body.reasoning_effort if body else None,
         fast_mode=body.fast_mode if body else None,
+        keep_full_context=bool(body and body.keep_full_context),
     )

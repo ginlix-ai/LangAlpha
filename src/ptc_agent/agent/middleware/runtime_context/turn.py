@@ -80,6 +80,16 @@ NOTES_DUE_ROW_KIND = "notes_due"
 #: ``update_row.md.j2`` hardcodes the same way.
 NOTES_CHECK_IN_ROW_KIND = "notes_check_in"
 
+#: Row kind of the ask to bring the notes up to date before a summary that
+#: keeps no turn mid-turn (``compaction/notes.py``), which
+#: ``update_row.md.j2`` hardcodes the same way.
+REBUILD_NOTES_ROW_KIND = "rebuild_notes"
+
+#: Row kind of the last step's calls and results that such a summary carries
+#: (``compaction/carry.py``), which ``update_row.md.j2`` hardcodes the same
+#: way.
+LAST_STEP_ROW_KIND = "last_step"
+
 #: Row kind of the ask to answer before the turn's time runs out, which
 #: ``update_row.md.j2`` hardcodes the same way.
 TIME_UP_ROW_KIND = "turn_time_up"
@@ -98,14 +108,16 @@ MARKET_WATCH_ROW_KIND = "market_watch"
 WAKEUP_CANCELLED_ROW_KIND = "wakeup_cancelled"
 
 #: Rows that speak for no block, so a rebuild neither folds them in nor
-#: retires them, but a summary carries them: nobody states them again, and
-#: the user's cancel of a wakeup holds whatever the blocks say.
-NOTICE_ROW_KINDS = frozenset({WAKEUP_CANCELLED_ROW_KIND})
+#: retires them, but a summary carries them: nobody states them again, the
+#: user's cancel of a wakeup holds whatever the blocks say, and a carried step
+#: holds results the work goes on from.
+NOTICE_ROW_KINDS = frozenset({WAKEUP_CANCELLED_ROW_KIND, LAST_STEP_ROW_KIND})
 
 #: Rows that are no change under the baseline: their writers state them again
 #: once a compaction takes them from view (the notes reminder before the next
-#: summary, the check-in after the next run of tool calls, the time-up ask on
-#: the next call, the live prices on the next fetch), so a rebuild does not
+#: summary, the check-in after the next run of tool calls, the ask before a
+#: mid-turn rebuild at the next one, the time-up ask on the next call, the
+#: live prices on the next fetch), so a rebuild does not
 #: count them and a summary does not carry them. The withdrawal of a time-up ask answers only that ask, which a
 #: summary does not carry either, so it has nothing to answer once both are
 #: out of view.
@@ -115,6 +127,7 @@ NON_CHANGE_ROW_KINDS = frozenset(
         SUBAGENTS_ROW_KIND,
         NOTES_DUE_ROW_KIND,
         NOTES_CHECK_IN_ROW_KIND,
+        REBUILD_NOTES_ROW_KIND,
         TIME_UP_ROW_KIND,
         TIME_UP_WITHDRAWN_ROW_KIND,
         MARKET_WATCH_ROW_KIND,

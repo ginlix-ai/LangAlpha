@@ -785,6 +785,7 @@ describe('ComputersDialog: removing a computer', () => {
     });
 
     const KEY = { used_by: null, fingerprint: 'SHA256:abc/def+', comment: 'langalpha' };
+    const TOKEN_PATH = `~/.config/langalpha/claude-code/${SECOND_ID}`;
     const BY_HAND =
       ' To remove it yourself, delete the line ending in langalpha from ~/.ssh/authorized_keys. Its fingerprint is SHA256:abc/def+.';
     it.each([
@@ -814,6 +815,19 @@ describe('ComputersDialog: removing a computer', () => {
         'We could not reach the machine, so our key is still there.',
         true,
       ],
+      [
+        'a Claude Code token left there',
+        { key: null, token: { outcome: 'unreached', path: TOKEN_PATH } },
+        `We could not reach the machine, so its Claude Code token is still there. To remove it yourself, delete ${TOKEN_PATH} on it.`,
+        true,
+      ],
+      [
+        'a Claude Code token the machine could not delete',
+        { key: null, token: { outcome: 'failed', path: '/srv/cfg/langalpha/claude-code/token' } },
+        'We could not remove its Claude Code token from the machine. To remove it yourself, delete /srv/cfg/langalpha/claude-code/token on it.',
+        true,
+      ],
+      ['no token left', { key: null, token: null }, undefined, false],
     ])('tells the outcome: %s', async (_case, res, description, stays) => {
       mockDelete.mockResolvedValue(res);
       await confirmSsh(userEvent.setup());

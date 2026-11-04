@@ -17,13 +17,33 @@ try:
 except ModuleNotFoundError:  # imported as a package module (tests)
     from mcp_servers._bootstrap import MCPServer
 
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import pandas as pd
 import yfinance as yf
 
 from mcp_servers._envelope import make_error, make_response
-from mcp_servers._schemas import OBJECT, RECORDS, STR, envelope_schema, output_model
+from mcp_servers._schemas import (
+    BOOL,
+    OBJECT,
+    RECORDS,
+    STR,
+    envelope_schema,
+    output_model,
+)
 from mcp_servers._yf_common import clean_value, safe_detail, serialize_records
 
 SOURCE = "yfinance"
+
+# Yahoo caps a calendar page at 100 rows, and the calendar covers US listings.
+_CALENDAR_ROWS = 100
+_CALENDAR_ZONE = "America/New_York"
+
+# A quote whose last regular-session trade is older than the newest one in the
+# result by more than this did not trade in the session the rest are ranked on.
+# Sessions on different continents sit well inside it.
+_STALE_AFTER_SECONDS = 18 * 3600
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +101,7 @@ def search_tickers(query: str, max_results: int = 8, news_count: int = 5) -> _OU
 
 _OUT_GET_MARKET_STATUS = output_model(
     "GetMarketStatusOut",
-    envelope_schema(OBJECT, echo={"market": STR}),
+    envelope_schema(OBJECT, frame=("timezone",), echo={"market": STR}),
 )
 
 
@@ -96,17 +116,27 @@ def get_market_status(market: str = "US") -> _OUT_GET_MARKET_STATUS:
         market: Market code (see above; default "US").
 
     Returns:
-        dict: {market, count, data, source}. data is {status, summary}, both
-        Yahoo-native: status holds open/close times and timezone fields,
-        summary is keyed by exchange/index with price and change fields. count
-        is 1 (one status snapshot). On error: {error, detail} with error
-        upstream_error.
+        dict: {market, timezone, count, data, source}. data is
+        {status, summary}, both Yahoo-native: status holds open/close times
+        ("YYYY-MM-DD HH:MM:SS" in `timezone`) and timezone fields, summary is
+        keyed by exchange/index with price and change fields. count is 1. On
+        error: {error, detail} with error upstream_error.
     """
     try:
         m = yf.Market(market)
+        status = m.status
+        zone = None
+        if isinstance(status, dict):
+            status = dict(status)
+            zone = (status.get("timezone") or {}).get("$text")
+            if zone:
+                for key in ("open", "close"):
+                    if isinstance(status.get(key), datetime):
+                        status[key] = status[key].astimezone(ZoneInfo(zone))
         return make_response(
-            clean_value({"status": m.status, "summary": m.summary}),
+            clean_value({"status": status, "summary": m.summary}),
             source=SOURCE,
+            timezone=zone or "UTC",
             market=market,
             count=1,
         )
@@ -126,23 +156,23 @@ def screen_stocks(
     sort_asc: bool = False,
     count: int = 25,
 ) -> _OUT_SCREEN_STOCKS:
-    """Screen equities with custom Yahoo filters — find stocks matching
-    numeric/categorical criteria.
+    """Screen equities with Yahoo filters on numeric/categorical criteria.
     Each filter is {operator, operands}; operators: gt, lt, gte, lte, eq, btwn,
-    is-in, and, or. E.g. {"operator": "gt", "operands": ["percentchange", 3]},
-    or nested with and/or. Multiple top-level filters are auto-wrapped in AND.
+    is-in, and, or (nest with and/or; top-level filters are AND-ed). E.g.
+    {"operator": "gt", "operands": ["percentchange", 3]}.
 
     Args:
         filters: List of filter dicts (see above).
         sort_field: Field to sort by (default "percentchange").
-        sort_asc: Ascending if True (default False = descending).
+        sort_asc: Ascending if True (default False).
         count: Max rows (default 25, max 250).
 
     Returns:
         dict: {count, data, source}. data is the Yahoo-native screen result
         {quotes: [...], ...}; quotes are raw Yahoo quote dicts ordered by
-        sort_field, count is the number returned. On error: {error, detail} —
-        invalid_argument (names the bad field/operator) | upstream_error.
+        sort_field, plus stale_price? (true: last trade over 18h before the
+        result's newest quote). On error: {error, detail} —
+        invalid_argument | upstream_error.
     """
     try:
         if len(filters) == 1:
@@ -152,8 +182,22 @@ def screen_stocks(
         result = clean_value(
             yf.screen(query, sortField=sort_field, sortAsc=sort_asc, size=count)
         )
-        n = len(result.get("quotes", [])) if isinstance(result, dict) else 0
-        return make_response(result, source=SOURCE, count=n)
+        quotes = result.get("quotes", []) if isinstance(result, dict) else []
+        traded = [
+            q["regularMarketTime"]
+            for q in quotes
+            if isinstance(q.get("regularMarketTime"), (int, float))
+        ]
+        newest = max(traded, default=None)
+        for q in quotes:
+            last = q.get("regularMarketTime")
+            if (
+                newest is not None
+                and isinstance(last, (int, float))
+                and newest - last > _STALE_AFTER_SECONDS
+            ):
+                q["stale_price"] = True
+        return make_response(result, source=SOURCE, count=len(quotes))
     except (ValueError, TypeError) as e:
         # Local EquityQuery validation — names the bad field/operator and
         # carries no URLs, unlike yfinance I/O errors (requests exceptions),
@@ -204,7 +248,9 @@ def get_predefined_screen(screen_name: str) -> _OUT_GET_PREDEFINED_SCREEN:
 
 _OUT_GET_EARNINGS_CALENDAR = output_model(
     "GetEarningsCalendarOut",
-    envelope_schema(RECORDS, echo={"start": STR, "end": STR}),
+    envelope_schema(
+        RECORDS, frame=("timezone",), echo={"start": STR, "end": STR, "truncated": BOOL}
+    ),
 )
 
 
@@ -212,22 +258,55 @@ _OUT_GET_EARNINGS_CALENDAR = output_model(
 def get_earnings_calendar(start: str, end: str) -> _OUT_GET_EARNINGS_CALENDAR:
     """Earnings announcements scheduled within a date range. Use to find which
     companies report in a window.
+    US listings only; at most 100 rows.
 
     Args:
         start: Start date "YYYY-MM-DD".
-        end: End date "YYYY-MM-DD".
+        end: End date "YYYY-MM-DD", inclusive.
 
     Returns:
-        dict: {start, end, count, data, source}. data is a list of records
-        {symbol, company, marketcap, event_start_date, timing, eps_estimate,
-        reported_eps, surprise_pct}, in Yahoo's native order; event_start_date
-        is "YYYY-MM-DD HH:MM:SS" exchange-local. Field names are Yahoo-native.
-        On error: {error, detail} with error upstream_error.
+        dict: {start, end, timezone, count, data, source, truncated?}. data is
+        a list of records {symbol, company (may be null), marketcap,
+        event_start_date, timing, eps_estimate, reported_eps, surprise_pct},
+        largest marketcap first; event_start_date is "YYYY-MM-DD HH:MM:SS" in
+        `timezone`. Field names are Yahoo-native. truncated: true if a size
+        cap cut the smallest-cap rows. On error: {error, detail} —
+        invalid_argument | upstream_error.
     """
     try:
-        cal = yf.Calendars(start=start, end=end)
-        records = serialize_records(cal.earnings_calendar)
-        return make_response(records, source=SOURCE, start=start, end=end)
+        first = date.fromisoformat(start)
+        after = date.fromisoformat(end) + timedelta(days=1)
+    except ValueError:
+        return make_error(
+            "invalid_argument",
+            "start and end must be YYYY-MM-DD dates.",
+            start=start,
+            end=end,
+        )
+    try:
+        # Yahoo reads end as midnight, so the last day needs the day after;
+        # the default query is also the 12 most active names, newest day first.
+        cal = yf.Calendars(start=first.isoformat(), end=after.isoformat())
+        rows = cal.get_earnings_calendar(
+            filter_most_active=False, limit=_CALENDAR_ROWS, force=True
+        )
+        cut = {"truncated": True} if len(rows) >= _CALENDAR_ROWS else {}
+        if rows.empty:
+            return make_response(
+                [], source=SOURCE, timezone=_CALENDAR_ZONE, start=start, end=end
+            )
+        rows = rows[rows["Event Start Date"] < pd.Timestamp(after, tz="UTC")]
+        rows = rows.assign(
+            **{"Event Start Date": rows["Event Start Date"].dt.tz_convert(_CALENDAR_ZONE)}
+        ).sort_values("Marketcap", ascending=False)
+        return make_response(
+            serialize_records(rows),
+            source=SOURCE,
+            timezone=_CALENDAR_ZONE,
+            start=start,
+            end=end,
+            **cut,
+        )
     except Exception as e:  # noqa: BLE001
         return make_error(
             "upstream_error",

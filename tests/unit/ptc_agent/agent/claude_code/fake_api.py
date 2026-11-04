@@ -7,15 +7,20 @@ request is answered from a script chosen by what the conversation holds, and
 every request body is kept so a test can check what the CLI sent.
 
 With ``first_party=True`` the CLI keeps its own API host and signs in with a
-dummy OAuth token, so it sends the request a Claude plan login sends (the
+dummy setup token (``TOKEN``, the launcher's to hand over), so it sends the
+request a Claude plan login sends (the
 1h cache, the billing header, request diagnostics): its ``HTTPS_PROXY`` is a
 tunnel to a TLS listener that answers as api.anthropic.com with a throwaway
 CA, trusted through ``NODE_EXTRA_CA_CERTS`` in the CLI's environment only.
 
 - ``RUN_TOOL`` in the newest user text: call the ``Bash`` tool once; once the
   turn holds its result, answer quoting it.
+- ``CALLS <name>:<command> ...``: make each call in one message, in order, with
+  the command as its input; answer once the turn holds their results.
 - ``RECALL``: answer with every earlier ``FACT:`` line the CLI sent.
 - ``FAIL_AUTH`` / ``FAIL_LIMIT``: refuse with 401 / 429.
+- ``overloaded_after_compaction``: answer that many requests that resume
+  from a compaction's summary with 529.
 - ``MAX_TOKENS``: answer ``part one`` and stop at the output limit, so the CLI
   continues the reply in a request of its own.
 - Anything else: ``ECHO <text>``.
@@ -36,6 +41,8 @@ from typing import Any
 from aiohttp import web
 
 API_HOST = "api.anthropic.com"
+#: The dummy setup token a first-party test launches with.
+TOKEN = "sk-ant-oat01-" + "0" * 80
 
 
 def _sse(event: str, data: dict[str, Any]) -> bytes:
@@ -71,6 +78,10 @@ def plan(body: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(content, list):
             content = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
         return [think, {"type": "text", "text": f"The tool said: {str(content).strip()[:300]}"}]
+    if "CALLS" in prompt:
+        calls = [word.split(":", 1) for word in prompt.split("CALLS", 1)[1].split()]
+        return [think, *({"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": name, "input": {"command": command}}
+                         for name, command in calls)]
     if "RUN_TOOL" in prompt and any(t.get("name") == "Bash" for t in body.get("tools", [])):
         return [think, {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": "Bash",
                         "input": {"command": "echo spike-$((6*7))"}}]
@@ -128,9 +139,17 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
 class FakeMessagesAPI:
     """The server and the request bodies it was sent."""
 
-    def __init__(self, *, first_party: bool = False) -> None:
+    def __init__(self, *, first_party: bool = False, refused: frozenset[str] = frozenset(),
+                 overloaded_after_compaction: int = 0) -> None:
         self.first_party = first_party
+        #: Credentials answered with a 401, as Anthropic answers a revoked token.
+        self.refused = refused
+        self.overloaded_after_compaction = overloaded_after_compaction
         self.requests: list[dict[str, Any]] = []
+        #: The credential each request carried: its bearer token, else its API key.
+        self.credentials: list[str | None] = []
+        #: The API key header each request carried, if any.
+        self.api_keys: list[str | None] = []
         self._runner: web.AppRunner | None = None
         self._tunnel: asyncio.Server | None = None
         self._dir = tempfile.TemporaryDirectory(prefix="fake-api-")
@@ -164,11 +183,11 @@ class FakeMessagesAPI:
         self._dir.cleanup()
 
     def cli_env(self) -> dict[str, str]:
-        """What the CLI's environment needs to reach this API, with a dummy credential."""
+        """What the CLI's environment needs to reach this API: a dummy key, or first-party the route to it alone."""
         if not self.first_party:
             return {"ANTHROPIC_BASE_URL": self.url, "ANTHROPIC_API_KEY": "sk-ant-test-fake"}
         proxy = f"http://127.0.0.1:{self._tunnel.sockets[0].getsockname()[1]}"  # type: ignore[union-attr]
-        return {"HTTPS_PROXY": proxy, "NODE_EXTRA_CA_CERTS": self._ca, "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-" + "0" * 80}
+        return {"HTTPS_PROXY": proxy, "NODE_EXTRA_CA_CERTS": self._ca}
 
     async def _connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int) -> None:
         """A CONNECT to api.anthropic.com reaches the TLS listener; any other host is refused."""
@@ -189,7 +208,17 @@ class FakeMessagesAPI:
     async def _messages(self, request: web.Request) -> web.StreamResponse:
         body = await request.json()
         self.requests.append(body)
+        auth = request.headers.get("authorization", "")
+        credential = auth.removeprefix("Bearer ") if auth else request.headers.get("x-api-key")
+        self.credentials.append(credential)
+        self.api_keys.append(request.headers.get("x-api-key"))
+        if credential in self.refused:
+            return web.json_response({"type": "error", "error": {"type": "authentication_error", "message": "invalid token"}}, status=401)
         prompt = " ".join(t for blocks in _user_blocks(body)[-1:] for t in _texts(blocks))
+        opening = " ".join(t for blocks in _user_blocks(body)[:1] for t in _texts(blocks))
+        if self.overloaded_after_compaction and opening.startswith("This session is being continued"):
+            self.overloaded_after_compaction -= 1
+            return web.json_response({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}, status=529)
         for word, (status, kind) in {"FAIL_AUTH": (401, "authentication_error"), "FAIL_LIMIT": (429, "rate_limit_error")}.items():
             if word in prompt:
                 return web.json_response({"type": "error", "error": {"type": kind, "message": word}}, status=status)

@@ -59,7 +59,7 @@ def test_a_pattern_expanding_past_the_cap_is_refused():
 
 
 def _find(pattern: str, root) -> list[str]:
-    found = find(pattern, str(root), [], {}, "/nonexistent-mount")
+    found = find(pattern, str(root), [], {}, "/nonexistent-mount", ())
     return [os.path.relpath(path, root) for path in found]
 
 

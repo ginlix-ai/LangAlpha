@@ -56,7 +56,7 @@ PROBED_SURFACES: tuple[Surface, ...] = (Surface.INTRADAY, Surface.DAILY, Surface
 
 class CellKey(BaseModel, frozen=True):
     # Routing token (``market_of``): us / cn / hk / jp / kr / tw / sg / in / au /
-    # ca / uk / eu / crypto / fx / other.
+    # ca / uk / eu / crypto / fx / futures / other.
     market: str
     asset_class: AssetClass
     surface: Surface

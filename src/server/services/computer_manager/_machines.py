@@ -515,7 +515,7 @@ class MachineLifecycleMixin:
         if status == ComputerStatus.STOPPED:
             # While the row still reads 'stopping', so no start can have minted
             # a token this would end.
-            await self._revoke_data_token(computer_id)
+            await self._revoke_computer_tokens(computer_id)
             await self._revoke_livefs(computer_id)
         if (
             await update_computer_status(computer_id, status, expected="stopping")
@@ -692,7 +692,7 @@ class MachineLifecycleMixin:
                     # (a paused sandbox resumes with its processes), and its
                     # file still holds the token the stop revoked. The row
                     # already names this sandbox, so the save's fence holds.
-                    await self._keep_data_token(computer_id, user_id, session.sandbox)
+                    await self._keep_computer_tokens(computer_id, user_id, session.sandbox)
             if not reconnected:
                 await self._publish_build_stage(computer_id, "sandbox")
                 await session.initialize(
@@ -821,7 +821,7 @@ class MachineLifecycleMixin:
                 # What starts with the machine (an always-on app) reads market
                 # data before any acquire writes a token. A built sandbox takes
                 # one only now, as the save is fenced on the row naming it.
-                await self._keep_data_token(computer_id, user_id, session.sandbox)
+                await self._keep_computer_tokens(computer_id, user_id, session.sandbox)
             await update_computer_activity(computer_id)
             logger.info(
                 f"Computer {computer_id} is running on sandbox {sandbox_id} "
@@ -863,7 +863,7 @@ class MachineLifecycleMixin:
         if reverted is not None:
             # A reconnect writes the token before the start can still fail, and
             # the resumed sandbox is left running: stopped revokes, as a stop does.
-            await self._revoke_data_token(computer_id)
+            await self._revoke_computer_tokens(computer_id)
 
     async def _claim_start_with_capacity(
         self, computer_id: str, *, from_status: str,

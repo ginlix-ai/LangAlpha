@@ -24,7 +24,9 @@ from src.data_client.instrument_clock import clock_for
 from src.server.services.cache._ohlcv_envelope import (
     _is_stale_date,
     _needs_refresh,
+    bars_from,
     is_watermark_stale,
+    window_covers,
 )
 from src.server.services.cache._series_cache_core import (
     _SeriesCacheCore,
@@ -314,6 +316,12 @@ class IntradayCacheService(_SeriesCacheCore):
             normalized, interval, from_date, to_date, is_index, live=live,
         )
         is_live = IntradayCacheKeyBuilder._is_live(to_date) if live is None else live
+        if envelope is not None and is_live and not window_covers(envelope, from_date, clock.tz):
+            logger.info(
+                "Cache %s %s: cached window does not reach from=%s → fetch and extend",
+                normalized, interval, from_date,
+            )
+            envelope = None
 
         if envelope is not None:
             bars = envelope["bars"]
@@ -345,7 +353,7 @@ class IntradayCacheService(_SeriesCacheCore):
                     _, fresh = await self._find_cached(
                         normalized, interval, from_date, to_date, is_index, live=live,
                     )
-                    if fresh is not None:
+                    if fresh is not None and (not is_live or window_covers(fresh, from_date, clock.tz)):
                         fresh_elapsed = time.time() - fresh.get("fetched_at", 0)
                         if not _should_discard_envelope(fresh, interval=interval, elapsed=fresh_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live, clock=clock):
                             envelope = fresh
@@ -379,7 +387,7 @@ class IntradayCacheService(_SeriesCacheCore):
                 return IntradayFetchResult(
                     symbol=normalized,
                     interval=interval,
-                    data=bars,
+                    data=bars_from(bars, from_date, clock.tz),
                     cached=True,
                     ttl_remaining=ttl_remaining,
                     background_refresh_triggered=bg_triggered,
@@ -409,7 +417,7 @@ class IntradayCacheService(_SeriesCacheCore):
             return IntradayFetchResult(
                 symbol=normalized,
                 interval=interval,
-                data=data,
+                data=bars_from(data, from_date, clock.tz),
                 cached=False,
                 ttl_remaining=new_envelope["stored_ttl"],
                 background_refresh_triggered=False,
@@ -513,10 +521,13 @@ class IntradayCacheService(_SeriesCacheCore):
 
             if envelope is not None:
                 env_elapsed = time.time() - envelope.get("fetched_at", 0)
-                if _should_discard_envelope(envelope, interval=interval, elapsed=env_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live, clock=clock):
+                if (
+                    (is_live and not window_covers(envelope, from_date, clock.tz))
+                    or _should_discard_envelope(envelope, interval=interval, elapsed=env_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live, clock=clock)
+                ):
                     cache_misses.append(sym)
                     return
-                results[normalized] = envelope["bars"]
+                results[normalized] = bars_from(envelope["bars"], from_date, clock.tz)
                 resolved_keys[sym] = key
                 cache_hits += 1
                 # Historical windows never background-delta-refresh: the delta
@@ -546,7 +557,7 @@ class IntradayCacheService(_SeriesCacheCore):
                             key, normalized, interval, from_date, to_date, is_index, user_id,
                             phase=phase, clock=clock, base_ttl=base_ttl,
                         )
-                        results[normalized] = data
+                        results[normalized] = bars_from(data, from_date, clock.tz)
 
                     except Exception as e:
                         logger.error(f"Failed to fetch {sym}: {e}")

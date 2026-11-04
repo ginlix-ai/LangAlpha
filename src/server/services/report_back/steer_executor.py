@@ -138,6 +138,7 @@ async def execute_steer(job: dict) -> None:
             "platform": payload.get("platform"),
             "request_key": payload.get("request_key") or steer_request_key(job_id),
             "steer_job_id": job_id,
+            "artifact_comments": payload.get("artifact_comments"),
         }
     else:
         body = await _agent_steer_body(payload, job_id, workspace_id, thread_id)
@@ -170,6 +171,14 @@ async def execute_steer(job: dict) -> None:
         return
     if outcome in ("deleted", "drop"):
         await finish("dropped")
+        if payload.get("artifact_comments") and payload.get("request_key"):
+            from src.server.services.artifacts.comments import give_back_unread
+
+            await give_back_unread(
+                user_id=user_id,
+                thread_id=thread_id,
+                request_key=payload["request_key"],
+            )
         return
     await _settle_dispatched(job, attempts, run_id, fence, finish)
 

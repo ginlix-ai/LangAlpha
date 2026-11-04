@@ -645,7 +645,7 @@
       },
       {
         "name": "get_technical_indicator",
-        "description": "Fetch a technical indicator time series over OHLCV bars — plot RSI,\noverlay EMA/MACD, or screen by technical signals.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    indicator: FMP name — \"rsi\", \"ema\", \"sma\", \"wma\", \"adx\", \"williams\".\n    period: Indicator lookback length (default 14).\n    timeframe: FMP-native bar — \"1min\"…\"4hour\", \"1day\" (default \"1day\").\n\nReturns:\n    dict: {symbol, count, data, source, data_type, indicator, period,\n    timeframe}. data is a list of bars; count is the bar total. Fields: date,\n    open, high, low, close, volume, and the indicator value keyed by its\n    name. date is \"YYYY-MM-DD\" (1day) or \"YYYY-MM-DD HH:MM:SS\"\n    (intraday); field names are FMP-native camelCase; bars newest-first.\n    On error: {error: <code>, detail, symbol}.\n",
+        "description": "Fetch a technical indicator time series over OHLCV bars.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    indicator: FMP name — \"rsi\", \"ema\", \"sma\", \"wma\", \"adx\", \"williams\".\n    period: Lookback length (default 14).\n    timeframe: FMP-native bar — \"1min\"…\"4hour\", \"1day\" (default \"1day\").\n\nReturns:\n    dict: {symbol, count, data, source, data_type, indicator, period,\n    timeframe, price_treatment, in_progress?}. data: list of {date, open,\n    high, low, close, volume, <indicator>} newest first, field names\n    FMP-native camelCase. date is \"YYYY-MM-DD\" (1day) or\n    \"YYYY-MM-DD HH:MM:SS\" (intraday). price_treatment:\n    raw|split_adjusted|dividend_adjusted. in_progress: date of the newest\n    bar while it forms. On error: {error: <code>, detail, symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -724,6 +724,23 @@
               "description": "FMP-native bar size.",
               "type": "string"
             },
+            "price_treatment": {
+              "description": "Adjustment of the prices: raw, split_adjusted or dividend_adjusted.",
+              "enum": [
+                "raw",
+                "split_adjusted",
+                "dividend_adjusted"
+              ],
+              "type": "string"
+            },
+            "in_progress": {
+              "description": "Date of the newest bar while it is still forming; omitted otherwise.",
+              "type": "string"
+            },
+            "volume_note": {
+              "description": "Why volume is unreliable; omitted when it is not.",
+              "type": "string"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -744,7 +761,7 @@
     "tools": [
       {
         "name": "get_economic_indicator",
-        "description": "Fetch an economic indicator time series — GDP growth for the macro\noutlook, CPI/inflation for discount-rate assumptions, or unemployment and\nthe Fed funds rate for economic context.\n\nArgs:\n    name: Indicator — \"GDP\", \"CPI\", \"unemploymentRate\", \"federalFundsRate\",\n        \"inflationRate\", \"retailSales\", \"consumerSentiment\", \"nonFarmPayrolls\".\n    limit: Number of observations to fetch (default 50).\n\nReturns:\n    dict: {count, data, source, data_type, indicator}. data is a list of\n    observations; count is the observation total. Fields: date, value (and\n    for some series, name). Field names are FMP-native camelCase; date is\n    \"YYYY-MM-DD\"; observations are newest-first as returned by FMP. On error:\n    {error: <code>, detail, indicator}.\n",
+        "description": "Fetch a US economic indicator series: GDP, CPI, unemployment, Fed funds.\n\nReads about 16 years at most.\n\nArgs:\n    name: \"GDP\", \"CPI\", \"unemploymentRate\", \"federalFundsRate\", \"inflationRate\"\n        (10Y breakeven, not CPI), \"retailSales\", \"consumerSentiment\",\n        \"nonFarmPayrolls\".\n    limit: Observation count (default 50).\n\nReturns:\n    dict: {count, data, source, data_type, indicator, series?, missing_periods?,\n    truncated?}. data is {date, value} levels, newest-first; date is the period\n    start; CPI is an index (YoY %: 100 * (value / same month a year ago - 1),\n    matched by date). series: country, unit, frequency, adjustment;\n    missing_periods: absent months or quarters. truncated: true if a size\n    cap cut the oldest rows. On error: {error: <code>, detail, indicator}.\n",
         "inputSchema": {
           "properties": {
             "name": {
@@ -802,6 +819,21 @@
               "description": "Echoed indicator name.",
               "type": "string"
             },
+            "truncated": {
+              "description": "Present and true if a size cap cut the oldest rows.",
+              "type": "boolean"
+            },
+            "series": {
+              "description": "What the series is: description, country, unit, frequency, adjustment. Absent for a series not described here.",
+              "type": "object"
+            },
+            "missing_periods": {
+              "description": "First days of monthly or quarterly periods that fall between the observations returned but that FMP has no observation for (present only when there are some).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -817,7 +849,7 @@
       },
       {
         "name": "get_economic_calendar",
-        "description": "Fetch economic events with prior, estimate, and actual values — build a\ncatalyst calendar, generate a morning note, or track Fed meetings, jobs\nreports, and CPI releases.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\" (default: today).\n    to_date: End date \"YYYY-MM-DD\" (default: 7 days from today).\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date}. data is a\n    list of events; count is the event total. Fields: date, country, event,\n    currency, previous, estimate, actual, change, changePercentage, impact,\n    unit. actual/estimate/previous are null for events not yet released.\n    Field names are FMP-native camelCase; date is \"YYYY-MM-DD HH:MM:SS\";\n    order is as returned by FMP. If FMP's 4000-record cap is reached,\n    truncated is true and a note asks for a narrower date range. On error:\n    {error: <code>, detail}.\n",
+        "description": "Fetch economic events, such as Fed meetings, jobs reports, and CPI releases.\n\nReads about two years at most.\n\nArgs:\n    from_date: \"YYYY-MM-DD\" (default: yesterday UTC, or 7 days before an\n        earlier to_date).\n    to_date: \"YYYY-MM-DD\" (default: 7 days after from_date).\n\nReturns:\n    dict: {count, data, source, data_type, timezone, from_date, to_date,\n    truncated?}. data is a list of events, oldest first: date, country, event,\n    currency, previous, estimate, actual, change, changePercentage, impact,\n    unit. actual is null before release; change and changePercentage (null\n    before release) compare actual with previous, not estimate. date is UTC\n    \"YYYY-MM-DD HH:MM:SS\". truncated: true if a size cap cut the latest dates.\n    On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "from_date": {
@@ -866,6 +898,10 @@
             }
           ],
           "properties": {
+            "timezone": {
+              "description": "IANA timezone of timestamps.",
+              "type": "string"
+            },
             "count": {
               "description": "Number of records in data.",
               "type": "integer"
@@ -895,6 +931,10 @@
                 "null"
               ]
             },
+            "truncated": {
+              "description": "Present and true if a size cap cut the latest dates.",
+              "type": "boolean"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -910,7 +950,7 @@
       },
       {
         "name": "get_treasury_rates",
-        "description": "Fetch US Treasury rates across the full yield curve (1M to 30Y) — get the\nrisk-free rate for DCF/WACC (typically 10Y), read the curve shape, or track\nrate trends.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\" (default: recent data).\n    to_date: End date \"YYYY-MM-DD\" (default: today).\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date}. data is a\n    list of daily records; count is the record total. Each record has a date\n    plus per-tenor rate columns: month1, month2, month3, month6, year1,\n    year2, year3, year5, year7, year10, year20, year30. Rates are percent\n    (4.5 = 4.5%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";\n    records are newest-first as returned by FMP. On error:\n    {error: <code>, detail}.\n",
+        "description": "Fetch US Treasury rates across the yield curve (1M to 30Y): the risk-free\nrate for DCF/WACC (typically 10Y), the curve shape, or rate trends.\n\nReads about two years at most.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\" (default: recent data).\n    to_date: End date \"YYYY-MM-DD\" (default: today).\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date, truncated?}.\n    data: list of daily {date, month1, month2, month3, month6, year1, year2,\n    year3, year5, year7, year10, year20, year30}, newest first; rates in\n    percent (4.5 = 4.5%); date \"YYYY-MM-DD\". truncated: true if a size cap\n    cut the oldest rows. On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "from_date": {
@@ -988,6 +1028,10 @@
                 "null"
               ]
             },
+            "truncated": {
+              "description": "Present and true if a size cap cut the oldest rows.",
+              "type": "boolean"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -1003,7 +1047,7 @@
       },
       {
         "name": "get_market_risk_premium",
-        "description": "Fetch market risk premium by country for CAPM/WACC — get the equity risk\npremium for a DCF cost of equity, or compare premiums across markets.\n\nReturns:\n    dict: {count, data, source, data_type}. data is a list of country\n    records; count is the record total. Fields: country, continent,\n    countryRiskPremium, totalEquityRiskPremium. Premiums are percent\n    (5.5 = 5.5%). Field names are FMP-native camelCase; order is by country\n    as returned by FMP (not time-ordered). On error: {error: <code>, detail}.\n",
+        "description": "Fetch market risk premium by country for CAPM/WACC — get the equity risk\npremium for a DCF cost of equity, or compare premiums across markets.\n\nReturns:\n    dict: {count, data, source, data_type, method, as_of}. data is a list of\n    country records; count is the record total. Fields: country, continent,\n    countryRiskPremium, totalEquityRiskPremium. Premiums are percent (5.5 =\n    5.5%). as_of is null: cite method (the source table) and report the figure\n    as undated. On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {},
           "title": "get_market_risk_premiumArguments",
@@ -1044,6 +1088,17 @@
             "data_type": {
               "type": "string"
             },
+            "method": {
+              "description": "What the premiums are and who publishes them.",
+              "type": "string"
+            },
+            "as_of": {
+              "description": "Date of the table; null because FMP does not date it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -1059,7 +1114,7 @@
       },
       {
         "name": "get_earnings_calendar",
-        "description": "Fetch the earnings calendar for all companies reporting in a date range —\nbuild a catalyst calendar, generate a morning note, or track earnings-season\nvolume.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\".\n    to_date: End date \"YYYY-MM-DD\".\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date}. data is a\n    list of reporter records; count is the record total. Fields: symbol,\n    date, epsActual, epsEstimated, revenueActual, revenueEstimated,\n    lastUpdated. actual fields are null before a company reports. Field names\n    are FMP-native camelCase; date is \"YYYY-MM-DD\"; order is as returned by\n    FMP. If FMP's 4000-record cap is reached, truncated is true and a note\n    asks for a narrower date range. On error: {error: <code>, detail}.\n",
+        "description": "Fetch the earnings calendar for all companies reporting in a date range —\nbuild a catalyst calendar.\n\nReads about a month in peak season. Rows carry no market cap; yf_market\nget_earnings_calendar ranks US listings by it.\n\nArgs:\n    from_date: \"YYYY-MM-DD\".\n    to_date: \"YYYY-MM-DD\".\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date, truncated?}. data\n    is a list of reporter records, oldest first. Fields: symbol, date,\n    epsActual, epsEstimated, revenueActual, revenueEstimated, lastUpdated.\n    Amounts are in each listing's own currency, not converted (a suffixed\n    symbol such as 7203.T is non-US): compare only within one currency. date\n    is \"YYYY-MM-DD\". truncated: true if a size cap cut the latest dates. On\n    error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "from_date": {
@@ -1119,6 +1174,10 @@
             "to_date": {
               "type": "string"
             },
+            "truncated": {
+              "description": "Present and true if a size cap cut the latest dates.",
+              "type": "boolean"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -1139,7 +1198,7 @@
     "tools": [
       {
         "name": "get_options_chain",
-        "description": "List options contracts for an underlying; use to discover/filter contracts.\n\nFilter by call/put, expiration range, and strike range. ginlix-data only.\n\nArgs:\n    underlying_ticker: Underlying stock ticker, e.g. \"AAPL\".\n    contract_type: \"call\" or \"put\" (default: both).\n    expiration_date_gte: Min expiration \"YYYY-MM-DD\".\n    expiration_date_lte: Max expiration \"YYYY-MM-DD\".\n    strike_price_gte: Min strike price.\n    strike_price_lte: Max strike price.\n    limit: Max contracts (default 50, max 1000).\n\nReturns:\n    dict: {symbol, underlying_ticker, currency, timezone, count, data,\n    source}. data: list of contract dicts with ticker, contract_type,\n    expiration_date, strike_price, shares_per_contract, primary_exchange;\n    strike_price in `currency` major units. On error: {error: <code>, detail}.\n",
+        "description": "List an underlying's options contracts; use to find contract tickers.\n\nArgs:\n    underlying_ticker: Underlying stock ticker, e.g. \"AAPL\".\n    contract_type: \"call\" or \"put\" (default: both).\n    expiration_date_gte: Min expiration \"YYYY-MM-DD\".\n    expiration_date_lte: Max expiration \"YYYY-MM-DD\".\n    strike_price_gte: Min strike price.\n    strike_price_lte: Max strike price.\n    limit: Max contracts (default 50, max 1000).\n\nReturns:\n    dict: {symbol, underlying_ticker, currency, timezone, count, data,\n    source, truncated?}. data: list of {ticker, contract_type,\n    expiration_date, strike_price, shares_per_contract, primary_exchange};\n    strike_price in `currency` major units. truncated: true if more\n    contracts match than limit. On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "underlying_ticker": {
@@ -1265,6 +1324,10 @@
             "underlying_ticker": {
               "type": "string"
             },
+            "truncated": {
+              "description": "Present and true if more contracts match than limit.",
+              "type": "boolean"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -1280,7 +1343,7 @@
       },
       {
         "name": "get_options_prices",
-        "description": "Fetch OHLCV bars for one options contract; use for option price history.\n\nIntervals: 1min|5min|15min|30min|1hour|4hour|1day|1week|1month (aliases like\n\"1d\"/\"daily\" accepted). ginlix-data only.\n\nArgs:\n    options_ticker: OCC contract ticker, e.g. \"O:AAPL260618C00220000\".\n    from_date: Start date \"YYYY-MM-DD\" (required).\n    to_date: End date \"YYYY-MM-DD\" (required).\n    interval: Bar size; one of the intervals above.\n\nReturns:\n    dict: {symbol, interval, currency, timezone, count, data, source}. symbol\n    echoes the contract ticker; currency/timezone are the underlying's. data:\n    list of {date, open, high, low, close, volume} ascending (oldest first);\n    date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in `currency` major\n    units. On error: {error: <code>, detail}.\n",
+        "description": "Fetch OHLCV bars for one options contract.\n\nIntervals: 1min|5min|15min|30min|1hour|4hour|1day|1week|1month (aliases like\n\"1d\"/\"daily\" accepted).\n\nArgs:\n    options_ticker: OCC contract ticker, e.g. \"O:AAPL260618C00220000\".\n    from_date: Start date \"YYYY-MM-DD\".\n    to_date: End date \"YYYY-MM-DD\".\n    interval: One of the intervals above.\n\nReturns:\n    dict: {symbol, interval, currency, timezone, count, data, source,\n    truncated?}. symbol echoes the contract ticker; currency/timezone are the\n    underlying's. data: list of {date, open, high, low, close, volume}\n    ascending (oldest first); date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\";\n    prices in `currency` major units. truncated: true if a size cap cut the\n    oldest bars. On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "options_ticker": {
@@ -1356,6 +1419,10 @@
             "source": {
               "description": "Upstream data source.",
               "type": "string"
+            },
+            "truncated": {
+              "description": "Present and true if a size cap cut the oldest rows.",
+              "type": "boolean"
             },
             "error": {
               "description": "Machine-readable error code (error responses only).",
@@ -1446,7 +1513,7 @@
     "tools": [
       {
         "name": "get_stock_data",
-        "description": "Fetch OHLCV price bars for a stock; use for historical charts/analysis.\n\nIntervals: 1min|5min|15min|30min|1hour|4hour|1day (aliases like \"1d\"/\"daily\"\naccepted). start_date and end_date are required for intraday.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\", LSE \"VOD.L\".\n    interval: Bar size; one of the intervals above.\n    start_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n    end_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n\nReturns:\n    dict: {symbol, interval, currency, timezone, count, data, source,\n    name?}. data: list of {date, open, high, low, close, volume} ascending\n    (oldest first); date exchange-local \"YYYY-MM-DD\" (daily) or\n    \"YYYY-MM-DD HH:MM:SS\" (intraday); prices in `currency` major units.\n    name: local-language company name, CN and HK listings only. On error:\n    {error: <code>, detail}.\n",
+        "description": "Fetch OHLCV price bars for a stock.\n\nIntervals: 1min|5min|15min|30min|1hour|4hour|1day. Intraday needs start_date\nand end_date.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\", LSE \"VOD.L\".\n    interval: See above.\n    start_date: \"YYYY-MM-DD[ HH:MM]\".\n    end_date: Same format.\n\nReturns:\n    dict: {symbol, interval, currency, timezone, count, data, source,\n    price_treatment, name?, in_progress?, truncated?, incomplete?}. data:\n    list of {date, open, high, low, close, volume} ascending (oldest first);\n    date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in `currency` major\n    units. price_treatment: raw|split_adjusted|dividend_adjusted.\n    in_progress: date of a forming last bar; some daily feeds omit it.\n    truncated: true if a size cap cut the oldest bars. incomplete: true if\n    bars in the window are missing. On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -1537,9 +1604,34 @@
               "description": "Upstream data source.",
               "type": "string"
             },
+            "price_treatment": {
+              "description": "Adjustment of the prices: raw, split_adjusted or dividend_adjusted.",
+              "enum": [
+                "raw",
+                "split_adjusted",
+                "dividend_adjusted"
+              ],
+              "type": "string"
+            },
+            "in_progress": {
+              "description": "Date of the newest bar while it is still forming; omitted otherwise.",
+              "type": "string"
+            },
+            "volume_note": {
+              "description": "Why volume is unreliable; omitted when it is not.",
+              "type": "string"
+            },
             "name": {
               "description": "Local-language company name; CN and HK listings only, omitted elsewhere.",
               "type": "string"
+            },
+            "truncated": {
+              "description": "Present and true if a size cap cut the oldest rows.",
+              "type": "boolean"
+            },
+            "incomplete": {
+              "description": "Present and true if bars in the window are missing.",
+              "type": "boolean"
             },
             "error": {
               "description": "Machine-readable error code (error responses only).",
@@ -1556,7 +1648,7 @@
       },
       {
         "name": "get_asset_data",
-        "description": "Fetch OHLCV bars for a stock, commodity, crypto, or forex pair.\n\nIntervals: 1min|5min|1hour|1day (stock adds 15min|30min|4hour); dates\nrequired for intraday.\n\nArgs:\n    symbol: Stock \"AAPL\", commodity \"GCUSD\", crypto \"BTCUSD\", forex \"EURUSD\".\n    asset_type: One of stock|commodity|crypto|forex.\n    interval: Bar size; see intervals above.\n    from_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n    to_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n\nReturns:\n    dict: {symbol, asset_type, interval, currency, timezone, count, data,\n    source, name?}. data: list of {date, open, high, low, close, volume}\n    ascending (oldest first); date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\";\n    prices in `currency` major units. name: local-language company name,\n    CN and HK stock listings only. On error: {error: <code>, detail}.\n",
+        "description": "Fetch OHLCV bars for a stock, commodity, crypto, or forex pair.\n\nIntervals: 1min|5min|1hour|1day; intraday needs dates.\n\nArgs:\n    symbol: Commodity \"GCUSD\", crypto \"BTCUSD\", forex \"EURUSD\".\n    asset_type: stock|commodity|crypto|forex.\n    interval: See above.\n    from_date: \"YYYY-MM-DD[ HH:MM]\".\n    to_date: Same format.\n\nReturns:\n    dict: {symbol, asset_type, interval, currency, timezone, count, data,\n    source, price_treatment, name?, in_progress?, truncated?, incomplete?}.\n    data: list of {date, open, high, low, close, volume} ascending; date\n    exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in `currency` major\n    units. price_treatment: raw|split_adjusted|dividend_adjusted.\n    in_progress: date of a forming last bar. truncated: true if a size cap\n    cut the oldest bars. incomplete: true if bars in the window are missing.\n    On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -1655,9 +1747,34 @@
             "asset_type": {
               "type": "string"
             },
+            "price_treatment": {
+              "description": "Adjustment of the prices: raw, split_adjusted or dividend_adjusted.",
+              "enum": [
+                "raw",
+                "split_adjusted",
+                "dividend_adjusted"
+              ],
+              "type": "string"
+            },
+            "in_progress": {
+              "description": "Date of the newest bar while it is still forming; omitted otherwise.",
+              "type": "string"
+            },
+            "volume_note": {
+              "description": "Why volume is unreliable; omitted when it is not.",
+              "type": "string"
+            },
             "name": {
               "description": "Local-language company name; CN and HK listings only, omitted elsewhere.",
               "type": "string"
+            },
+            "truncated": {
+              "description": "Present and true if a size cap cut the oldest rows.",
+              "type": "boolean"
+            },
+            "incomplete": {
+              "description": "Present and true if bars in the window are missing.",
+              "type": "boolean"
             },
             "error": {
               "description": "Machine-readable error code (error responses only).",

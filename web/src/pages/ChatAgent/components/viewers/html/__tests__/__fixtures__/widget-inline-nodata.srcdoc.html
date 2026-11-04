@@ -1,11 +1,11 @@
 <!DOCTYPE html><html><head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; connect-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh;">
 <style>
 :root {
   
 }
 *, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; overflow: hidden; }
+body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; overflow-x: auto; overflow-y: hidden; }
 
 body > :first-child {
   background: transparent !important;
@@ -87,6 +87,7 @@ window.sendPrompt = function(text) {
   function reportHeight() {
     if (!document.body) return;
     var h = document.body.scrollHeight;
+    if (h !== window.innerHeight) h += window.innerHeight - document.documentElement.clientHeight;
     if (h > 0 && Math.abs(h - lastH) > 2) {
       lastH = h;
       parent.postMessage({ type: 'widget:resize', height: h }, '*');
@@ -120,6 +121,7 @@ window.sendPrompt = function(text) {
           /:root\s*\{[^}]*\}/,
           ':root {\n  ' + e.data.css + '\n}'
         );
+        try { window.dispatchEvent(new Event('themechange')); } catch (err) {}
       }
     }
   });

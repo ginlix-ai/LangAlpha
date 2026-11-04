@@ -13,7 +13,7 @@ import { isReportRow, opensTurn } from './messageList/messagePredicates';
 import { ReportRow, type ReportProvenance } from './messageList/ReportRow';
 import { HandoffPlacesContext, placeHandoffs, samePlaces } from './analystHandoff/reportLinks';
 import {
-  computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, type ProjectedMessage,
+  computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, turnStartTimes, type ProjectedMessage,
 } from './messageList/turnProjection';
 import { planQuietChecks } from './messageList/quietChecks';
 import { CollapseClock, CollapseClockContext } from './messageList/transcriptMotion';
@@ -230,9 +230,8 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
     const folds = new Map<number, TurnFoldInfo>();
     const ends = new Map<number, number>();
 
-    const startedAt = new Map<number, number>();
+    const startedAt = turnStartTimes(visible);
     const sentHere = new Map<number, boolean>();
-    const firstReplyAt = new Map<number, number>();
     const rowPos = new Map<number, number>();
     const assistantBubbles = new Map<number, MessageRecord[]>();
 
@@ -256,36 +255,20 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       const role = message.role as string;
       if (role === 'user') {
         // A steering bubble is projected onto the NEXT turn (it lands after the
-        // opener already advanced the counter), and on replay its timestamp is
-        // not history time. Only a turn's own initiator can start its clock.
+        // opener already advanced the counter). Only a turn's own initiator
+        // starts it; of two openers on one count the later is the turn's, and
+        // the row starts over there, as its clock does (`turnStartTimes`).
         if (!opensTurn(message)) continue;
-        // Of two openers on one count the later is the turn's: the row and
-        // the clock start over there.
-        const ts = messageTimeMs(message.timestamp);
-        if (ts !== undefined) startedAt.set(turnIndex, ts);
-        else startedAt.delete(turnIndex);
         sentHere.set(turnIndex, message.sentHere === true);
         rowPos.delete(turnIndex);
-        firstReplyAt.delete(turnIndex);
         assistantBubbles.delete(turnIndex);
         continue;
       }
       if (role !== 'assistant') continue;
       if (!rowPos.has(turnIndex)) rowPos.set(turnIndex, i);
-      if (!firstReplyAt.has(turnIndex)) {
-        const ts = messageTimeMs(message.timestamp);
-        if (ts !== undefined) firstReplyAt.set(turnIndex, ts);
-      }
       const bubbles = assistantBubbles.get(turnIndex);
       if (bubbles) bubbles.push(message);
       else assistantBubbles.set(turnIndex, [message]);
-    }
-
-    // A turn with no row of its own to take its clock from (a report-back
-    // whose row names no source, or one attached live) starts at its first
-    // reply, the nearest thing.
-    for (const [turnIndex, ts] of firstReplyAt) {
-      if (!startedAt.has(turnIndex)) startedAt.set(turnIndex, ts);
     }
 
     for (let i = 0; i < visible.length; i++) {

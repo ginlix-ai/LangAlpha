@@ -99,6 +99,43 @@ class TestBase:
         assert not base.claims("app.example.com")
 
 
+_ARTIFACT = "5f577948-dc99-4827-a35f-a8ebfbdfa0ff"
+
+
+class TestArtifactHost:
+    def test_an_artifact_url_parses_back_to_its_id(self):
+        base = PreviewBase("http", "preview.localhost", 8000)
+
+        assert base.artifact_url(_ARTIFACT, "v1.x") == (
+            f"http://artifact-{_ARTIFACT}.preview.localhost:8000/g/v1.x/"
+        )
+        for host in (
+            f"artifact-{_ARTIFACT}.preview.localhost:8000",
+            f"ARTIFACT-{_ARTIFACT.upper()}.PREVIEW.LOCALHOST.",
+        ):
+            assert base.parse_artifact(host) == _ARTIFACT
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            None,
+            "preview.example.com",
+            f"x.artifact-{_ARTIFACT}.preview.example.com",
+            f"artifact-{_ARTIFACT}.evilpreview.example.com",
+            f"artifact-{_ARTIFACT[:-1]}.preview.example.com",
+            f"artifact-{_ARTIFACT.replace('-', '')}.preview.example.com",
+            f"page-{_ARTIFACT}.preview.example.com",
+            f"8080-{_TOKEN}.preview.example.com",
+        ],
+    )
+    def test_no_other_host_names_an_artifact(self, host):
+        assert PreviewBase("https", "preview.example.com").parse_artifact(host) is None
+
+    def test_an_artifact_host_is_no_capability(self):
+        host = f"artifact-{_ARTIFACT}.preview.example.com"
+        assert PreviewBase("https", "preview.example.com").parse(host) is None
+
+
 class TestBootCheck:
     @pytest.mark.parametrize(
         ("sandbox", "named"),

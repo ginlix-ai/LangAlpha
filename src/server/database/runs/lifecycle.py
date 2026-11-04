@@ -1006,6 +1006,23 @@ async def get_run(run_id: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
+async def cancel_requested_runs(run_ids: list[str]) -> set[str]:
+    """Of ``run_ids``, the runs still in progress that carry cancel intent."""
+    if not run_ids:
+        return set()
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT conversation_response_id FROM conversation_responses
+                WHERE conversation_response_id = ANY(%s::uuid[])
+                  AND status = 'in_progress' AND cancel_requested_at IS NOT NULL
+                """,
+                (run_ids,),
+            )
+            return {str(row["conversation_response_id"]) for row in await cur.fetchall()}
+
+
 async def get_run_brief(conn, run_id: str) -> Optional[Dict[str, Any]]:
     """A run's id, thread, request key and status, read on ``conn``.
 
@@ -1147,6 +1164,7 @@ async def get_latest_attempt(
     *,
     before_turn: Optional[int] = None,
     wait_for_finalize: bool = False,
+    without_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """The thread's most recent attempt row — /retry's validation target.
 
@@ -1161,12 +1179,17 @@ async def get_latest_attempt(
     ``wait_for_finalize`` reads the row ``FOR SHARE``, which waits out a
     finalize in flight: its terminal CAS holds the row until it commits, so
     a run whose finalize has already run its release pass never reads live.
+
+    ``without_key`` passes over attempts whose metadata holds that key.
     """
     clauses = ["conversation_thread_id = %s"]
     params: list[Any] = [thread_id]
     if before_turn is not None:
         clauses.append("turn_index < %s")
         params.append(before_turn)
+    if without_key is not None:
+        clauses.append("NOT (COALESCE(metadata, '{}'::jsonb) ? %s)")
+        params.append(without_key)
     lock = "FOR SHARE" if wait_for_finalize else ""
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -1464,5 +1487,11 @@ async def pointer_pinned_by_fork(
 async def find_run_by_request_key(request_key: str) -> Optional[Dict[str, Any]]:
     async with pool.get_db_connection() as conn:
         return await _run_by_request_key(conn, request_key)
+
+
+async def request_key_has_run(conn, request_key: str) -> bool:
+    """Whether a run took ``request_key``, read on the caller's connection so
+    it can follow a lock the caller holds."""
+    return await _run_by_request_key(conn, request_key) is not None
 
 

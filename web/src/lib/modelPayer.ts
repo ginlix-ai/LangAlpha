@@ -9,6 +9,7 @@
  * and spends its own key on a self-hosted one.
  */
 import { isPlatformMode } from '@/config/hostMode';
+import { CLAUDE_CODE } from '@/lib/claudeCode';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import { SERVER_KEY, isOwnKey } from '@/lib/ownKey';
 import type { KeyCandidates } from '@/components/model/types';
@@ -58,7 +59,9 @@ const PAYER_LABEL_KEYS = {
 
 /** A payer's badge text. A coding plan is named by `planName`, the catalog's
  *  name for it; one whose name already says plan ("GLM Coding Plan") is
- *  tagged with the name alone. A plan nothing names keeps the generic word. */
+ *  tagged with the name alone. A plan nothing names keeps the generic word.
+ *  Claude Code is named alone: it runs on the setup token kept for it on the
+ *  server, not on a plan the user connects in Settings. */
 export function payerLabel(
   t: (key: string, opts?: Record<string, unknown>) => string,
   payer: Payer,
@@ -66,6 +69,7 @@ export function payerLabel(
 ): string {
   if (!isSubscription(payer)) return t(PAYER_LABEL_KEYS[payer]);
   const provider = payer.slice(SUBSCRIPTION.length);
+  if (provider === CLAUDE_CODE) return t('payer.claudeCode');
   const plan = SUBSCRIPTION_PLANS[provider] ?? planName?.(provider);
   if (!plan) return t('payer.subscription');
   return /\bplan$/i.test(plan) ? plan : t('payer.plan', { plan });

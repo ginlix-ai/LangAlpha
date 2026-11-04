@@ -35,6 +35,7 @@ from src.server.database.order_attempts import (
     latest_attempt_for_vendor_order,
     refuse_attempt,
 )
+from src.server.database.order_reconciliation import refuse_cut_off_proposal
 from src.server.models.orders import (
     attempt_row_to_response,
     order_summary,
@@ -213,6 +214,9 @@ class OrderAttemptLedger:
         if row is None:
             return None
         return receipt_from_attempt(attempt_row_to_response(row))
+
+    async def abandon(self, message_id: str, tool_call_id: str) -> None:
+        await refuse_cut_off_proposal(self._user_id, message_id, tool_call_id)
 
     # -- execution -----------------------------------------------------------
 

@@ -5,6 +5,7 @@ import { Loader } from '@/components/ui/loader';
 import { useShareLink } from '@/hooks/useShareLink';
 import { shareLinkHref } from '../../utils/api/shareLinks';
 import { APP_PREVIEW_SANDBOX } from './html/sandbox';
+import { HostedFrame } from './HostedFrame';
 import './PreviewViewer.css';
 import type { PreviewData } from '../../hooks/utils/types';
 
@@ -28,7 +29,6 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
   const { data: link } = useShareLink(workspaceId, port ? { kind: 'app', port } : null, { enabled: chrome });
   const [loading, setLoading] = useState(true);
   const [iframeKey, setIframeKey] = useState(0);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   // Keep overlay visible briefly after drag ends so iframe repaints at new size
   const [overlayLinger, setOverlayLinger] = useState(false);
 
@@ -147,8 +147,7 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
               </div>
             </div>
           )}
-          <iframe
-            ref={iframeRef}
+          <HostedFrame
             key={iframeKey}
             src={url}
             className="preview-viewer-frame"

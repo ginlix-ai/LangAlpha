@@ -11,6 +11,7 @@ import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
+import { claudeCodeRefusal } from '@/lib/claudeCode';
 import { holdReload } from '@/lib/reloadHolds';
 import { useHomeTimezone } from '@/hooks/useHomeTimezone';
 import { useStableHandler } from '@/hooks/useStableHandler';
@@ -18,7 +19,7 @@ import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, sendRetryStream, getWorkflowStatus, sendHitlResponse, fetchThreadTurns, cancelWorkflow } from '../utils/api';
 import { useLocalRunPublisher } from '@/lib/threadLifecycle/useLocalRunPublisher';
 import { peekThreadMux } from '../session/stream/threadStreamMux';
-import type { WorkflowStatusResponse } from '../utils/api';
+import type { NextSummary, WorkflowStatusResponse } from '../utils/api';
 import type { CancelOutcome, HeldSteer } from '../utils/cancelOutcome';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
 // keeps decoding wire status even in the hook tests that fully mock `../utils/api`.
@@ -41,11 +42,14 @@ export { removeStoredThreadId } from './utils/threadStorage';
 import { carriesContext, createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
 import type { HitlResponseBody } from '@/types/api';
 import type { AssistantMessage, UserMessage, ChatMessage } from '@/types/chat';
+import type { ArtifactCommentsShown } from '@/types/api';
 import type { PreviewData } from './utils/types';
+import type { ComposerDraft } from '@/components/ui/chat-input.types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
-import { createRequestKeyTracker, sendFingerprint } from './utils/requestKey';
+import { createRequestKeyTracker, sendFingerprint, type SendOutcome } from './utils/requestKey';
+import { commentSendOf, openerMatchText, readArtifactCommentsShown } from '../components/artifactComments/artifactCommentSend';
 import { withServerTotals, withoutServerTotals } from './utils/contextWindowEvent';
-import { BUSY_REFUSAL_KEYS, createForkRefusalRecovery, forkRefusalMessage, isBusyCode, isRecoverableRetryRefusal, isStaleForkRefusal, type BusyCode, type ForkCut } from './utils/forkRefusal';
+import { BUSY_REFUSAL_KEYS, admissionRefusalWords, createForkRefusalRecovery, forkRefusalMessage, isBusyCode, isRecoverableRetryRefusal, isStaleForkRefusal, type BusyCode, type ForkCut } from './utils/forkRefusal';
 import { createEditDraftStore, sameDraftMessage, type EditDraft } from './utils/editDrafts';
 import { settleStoppedBubble } from '../session/stream/stopBubble';
 import { withoutPending } from '../session/stream/toolCallChunks';
@@ -79,7 +83,7 @@ import { loadConversationHistory as replayConversationHistory } from '../session
 import { loadOlderHistoryPage, commitOlderHistoryPage } from '../session/history/olderPages';
 import { createHistoryWindow, HISTORY_PAGE_TURNS } from '../session/history/historyWindow';
 import { createStreamEventProcessor, type StreamRouterDeps } from '../session/stream/processStreamEvent';
-import { forkRequest, retryRequest, retryRequestFor, sendRequest, settleRetryNotice, type HeldRetry, type RetryNotice, type TurnRequest } from '../session/stream/autoRetry';
+import { DROPPED_BEFORE_RUN, forkRequest, retryRequest, retryRequestFor, sendRequest, settleRetryNotice, type HeldRetry, type RetryNotice, type TurnRequest } from '../session/stream/autoRetry';
 import { createLiveTranscript, type LiveMessages } from '../session/stream/liveMessages';
 import { useSubagentHistory } from '../session/subagents/useSubagentHistory';
 import {
@@ -88,7 +92,7 @@ import {
   reconnectToStream as reconnectToStreamImpl,
   attemptReconnectAfterDisconnect as attemptReconnectImpl,
   cleanupAfterStreamEnd as cleanupAfterStreamEndImpl,
-  type RecoveryDeps, type ReconnectOptions,
+  type RecoveryDeps, type ReconnectOptions, type RetryOptions,
 } from '../session/stream/lifecycle';
 import { collectRenderedInterruptIds, finalizeTodoListProcessesInMessages } from './utils/messageFinalizers';
 export { finalizeTodoListProcessesInMessages, mapToolCallIdToAgentId } from './utils/messageFinalizers';
@@ -121,21 +125,48 @@ interface Resend {
   shown?: ShownBubbles;
 }
 
+/** What a host hands the chat beyond the workspace and thread it shows. */
+export interface ChatMessagesOptions {
+  updateTodoListCard?: ((todoData: Record<string, unknown>, isNew?: boolean) => void) | null;
+  updateSubagentCard?: CardUpdater | null;
+  finalizePendingTodos?: (() => void) | null;
+  onFileArtifact?: ((event: SSEEvent) => void) | null;
+  onPreviewUrl?: ((data: PreviewData) => void) | null;
+  clearSubagentCards?: (() => void) | null;
+  onWorkspaceCreated?: ((info: { workspaceId: string; question: string }) => void) | null;
+  platform?: string | null;
+  readComposerOptions?: (() => ModelOptions | undefined) | null;
+  /** Whether a send the server did not keep goes back to the composer
+   *  (`returnedDraft`) rather than staying in the transcript with its Retry:
+   *  the host's answer at the moment it fails. */
+  returnsUnsent?: (() => boolean) | null;
+}
+
 export function useChatMessages(
   workspaceId: string,
   initialThreadId: string | null = null,
-  updateTodoListCard: ((todoData: Record<string, unknown>, isNew?: boolean) => void) | null = null,
-  updateSubagentCard: CardUpdater | null = null,
-  finalizePendingTodos: (() => void) | null = null,
-  onFileArtifact: ((event: SSEEvent) => void) | null = null,
-  onPreviewUrl: ((data: PreviewData) => void) | null = null,
-  clearSubagentCards: (() => void) | null = null,
-  onWorkspaceCreated: ((info: { workspaceId: string; question: string }) => void) | null = null,
-  platform: string | null = null,
-  readComposerOptions: (() => ModelOptions | undefined) | null = null,
+  {
+    updateTodoListCard = null,
+    updateSubagentCard = null,
+    finalizePendingTodos = null,
+    onFileArtifact = null,
+    onPreviewUrl = null,
+    clearSubagentCards = null,
+    onWorkspaceCreated = null,
+    platform = null,
+    readComposerOptions = null,
+    returnsUnsent = null,
+  }: ChatMessagesOptions = {},
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  // A refused token can be the saved one or a computer's, and a cloud
+  // computer's refusal may mean the user's choice for it changed: all are
+  // read again.
+  const refreshClaudeCode = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.user.claudeCodeCustody() });
+  };
 
   // User locale/timezone — prefer saved preference, fall back to browser detection
   const { user } = useUser();
@@ -235,10 +266,13 @@ export function useChatMessages(
     message: string;
     additionalContext: Record<string, unknown>[] | null;
     attachmentMeta: Record<string, unknown>[] | null;
-    modelOptions: ModelOptions;
+    modelOptions: SendOptions;
     // id of the optimistic shimmer bubble shown while parked, so it can be
     // removed on flush (before the real send re-adds it) or on stop.
     messageId: string;
+    /** Taken as it parks, so its comments are on their way from then on;
+     *  the send it becomes takes the same key, by its fingerprint. */
+    requestKey: string;
   } | null>(null);
   const [messageError, setMessageError] = useState<string | StructuredError | null>(null);
   // Steer text for the composer: the user's steers a stop took back from the
@@ -253,7 +287,7 @@ export function useChatMessages(
     message: string;
     additionalContext: Record<string, unknown>[] | null;
     attachmentMeta: Record<string, unknown>[] | null;
-    modelOptions: ModelOptions;
+    modelOptions: SendOptions;
     requestKey: string;
     /** The steer's bubble, which waits on screen until its send replaces it. */
     steerId: string;
@@ -272,11 +306,24 @@ export function useChatMessages(
   // Edit text whose message is gone, for the composer.
   const [returnedEdit, setReturnedEdit] = useState<string | null>(null);
   const clearReturnedEdit = useCallback(() => setReturnedEdit(null), []);
+  // A send the server did not keep, as the composer held it (`returnsUnsent`).
+  const [returnedDraft, setReturnedDraft] = useState<ComposerDraft | null>(null);
+  const clearReturnedDraft = useCallback(() => setReturnedDraft(null), []);
   // HITL (Human-in-the-Loop) interrupt state
   const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
 
   // Token usage tracking (for context window progress ring)
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
+  // What the next send summarizes first, as the server last read it.
+  const [nextSummary, setNextSummary] = useState<NextSummary | null>(null);
+  // Whether the stream still owes the next reading (`StreamRuntime`).
+  const nextSummaryOwedRef = useRef(false);
+  // A run of this view's own started: the reading it was sent against is
+  // spent, and the run's end owes the next one.
+  const spendNextSummary = () => {
+    setNextSummary(null);
+    nextSummaryOwedRef.current = true;
+  };
   const [isShared, setIsShared] = useState(false);
 
   // Bridge: handler modules define their own local SetMessages accepting Record<string, unknown>[]
@@ -557,6 +604,7 @@ export function useChatMessages(
     // Deferred call — the helper is declared below and initialized before
     // any watch event can fire.
     hasOpenProducers: () => muxOpenTaskIds().size > 0,
+    setNextSummary,
   });
   // `arm` is identity-stable (facade over a latest-impl ref), so callbacks that
   // dispatch through it can dep on it without churning per render — the whole
@@ -597,8 +645,10 @@ export function useChatMessages(
   // Recently sent messages tracker
   const recentlySentTrackerRef = useRef(createRecentlySentTracker());
   // v4 idempotent delivery: one request_key per logical send, reused across
-  // retransmits of the same send until response headers prove acceptance.
-  const requestKeyRef = useRef(createRequestKeyTracker());
+  // retransmits of the same send until its first frame proves acceptance.
+  // It also settles each request's file comments, which the host watches.
+  const [requestKeys] = useState(createRequestKeyTracker);
+  const requestKeyRef = useRef(requestKeys);
   // What each failed reply's Retry sends, once the client stops retrying it,
   // and the fork it stands for, by bubble: a failure on another thread holds
   // its own and leaves this one's in place.
@@ -717,6 +767,7 @@ export function useChatMessages(
     setFallbackSuggestion,
     setThreadModels,
     setTokenUsage,
+    setNextSummary,
     setReloadTrigger,
     setHasActiveSubagents,
     setPendingInterrupt,
@@ -755,6 +806,7 @@ export function useChatMessages(
     subagentTokenUsageRef,
     terminalTaskOutcomesRef,
     pendingMuxResyncRef,
+    nextSummaryOwedRef,
   };
 
   // Keep threadIdRef in sync with state (for use inside closures)
@@ -765,18 +817,17 @@ export function useChatMessages(
     }
   }, [workspaceId, threadId]);
 
-  // iOS Safari freezes a backgrounded tab and tears down its SSE socket; the
-  // frozen reader.read() may not reject promptly on return, hanging the turn.
-  // On foreground, if a main stream is genuinely active and reconnectable,
-  // abort the (likely dead) reader and flag it so the stream's result handler
+  // A page restored from the back/forward cache comes back with a reader whose
+  // socket is gone. On foreground, if a main stream is genuinely active and
+  // reconnectable, abort that reader and flag it so the stream's result handler
   // runs the existing reconnect rather than treating the abort as a user stop.
   //
   // CRITICAL: only act when the tab was ACTUALLY suspended (`pagehide`/`freeze`),
   // not on a bare `visibilitychange`. A desktop alt-tab fires visibility events
   // but keeps the socket alive — aborting there would needlessly tear down a
-  // healthy stream and flash "Reconnecting…" on every refocus. The lifecycle
-  // suspend events fire only when the OS froze the tab (the case the socket
-  // dies), so gating on tabSuspendedRef keeps non-suspended users unaffected.
+  // healthy stream and flash "Reconnecting…" on every refocus. An app switch on
+  // iOS fires neither event, freeze the JS as it may, and is the stream's own
+  // silence to notice (lib/streamSilence).
   useEffect(() => {
     const onSuspend = () => { tabSuspendedRef.current = true; };
     const onForeground = () => {
@@ -799,7 +850,7 @@ export function useChatMessages(
       backgroundReconnectRef.current = true;
       mainStreamAbortRef.current.abort();
     };
-    // Suspend signals: pagehide (iOS app-background / bfcache) + freeze (Chromium
+    // Suspend signals: pagehide (leaving for the bfcache) + freeze (Chromium
     // background-tab freeze). Both fire only on a real suspend, never on a tab-switch.
     window.addEventListener('pagehide', onSuspend);
     document.addEventListener('freeze', onSuspend);
@@ -816,6 +867,26 @@ export function useChatMessages(
     // from threadIdRef.current, not the prop, so threadId is intentionally NOT a
     // dep — including it would re-register the listeners on every thread nav.
   }, [isLoading]); // refs are stable
+
+  /**
+   * Lets go of the sends waiting to go out, which now never will: the one
+   * parked during compaction and, unless `steers` is false, the refused
+   * steers waiting for the next turn, which it returns. Their keys are spent
+   * and their comments go back to what the lists say.
+   */
+  const dropParked = ({ steers = true }: { steers?: boolean } = {}) => {
+    const queued = queuedSendRef.current;
+    queuedSendRef.current = null;
+    setQueuedSend(false);
+    const unsent = steers ? notRunningSendsRef.current.splice(0) : [];
+    for (const { requestKey } of [...(queued ? [queued] : []), ...unsent]) {
+      requestKeys.spend(requestKey);
+      requestKeys.settle(requestKey, 'dropped');
+    }
+    // The optimistic shimmer bubble of the one parked during compaction.
+    if (queued) setMessages((prev) => prev.filter((m) => m.id !== queued.messageId));
+    return unsent;
+  };
 
   // Reset thread ID when workspace or initialThreadId changes
   useEffect(() => {
@@ -854,6 +925,8 @@ export function useChatMessages(
         setMessages([]);
         setThreadModels([]);
         setTokenUsage(null);
+        setNextSummary(null);
+        nextSummaryOwedRef.current = false;
         setFallbackSuggestion(null);
         // A mid-retry pill belongs to the thread we're leaving; without this
         // it would render over thread B until B's next content event.
@@ -861,14 +934,11 @@ export function useChatMessages(
         // A compaction + a message parked during it belong to the thread we're
         // leaving. Clear them so the isCompacting→false flush can never replay
         // thread A's queued payload into thread B (and B doesn't inherit A's
-        // stale compacting indicator).
-        setQueuedSend(false);
-        queuedSendRef.current = null;
-        // So do refused steers waiting to open its next turn, and those still
-        // waiting on their answers. Their bubbles go with the messages above,
-        // so nothing would ever send them: their keys are released here.
+        // stale compacting indicator). So do refused steers waiting to open
+        // its next turn, and those still waiting on their answers. Their
+        // bubbles go with the messages above, so nothing would ever send them.
         notRunningGenRef.current += 1;
-        for (const q of notRunningSendsRef.current.splice(0)) requestKeyRef.current.settle(q.requestKey);
+        dropParked();
         setIsCompacting(false);
         // A send held on the thread we're leaving is no wait of B's.
         setTurnHeld(null);
@@ -1074,8 +1144,8 @@ export function useChatMessages(
   // break the render-time cycle described at the useReportBackWatch call site).
   reconnectToStreamRef.current = reconnectToStream;
 
-  const attemptReconnectAfterDisconnect = (assistantMessageId: string) =>
-    attemptReconnectImpl(runtime, recoveryDeps, assistantMessageId);
+  const attemptReconnectAfterDisconnect = (assistantMessageId: string, options?: RetryOptions) =>
+    attemptReconnectImpl(runtime, recoveryDeps, assistantMessageId, options);
 
   /**
    * v4 request_key dedup: a 409 `duplicate_request` means an earlier copy of
@@ -1084,9 +1154,10 @@ export function useChatMessages(
    * run replays its stream; a settled one falls through to the history
    * reload) — instead of surfacing an error banner for a turn that exists.
    * Returns true when adopted; the caller must skip its own error/finalize
-   * path (the reconnect owns teardown from here).
+   * path (the reconnect owns teardown from here). A copy still in setup may yet
+   * hear its own connection die and cancel, which `ifNothingHeard` answers.
    */
-  const adoptDuplicateRun = (err: unknown, assistantMessageId: string, requestKey: string): boolean => {
+  const adoptDuplicateRun = (err: unknown, assistantMessageId: string, requestKey: string, ifNothingHeard?: RetryOptions['ifNothingHeard']): boolean => {
     const e = err as { status?: number; errorInfo?: Record<string, unknown> };
     if (e?.status !== 409 || e?.errorInfo?.code !== 'duplicate_request') return false;
     const runId = e.errorInfo.run_id as string | undefined;
@@ -1094,7 +1165,7 @@ export function useChatMessages(
     // Run identity not disclosed (the key belongs to another user's run —
     // shouldn't happen for an honest client): fall through to a plain error.
     if (!runId || !dupThreadId) return false;
-    requestKeyRef.current.settle(requestKey); // consumed by the accepted copy
+    requestKeys.settle(requestKey, 'accepted'); // consumed by the accepted copy
     // A new chat's copy may have made the thread: the reload, the route and
     // the next send all read the state.
     threadIdRef.current = dupThreadId;
@@ -1105,28 +1176,32 @@ export function useChatMessages(
     // the bubbles this send drew: kept, they sit below the turn it renders.
     const runStatus = e.errorInfo.run_status;
     if (typeof runStatus === 'string' && runStatus !== 'in_progress') markTranscriptPersisted();
-    attemptReconnectAfterDisconnect(assistantMessageId);
+    attemptReconnectAfterDisconnect(assistantMessageId, ifNothingHeard && runStatus === 'in_progress' ? { rendered: false, ifNothingHeard } : undefined);
     return true;
   };
 
   /**
    * A copy of this request did arrive and its run failed, so this click asked
    * for that run's Retry: it goes out at once, by the run's id, in place of a
-   * reply that would only show the failure. Any other run is adopted as it
-   * is, a stopped one too, since only a failed run can be retried.
+   * reply that would only show the failure. So does a run a dropped connection
+   * cancelled before it ran. Any other run is adopted as it is, a stopped one
+   * too, since the server would refuse its Retry. `spent` carries on the count
+   * of a chain of automatic resends.
    */
-  const retryFailedDuplicate = (err: unknown, assistantMessageId: string, request: TurnRequest, modelOptions: ModelOptions, requestKey: string): boolean => {
+  const retryFailedDuplicate = (err: unknown, assistantMessageId: string, request: TurnRequest, modelOptions: ModelOptions, requestKey: string, spent = 0): boolean => {
     const e = err as { status?: number; errorInfo?: Record<string, unknown> };
-    if (e?.status !== 409 || e?.errorInfo?.code !== 'duplicate_request' || e.errorInfo.run_status !== 'error') return false;
+    if (e?.status !== 409 || e?.errorInfo?.code !== 'duplicate_request') return false;
+    if (e.errorInfo.run_status !== 'error' && e.errorInfo.retryable !== true) return false;
     // A run the copy steered into is another message's turn.
     if (e.errorInfo.steered === true) return false;
     const runId = e.errorInfo.run_id;
     if (typeof runId !== 'string' || !runId || e.errorInfo.thread_id !== threadIdRef.current) return false;
-    requestKeyRef.current.settle(requestKey);
+    // The copy arrived, with what it carried; the Retry goes by the run's id.
+    requestKeys.settle(requestKey, 'accepted');
     noteLiveRun({ latestRunIdRef, latestRunEpochRef }, runId);
     const transcript = liveMessages.get();
     const at = transcript.findIndex((m) => m.id === assistantMessageId);
-    void streamFromCheckpoint(retryRequest(runId, request.additionalContext), at === -1 ? transcript.length : at, transcript, modelOptions);
+    void streamFromCheckpoint(retryRequest(runId, request.additionalContext, { keepFullContext: request.keepFullContext }), at === -1 ? transcript.length : at, transcript, modelOptions, spent > 0 ? { rerun: { spent } } : {});
     return true;
   };
 
@@ -1146,7 +1221,7 @@ export function useChatMessages(
     const e = err as { status?: number; errorInfo?: Record<string, unknown> };
     // A copy of another user's names no run: shown as the refusal it is.
     if (e?.status !== 409 || e?.errorInfo?.code !== 'duplicate_request' || !e.errorInfo.run_id) return false;
-    requestKeyRef.current.settle(requestKey);
+    requestKeys.settle(requestKey, 'accepted');
     if (e.errorInfo.steered !== true) {
       // A copy of this send started the turn the answer names, as its
       // question, and only that copy's answer was lost, so the steer is no
@@ -1332,6 +1407,7 @@ export function useChatMessages(
       // Without a count they restart from zero and the replay sums what loads.
       const counted = status.token_totals;
       setTokenUsage((prev) => (counted ? withServerTotals(prev, counted) : withoutServerTotals(prev)));
+      setNextSummary(status.next_summary ?? null);
 
       // Capture share status from workflow status response
       if (status.is_shared !== undefined) {
@@ -1346,7 +1422,7 @@ export function useChatMessages(
       // blanket completion of inline subagent cards: each is born with its real
       // status from the replayed task-artifact stamp, and one would clobber a
       // legitimately 'cancelled' card.
-      const pendingSteers = (status.pending_steers ?? []).filter((p) => p.content);
+      const pendingSteers = (status.pending_steers ?? []).filter((p) => p.content || p.artifact_comments);
       const pendingKeys = new Set(pendingSteers.map((p) => p.request_key).filter((key): key is string => !!key));
       const settleEndedRun = (ok: boolean) => {
         if (cancelled || sessionEpochRef.current !== sessionEpochAtStart) return;
@@ -1381,18 +1457,22 @@ export function useChatMessages(
             const shown = new Set(prev.map((m) => (m as { requestKey?: string }).requestKey).filter(Boolean));
             const rows = pendingSteers
               .filter((p) => !p.request_key || !shown.has(p.request_key))
-              .map((p, i): UserMessage => ({
-                id: `pending-steer-${p.request_key ?? i}`,
-                role: 'user',
-                content: p.content,
-                contentType: 'text',
-                timestamp: p.timestamp ? new Date(p.timestamp * 1000) : new Date(),
-                isStreaming: false,
-                isHistory: true,
-                steering: true,
-                ...(turn !== null && turn >= 0 ? { turnIndex: turn } : {}),
-                ...(p.request_key ? { requestKey: p.request_key } : {}),
-              }));
+              .map((p, i): UserMessage => {
+                const shown = readArtifactCommentsShown(p.artifact_comments);
+                return {
+                  id: `pending-steer-${p.request_key ?? i}`,
+                  role: 'user',
+                  content: p.content,
+                  contentType: 'text',
+                  timestamp: p.timestamp ? new Date(p.timestamp * 1000) : new Date(),
+                  isStreaming: false,
+                  isHistory: true,
+                  steering: true,
+                  ...(turn !== null && turn >= 0 ? { turnIndex: turn } : {}),
+                  ...(p.request_key ? { requestKey: p.request_key } : {}),
+                  ...(shown ? { artifactComments: shown } : {}),
+                };
+              });
             if (rows.length === 0) return prev;
             // A live run's go below the reply it is writing, which the
             // reconnect puts above them, as the run reads them after it.
@@ -1754,16 +1834,6 @@ export function useChatMessages(
     }
   };
 
-  // Forget a message parked during compaction (clear ref + chip + optimistic shimmer bubble).
-  const dropQueuedSend = () => {
-    const queuedMsgId = queuedSendRef.current?.messageId;
-    queuedSendRef.current = null;
-    setQueuedSend(false);
-    if (queuedMsgId) {
-      setMessages((prev) => prev.filter((m) => m.id !== queuedMsgId));
-    }
-  };
-
   /**
    * Hard stop: terminates the current turn immediately while preserving state.
    * (a) aborts the main reader (stop feels instant); (b) finalizes the open
@@ -1781,7 +1851,9 @@ export function useChatMessages(
     if (wasStoppedRef.current) return; // double-click stop is idempotent
     // Steers waiting to open the next turn were never sent anywhere: they go
     // back to the composer with the ones the stop takes back from the run.
-    const unsent = notRunningSendsRef.current.splice(0);
+    // A message queued during compaction goes too, so the isCompacting→false
+    // transition below never auto-sends what the user just cancelled.
+    const unsent = dropParked();
 
     // (a) Abort the main reader NOW so the stop feels instant. The aborted
     // stream resolves with { aborted: true } and the send finally skips
@@ -1809,11 +1881,6 @@ export function useChatMessages(
     setTurnHeld(null);
     setIsCompacting(false);
     clearModelStatus();
-    // Drop any message queued during compaction: the user just cancelled, so it
-    // must NOT auto-send when the isCompacting→false transition fires the flush
-    // effect. dropQueuedSend clears the ref synchronously (before the effect runs
-    // post-render) and removes its optimistic shimmer bubble.
-    dropQueuedSend();
     releaseStreamOwnership();
     currentMessageRef.current = null;
 
@@ -1883,7 +1950,7 @@ export function useChatMessages(
    */
   const giveBackStoppedSteers = (
     returned: readonly HeldSteer[],
-    unsent: readonly { message: string; steerId: string; requestKey: string }[],
+    unsent: readonly { message: string; steerId: string }[],
   ) => {
     const transcript = liveMessages.get();
     const keyOf = (m: ChatMessage) => (m as { requestKey?: string }).requestKey;
@@ -1892,12 +1959,15 @@ export function useChatMessages(
     const seen = new Set<string>();
     for (const steer of returned) {
       const key = steer.request_key;
+      if (key && seen.has(key)) continue;
+      // The stop gave its file comments back; the note goes to the composer.
+      const comments = readArtifactCommentsShown(steer.artifact_comments);
+      if (comments) requestKeys.returned(comments);
       if (key) {
-        if (seen.has(key)) continue;
         seen.add(key);
         // The server keeps a returned steer's key spent, so the text sent
         // again from the composer is a new send under a new key.
-        requestKeyRef.current.settle(key);
+        requestKeys.spend(key);
         const copies = transcript.filter((m): m is UserMessage => m.role === 'user' && keyOf(m) === key);
         if (copies.some((m) => m.steeringDelivered)) continue;
         for (const m of copies) drop.add(m.id as string);
@@ -1909,10 +1979,7 @@ export function useChatMessages(
       }
       if (steer.content) texts.push(steer.content);
     }
-    for (const u of unsent) {
-      requestKeyRef.current.settle(u.requestKey);
-      texts.push(u.message);
-    }
+    for (const u of unsent) texts.push(u.message);
     if (drop.size > 0) setMessages((prev) => prev.filter((m) => !drop.has(m.id as string)));
     if (texts.length > 0) giveBackSteering(texts.join('\n'));
   };
@@ -1932,7 +1999,7 @@ export function useChatMessages(
     // Drop a message queued during compaction so the isCompacting→false flush
     // effect doesn't auto-send it after the user cancelled, and remove its
     // optimistic shimmer bubble.
-    dropQueuedSend();
+    dropParked({ steers: false });
     if (tid && tid !== '__default__') {
       try {
         await cancelWorkflow(tid);
@@ -2012,6 +2079,15 @@ export function useChatMessages(
       return { banner: { message: t(BUSY_REFUSAL_KEYS[errorInfo.code]), kind: 'notice' }, answered: false };
     }
     const worded = typeof errorInfo?.message === 'string' && errorInfo.message ? errorInfo.message : null;
+    // A Claude Code turn the server cannot run says what to change, and a
+    // retry meets the same refusal. Without a working token, the change is
+    // one the user makes in Settings.
+    if (errorInfo?.type === 'claude_code_off' && worded) {
+      const { reread, link, messageKey, messageValues } = claudeCodeRefusal(errorInfo.reason, workspaceId, errorInfo.limit);
+      if (reread) refreshClaudeCode();
+      const message = messageKey ? t(messageKey, messageValues) : worded;
+      return { banner: link ? { message, links: [link] } : message, answered: true };
+    }
     return { banner: worded, answered: false };
   };
 
@@ -2028,10 +2104,11 @@ export function useChatMessages(
     message: string,
     additionalContext: Record<string, unknown>[] | null = null,
     attachmentMeta: Record<string, unknown>[] | null = null,
-    modelOptions: ModelOptions = {},
+    modelOptions: SendOptions = {},
     resend: Resend = {},
   ) => {
-    const { widgetSnapshots, chartSelections } = modelOptions;
+    const { widgetSnapshots, chartSelections, artifactComments } = modelOptions;
+    const commentSend = commentSendOf(artifactComments);
     // The refused-steer queue the steer belongs to, for a refusal to rejoin
     // it only if no thread switch has ended it since.
     const gen = notRunningGenRef.current;
@@ -2043,38 +2120,47 @@ export function useChatMessages(
     // answer was lost reuses the key and dedups against the accepted copy.
     // Other steers can be waiting on their answers too, and each keeps its own
     // key for its own re-send.
-    const requestKey = resend.requestKey ?? requestKeyRef.current.take(sendFingerprint(threadId, message), { alongside: true });
+    const requestKey = requestKeys.take(sendFingerprint(threadId, message, commentSend), { alongside: true, key: resend.requestKey, comments: artifactComments });
     const userMessage: ChatMessage = {
-      ...createUserMessage(message, steeredTurn, { attachments: attachmentMeta as AttachmentMeta[] | null, widgetSnapshots, chartSelections, id: resend.shown?.userId }),
+      ...createUserMessage(message, steeredTurn, { attachments: attachmentMeta as AttachmentMeta[] | null, widgetSnapshots, chartSelections, artifactComments, id: resend.shown?.userId }),
       steering: true,
       requestKey,
       ...(currentRunIdRef.current ? { steeredRunId: currentRunIdRef.current } : {}),
     };
-    recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
+    recentlySentTrackerRef.current.track(openerMatchText(message, artifactComments), userMessage.timestamp, userMessage.id);
     setMessages((prev) => appendMessage(prev,userMessage));
     const seq = ++steerSeqRef.current;
 
     // The refusal the stream answered with, once it started: the same answer
     // the route gives as a 409 before it does.
     const answered: { refusal: Record<string, unknown> | null } = { refusal: null };
+    // How the POST ended for the steer's comments, unless the server answered first.
+    let ended: SendOutcome = 'dropped';
     steersInFlightRef.current.set(seq, gen);
+    let accepted = false;
     try {
-      await sendChatMessageStream(message, workspaceId, threadId, {
+      const result = await sendChatMessageStream(message, workspaceId, threadId, {
         onEvent: (event) => {
           if (event.event === 'steering_accepted') {
+            accepted = true;
             // Snapshot the boundary so the primary stream's steering_delivered
             // handler can roll back leaked content. The event's own `_eventId`
             // is the natural boundary in the Redis stream; fall back to the
             // local counter for tests/legacy flows without `_eventId`.
             steeringAtOrderRef.current = computeSteeringBoundary(event, contentOrderCounterRef.current);
+            // The comments the server took, which may be fewer than were
+            // sent: one sent or deleted meanwhile is left out.
+            const taken = readArtifactCommentsShown(event.artifact_comments);
             // Update the user message to reflect steering status
             setMessages((prev) =>
               updateMessage(prev,userMessage.id as string, (msg) => ({
                 ...msg,
                 steering: true,
                 queuePosition: event.position,
+                ...(taken ? { artifactComments: taken } : {}),
               }))
             );
+            requestKeys.settle(requestKey, 'accepted');
             return;
           }
           // A steer-only POST carries no turn of its own: its one other
@@ -2085,9 +2171,10 @@ export function useChatMessages(
         locale: userLocale,
         timezone: userTimezone,
         platform,
-        onRunIdResolved: () => requestKeyRef.current.settle(requestKey),
+        onRunIdResolved: () => requestKeys.spend(requestKey),
         requestKey,
         steerOnly: true,
+        artifactComments: commentSend,
       });
       const frame = answered.refusal;
       if (frame) {
@@ -2097,17 +2184,20 @@ export function useChatMessages(
           errorInfo: { code: frame.code, message: text },
         });
       }
+      // No answer, and no way to know: a delivery can still clear this.
+      if (result.disconnected && !accepted) throw new Error('Failed to send message');
     } catch (err: unknown) {
       if ((err as Error)?.name === 'AbortError') return;
       const code = (err as { errorInfo?: { code?: unknown } })?.errorInfo?.code;
       if ((err as { status?: number })?.status === 409 && code === 'not_running') {
-        settleNotRunningSteer(userMessage.id as string, gen, message, additionalContext, attachmentMeta, modelOptions, requestKey, seq);
+        // Waiting to go out as a send of its own, it holds its comments until then.
+        if (settleNotRunningSteer(userMessage.id as string, gen, message, additionalContext, attachmentMeta, modelOptions, requestKey, seq)) ended = 'handedOff';
         return;
       }
       // A steer the user's stop overtook: the stop hands the turn's steers
       // back to the composer, and this one joins them.
       if (wasStoppedRef.current && code === 'stopping') {
-        requestKeyRef.current.settle(requestKey);
+        requestKeys.spend(requestKey);
         setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
         giveBackSteering(message);
         return;
@@ -2115,9 +2205,9 @@ export function useChatMessages(
       if (wasStoppedRef.current) return;
       console.error('Error sending steering:', err);
       if (settleDuplicateSteer(err, userMessage.id as string, message, requestKey)) return;
-      // The server sends a refusal (a 4xx) before it queues a steer. It holds
-      // the status line of a steer it takes until the stream's first frame,
-      // so a failure in between reads as a 5xx or as no answer, and a
+      // The server sends a refusal (a 4xx) before it queues a steer. Past that
+      // it answers in frames, so a failure before the first one reads as no
+      // answer, and a
       // delivery the run already made was the answer this POST lost. A
       // delivery marks the steers it names, so one that marked a refused
       // steer was another with its text.
@@ -2130,6 +2220,7 @@ export function useChatMessages(
       // or asked for and yet to run.
       const banner = refusalBanner(err).banner ?? 'Failed to send message';
       refusalAfterReloadRef.current = { epoch: sessionEpochRef.current, banner };
+      ended = { refused: banner };
       // Update user message to show steering failure. A stream end or a
       // give-up while it was out may have marked it persisted, but the server
       // never stored it, so a reload must leave it with its error. The error
@@ -2147,6 +2238,7 @@ export function useChatMessages(
       );
       setMessageError(banner);
     } finally {
+      requestKeys.settle(requestKey, ended);
       steersInFlightRef.current.delete(seq);
       if (notRunningSendsRef.current.length > 0) setNotRunningTick((n) => n + 1);
       // A load deferred to this answer runs now, unless a stream it started
@@ -2163,7 +2255,8 @@ export function useChatMessages(
    * ended. After a stop the message goes back to the composer with the
    * turn's other steers. Otherwise its bubble keeps waiting until the view
    * lets the ended turn go, and then it goes out as a send under the same
-   * request key (the flush below), behind any sent before it.
+   * request key (the flush below), behind any sent before it. True when it
+   * waits so.
    */
   const settleNotRunningSteer = (
     steerId: string,
@@ -2171,22 +2264,23 @@ export function useChatMessages(
     message: string,
     additionalContext: Record<string, unknown>[] | null,
     attachmentMeta: Record<string, unknown>[] | null,
-    modelOptions: ModelOptions,
+    modelOptions: SendOptions,
     requestKey: string,
     seq: number,
-  ): void => {
+  ): boolean => {
     // A thread switch while it was out took its bubble with the old thread.
     if (gen !== notRunningGenRef.current) {
-      requestKeyRef.current.settle(requestKey);
-      return;
+      requestKeys.spend(requestKey);
+      return false;
     }
     if (wasStoppedRef.current) {
-      requestKeyRef.current.settle(requestKey);
+      requestKeys.spend(requestKey);
       setMessages((prev) => prev.filter((m) => m.id !== steerId));
       giveBackSteering(message);
-      return;
+      return false;
     }
     enqueueNotRunningSend({ gen, message, additionalContext, attachmentMeta, modelOptions, requestKey, steerId, seq });
+    return true;
   };
 
   // In send order, so a steer whose refusal lands late still goes out ahead
@@ -2207,15 +2301,20 @@ export function useChatMessages(
     message: string,
     additionalContext: Record<string, unknown>[] | null,
     attachmentMeta: Record<string, unknown>[] | null,
-    modelOptions: ModelOptions,
+    modelOptions: SendOptions,
     shown?: ShownBubbles,
   ): void => {
-    const requestKey = requestKeyRef.current.take(sendFingerprint(threadId, message), { alongside: true });
+    // Parked with the others, it holds its comments until it goes out.
+    const requestKey = requestKeys.take(
+      sendFingerprint(threadId, message, commentSendOf(modelOptions.artifactComments)),
+      { alongside: true, comments: modelOptions.artifactComments },
+    );
     const waiting: ChatMessage = {
       ...createUserMessage(message, newestTurn(liveMessages.get()) ?? undefined, {
         attachments: attachmentMeta as AttachmentMeta[] | null,
         widgetSnapshots: modelOptions.widgetSnapshots,
         chartSelections: modelOptions.chartSelections,
+        artifactComments: modelOptions.artifactComments,
         id: shown?.userId,
       }),
       steering: true,
@@ -2235,6 +2334,27 @@ export function useChatMessages(
   };
 
   /**
+   * A send the server did not keep, back in the composer if the host takes it
+   * (`returnsUnsent`): with the transcript out of view, a failed reply's Retry
+   * there is one nobody reads. Its bubbles go and the reason shows above the
+   * composer: the deck's line says it for comments, else a bare failure gets
+   * a line of its own. Returns whether it went back.
+   */
+  const returnUnsent = (
+    draft: ComposerDraft | undefined,
+    bubbles: { userId: string; assistantId: string },
+    banner: string | StructuredError | null,
+    artifactComments: ArtifactCommentsShown | undefined,
+  ): boolean => {
+    if (!draft || !returnsUnsent?.()) return false;
+    setReturnedDraft(draft);
+    heldRetriesRef.current.delete(bubbles.assistantId);
+    setMessages((prev) => prev.filter((m) => m.id !== bubbles.userId && m.id !== bubbles.assistantId));
+    setMessageError(banner ?? (artifactComments ? null : t('chat.sendReturned')));
+    return true;
+  };
+
+  /**
    * A plain send's standing with the server, read off its own stream. A send
    * refused or lost before the run started left nothing on the server, so its
    * bubbles take no turn and its Retry sends it again, under the same request
@@ -2250,7 +2370,7 @@ export function useChatMessages(
   }) => {
     const ids = new Set(send.userId === null ? [send.assistantId] : [send.userId, send.assistantId]);
     let started = false;
-    let refused = false;
+    let refused: SSEEvent | null = null;
     return {
       /** Reads a frame of the send's stream, ahead of the processor. */
       observe(event: SSEEvent): void {
@@ -2258,7 +2378,7 @@ export function useChatMessages(
         if (forkRefusalMessage(event) !== null) {
           // One that names a run was refused after the run started.
           if (typeof event.run_id === 'string') started = true;
-          else refused = true;
+          else refused = event;
           return;
         }
         if (event.event === 'metadata') {
@@ -2269,7 +2389,12 @@ export function useChatMessages(
         if ((event.event === 'error' || event.event === 'retry') && event.recovery && typeof event.run_id === 'string') started = true;
       },
       /** Whether the server refused the send before starting its run. */
-      refused: () => refused && !started,
+      refused: () => !!refused && !started,
+      /** The composer's words for that refusal, null when there was none. */
+      refusal: (): string | StructuredError | null => {
+        if (!refused || started) return null;
+        return admissionRefusalWords(refused, busyRefusalMessage);
+      },
       /** The send, for a resend to carry, until the server starts its run. */
       unstarted: (): UnstartedSend | null => (started ? null : { userId: send.userId, watermarkBefore: send.watermarkBefore }),
       /** Marks the send as one the server never kept, unless it started the run. */
@@ -2297,8 +2422,10 @@ export function useChatMessages(
     heldRetriesRef.current.set(bubbleId, { bubbleId, request: retryRequest(null, additionalContext), cut: null });
   };
 
-  const handleSendMessage = async (message: string, additionalContext: Record<string, unknown>[] | null = null, attachmentMeta: Record<string, unknown>[] | null = null, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride, hiddenOpener = false, threadTitle }: SendOptions = {}, resend: Resend = {}) => {
-    const hasContent = message.trim() || (additionalContext && additionalContext.length > 0);
+  const handleSendMessage = async (message: string, additionalContext: Record<string, unknown>[] | null = null, attachmentMeta: Record<string, unknown>[] | null = null, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride, hiddenOpener = false, threadTitle, artifactComments, draft, keepFullContext = false }: SendOptions = {}, resend: Resend = {}) => {
+    // What the request carries, and a resend of it again.
+    const commentSend = commentSendOf(artifactComments);
+    const hasContent = message.trim() || (additionalContext && additionalContext.length > 0) || !!commentSend;
     if (!workspaceId || !hasContent) {
       return;
     }
@@ -2329,8 +2456,18 @@ export function useChatMessages(
         attachments: attachmentMeta as AttachmentMeta[] | null,
         widgetSnapshots,
         chartSelections,
+        artifactComments,
       });
       const queuedMessage: ChatMessage = { ...queuedMsg, queued: true };
+      // The send it replaces will not go, so its comments wait in the queue again.
+      const replaced = queuedSendRef.current?.requestKey;
+      if (replaced) {
+        requestKeys.spend(replaced);
+        requestKeys.settle(replaced, 'dropped');
+      }
+      // Alongside, as a steer's: whether the send it becomes drops the
+      // others' keys is the flush's to decide.
+      const requestKey = requestKeys.take(sendFingerprint(threadId, message, commentSend), { alongside: true, comments: artifactComments });
       // The subagents setting stays behind: compaction only runs on a thread
       // that exists, whose row a flip made since has already PATCHed, and the
       // value captured now would store over that flip when the send flushes.
@@ -2338,8 +2475,9 @@ export function useChatMessages(
         message,
         additionalContext,
         attachmentMeta,
-        modelOptions: { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections },
+        modelOptions: { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, artifactComments, keepFullContext },
         messageId: queuedMessage.id as string,
+        requestKey,
       };
       setMessages((prev) => {
         const base = prevQueuedId ? prev.filter((m) => m.id !== prevQueuedId) : prev;
@@ -2351,13 +2489,13 @@ export function useChatMessages(
 
     // The resend of a refused steer is the queue's own; anything else waits behind it.
     if (resend.requestKey === undefined && notRunningSendsRef.current.length > 0) {
-      queueBehindRefused(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride }, resend.shown);
+      queueBehindRefused(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride, artifactComments, keepFullContext }, resend.shown);
       return;
     }
 
     // If agent is already streaming, send as steering message
     if (isLoading) {
-      return handleSendSteering(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride }, resend);
+      return handleSendSteering(message, additionalContext, attachmentMeta, { model, reasoningEffort, fastMode, widgetSnapshots, chartSelections, subagentsAllowed, reasoningEffortOverride, fastModeOverride, artifactComments, keepFullContext }, resend);
     }
 
     // Store model options so HITL resume can forward them
@@ -2371,9 +2509,19 @@ export function useChatMessages(
       attachments: attachmentMeta as AttachmentMeta[] | null,
       widgetSnapshots,
       chartSelections,
+      artifactComments,
       id: resend.shown?.userId,
     });
-    if (userMessage) recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
+    if (userMessage) recentlySentTrackerRef.current.track(openerMatchText(message, artifactComments), userMessage.timestamp, userMessage.id);
+
+    // One request_key per logical send, reused if this exact send is
+    // retransmitted after a lost response (fingerprint match) — see
+    // createRequestKeyTracker. A steer that found no turn running goes out
+    // under the key it was sent with. A new chat's fingerprint names the
+    // thread its create makes, so its key waits for it; any other's is taken
+    // now, and the comments are on their way from the click.
+    const takeKey = (tid: string) => requestKeys.take(sendFingerprint(tid, message, commentSend), { key: resend.requestKey, comments: artifactComments });
+    const keyNow = !threadId || threadId === '__default__' ? null : takeKey(threadId);
 
     // Check if this is a new conversation
     // Only consider it a new conversation if:
@@ -2469,21 +2617,21 @@ export function useChatMessages(
     }).finally(releaseCreate);
     // Stopped during the pre-create round-trip: stopWorkflow already finalized
     // the UI — starting the run now would resurrect it.
-    if (created.aborted) return;
+    if (created.aborted) {
+      if (keyNow) requestKeys.settle(keyNow, 'dropped');
+      return;
+    }
     const effectiveThreadId = created.threadId;
-
-    // One request_key per logical send, reused if this exact send is
-    // retransmitted after a lost response (fingerprint match) — see
-    // createRequestKeyTracker. A steer that found no turn running goes out
-    // under the key it was sent with.
-    const requestKey = resend.requestKey ?? requestKeyRef.current.take(sendFingerprint(effectiveThreadId, message));
+    const requestKey = keyNow ?? takeKey(effectiveThreadId);
+    // How the request ended for its comments, unless the server answered first.
+    let ended: SendOutcome = 'dropped';
     let wasDisconnected = false;
     const wasInterruptedRef = { current: false };
     const admission = trackPlainSend({
       userId: userMessage?.id ?? null,
       assistantId: assistantMessageId,
       turnIndex,
-      request: { ...sendRequest(message, additionalContext, subagentsAllowed), requestKey },
+      request: { ...sendRequest(message, additionalContext, { subagentsAllowed, keepFullContext, artifactComments: commentSend }), requestKey },
       watermarkBefore,
     });
     if (hiddenOpener) holdHiddenOpenerRetry(assistantMessageId, additionalContext);
@@ -2495,6 +2643,13 @@ export function useChatMessages(
       const processStreamFrame = createStreamEventProcessor(runtime, streamRouterDeps, assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
       const processEvent = (event: SSEEvent) => {
         admission.observe(event);
+        // Headers come ahead of the checks that can still refuse: the first
+        // frame is when the server has the comments this send carries.
+        if (event.event === 'metadata' || event.event === 'steering_accepted') requestKeys.settle(requestKey, 'accepted');
+        // Only a run of this send's own spends what the hint said, and its
+        // closing frame says what the next send summarizes. A send refused or
+        // lost before that, or steered into another run, leaves both standing.
+        if (event.event === 'metadata' && !isSubagentEvent(event)) spendNextSummary();
         processStreamFrame(event);
       };
 
@@ -2506,15 +2661,16 @@ export function useChatMessages(
         llmModel: model || null,
         reasoningEffort: reasoningEffort || null,
         fastMode: fastMode ?? null,
+        keepFullContext,
         platform,
-        // Latch run_id AND the server-assigned thread_id from Content-Location
-        // BEFORE the first SSE body byte. run_id closes the reconnect race
+        // Latch run_id AND the server-assigned thread_id from Content-Location,
+        // which come with the first frame. run_id closes the reconnect race
         // window; the thread_id latch lets an early stop on a brand-new thread
         // ('__default__' until the first event) still hard-cancel the backend
         // run instead of skipping cancel. The first event still drives the
         // route/storage update (see the thread_id branch in processEvent).
         onRunIdResolved: (runId, resolvedThreadId) => {
-          requestKeyRef.current.settle(requestKey);
+          requestKeys.spend(requestKey);
           currentRunIdRef.current = runId;
           if (resolvedThreadId && resolvedThreadId !== '__default__') {
             threadIdRef.current = resolvedThreadId;
@@ -2523,32 +2679,37 @@ export function useChatMessages(
         signal: abortController.signal,
         requestKey,
         threadSettings: { subagentsAllowed },
+        artifactComments: commentSend,
       });
 
       // The user hit stop: stopWorkflow already finalized the message and ran
       // teardown. Skip reconnect/cleanup so we don't double-fire. Exception: a
       // foreground handler aborted this stream because the tab resumed
-      // (background abort, not a user stop) — re-kick the reconnect instead.
-      if (result?.aborted || wasStoppedRef.current) {
-        if (backgroundReconnectRef.current && !wasStoppedRef.current) {
-          backgroundReconnectRef.current = false;
-          attemptReconnectAfterDisconnect(currentMessageRef.current || assistantMessageId);
-        }
-        return;
+      // (background abort, not a user stop), which is a drop like any other.
+      const resumed = result?.aborted && backgroundReconnectRef.current && !wasStoppedRef.current;
+      if (resumed) backgroundReconnectRef.current = false;
+      else if (result?.aborted || wasStoppedRef.current) return;
+
+      // A drop with no run on screen goes again rather than look for one to
+      // resume. See DROPPED_BEFORE_RUN.
+      if ((resumed || result?.disconnected) && !refs.retryNotice && admission.unstarted() && !admission.refused()) {
+        refs.retryNotice = DROPPED_BEFORE_RUN;
+        setTurnHeld(null);
       }
 
       // Checked before the disconnect: the server drops the connection right
       // after a retry notice, and the run it names is already over, so there
       // is nothing to reconnect to. A scheduled resend owns finalization.
-      if (refs.retryNotice && settleRetry(refs.retryNotice, currentMessageRef.current || assistantMessageId, 0, { model, reasoningEffort, fastMode }, sendRequest(message, additionalContext, subagentsAllowed), null, admission.unstarted())) {
+      if (refs.retryNotice && settleRetry(refs.retryNotice, currentMessageRef.current || assistantMessageId, 0, { model, reasoningEffort, fastMode }, sendRequest(message, additionalContext, { subagentsAllowed, keepFullContext, artifactComments: commentSend }), requestKey, null, admission.unstarted())) {
         wasDisconnected = true;
+        ended = 'handedOff';
         return;
       }
 
-      if (result?.disconnected && !refs.retryNotice) {
+      if ((resumed || result?.disconnected) && !refs.retryNotice) {
         console.log('[Send] Stream disconnected, attempting reconnect');
         wasDisconnected = true;
-        attemptReconnectAfterDisconnect(assistantMessageId);
+        attemptReconnectAfterDisconnect(currentMessageRef.current || assistantMessageId);
         return;
       }
 
@@ -2562,6 +2723,13 @@ export function useChatMessages(
         // bubbles have to outlive a reload and take no turn.
         if (admission.refused() || refs.retryNotice?.recovery === 'resend') admission.unadmit();
         else markTranscriptPersisted();
+        // Refused inside the stream: its comments wait with the reason, and
+        // the composer takes the send back where it would.
+        const refusal = admission.refusal();
+        if (refusal !== null) {
+          ended = { refused: refusal };
+          if (userMessage) returnUnsent(draft, { userId: userMessage.id, assistantId: assistantMessageId }, refusal, artifactComments);
+        }
       }
     } catch (err: unknown) {
           // An aborted stream (user hit stop) is intentional, not a failure.
@@ -2577,7 +2745,7 @@ export function useChatMessages(
           // accepted (its response was lost) — adopt that run instead of
           // erroring; the reconnect owns finalization from here.
           if (
-            retryFailedDuplicate(err, assistantMessageId, sendRequest(message, additionalContext, subagentsAllowed), { model, reasoningEffort, fastMode }, requestKey)
+            retryFailedDuplicate(err, assistantMessageId, sendRequest(message, additionalContext, { subagentsAllowed, keepFullContext, artifactComments: commentSend }), { model, reasoningEffort, fastMode }, requestKey)
             || adoptDuplicateRun(err, assistantMessageId, requestKey)
           ) {
             wasDisconnected = true;
@@ -2586,6 +2754,8 @@ export function useChatMessages(
           admission.unadmit();
           if ((err as Record<string, unknown>).status !== 429) console.error('Error sending message:', err);
           const { banner, answered } = refusalBanner(err);
+          ended = { refused: banner };
+          if (userMessage && returnUnsent(draft, { userId: userMessage.id, assistantId: assistantMessageId }, banner, artifactComments)) return;
           if (banner !== null) setMessageError(banner);
           // A hidden opener keeps its reply either way: the user has no
           // message on screen to send again, so the failed reply is the one
@@ -2603,6 +2773,9 @@ export function useChatMessages(
             );
           }
         } finally {
+          // The request is over: comments it carried that the server never
+          // answered for wait in the queue again, unless a retry carries them.
+          requestKeys.settle(requestKey, ended);
           // Skip cleanup on a user stop — stopWorkflow owns the teardown and a
           // second cleanup here would re-toggle loading/subagent state. Also
           // clear the abort ref so a later stop can't abort a finished stream.
@@ -2751,7 +2924,7 @@ export function useChatMessages(
 
     // One request_key per resume (keyed by the interrupt answers), reused on
     // a retransmit after a lost response — see createRequestKeyTracker.
-    const requestKey = requestKeyRef.current.take(
+    const requestKey = requestKeys.take(
       `hitl|${threadId}|${JSON.stringify(hitlResponse)}`,
     );
     let wasDisconnected = false;
@@ -2765,13 +2938,13 @@ export function useChatMessages(
         llmModel: model,
         reasoningEffort,
         fastMode,
-        // Latch the fresh run_id from response headers before the first SSE
-        // body byte. Without this, an early disconnect (between the pre-POST
+        // Latch the fresh run_id from Content-Location with the first frame,
+        // ahead of its handling. Without this, an early disconnect (between the pre-POST
         // clear above and the metadata frame) would let
         // attemptReconnectAfterDisconnect fall back to the prior run's
         // TaskInfo and silently hang.
         onRunIdResolved: (runId) => {
-          requestKeyRef.current.settle(requestKey);
+          requestKeys.settle(requestKey, 'accepted');
           currentRunIdRef.current = runId;
           // The backend opened a run, so the resume was admitted. Settled here
           // rather than left to the `finally` because this is the first moment
@@ -2804,7 +2977,7 @@ export function useChatMessages(
       // reconnect finds no run and reloads the thread, whose pause still waits.
       // The server ends that body cleanly, so the notice stands in for the drop.
       const notice = refs.retryNotice?.recovery === 'retry' ? refs.retryNotice : undefined;
-      if (notice && settleRetry(notice, currentMessageRef.current || assistantMessageId, 0, { model, reasoningEffort, fastMode }, null)) {
+      if (notice && settleRetry(notice, currentMessageRef.current || assistantMessageId, 0, { model, reasoningEffort, fastMode }, null, requestKey)) {
         wasDisconnected = true;
         return;
       }
@@ -2906,6 +3079,17 @@ export function useChatMessages(
     },
     [setMessages],
   );
+
+  // What a request the view made of thread `tid` (/compact, /offload) writes
+  // once it settles, which lands only while that thread is still on screen:
+  // the view may have moved to another meanwhile.
+  const forThread = useCallback((tid: string) => {
+    const onScreen = () => threadIdRef.current === tid;
+    return {
+      setNextSummary: (next: NextSummary | null) => { if (onScreen()) setNextSummary(next); },
+      insertNotification: (...args: Parameters<typeof insertNotification>) => { if (onScreen()) insertNotification(...args); },
+    };
+  }, [insertNotification]);
 
   // =====================================================================
   // Edit / Regenerate / Retry handlers
@@ -3083,8 +3267,11 @@ export function useChatMessages(
     // box warned of messages after the one edited. A refused fork gives them
     // back with the messages.
     const dropped: EditDraft[] = [];
+    // Another attempt replaces its reply alone: steers sent while the reply was
+    // out stay, with whatever they came to.
+    const keepsSteers = rerun !== undefined && forkFromTurn === null;
     for (const { message: removed, turnIndex: turn } of projected.slice(truncateIndex)) {
-      if (removed.role !== 'user') continue;
+      if (removed.role !== 'user' || keepsSteers) continue;
       const key = { turnIndex: turn, original: removed.content.trim(), messageId: removed.id };
       const text = editDrafts.get(key);
       if (text === undefined) continue;
@@ -3096,9 +3283,10 @@ export function useChatMessages(
       const truncated = resentUserId === null
         ? prev.slice(0, truncateIndex)
         : prev.slice(0, truncateIndex).map((m) => (m.id === resentUserId ? { ...m, unadmitted: false, turnIndex } : m));
+      const steers = keepsSteers ? prev.slice(truncateIndex).filter((m) => m.role === 'user') : [];
       const newMsgs = userMessage
         ? [...truncated, userMessage, assistantMessage]
-        : [...truncated, assistantMessage];
+        : [...truncated, assistantMessage, ...steers];
       newMessagesStartIndexRef.current = newMsgs.length;
       return newMsgs;
     });
@@ -3109,11 +3297,13 @@ export function useChatMessages(
     turnCheckpointsRef.current = null;
 
     // One request_key per retry click / fork, reused on a retransmit after a
-    // lost response — see createRequestKeyTracker.
-    const requestKey = request.requestKey ?? requestKeyRef.current.take(
+    // lost response — see createRequestKeyTracker. A resend of a send that
+    // carried comments carries them again.
+    const requestKey = requestKeys.take(
       viaRetryEndpoint
         ? `retry|${threadId}`
         : `fork|${threadId}|${checkpointId ?? ''}|${forkFromTurn ?? ''}|${message ?? ''}`,
+      { key: request.requestKey, comments: request.artifactComments },
     );
     // The message a reply answered when it is the one right above it, which a
     // refusal that needs the turn's input sent again gives back to the
@@ -3147,25 +3337,32 @@ export function useChatMessages(
       watermarkBefore,
     });
     let wasDisconnected = false;
+    // How the request ended for its comments, unless the server answered first.
+    let ended: SendOutcome = 'dropped';
     const wasInterruptedRef = { current: false };
     try {
       const refs = buildStreamRefs();
       const processStreamFrame = createStreamEventProcessor(runtime, streamRouterDeps, assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
       // Once the stream is open, a refusal arrives as a frame.
       let refusalFrame: SSEEvent | null = null;
+      let runFrameSeen = false;
       const processEvent = (event: SSEEvent) => {
         if (forkRefusalMessage(event) !== null) refusalFrame = event;
         admission?.observe(event);
+        if (event.event === 'metadata' && !isSubagentEvent(event)) runFrameSeen = true;
+        if (event.event === 'metadata' || event.event === 'steering_accepted') requestKeys.settle(requestKey, 'accepted');
+        // As for a send: the hint goes once the run this request starts does.
+        if (event.event === 'metadata' && !isSubagentEvent(event)) spendNextSummary();
         processStreamFrame(event);
       };
 
       // Retry goes through POST /retry (v4 attempt chain: server validates
       // the latest attempt + resolves the checkpoint, no truncation); edit/
       // regenerate keep the fork path.
-      // Latch run_id from response headers — see handleSendMessage for the same
+      // Latch run_id from Content-Location — see handleSendMessage for the same
       // closing-the-race rationale. Shared by both branches.
       const latchRunId = (runId: string) => {
-        requestKeyRef.current.settle(requestKey);
+        requestKeys.spend(requestKey);
         currentRunIdRef.current = runId;
       };
       const result = viaRetryEndpoint
@@ -3183,6 +3380,7 @@ export function useChatMessages(
             // which the server refuses when another run came since.
             retryOf.runId ?? latestRunIdRef.current,
             request.additionalContext,
+            request.keepFullContext,
           )
         : await sendChatMessageStream(message || '', workspaceId, threadId, {
             onEvent: processEvent,
@@ -3199,38 +3397,43 @@ export function useChatMessages(
             onRunIdResolved: latchRunId,
             signal: abortController.signal,
             requestKey,
+            keepFullContext: request.keepFullContext,
             threadSettings: { subagentsAllowed: request.subagentsAllowed },
+            artifactComments: request.artifactComments,
           });
 
       // User hit stop: stopWorkflow already finalized + tore down. Exception: a
       // foreground handler aborted this stream on tab resume (background abort,
-      // not a user stop) — treat it as a disconnect and re-kick the reconnect so
-      // the resumed turn recovers instead of dying silently.
-      if (result?.aborted || wasStoppedRef.current) {
-        if (backgroundReconnectRef.current && !wasStoppedRef.current) {
-          backgroundReconnectRef.current = false;
-          wasDisconnected = true;
-          attemptReconnectAfterDisconnect(assistantMessageId);
-        }
-        return;
-      }
+      // not a user stop), which is a drop like any other.
+      const resumed = result?.aborted && backgroundReconnectRef.current && !wasStoppedRef.current;
+      if (resumed) backgroundReconnectRef.current = false;
+      else if (result?.aborted || wasStoppedRef.current) return;
 
       if (recoverRefusedFork(refusalFrame)) return;
       if (admission?.refused()) {
         admission.unadmit();
+        ended = { refused: admission.refusal() };
         return;
+      }
+
+      // A drop with no run on screen goes again rather than look for one to
+      // resume. See DROPPED_BEFORE_RUN.
+      if ((resumed || result?.disconnected) && !refs.retryNotice && !runFrameSeen) {
+        refs.retryNotice = DROPPED_BEFORE_RUN;
+        setTurnHeld(null);
       }
 
       // A resend that fails the same way counts against the same turn's
       // budget, which is what keeps a chain of notices from looping.
-      if (refs.retryNotice && settleRetry(refs.retryNotice, currentMessageRef.current || assistantMessageId, rerun?.spent ?? 0, modelOptions, request, forkCut, plainSend ? admission?.unstarted() ?? null : null)) {
+      if (refs.retryNotice && settleRetry(refs.retryNotice, currentMessageRef.current || assistantMessageId, rerun?.spent ?? 0, modelOptions, request, requestKey, forkCut, plainSend ? admission?.unstarted() ?? null : null)) {
         wasDisconnected = true;
+        ended = 'handedOff';
         return;
       }
 
-      if (result?.disconnected && !refs.retryNotice) {
+      if ((resumed || result?.disconnected) && !refs.retryNotice) {
         wasDisconnected = true;
-        attemptReconnectAfterDisconnect(assistantMessageId);
+        attemptReconnectAfterDisconnect(currentMessageRef.current || assistantMessageId);
         return;
       }
 
@@ -3249,20 +3452,32 @@ export function useChatMessages(
       if (sendUserId !== null && settleSteeredSend(err, { userId: sendUserId, assistantId: assistantMessageId, turnIndex, watermarkBefore, requestKey })) return;
       // 409 duplicate_request: an earlier copy of this retry/fork was already
       // accepted (its response was lost) — adopt that run instead of erroring.
-      if (retryFailedDuplicate(err, assistantMessageId, request, modelOptions, requestKey) || adoptDuplicateRun(err, assistantMessageId, requestKey)) {
+      // Another attempt adopting a run asks again if that run goes without a word.
+      const askAgain = rerun && ((bubbleId: string) => (settleRetry(DROPPED_BEFORE_RUN, bubbleId, rerun.spent, modelOptions, request, requestKey, forkCut, plainSend ? admission?.unstarted() ?? null : null) ? 'resending' as const : 'failed' as const));
+      if (retryFailedDuplicate(err, assistantMessageId, request, modelOptions, requestKey, rerun?.spent ?? 0) || adoptDuplicateRun(err, assistantMessageId, requestKey, askAgain || undefined)) {
         wasDisconnected = true;
         return;
       }
       if (recoverRefusedFork(err)) return;
+      // A resend that could not open: the link is not back yet, which a radio
+      // waking with the page takes a moment for. Another try on the same budget.
+      if (rerun && (err as Error)?.name === 'TypeError' && settleRetry(DROPPED_BEFORE_RUN, assistantMessageId, rerun.spent, modelOptions, request, requestKey, forkCut, plainSend ? admission?.unstarted() ?? null : null)) {
+        wasDisconnected = true;
+        ended = 'handedOff';
+        return;
+      }
       admission?.unadmit();
       console.error('[streamFromCheckpoint] Error:', err);
       const { banner } = refusalBanner(err);
+      // A resend's comments wait with the reason, as its first send's did.
+      ended = { refused: banner };
       if (banner !== null) setMessageError(banner);
       setMessages((prev) =>
         updateMessage(prev, assistantMessageId, (msg) =>
           failAssistantMessage(msg, { message: 'Failed to process request. Please try again.' }))
       );
     } finally {
+      requestKeys.settle(requestKey, ended);
       if (mainStreamAbortRef.current === abortController) {
         mainStreamAbortRef.current = null;
       }
@@ -3283,16 +3498,17 @@ export function useChatMessages(
    * Ends a stream that closed on a retry notice: schedules the resend the
    * notice's recovery calls for, or marks the reply failed and hands its Retry
    * that recovery. True when the resend owns the turn, so the caller skips its
-   * own finalize and cleanup. `request` is what the stream sent, and `cut`
-   * the fork it stands for, and `send` the send the server started no run
-   * of, which a resend of it carries.
+   * own finalize and cleanup. `request` is what the stream sent under
+   * `requestKey`, and `cut` the fork it stands for, and `send` the send the
+   * server started no run of, which a resend of it carries.
    */
-  const settleRetry = (notice: RetryNotice, bubbleId: string, spent: number, modelOptions: ModelOptions, request: TurnRequest | null, cut: ForkCut | null = null, send: UnstartedSend | null = null): boolean =>
+  const settleRetry = (notice: RetryNotice, bubbleId: string, spent: number, modelOptions: ModelOptions, request: TurnRequest | null, requestKey: string, cut: ForkCut | null = null, send: UnstartedSend | null = null): boolean =>
     settleRetryNotice(
       {
         setMessages,
         getMessages: liveMessages.get,
-        request,
+        // A copy of a dropped request may have arrived, and its key says so.
+        request: request && notice === DROPPED_BEFORE_RUN ? { ...request, requestKey } : request,
         failedRunId: currentRunIdRef.current,
         resend: (next, truncateIndex, snapshot, nextSpent) => {
           void streamFromCheckpoint(next, truncateIndex, snapshot, modelOptions, { rerun: { spent: nextSpent, send }, cut });
@@ -3300,6 +3516,8 @@ export function useChatMessages(
         holdRetry: (held) => {
           if (held) heldRetriesRef.current.set(held.bubbleId, { ...held, cut });
         },
+        // The resend held the request's comments; with none going, they go back.
+        abandoned: () => requestKeys.settle(requestKey, 'dropped'),
         wasStoppedRef,
         sessionEpochRef,
         threadIdRef,
@@ -3327,6 +3545,7 @@ export function useChatMessages(
     cut: ForkCut,
     turnsData: ThreadTurns,
     modelOptions: ModelOptions,
+    keepFullContext: boolean,
     shown: ShownBubbles,
   ) => {
     const turn = turnsData.turns.find((entry) => entry.turn_index >= turnIndex);
@@ -3339,14 +3558,14 @@ export function useChatMessages(
       abandonForkPreflight(cut, 'Failed to process request');
       return;
     }
-    await streamFromCheckpoint(forkRequest(text, turn.edit_checkpoint_id, turnIndex), msgIndex, cut.transcript, modelOptions, { cut, shown });
+    await streamFromCheckpoint(forkRequest(text, turn.edit_checkpoint_id, turnIndex, { keepFullContext }), msgIndex, cut.transcript, modelOptions, { cut, shown });
   };
 
   /**
    * Edit a user message: truncate to before that message, send modified content
    * from the checkpoint before the original message was added.
    */
-  const handleEditMessage = useCallback(async (messageId: string, newContent: string, modelOptions: ModelOptions = {}) => {
+  const handleEditMessage = useCallback(async (messageId: string, newContent: string, modelOptions: ModelOptions = {}, keepFullContext = false) => {
     if (!newContent?.trim()) return;
 
     const transcript = liveMessages.get();
@@ -3380,7 +3599,7 @@ export function useChatMessages(
         returnEditDraft(draft);
         return;
       }
-      await streamFromCheckpoint(sendRequest(newContent, null), msgIndex, transcript, modelOptions);
+      await streamFromCheckpoint(sendRequest(newContent, null, { keepFullContext }), msgIndex, transcript, modelOptions);
       return;
     }
     const cut: ForkCut = {
@@ -3412,7 +3631,7 @@ export function useChatMessages(
       abandonForkPreflight(cut, 'Failed to process request');
       return;
     }
-    await streamEdit(newContent, turnIndex, msgIndex, cut, turnsData, modelOptions, { userId: edited.id, assistantId });
+    await streamEdit(newContent, turnIndex, msgIndex, cut, turnsData, modelOptions, keepFullContext, { userId: edited.id, assistantId });
   // The slot helpers reach only refs and threadId.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveMessages, threadId, getTurnCheckpoints, streamFromCheckpoint, setMessages]);
@@ -3421,7 +3640,7 @@ export function useChatMessages(
    * Regenerate an assistant response: truncate the assistant message,
    * re-run from the checkpoint that has the user message but before AI response.
    */
-  const handleRegenerate = useCallback(async (messageId: string, modelOptions: ModelOptions = {}) => {
+  const handleRegenerate = useCallback(async (messageId: string, modelOptions: ModelOptions = {}, keepFullContext = false) => {
     const transcript = liveMessages.get();
     const msgIndex = transcript.findIndex((m) => m.id === messageId);
     if (msgIndex === -1) return;
@@ -3482,7 +3701,7 @@ export function useChatMessages(
     const turn = turnsData.turns.find((entry) => entry.turn_index === turnIndex);
     if (turn) {
       // Truncate at the turn's first assistant bubble (keep everything before it, including user msg)
-      await streamFromCheckpoint(forkRequest(null, turn.regenerate_checkpoint_id, turnIndex), truncateIndex, transcript, modelOptions, { cut, shown: { assistantId } });
+      await streamFromCheckpoint(forkRequest(null, turn.regenerate_checkpoint_id, turnIndex, { keepFullContext }), truncateIndex, transcript, modelOptions, { cut, shown: { assistantId } });
       return;
     }
     if (!userMessage) {
@@ -3494,7 +3713,7 @@ export function useChatMessages(
     const held = heldRetriesRef.current.get(messageId);
     if (held) {
       heldRetriesRef.current.delete(messageId);
-      await streamFromCheckpoint(held.request, truncateIndex, transcript, modelOptions, { rerun: { spent: 0 }, cut: held.cut, shown: { assistantId } });
+      await streamFromCheckpoint({ ...held.request, keepFullContext }, truncateIndex, transcript, modelOptions, { rerun: { spent: 0 }, cut: held.cut, shown: { assistantId } });
       return;
     }
     // Otherwise only its text is known here, which is the whole of it only
@@ -3505,7 +3724,7 @@ export function useChatMessages(
     }
     // The message goes again in its own place, as an edit that keeps its text,
     // and its bubble, still on screen, keeps its id.
-    await streamEdit(userMessage.content, turnIndex, userIndex, cut, turnsData, modelOptions, { userId: userMessage.id, assistantId });
+    await streamEdit(userMessage.content, turnIndex, userIndex, cut, turnsData, modelOptions, keepFullContext, { userId: userMessage.id, assistantId });
   // Same as handleEditMessage: the slot helpers reach only refs and threadId.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveMessages, threadId, getTurnCheckpoints, streamFromCheckpoint, setMessages]);
@@ -3519,7 +3738,7 @@ export function useChatMessages(
    * A reply this session saw fail sends the recovery its failure named, with
    * the context the send carried.
    */
-  const handleRetry = useCallback(async (modelOptions: ModelOptions = {}) => {
+  const handleRetry = useCallback(async (modelOptions: ModelOptions = {}, keepFullContext = false) => {
     if (isStreamingRef.current) return;
     const transcript = liveMessages.get();
     const lastErrorIndex = transcript.findLastIndex((m) => m.role === 'assistant' && (m as AssistantMessage).error);
@@ -3529,8 +3748,8 @@ export function useChatMessages(
     const request = retryRequestFor(held, bubbleId);
     if (bubbleId) heldRetriesRef.current.delete(bubbleId);
     // A held fork resend carries the fork it stands for, which a refusal of
-    // it puts back.
-    await streamFromCheckpoint(request, truncateIndex, transcript, modelOptions, { rerun: { spent: 0 }, cut: held && request === held.request ? held.cut : null });
+    // it puts back. The summary skip is the composer's now, not the send's.
+    await streamFromCheckpoint({ ...request, keepFullContext }, truncateIndex, transcript, modelOptions, { rerun: { spent: 0 }, cut: held && request === held.request ? held.cut : null });
   }, [liveMessages, streamFromCheckpoint]);
 
   // A PTC run's sandbox acquisition settles every folder on its computer, which
@@ -3557,6 +3776,7 @@ export function useChatMessages(
     refreshWorkspaceFolder,
     armReportBack: (owed) => armReportBackWatch(threadIdRef.current, null, null, undefined, owed),
     refreshWorkspaces: () => invalidateNewWorkspace(queryClient),
+    refreshClaudeCode,
     // A turn other than the one this view counted for the run's bubble means
     // turns were added where the view never saw them. The stream stamps the
     // server's number, and only a reload shows those turns.
@@ -3623,6 +3843,11 @@ export function useChatMessages(
     clearReturnedSteering: () => setReturnedSteering(null),
     returnedEdit,
     clearReturnedEdit,
+    returnedDraft,
+    clearReturnedDraft,
+    // What becomes of the file comments each send carries, for the views
+    // that show them waiting.
+    watchCommentSends: requestKeys.watchComments,
     editDrafts,
     handleSendMessage,
     stopWorkflow,
@@ -3630,6 +3855,8 @@ export function useChatMessages(
     pendingInterrupt,
     ...interruptAnswers,
     tokenUsage,
+    nextSummary,
+    forThread,
     isShared,
     insertNotification,
     handleEditMessage,

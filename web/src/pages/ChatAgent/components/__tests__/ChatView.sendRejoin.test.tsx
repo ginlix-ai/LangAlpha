@@ -44,6 +44,7 @@ vi.mock('../FilePanel', () => ({ default: () => null }));
 
 import { assistant, chatInput, chatState, mountChatView, resetChatState, userMsg } from './chatViewHarness';
 import ChatView from '../ChatView';
+import type { ComposerSend } from '@/components/ui/chat-input.types';
 import { scrollMemory } from '@/lib/scrollMemory';
 
 const reply = (id: string, content: string, isStreaming = false) =>
@@ -159,8 +160,8 @@ describe('ChatView send while scrolled up', () => {
   }
 
   function send() {
-    const onSend = chatInput.props!.onSend as (m: string, att: unknown[], cmds: unknown[], opts: unknown) => void;
-    act(() => onSend('and the next quarter?', [], [], {}));
+    const onSend = chatInput.props!.onSend as (send: ComposerSend) => void;
+    act(() => onSend({ text: 'and the next quarter?', files: [], mentions: [], commands: [], message: 'and the next quarter?', modelOptions: { model: null, reasoningEffort: null, fastMode: null } }));
     expect(chatState.handleSendMessage).toHaveBeenCalledTimes(1);
   }
 

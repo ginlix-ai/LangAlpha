@@ -22,8 +22,6 @@ const ws = vi.hoisted(() => ({
   ginlixDataEnabled: true,
   subscribe: vi.fn(),
   unsubscribe: vi.fn(),
-  setPreviousClose: vi.fn(),
-  setDayOpen: vi.fn(),
 }));
 
 // Controllable useStockData return; mutated per-test.

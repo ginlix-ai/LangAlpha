@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, useState, Suspense } from 'react';
-import { CandlestickChart, FolderTree, LayoutDashboard, TextSelect, Upload } from 'lucide-react';
+import { CandlestickChart, FolderTree, LayoutDashboard, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   memoMimeForName,
@@ -31,12 +31,15 @@ import './FilePanel.css';
 
 const ExportPreviewModal = React.lazy(() => import('./ExportPreviewModal'));
 
-import type { ApiAdapter, ChartTabSpec, ContextPayload, PanelTarget } from './filePanel/types';
+import type { ContextPayload } from '@/components/ui/chat-input.types';
+import type { ApiAdapter, ChartTabSpec, PanelAccess, PanelTarget } from './filePanel/types';
 import { EDITABLE_EXTENSIONS, getFileExtension, viewerFor } from './filePanel/fileMeta';
 import { useFileUpload } from './filePanel/useFileUpload';
 import { useFileEdit } from './filePanel/useFileEdit';
 import { usePanelConfirm } from './filePanel/usePanelConfirm';
-import { useSelectionContext } from './filePanel/useSelectionContext';
+import { selectionSourceName, useSelectionContext } from './filePanel/useSelectionContext';
+import { ImageReply } from './selectionQuote/ImageReply';
+import { SelectionQuote } from './selectionQuote/SelectionQuote';
 import { useFileSelection } from './filePanel/useFileSelection';
 import { useFileBackup } from './filePanel/useFileBackup';
 import { useFileFocus } from './filePanel/useFileFocus';
@@ -59,8 +62,10 @@ import { FileCrumbs } from './filePanel/FileCrumbs';
 import { PreviewCrumbs } from './filePanel/PreviewCrumbs';
 import { SiblingCrumbs } from './filePanel/SiblingCrumbs';
 import { PreviewPanes } from './filePanel/PreviewPanes';
+import { useHtmlArtifactTab } from './filePanel/useHtmlArtifactTab';
 import { usePreviews } from './filePanel/usePreviews';
 import { usePanelTarget } from './filePanel/usePanelTarget';
+import { useCommentUi } from './viewers/html/comments/useCommentUi';
 import { ActiveTabBody } from './filePanel/ActiveTabBody';
 import type { NewTabMenu } from './filePanel/panelLaunchers';
 import { useWatchTab } from './filePanel/useWatchTab';
@@ -129,6 +134,8 @@ interface FilePanelProps {
   isActive?: boolean;
   apiAdapter?: ApiAdapter | null;
   onAddContext?: ((ctx: ContextPayload) => void) | null;
+  /** Who a quote from this panel goes to: the placeholder names them. */
+  agentName?: string;
   showSystemFiles?: boolean;
   onToggleSystemFiles?: (() => void) | null;
   /** The guard the panel's own close runs, for whoever else can unmount the
@@ -139,8 +146,6 @@ interface FilePanelProps {
    *  The host that sizes the panel reads this, since a chart has a floor of
    *  its own. */
   onActiveTabKindChange?: ((kind: FileTab['kind'] | null) => void) | null;
-  /** Offer the open file's share dialog in its header: the owner's own panel only. */
-  canShare?: boolean;
   /** Set while a Home or analyst panel shows a sibling's files in place of
    *  its own: the panel names that workspace and offers the way back, asking
    *  first about unsaved edits as its own close does. */
@@ -177,11 +182,11 @@ function FilePanel({
   isActive = true,
   apiAdapter = null,
   onAddContext = null,
+  agentName,
   showSystemFiles = false,
   onToggleSystemFiles = null,
   onLeaveGuardChange = null,
   onActiveTabKindChange = null,
-  canShare = false,
   onReturnHome = null,
   returnLabel = null,
 }: FilePanelProps): React.ReactElement {
@@ -254,6 +259,16 @@ function FilePanel({
   const selectedFile = activeTab.kind === 'file' ? activeTab.path : null;
 
   const previews = usePreviews(workspaceId);
+  // Publishing, comments, versions and a file's record are the owner's: a
+  // read-only panel, or a share's, shows a file alone. Decided here once, and
+  // what acts on it reads this rather than deciding again.
+  const commentUi = useCommentUi();
+  const servePrefix = apiAdapter?.servePrefix;
+  const access = useMemo<PanelAccess>(
+    () => (servePrefix ? { kind: 'share', servePrefix } : readOnly || !workspaceId ? { kind: 'readOnly' } : { kind: 'owner' }),
+    [servePrefix, readOnly, workspaceId],
+  );
+  const comments = access.kind === 'owner' ? commentUi : undefined;
 
   const { body, loading: fileLoading, error: readError, readAt, refetch } = useFileBody({
     cache, path: selectedFile, workspaceStatus: wsData?.status,
@@ -309,7 +324,7 @@ function FilePanel({
   useEffect(() => { reportActiveKind(activeTab.kind); }, [activeTab.kind]);
   useEffect(() => () => reportActiveKind(null), []);
 
-  const { selectionTooltip, contentWrapperRef, contextMenu, setContextMenu, handleContentMouseUp, handleEditorTextSelect, handleAddSelectionContext } =
+  const { selectionTooltip, selectionComposing, beginReply, dismissSelection, contentWrapperRef, contextMenu, setContextMenu, handleEditorTextSelect, handleAddSelectionContext } =
     useSelectionContext({ selectedFile, fileContent, onAddContext });
 
   const viewer = selectedFile ? viewerFor(selectedFile, fileMime, edit.isEditing) : 'other';
@@ -327,6 +342,26 @@ function FilePanel({
   // A replay restores the reader's place and leaves their choice of view be.
   const htmlView = useHtmlViewMode(focus.replayed ? null : focus.htmlAnchor, focus.seq);
   const { setSource: setHtmlSource } = htmlView;
+
+  // An HTML file the owner reads takes comments and has versions.
+  const artifactTab = useHtmlArtifactTab({
+    workspaceId,
+    tabId: activeTab.id,
+    file: selectedFile,
+    html: viewer === 'html',
+    source: htmlView.source,
+    active: isActive,
+    readAt: readAt ?? null,
+    ui: comments,
+  });
+  const htmlArtifactPath = artifactTab.path;
+  // The agent's edit to the HTML file in front is read at once, unlike other
+  // files: the frame swaps it in over the old one with the place kept, and a
+  // reader whose comments the agent is answering is waiting for exactly that.
+  const htmlChanged = !!htmlArtifactPath && !edit.isEditing && hasChanged(htmlArtifactPath);
+  useEffect(() => {
+    if (htmlChanged && htmlArtifactPath) cache.invalidate(htmlArtifactPath);
+  }, [htmlChanged, htmlArtifactPath, cache]);
 
   // Replay the tab's own location whenever it comes back to the front. A
   // location the tab has already been to is a replay; a new one is an ask.
@@ -434,6 +469,7 @@ function FilePanel({
   usePanelTarget({
     target, tabs, previews, openFileRef, cancelPending,
     clearSearch, setTreeOpen, setScopeDir, onTargetHandled,
+    onCommentFocus: comments?.requestFocus,
   });
 
   // Opening a singleton tab drops a reference still resolving, like any other
@@ -486,7 +522,7 @@ function FilePanel({
     setContextMenu(null);
     if (action === 'add-context' && onAddContext) {
       tabs.openFile(filePath, { pin: true });
-      onAddContext({ path: filePath });
+      onAddContext({ kind: 'file', path: filePath });
     } else if (action === 'add-to-memo') {
       handleAddToMemo(filePath);
     } else if (action === 'open') {
@@ -644,6 +680,13 @@ function FilePanel({
     void openFileRef(path, { fromFile: rooted ? null : selectedFile, location, pin: opts?.pin });
   });
 
+  // A link in a framed document opens beside it, so the document cannot stay
+  // the preview tab the new one would take over. Its path starts at the workspace.
+  const handleFrameLink = useStableHandler((path: string, fragment: string) => {
+    tabs.pinTab(activeTab.id);
+    handleViewerLink(path, undefined, parseFragment(fragment) ?? undefined, { rooted: true, pin: true });
+  });
+
   const handleAnchorLink = useStableHandler((fragment: string) => {
     if (selectedFile) focus.focusAt(selectedFile, parseFragment(fragment));
   });
@@ -756,11 +799,15 @@ function FilePanel({
         <FileCrumbs
           path={selectedFile}
           onOpenDir={revealInTree}
-          meta={meta}
+          // A page in front of the owner has its version and comments to say
+          // there; its line count is the markup's, read under Source.
+          meta={artifactTab.hideMeta ? null : meta}
           unsaved={edit.hasUnsavedChanges}
           chip={focus.chip && (
             <FocusChip state={focus.chip} onJump={focus.jump} onDismiss={() => { focus.dismiss(); tabs.clearLocation(activeTab.id); }} />
           )}
+          artifact={artifactTab.crumbs}
+          tools={artifactTab.tools}
           actions={(
             <FileHeaderActions
               selectedFile={selectedFile}
@@ -774,8 +821,9 @@ function FilePanel({
               triggerDownloadFn={triggerDownloadFn}
               canDownload={canDownload}
               readFileFullFn={readFileFullFn}
-              servePrefix={apiAdapter?.servePrefix}
-              canShare={canShare}
+              access={access}
+              openPublish={artifactTab.openPublish}
+              artifactDoc={artifactTab.doc}
               htmlSource={htmlView.source}
               // Only where the viewer is up to switch: not while loading, nor on an error card.
               onToggleHtmlSource={viewer === 'html' && !fileLoading && !fileError ? () => setHtmlSource((v) => !v) : null}
@@ -842,32 +890,28 @@ function FilePanel({
           <div className="file-panel-viewer">
             {/* font-content only while reading a file: the tree stays on the UI font. */}
             <div className={`file-panel-content${selectedFile ? ' font-content' : ''}`} ref={contentWrapperRef}>
-              {selectionTooltip && onAddContext && (
-                <button
-                  type="button"
-                  className="file-panel-selection-tooltip"
-                  style={{ left: Math.max(8, selectionTooltip.x - 60), top: Math.max(4, selectionTooltip.y - 32) }}
-                  // Acts on mousedown: a click would land after the browser has
-                  // already collapsed the selection it is meant to capture.
-                  onMouseDown={(e: React.MouseEvent) => {
-                    e.preventDefault(); e.stopPropagation();
-                    tabs.pinTab(activeTab.id);
-                    handleAddSelectionContext();
-                  }}
-                  onKeyDown={(e: React.KeyboardEvent) => {
-                    if (e.key !== 'Enter' && e.key !== ' ') return;
-                    e.preventDefault();
-                    tabs.pinTab(activeTab.id);
-                    handleAddSelectionContext();
-                  }}
-                >
-                  <TextSelect className="h-3.5 w-3.5" style={{ color: 'var(--color-accent-primary)' }} />
-                  {selectionTooltip.lineStart != null
+              <ImageReply surfaceRef={contentWrapperRef} enabled={!!onAddContext && isActive !== false} paused={!!selectionTooltip} agentName={agentName} onAddContext={onAddContext} />
+              {selectionTooltip && selectedFile && (
+                <SelectionQuote
+                  key={selectionTooltip.id}
+                  anchor={selectionTooltip}
+                  composing={selectionComposing}
+                  hidden={!onAddContext || isActive === false}
+                  boundsRef={contentWrapperRef}
+                  label={t('context.quote.from', { name: selectionSourceName(selectedFile, selectionTooltip) })}
+                  placeholder={agentName ? t('context.quote.reply', { name: agentName }) : t('context.quote.replyGeneric')}
+                  addLabel={selectionTooltip.lineStart != null
                     ? (selectionTooltip.lineEnd !== selectionTooltip.lineStart
                         ? t('context.addLinesToContext', { start: selectionTooltip.lineStart, end: selectionTooltip.lineEnd })
                         : t('context.addLineToContext', { line: selectionTooltip.lineStart }))
                     : t('context.addToContext')}
-                </button>
+                  onAdd={(reply) => {
+                    tabs.pinTab(activeTab.id);
+                    handleAddSelectionContext(reply);
+                  }}
+                  onReply={() => beginReply(selectionTooltip)}
+                  onDismiss={dismissSelection}
+                />
               )}
               <PreviewPanes tabs={tabs.tabs} activeId={activeTab.id} previews={previews} />
               {!treeFull && (
@@ -907,10 +951,11 @@ function FilePanel({
                   onUndoRedoChange: edit.handleUndoRedoChange,
                   onEditorTextSelect: handleEditorTextSelect,
                   onAddContext: onAddContext ? addViewerContext : null,
-                  onContentMouseUp: handleContentMouseUp,
                   onViewerLink: handleViewerLink,
+                  onFrameLink: handleFrameLink,
                   onAnchorLink: handleAnchorLink,
                   htmlSource: htmlView.source,
+                  htmlArtifact: artifactTab.view,
                 }}
                 onPageCount={onPageCount}
                 canUpload={!readOnly}
@@ -997,6 +1042,7 @@ function FilePanel({
           />
         </Suspense>
       )}
+      {artifactTab.dialog}
       {selectedFile && memoEntry && memoStaleSandboxText !== null && (
         <MemoDiffModal
           open={memoDiffOpen}
@@ -1015,7 +1061,7 @@ function FilePanel({
 }
 
 export default FilePanel;
-export type { ContextPayload, PanelTarget } from './filePanel/types';
+export type { PanelTarget } from './filePanel/types';
 export { SYSTEM_DIR_PREFIXES } from './filePanel/fileMeta';
 // eslint-disable-next-line react-refresh/only-export-components
 export { categorizeFileError } from './filePanel/fileErrors';

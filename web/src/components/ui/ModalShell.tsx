@@ -271,7 +271,9 @@ export function ModalShell({
               {header}
             </div>
           ) : (
-            <div className={cn('shrink-0 pt-5 pb-3 pr-12', space.x)}>
+            // The close button's room is set after the density's padding,
+            // which would otherwise win over it and run a long title under it.
+            <div className={cn('shrink-0 pt-5 pb-3', space.x, 'pr-12')}>
               <h3 id={labelId} className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
                 {title}
               </h3>

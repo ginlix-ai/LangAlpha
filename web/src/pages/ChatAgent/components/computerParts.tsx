@@ -25,6 +25,7 @@ import { MachineArt } from './machineArt/MachineArt';
 import { machineArtOf, machineModelOf, machineStateOf } from './machineArt/machine';
 import { railOrdinal } from './computerRailState';
 import { shownStartFailure, startFailureRemedy } from './startFailure';
+import type { SheetAction } from '@/components/modelAccess/tokenTarget';
 
 /**
  * Everything a card or the details can ask of one machine, already bound to
@@ -51,6 +52,9 @@ export interface MachineActions {
   movingHome: boolean;
   makePrimaryHeld: boolean;
   makePrimary: () => void;
+  /** Add or replace the setup token Claude Code uses on it. */
+  claudeCodeToken: (action: SheetAction) => void;
+  removeClaudeCodeToken: () => void;
 }
 
 interface MachineFrameProps {

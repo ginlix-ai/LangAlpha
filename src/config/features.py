@@ -15,7 +15,9 @@ Each feature carries two orthogonal controls:
 Three definition layers, resolved in order:
 
 1. **Catalog** (this module): every feature the codebase knows about, with its
-   hard defaults and the frontend-facing label/description. A feature must be
+   hard defaults and the frontend-facing label/description/tradeoffs, in
+   English; a web locale translates them under ``settings.featureCatalog.<key>``
+   (``web/src/locales``) and falls back to this copy. A feature must be
    declared here to exist anywhere else.
 2. **Deployment posture** (``config.yaml`` ``features:`` section): per-deploy
    override of ``enabled`` / ``gate`` / ``min_tier``; unset fields inherit
@@ -82,7 +84,7 @@ FEATURES: dict[str, FeatureSpec] = {
         key="market_watch",
         label="Market watch",
         description=(
-            "Adds a Watch toggle to chat: keep a per-thread list of symbols "
+            "Adds a Market watch toggle to chat: keep a per-thread list of symbols "
             "whose live quotes stream into the conversation while you work, "
             "so the agent reasons from current intraday prices instead of "
             "stale lookups."
@@ -92,7 +94,7 @@ FEATURES: dict[str, FeatureSpec] = {
         tradeoffs=(
             "Quotes are re-injected into the model's context as they update, "
             "which can occasionally distract the agent from its main task and "
-            "invalidate the prompt cache — expect slightly slower, costlier "
+            "invalidate the prompt cache. Expect slightly slower, costlier "
             "turns while a watch list is active."
         ),
     ),
@@ -108,7 +110,7 @@ FEATURES: dict[str, FeatureSpec] = {
         gate=FeatureGate.OPT_IN,
         tradeoffs=(
             "Crawling bills per delivered page up to the call's page limit, "
-            "so a broad crawl costs more than targeted fetches. Experimental — "
+            "so a broad crawl costs more than targeted fetches. Experimental: "
             "behavior and pricing may change."
         ),
     ),
@@ -138,7 +140,7 @@ FEATURES: dict[str, FeatureSpec] = {
             "thread are summarized."
         ),
         enabled=True,
-        gate=FeatureGate.OPT_IN,
+        gate=FeatureGate.OPT_OUT,
         tradeoffs=(
             "The agent spends a few extra tool calls per task keeping its "
             "notes. The scratchpad and its notes are deleted when you archive "
@@ -166,14 +168,20 @@ FEATURES: dict[str, FeatureSpec] = {
         ),
     ),
     # Off in every deployment until an operator turns it on; then each user
-    # opts in. Nothing reads it yet: the graph build consults it once
-    # Claude Code models are routable (design phase 2).
+    # opts in. The system switch lists the Claude Code models
+    # (``src.llms.claude_code.rows_available``) and a user's opt-in lets
+    # their turns run on one (``resolve_llm_config``).
     "claude_code_runtime": FeatureSpec(
         key="claude_code_runtime",
         label="Claude Code runtime (preview)",
         description=(
             "Runs your Claude threads through Claude Code on your own Claude "
-            "plan instead of an API key."
+            "plan. It signs in with a setup token, a separate credential you "
+            "make for LangAlpha that never touches your own Claude Code "
+            "sign-in. Claude Code runs on your own computers, and where this "
+            "server offers it, also on the server for workspaces on cloud "
+            "computers, with your setup token or your Anthropic API key. "
+            "Choose where it runs in Settings under Model access."
         ),
         enabled=False,
         gate=FeatureGate.OPT_IN,

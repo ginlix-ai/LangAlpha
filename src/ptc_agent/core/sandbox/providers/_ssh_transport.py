@@ -50,11 +50,18 @@ logger = structlog.get_logger(__name__)
 # free: sshd holds a session until its process exits, which can come after we
 # closed the channel.
 _COMMAND_SLOTS = 6
+# A Claude Code turn's CLI holds a command slot for the whole turn, so no more
+# than this many run at once, leaving two for the commands, installs and
+# checks those turns and their computers still need.
+_CLI_SLOTS = _COMMAND_SLOTS - 2
 # Kept from a command's output, so one runaway command cannot take the
 # server's memory. Past it the rest is read and dropped, so the command is
 # never blocked writing.
 OUTPUT_CAP = 32 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
+# What an upload reads of its local file at a time, off the event loop; the
+# SFTP channel writes each in parallel requests.
+_UPLOAD_CHUNK = 4 * 1024 * 1024
 # How often a running script is checked for having exited, and how long its
 # output may then go quiet before the call returns without the rest.
 _EXIT_POLL_S = 0.1
@@ -201,6 +208,8 @@ class HostFacts:
     sudo_needs_tty: bool = False
     # Where the machine sees this connection come from; empty if it did not say.
     client_address: str = ""
+    # The login's $XDG_CONFIG_HOME, which places its Claude Code token; empty when unset.
+    config_home: str = ""
 
 
 async def _release_when_closed(process: Any, slot: asyncio.Semaphore) -> None:
@@ -230,6 +239,22 @@ async def _give_back(slot: asyncio.Semaphore, process: Any) -> None:
     await _release_when_closed(process, slot)
 
 
+async def _end_upload(slot: asyncio.Semaphore, sftp: Any, *, partial: str | None) -> None:
+    """Remove a failed upload's *partial* file, close its channel, and give
+    its slot back once the channel is closed."""
+    try:
+        if sftp is None:
+            return
+        if partial is not None:
+            with contextlib.suppress(Exception):
+                await sftp.remove(partial)
+        sftp.exit()
+        with contextlib.suppress(Exception):
+            await sftp.wait_closed()
+    finally:
+        slot.release()
+
+
 async def _exit_sftp(sftp: Any) -> None:
     if sftp is not None:
         sftp.exit()
@@ -243,6 +268,7 @@ class Link:
         self.conn = conn
         self.facts: HostFacts | None = None
         self.slots = asyncio.Semaphore(_COMMAND_SLOTS)
+        self.cli_slots = asyncio.Semaphore(_CLI_SLOTS)
         self.control_slot = asyncio.Semaphore(1)
         self.kill_slot = asyncio.Semaphore(1)
         self.forwards: dict[int, Any] = {}
@@ -309,24 +335,19 @@ class Link:
             self.spawn(_after_open(task, then))
             raise
 
-    async def start(
-        self,
-        script: str,
-        *,
-        root: bool = False,
-        cap: int = OUTPUT_CAP,
-        slot: asyncio.Semaphore | None = None,
-    ) -> _Run:
-        """Open a channel and send *script*; the caller reads it and finishes it.
+    async def open_process(
+        self, command: str, *, slot: asyncio.Semaphore | None = None, held: bool = False
+    ) -> Any:
+        """Open a channel running *command*, with bytes on its streams.
 
-        A transport error raised here came before anything was sent, so the
-        caller can tell a command that never ran from one that may have. The
-        slot taken, a command slot unless *slot* names another, is given back
-        when the channel closes, however that comes.
+        The slot taken, a command slot unless *slot* names another, is given
+        back when the channel closes, however that comes. With *held* the
+        caller already took it, waiting for it under a budget of its own,
+        and it is given back the same way.
         """
         slot = self.slots if slot is None else slot
-        await slot.acquire()
-        command = f"exec sudo -n {BOOT.removeprefix('exec ')}" if root else BOOT
+        if not held:
+            await slot.acquire()
         try:
             process = await self._open(
                 self.conn.create_process(command, encoding=None),
@@ -341,6 +362,23 @@ class Link:
             raise
         self.refusals = 0
         self.spawn(_release_when_closed(process, slot))
+        return process
+
+    async def start(
+        self,
+        script: str,
+        *,
+        root: bool = False,
+        cap: int = OUTPUT_CAP,
+        slot: asyncio.Semaphore | None = None,
+    ) -> _Run:
+        """Open a channel and send *script*; the caller reads it and finishes it.
+
+        A transport error raised here came before anything was sent, so the
+        caller can tell a command that never ran from one that may have.
+        """
+        command = f"exec sudo -n {BOOT.removeprefix('exec ')}" if root else BOOT
+        process = await self.open_process(command, slot=slot)
         run = _Run(process, cap)
         try:
             process.stdin.write(script.encode())
@@ -353,17 +391,26 @@ class Link:
         return run
 
     async def run(
-        self, script: str, *, timeout: float, root: bool = False, kill: bool = False
+        self,
+        script: str,
+        *,
+        timeout: float,
+        root: bool = False,
+        kill: bool = False,
+        slot: asyncio.Semaphore | None = None,
     ) -> ScriptResult:
-        """Run a short management script and wait for it.
+        """Run a script and wait for it.
 
-        It takes the control slot, or the kill slot with *kill*, never a
-        command slot, so long commands cannot hold it up.
+        A short management script takes the control slot, or the kill slot
+        with *kill*, never a command slot, so long commands cannot hold it up.
+        A long one passes *slot* (a command slot) so it never holds the
+        control slot.
 
         Raises:
             TimeoutError: It ran past *timeout*; its channel is closed.
         """
-        slot = self.kill_slot if kill else self.control_slot
+        if slot is None:
+            slot = self.kill_slot if kill else self.control_slot
         async with self.in_use(), asyncio.timeout(timeout):
             run = await self.start(script, root=root, slot=slot)
             try:
@@ -389,8 +436,45 @@ class Link:
             os=lines[3],
             arch=lines[4],
             client_address=lines[5] if len(lines) > 5 else "",
+            config_home=lines[6] if len(lines) > 6 else "",
         )
         return self.facts
+
+    async def upload(self, local: str, remote: str, *, timeout: float) -> None:
+        """Send a large file on an SFTP channel of its own, in a command slot,
+        so the kept channel file calls use never waits behind it. A send that
+        fails leaves no partial file behind. The local file is read in a
+        thread, as ``put`` would read it on the event loop.
+
+        Raises:
+            TimeoutError: It ran past *timeout*.
+        """
+        async with self.in_use(), asyncio.timeout(timeout):
+            await self.slots.acquire()
+            try:
+                sftp = await self._open(
+                    self.conn.start_sftp_client(),
+                    functools.partial(_end_upload, self.slots, partial=None),
+                )
+            except asyncio.CancelledError:
+                raise  # _end_upload gives the slot back once the channel is closed
+            except BaseException:
+                self.slots.release()
+                raise
+            sent = False
+            try:
+                src = await asyncio.to_thread(open, local, "rb")
+                try:
+                    async with sftp.open(remote, "wb") as dst:
+                        while chunk := await asyncio.to_thread(src.read, _UPLOAD_CHUNK):
+                            await dst.write(chunk)
+                finally:
+                    await asyncio.to_thread(src.close)
+                sent = True
+            finally:
+                self.spawn(
+                    _end_upload(self.slots, sftp, partial=None if sent else remote)
+                )
 
     async def sftp(self) -> asyncssh.SFTPClient:
         """The connection's SFTP channel, opened once in the session kept for
@@ -575,6 +659,16 @@ def pool() -> SSHPool:
     if found is None:
         found = _pools[loop] = SSHPool()
     return found
+
+
+@dataclass(frozen=True)
+class Machine:
+    """A machine of the user's own, for work that runs its own channels on it
+    (a Claude Code turn, its token): ``link`` returns its pooled connection,
+    dialing again once one is lost, and ``root`` the computer root there."""
+
+    link: Callable[[], Awaitable[Link]]
+    root: Callable[[], str]
 
 
 # -- Framed commands ----------------------------------------------------------

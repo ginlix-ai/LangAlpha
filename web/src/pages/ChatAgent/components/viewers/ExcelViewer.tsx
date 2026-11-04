@@ -16,7 +16,7 @@ import {
   type CellBox,
   type CellRef,
 } from '@/pages/ChatAgent/utils/a1';
-import type { ContextPayload } from '../filePanel/types';
+import type { ChipContext } from '@/components/ui/chat-input.types';
 import { parseWorkbook, withEquals, type GridCell, type SheetData } from './excel/parse';
 import { GridRow } from './excel/GridRow';
 import { precedentsOf } from './excel/precedents';
@@ -86,7 +86,7 @@ export interface ExcelViewerProps {
   focusCell?: string | null;
   /** Bumped to replay the same `focusCell`, the way PdfViewer replays a page. */
   focusSeq?: number;
-  onAddContext?: (payload: ContextPayload) => void;
+  onAddContext?: (chip: ChipContext) => void;
   /** The page around the viewer offers this file as a download, so a note can send the reader there. */
   canDownload?: boolean;
 }
@@ -323,7 +323,7 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
     // line saying which one, and reads the cells itself if it needs them.
     const snippet = isWhole(sel.box) ? buildWholeSnippet(sheet, sel.box) : buildRangeSnippet(sheet, sel.box);
     const name = filePath ? filePath.split('/').pop() || filePath : sheet.name;
-    onAddContext({ path: filePath, locator: offer, label: `${name}#${offer}`, snippet });
+    onAddContext({ kind: 'chip', source: 'range', path: filePath ?? '', locator: offer, label: `${name}#${offer}`, snippet });
     setOffer(null);
   }, [sheet, sel, offer, onAddContext, filePath]);
 
