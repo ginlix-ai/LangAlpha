@@ -27,6 +27,8 @@ from typing import Any, List, Optional
 
 import pandas as pd
 import yfinance as yf
+from data_client.normalize import series_labels
+from market_protocol import InstrumentRef, PriceTreatment, to_canonical
 
 from mcp_servers._envelope import make_error, make_response, normalize_interval
 from mcp_servers._schemas import (
@@ -62,6 +64,24 @@ _SUPPORTED_INTERVALS = sorted(_YF_INTERVAL) + sorted(_YF_NATIVE_INTERVALS)
 # ---------------------------------------------------------------------------
 # Boundary + serialization helpers
 # ---------------------------------------------------------------------------
+
+
+def _ref(ticker: str) -> Optional[InstrumentRef]:
+    try:
+        return to_canonical(ticker)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _series_labels(ticker: str, history: list[dict], interval: str) -> dict[str, str]:
+    """:func:`series_labels` for *history*. Its history is auto-adjusted for
+    dividends, so what yfinance's declaration calls split-adjusted is
+    dividend-adjusted here."""
+    newest = history[-1]["date"] if history else None
+    labels = series_labels(SOURCE, _ref(ticker), interval, newest)
+    if labels["price_treatment"] == PriceTreatment.SPLIT_ADJUSTED.value:
+        labels["price_treatment"] = PriceTreatment.DIVIDEND_ADJUSTED.value
+    return labels
 
 
 def _index_tz(index: Any) -> Optional[str]:
@@ -272,6 +292,7 @@ def get_stock_history(
             currency=resp_currency,
             timezone=_index_tz(df.index),
             period=period,
+            **_series_labels(ticker, history, echo_interval),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -334,6 +355,7 @@ def get_multiple_stocks_history(
             tz = _index_tz(df.index)
             if tz:
                 entry["timezone"] = tz
+            entry.update(_series_labels(t, history, echo_interval))
             entry["data"] = history
             per_ticker[symbol] = entry
             total += len(history)

@@ -7,13 +7,15 @@ errors, and GBX→major-unit price conversion. Upstream fetches are mocked.
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from src.data_client.base import FetchResult
 
-from .conftest import assert_error, assert_ok_envelope
+from .conftest import assert_error, assert_ok_envelope, frozen_clock
 
 _MOD = "plugins.langalpha_market_data.price_data_mcp_server"
 
@@ -353,13 +355,21 @@ class TestGetAssetData:
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
-        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+        # A commodity's day settles at 17:00 New York, 17:15 on a delayed series.
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 16, 30, tzinfo=_NY)):
             result = await mod.get_asset_data("GCUSD", asset_type="commodity")
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 17, 16, tzinfo=_NY)):
+            settled = await mod.get_asset_data("GCUSD", asset_type="commodity")
 
         assert_ok_envelope(result, source="fmp", currency="USD", count=2)
         assert result["asset_type"] == "commodity"
+        assert result["price_treatment"] == "raw"
+        assert result["in_progress"] == "2025-01-03"
+        assert "in_progress" not in settled
         assert result["data"][0]["date"] == "2025-01-02"  # ascending
-        client.get_commodity_price.assert_awaited_once()
+        assert client.get_commodity_price.await_count == 2
 
     @pytest.mark.asyncio
     async def test_crypto_intraday_canonical_symbol(self):
@@ -729,3 +739,64 @@ class TestTruncatedFmpTier:
 
         assert_ok_envelope(result, source="fmp")
         assert result["truncated"] is True
+
+
+# ---------------------------------------------------------------------------
+# Series labels: price treatment and the bar still forming
+# ---------------------------------------------------------------------------
+
+_NY = ZoneInfo("America/New_York")
+
+
+class TestSeriesLabels:
+    @pytest.mark.asyncio
+    async def test_last_bar_of_a_running_session_is_in_progress(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 11, 0, tzinfo=_NY)):
+            result = await mod.get_stock_data("AAPL", interval="1day")
+
+        assert result["price_treatment"] == "split_adjusted"
+        assert result["in_progress"] == "2025-01-03"
+
+    @pytest.mark.asyncio
+    async def test_settled_series_names_only_its_treatment(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 20, 1, tzinfo=_NY)):
+            result = await mod.get_stock_data("AAPL", interval="1day")
+
+        assert result["price_treatment"] == "split_adjusted"
+        assert "in_progress" not in result
+
+    @pytest.mark.asyncio
+    async def test_cn_intraday_from_fmp_is_unadjusted(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        rows = [{"date": "2025-01-02 10:30:00", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
+        client = _fmp_client(intraday=rows)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                patch.object(mod._names, "display_names", new=AsyncMock(return_value=(None, None))):
+            result = await mod.get_stock_data(
+                "600519.SH", interval="1hour", start_date="2025-01-02", end_date="2025-01-02"
+            )
+
+        assert_ok_envelope(result, source="fmp", count=1)
+        assert result["price_treatment"] == "raw"
+
+    @pytest.mark.asyncio
+    async def test_asset_bars_carry_the_labels(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        rows = [{"date": "2025-01-03", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
+        client = _fmp_client(crypto=rows)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 23, 0, tzinfo=ZoneInfo("UTC"))):
+            result = await mod.get_asset_data("BTCUSD", asset_type="crypto")
+
+        assert result["in_progress"] == "2025-01-03"
+        assert "price_treatment" in result

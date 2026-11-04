@@ -43,7 +43,7 @@ import httpx
 from data_client.fmp import close_fmp_client, get_fmp_client
 from data_client.lifespan import closing_lifespan
 from data_client.market_data_provider import symbol_market
-from data_client.normalize import populated
+from data_client.normalize import populated, series_labels
 from data_client.ginlix_data import close_ginlix_mcp_client, get_ginlix_mcp_client
 from data_client.ginlix_data.cn_financial import GinlixDataCnFinancialSource
 from mcp_servers._envelope import error_from_exception, make_error, make_response
@@ -731,18 +731,32 @@ async def get_technical_indicator(
         return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
 
     try:
+        ref = to_canonical(symbol, asset_class=AssetClass.EQUITY)
+    except Exception:  # noqa: BLE001
+        ref = None
+    try:
         data = await client.get_technical_indicator(
             api, indicator=indicator, period=period, timeframe=timeframe
         )
+        rows = data or []
+        if timeframe == "1day":
+            # FMP stamps a daily row with a midnight time; the contract is a bare date.
+            rows = [
+                {**row, "date": str(row["date"])[:10]}
+                if isinstance(row, dict) and row.get("date") else row
+                for row in rows
+            ]
+        newest = rows[0].get("date") if rows and isinstance(rows[0], dict) else None
 
         return make_response(
-            data or [],
+            rows,
             source=_SOURCE,
             symbol=disp,
             data_type="technical_indicator",
             indicator=indicator,
             period=period,
             timeframe=timeframe,
+            **series_labels(_SOURCE, ref, timeframe, newest),
         )
 
     except Exception as e:  # noqa: BLE001

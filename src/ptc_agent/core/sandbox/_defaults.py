@@ -74,6 +74,9 @@ DEFAULT_DEPENDENCIES = [
     "statsmodels",
     # Financial data
     "yfinance",
+    # market_protocol's session calendars, which tell the market-data servers
+    # whether a bar has settled.
+    "exchange-calendars==4.13.2",
     # Visualization
     "matplotlib",
     "seaborn",

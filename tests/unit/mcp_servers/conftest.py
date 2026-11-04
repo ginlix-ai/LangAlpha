@@ -13,7 +13,9 @@ helper idiom in tests/regression/market_data/conftest.py.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+from unittest.mock import patch
 
 
 def assert_ok_envelope(
@@ -82,3 +84,14 @@ def assert_error(
     for excluded in detail_excludes:
         assert excluded not in detail, f"{excluded!r} leaked into detail: {detail!r}"
     return result
+
+
+def frozen_clock(at: datetime):
+    """Patch the sandbox copy of the session rule (``data_client.normalize``) to read *at* as now."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return at.astimezone(tz) if tz else at
+
+    return patch("data_client.normalize.datetime", _Frozen)

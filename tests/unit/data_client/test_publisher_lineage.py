@@ -24,6 +24,21 @@ def test_tushare_adjusts_equities_only_regardless_of_venue():
     assert publisher_lineage("tushare", AssetClass.FUND, "XSHG")[0] is PriceTreatment.RAW
 
 
+@pytest.mark.parametrize("publisher", ["fmp", "ginlix-data", "yfinance", "tushare", None])
+@pytest.mark.parametrize("asset_class", [AssetClass.INDEX, AssetClass.CRYPTO, AssetClass.FX])
+def test_an_index_or_a_pair_is_raw_from_every_publisher(publisher, asset_class):
+    assert publisher_lineage(publisher, asset_class, "XNYS")[0] is PriceTreatment.RAW
+
+
+@pytest.mark.parametrize("publisher", ["fmp", "ginlix-data", "yfinance", "tushare", None])
+def test_a_futures_contract_is_raw_from_every_publisher(publisher):
+    from market_protocol import to_canonical
+
+    from src.data_client.normalize import series_lineage
+
+    assert series_lineage(publisher, to_canonical("GC=F"))[0] is PriceTreatment.RAW
+
+
 def test_series_lineage_reads_the_ref_and_bars_and_quotes_agree_on_fmp():
     from market_protocol import to_canonical
 

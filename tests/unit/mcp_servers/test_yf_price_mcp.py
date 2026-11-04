@@ -5,7 +5,9 @@ canonical interval mapping, partial-success semantics, and machine error codes.
 yfinance is mocked — no live network.
 """
 
+from datetime import datetime
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -18,7 +20,7 @@ from plugins.yfinance.yf_price_mcp_server import (
     get_stock_history,
 )
 
-from .conftest import assert_error, assert_ok_envelope
+from .conftest import assert_error, assert_ok_envelope, frozen_clock
 
 
 # ============================================================================
@@ -89,6 +91,26 @@ class TestGetStockHistory:
         mock_ticker_cls.return_value.history.assert_called_once_with(
             period="1y", interval="1d"
         )
+
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
+    def test_history_is_dividend_adjusted_and_names_a_forming_bar(
+        self, mock_ticker_cls, mock_history_df
+    ):
+        # The fixture's last bar is 2024-01-05, a Friday session.
+        mock_ticker_cls.return_value.history.return_value = mock_history_df
+        with frozen_clock(datetime(2024, 1, 5, 11, 0, tzinfo=ZoneInfo("America/New_York"))):
+            result = get_stock_history("AAPL")
+
+        assert result["price_treatment"] == "dividend_adjusted"
+        assert result["in_progress"] == "2024-01-05"
+
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
+    def test_index_history_is_unadjusted(self, mock_ticker_cls, mock_history_df):
+        mock_ticker_cls.return_value.history.return_value = mock_history_df
+        result = get_stock_history("^GSPC")
+
+        assert result["price_treatment"] == "raw"
+        assert "in_progress" not in result
 
     @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_canonical_interval_input(self, mock_ticker_cls, mock_history_df):
@@ -302,6 +324,16 @@ class TestGetMultipleStocksHistory:
         assert result["data"]["AAPL"]["currency"] == "USD"
         assert len(result["data"]["AAPL"]["data"]) == 5
         assert "errors" not in result
+
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
+    def test_each_series_names_its_treatment_and_forming_bar(self, mock_ticker_cls, mock_history_df):
+        mock_ticker_cls.return_value.history.return_value = mock_history_df
+        with frozen_clock(datetime(2024, 1, 5, 11, 0, tzinfo=ZoneInfo("America/New_York"))):
+            result = get_multiple_stocks_history(["AAPL", "^GSPC"])
+
+        aapl, spx = result["data"]["AAPL"], result["data"]["SPX"]
+        assert (aapl["price_treatment"], aapl["in_progress"]) == ("dividend_adjusted", "2024-01-05")
+        assert (spx["price_treatment"], spx["in_progress"]) == ("raw", "2024-01-05")
 
     @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_partial_failure(self, mock_ticker_cls, mock_history_df):

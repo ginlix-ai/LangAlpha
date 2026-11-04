@@ -46,7 +46,13 @@ from data_client.ginlix_data import (
     get_ginlix_mcp_client,
 )
 from data_client.market_data_provider import symbol_market
-from data_client.normalize import minor_unit_places, normalize_bars, populated, scale_price
+from data_client.normalize import (
+    minor_unit_places,
+    normalize_bars,
+    populated,
+    scale_price,
+    series_labels,
+)
 from data_client.ginlix_data.cn_source import GinlixDataCnSource
 from data_client.ginlix_data.directory import NameDirectory
 from market_protocol import (
@@ -59,6 +65,7 @@ from market_protocol import (
     to_legacy_api,
 )
 from market_protocol.enums import AssetClass
+from market_protocol.symbology import FUTURES_MIC
 
 try:
     from _envelope import (
@@ -189,6 +196,12 @@ def _display_rows(
     return normalized
 
 
+def _series_labels(env: dict, ref: Optional[InstrumentRef], interval: str) -> dict:
+    """:func:`series_labels` for an ascending envelope."""
+    newest = env["data"][-1]["date"] if env["data"] else None
+    return series_labels(env["source"], ref, interval, newest)
+
+
 _names = NameDirectory(_ginlix.get_instruments_v2, deadline=2.0)
 _cn = GinlixDataCnSource(_ginlix)
 
@@ -221,8 +234,10 @@ async def _fetch_stock_series(
         _names.display_names(resolved[1]),
         _fetch_stock_bars(resolved, interval, start_date, end_date),
     )
-    if ok is not None and name:
-        ok["name"] = name
+    if ok is not None:
+        ok.update(_series_labels(ok, resolved[4], ok["interval"]))
+        if name:
+            ok["name"] = name
     return ok, err
 
 
@@ -497,6 +512,11 @@ async def get_asset_data(
     # so the BTC-USD this tool answers with can be sent back.
     pair = ref is not None and ref.asset_class in (AssetClass.CRYPTO, AssetClass.FX)
     fmp_symbol = ref.symbol.replace("-", "") if pair else symbol
+    if at == "commodity" and ref is not None:
+        # A commodity keeps CME Globex hours, settling at its 16:00 Chicago halt,
+        # and adjusts for nothing. FMP labels it in New York time, the zone the
+        # ref keeps.
+        ref = ref.model_copy(update={"mic": FUTURES_MIC, "calendar_id": FUTURES_MIC})
     canonical, err = _resolve_interval(interval, _ASSET_INTERVALS, symbol=display)
     if err is not None:
         return err
@@ -560,17 +580,17 @@ async def get_asset_data(
     if window is not None and isinstance(rows, list):
         rows = window.rows(rows)
 
-    data = _display_rows(rows or [], symbol, intraday=intraday)
-    return make_response(
-        data,
-        source="fmp",
-        symbol=display,
-        interval=canonical,
-        currency=currency,
-        timezone=timezone,
-        truncated=truncated,
-        asset_type=at,
-    )
+    env = {
+        "data": _display_rows(rows or [], symbol, intraday=intraday),
+        "source": "fmp",
+        "symbol": display,
+        "interval": canonical,
+        "currency": currency,
+        "timezone": timezone,
+        "truncated": truncated,
+        "asset_type": at,
+    }
+    return make_response(**env, **_series_labels(env, ref, canonical))
 
 
 _OUT_GET_SHORT_DATA = output_model(
