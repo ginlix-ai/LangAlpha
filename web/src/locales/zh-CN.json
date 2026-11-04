@@ -3523,6 +3523,8 @@
     "marketIndices": "市场指数",
     "marketOverview": "市场概览",
     "sectorPerformance": "板块表现",
+    "overviewFallbackDay": "{{day}}（{{requested}}之前最近一日）",
+    "sessionInProgress": "{{day}}（进行中）",
     "stockScreener": "股票筛选",
     "pricePerformance": "价格表现",
     "analystRatings": "分析师评级",

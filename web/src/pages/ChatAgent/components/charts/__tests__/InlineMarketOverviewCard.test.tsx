@@ -96,6 +96,60 @@ describe('InlineMarketOverviewCard', () => {
     expect(screen.queryByText('Market Indices')).not.toBeInTheDocument();
   });
 
+  it('dates the card by the session it shows', () => {
+    render(<InlineMarketOverviewCard artifact={{ ...US_ARTIFACT, date: '2026-11-03' }} />);
+
+    expect(screen.getByText('Nov 3, 2026')).toBeInTheDocument();
+  });
+
+  it('names the requested day beside the session shown when there was none', () => {
+    render(<InlineMarketOverviewCard artifact={{ ...US_ARTIFACT, date: '2026-10-30', requested_date: '2026-11-01' }} />);
+
+    expect(screen.getByText('Oct 30, 2026, latest before Nov 1, 2026')).toBeInTheDocument();
+  });
+
+  it('dates the sectors by their own session when it differs from the indices', () => {
+    render(
+      <InlineMarketOverviewCard
+        artifact={{ ...US_ARTIFACT, date: '2026-11-04', sectors: { ...SECTORS_ARTIFACT, date: '2026-11-03' } }}
+      />,
+    );
+
+    expect(screen.getByText('Sector Performance · Nov 3, 2026')).toBeInTheDocument();
+  });
+
+  it('marks a sector session still forming as in progress', () => {
+    render(
+      <InlineMarketOverviewCard
+        artifact={{ ...US_ARTIFACT, date: '2026-11-04', sectors: { ...SECTORS_ARTIFACT, date: '2026-11-04', in_progress: true } }}
+      />,
+    );
+
+    expect(screen.getByText('Sector Performance · Nov 4, 2026 (in progress)')).toBeInTheDocument();
+  });
+
+  it('keeps the requested day on a sectors-only fallback card', () => {
+    render(
+      <InlineMarketOverviewCard
+        artifact={{
+          type: 'market_overview',
+          region: 'us',
+          date: '2026-11-06',
+          requested_date: '2026-11-08',
+          sectors: { ...SECTORS_ARTIFACT, date: '2026-11-06' },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Nov 6, 2026, latest before Nov 8, 2026')).toBeInTheDocument();
+  });
+
+  it('dates a sectors-only card by the sectors session', () => {
+    render(<InlineMarketOverviewCard artifact={{ type: 'market_overview', region: 'us', date: '2026-11-07', sectors: { ...SECTORS_ARTIFACT, date: '2026-11-06' } }} />);
+
+    expect(screen.getByText('Nov 6, 2026')).toBeInTheDocument();
+  });
+
   it('propagates onClick from a nested card', () => {
     const onClick = vi.fn();
     render(<InlineMarketOverviewCard artifact={US_ARTIFACT} onClick={onClick} />);
@@ -134,5 +188,26 @@ describe('InlineMarketOverviewCard', () => {
     expect(screen.getByText('Delayed 15 min')).toBeInTheDocument();
     expect(screen.queryByLabelText(/Delayed 15 min/)).not.toBeInTheDocument();
     expect(screen.getAllByLabelText(/Realtime/)).toHaveLength(1);
+  });
+});
+
+describe('InlineMarketOverviewCard across sessions', () => {
+  it('dates a row whose session is behind the newest one', () => {
+    const artifact = {
+      type: 'market_overview',
+      region: 'global',
+      date: '2026-11-02',
+      indices: {
+        type: 'market_indices',
+        indices: {
+          '^GSPC': { name: 'S&P 500', ohlcv: [{ date: '2026-10-29', close: 5000 }, { date: '2026-10-30', close: 5100 }], stats: { period_change_pct: 2 } },
+          '^HSI': { name: 'Hang Seng Index', ohlcv: [{ date: '2026-10-30', close: 20000 }, { date: '2026-11-02', close: 20100 }], stats: { period_change_pct: 0.5 } },
+        },
+      },
+    };
+    render(<InlineMarketOverviewCard artifact={artifact} />);
+
+    expect(screen.getByText('Oct 30')).toBeInTheDocument();
+    expect(screen.queryByText('Nov 2')).not.toBeInTheDocument();
   });
 });

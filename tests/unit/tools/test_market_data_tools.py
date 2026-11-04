@@ -1682,9 +1682,116 @@ class TestFetchMarketOverview:
              patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
              patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
             content, artifact = await fetch_market_overview(region="us", date="2025-02-16")
-        assert "No daily bar for 2025-02-16" in content
+        assert "No daily bar for 2025-02-16** (weekend / holiday)" in content
         assert "**2025-02-14**" in content
         assert artifact["date"] == "2025-02-14"
+        assert artifact["requested_date"] == "2025-02-16"
+
+    @pytest.mark.asyncio
+    async def test_before_the_open_the_last_session_is_no_fallback(self):
+        """At 05:48 Shanghai on a trading day the newest session that has
+        opened is yesterday's, so showing it is no holiday fallback. A caller
+        who names today is still told that day has no bar yet."""
+        before_open = datetime(2026, 11, 4, 5, 48, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        class _BeforeOpen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return before_open.astimezone(tz)
+
+        with patch(f"{_MKT_MOD}.datetime", _BeforeOpen), \
+             patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2026-11-03"))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, artifact = await fetch_market_overview(region="cn")
+            named, named_artifact = await fetch_market_overview(region="cn", date="2026-11-04")
+        assert "No daily bar" not in content
+        assert "requested_date" not in artifact
+        assert "No daily bar for 2026-11-04** (the session has not opened yet)" in named
+        assert named_artifact["requested_date"] == "2026-11-04"
+
+    @pytest.mark.asyncio
+    async def test_an_open_session_with_no_bar_yet_is_no_holiday(self):
+        """At 09:38 ET the delayed index feed has not printed the new session."""
+        after_open = datetime(2026, 11, 5, 9, 38, tzinfo=ZoneInfo("America/New_York"))
+
+        class _AfterOpen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return after_open.astimezone(tz)
+
+        with patch(f"{_MKT_MOD}.datetime", _AfterOpen), \
+             patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2026-11-04"))), \
+             patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, artifact = await fetch_market_overview(region="us")
+        assert "No daily bar for 2026-11-05** (the session has opened but has no published bar yet)" in content
+        assert "holiday" not in content
+        assert artifact["requested_date"] == "2026-11-05"
+
+    @pytest.mark.asyncio
+    async def test_today_named_on_a_weekend_is_no_session_to_come(self):
+        """An agent passing today's date on a Saturday is told it is a weekend,
+        not that a session has yet to open."""
+        saturday = datetime(2026, 11, 7, 11, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        class _Saturday(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return saturday.astimezone(tz)
+
+        with patch(f"{_MKT_MOD}.datetime", _Saturday), \
+             patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2026-11-06"))), \
+             patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, _ = await fetch_market_overview(region="us", date="2026-11-07")
+        assert "No daily bar for 2026-11-07** (weekend / holiday)" in content
+
+    @pytest.mark.asyncio
+    async def test_a_past_session_with_no_bar_is_missing_not_unpublished(self):
+        with patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2025-02-12"))), \
+             patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, _ = await fetch_market_overview(region="us", date="2025-02-13")
+        assert "No daily bar for 2025-02-13** (missing from the source)" in content
+
+    @pytest.mark.asyncio
+    async def test_an_empty_basket_reads_sectors_up_to_its_own_session(self):
+        from src.data_client.instrument_clock import clock_for
+
+        sectors = AsyncMock(return_value=("SEC", {}))
+        with patch(f"{_MKT_MOD}._fetch_index_day_snapshot", AsyncMock(return_value=("IDX", [], None))), \
+             patch(f"{_MKT_MOD}.fetch_sector_performance", sectors), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            await fetch_market_overview(region="us", indices=["^N225"])
+        opened = clock_for("^N225", True).expected_latest_daily_date(datetime.now(timezone.utc))
+        assert sectors.await_args.kwargs["date"] == opened
+
+    @pytest.mark.asyncio
+    async def test_a_sectors_only_overview_is_dated_by_the_funds_session(self):
+        """With no index row, the sector funds' session dates the overview and its notice."""
+        with patch(f"{_MKT_MOD}._fetch_index_day_snapshot", AsyncMock(return_value=("IDX", [], None))), \
+             patch(f"{_MKT_MOD}.fetch_sector_performance",
+                   AsyncMock(return_value=("SEC", {"date": "2025-02-14"}))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, artifact = await fetch_market_overview(region="us", date="2025-02-16")
+        assert "Market Overview — US (2025-02-14)" in content
+        assert "No daily bar for 2025-02-16** (weekend / holiday)" in content
+        assert (artifact["date"], artifact["requested_date"]) == ("2025-02-14", "2025-02-16")
+
+    @pytest.mark.asyncio
+    async def test_a_bar_dated_past_the_target_is_no_fallback(self):
+        """A publisher stamping a bar a day ahead must not read as a missing session."""
+        with patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2025-02-18"))), \
+             patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, artifact = await fetch_market_overview(region="us", date="2025-02-14")
+        assert "No daily bar" not in content
+        assert "requested_date" not in artifact
 
     @pytest.mark.asyncio
     async def test_the_default_date_is_the_venue_day_not_utc(self):
@@ -3323,6 +3430,7 @@ async def test_an_overview_with_nothing_behind_it_is_unavailable(symbol, bars):
     metadata = update["extra"]["metadata"]
     assert (metadata["tool_outcome"], metadata["error_class"]) == ("unavailable", "no_data")
     assert update["error"] is None
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(

@@ -443,6 +443,17 @@ def _venue_today(symbols: List[str]) -> str:
     return max(dates, default=now.date().isoformat())
 
 
+def _no_bar_reason(target: str, opened: str, basket: List[str]) -> str:
+    """Why *target* has no daily bar, given the newest session that has *opened*."""
+    if not any(clock_for(s, True).is_trading_day(datetime.strptime(target, "%Y-%m-%d").date()) for s in basket):
+        return "weekend / holiday"
+    if target > opened:
+        return "the session has not opened yet"
+    if target == opened:
+        return "the session has opened but has no published bar yet"
+    return "missing from the source"
+
+
 async def fetch_market_overview(
     region: str = "us",
     indices: Optional[List[str]] = None,
@@ -466,9 +477,10 @@ async def fetch_market_overview(
     basket = [_basket_spelling(s) for s in basket]
 
     today_iso = _venue_today(basket)
+    asked: Optional[str] = None
     if date:
         try:
-            requested = datetime.strptime(date.strip(), "%Y-%m-%d").date().isoformat()
+            asked = datetime.strptime(date.strip(), "%Y-%m-%d").date().isoformat()
         except ValueError:
             return (
                 f"Invalid date '{date}'. Expected YYYY-MM-DD format.",
@@ -478,14 +490,19 @@ async def fetch_market_overview(
                     "error": f"invalid date: {date}",
                 },
             )
-    else:
-        requested = today_iso
+    window_end = asked or today_iso
+    # A request with no date means the newest session that has opened: before
+    # the open that is the previous one, which no notice should call a fallback.
+    opened = max(
+        clock_for(s, True).expected_latest_daily_date(datetime.now(timezone.utc)) for s in basket
+    )
+    target = asked or opened
 
     try:
         # Today's quotes: the live stamp for the text, and the forming daily
         # row for any index whose daily publisher is still a session behind.
         snaps: List[Dict[str, Any]] = []
-        if requested == today_iso:
+        if window_end == today_iso:
             try:
                 provider = await get_market_data_provider()
                 snaps = list(await provider.get_snapshots(
@@ -496,30 +513,33 @@ async def fetch_market_overview(
         # Providers answer an index caret-free (``GSPC`` for ``^GSPC``).
         by_symbol = {snapshot_key(s.get("symbol")): s for s in snaps if s.get("symbol")}
         idx_content, idx_artifact, snapshot_date = await _fetch_index_day_snapshot(
-            basket, requested, config=config, snaps=by_symbol or None
+            basket, window_end, config=config, snaps=by_symbol or None
         )
 
         if region == "us":
             # Align the sector half to the resolved trading day so both halves
             # describe the same session; if the indices half came up empty,
-            # let the sector provider resolve the requested date itself.
-            sector_date = snapshot_date or (requested if date else None)
+            # the sectors read up to the session the basket targets.
+            sector_date = snapshot_date or target
             sec_content, sec_artifact = await fetch_sector_performance(date=sector_date, config=config)
         else:
             sec_content, sec_artifact = None, None
 
-        parts = [f"## Market Overview — {region.upper()} ({snapshot_date or requested})"]
-        if snapshot_date and snapshot_date != requested:
+        # With no index row, the sector funds' session is the one shown.
+        shown = snapshot_date or (sec_artifact or {}).get("date")
+        fell_back = shown is not None and shown < target
+        parts = [f"## Market Overview — {region.upper()} ({shown or window_end})"]
+        if fell_back:
             parts.append(
-                f"> ⚠️ **No daily bar for {requested}** "
-                f"(weekend / holiday / not yet published). "
-                f"Showing the last trading day: **{snapshot_date}**."
+                f"> ⚠️ **No daily bar for {target}** ({_no_bar_reason(target, opened, basket)}). "
+                f"Showing the last trading day: **{shown}**."
             )
         parts.append(idx_content)
         artifact: Dict[str, Any] = {
             "type": "market_overview",
             "region": region,
-            "date": snapshot_date or requested,
+            "date": shown or window_end,
+            **({"requested_date": target} if fell_back else {}),
             "indices": idx_artifact,
         }
         if sec_content is not None:
