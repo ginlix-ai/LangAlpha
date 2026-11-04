@@ -2700,6 +2700,7 @@
     },
     "claudeCode": {
       "off": {
+        "account": "Claude Code is off for your account. Turn it on in Settings under Model access, or pick another model.",
         "token_refused": "Claude refused your setup token. It may have expired or been revoked. Add a new one in Settings under Model access to use this model.",
         "hosted_off": "Claude Code runs only on your own computers for your account, so workspaces on cloud computers can't use Claude Code models. Choose where it runs in Settings under Model access, or move this workspace to one of your computers.",
         "needs_api_key": "For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your Anthropic API key, and you haven't saved one. Add one in Settings under Model access, or move this workspace to one of your computers.",

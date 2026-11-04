@@ -34,6 +34,14 @@ describe('claudeCodeRefusal', () => {
     });
   });
 
+  it('links Claude Code off for the account to its view under Model access, reading the opt-in again', () => {
+    expect(claudeCodeRefusal('account', 'ws-1')).toEqual({
+      reread: true,
+      link: { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' },
+      messageKey: 'chat.claudeCode.off.account',
+    });
+  });
+
   it('links automations on a stored token to Model access, reading nothing again', () => {
     expect(claudeCodeRefusal('stored_unattended', 'ws-1')).toEqual({
       reread: false,

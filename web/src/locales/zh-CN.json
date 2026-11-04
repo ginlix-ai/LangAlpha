@@ -2725,6 +2725,7 @@
     },
     "claudeCode": {
       "off": {
+        "account": "你的账户未开启 Claude Code。请在设置的“模型接入”中开启，或选择其他模型。",
         "token_refused": "Claude 拒绝了你的 setup token，它可能已过期或被撤销。请在设置的“模型接入”中添加新的 token 后使用此模型。",
         "hosted_off": "你的账户设置为只在你自己的电脑上运行 Claude Code，所以云端计算机上的工作区无法使用 Claude Code 模型。请在设置的“模型接入”中选择运行位置，或把此工作区移到你自己的电脑上。",
         "needs_api_key": "云端计算机上的工作区由 LangAlpha 在自己的服务器上用你的 Anthropic API 密钥运行 Claude Code，但你还没有保存密钥。请在设置的“模型接入”中添加，或把此工作区移到你自己的电脑上。",
