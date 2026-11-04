@@ -47,6 +47,8 @@ class FeatureState(BaseModel):
     gate: Literal["none", "opt_in", "opt_out", "plan"]
     min_tier: int | None = None
     user_override: bool | None = None
+    #: Where the user turns it on, when not in Experiments (``FeatureSpec.home``).
+    home: Literal["model_access"] | None = None
 
 
 class UnknownFeatureError(KeyError):
@@ -128,6 +130,7 @@ async def list_user_features(user_id: str) -> list[FeatureState]:
                 enabled=resolved[key],
                 gate=flag.gate.value,
                 min_tier=flag.min_tier,
+                home=spec.home,
                 user_override=(
                     override
                     if user_controllable and isinstance(override, bool)

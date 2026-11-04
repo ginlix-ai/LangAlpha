@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 #: Why a Claude Code row cannot run this turn, as the user is told it.
 CLAUDE_CODE_OFF = {
     "server": "This server does not run Claude Code models. Pick another model.",
-    "account": "Claude Code is off for your account. Turn it on in Settings under Experiments, or pick another model.",
+    "account": "Claude Code is off for your account. Turn it on in Settings under Model access, or pick another model.",
     "chief_of_staff": "Chief of Staff does not run on Claude Code models yet. Pick another model.",
     "other_model": "Claude Code cannot continue a thread another model has replied on. Start a new thread to use this model.",
     "signed_out": "Add a Claude Code setup token in Settings under Model access to use this model.",
