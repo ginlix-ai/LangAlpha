@@ -156,6 +156,57 @@ class TestCurrencyAndVenueAwareness:
         assert "ET" not in line
         assert "(" not in line
 
+    def test_a_closed_us_row_names_its_session_and_print_time(self):
+        # 01:00 ET Thursday: the row is Wednesday's last after-hours print.
+        at = _ET.localize(datetime(2026, 7, 2, 1, 0))
+        printed = _ET.localize(datetime(2026, 7, 1, 19, 59, 50))
+        line = format_quote_line(_snap(as_of=int(printed.timestamp() * 1000)), at=at)
+        assert "+2.31% on 2026-07-01" in line
+        assert line.endswith("(closed, 2026-07-01 19:59:50 ET)")
+
+    def test_a_thin_name_is_stamped_at_its_last_trade_not_its_last_quote(self):
+        traded = _ET.localize(datetime(2026, 11, 5, 19, 41, 54))
+        quoted = _ET.localize(datetime(2026, 11, 5, 19, 57, 56))
+        snap = _snap(
+            symbol="INMX", market_status="closed", last_trade_price=12.96,
+            last_trade_at=int(traded.timestamp() * 1000), as_of=int(quoted.timestamp() * 1000),
+        )
+        line = format_quote_line(snap, at=_ET.localize(datetime(2026, 11, 5, 21, 0)))
+        assert "19:41:54 ET" in line
+        assert "19:57" not in line
+
+    def test_a_live_row_whose_last_trade_is_old_names_its_trade_time(self):
+        # The quote moves on a live feed, but the price is a trade from hours ago.
+        at = _ET.localize(datetime(2026, 11, 6, 9, 15, 46))
+        traded = _ET.localize(datetime(2026, 11, 6, 4, 4, 20))
+        snap = _snap(
+            symbol="MKL", last_trade_price=1939.86, tier="realtime",
+            last_trade_at=int(traded.timestamp() * 1000), as_of=int(at.timestamp() * 1000),
+        )
+        assert format_quote_line(snap, at=at).endswith("(pre, 2026-11-06 04:04:20 ET)")
+
+    def test_a_live_row_that_just_traded_carries_no_clock(self):
+        at = _ET.localize(datetime(2026, 11, 6, 9, 15, 46))
+        traded = _ET.localize(datetime(2026, 11, 6, 9, 15, 41))
+        snap = _snap(
+            symbol="MKL", last_trade_price=1939.86, tier="realtime",
+            last_trade_at=int(traded.timestamp() * 1000), as_of=int(at.timestamp() * 1000),
+        )
+        assert format_quote_line(snap, at=at).endswith("(pre)")
+
+    def test_a_prior_print_on_a_rolled_previous_close_states_no_move(self):
+        # 09:38 ET on a delayed index feed: the base rolled to the last close,
+        # whose print has not been replaced yet.
+        at = _ET.localize(datetime(2026, 7, 2, 9, 38))
+        printed = _ET.localize(datetime(2026, 7, 1, 16, 4, 47))
+        snap = _snap(
+            symbol="GSPC", price=7688.62, last_trade_price=None, previous_close=7688.62,
+            change_percent=0.0, as_of=int(printed.timestamp() * 1000),
+        )
+        line = format_quote_line(snap, at=at, asset_class=AssetClass.INDEX)
+        assert "%" not in line
+        assert "7,688.62" in line
+
     def test_a_sub_dollar_price_keeps_four_places(self):
         assert "$0.3734" in format_quote_line(_snap(last_trade_price=0.3734))
 
@@ -328,7 +379,7 @@ class TestFreshnessSplitsTheStamp:
         three_hours_ago = int(_FIXED_ET.timestamp() * 1000) - 3 * 3600 * 1000
         with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
             stamp = build_live_stamp([_snap(as_of=three_hours_ago)], at=_FIXED_ET)
-        assert stamp == "[Stale: NVDA $233.45 (+2.31%)]"
+        assert stamp == "[Stale: NVDA $233.45 (+2.31%) @ 2026-07-01 11:32:05 ET]"
 
     def test_each_freshness_gets_its_own_group(self):
         ten_minutes_ago = int(_FIXED_ET.timestamp() * 1000) - 10 * 60 * 1000
@@ -338,7 +389,7 @@ class TestFreshnessSplitsTheStamp:
                 at=_FIXED_ET,
             )
         assert stamp.split("\n") == [
-            "[Delayed 15m: NVDA $233.45 (+2.31%)]",
+            "[Delayed 15m: NVDA $233.45 (+2.31%) @ 2026-07-01 14:22:05 ET]",
             "[Freshness unknown: AAPL $233.45 (+2.31%)]",
         ]
 

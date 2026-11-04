@@ -262,6 +262,9 @@ class GinlixDataSource:
             "early_trading_change_percent": session.get("early_trading_change_percent"),
             "late_trading_change": session.get("late_trading_change"),
             "late_trading_change_percent": session.get("late_trading_change_percent"),
+            # When the last trade printed: the shown price's own time, which a
+            # thin name's newer quote stamp in ``as_of`` does not share.
+            "last_trade_at": _epoch_ms((last_trade or {}).get("last_updated")),
         }
 
     async def close(self) -> None:
