@@ -28,6 +28,7 @@ import './widgets/index';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePreferences } from '@/hooks/usePreferences';
 import { queryKeys } from '@/lib/queryKeys';
+import { isMinorUnitListingInMajor } from './utils/portfolioSummary';
 import { useOnboarding, snoozePersonalization } from './hooks/useOnboarding';
 import { WelcomeBanner } from '../Onboarding/welcome/WelcomeBanner';
 import { getPreferences } from './utils/api';
@@ -358,12 +359,20 @@ function DashboardPage() {
                 />
               </label>
               <label className="block">
-                <span className="term-label dash-form-label">{t('dashboard.widgets.shell.averageCostLabel')}</span>
+                <span className="term-label dash-form-label">
+                  {portfolio.editRow?.costCurrency
+                    ? t('dashboard.widgets.shell.averageCostIn', { currency: portfolio.editRow.costCurrency })
+                    : t('dashboard.widgets.shell.averageCostLabel')}
+                </span>
                 <Input
                   type="number"
                   min="0"
                   step="any"
-                  placeholder={t('dashboard.widgets.shell.averageCostPlaceholder')}
+                  placeholder={
+                    isMinorUnitListingInMajor(portfolio.editRow?.symbol, portfolio.editRow?.costCurrency)
+                      ? t('dashboard.widgets.shell.averageCostPlaceholderMinorUnit')
+                      : t('dashboard.widgets.shell.averageCostPlaceholder')
+                  }
                   value={portfolio.editForm.averageCost ?? ''}
                   onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, averageCost: e.target.value })}
                   className="dash-form-input dash-form-figure border"

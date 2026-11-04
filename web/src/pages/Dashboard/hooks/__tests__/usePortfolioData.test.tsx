@@ -104,4 +104,23 @@ describe('usePortfolioData', () => {
     const places = Object.fromEntries(result.current.rows.map((row) => [row.symbol, row.places]));
     expect(places).toEqual({ '510300.SH': 3, 'VOD.L': 4 });
   });
+
+  it("values a holding in its quote's currency and gives no P/L for a cost in another", async () => {
+    mockGetPortfolio.mockResolvedValue({
+      holdings: [{ user_portfolio_id: '1', symbol: '0700.HK', quantity: 100, average_cost: 50, currency: 'USD' }],
+    });
+    mockGetSnapshotStocks.mockResolvedValue({
+      snapshots: [{ symbol: '0700.HK', price: 401.4, change: 4.2, change_percent: 1.06, currency: 'HKD' }],
+    });
+
+    const { result } = renderHookWithProviders(() => usePortfolioData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.rows[0]).toMatchObject({
+      currency: 'HKD',
+      costCurrency: 'USD',
+      marketValue: 40140,
+      unrealizedPlPercent: null,
+    });
+  });
 });

@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 import { Pencil, Trash2, Eye, EyeOff } from 'lucide-react';
 import { sessionQuote, type MarketStatusData } from '@/lib/marketUtils';
-import { DASH, integer } from '@/lib/format';
+import { DASH, formatList, integer } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
 import { formatMoney, quoteCurrency } from '@/lib/bars';
 import {
@@ -258,6 +258,11 @@ export function HoldingsAddButton({ label, onClick }: HoldingsAddButtonProps) {
   );
 }
 
+/** The symbols a P/L leaves out, three at most before a count of the rest. */
+function listSymbols(symbols: string[], locale: string, more: (n: number) => string): string {
+  return formatList(symbols.length > 3 ? [...symbols.slice(0, 3), more(symbols.length - 3)] : symbols, locale);
+}
+
 interface PortfolioNavSummaryProps {
   rows: PortfolioRow[];
   valuesHidden: boolean;
@@ -313,6 +318,14 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
                     ],
                   ]}
                 />
+              </div>
+            )}
+            {summary.totalCost > 0 && summary.uncosted.length > 0 && (
+              <div className="term-line term-word term-t3 mt-1">
+                {t('dashboard.widgets.holdings.plExcludes', {
+                  symbols: listSymbols([...new Set(summary.uncosted.map((h) => h.symbol))], locale, (n) => t('dashboard.widgets.holdings.andMore', { n })),
+                  currency: summary.currency,
+                })}
               </div>
             )}
           </div>

@@ -614,8 +614,10 @@
         "deleteConfirm": "Delete",
         "quantityLabel": "Quantity *",
         "quantityPlaceholder": "e.g. 10.5",
+        "averageCostIn": "Average Cost Per Share ({{currency}}) *",
         "averageCostLabel": "Average Cost Per Share *",
         "averageCostPlaceholder": "e.g. 175.50",
+        "averageCostPlaceholderMinorUnit": "e.g. 1.75",
         "notesLabel": "Notes",
         "notesPlaceholder": "Optional",
         "cancel": "Cancel",
@@ -803,7 +805,9 @@
         "colValue": "Value",
         "colPl": "P/L",
         "cost": "Cost",
-        "totalPl": "Total P/L"
+        "totalPl": "Total P/L",
+        "plExcludes": "P/L excludes {{symbols}}: no cost in {{currency}}",
+        "andMore": "{{n}} more"
       },
       "tickerTape": {
         "title": "Ticker Tape",
@@ -1253,7 +1257,9 @@
       "quantityLabel": "Quantity",
       "quantityPlaceholder": "e.g. 10.5",
       "averageCostLabel": "Avg Cost",
+      "averageCostIn": "Avg Cost ({{currency}})",
       "averageCostPlaceholder": "e.g. 175.50",
+      "averageCostPlaceholderMinorUnit": "e.g. 1.75",
       "accountNameLabel": "Account Name",
       "accountNamePlaceholder": "e.g. Robinhood",
       "notesLabel": "Notes",

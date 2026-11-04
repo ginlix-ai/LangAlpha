@@ -18,6 +18,7 @@ const createPortfolioRow = (overrides: Partial<PortfolioRow>): PortfolioRow => (
   quantity: 0,
   average_cost: 0,
   currency: 'USD',
+  costCurrency: overrides.currency ?? 'USD',
   marketValue: 0,
   places: 2,
   ...overrides,
@@ -39,6 +40,7 @@ describe('portfolioSummary', () => {
         totalPl: 25,
         totalPlPct: expect.any(Number),
         isPlPositive: true,
+        uncosted: [],
       },
       {
         currency: 'HKD',
@@ -47,6 +49,7 @@ describe('portfolioSummary', () => {
         totalPl: 100,
         totalPlPct: expect.any(Number),
         isPlPositive: true,
+        uncosted: [],
       },
     ]);
     expect(summaries[0].totalPlPct).toBeCloseTo(16.67, 2);
@@ -117,6 +120,42 @@ describe('portfolioSummary', () => {
 
     expect(summaries.map((summary) => summary.currency)).toEqual(['USD', 'HKD']);
     expect(summaries.find((summary) => summary.currency === 'CNY')).toBeUndefined();
+  });
+
+  it('values a holding with no cost but leaves it out of the cost and P/L', () => {
+    const [usd] = summarizePortfolioByCurrency([
+      createPortfolioRow({ symbol: 'AAPL', marketValue: 3319, average_cost: 150, quantity: 10 }),
+      createPortfolioRow({ symbol: 'NVDA', marketValue: 1033.45, average_cost: null, quantity: 5 }),
+    ]);
+
+    expect(usd.totalValue).toBeCloseTo(4352.45, 2);
+    expect(usd.totalCost).toBe(1500);
+    expect(usd.totalPl).toBe(1819);
+    expect(usd.totalPlPct).toBeCloseTo(121.27, 2);
+    expect(usd.uncosted).toEqual([{ symbol: 'NVDA', value: 1033.45 }]);
+  });
+
+  it('counts a holding entered at zero cost as all gain, not as having no cost', () => {
+    const [usd] = summarizePortfolioByCurrency([
+      createPortfolioRow({ symbol: 'AAPL', marketValue: 3319, average_cost: 150, quantity: 10 }),
+      createPortfolioRow({ symbol: 'BONUS', marketValue: 150, average_cost: 0, quantity: 10 }),
+    ]);
+
+    expect(usd.totalCost).toBe(1500);
+    expect(usd.totalPl).toBe(1969);
+    expect(usd.uncosted).toEqual([]);
+  });
+
+  it('leaves out of the P/L a cost entered in another currency than the quote', () => {
+    const [hkd] = summarizePortfolioByCurrency([
+      createPortfolioRow({ symbol: '0700.HK', currency: 'HKD', marketValue: 80280, average_cost: 380, quantity: 200 }),
+      createPortfolioRow({ symbol: '0700.HK', currency: 'HKD', costCurrency: 'USD', marketValue: 40140, average_cost: 50, quantity: 100 }),
+    ]);
+
+    expect(hkd.totalValue).toBe(120420);
+    expect(hkd.totalCost).toBe(76000);
+    expect(hkd.totalPl).toBe(4280);
+    expect(hkd.uncosted).toEqual([{ symbol: '0700.HK', value: 40140 }]);
   });
 
   it('formats portfolio money with the holding currency', () => {

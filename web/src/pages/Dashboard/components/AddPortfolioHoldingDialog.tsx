@@ -7,6 +7,8 @@ import { FormCard } from './FormCard';
 import { SymbolSearchCard } from './SymbolSearchCard';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
+import { currencyForSymbol } from '@/lib/bars/exchanges';
+import { isMinorUnitListingInMajor } from '../utils/portfolioSummary';
 
 interface PortfolioHoldingPayload {
   symbol: string;
@@ -25,6 +27,19 @@ interface AddPortfolioHoldingDialogProps {
   open?: boolean;
   onClose?: () => void;
   onAdd: (payload: PortfolioHoldingPayload) => void;
+}
+
+/**
+ * The currency a holding's cost is entered in: the one the app quotes the
+ * listing in. Search names a pence-quoted London line in pence (GBp), which the
+ * app quotes in pounds, so a cost typed against the app's price is pounds; a
+ * London line traded in dollars keeps its USD. Absent, the server takes the
+ * listing's.
+ */
+function holdingCurrency(hit: StockSearchHit): string | undefined {
+  const code = hit.currency?.trim();
+  if (code === 'GBp' || code?.toUpperCase() === 'GBX') return currencyForSymbol(hit.symbol);
+  return code || undefined;
 }
 
 /**
@@ -49,6 +64,7 @@ function AddPortfolioHoldingDialog({
   const [averageCost, setAverageCost] = useState('');
   const [accountName, setAccountName] = useState('');
   const [notes, setNotes] = useState('');
+  const costCurrency = selectedStock ? holdingCurrency(selectedStock) : undefined;
 
   // Reset state when dialog closes
   useEffect(() => {
@@ -111,7 +127,7 @@ function AddPortfolioHoldingDialog({
       name: selectedStock.name || '',
       quantity: String(quantityNum),
       average_cost: String(averageCostNum),
-      currency: selectedStock.currency || undefined,
+      currency: costCurrency,
       account_name: accountName.trim() || undefined,
       notes: notes.trim() || undefined,
       first_purchased_at: new Date().toISOString(),
@@ -188,13 +204,20 @@ function AddPortfolioHoldingDialog({
                     </label>
                     <label className="block">
                       <span className="term-label dash-form-label">
-                        {t('dashboard.addPortfolioDialog.averageCostLabel')} <span className="dash-form-required">*</span>
+                        {costCurrency
+                          ? t('dashboard.addPortfolioDialog.averageCostIn', { currency: costCurrency })
+                          : t('dashboard.addPortfolioDialog.averageCostLabel')}{' '}
+                        <span className="dash-form-required">*</span>
                       </span>
                       <Input
                         type="number"
                         min="0"
                         step="any"
-                        placeholder={t('dashboard.addPortfolioDialog.averageCostPlaceholder')}
+                        placeholder={
+                          isMinorUnitListingInMajor(selectedStock.symbol, costCurrency)
+                            ? t('dashboard.addPortfolioDialog.averageCostPlaceholderMinorUnit')
+                            : t('dashboard.addPortfolioDialog.averageCostPlaceholder')
+                        }
                         value={averageCost}
                         onChange={(e) => setAverageCost(e.target.value)}
                         className="dash-form-input dash-form-figure border"
