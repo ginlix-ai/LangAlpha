@@ -311,8 +311,9 @@ async def get_financial_ratios(
         freeCashFlowYield. ratios fields: date, netProfitMargin, returnOnEquity,
         currentRatio, debtToEquityRatio, priceToEarningsRatio. Field names are
         FMP-native camelCase; date is "YYYY-MM-DD"; records are newest-first as
-        returned by FMP. When period="quarter" returns 0 records, an optional
-        note suggests period="annual". On error: {error: <code>, detail, symbol}.
+        returned by FMP. When period="quarter" returns 0 records, an
+        optional note suggests period="annual". On error: {error: <code>,
+        detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
