@@ -26,7 +26,7 @@ def _make_fmp_client() -> AsyncMock:
     client.get_historical_dcf = AsyncMock(return_value=[])
     client.get_enterprise_value = AsyncMock(return_value=[{"date": "2024-12-31", "enterpriseValue": 3_000_000}])
     client.get_insider_trades = AsyncMock(return_value=[{"transactionDate": "2025-01-01", "transactionType": "S-Sale"}])
-    client.get_insider_trade_stats = AsyncMock(return_value=[{"totalBought": 10, "totalSold": 5}])
+    client.get_insider_trade_stats = AsyncMock(return_value=[{"totalPurchases": 10, "totalSales": 5}])
     client.get_dividends = AsyncMock(return_value=[{"date": "2024-12-15", "dividend": 0.25}])
     client.get_splits = AsyncMock(return_value=[{"date": "2020-08-31", "numerator": 4, "denominator": 1}])
     client.get_shares_float = AsyncMock(return_value=[{"floatShares": 15_000_000_000}])
@@ -219,6 +219,69 @@ class TestGetHistoricalValuation:
         assert result["data"]["historical_dcf"] == []
         assert isinstance(result["count"], int)
 
+    @pytest.mark.asyncio
+    async def test_each_price_names_its_currency(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_historical_valuation
+
+        client = _make_fmp_client()
+        client.get_dcf = AsyncMock(return_value=[
+            {"symbol": "TSM", "date": "2026-11-03", "dcf": 124.03, "Stock Price": 406.41},
+        ])
+        client.get_enterprise_value = AsyncMock(return_value=[
+            {"date": "2025-12-31", "stockPrice": 9521.48},
+            {"date": "2024-12-31", "stockPrice": 6486.4},
+        ])
+        client.get_key_metrics = AsyncMock(return_value=[
+            {"date": "2025-12-31", "reportedCurrency": "TWD"},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_historical_valuation("TSM")
+
+        assert result["currency"] == "USD"
+        assert result["data"]["current_dcf"] == [
+            {"symbol": "TSM", "date": "2026-11-03", "dcf": 124.03, "stockPrice": 406.41},
+        ]
+        assert [r["reportedCurrency"] for r in result["data"]["enterprise_value"]] == ["TWD", None]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_venue_names_no_currency(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_historical_valuation
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            foreign = await get_historical_valuation("PETR4.SA")
+            class_share = await get_historical_valuation("BRK.B")
+
+        assert "currency" not in foreign
+        assert class_share["currency"] == "USD"
+
+    @pytest.mark.asyncio
+    async def test_a_key_metrics_miss_leaves_the_rows_unlabelled(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_historical_valuation
+
+        client = _make_fmp_client()
+        client.get_key_metrics = AsyncMock(side_effect=RuntimeError("429"))
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_historical_valuation("AAPL")
+
+        assert result["data"]["enterprise_value"][0]["reportedCurrency"] is None
+        assert result["data"]["enterprise_value"][0]["enterpriseValue"] == 3_000_000
+
+    @pytest.mark.asyncio
+    async def test_a_pence_listing_prices_its_dcf_in_pounds(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_historical_valuation
+
+        client = _make_fmp_client()
+        client.get_dcf = AsyncMock(return_value=[
+            {"symbol": "VOD.L", "date": "2026-11-03", "dcf": 486.29, "Stock Price": 117.2},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_historical_valuation("VOD.L")
+
+        assert result["currency"] == "GBP"
+        row = result["data"]["current_dcf"][0]
+        assert (row["dcf"], row["stockPrice"]) == (pytest.approx(4.8629), pytest.approx(1.172))
+
 
 # ---------------------------------------------------------------------------
 # get_insider_trades
@@ -286,6 +349,19 @@ class TestGetSharesFloat:
         assert_ok_envelope(result, count=1)
         assert result["data_type"] == "shares_float"
         assert isinstance(result["data"], list)
+
+    @pytest.mark.asyncio
+    async def test_the_refresh_stamp_is_cut_to_its_date(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_shares_float
+
+        client = _make_fmp_client()
+        client.get_shares_float = AsyncMock(return_value=[
+            {"symbol": "AAPL", "date": "2026-11-04 04:17:50", "floatShares": 14_569_078_010},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_shares_float("AAPL")
+
+        assert result["data"][0]["date"] == "2026-11-04"
 
 
 # ---------------------------------------------------------------------------

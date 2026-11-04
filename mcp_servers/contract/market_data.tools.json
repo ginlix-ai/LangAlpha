@@ -341,6 +341,10 @@
               "description": "Upstream data source.",
               "type": "string"
             },
+            "currency": {
+              "description": "ISO 4217 currency of current_dcf's dcf and stockPrice; omitted when the listing's venue is unknown.",
+              "type": "string"
+            },
             "data_type": {
               "type": "string"
             },

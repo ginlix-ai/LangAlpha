@@ -43,7 +43,13 @@ import httpx
 from data_client.fmp import close_fmp_client, get_fmp_client
 from data_client.lifespan import closing_lifespan
 from data_client.market_data_provider import symbol_market
-from data_client.normalize import populated, series_labels
+from data_client.normalize import (
+    declared_venue,
+    minor_unit_places,
+    populated,
+    scale_price,
+    series_labels,
+)
 from data_client.ginlix_data import close_ginlix_mcp_client, get_ginlix_mcp_client
 from data_client.ginlix_data.cn_financial import GinlixDataCnFinancialSource
 from mcp_servers._envelope import error_from_exception, make_error, make_response
@@ -60,6 +66,7 @@ from mcp_servers._schemas import (
 )
 from market_protocol.enums import AssetClass
 from market_protocol.symbology import (
+    UNKNOWN_MIC,
     is_family_index,
     to_canonical,
     to_display,
@@ -403,7 +410,15 @@ _OUT_GET_HISTORICAL_VALUATION = output_model(
     envelope_schema(
         RECORDS_BY_KEY,
         frame=("symbol",),
-        echo={"data_type": STR, "period": STR},
+        echo={
+            "currency": described(
+                STR,
+                "ISO 4217 currency of current_dcf's dcf and stockPrice;"
+                " omitted when the listing's venue is unknown.",
+            ),
+            "data_type": STR,
+            "period": STR,
+        },
     ),
 )
 
@@ -443,21 +458,48 @@ async def get_historical_valuation(
         current_dcf = await client.get_dcf(api)
         historical_dcf = await client.get_historical_dcf(api, period=period, limit=limit)
         enterprise_value = await client.get_enterprise_value(api, period=period, limit=limit)
-
-        return make_response(
-            {
-                "current_dcf": current_dcf or [],
-                "historical_dcf": historical_dcf or [],
-                "enterprise_value": enterprise_value or [],
-            },
-            source=_SOURCE,
-            symbol=disp,
-            data_type="historical_valuation",
-            period=period,
-        )
-
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+
+    try:
+        key_metrics = await client.get_key_metrics(api, period=period, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - it only labels the rows, which still answer
+        logger.warning("FMP key metrics unavailable for %s: %s", disp, type(exc).__name__)
+        key_metrics = []
+
+    # FMP prices the DCF row in the listing's trading currency (in pence on a
+    # pence venue) and the enterprise-value rows in the filings' currency, which
+    # only the key-metrics row for the same period names.
+    try:
+        ref = to_canonical(symbol, asset_class=AssetClass.EQUITY)
+    except Exception:  # noqa: BLE001
+        ref = None
+    # A venue the protocol does not know resolves to a USD default, not its currency.
+    currency = ref.price_currency if ref and declared_venue(ref) != UNKNOWN_MIC else None
+    places = minor_unit_places(symbol)
+    reported = {row.get("date"): row.get("reportedCurrency") for row in key_metrics or []}
+    return make_response(
+        {
+            "current_dcf": [
+                {
+                    **{k: v for k, v in row.items() if k != "Stock Price"},
+                    "dcf": scale_price(row.get("dcf"), places),
+                    "stockPrice": scale_price(row.get("Stock Price", row.get("stockPrice")), places),
+                }
+                for row in current_dcf or []
+            ],
+            "historical_dcf": historical_dcf or [],
+            "enterprise_value": [
+                {**row, "reportedCurrency": reported.get(row.get("date"))}
+                for row in enterprise_value or []
+            ],
+        },
+        source=_SOURCE,
+        symbol=disp,
+        currency=currency,
+        data_type="historical_valuation",
+        period=period,
+    )
 
 
 _OUT_GET_INSIDER_TRADES = output_model(
@@ -614,8 +656,12 @@ async def get_shares_float(
     try:
         data = await client.get_shares_float(api)
 
+        # FMP stamps the row with its refresh time; the contract is a bare date.
         return make_response(
-            data or [],
+            [
+                {**row, "date": str(row["date"])[:10]} if row.get("date") else row
+                for row in data or []
+            ],
             source=_SOURCE,
             symbol=disp,
             data_type="shares_float",
