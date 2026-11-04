@@ -2502,7 +2502,7 @@ class TestFetchQuote:
             clock.return_value.is_closed.return_value = True
             content, artifact = await fetch_quote(["600519.SH", "920395.BJ"])
 
-        assert "920395.BJ  CN¥6.68  +0.91% today" in content
+        assert "920395.BJ  CN¥6.68  +0.91% on 2026-09-30" in content
         assert "no data" not in content
         bj = artifact["quotes"][1]
         assert (bj["source"], bj["tier"], bj["currency"]) == ("daily", "eod", "CNY")

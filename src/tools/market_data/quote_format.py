@@ -308,7 +308,15 @@ def _line(row: _Row, prev_price: Optional[float], at: Optional[datetime]) -> str
     coin = row.ref is not None and row.ref.asset_class is AssetClass.CRYPTO
     pct = finite_or_none(snap.get("change_percent"))
     if pct is not None:
-        parts.append(f"{'+' if pct >= 0 else ''}{pct:.2f}% {'since 00:00 UTC' if coin else 'today'}")
+        # A print from an earlier venue day carries that session's move.
+        printed = venue_local_time(row.ref, print_time(snap) or at)
+        today = venue_local_time(row.ref, at)
+        day = (
+            "since 00:00 UTC" if coin
+            else f"on {printed:%Y-%m-%d}" if printed and today and printed.date() != today.date()
+            else "today"
+        )
+        parts.append(f"{'+' if pct >= 0 else ''}{pct:.2f}% {day}")
     vol = finite_or_none(snap.get("volume"))
     if vol:
         parts.append(f"vol {fmt_money(vol, row.ref.price_currency) if coin else _fmt_volume(int(vol))}")
