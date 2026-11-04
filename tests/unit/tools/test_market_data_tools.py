@@ -3324,3 +3324,46 @@ async def test_an_overview_with_nothing_behind_it_is_unavailable(symbol, bars):
     assert (metadata["tool_outcome"], metadata["error_class"]) == ("unavailable", "no_data")
     assert update["error"] is None
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("now_et", "printed_et", "line"),
+    [
+        ((2026, 11, 4, 1, 0), (2026, 11, 3, 16, 4, 18), "| As of | 2026-11-03 16:04:18 ET, session close |"),
+        ((2026, 11, 3, 16, 6), (2026, 11, 3, 15, 51, 31),
+         "| As of | 2026-11-03 15:51:31 ET, delayed 15m, before the session close |"),
+        ((2026, 11, 3, 11, 0), (2026, 11, 3, 10, 45), "| As of | 2026-11-03 10:45:00 ET, delayed 15m |"),
+    ],
+    ids=["after-the-close", "inside-the-delay-after-the-close", "in-session"],
+)
+async def test_an_index_level_says_when_it_printed_and_whether_it_is_the_close(now_et, printed_et, line):
+    from market_protocol import AssetClass
+    from src.tools.market_data.display import _symbol_currency
+    from src.tools.market_data.index_overview import fetch_index_overview, index_overview_text
+
+    snap = {
+        "symbol": "GSPC", "price": 7568.92, "change": 27.52, "change_percent": 0.36,
+        "as_of": int(_ET.localize(datetime(*printed_et)).timestamp() * 1000),
+        "tier": "delayed_15m", "source": "ginlix-data",
+    }
+    market = MagicMock()
+    market.get_snapshots = AsyncMock(return_value=[snap])
+    market.get_daily_with_source = AsyncMock(return_value=([], "ginlix-data", None))
+    ref = resolve_ref("^GSPC", AssetClass.INDEX)
+    with patch("src.tools.market_data.index_overview.get_market_data_provider", AsyncMock(return_value=market)), \
+         patch("src.data_client.freshness._now", side_effect=lambda now: now or _ET.localize(datetime(*now_et))):
+        artifact = await fetch_index_overview("^GSPC", ref)
+    assert line in index_overview_text(artifact, _symbol_currency(ref))
+
+
+@pytest.mark.asyncio
+async def test_an_index_level_with_no_print_time_names_none():
+    from market_protocol import AssetClass
+    from src.tools.market_data.index_overview import fetch_index_overview
+
+    market = MagicMock()
+    market.get_snapshots = AsyncMock(return_value=[{"symbol": "GSPC", "price": 7568.92}])
+    market.get_daily_with_source = AsyncMock(return_value=([], "fmp", None))
+    with patch("src.tools.market_data.index_overview.get_market_data_provider", AsyncMock(return_value=market)):
+        artifact = await fetch_index_overview("^GSPC", resolve_ref("^GSPC", AssetClass.INDEX))
+    assert artifact["quote"]["price"] == 7568.92
+    assert "levelPrintedAt" not in artifact["quote"]
