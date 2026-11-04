@@ -608,7 +608,9 @@ class MarketDataProvider:
                     snap["source"] = entry.name
                     # A provider that knows its own freshness keeps it (a
                     # daily-derived row is EOD whoever built it).
-                    snap.setdefault("tier", snapshot_tier(entry.name, venues[symbol]).value)
+                    snap.setdefault("tier", snapshot_tier(
+                        entry.name, venues[symbol], AssetClass.INDEX if is_index else None
+                    ).value)
                     results_by_symbol[symbol] = snap
                     resolved.add(symbol)
                 elif symbol:

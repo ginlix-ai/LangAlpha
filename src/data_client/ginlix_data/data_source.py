@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from src.data_client.base import FetchResult, IntervalNotSupported
-from src.data_client.normalize import build_series
+from src.data_client.instrument_clock import clock_for
+from src.data_client.normalize import build_series, change_from
 from market_protocol import InstrumentRef, Series
 from market_protocol import display_spelling, index_families, to_legacy_api
 
@@ -27,6 +28,29 @@ def vendor_epoch_ms(value: Any) -> int | None:
     if value >= 1e11:
         return int(value)
     return int(value * 1000)
+
+
+def _index_quote(ticker: str, session: dict[str, Any], as_of: int | None) -> tuple[Any, Any, int | None]:
+    """The move of the index level shown, and when that level printed.
+
+    The feed's own move is rounded and can trail the level by minutes in
+    session. The feed can also stop refreshing an index's stamp and move once a
+    new session opens: the move then reads exactly 0, stamped before the newest
+    session that has opened (before it opens, the zero may be the stamped
+    session's own). A level that moved on since is not dated by the old stamp;
+    one that has not is a previous close with no move of the new session yet.
+    """
+    close, previous = session.get("close"), session.get("previous_close")
+    if as_of is not None and close is not None and session.get("change") == 0:
+        clock = clock_for(ticker, True)
+        stamped = datetime.fromtimestamp(as_of / 1000, clock.tz).date().isoformat()
+        if clock.expected_latest_daily_date() > stamped:
+            if close == previous:
+                return None, None, as_of
+            as_of = None
+    if close is not None and previous:
+        return (*change_from(close, previous), as_of)
+    return session.get("change"), session.get("change_percent"), as_of
 
 
 def normalize_series(rows: list[dict], *, ref: InstrumentRef, schema: str) -> Series:
@@ -213,18 +237,32 @@ class GinlixDataSource:
         last_trade = raw.get("last_trade", {})
         last_minute = raw.get("last_minute", {})
         ticker = raw.get("ticker", "")
-        # For indices, reverse-map I:SPX → GSPC etc.; a stock comes back in
-        # Massive's spelling (BRK.B) and leaves in ours (BRK-B).
+        change, change_percent = session.get("change"), session.get("change_percent")
+        # The feed's newest stamp, not the last trade's alone: a thin name on a
+        # realtime feed can go minutes without a print while its quote keeps
+        # moving, and that is not a delay. An index has only its own stamp.
+        as_of = max(
+            (
+                ms for ms in (
+                    vendor_epoch_ms((last_trade or {}).get("last_updated")),
+                    vendor_epoch_ms((raw.get("last_quote") or {}).get("last_updated")),
+                    vendor_epoch_ms(raw.get("last_updated")),
+                ) if ms
+            ),
+            default=None,
+        )
         if asset_type == "indices":
             ticker = _REVERSE_INDEX_TICKERS.get(ticker, ticker.removeprefix("I:"))
+            change, change_percent, as_of = _index_quote(ticker, session, as_of)
         else:
+            # A stock comes back in Massive's spelling (BRK.B) and leaves in ours (BRK-B).
             ticker = display_spelling(ticker)
         return {
             "symbol": ticker,
             "name": raw.get("name"),
             "price": session.get("close"),
-            "change": session.get("change"),
-            "change_percent": session.get("change_percent"),
+            "change": change,
+            "change_percent": change_percent,
             "previous_close": session.get("previous_close"),
             "open": session.get("open"),
             "high": session.get("high"),
@@ -232,19 +270,7 @@ class GinlixDataSource:
             "volume": int(session["volume"]) if session.get("volume") is not None else None,
             "market_status": raw.get("market_status"),
             "last_trade_price": last_trade.get("price") if last_trade else None,
-            # The feed's newest stamp, not the last trade's alone: a thin name on a
-            # realtime feed can go minutes without a print while its quote keeps
-            # moving, and that is not a delay. An index has only its own stamp.
-            "as_of": max(
-                (
-                    ms for ms in (
-                        vendor_epoch_ms((last_trade or {}).get("last_updated")),
-                        vendor_epoch_ms((raw.get("last_quote") or {}).get("last_updated")),
-                        vendor_epoch_ms(raw.get("last_updated")),
-                    ) if ms
-                ),
-                default=None,
-            ),
+            "as_of": as_of,
             # Close of the most recent minute aggregate — the consolidated last
             # sale. Unlike last_trade (and the session change fields derived
             # from it), it excludes odd-lot prints that don't update the

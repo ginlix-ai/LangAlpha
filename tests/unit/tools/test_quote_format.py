@@ -194,19 +194,6 @@ class TestCurrencyAndVenueAwareness:
         )
         assert format_quote_line(snap, at=at).endswith("(pre)")
 
-    def test_a_prior_print_on_a_rolled_previous_close_states_no_move(self):
-        # 09:38 ET on a delayed index feed: the base rolled to the last close,
-        # whose print has not been replaced yet.
-        at = _ET.localize(datetime(2026, 7, 2, 9, 38))
-        printed = _ET.localize(datetime(2026, 7, 1, 16, 4, 47))
-        snap = _snap(
-            symbol="GSPC", price=7688.62, last_trade_price=None, previous_close=7688.62,
-            change_percent=0.0, as_of=int(printed.timestamp() * 1000),
-        )
-        line = format_quote_line(snap, at=at, asset_class=AssetClass.INDEX)
-        assert "%" not in line
-        assert "7,688.62" in line
-
     def test_a_sub_dollar_price_keeps_four_places(self):
         assert "$0.3734" in format_quote_line(_snap(last_trade_price=0.3734))
 

@@ -61,7 +61,9 @@ _NO_DATA = {"__no_data__": True}
 # and daily-fallback rows say ``regular_only`` (no extended-hours prints).
 # v9: keys carry the asset class, so an index-hinted miss for an equity's
 # instrument_key (0700.HK) cannot negative-cache the equity read.
-_QUOTE_SCHEMA_VERSION = 9
+# v10: ginlix-data rows carry ``last_trade_at``, and an index row the feed
+# rolled past its stamp carries no stale stamp or move.
+_QUOTE_SCHEMA_VERSION = 10
 
 
 def _closed_recently(cal: MarketCalendar, now: datetime, window: timedelta) -> bool:

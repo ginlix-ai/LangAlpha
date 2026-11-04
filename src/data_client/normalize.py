@@ -137,9 +137,19 @@ def bars_regular_only(publisher: str | None) -> bool:
     return publisher in _REGULAR_SESSION_BARS
 
 
-def snapshot_tier(publisher: str | None, venue: str | None = None) -> Tier:
+def snapshot_tier(
+    publisher: str | None, venue: str | None = None, asset_class: AssetClass | None = None
+) -> Tier:
     """Freshness of *publisher*'s quote on *venue* (a :func:`declared_venue`; None = publisher-wide)."""
+    if _delayed_index_feed(publisher, asset_class):
+        return Tier.DELAYED_15M
     return _declared(publisher, venue).quote_tier
+
+
+def _delayed_index_feed(publisher: str | None, asset_class: AssetClass | None) -> bool:
+    """ginlix-data's index feed, bars and quotes alike, is the 15-minute delayed one
+    (the live index stream is delayed-only too)."""
+    return publisher == "ginlix-data" and asset_class is AssetClass.INDEX
 
 
 def publisher_lineage(
@@ -163,10 +173,9 @@ def publisher_lineage(
         treatment = PriceTreatment.RAW
     elif publisher == "fmp" and venue == _CN_CALENDAR:
         treatment = PriceTreatment.RAW
-    if publisher == "ginlix-data" and asset_class is AssetClass.INDEX:
-        # Its index feed is the 15-minute delayed one (the live index stream is
-        # delayed-only too); declared realtime, a daily series would settle at
-        # 16:05 ET on a pre-close value and be held until the next open.
+    if _delayed_index_feed(publisher, asset_class):
+        # Declared realtime, a daily series would settle at 16:05 ET on a
+        # pre-close value and be held until the next open.
         tier = Tier.DELAYED_15M
     return treatment, tier
 
