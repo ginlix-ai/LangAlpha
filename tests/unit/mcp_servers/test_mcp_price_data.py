@@ -787,6 +787,17 @@ class TestSeriesLabels:
 
         assert_ok_envelope(result, source="fmp", count=1)
         assert result["price_treatment"] == "raw"
+        assert "volume" in result["volume_note"]
+
+    @pytest.mark.asyncio
+    async def test_only_cn_intraday_from_fmp_carries_a_volume_note(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
+            us_daily = await mod.get_stock_data("AAPL", interval="1day")
+
+        assert "volume_note" not in us_daily
 
     @pytest.mark.asyncio
     async def test_asset_bars_carry_the_labels(self):

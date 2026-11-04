@@ -165,4 +165,5 @@ def test_series_labels_name_the_treatment_and_the_forming_bar(monkeypatch):
     assert series_labels("tushare", MOUTAI, "1day", "2025-11-04") == {
         "price_treatment": "dividend_adjusted"
     }
-    assert series_labels("fmp", MOUTAI, "1hour", None) == {"price_treatment": "raw"}
+    assert series_labels("fmp", MOUTAI, "1day", None) == {"price_treatment": "raw"}
+    assert "volume" in series_labels("fmp", MOUTAI, "1hour", None)["volume_note"]

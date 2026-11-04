@@ -313,6 +313,15 @@ def series_in_progress(
     )
 
 
+# FMP's CN intraday bars carry a single print's size on an unpredictable subset
+# of bars (6x to 48x below Yahoo's on 600519.SH), and no other source holds
+# whole CN minute sessions to read instead.
+_CN_INTRADAY_VOLUME_NOTE = (
+    "FMP reports a fraction of the real volume on some CN intraday bars; "
+    "volume totals and volume-weighted figures understate."
+)
+
+
 def series_labels(
     publisher: str | None,
     ref: InstrumentRef | None,
@@ -320,10 +329,18 @@ def series_labels(
     newest: str | None,
 ) -> dict[str, str]:
     """Envelope keys for a bar series: the price treatment *publisher* declares
-    for *ref*, and ``in_progress`` naming the newest bar while it still forms."""
+    for *ref*, ``in_progress`` naming the newest bar while it still forms, and
+    ``volume_note`` where the volume is known to be unreliable."""
     labels = {"price_treatment": series_lineage(publisher, ref)[0].value}
     if series_in_progress(publisher, ref, newest, interval):
         labels["in_progress"] = newest
+    if (
+        publisher == "fmp"
+        and interval in _INTRADAY_SECONDS
+        and ref is not None
+        and ref.calendar_id == _CN_CALENDAR
+    ):
+        labels["volume_note"] = _CN_INTRADAY_VOLUME_NOTE
     return labels
 
 
