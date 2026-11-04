@@ -46,6 +46,22 @@ FRESHNESS_WORDS: dict[FreshnessLabel, str] = {
 }
 
 
+def inside_delay(freshness: dict[str, Any]) -> bool:
+    """A delayed row measured behind is still inside its delay, so after the
+    close it predates the session's final print."""
+    return freshness.get("label") == FreshnessLabel.DELAYED and bool(freshness.get("measured"))
+
+
+def holds_close(freshness: dict[str, Any]) -> bool:
+    """Whether a row on a closed venue holds the session's final price: a current
+    or delayed one does, unless it is still inside its delay."""
+    return (
+        bool(freshness.get("closed"))
+        and freshness.get("label") in (FreshnessLabel.LIVE, FreshnessLabel.DELAYED)
+        and not inside_delay(freshness)
+    )
+
+
 def current_price(snap: dict[str, Any]) -> Optional[float]:
     """Best available finite current price: last trade if present, else session close.
 

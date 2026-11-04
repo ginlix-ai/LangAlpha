@@ -30,12 +30,14 @@ from .display import (
     _market_status_line,
     _symbol_currency,
     resolve_listing,
+    venue_phase,
 )
 from .index_overview import fetch_index_overview, index_overview_text
 from .quote_format import (
     FRESHNESS_WORDS,
     build_live_stamp,
     current_price,
+    holds_close,
     stamp_provider_quote,
     stamp_quote,
 )
@@ -46,7 +48,7 @@ from src.data_client import get_financial_data_provider, get_market_data_provide
 from src.data_client.freshness import FreshnessLabel
 from src.data_client.ginlix_data.directory import display_names
 from src.data_client.normalize import minor_unit_places
-from market_protocol import AssetClass, InstrumentRef
+from market_protocol import AssetClass, InstrumentRef, MarketPhase
 
 from ._shared import _fmp_request, _get_user_id, _mark_failure, _mark_no_data, _safe_result
 
@@ -479,21 +481,35 @@ def _extended_session(snap: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return None if finite_or_none(snap.get(f"{named[1]}_change")) == 0 else named
 
 
-def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
-    """Regular close, the extended-hours print off it, and the day's move."""
+def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec, settled: bool) -> List[str]:
+    """The shown price, the extended-hours print off a settled close, and the day's move.
+
+    Until its session settles the snapshot's close is a running figure behind
+    the last trade, so the block shows the last trade and its move from the
+    previous close. Once *settled* it shows
+    the regular close, any extended-hours trade off it, and the day's move.
+    """
+    reg_close = finite_or_none(snap.get("price"))  # session.close = regular session close
+    if not settled:
+        price = current_price(snap)
+        prev = finite_or_none(snap.get("previous_close"))
+        change, change_pct = (
+            (price - prev, (price - prev) / prev * 100) if prev
+            else (snap.get("change"), snap.get("change_percent"))
+        )
+        return [f"**Last Price:** {fmt_price(price, cur)}", *_day_change_line(change, change_pct, cur), ""]
+
     out = []
-    reg_close = snap.get("price")  # session.close = regular session close
     last_price = snap.get("last_trade_price")  # actual current price
     reg_change = snap.get("regular_trading_change")
     reg_change_pct = snap.get("regular_trading_change_percent")
-    if reg_close is not None:
-        if reg_change is not None and reg_change_pct is not None:
-            sign = _plus(reg_change)
-            out.append(
-                f"**Regular Close:** {fmt_price(reg_close, cur)} ({sign}{reg_change:.{cur.decimals}f} / {sign}{reg_change_pct:.3f}%)"
-            )
-        else:
-            out.append(f"**Regular Close:** {fmt_price(reg_close, cur)}")
+    if reg_change is not None and reg_change_pct is not None:
+        sign = _plus(reg_change)
+        out.append(
+            f"**Regular Close:** {fmt_quote(reg_close, cur)} ({sign}{reg_change:.{cur.decimals}f} / {sign}{reg_change_pct:.3f}%)"
+        )
+    else:
+        out.append(f"**Regular Close:** {fmt_quote(reg_close, cur)}")
 
     extended = _extended_session(snap)
     if extended is not None:
@@ -513,14 +529,21 @@ def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
                 f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{diff:.{cur.decimals}f} / {sign}{diff_pct:.2f}% from close)"
             )
 
-    total_change = snap.get("change")
-    total_change_pct = snap.get("change_percent")
-    if total_change is not None and total_change_pct is not None:
-        sign = _plus(total_change)
-        out.append(
-            f"**Day Change (from prev close):** {sign}{total_change:.{cur.decimals}f} / {sign}{total_change_pct:.3f}%"
-        )
-    return out + [""]
+    return out + _day_change_line(snap.get("change"), snap.get("change_percent"), cur) + [""]
+
+
+def _day_change_line(change: Any, change_pct: Any, cur: DisplaySpec) -> List[str]:
+    """The move from the previous close, as one line; none without both figures."""
+    if change is None or change_pct is None:
+        return []
+    sign = _plus(change)
+    return [f"**Day Change (from prev close):** {sign}{change:.{cur.decimals}f} / {sign}{change_pct:.3f}%"]
+
+
+def _inside_delay(freshness: Dict[str, Any]) -> bool:
+    """A delayed row measured behind is still inside its delay, so after the
+    close it predates the closing auction's print."""
+    return freshness.get("label") == FreshnessLabel.DELAYED and bool(freshness.get("measured"))
 
 
 def _quote_heading(freshness: Dict[str, Any]) -> str:
@@ -528,16 +551,10 @@ def _quote_heading(freshness: Dict[str, Any]) -> str:
 
     Only a row measured or declared current is called real-time. A delayed one
     says so, and a provider quote that carries neither a tier nor a print time
-    reads as unknown rather than borrowing the title. On a closed venue a
-    current row is the session's final price, and so is a delayed one nothing
-    measured. A measured delayed row is still inside its delay, before the
-    closing auction's print, so it keeps naming the delay.
+    reads as unknown rather than borrowing the title. A row that holds the
+    session's final price (:func:`holds_close`) is the last close.
     """
-    label = freshness.get("label")
-    if freshness.get("closed") and (
-        label == FreshnessLabel.LIVE
-        or (label == FreshnessLabel.DELAYED and not freshness.get("measured"))
-    ):
+    if holds_close(freshness):
         return "### Quote (last close)"
     words = FRESHNESS_WORDS.get(freshness.get("label"))
     return f"### Quote ({words})" if words else "### Real-Time Quote"
@@ -577,7 +594,8 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
         stamp_quote(snap, ref=inp.ref) if snap is not None
         else stamp_provider_quote(fmp, inp.symbol, inp.ref)
     )
-    out = [_quote_heading(stamp["freshness"])]
+    freshness = stamp["freshness"]
+    out = [_quote_heading(freshness)]
     # US: snapshot/session label + ET clock. Non-US: phase from the exchange
     # calendar + exchange-local clock (the US-Eastern phase is meaningless for a
     # foreign listing; snapshot.market_status is US-centric).
@@ -590,7 +608,10 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
     out.append("")
 
     if snap is not None:
-        out += _snapshot_price_lines(snap, cur)
+        settled = venue_phase(inp.ref) not in (
+            None, MarketPhase.REGULAR, MarketPhase.LUNCH,
+        ) and not _inside_delay(freshness)
+        out += _snapshot_price_lines(snap, cur, settled)
         # The snapshot has no 52-week range or average volume; the provider quote does.
         fmp = fmp or {}
         rows = _quote_detail_rows(

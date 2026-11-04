@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.tools.market_data import earnings
+from market_protocol import MarketPhase
+from src.tools.market_data import company, earnings
 from src.tools.market_data.company import CompanyInputs, _company_text, _extended_session, _quote_lines
 from src.tools.market_data.display import _symbol_currency, resolve_listing
 from src.tools.market_data.earnings import join_earnings
@@ -247,7 +248,8 @@ def test_a_pence_listing_provider_quote_keeps_the_places_a_pence_move_needs():
     assert "£0.8524 - £1.3207" in text
 
 
-def test_a_pence_listing_snapshot_keeps_the_places_a_pence_move_needs():
+def test_a_pence_listing_snapshot_keeps_the_places_a_pence_move_needs(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.CLOSED)
     text = _quote_text("VOD.L", snapshot={
         "price": 1.172, "change": 0.0035, "change_percent": 0.3,
         "regular_trading_change": 0.0035, "regular_trading_change_percent": 0.3,
@@ -262,6 +264,42 @@ def test_a_pence_listing_headline_price_matches_its_quote_block():
     text = _company_text(_inputs("VOD.L", quote=quote, profile={"price": 1.172}))
     assert "Current Price: £1.1720" in text
     assert "**Price:** £1.1720" in text
+
+
+@pytest.mark.parametrize("phase, freshness, label", [
+    (MarketPhase.REGULAR, {"label": "live", "measured": True}, "Last Price"),
+    (MarketPhase.LUNCH, {"label": "live", "measured": True}, "Last Price"),
+    (MarketPhase.CLOSED, {"label": "delayed", "measured": True, "closed": True}, "Last Price"),
+    (MarketPhase.CLOSED, {"label": "live", "measured": True, "closed": True}, "Regular Close"),
+    (MarketPhase.POST, {"label": "live", "measured": True}, "Regular Close"),
+])
+def test_the_snapshot_price_is_a_regular_close_only_once_it_settles(monkeypatch, phase, freshness, label):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: phase)
+    monkeypatch.setattr(company, "stamp_quote", lambda snap, ref=None: {"freshness": freshness})
+    text = _quote_text("0700.HK", snapshot={"price": 401.6, "tier": "delayed_15m"})
+    assert f"**{label}:** HK$401.60" in text
+
+
+def test_a_sub_dollar_close_keeps_four_places_beside_a_trade_above_a_dollar(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.POST)
+    monkeypatch.setattr(company, "stamp_quote", lambda snap, ref=None: {
+        "freshness": {"label": "live", "measured": True}})
+    snapshot = {"price": 0.9834, "last_trade_price": 1.02, "previous_close": 0.95, "market_status": "late_trading",
+                "late_trading_change": 0.0366, "late_trading_change_percent": 3.72, "tier": "realtime"}
+    assert "**Regular Close:** $0.9834\n" in _quote_text("SUBD", snapshot=snapshot)
+    moved = {**snapshot, "regular_trading_change": 0.0334, "regular_trading_change_percent": 3.516}
+    assert "**Regular Close:** $0.9834 (+0.03 / +3.516%)" in _quote_text("SUBD", snapshot=moved)
+
+
+def test_an_unsettled_session_shows_the_last_trade_and_one_move(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.REGULAR)
+    text = _quote_text("TSM", snapshot={
+        "price": 405.30, "last_trade_price": 405.60, "previous_close": 400.0, "market_status": "open",
+        "change": 5.30, "change_percent": 1.325, "regular_trading_change": 5.30,
+        "regular_trading_change_percent": 1.325, "tier": "realtime",
+    })
+    assert "**Last Price:** $405.60\n**Day Change (from prev close):** +5.60 / +1.400%" in text
+    assert "405.30" not in text
 
 
 def test_a_foreign_quote_says_when_its_price_printed():
