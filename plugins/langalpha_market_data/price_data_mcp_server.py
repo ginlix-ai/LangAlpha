@@ -84,7 +84,7 @@ from mcp_servers._dates import (
     intraday_window,
 )
 from mcp_servers._schemas import (
-    BOOL,
+    INCOMPLETE,
     OBJECT,
     RECORDS,
     RECORDS_BY_KEY,
@@ -400,7 +400,7 @@ _OUT_GET_STOCK_DATA = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={"name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": BOOL},
+        echo={"name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": INCOMPLETE},
     ),
 )
 
@@ -442,7 +442,7 @@ _OUT_GET_ASSET_DATA = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={"asset_type": STR, "name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": BOOL},
+        echo={"asset_type": STR, "name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": INCOMPLETE},
     ),
 )
 

@@ -495,22 +495,21 @@
   },
   "mcp:macro:get_treasury_rates": {
     "doc_lines": [
-      "Fetch US Treasury rates across the full yield curve (1M to 30Y) — get the",
-      "risk-free rate for DCF/WACC (typically 10Y), read the curve shape, or track",
-      "rate trends.",
+      "Fetch US Treasury rates across the yield curve (1M to 30Y): the risk-free",
+      "rate for DCF/WACC (typically 10Y), the curve shape, or rate trends.",
+      "",
+      "Reads about two years at most.",
       "",
       "Args:",
       "    from_date: Start date \"YYYY-MM-DD\" (default: recent data).",
       "    to_date: End date \"YYYY-MM-DD\" (default: today).",
       "",
       "Returns:",
-      "    dict: {count, data, source, data_type, from_date, to_date}. data is a",
-      "    list of daily records; count is the record total. Each record has a date",
-      "    plus per-tenor rate columns: month1, month2, month3, month6, year1,",
-      "    year2, year3, year5, year7, year10, year20, year30. Rates are percent",
-      "    (4.5 = 4.5%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";",
-      "    records are newest-first as returned by FMP. On error:",
-      "    {error: <code>, detail}."
+      "    dict: {count, data, source, data_type, from_date, to_date, truncated?}.",
+      "    data: list of daily {date, month1, month2, month3, month6, year1, year2,",
+      "    year3, year5, year7, year10, year20, year30}, newest first; rates in",
+      "    percent (4.5 = 4.5%); date \"YYYY-MM-DD\". truncated: true if a size cap",
+      "    cut the oldest rows. On error: {error: <code>, detail}."
     ],
     "params": [
       "from_date",
@@ -520,9 +519,7 @@
   },
   "mcp:options:get_options_chain": {
     "doc_lines": [
-      "List options contracts for an underlying; use to discover/filter contracts.",
-      "",
-      "Filter by call/put, expiration range, and strike range. ginlix-data only.",
+      "List an underlying's options contracts; use to find contract tickers.",
       "",
       "Args:",
       "    underlying_ticker: Underlying stock ticker, e.g. \"AAPL\".",
@@ -535,9 +532,10 @@
       "",
       "Returns:",
       "    dict: {symbol, underlying_ticker, currency, timezone, count, data,",
-      "    source}. data: list of contract dicts with ticker, contract_type,",
-      "    expiration_date, strike_price, shares_per_contract, primary_exchange;",
-      "    strike_price in `currency` major units. On error: {error: <code>, detail}."
+      "    source, truncated?}. data: list of {ticker, contract_type,",
+      "    expiration_date, strike_price, shares_per_contract, primary_exchange};",
+      "    strike_price in `currency` major units. truncated: true if more",
+      "    contracts match than limit. On error: {error: <code>, detail}."
     ],
     "params": [
       "contract_type",
@@ -554,23 +552,24 @@
   },
   "mcp:options:get_options_prices": {
     "doc_lines": [
-      "Fetch OHLCV bars for one options contract; use for option price history.",
+      "Fetch OHLCV bars for one options contract.",
       "",
       "Intervals: 1min|5min|15min|30min|1hour|4hour|1day|1week|1month (aliases like",
-      "\"1d\"/\"daily\" accepted). ginlix-data only.",
+      "\"1d\"/\"daily\" accepted).",
       "",
       "Args:",
       "    options_ticker: OCC contract ticker, e.g. \"O:AAPL260618C00220000\".",
-      "    from_date: Start date \"YYYY-MM-DD\" (required).",
-      "    to_date: End date \"YYYY-MM-DD\" (required).",
-      "    interval: Bar size; one of the intervals above.",
+      "    from_date: Start date \"YYYY-MM-DD\".",
+      "    to_date: End date \"YYYY-MM-DD\".",
+      "    interval: One of the intervals above.",
       "",
       "Returns:",
-      "    dict: {symbol, interval, currency, timezone, count, data, source}. symbol",
-      "    echoes the contract ticker; currency/timezone are the underlying's. data:",
-      "    list of {date, open, high, low, close, volume} ascending (oldest first);",
-      "    date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in `currency` major",
-      "    units. On error: {error: <code>, detail}."
+      "    dict: {symbol, interval, currency, timezone, count, data, source,",
+      "    truncated?}. symbol echoes the contract ticker; currency/timezone are the",
+      "    underlying's. data: list of {date, open, high, low, close, volume}",
+      "    ascending (oldest first); date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\";",
+      "    prices in `currency` major units. truncated: true if a size cap cut the",
+      "    oldest bars. On error: {error: <code>, detail}."
     ],
     "params": [
       "from_date",

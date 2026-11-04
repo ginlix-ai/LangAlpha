@@ -36,6 +36,7 @@ from mcp_servers._schemas import (
     RECORDS,
     STR,
     TRUNCATED,
+    TRUNCATED_LATEST,
     described,
     envelope_schema,
     output_model,
@@ -124,7 +125,7 @@ _OUT_GET_ECONOMIC_CALENDAR = output_model(
             "data_type": STR,
             "from_date": NULLABLE_STR,
             "to_date": NULLABLE_STR,
-            "truncated": TRUNCATED,
+            "truncated": TRUNCATED_LATEST,
         },
     ),
 )
@@ -196,22 +197,21 @@ async def get_treasury_rates(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
 ) -> _OUT_GET_TREASURY_RATES:
-    """Fetch US Treasury rates across the full yield curve (1M to 30Y) — get the
-    risk-free rate for DCF/WACC (typically 10Y), read the curve shape, or track
-    rate trends.
+    """Fetch US Treasury rates across the yield curve (1M to 30Y): the risk-free
+    rate for DCF/WACC (typically 10Y), the curve shape, or rate trends.
+
+    Reads about two years at most.
 
     Args:
         from_date: Start date "YYYY-MM-DD" (default: recent data).
         to_date: End date "YYYY-MM-DD" (default: today).
 
     Returns:
-        dict: {count, data, source, data_type, from_date, to_date}. data is a
-        list of daily records; count is the record total. Each record has a date
-        plus per-tenor rate columns: month1, month2, month3, month6, year1,
-        year2, year3, year5, year7, year10, year20, year30. Rates are percent
-        (4.5 = 4.5%). Field names are FMP-native camelCase; date is "YYYY-MM-DD";
-        records are newest-first as returned by FMP. On error:
-        {error: <code>, detail}.
+        dict: {count, data, source, data_type, from_date, to_date, truncated?}.
+        data: list of daily {date, month1, month2, month3, month6, year1, year2,
+        year3, year5, year7, year10, year20, year30}, newest first; rates in
+        percent (4.5 = 4.5%); date "YYYY-MM-DD". truncated: true if a size cap
+        cut the oldest rows. On error: {error: <code>, detail}.
     """
     try:
         client = await get_fmp_client()
@@ -279,7 +279,7 @@ _OUT_GET_EARNINGS_CALENDAR = output_model(
     "GetEarningsCalendarOut",
     envelope_schema(
         RECORDS,
-        echo={"data_type": STR, "from_date": STR, "to_date": STR, "truncated": TRUNCATED},
+        echo={"data_type": STR, "from_date": STR, "to_date": STR, "truncated": TRUNCATED_LATEST},
     ),
 )
 
