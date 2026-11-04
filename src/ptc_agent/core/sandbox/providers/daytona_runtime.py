@@ -12,6 +12,7 @@ from daytona import (
 )
 
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
+from ptc_agent.core.sandbox.providers._daytona_stream import open_daytona_stream
 from ptc_agent.core.sandbox.runtime import (
     ExecResult,
     PreviewInfo,
@@ -20,6 +21,7 @@ from ptc_agent.core.sandbox.runtime import (
     SandboxRuntime,
     SessionCommandResult,
     SessionState,
+    StreamProcess,
 )
 
 logger = structlog.get_logger(__name__)
@@ -188,6 +190,9 @@ class DaytonaRuntime(SandboxRuntime):
             stdout = str(result) if result else ""
         exit_code = getattr(result, "exit_code", 0)
         return ExecResult(stdout=stdout, stderr="", exit_code=exit_code)
+
+    async def open_stream(self, command: str) -> StreamProcess:
+        return await open_daytona_stream(self, command)
 
     # -- File I/O --
 

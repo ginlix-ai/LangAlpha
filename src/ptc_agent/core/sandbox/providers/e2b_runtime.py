@@ -27,6 +27,8 @@ from e2b.sandbox.filesystem.filesystem import FileType, WriteEntry
 
 from ptc_agent.config.core import PlatformSecretDefinition
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT, SandboxLayout
+from ptc_agent.core.sandbox.providers._e2b_common import _USER, _exit_status
+from ptc_agent.core.sandbox.providers._e2b_stream import open_e2b_stream
 from ptc_agent.core.sandbox.providers._exec_sessions import ExecSessionRuntime
 from ptc_agent.core.sandbox.providers.e2b_secrets import egress_rules
 from ptc_agent.core.sandbox.runtime import (
@@ -34,6 +36,7 @@ from ptc_agent.core.sandbox.runtime import (
     PreviewInfo,
     RuntimeState,
     SandboxTransientError,
+    StreamProcess,
 )
 
 logger = structlog.get_logger(__name__)
@@ -43,9 +46,6 @@ _STATE_MAP: dict[str, RuntimeState] = {
     "paused": RuntimeState.STOPPED,
 }
 
-# Every command and file operation runs as root, as on Daytona: the image is
-# built as root, HOME is /root, and packages install into the system Python.
-_USER = "root"
 # The SDK's own default, stated so a hung envd connection surfaces as a
 # transient error within the PTCSandbox retry envelope.
 _FS_TIMEOUT_S = 60
@@ -84,30 +84,6 @@ def _window(minutes: int | None, *, default_s: int, max_s: int) -> int:
     """
     seconds = default_s if minutes is None else (minutes * 60 or max_s)
     return max(60, min(seconds, max_s))
-
-
-# envd reports a process a signal ended as exit -1, naming the signal the way
-# Go does ("signal: killed"). A shell reports 128 + its number, which is what
-# the other providers return, so an OOM kill reads 137 on every one of them.
-# Linux numbers, the sandbox's, not this host's (SIGBUS is 10 on macOS).
-_SIGNAL_NUMBERS = {
-    "hangup": 1,
-    "interrupt": 2,
-    "aborted": 6,
-    "bus error": 7,
-    "killed": 9,
-    "segmentation fault": 11,
-    "terminated": 15,
-}
-
-
-def _exit_status(exit_code: int, error: str | None) -> int:
-    """The shell's exit status for an envd result."""
-    if exit_code != -1 or not error or not error.startswith("signal: "):
-        return exit_code
-    name = error.removeprefix("signal: ").removesuffix(" (core dumped)")
-    number = _SIGNAL_NUMBERS.get(name)
-    return exit_code if number is None else 128 + number
 
 
 class E2BRuntime(ExecSessionRuntime):
@@ -327,6 +303,11 @@ class E2BRuntime(ExecSessionRuntime):
         await self._keep_alive(busy_for_s)
         return sandbox
 
+    async def connected_sandbox(self) -> AsyncSandbox:
+        """The SDK sandbox, attached and kept up, for code that needs what the
+        runtime interface does not surface."""
+        return await self._ready()
+
     # -- Execution --
 
     async def exec(
@@ -342,6 +323,9 @@ class E2BRuntime(ExecSessionRuntime):
         return ExecResult(
             stdout=result.stdout + result.stderr, stderr="", exit_code=result.exit_code
         )
+
+    async def open_stream(self, command: str) -> StreamProcess:
+        return await open_e2b_stream(self, command)
 
     @staticmethod
     async def _run(

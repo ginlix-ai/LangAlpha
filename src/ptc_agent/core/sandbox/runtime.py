@@ -1,5 +1,6 @@
 """Abstract runtime and provider interfaces for sandbox backends."""
 
+import asyncio
 import base64
 import shlex
 from abc import ABC, abstractmethod
@@ -204,6 +205,78 @@ class MetricSample:
 STREAM_CHUNK_BYTES = 8 * 1024 * 1024
 
 
+class StreamProcess(ABC):
+    """One process in the sandbox whose stdin and stdout stream both ways for as long as it runs.
+
+    A stream is faithful to lines, not bytes, which is what a line protocol
+    such as stream-json needs and all that every provider can promise: input
+    may reach the process only once a write ends its line, output may gain a
+    final newline, output bytes that are not UTF-8 read as U+FFFD, and where
+    the provider takes input as text, ``write`` raises ValueError on input that
+    is not UTF-8.
+
+    A signal reaches every process the command started, unless one left its
+    process group (``setsid``). The exit status
+    follows the shell's convention, as ``exec`` reports it on every provider:
+    a process a signal ended reads 128 plus the signal's number (137 for a
+    kill, 143 for a TERM). -1 means the stream failed, which ``failure`` says
+    why, or the provider could not say how the process ended.
+    """
+
+    stdout: asyncio.StreamReader
+    # Never mixed into stdout, which carries a protocol.
+    stderr: asyncio.StreamReader
+
+    @property
+    @abstractmethod
+    def returncode(self) -> int | None:
+        """None while it runs."""
+
+    @property
+    @abstractmethod
+    def failure(self) -> str | None:
+        """Why the stream failed and killed the process (it lost track of it,
+        could not signal it, lost a send to it, or too much output went
+        unread); None unless it failed."""
+
+    @abstractmethod
+    async def write(self, data: bytes) -> None:
+        """Send *data* to its stdin after every earlier write.
+
+        Raises ConnectionError once the process ended or the stream was lost,
+        and ValueError, sending none of it, where the provider takes text and
+        whole lines: on bytes that are not UTF-8, or on a line it would hold
+        past its line limit.
+        """
+
+    @abstractmethod
+    async def write_eof(self) -> bool:
+        """Close its stdin after every earlier write.
+
+        False, with nothing done, where the provider cannot, so the caller
+        ends the process another way.
+        """
+
+    @abstractmethod
+    async def wait(self) -> int:
+        """Its exit status, once it ended and both readers reached EOF."""
+
+    @abstractmethod
+    async def terminate(self) -> None:
+        """SIGTERM the command and what it started in its process group; a
+        no-op once it ended."""
+
+    @abstractmethod
+    async def kill(self) -> None:
+        """SIGKILL the command and what it started in its process group; a
+        no-op once it ended."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Free what the stream holds on the provider, killing a process still
+        running. Safe to call again, and to cancel: the teardown still runs."""
+
+
 class SandboxRuntime(ABC):
     """Primitive operations that vary per sandbox provider.
 
@@ -334,6 +407,25 @@ class SandboxRuntime(ABC):
         to do, such as mounting. A runtime whose commands already run as root
         keeps this default."""
         return await self.exec(command, timeout, env=env)
+
+    async def open_stream(self, command: str) -> StreamProcess:
+        """Start ``bash -c command`` as the user ``exec`` runs as, its pipes
+        streaming both ways until it ends.
+
+        For a process that speaks a protocol over its pipes for a whole turn,
+        which neither ``exec`` nor a session can carry: both are bounded and
+        read output only after the fact. It starts where the provider starts
+        commands, and no login or interactive startup file runs before it, so a
+        caller that needs a folder, a variable or a PATH says so in the
+        command. The one exception is Daytona's: the command runs inside a
+        session whose shell is zsh where the image has it, which reads
+        ``/etc/zshenv`` and ``~/.zshenv`` as it starts, and Daytona's API has no
+        way to start without it. A runtime with no way to stream raises
+        NotImplementedError.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support streaming a process"
+        )
 
     async def login_home(self) -> str:
         """The home ``~`` names for the user commands run as; empty when the
