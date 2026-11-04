@@ -11,12 +11,15 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useLocation } from 'react-router';
 import { renderWithProviders } from '@/test/utils';
 import { ANTHROPIC_KEY_URL, CLAUDE_CODE_CHOICE_URL } from '@/lib/claudeCode';
-import type { ClaudeCodeCustody } from '@/api/model';
+import type { ClaudeCodeCustody, ClaudeCodeSetup } from '@/api/model';
 
 const saved = vi.hoisted(() => ({ current: false }));
+// Claude Code is on; where it stands as a whole is the row's own line.
+const setup = vi.hoisted(() => ({ current: {} as ClaudeCodeSetup }));
 
 // A hosted server, which runs no turn on a saved token.
 vi.mock('@/hooks/useClaudeCode', () => ({
+  useClaudeCodeSetup: () => ({ setup: setup.current, isLoading: false }),
   useClaudeCodeStatus: () => ({ enabled: true, runsHere: false, state: 'off', saved: saved.current, email: null, expiresAt: null, isLoading: false }),
   useClaudeCodeComputers: () => ({ computers: [], isLoading: false }),
 }));
@@ -67,19 +70,21 @@ const consentDialog = () => screen.queryByRole('dialog', { name: 'Let LangAlpha 
 const leaveDialog = () => screen.queryByRole('dialog', { name: 'Stop storing your setup token?' });
 const tokenSheet = () => screen.queryByRole('dialog', { name: 'Add a setup token' });
 const STORING: Partial<ClaudeCodeCustody> = { offered: ['api_key', 'stored'] };
-/** Claude Code's row in Model access, which opens the sheet the choice is in. */
+/** Claude Code's row in Model access, whose Manage opens the view the choice is in. */
 const openClaudeCode = async () => fireEvent.click(await screen.findByRole('button', { name: 'Manage' }));
 
 describe('ModelAccessSection: Claude Code on cloud computers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     saved.current = false;
+    setup.current = { state: 'not_connected', on: true, computers: [], saved_token_runs: false, cloud: true };
     catalog.read = true;
     (setClaudeCodeCustody as Mock).mockImplementation(async (mode: string) => ({ ...BASE, ...STORING, mode, api_key_saved: true }));
   });
 
   it('offers no choice where the server offers none', async () => {
     render(null);
+    await openClaudeCode();
     await waitFor(() => expect(getClaudeCodeCustody).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByText('Where Claude Code runs')).toBeNull();
@@ -87,6 +92,7 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
   });
 
   it('shows the choice only inside Claude Code, whose row says which is chosen', async () => {
+    setup.current = { ...setup.current, state: 'connected' };
     render({ mode: 'api_key', api_key_saved: true, runs_on: 'api_key', refusal: null });
     expect(await screen.findByText('Also for cloud computers, with your Anthropic API key')).toBeInTheDocument();
     expect(screen.queryByRole('radiogroup')).toBeNull();
