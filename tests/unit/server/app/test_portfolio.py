@@ -328,6 +328,28 @@ async def test_update_portfolio_holding(client):
 
 
 @pytest.mark.asyncio
+async def test_update_portfolio_holding_currency_refusal_is_a_conflict(client):
+    from src.server.database.portfolio import HoldingCurrencyMismatch
+
+    message = (
+        "GBp is a cost in pence, which is stored in GBP. Give the average cost "
+        "in the same write, or set the currency to GBP."
+    )
+    with patch(
+        f"{DB}.db_update_portfolio_holding",
+        new_callable=AsyncMock,
+        side_effect=HoldingCurrencyMismatch(message),
+    ):
+        resp = await client.put(
+            f"/api/v1/users/me/portfolio/{HOLDING_ID}",
+            json={"currency": "GBp"},
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == message
+
+
+@pytest.mark.asyncio
 async def test_update_portfolio_holding_not_found(client):
     fake_id = str(uuid.uuid4())
     with patch(

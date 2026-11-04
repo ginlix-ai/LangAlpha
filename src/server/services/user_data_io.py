@@ -376,6 +376,10 @@ def parse_portfolio(content: str) -> list[dict[str, Any]]:
         avg_cost_raw = item.get("average_cost")
         average_cost = _coerce_decimal(avg_cost_raw, file, f"holdings[{idx}].average_cost") if avg_cost_raw is not None else None
         _reject_negative(average_cost, file=file, path=f"holdings[{idx}].average_cost")
+        currency, average_cost = portfolio_db.canonical_holding_cost(
+            _coerce_str(item.get("currency"), file, f"holdings[{idx}].currency", required=False),
+            average_cost,
+        )
 
         # Reject duplicates within the payload — DB has UNIQUE (user, symbol,
         # instrument_type, account_name) and would error out asymmetrically
@@ -396,7 +400,7 @@ def parse_portfolio(content: str) -> list[dict[str, Any]]:
             "name": _coerce_str(item.get("name"), file, f"holdings[{idx}].name", required=False),
             "quantity": quantity,
             "average_cost": average_cost,
-            "currency": _coerce_str(item.get("currency"), file, f"holdings[{idx}].currency", required=False) or None,
+            "currency": currency,
             "account_name": account_name,
             "notes": _coerce_str(item.get("notes"), file, f"holdings[{idx}].notes", required=False),
             "first_purchased_at": _coerce_str(item.get("first_purchased_at"), file, f"holdings[{idx}].first_purchased_at", required=False),

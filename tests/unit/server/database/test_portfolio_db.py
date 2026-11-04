@@ -3,7 +3,7 @@ Tests for src/server/database/portfolio.py
 
 A holding written without a currency takes its listing's, and a write that
 names another currency than the holding it merges into is refused rather
-than averaged across the two.
+than averaged across the two. A cost in pence is stored in pounds.
 """
 
 from contextlib import asynccontextmanager
@@ -15,7 +15,9 @@ import pytest
 
 from src.server.database.portfolio import (
     HoldingCurrencyMismatch,
+    canonical_holding_cost,
     default_holding_currency,
+    update_portfolio_holding,
     upsert_portfolio_holding,
 )
 
@@ -187,3 +189,115 @@ async def test_a_write_in_the_holdings_currency_merges(mock_cursor, currency):
     assert "UPDATE user_portfolios" in update.args[0]
     # The merge never rewrites the holding's currency.
     assert "currency" not in update.args[0].split("SET", 1)[1].split("WHERE", 1)[0]
+
+
+@pytest.mark.parametrize(
+    ("currency", "cost", "stored"),
+    [
+        ("GBp", Decimal("110"), ("GBP", Decimal("1.10"))),
+        ("GBX", Decimal("205"), ("GBP", Decimal("2.05"))),
+        (" GBx ", None, ("GBP", None)),
+        ("gbx", Decimal("110"), ("GBP", Decimal("1.10"))),
+        # Pounds, however it is spelled, is not pence.
+        ("gbp", Decimal("1.2"), ("GBP", Decimal("1.2"))),
+        (" usd ", Decimal("3"), ("USD", Decimal("3"))),
+        ("", Decimal("3"), (None, Decimal("3"))),
+        (None, Decimal("3"), (None, Decimal("3"))),
+    ],
+)
+def test_a_holding_is_stored_in_its_canonical_currency(currency, cost, stored):
+    assert canonical_holding_cost(currency, cost) == stored
+
+
+@pytest.mark.asyncio
+async def test_a_pence_holding_is_created_in_pounds(mock_cursor):
+    mock_cursor.fetchone.side_effect = [None, _row(symbol="VOD.L", currency="GBP")]
+
+    await upsert_portfolio_holding(
+        user_id="user-1",
+        symbol="VOD.L",
+        instrument_type="stock",
+        quantity=Decimal("1000"),
+        average_cost=Decimal("110"),
+        currency="GBp",
+    )
+
+    params = mock_cursor.execute.call_args_list[-1].args[1]
+    assert (params[7], params[8]) == (Decimal("1.10"), "GBP")
+
+
+@pytest.mark.asyncio
+async def test_a_pence_cost_merges_into_a_pounds_holding_in_pounds(mock_cursor):
+    held = _row(symbol="VOD.L", currency="GBP", quantity=Decimal("1000"), average_cost=Decimal("1.20"))
+    mock_cursor.fetchone.side_effect = [held, held]
+
+    _, merge_details = await upsert_portfolio_holding(
+        user_id="user-1",
+        symbol="VOD.L",
+        instrument_type="stock",
+        quantity=Decimal("1000"),
+        average_cost=Decimal("110"),
+        currency="GBp",
+    )
+
+    assert merge_details["added"]["average_cost"] == "1.1"
+    assert merge_details["result"] == {"quantity": "2000", "average_cost": "1.15"}
+
+
+@pytest.mark.parametrize(
+    ("held", "added", "merged"),
+    [
+        ((Decimal("100"), Decimal("1.1")), (Decimal("50"), Decimal("1.3")), "1.16666666667"),
+        (
+            (Decimal("50000000"), Decimal("0.00001234")),
+            (Decimal("30000000"), Decimal("0.00002")),
+            "0.0000152125",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_merged_cost_keeps_twelve_significant_digits(mock_cursor, held, added, merged):
+    existing = _row(symbol="AAPL", currency="USD", quantity=held[0], average_cost=held[1])
+    mock_cursor.fetchone.side_effect = [existing, existing]
+
+    _, merge_details = await upsert_portfolio_holding(
+        user_id="user-1",
+        symbol="AAPL",
+        instrument_type="stock",
+        quantity=added[0],
+        average_cost=added[1],
+        currency="USD",
+    )
+
+    assert merge_details["result"]["average_cost"] == merged
+    assert mock_cursor.execute.call_args_list[-1].args[1][1] == Decimal(merged)
+
+
+@pytest.mark.asyncio
+async def test_an_update_in_pence_is_stored_in_pounds(mock_cursor):
+    mock_cursor.fetchone.side_effect = [_row(symbol="VOD.L", currency="GBP")]
+
+    await update_portfolio_holding(
+        "up-1", "user-1", average_cost=Decimal("120"), currency="GBp",
+    )
+
+    update = mock_cursor.execute.call_args_list[-1]
+    assert "UPDATE user_portfolios" in update.args[0]
+    assert update.args[1][:2] == (Decimal("1.20"), "GBP")
+
+
+@pytest.mark.asyncio
+async def test_a_pence_currency_without_its_cost_is_refused(mock_cursor):
+    mock_cursor.fetchone.side_effect = [_row(symbol="VOD.L", currency="GBP")]
+
+    with pytest.raises(HoldingCurrencyMismatch, match=r"^GBX is a cost in pence"):
+        await update_portfolio_holding("up-1", "user-1", currency="GBX")
+
+    assert not any("UPDATE" in c.args[0] for c in mock_cursor.execute.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_pence_currency_on_a_holding_the_caller_lacks_is_not_found(mock_cursor):
+    assert await update_portfolio_holding("up-1", "other-user", currency="GBX") is None
+
+    assert not any("UPDATE" in c.args[0] for c in mock_cursor.execute.call_args_list)
