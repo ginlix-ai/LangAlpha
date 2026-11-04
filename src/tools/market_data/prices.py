@@ -20,6 +20,7 @@ from .display import (
 from .quote_format import FRESHNESS_WORDS, build_live_stamp
 from .utils import finite_or_none, format_percentage
 from src.data_client import get_market_data_provider
+from src.data_client.fallbacks import unrecorded
 from src.data_client.freshness import Freshness, FreshnessLabel, measure_bars, measure_daily
 from src.data_client.normalize import series_in_progress, series_lineage
 from src.data_client.ginlix_data.directory import display_names
@@ -369,9 +370,10 @@ async def _live_stamp_for(
     user_id: Optional[str],
     asset_type: str = "stocks",
 ) -> Optional[str]:
-    """Best-effort `[Live: ...]` stamp; never raises."""
+    """Best-effort `[Live: ...]` stamp; never raises, and records no fallback."""
     try:
-        snaps = await provider.get_snapshots(symbols, asset_type=asset_type, user_id=user_id)
+        with unrecorded():
+            snaps = await provider.get_snapshots(symbols, asset_type=asset_type, user_id=user_id)
         asset_class = AssetClass.INDEX if asset_type == "indices" else AssetClass.EQUITY
         return build_live_stamp(snaps or [], asset_class=asset_class)
     except Exception:
@@ -571,14 +573,15 @@ No price data available for the specified period."""
                 # A Shanghai session is already on tomorrow's date in New York.
                 venue_today = (venue_local_time(ref) or datetime.now()).date().isoformat()
                 intraday_to = end_date or max(actual_end, venue_today)
-                intraday_bars, intraday_source, _ = await provider.get_intraday_with_source(
-                    symbol,
-                    interval=intraday_interval,
-                    from_date=actual_start,
-                    to_date=intraday_to,
-                    is_index=is_index,
-                    user_id=user_id,
-                )
+                with unrecorded():
+                    intraday_bars, intraday_source, _ = await provider.get_intraday_with_source(
+                        symbol,
+                        interval=intraday_interval,
+                        from_date=actual_start,
+                        to_date=intraday_to,
+                        is_index=is_index,
+                        user_id=user_id,
+                    )
                 if intraday_bars and len(intraday_bars) > 5:
                     # Normalize and sort oldest-first for charting
                     intraday_norm = _normalize_market_bars(

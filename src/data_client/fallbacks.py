@@ -62,6 +62,19 @@ def answered(symbol: str, what: str, served_by: str) -> None:
     ]
 
 
+@contextmanager
+def unrecorded() -> Iterator[None]:
+    """Keep the block's fallbacks out of the enclosing record.
+
+    For a side read the tool swallows: its misses are not the answer's.
+    """
+    token = _taken.set(None)
+    try:
+        yield
+    finally:
+        _taken.reset(token)
+
+
 def taken() -> list[Fallback]:
     """The fallbacks recorded so far in the enclosing block."""
     return list(_taken.get() or ())
