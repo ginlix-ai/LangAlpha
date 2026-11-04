@@ -83,6 +83,10 @@
             "period": {
               "type": "string"
             },
+            "note": {
+              "description": "Why a quarterly read returned no records; omitted otherwise.",
+              "type": "string"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -171,6 +175,10 @@
             "period": {
               "type": "string"
             },
+            "note": {
+              "description": "Why a quarterly read returned no records; omitted otherwise.",
+              "type": "string"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -257,6 +265,10 @@
               "type": "string"
             },
             "period": {
+              "type": "string"
+            },
+            "note": {
+              "description": "Why a quarterly read returned no records; omitted otherwise.",
               "type": "string"
             },
             "error": {

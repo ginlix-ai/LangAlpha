@@ -163,6 +163,12 @@ async def _from_tushare(disp: str, fetch, *, data_type: str, **extra):
     )
 
 
+#: Set by ``_add_quarterly_empty_note``; omitted unless a quarterly read is empty.
+_QUARTERLY_NOTE = described(
+    STR, "Why a quarterly read returned no records; omitted otherwise."
+)
+
+
 def _add_quarterly_empty_note(result: dict, period: str) -> None:
     if period == "quarter" and result.get("count") == 0:
         result["note"] = (
@@ -177,7 +183,12 @@ _OUT_GET_FINANCIAL_STATEMENTS = output_model(
     envelope_schema(
         ANY,
         frame=("symbol",),
-        echo={"data_type": STR, "statement_type": STR, "period": STR},
+        echo={
+            "data_type": STR,
+            "statement_type": STR,
+            "period": STR,
+            "note": _QUARTERLY_NOTE,
+        },
     ),
 )
 
@@ -274,7 +285,7 @@ _OUT_GET_FINANCIAL_RATIOS = output_model(
     envelope_schema(
         RECORDS_BY_KEY,
         frame=("symbol",),
-        echo={"data_type": STR, "period": STR},
+        echo={"data_type": STR, "period": STR, "note": _QUARTERLY_NOTE},
     ),
 )
 
@@ -349,7 +360,7 @@ _OUT_GET_GROWTH_METRICS = output_model(
     envelope_schema(
         RECORDS_BY_KEY,
         frame=("symbol",),
-        echo={"data_type": STR, "period": STR},
+        echo={"data_type": STR, "period": STR, "note": _QUARTERLY_NOTE},
     ),
 )
 
