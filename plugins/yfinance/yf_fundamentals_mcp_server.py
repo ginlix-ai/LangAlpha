@@ -138,12 +138,12 @@ def get_income_statement(
         quarterly: Quarterly if True, else annual.
 
     Returns:
-        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
-        {metric: {date: value}} — metric names are Yahoo-native (e.g.
-        "Total Revenue", "Net Income"); date keys are "YYYY-MM-DD" ordered newest
-        first; values are in the company's reporting currency (native units).
-        count is the number of metrics. On error: {error, detail, symbol} with
-        error not_found|upstream_error.
+        dict: {symbol, currency?, quarterly, count, data, source}. data is
+        Yahoo-native {metric: {date: value}}, metric names Yahoo-native
+        (e.g. "Total Revenue", "Net Income"); date keys "YYYY-MM-DD" newest
+        first; values in `currency`, the reporting currency (may differ from
+        the trading one), null where missing. count is the number of metrics.
+        On error: {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -188,12 +188,12 @@ def get_balance_sheet(ticker: str, quarterly: bool = True) -> _OUT_GET_BALANCE_S
         quarterly: Quarterly if True, else annual.
 
     Returns:
-        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
-        {metric: {date: value}} — metric names Yahoo-native (e.g. "Total Assets",
-        "Total Debt"); date keys "YYYY-MM-DD" ordered newest first; values in the
-        company's reporting currency (native units). count is the number of
-        metrics. On error: {error, detail, symbol} with error
-        not_found|upstream_error.
+        dict: {symbol, currency?, quarterly, count, data, source}. data is
+        Yahoo-native {metric: {date: value}}, metric names Yahoo-native
+        (e.g. "Total Assets", "Total Debt"); date keys "YYYY-MM-DD" newest
+        first; values in `currency`, the reporting currency (may differ from
+        the trading one), null where missing. count is the number of metrics.
+        On error: {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -238,12 +238,13 @@ def get_cash_flow(ticker: str, quarterly: bool = True) -> _OUT_GET_CASH_FLOW:
         quarterly: Quarterly if True, else annual.
 
     Returns:
-        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
-        {metric: {date: value}} — metric names Yahoo-native (e.g.
-        "Operating Cash Flow", "Capital Expenditure"); date keys "YYYY-MM-DD"
-        ordered newest first; values in the company's reporting currency (native
-        units). count is the number of metrics. On error:
-        {error, detail, symbol} with error not_found|upstream_error.
+        dict: {symbol, currency?, quarterly, count, data, source}. data is
+        Yahoo-native {metric: {date: value}}, metric names Yahoo-native
+        (e.g. "Operating Cash Flow", "Capital Expenditure"); date keys
+        "YYYY-MM-DD" newest first; values in `currency`, the reporting
+        currency (may differ from the trading one), null where missing. count
+        is the number of metrics. On error: {error, detail, symbol} with
+        error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -337,10 +338,11 @@ def get_earnings_dates(ticker: str) -> _OUT_GET_EARNINGS_DATES:
         ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
-        dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records {earnings_date, eps_estimate, reported_eps, surprise_pct} ordered
-        newest first (future dates included, with null reported_eps/surprise_pct);
-        earnings_date is exchange-local "YYYY-MM-DD HH:MM:SS". On error:
+        dict: {symbol, timezone, count, data, source}. data is a list of
+        Yahoo-native records {earnings_date, eps_estimate, reported_eps,
+        surprise_pct} ordered newest first (future dates included, with null
+        reported_eps/surprise_pct); earnings_date is "YYYY-MM-DD HH:MM:SS" in
+        `timezone`; surprise_pct is in percent (6.7 = 6.7%). On error:
         {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
@@ -377,8 +379,9 @@ def get_earnings_data(ticker: str) -> _OUT_GET_EARNINGS_DATA:
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records {quarter, epsestimate, epsactual, epsdifference, surprisepercent}
-        in Yahoo's order (oldest first); quarter is "YYYY-MM-DD". On error:
+        records {quarter, epsestimate, epsactual, epsdifference,
+        surprisepercent} in Yahoo's order (oldest first); quarter is
+        "YYYY-MM-DD"; surprisepercent is a fraction (0.067 = 6.7%). On error:
         {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
@@ -433,12 +436,13 @@ def compare_financials(
         quarterly: Quarterly if True, else annual.
 
     Returns:
-        dict: {statement_type, quarterly, count, data, source,
+        dict: {statement_type, quarterly, currencies, count, data, source,
         successful_tickers, errors?}. data is keyed by canonical symbol →
         Yahoo-native {metric: {date: value}} (date keys "YYYY-MM-DD" newest
-        first, reporting-currency native units, Yahoo-native metric names); count
-        is total metrics across symbols. Failed/empty symbols are omitted and
-        listed in errors as {error, detail, symbol}. On a bad statement_type:
+        first, Yahoo-native metric names, null where missing); currencies maps
+        each symbol to its values' currency; count is total metrics across
+        symbols. Failed/empty symbols are omitted and listed in errors as
+        {error, detail, symbol}. On a bad statement_type:
         {error: invalid_argument, detail, supported}.
     """
     if statement_type not in ("income", "balance", "cashflow"):
@@ -521,14 +525,15 @@ def compare_valuations(tickers: List[str]) -> _OUT_COMPARE_VALUATIONS:
 
     Returns:
         dict: {count, data, source, successful_tickers, errors?}. data is keyed
-        by canonical symbol → a dict of snake_case metrics: trailing_p_e,
-        forward_p_e, price_to_book, price_to_sales_trailing12_months,
-        enterprise_to_ebitda, enterprise_to_revenue, peg_ratio, dividend_yield,
-        payout_ratio, market_cap, enterprise_value, beta,
+        by canonical symbol → metrics: currency, financial_currency,
+        trailing_p_e, forward_p_e, price_to_book,
+        price_to_sales_trailing12_months, enterprise_to_ebitda,
+        enterprise_to_revenue, peg_ratio, dividend_yield (percent),
+        payout_ratio (fraction), market_cap, enterprise_value, beta,
         fifty_two_week_high/low, fifty_day_average, two_hundred_day_average,
-        current_price (nulls where absent); count is the number of symbols
-        returned. Failed symbols are omitted and listed in errors as
-        {error, detail, symbol}.
+        current_price. price_to_book, price_to_sales_*, enterprise_* are null
+        when currency differs from financial_currency. Failed symbols are
+        omitted, listed in errors as {error, detail, symbol}.
     """
     valuation_keys = [
         "trailingPE", "forwardPE", "priceToBook", "priceToSalesTrailing12Months",
@@ -613,9 +618,10 @@ def get_multiple_stocks_earnings(
         dict: {count, data, source, successful_tickers, errors?}. data is keyed
         by canonical symbol → {count, earnings}; each earnings is a list of
         Yahoo-native records {quarter, epsestimate, epsactual, epsdifference,
-        surprisepercent} in Yahoo's order (oldest first), quarter "YYYY-MM-DD".
-        Top-level count is total earnings records across symbols. Failed/empty
-        symbols are omitted and listed in errors as {error, detail, symbol}.
+        surprisepercent} in Yahoo's order (oldest first), quarter
+        "YYYY-MM-DD", surprisepercent a fraction (0.067 = 6.7%). Top-level
+        count is total earnings records across symbols. Failed/empty symbols
+        are omitted and listed in errors as {error, detail, symbol}.
     """
     data: dict[str, dict] = {}
     errors: list[dict] = []

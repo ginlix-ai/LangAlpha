@@ -370,8 +370,7 @@ _OUT_GET_DIVIDENDS_AND_SPLITS = output_model(
 
 @mcp.tool()
 def get_dividends_and_splits(ticker: str) -> _OUT_GET_DIVIDENDS_AND_SPLITS:
-    """Full dividend and stock-split history for one ticker. Use for
-    total-return, yield, and adjustment analysis.
+    """Full dividend and stock-split history for one ticker.
 
     Args:
         ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
@@ -380,11 +379,11 @@ def get_dividends_and_splits(ticker: str) -> _OUT_GET_DIVIDENDS_AND_SPLITS:
         dict: {symbol, currency, timezone, count, data, source,
         dividend_count, split_count}. data is
         {dividends: [{date, amount}], splits: [{date, ratio}]}, each ascending
-        (oldest first); date is exchange-local "YYYY-MM-DD", amounts in
-        `currency` major units (minor-unit quotes like GBp are converted, e.g.
-        pence→pounds), ratio is the split factor (e.g. 4.0 = 4-for-1);
-        count is dividends + splits. On error: {error, detail, symbol} with
-        error upstream_error.
+        (oldest first); date is exchange-local "YYYY-MM-DD"; amount is per
+        share as paid, in `currency` major units (minor-unit quotes like GBp
+        are converted), not adjusted for later splits; ratio is the split
+        factor (4.0 = 4-for-1); count is dividends + splits. On error:
+        {error, detail, symbol} — not_found | upstream_error.
     """
     symbol, yf_symbol, currency = boundary(ticker)
     try:
@@ -439,10 +438,11 @@ def get_multiple_stocks_dividends(tickers: List[str]) -> _OUT_GET_MULTIPLE_STOCK
         dict: {count, data, source, errors?}. data is keyed by canonical symbol
         → {count, currency?, dividends}; each dividends is a list of
         {date, amount} ascending (oldest first), date exchange-local
-        "YYYY-MM-DD", amounts in that symbol's major currency units (minor-unit
-        quotes like GBp are converted, e.g. pence→pounds); count is the total
-        dividends across symbols. Failed symbols are omitted from data and listed
-        in errors as {error, detail, symbol}.
+        "YYYY-MM-DD", amount per share as paid, in that symbol's major
+        currency units (minor-unit quotes like GBp are converted), not
+        adjusted for later splits; count is the total dividends across
+        symbols. Failed symbols are omitted from data and listed in errors as
+        {error, detail, symbol}.
     """
     per_ticker: dict[str, Any] = {}
     errors: list[dict] = []

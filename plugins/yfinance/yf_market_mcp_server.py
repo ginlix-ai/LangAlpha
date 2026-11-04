@@ -116,11 +116,11 @@ def get_market_status(market: str = "US") -> _OUT_GET_MARKET_STATUS:
         market: Market code (see above; default "US").
 
     Returns:
-        dict: {market, count, data, source}. data is {status, summary}, both
-        Yahoo-native: status holds open/close times and timezone fields,
-        summary is keyed by exchange/index with price and change fields. count
-        is 1 (one status snapshot). On error: {error, detail} with error
-        upstream_error.
+        dict: {market, timezone, count, data, source}. data is
+        {status, summary}, both Yahoo-native: status holds open/close times
+        ("YYYY-MM-DD HH:MM:SS" in `timezone`) and timezone fields, summary is
+        keyed by exchange/index with price and change fields. count is 1. On
+        error: {error, detail} with error upstream_error.
     """
     try:
         m = yf.Market(market)
@@ -156,23 +156,23 @@ def screen_stocks(
     sort_asc: bool = False,
     count: int = 25,
 ) -> _OUT_SCREEN_STOCKS:
-    """Screen equities with custom Yahoo filters — find stocks matching
-    numeric/categorical criteria.
+    """Screen equities with Yahoo filters on numeric/categorical criteria.
     Each filter is {operator, operands}; operators: gt, lt, gte, lte, eq, btwn,
-    is-in, and, or. E.g. {"operator": "gt", "operands": ["percentchange", 3]},
-    or nested with and/or. Multiple top-level filters are auto-wrapped in AND.
+    is-in, and, or (nest with and/or; top-level filters are AND-ed). E.g.
+    {"operator": "gt", "operands": ["percentchange", 3]}.
 
     Args:
         filters: List of filter dicts (see above).
         sort_field: Field to sort by (default "percentchange").
-        sort_asc: Ascending if True (default False = descending).
+        sort_asc: Ascending if True (default False).
         count: Max rows (default 25, max 250).
 
     Returns:
         dict: {count, data, source}. data is the Yahoo-native screen result
         {quotes: [...], ...}; quotes are raw Yahoo quote dicts ordered by
-        sort_field, count is the number returned. On error: {error, detail} —
-        invalid_argument (names the bad field/operator) | upstream_error.
+        sort_field, plus stale_price? (true: last trade over 18h before the
+        result's newest quote). On error: {error, detail} —
+        invalid_argument | upstream_error.
     """
     try:
         if len(filters) == 1:
@@ -258,17 +258,20 @@ _OUT_GET_EARNINGS_CALENDAR = output_model(
 def get_earnings_calendar(start: str, end: str) -> _OUT_GET_EARNINGS_CALENDAR:
     """Earnings announcements scheduled within a date range. Use to find which
     companies report in a window.
+    US listings only; at most 100 rows.
 
     Args:
         start: Start date "YYYY-MM-DD".
-        end: End date "YYYY-MM-DD".
+        end: End date "YYYY-MM-DD", inclusive.
 
     Returns:
-        dict: {start, end, count, data, source}. data is a list of records
-        {symbol, company, marketcap, event_start_date, timing, eps_estimate,
-        reported_eps, surprise_pct}, in Yahoo's native order; event_start_date
-        is "YYYY-MM-DD HH:MM:SS" exchange-local. Field names are Yahoo-native.
-        On error: {error, detail} with error upstream_error.
+        dict: {start, end, timezone, count, data, source, truncated?}. data is
+        a list of records {symbol, company (may be null), marketcap,
+        event_start_date, timing, eps_estimate, reported_eps, surprise_pct},
+        largest marketcap first; event_start_date is "YYYY-MM-DD HH:MM:SS" in
+        `timezone`. Field names are Yahoo-native. truncated: true if a size
+        cap cut the smallest-cap rows. On error: {error, detail} —
+        invalid_argument | upstream_error.
     """
     try:
         first = date.fromisoformat(start)

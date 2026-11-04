@@ -301,8 +301,9 @@ def get_news(ticker: str, count: int = 10, tab: str = "news") -> _OUT_GET_NEWS:
         dict: {symbol, count, data, source}. data is a list of raw Yahoo-native
         article dicts in Yahoo's order (most recent first); each has nested
         `content` with title, publisher, url, and publish-date fields (exact
-        shape is Yahoo-native and varies). Empty data means no articles. On
-        error: {error, detail, symbol} with error upstream_error.
+        shape is Yahoo-native and varies), and may carry relatedTickers; check
+        it before treating an item as about this ticker. Empty data means no
+        articles. On error: {error, detail, symbol} with error upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -368,10 +369,11 @@ def get_upgrades_downgrades(ticker: str) -> _OUT_GET_UPGRADES_DOWNGRADES:
         ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
-        dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records {gradedate, firm, tograde, fromgrade, action} in Yahoo's order
-        (most recent first); gradedate is "YYYY-MM-DD". Empty data means none
-        reported. On error: {error, detail, symbol} with error upstream_error.
+        dict: {symbol, timezone, count, data, source}. data is a list of
+        Yahoo-native records {gradedate, firm, tograde, fromgrade, action} in
+        Yahoo's order (most recent first); gradedate is "YYYY-MM-DD HH:MM:SS"
+        in `timezone`. Empty data means none reported. On error:
+        {error, detail, symbol} with error upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -468,18 +470,20 @@ _OUT_GET_EARNINGS_ESTIMATES = output_model(
 
 @mcp.tool()
 def get_earnings_estimates(ticker: str) -> _OUT_GET_EARNINGS_ESTIMATES:
-    """Forward EPS estimates by period. Use for consensus EPS for coming
-    quarters and years.
+    """Forward EPS estimates by period.
 
     Args:
         ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records, one per period {period (0q, +1q, 0y, +1y), numberofanalysts,
-        avg, low, high, yearagoeps, growth} in Yahoo's period order. Empty data
-        means none published. On error: {error, detail, symbol} with error
-        upstream_error.
+        records, one per period {period (0q, +1q, 0y, +1y), period_end?,
+        numberofanalysts, avg, low, high, yearagoeps, growth,
+        year_ago_stale?} in Yahoo's period order; growth is a fraction (0.07
+        = 7%). year_ago_stale: true when the year-ago basis is out of date;
+        yearagoeps and growth are then null and period_end may still name
+        the period just reported. Empty data means none published. On
+        error: {error, detail, symbol} with error upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -509,10 +513,13 @@ def get_revenue_estimates(ticker: str) -> _OUT_GET_REVENUE_ESTIMATES:
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records, one per period {period (0q, +1q, 0y, +1y), numberofanalysts,
-        avg, low, high, yearagorevenue, growth} in Yahoo's period order. Empty
-        data means none published. On error: {error, detail, symbol} with error
-        upstream_error.
+        records, one per period {period (0q, +1q, 0y, +1y), period_end?,
+        numberofanalysts, avg, low, high, yearagorevenue, growth,
+        year_ago_stale?} in Yahoo's period order; growth is a fraction (0.07
+        = 7%). year_ago_stale: true when the year-ago basis is out of date;
+        yearagorevenue and growth are then null and period_end may still
+        name the period just reported. Empty data means none published. On
+        error: {error, detail, symbol} with error upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -536,18 +543,20 @@ _OUT_GET_GROWTH_ESTIMATES = output_model(
 
 @mcp.tool()
 def get_growth_estimates(ticker: str) -> _OUT_GET_GROWTH_ESTIMATES:
-    """Growth estimates for the stock vs. industry, sector, and index. Use to
-    compare a name's growth outlook to its peers.
+    """Growth estimates for the stock vs. the index.
 
     Args:
         ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records, one per period {period (0q, +1q, 0y, +1y, +5y, -5y), stock,
-        industry, sector, index}, each a growth rate, in Yahoo's period order.
-        Empty data means none published. On error: {error, detail, symbol} with
-        error upstream_error.
+        records, one per period {period (0q, +1q, 0y, +1y, LTG), period_end?,
+        stocktrend, indextrend, year_ago_stale?} in Yahoo's period order; the
+        trends are fractions (0.07 = 7%). year_ago_stale: true when the
+        year-ago basis is out of date; stocktrend is then null and period_end
+        may still name the period just reported. Empty data means none
+        published. On error: {error, detail, symbol} with error
+        upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -577,9 +586,10 @@ def get_major_holders(ticker: str) -> _OUT_GET_MAJOR_HOLDERS:
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records {breakdown, value} where breakdown is the label and value the
-        percentage or count. Empty data means unavailable. On error:
-        {error, detail, symbol} with error upstream_error.
+        records {breakdown, value}: value is a fraction (0.66 = 66%) for
+        *PercentHeld rows and a count for *Count rows. Empty data means
+        unavailable. On error: {error, detail, symbol} with error
+        upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
