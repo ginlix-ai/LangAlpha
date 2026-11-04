@@ -636,6 +636,18 @@ class TestDateBounds:
 
 class TestGetShortData:
     @pytest.mark.asyncio
+    async def test_a_listing_outside_the_us_is_refused(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        fetch = AsyncMock()
+        with patch.object(mod._ginlix, "ensure", new=AsyncMock(return_value=True)), \
+             patch.object(mod._ginlix, "fetch_short_data", new=fetch):
+            result = await mod.get_short_data("0700.HK")
+
+        assert_error(result, "invalid_argument", symbol="0700.HK")
+        fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_ginlix_client(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 

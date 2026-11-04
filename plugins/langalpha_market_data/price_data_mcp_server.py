@@ -698,7 +698,17 @@ async def get_short_data(
         short_volume_ratio is a percent (43.3 = 43.3%). Partial failures appear
         in an `errors` map. On error: {error: <code>, detail}.
     """
-    display, legacy, _currency, timezone, _ref = _resolve(symbol)
+    display, legacy, _currency, timezone, ref = _resolve(symbol)
+
+    # FINRA's figures cover US listings only, so another market's listing would
+    # read as one with no short activity. A venue the protocol does not know stays.
+    if ref is not None and market_of(ref) not in ("us", "other"):
+        return make_error(
+            "invalid_argument",
+            f"Short data covers US listings only; {display} is not one.",
+            symbol=display,
+            data_type=data_type,
+        )
 
     if not await _ginlix.ensure():
         return make_error(

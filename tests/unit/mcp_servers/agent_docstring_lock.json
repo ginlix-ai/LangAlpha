@@ -536,6 +536,8 @@
     "doc_lines": [
       "List an underlying's options contracts; use to find contract tickers.",
       "",
+      "US-listed underlyings only; a listing on a known non-US venue is refused.",
+      "",
       "Args:",
       "    underlying_ticker: Underlying stock ticker, e.g. \"AAPL\".",
       "    contract_type: \"call\" or \"put\" (default: both).",
