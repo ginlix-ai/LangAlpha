@@ -238,6 +238,25 @@ class TestCnDailyBranch:
         assert record.exc_info is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "start, end, detail",
+        [
+            ("2025-01-31", "2025-01-01", "start is after end"),
+            ("01/01/2025", None, "start_date must be YYYY-MM-DD, not '01/01/2025'"),
+        ],
+    )
+    async def test_bad_bounds_are_refused_before_tushare_is_asked(self, start, end, detail):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        daily = AsyncMock(side_effect=AssertionError("tushare was asked"))
+        with patch.object(mod._cn, "get_daily", new=daily):
+            result = await mod.get_stock_data("600519.SH", start_date=start, end_date=end)
+
+        assert_error(result, "invalid_argument", symbol="600519.SH")
+        assert result["detail"] == detail
+        daily.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_us_symbol_skips_the_cn_daily_route(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 

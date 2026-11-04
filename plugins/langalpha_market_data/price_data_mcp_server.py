@@ -85,10 +85,14 @@ except ModuleNotFoundError:  # imported as a package module (tests)
     )
 
 from mcp_servers._dates import (
+    FROM_TO,
     NEW_YORK,
+    Bounds,
+    DateBoundError,
     commodity_daily_days,
     daily_days,
     intraday_window,
+    whole_daily_days,
 )
 from mcp_servers._schemas import (
     BAR_LABELS,
@@ -220,6 +224,7 @@ async def _fetch_stock_series(
     interval: str,
     start_date: Optional[str],
     end_date: Optional[str],
+    names: Bounds = ("start_date", "end_date"),
 ) -> tuple[Optional[dict], Optional[dict]]:
     """Fetch stock OHLCV: ginlix-data (CN daily, then US) → FMP fallback (global).
 
@@ -227,14 +232,15 @@ async def _fetch_stock_series(
     The success kwargs carry canonical ``symbol``/``interval``, ``currency``,
     ``timezone``, ``data`` (ascending), the resolved ``source``, and for
     CN and HK listings the local-language ``name``, whichever source served
-    the bars.
+    the bars. *names* are the caller's names for the two bounds, which a
+    refusal quotes.
     """
     # A bare ticker is the listing (COMP the stock, not the Nasdaq Composite);
     # only an index spelling (^GSPC, I:SPX, SPX.INDEX) asks for index bars.
     resolved = _resolve(symbol, asset_class=AssetClass.EQUITY)
     (name, _), (ok, err) = await asyncio.gather(
         _names.display_names(resolved[1]),
-        _fetch_stock_bars(resolved, interval, start_date, end_date),
+        _fetch_stock_bars(resolved, interval, start_date, end_date, names),
     )
     if ok is not None:
         ok.update(_series_labels(ok, resolved[4], ok["interval"]))
@@ -248,6 +254,7 @@ async def _fetch_stock_bars(
     interval: str,
     start_date: Optional[str],
     end_date: Optional[str],
+    names: Bounds,
 ) -> tuple[Optional[dict], Optional[dict]]:
     display, legacy, currency, timezone, ref = resolved
     canonical, err = _resolve_interval(interval, _STOCK_INTERVALS, symbol=display)
@@ -258,7 +265,7 @@ async def _fetch_stock_bars(
     if intraday and (not start_date or not end_date):
         return None, make_error(
             "invalid_argument",
-            "start_date and end_date are required for intraday intervals "
+            f"{names[0]} and {names[1]} are required for intraday intervals "
             "(YYYY-MM-DD or YYYY-MM-DD HH:MM).",
             symbol=display,
             interval=canonical,
@@ -267,7 +274,14 @@ async def _fetch_stock_bars(
     # CN A-shares, daily bars only: ginlix-data's minute history is short, so
     # CN intraday stays on the existing fallbacks.
     if intraday or symbol_market(legacy) != "cn":
-        return await _fetch_chain_bars(resolved, canonical, start_date, end_date)
+        return await _fetch_chain_bars(resolved, canonical, start_date, end_date, names)
+
+    # A caller's bad bounds are refused here, before tushare is asked, so they
+    # never read as a tushare failure.
+    try:
+        daily_days(start_date, end_date, names)
+    except DateBoundError as e:
+        return None, error_from_exception(e, "FMP fetch failed.", symbol=display, interval=canonical)
 
     # The window runs back from the end the caller gave, else from today.
     cn_start = start_date
@@ -300,10 +314,10 @@ async def _fetch_stock_bars(
                 # window (a refetch that failed), not a cap cutting either end.
                 "incomplete": fetched.truncated,
             }, None
-        return await _fetch_chain_bars(resolved, canonical, start_date, end_date)
+        return await _fetch_chain_bars(resolved, canonical, start_date, end_date, names)
     # A failed tushare read is not a miss: the chain's rows name it, and with
     # none the read is an error.
-    ok, err = await _fetch_chain_bars(resolved, canonical, start_date, end_date)
+    ok, err = await _fetch_chain_bars(resolved, canonical, start_date, end_date, names)
     if ok is not None and ok["data"]:
         return {**ok, "fallback_from": "tushare"}, None
     if err is not None:
@@ -321,10 +335,22 @@ async def _fetch_chain_bars(
     canonical: str,
     start_date: Optional[str],
     end_date: Optional[str],
+    names: Bounds,
 ) -> tuple[Optional[dict], Optional[dict]]:
     """Bars from ginlix-data's US tier, else FMP, in the shape of ``_fetch_stock_bars``."""
     display, legacy, currency, timezone, ref = resolved
     intraday = canonical not in DAILY_INTERVALS
+
+    # A daily window is read here, in the caller's words, before the US tier
+    # is asked: that tier reads only a whole window, so an undated read gets
+    # the one FMP would serve it and reaches the same source as a dated one.
+    if not intraday:
+        try:
+            start_date, end_date = whole_daily_days(start_date, end_date, names)
+        except DateBoundError as e:
+            return None, error_from_exception(
+                e, "FMP fetch failed.", symbol=display, interval=canonical
+            )
 
     # The legacy spelling of a family index is bare (GSPC), which every vendor
     # reads as a stock ticker: FMP needs ^GSPC, Massive its I:SPX index ticker.
@@ -390,14 +416,14 @@ async def _fetch_chain_bars(
     places = minor_unit_places(legacy)
     window = None
     try:
-        # A bound FMP would drop or a reversed window is refused here, as the
-        # hosted tools refuse it (mcp_servers/_dates.py). The ginlix-data tier
-        # above sends both on to this read rather than answering them.
+        # An intraday bound FMP would drop, or a reversed window, is refused
+        # here, as the hosted tools refuse it (mcp_servers/_dates.py). The
+        # ginlix-data tier above sends both on to this read rather than
+        # answering them.
         if canonical in DAILY_INTERVALS:
-            lo, hi = daily_days(start_date, end_date)
-            rows = await client.get_stock_price(fmp_symbol, from_date=lo, to_date=hi)
+            rows = await client.get_stock_price(fmp_symbol, from_date=start_date, to_date=end_date)
         else:
-            window = intraday_window(start_date, end_date, timezone)
+            window = intraday_window(start_date, end_date, timezone, names=names)
             rows = await client.get_intraday_chart(
                 fmp_symbol, canonical, from_date=window.from_day, to_date=window.to_day
             )
@@ -535,7 +561,7 @@ async def get_asset_data(
         )
 
     if at == "stock":
-        env, err = await _fetch_stock_series(symbol, interval, from_date, to_date)
+        env, err = await _fetch_stock_series(symbol, interval, from_date, to_date, FROM_TO)
         if err is not None:
             return err
         env["asset_type"] = at
