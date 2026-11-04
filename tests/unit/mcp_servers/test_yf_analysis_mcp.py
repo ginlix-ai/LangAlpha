@@ -354,10 +354,32 @@ class TestGetNews:
         mock_search.side_effect = Exception("down")
         assert_ok_envelope(get_news("AAPL"), count=0)
 
-    def test_exception(self, mock_ticker):
+    def test_exception(self, mock_ticker, mock_search):
         mock_ticker.get_news.side_effect = Exception("API error")
         result = get_news("AAPL")
         assert_error(result, "upstream_error")
+
+    def test_raising_primary_falls_back_to_search(self, mock_ticker, mock_search):
+        mock_ticker.get_news.side_effect = Exception("withdrawn endpoint")
+        mock_search.return_value.news = [
+            {"uuid": "abc", "title": "Headline", "providerPublishTime": 1700000000}
+        ]
+        result = get_news("AAPL", count=5)
+        assert_ok_envelope(result, symbol="AAPL", count=1)
+        assert result["data"][0]["content"]["title"] == "Headline"
+
+    def test_press_releases_error_is_not_masked_by_search(
+        self, mock_ticker, mock_search
+    ):
+        mock_ticker.get_news.side_effect = Exception("withdrawn endpoint")
+        assert_error(get_news("AAPL", tab="press releases"), "upstream_error")
+        mock_search.assert_not_called()
+
+    def test_unknown_tab_error_is_not_masked_by_search(self, mock_ticker, mock_search):
+        mock_ticker.get_news.side_effect = ValueError("Invalid tab name")
+        mock_search.return_value.news = [{"uuid": "abc", "title": "General headline"}]
+        assert_error(get_news("AAPL", tab="press_releases"), "upstream_error")
+        mock_search.assert_not_called()
 
 
 # --- get_analyst_price_targets ---
