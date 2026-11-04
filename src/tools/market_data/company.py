@@ -577,7 +577,10 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
     # US: snapshot/session label + ET clock. Non-US: phase from the exchange
     # calendar + exchange-local clock (the US-Eastern phase is meaningless for a
     # foreign listing; snapshot.market_status is US-centric).
-    status_line = _market_status_line(inp.ref, _is_us_clock(inp.ref), label, current_time_et)
+    status_line = _market_status_line(
+        inp.ref, _is_us_clock(inp.ref), label, current_time_et,
+        stamp.get("as_of_local") if stamp.get("printed") else None,
+    )
     if status_line:
         out.append(status_line)
     out.append("")

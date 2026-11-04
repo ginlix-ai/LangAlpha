@@ -6,7 +6,7 @@ label read N/A), its actual EPS is on the consensus basis, and the last
 after-hours trade headlined a closed market unlabeled.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -262,6 +262,12 @@ def test_a_pence_listing_headline_price_matches_its_quote_block():
     text = _company_text(_inputs("VOD.L", quote=quote, profile={"price": 1.172}))
     assert "Current Price: £1.1720" in text
     assert "**Price:** £1.1720" in text
+
+
+def test_a_foreign_quote_says_when_its_price_printed():
+    close = int(datetime(2026, 7, 1, 7, tzinfo=timezone.utc).timestamp() * 1000)
+    text = _quote_text("600519.SH", snapshot={"price": 1446.44, "as_of": close, "tier": "realtime"})
+    assert "| **Price as of:** 2026-07-01 15:00:00 UTC+8" in text
 
 
 def test_a_us_quote_keeps_two_places():

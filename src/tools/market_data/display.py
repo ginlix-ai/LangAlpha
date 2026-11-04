@@ -216,14 +216,17 @@ def _market_status_line(
     is_us: bool,
     us_label: str,
     us_clock_et: datetime,
+    printed_at: Optional[str] = None,
 ) -> Optional[str]:
     """The ``**Market Status:** <phase> | **As of:** <clock>`` quote line.
 
     US listings keep the snapshot/session-driven ``us_label`` and the ET clock
     (byte-identical to legacy output). Non-US listings derive the phase from the
     exchange calendar and stamp the exchange-local clock (e.g. HKT), since the
-    US-Eastern phase is meaningless for them. Returns ``None`` when a non-US ref
-    is missing or its calendar can't be read, so the caller omits the line rather
+    US-Eastern phase is meaningless for them, then *printed_at*, the venue-local
+    time the shown price printed: the clock is when it was read, and a closed or
+    delayed venue's price is older. Returns ``None`` when a non-US ref is
+    missing or its calendar can't be read, so the caller omits the line rather
     than asserting a wrong phase.
     """
     if is_us:
@@ -236,4 +239,5 @@ def _market_status_line(
     if phase is None or local is None:
         return None
     label = _PHASE_LABELS.get(phase, phase.value.replace("_", " ").title())
-    return f"**Market Status:** {label} | **As of:** {local:%H:%M} {zone_label(local)}"
+    line = f"**Market Status:** {label} | **As of:** {local:%H:%M} {zone_label(local)}"
+    return f"{line} | **Price as of:** {printed_at}" if printed_at else line
