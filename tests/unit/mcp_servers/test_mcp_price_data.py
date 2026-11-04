@@ -387,6 +387,26 @@ class TestGetAssetData:
         client.get_forex_price.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("symbol", "asset_type", "method", "fmp_symbol"),
+        [
+            ("BTC-USD", "crypto", "get_crypto_price", "BTCUSD"),
+            ("EURUSD=X", "forex", "get_forex_price", "EURUSD"),
+            ("EUR-USD", "forex", "get_forex_price", "EURUSD"),
+        ],
+    )
+    async def test_the_spelling_it_answers_with_reaches_fmp_as_fmps(
+        self, symbol, asset_type, method, fmp_symbol,
+    ):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            await mod.get_asset_data(symbol, asset_type=asset_type)
+
+        assert getattr(client, method).await_args.args[0] == fmp_symbol
+
+    @pytest.mark.asyncio
     async def test_stock_routes_through_stock_path(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 

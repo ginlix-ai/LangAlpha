@@ -355,7 +355,7 @@ def measure_daily(
     moment = _now(now)
     expected_date = date.fromisoformat(clock.expected_latest_daily_date(moment))
     actual_date = datetime.fromtimestamp(actual / 1000, tz=timezone.utc).astimezone(clock.tz).date()
-    if actual_date > moment.astimezone(clock.tz).date():
+    if actual_date > date.fromisoformat(clock.current_trading_date(moment)):
         # A session the venue has not reached yet: a mis-stamped bar, not a current one.
         return _unmeasured(actual, source, clock.is_closed(moment), "1day")
 

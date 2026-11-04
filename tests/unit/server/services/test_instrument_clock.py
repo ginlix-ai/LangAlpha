@@ -247,3 +247,36 @@ class TestHandRolledClocks:
         assert clock.is_closed(saturday) is True
         monday = datetime(2026, 4, 20, 12, 0, tzinfo=ZoneInfo("UTC"))
         assert clock.is_closed(monday) is False
+
+
+def test_a_globex_window_from_today_starts_at_local_midnight():
+    """Globex opened Sunday 17:00 Chicago, but a window from Monday starts at
+    Monday's midnight, so its first bar is no coverage gap."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    from zoneinfo import ZoneInfo
+
+    from src.data_client import instrument_clock as ic
+
+    ct = ZoneInfo("America/Chicago")
+    clock = ic.clock_for("GC=F")
+    monday = datetime(2026, 11, 9, 10, 0, tzinfo=ct)
+    with patch.object(ic, "datetime", wraps=datetime) as fake:
+        fake.now.side_effect = lambda tz=None: monday.astimezone(tz or timezone.utc)
+        open_ms = clock.today_market_open_ms()
+    assert open_ms == int(datetime(2026, 11, 9, 0, 0, tzinfo=ct).timestamp() * 1000)
+
+
+def test_on_sunday_evening_the_globex_window_opens_with_mondays_session():
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    from zoneinfo import ZoneInfo
+
+    from src.data_client import instrument_clock as ic
+
+    ct = ZoneInfo("America/Chicago")
+    sunday = datetime(2026, 11, 8, 17, 30, tzinfo=ct)
+    with patch.object(ic, "datetime", wraps=datetime) as fake:
+        fake.now.side_effect = lambda tz=None: sunday.astimezone(tz or timezone.utc)
+        open_ms = ic.clock_for("GC=F").today_market_open_ms()
+    assert open_ms == int(datetime(2026, 11, 8, 17, 0, tzinfo=ct).timestamp() * 1000)

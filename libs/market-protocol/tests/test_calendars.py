@@ -540,3 +540,44 @@ class TestRegistry:
         assert (opened.hour, opened.minute) == (9, 30)
         assert (closed.hour, closed.minute) == (16, 0)
         assert cal.session_open_ms(date(2026, 7, 4)) is None  # Saturday
+
+
+class TestGlobex:
+    """CME Globex sessions open at 17:00 Chicago on the eve of their date."""
+
+    CT = ZoneInfo("America/Chicago")
+
+    def at(self, text):
+        return datetime.fromisoformat(text).replace(tzinfo=self.CT)
+
+    def test_the_week_opens_sunday_evening_for_mondays_session(self):
+        cal = get_calendar("GLBX")
+        sunday = self.at("2026-11-08 17:01")
+        assert cal.phase_at(sunday) == MarketPhase.REGULAR
+        assert cal.latest_trading_date(sunday) == date(2026, 11, 9)
+        # Vendors date Monday's bar at midnight; until then Friday's is the newest.
+        assert cal.expected_latest_daily_date(sunday) == date(2026, 11, 6)
+        assert cal.phase_at(self.at("2026-11-08 16:59")) == MarketPhase.CLOSED
+
+    def test_the_daily_halt_is_closed_and_the_evening_trades_the_next_date(self):
+        cal = get_calendar("GLBX")
+        assert cal.phase_at(self.at("2026-11-09 16:30")) == MarketPhase.CLOSED
+        assert cal.seconds_until_next_open(self.at("2026-11-09 16:30")) == 1800
+        evening = self.at("2026-11-09 17:30")
+        assert cal.phase_at(evening) == MarketPhase.REGULAR
+        assert cal.latest_trading_date(evening) == date(2026, 11, 10)
+
+    def test_the_weekend_holds_until_sunday_evening(self):
+        cal = get_calendar("GLBX")
+        friday = self.at("2026-11-06 16:30")
+        assert cal.phase_at(friday) == MarketPhase.CLOSED
+        assert cal.seconds_until_next_open(friday) == (48 + 0.5) * 3600
+
+
+def test_every_venue_dates_its_bars_in_its_calendars_zone():
+    # Vendors' daily stamps are restamped in the venue's zone and freshness
+    # reads them in the calendar's; two zones would date a day apart.
+    from market_protocol.symbology import _MICS
+
+    for info in _MICS.values():
+        assert info.tz == get_calendar(info.calendar_id).tz.key, info

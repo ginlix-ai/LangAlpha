@@ -71,6 +71,15 @@ class TestFormatQuoteLine:
         line = format_quote_line(_snap(), prev_price=232.50)
         assert "+0.41% since last check" in line
 
+    def test_a_coin_reads_its_utc_day_and_money_volume(self):
+        # Yahoo and FMP close a coin's day at 00:00 UTC and report its volume
+        # in dollars, not coins; the NYSE session never applies.
+        snap = _snap(symbol="BTC-USD", last_trade_price=76810.3281, change_percent=-0.68,
+                     volume=23_755_311_104)
+        line = format_quote_line(snap, at=_FIXED_ET)
+        assert "BTC-USD  $76,810.3281  -0.68% since 00:00 UTC  vol $23.76B" in line
+        assert "today" not in line and "(post" not in line and "closed" not in line
+
     def test_missing_fields_graceful(self):
         line = format_quote_line({"symbol": "XYZ"})
         assert line.startswith("XYZ")

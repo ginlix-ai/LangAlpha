@@ -85,6 +85,12 @@ class TestFmtPrice:
         assert fmt_price(4521.5, DisplaySpec("CNY", 2, bare=True)) == "4521.50"
         assert fmt_price(-12.25, DisplaySpec("USD", 2, bare=True)) == "-12.25"
 
+    def test_a_trimmed_spec_drops_zeros_past_the_cent(self):
+        coin = DisplaySpec("USD", 8, trim=True)
+        assert fmt_price(76810.3281, coin, group=True) == "$76,810.3281"
+        assert fmt_price(0.00000464, coin) == "$0.00000464"
+        assert fmt_price(2260.0, coin) == "$2260.00"
+
     def test_none_value(self):
         assert fmt_price(None, "USD") == "N/A"
         assert fmt_price(None, "GBP") == "N/A"

@@ -9,11 +9,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from src.data_client.normalize import build_series, minor_unit_places, scale_snapshot_prices
+from src.data_client.normalize import (
+    build_series,
+    minor_unit_places,
+    scale_snapshot_prices,
+    symbol_timezone,
+)
 from market_protocol import InstrumentRef, Series, to_canonical, to_major_units
 from market_protocol.calendars import get_calendar, session_bounds
 from market_protocol.enums import AssetClass
@@ -113,8 +118,14 @@ def _fetch_history(
     start: str | None,
     end: str | None,
     places: int = 0,
+    day_tz: ZoneInfo | None = None,
 ) -> list[dict[str, Any]]:
-    """Synchronous helper — called via ``asyncio.to_thread``."""
+    """Synchronous helper — called via ``asyncio.to_thread``.
+
+    *day_tz* restamps each daily bar at midnight there: Yahoo stamps a day at
+    midnight in its own exchange zone, London for FX, which in summer is the
+    previous evening in the UTC an FX date is read in.
+    """
     ticker = yahoo_ticker(symbol)
 
     # auto_adjust=False: Yahoo's Close is split-adjusted only (dividends live
@@ -137,6 +148,8 @@ def _fetch_history(
     # A NaN-priced row (halted session, yfinance gap padding) would propagate
     # NaN into the cache and render as "nan" downstream — drop it here.
     df = df.copy().dropna(subset=["Open", "High", "Low", "Close"])
+    if day_tz is not None:
+        df.index = [datetime.combine(i.date(), time(), day_tz) for i in df.index]
     return [_normalize_bar(idx, row, places) for idx, row in df.iterrows()]
 
 
@@ -276,7 +289,7 @@ class YFinanceDataSource:
         api_symbol = self._api_symbol(symbol, is_index)
         places = minor_unit_places(symbol)
         return await asyncio.to_thread(
-            _fetch_history, api_symbol, "1d", from_date, to_date, places
+            _fetch_history, api_symbol, "1d", from_date, to_date, places, symbol_timezone(symbol)
         )
 
     async def get_snapshots(

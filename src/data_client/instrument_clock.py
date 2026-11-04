@@ -15,7 +15,7 @@ permanently stale against the wrong calendar.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -207,13 +207,23 @@ class CalendarClock:
         return edge
 
     def today_market_open_ms(self) -> int | None:
-        """Today's session open (exchange-local date), None before it opens."""
+        """Today's session open (exchange-local date), None before it opens.
+
+        A session that opened the evening before (CME Globex) answers local
+        midnight: a window from today starts there, not at the eve's open. On
+        a day with no session of its own (Sunday), the next day's session
+        answers once it has opened on that evening.
+        """
         now = datetime.now(timezone.utc)
+        now_ms = int(now.timestamp() * 1000)
         local_date = now.astimezone(self.tz).date()
         open_ms = self._cal.session_open_ms(local_date)
-        if open_ms is None or int(now.timestamp() * 1000) < open_ms:
+        if open_ms is None:
+            open_ms = self._cal.session_open_ms(local_date + timedelta(days=1))
+        if open_ms is None or now_ms < open_ms:
             return None
-        return open_ms
+        midnight_ms = int(datetime.combine(local_date, time(0, 0), tzinfo=self.tz).timestamp() * 1000)
+        return max(open_ms, midnight_ms)
 
 
 # Index families whose daily bars follow the US (XNYS) calendar. An unknown
