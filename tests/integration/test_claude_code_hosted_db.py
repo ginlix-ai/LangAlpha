@@ -122,7 +122,7 @@ async def test_a_token_unreadable_under_the_current_key_is_deleted_with_any_othe
 
 
 async def test_only_the_users_runs_in_progress_on_a_worker_are_counted(user, seed_workspace, patched_get_db_connection):
-    from src.server.database.claude_code_hosted import WORKER_TURN, live_worker_turns
+    from src.server.database.claude_code_hosted import CLOUD_TURN, live_cloud_turns
 
     threads = [str(uuid.uuid4()) for _ in range(4)]
     async with patched_get_db_connection() as conn, conn.cursor() as cur:
@@ -133,7 +133,7 @@ async def test_only_the_users_runs_in_progress_on_a_worker_are_counted(user, see
                 (thread, seed_workspace["workspace_id"], index),
             )
         for thread, (owner, metadata) in zip(threads, [
-            (user, WORKER_TURN), (user, WORKER_TURN), (user, {}), ("someone-else", WORKER_TURN),
+            (user, CLOUD_TURN), (user, CLOUD_TURN), (user, {}), ("someone-else", CLOUD_TURN),
         ]):
             await cur.execute(
                 "INSERT INTO conversation_responses (conversation_thread_id, turn_index, status, metadata, created_at, user_id) "
@@ -143,19 +143,19 @@ async def test_only_the_users_runs_in_progress_on_a_worker_are_counted(user, see
         await cur.execute(
             "UPDATE conversation_responses SET status = 'completed' WHERE conversation_thread_id = %s", (threads[1],)
         )
-    assert await live_worker_turns(user) == 1
-    assert await live_worker_turns(user, besides=threads[0]) == 0
+    assert await live_cloud_turns(user) == 1
+    assert await live_cloud_turns(user, besides=threads[0]) == 0
 
 
 async def test_only_the_users_runs_in_progress_on_the_stored_token_are_found(
     user, seed_workspace, patched_get_db_connection,
 ):
-    from src.server.database.claude_code_hosted import STORED_TURN, WORKER_TURN, live_stored_turns
+    from src.server.database.claude_code_hosted import STORED_TURN, CLOUD_TURN, live_stored_turns
 
     threads = [str(uuid.uuid4()) for _ in range(3)]
     async with patched_get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         for index, (thread, (owner, metadata)) in enumerate(zip(threads, [
-            (user, {**WORKER_TURN, **STORED_TURN}), (user, WORKER_TURN), ("someone-else", STORED_TURN),
+            (user, {**CLOUD_TURN, **STORED_TURN}), (user, CLOUD_TURN), ("someone-else", STORED_TURN),
         ])):
             await cur.execute(
                 "INSERT INTO conversation_threads (conversation_thread_id, workspace_id, current_status, thread_index) "

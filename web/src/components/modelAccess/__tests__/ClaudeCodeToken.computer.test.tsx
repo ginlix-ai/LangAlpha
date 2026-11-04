@@ -39,10 +39,11 @@ const BOX: ClaudeCodeComputer = { ...MAC, computer_id: 'cmp-box', name: 'Lab box
 const STATUS: ClaudeCodeStatus = { enabled: true, state: 'no_token', email: null, expires_at: null, saved: false };
 const STATUS_KEY = queryKeys.features.claudeCodeStatus();
 const LIST_KEY = queryKeys.features.claudeCodeComputers();
+const CLOUD_REFUSALS = { 'cmp-daytona': 'needs_bigger_computer' } as const;
 
 function client() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(LIST_KEY, { computers: [MAC, BOX] });
+  queryClient.setQueryData(LIST_KEY, { computers: [MAC, BOX], cloud_refusals: CLOUD_REFUSALS });
   queryClient.setQueryData(STATUS_KEY, STATUS);
   return queryClient;
 }
@@ -71,7 +72,7 @@ describe('ClaudeCodeTokenSheet for a computer', () => {
     expect(startClaudeCodeComputerSignIn).toHaveBeenCalledWith('cmp-mac');
     expect(submitClaudeCodeComputerSignInCode).toHaveBeenCalledWith('cmp-mac', CODE);
     expect(startClaudeCodeSignIn).not.toHaveBeenCalled();
-    expect(queryClient.getQueryData(LIST_KEY)).toEqual({ computers: [saved, BOX] });
+    expect(queryClient.getQueryData(LIST_KEY)).toEqual({ computers: [saved, BOX], cloud_refusals: CLOUD_REFUSALS });
     // The list is the answer; the saved token's status is read again.
     expect(invalidated(queryClient, LIST_KEY)).toBe(false);
     expect(invalidated(queryClient, STATUS_KEY)).toBe(true);

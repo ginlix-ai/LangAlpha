@@ -74,21 +74,21 @@ describe('useChatMessages: a Claude Code turn without a working token', () => {
   it("at admission on a computer whose organization's policy keeps Claude Code out rereads the computers, with nothing to add", async () => {
     refuseAtAdmission('policy_blocked');
     const { result, reread } = await send();
-    await waitFor(() => expect(result.current.messageError).toBe(WORDS));
+    await waitFor(() => expect(result.current.messageError).toEqual({ message: WORDS }));
     expect(reread()).toBe(true);
   });
 
   it.each(['needs_perl', 'computer_unsupported'])('at admission on a computer refused with %s rereads the computers, with nothing to add', async (reason) => {
     refuseAtAdmission(reason);
     const { result, reread } = await send();
-    await waitFor(() => expect(result.current.messageError).toBe(WORDS));
+    await waitFor(() => expect(result.current.messageError).toEqual({ message: WORDS }));
     expect(reread()).toBe(true);
   });
 
   it('at admission for another reason keeps the words alone', async () => {
     refuseAtAdmission('chief_of_staff');
     const { result, reread } = await send();
-    await waitFor(() => expect(result.current.messageError).toBe(WORDS));
+    await waitFor(() => expect(result.current.messageError).toEqual({ message: WORDS }));
     expect(reread()).toBe(false);
   });
 

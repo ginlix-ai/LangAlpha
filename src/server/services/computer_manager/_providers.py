@@ -7,9 +7,11 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
 from ptc_agent.core.sandbox.providers._ssh_transport import Link, Machine
+from ptc_agent.core.sandbox.providers._tiers import container_sizing, resolve_tier
 from ptc_agent.core.sandbox.runtime import (
     HostUnavailablePolicy,
     SandboxGoneError,
@@ -114,6 +116,32 @@ class ProviderMixin:
                 f"{', '.join(unknown)}"
             )
         return type(base).model_validate({**base.model_dump(), **overrides})
+
+    def tier_size(
+        self, computer: Mapping[str, Any], tier: str | None
+    ) -> tuple[float, float] | None:
+        """The cpus and memory GiB ``computer``'s sandbox gets on ``tier``, as
+        its provider builds it: a Docker container is floored at the operator's
+        own size, any other sandbox gets the tier's preset, and a tier its
+        provider no longer offers runs at a base size no preset names (None)."""
+        settings = self._provider_settings(
+            computer["kind"], computer.get("provider_config")
+        )
+        choice = resolve_tier(
+            tier,
+            default_tier=settings.default_tier,
+            resource_tiers=settings.resource_tiers,
+        )
+        if computer["kind"] == "docker":
+            sizing = container_sizing(
+                choice,
+                floor_cpus=settings.cpu_count,
+                floor_memory_limit=settings.memory_limit,
+            )
+            return sizing.cpus, sizing.memory_bytes / 1024**3
+        if choice.preset is None:
+            return None
+        return float(choice.preset.cpu), float(choice.preset.memory)
 
     def _provider_for(self, binding: Optional[ComputerBinding]):
         """Use the persisted backend so one process can serve multiple providers.

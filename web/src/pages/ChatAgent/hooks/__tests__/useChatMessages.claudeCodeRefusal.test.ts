@@ -57,7 +57,7 @@ describe('useChatMessages: a Claude Code refusal', () => {
     await act(async () => {
       await result.current.handleSendMessage('hello');
     });
-    await waitFor(() => expect(result.current.messageError).toBe(SIGNED_OUT));
+    await waitFor(() => expect(result.current.messageError).toEqual({ message: SIGNED_OUT }));
     expect(result.current.messages.filter((m) => m.role === 'assistant')).toEqual([]);
   });
 
@@ -85,7 +85,7 @@ describe('useChatMessages: a Claude Code refusal', () => {
     await act(async () => {
       await result.current.handleSendMessage('hello');
     });
-    await waitFor(() => expect(result.current.messageError).toBe('chat.claudeCode.off.too_many_turns:{"n":3}'));
+    await waitFor(() => expect(result.current.messageError).toEqual({ message: 'chat.claudeCode.off.too_many_turns:{"n":3}' }));
   });
 
   it('at admission links a cloud computer kept off to Model access, and reads the choice for it again', async () => {
@@ -105,7 +105,7 @@ describe('useChatMessages: a Claude Code refusal', () => {
     expect(reread).toHaveBeenCalledWith({ queryKey: queryKeys.user.claudeCodeCustody() });
   });
 
-  it.each(['api_key_refused', 'busy'])("mid-turn words %s on the turn in the app's words", async (reason) => {
+  it.each(['api_key_refused', 'needs_bigger_computer'])("mid-turn words %s on the turn in the app's words", async (reason) => {
     mockSendStream.mockImplementation(async (_m: string, _w: string, _t: string | null, { onEvent }: { onEvent: (e: Record<string, unknown>) => void }) => {
       onEvent({ event: 'error', error: 'Server words.', message: 'Server words.', type: 'claude_code_off', reason });
       return { disconnected: false };

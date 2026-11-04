@@ -1,24 +1,28 @@
 """Where a Claude Code turn on a cloud computer runs, and on which credential.
 
-The CLI runs in the backend worker that owns the turn, never in the
-sandbox: the turn's tools reach the sandbox through the in-process MCP
-bridge, and a credential in the sandbox would sit beside code the model
-writes. On a self-hosted server the credential is the setup token each user
-saves in Settings (``saved``). On the platform it is the one the user chose
-for cloud computers (``claude_code_custody``), each behind its operator's
-switch: their own Anthropic API key (``claude_code.hosted_api_key``), or
-the setup token they let the server store (``claude_code.stored_custody``),
-which also signs in their own computers that have none. With both switches
-off no turn reads a user's choice, and cloud computers there run no Claude
+On a self-hosted server the credential is the setup token each user saves in
+Settings (``saved``), and the CLI runs in the backend worker that owns the
+turn, or inside the computer's own sandbox with
+``claude_code.sandbox_placement`` on. The platform runs it only inside the
+sandbox, so its users choose a credential for cloud computers
+(``claude_code_custody``) only with that switch on, each credential behind
+its operator's switch: their own Anthropic API key
+(``claude_code.hosted_api_key``), or the setup token they let the server
+store (``claude_code.stored_custody``), which also signs in their own
+computers that have none. With placement off, or both credential switches
+off, no turn reads a user's choice, and cloud computers there run no Claude
 Code, as before the choice existed; only turning Claude Code off in
-Experiments reads it (``opted_out``).
+Experiments reads it (``opted_out``). Where the CLI runs is decided once
+(``cloud_runs_in``), and wherever it runs in the sandbox only a computer at
+``SANDBOX_MIN_TIER`` or above runs it (``tier_refusal``).
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from src.config.settings import get_claude_code_config
 from src.llms.claude_code import backend_available, rows_available
@@ -31,7 +35,7 @@ from src.server.database.claude_code_hosted import (
     live_stored_turns,
     write_custody,
 )
-from src.server.models.claude_code import ClaudeCodeCustody, HostedMode
+from src.server.models.claude_code import ClaudeCodeCustody, ComputerRefusal, HostedMode
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +43,14 @@ logger = logging.getLogger(__name__)
 ANTHROPIC = "anthropic"
 #: The version of the consent text a user accepts to store their setup token.
 DISCLOSURE = "2026-11-v1"
+#: The smallest computer that runs the CLI inside its own sandbox: Medium,
+#: whose resource tier key this is.
+SANDBOX_MIN_TIER = "performance"
 
 RunsOn = Literal["saved_token", "stored_token", "api_key"]
+#: Where a turn's CLI runs on a cloud computer: inside the computer's own
+#: sandbox, or in the backend worker that owns the turn.
+CloudRunsIn = Literal["sandbox", "worker"]
 
 
 @dataclass(frozen=True)
@@ -67,11 +77,14 @@ class Hosted:
 @dataclass(frozen=True)
 class Placement:
     """Where a Claude Code turn in a workspace runs: on ``own_computer``, the
-    row of the user's own computer it is on, else as ``hosted`` says, None
-    where this server runs none on a cloud computer."""
+    row of the user's own computer, else on the credential ``hosted`` names.
+    ``refusal`` is the first of every reason a turn on a cloud computer is
+    refused (``cloud_placement``), the credential's among them, so every
+    caller tells the user the same one."""
 
     own_computer: dict | None = None
     hosted: Hosted | None = None
+    refusal: str | None = None
 
 
 class TurnsNotStopped(Exception):
@@ -97,14 +110,44 @@ def _platform() -> bool:
 
 
 def _offered() -> list[HostedMode]:
-    """The credentials the operator lets users choose for cloud computers."""
+    """The credentials the operator lets users choose for cloud computers on the platform."""
     config = get_claude_code_config()
     return [mode for mode, on in (("api_key", config.hosted_api_key), ("stored", config.stored_custody)) if on]
 
 
+def cloud_runs_in() -> CloudRunsIn | None:
+    """Where this server runs the CLI of a turn on a cloud computer, the one
+    read of ``claude_code.sandbox_placement``: inside the computer's sandbox
+    with it on, else in the worker on a self-hosted server. The platform runs
+    it only in the sandbox, and only once a credential is offered for it;
+    None where this server runs none on a cloud computer."""
+    in_sandbox = get_claude_code_config().sandbox_placement
+    if backend_available():
+        return "sandbox" if in_sandbox else "worker"
+    return "sandbox" if in_sandbox and _platform() and _offered() else None
+
+
+def in_sandbox() -> bool:
+    """Whether a turn on a cloud computer runs its CLI inside the computer's
+    own sandbox, the one placement where the computer's size refuses it."""
+    return cloud_runs_in() == "sandbox"
+
+
+def checks_automations() -> bool:
+    """Whether a Claude Code automation's save is checked against how its
+    turns would run: where users choose a credential for cloud computers,
+    whose stored token automations never run on, here or relayed to their own
+    computers, and where a cloud computer's size can refuse it."""
+    return choice_offered() or in_sandbox()
+
+
 def choice_offered() -> bool:
     """Whether users choose how Claude Code runs on this server's cloud
-    computers: on the platform, once the operator turned a credential on."""
+    computers: on the platform, once the operator turned a credential on.
+    The choice stays theirs to change with the CLI's placement off, where
+    their stored token still signs in their own computers and leaving
+    ``stored`` deletes it; their cloud turns are refused there
+    (``cloud_placement``)."""
     return _platform() and bool(_offered())
 
 
@@ -140,19 +183,123 @@ def _verdict(current: Custody, key: dict | None) -> Hosted:
     return Hosted("api_key")
 
 
-async def placement(user_id: str, workspace_id: str | None, *, conn=None) -> Placement:
+def tier_refusal(computer: Mapping[str, Any]) -> ComputerRefusal | None:
+    """Why a turn on the cloud computer ``computer`` is refused whatever its
+    credential where the CLI runs inside its sandbox: ``needs_bigger_computer``
+    where its sandbox, as its provider builds it (``ComputerManager.tier_size``),
+    gets less cpu or memory than one at ``SANDBOX_MIN_TIER``. While a resize
+    is under way, or once one was interrupted, the sandbox may run at either
+    tier, so both must fit. The
+    server checks at startup that every kind it creates offers
+    ``SANDBOX_MIN_TIER`` (``check_sandbox_tiers``)."""
+    from src.server.services.computer_manager import ComputerManager
+    from src.server.services.spec_change import spec_change_from_row
+
+    manager = ComputerManager.get_instance()
+    floor = manager.tier_size(computer, SANDBOX_MIN_TIER)
+    change = spec_change_from_row(computer)
+    tiers = {computer.get("resource_tier")}
+    if change is not None and (
+        change.state == "in_progress" or (change.error is not None and change.error.code == "interrupted")
+    ):
+        tiers |= {change.from_tier, change.target_tier}
+    for tier in tiers:
+        size = manager.tier_size(computer, tier)
+        if floor is None or size is None or size[0] < floor[0] or size[1] < floor[1]:
+            return "needs_bigger_computer"
+    return None
+
+
+def check_sandbox_tiers(sandbox: Any) -> None:
+    """Fail startup where the CLI runs inside cloud computers' sandboxes and a
+    kind this server creates cloud computers on cannot size one at
+    ``SANDBOX_MIN_TIER`` (``ComputerManager.tier_size``): every computer of
+    that kind would be refused as too small.
+
+    Raises:
+        RuntimeError: A creatable cloud kind cannot size ``SANDBOX_MIN_TIER``.
+    """
+    from src.server.services.computer_manager import ComputerManager
+
+    manager = ComputerManager.current()
+    if not in_sandbox() or manager is None:
+        return
+    for kind in sandbox.creatable_providers():
+        if kind != "ssh" and manager.tier_size({"kind": kind}, SANDBOX_MIN_TIER) is None:
+            raise RuntimeError(
+                f"claude_code.sandbox_placement is on, but {kind} computers offer no {SANDBOX_MIN_TIER!r} tier"
+            )
+
+
+async def cloud_refusals(user_id: str) -> dict[str, ComputerRefusal]:
+    """Each of the user's cloud computers that refuses a turn whatever its
+    credential (``tier_refusal``), by id; none where the CLI does not run in
+    their sandboxes."""
+    from src.server.database.computer import get_computers_for_user
+    from src.server.services.ssh_computers import is_own_computer
+
+    if not in_sandbox():
+        return {}
+    refusals: dict[str, ComputerRefusal] = {}
+    for computer in await get_computers_for_user(user_id):
+        if is_own_computer(computer):
+            continue
+        try:
+            reason = tier_refusal(computer)
+        except ValueError as e:
+            logger.warning(f"[claude_code] cannot size computer_id={computer['computer_id']} for Claude Code: {e}")
+            continue
+        if reason:
+            refusals[str(computer["computer_id"])] = reason
+    return refusals
+
+
+async def placement(user_id: str, workspace_id: str | None, *, conn=None, token: bool = False) -> Placement:
     """Where the user's Claude Code turn in ``workspace_id`` runs, settled once
     at admission: the own computer first, so a workspace on one never reads
-    the choice for cloud computers. ``conn`` reads on a caller's connection,
-    as an automation file save that holds the user's locks passes it, so the
-    check never waits on a second pool slot."""
+    the choice for cloud computers, else as ``cloud_placement`` says.
+    ``conn`` reads on a caller's connection, as an automation file save that
+    holds the user's locks passes it, so the check never waits on a second
+    pool slot."""
     from src.server.database.computer import get_computer_for_workspace
     from src.server.services.ssh_computers import is_own_computer
 
     computer = await get_computer_for_workspace(workspace_id, conn=conn) if workspace_id else None
     if is_own_computer(computer):
         return Placement(own_computer=computer)
-    return Placement(hosted=await hosted(user_id, conn=conn))
+    return await cloud_placement(user_id, computer, conn=conn, token=token)
+
+
+async def cloud_placement(
+    user_id: str, computer: Mapping[str, Any] | None, *, conn=None, token: bool = False,
+) -> Placement:
+    """Where the user's turn on the cloud computer ``computer`` (its row, or
+    None where none is bound yet) runs, and the first reason it is refused:
+    none run here (``needs_own_computer``), the credential (``hosted``), an
+    organization's policy on the worker that would run it, with ``token`` the
+    saved setup token known not to work (admission's, which reads the token
+    store), and only then the computer's size, so a user hears of the size
+    once the credential would run. A computer not bound yet is judged as the
+    run starts, where it always is."""
+    runs_in = cloud_runs_in()
+    state = await hosted(user_id, conn=conn) if runs_in is not None else None
+    if state is None:
+        return Placement(refusal="needs_own_computer")
+    if state.refusal is not None:
+        return Placement(hosted=state, refusal=state.refusal)
+    if runs_in == "worker":
+        from ptc_agent.core.claude_code_managed import local_managed
+
+        if await local_managed():
+            return Placement(hosted=state, refusal="policy_blocked")
+    if token and state.token_signs_in:
+        from .saved import saved_refusal
+
+        if reason := await saved_refusal(user_id):
+            return Placement(hosted=state, refusal=reason)
+    if runs_in == "sandbox" and computer is not None and (reason := tier_refusal(computer)):
+        return Placement(hosted=state, refusal=reason)
+    return Placement(hosted=state)
 
 
 def relay_offered() -> bool:
@@ -172,12 +319,16 @@ async def saved_token_runs(user_id: str, *, conn=None) -> bool:
 
 async def custody(user_id: str) -> ClaudeCodeCustody | None:
     """The user's choice as Settings shows it, with the verdict admission
-    gives a turn there; None where none is offered."""
+    gives a turn there, ``needs_own_computer`` while this server runs none on
+    a cloud computer. None where none is offered."""
     if not choice_offered():
         return None
     current = await get_custody(user_id)
     key = await saved_key(user_id, ANTHROPIC)
-    verdict = _verdict(current, key)
+    if cloud_runs_in() is None:
+        verdict = Hosted(refusal="needs_own_computer")
+    else:
+        verdict = _verdict(current, key)
     return ClaudeCodeCustody(
         mode=current.mode, api_key_saved=key is not None,
         offered=[mode for mode in _offered() if not (mode == "stored" and current.blocked)], blocked=current.blocked,

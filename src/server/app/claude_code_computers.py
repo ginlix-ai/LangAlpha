@@ -1,7 +1,7 @@
 """Claude Code on each of the user's own computers, for Settings: whether a
 turn can run there, and the setup token kept on its machine.
 
-- GET    /api/v1/claude-code/computers                               Every own computer and where it stands
+- GET    /api/v1/claude-code/computers                               Every own computer and where it stands, and each cloud computer too small for Claude Code
 - POST   /api/v1/claude-code/computers/{computer_id}/sign-in         Start a sign-in that makes a token for it
 - POST   /api/v1/claude-code/computers/{computer_id}/sign-in/code    Finish it with the code Claude's page shows
 - PUT    /api/v1/claude-code/computers/{computer_id}/token           Place a token the user made themselves
@@ -10,11 +10,14 @@ turn can run there, and the setup token kept on its machine.
 The flow and the machine's token are ``services.claude_code`` (``flow``, ``machine``).
 """
 
+import asyncio
+
 from fastapi import APIRouter, Response
 
 from src.server.models.claude_code import ClaudeCodeComputer, ClaudeCodeComputers, CodeBody, TokenBody
 from src.server.services.claude_code import flow
 from src.server.services.claude_code.flow import pasted_code, pasted_token, require, rows_on
+from src.server.services.claude_code.hosted import cloud_refusals
 from src.server.services.claude_code.machine import MachineHome, list_computers
 from src.server.utils.api import CurrentUserId
 
@@ -23,7 +26,10 @@ router = APIRouter(prefix="/api/v1/claude-code/computers", tags=["claude-code"])
 
 @router.get("", response_model=ClaudeCodeComputers)
 async def get_computers(x_user_id: CurrentUserId):
-    return await list_computers(x_user_id)
+    listed, refusals = await asyncio.gather(list_computers(x_user_id), cloud_refusals(x_user_id))
+    if refusals and await rows_on(x_user_id):
+        listed.cloud_refusals = refusals
+    return listed
 
 
 @router.post("/{computer_id}/sign-in")

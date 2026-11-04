@@ -1,5 +1,6 @@
 import type { ClaudeCodeCustodyMode, ClaudeCodeSetupState } from '@/api/model';
 import type { RowStatus } from '@/components/modelAccess/parts';
+import { PLAN_URL } from '@/config/supportLinks';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import type { ErrorLinkSpec } from '@/utils/rateLimitError';
 
@@ -40,8 +41,27 @@ export const CLAUDE_CODE_SETUP_STATUS: Readonly<Record<ClaudeCodeSetupState, Row
   no_computer: 'needs_computer',
 };
 
+/** The states of a Claude Code token that works. */
+export const TOKEN_WORKS: ReadonlySet<string> = new Set(['signed_in', 'unverified']);
+
 /** Settings → Model access. */
 export const MODEL_ACCESS_URL = '/settings?tab=model';
+
+/**
+ * A cloud computer too small for Claude Code, as the picker row and the
+ * refusal word it. Where the build names a plan page, a larger computer comes
+ * with a plan: worded so, and linked where every Upgrade plan button goes.
+ * Elsewhere its spec is changed where the computer is, so nothing links.
+ */
+export function biggerComputer(): { rowKey: string; messageKey: string; link: ErrorLinkSpec | null } {
+  return PLAN_URL
+    ? {
+      rowKey: 'chat.modelSelector.claudeCodeNeedsBiggerComputerPlan',
+      messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan',
+      link: { url: PLAN_URL, label: 'Upgrade plan', labelKey: 'computer.spec.upgradePlan', external: true },
+    }
+    : { rowKey: 'chat.modelSelector.claudeCodeNeedsBiggerComputer', messageKey: 'chat.claudeCode.off.needs_bigger_computer', link: null };
+}
 
 /** Settings → Model access with the setup-token sheet open, the one place a
  *  token is added, which `ModelAccessSection` reads off the query. */
@@ -98,8 +118,8 @@ const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
   stored_unattended: 'chat.claudeCode.off.stored_unattended',
   choice_changed: 'chat.claudeCode.off.choice_changed',
   api_key_refused: 'chat.claudeCode.off.api_key_refused',
-  busy: 'chat.claudeCode.off.busy',
   too_many_turns: 'chat.claudeCode.off.too_many_turns',
+  needs_bigger_computer: 'chat.claudeCode.off.needs_bigger_computer',
 };
 
 const CLAUDE_CODE_CHOICE_LINK: ErrorLinkSpec = { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' };
@@ -114,9 +134,11 @@ const CLAUDE_CODE_CLOUD_LINKS: Readonly<Record<string, ErrorLinkSpec>> = {
 };
 
 /** A cloud computer's refusals that say the user's choice for cloud
- *  computers, the key it runs on, or what the server offers, is not what the
- *  view read. */
-const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set(['hosted_off', 'hosted_paused', 'needs_api_key', 'api_key_endpoint', 'stored_blocked', 'choice_changed']);
+ *  computers, the key it runs on, what the server offers, or which of their
+ *  computers are too small, is not what the view read. */
+const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set([
+  'hosted_off', 'hosted_paused', 'needs_api_key', 'api_key_endpoint', 'stored_blocked', 'choice_changed', 'needs_bigger_computer',
+]);
 
 /**
  * What a turn's `claude_code_off` refusal means, wherever it arrives:
@@ -131,8 +153,9 @@ const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set(['hosted_off', '
  * (`hosted_off`, and `stored_unattended` for automations and wakeups, which
  * a stored token does not run) or the Anthropic API key it runs on
  * (`needs_api_key`, or `api_key_endpoint` for one set to another endpoint)
- * fixes it; a choice paused on the server or storing
- * blocked for the user has nothing to fix. Too many turns at once names the
+ * fixes it; a choice paused on the server or storing blocked for the user has
+ * nothing to fix. A computer too small for Claude Code reads as
+ * `biggerComputer` says. Too many turns at once names the
  * user's cap, `limit`, and keeps the server's words without one. Any other
  * reason keeps the server's words alone.
  */
@@ -144,6 +167,10 @@ export function claudeCodeRefusal(
     return typeof limit === 'number'
       ? { reread: false, link: null, messageKey: CLAUDE_CODE_OFF_KEYS[reason], messageValues: { n: limit } }
       : { reread: false, link: null, messageKey: null };
+  }
+  if (reason === 'needs_bigger_computer') {
+    const { link, messageKey } = biggerComputer();
+    return { reread: true, link, messageKey };
   }
   const messageKey = CLAUDE_CODE_OFF_KEYS[reason] ?? null;
   if (reason === 'signed_out' || reason === 'token_refused') {

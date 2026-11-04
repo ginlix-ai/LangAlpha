@@ -182,9 +182,9 @@ FEATURES: dict[str, FeatureSpec] = {
             "plan. It signs in with a setup token, a separate credential you "
             "make for LangAlpha that never touches your own Claude Code "
             "sign-in. Claude Code runs on your own computers, and where this "
-            "server offers it, also on the server for workspaces on cloud "
-            "computers, with your setup token or your Anthropic API key. "
-            "Choose where it runs in Settings under Model access."
+            "server offers it, also on cloud computers, with your setup token "
+            "or your Anthropic API key. Choose where it runs in Settings under "
+            "Model access."
         ),
         enabled=False,
         gate=FeatureGate.OPT_IN,

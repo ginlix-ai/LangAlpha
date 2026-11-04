@@ -17,10 +17,8 @@ from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITra
 from ptc_agent.agent.claude_code.machine_token import API_KEY_FD_ENV, TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.launcher import (
     SDK_CONNECT_SHA256,
-    CliSlots,
     Credential,
     LocalLauncher,
-    ScopedEnvTransport,
     _token_socket,
     session_file_path,
     thread_dir,
@@ -105,41 +103,6 @@ async def test_an_api_key_reaches_the_cli_on_its_own_descriptor_never_its_enviro
     env, argv, handed = await launch(launcher, tmp_path, fd_env=API_KEY_FD_ENV)
     assert handed == key and TOKEN_FD_ENV not in env
     assert key not in argv and not any(key in v for v in env.values())
-
-
-@pytest.mark.asyncio
-async def test_a_cli_waits_for_a_slot_is_busy_once_none_frees_in_time_and_gives_it_back_once_closed(monkeypatch):
-    from src.llms.claude_code import ClaudeTurnFailed
-
-    monkeypatch.setattr(CliSlots, "WAIT_S", 0.2)
-    monkeypatch.setattr(ScopedEnvTransport, "_start", lambda self: anyio.sleep(0))
-    slots = CliSlots(1)
-    first = LocalLauncher(slots=slots).transport(ClaudeAgentOptions())
-    await first.connect()
-    with pytest.raises(ClaudeTurnFailed) as busy:
-        await LocalLauncher(slots=slots).transport(ClaudeAgentOptions()).connect()
-    assert busy.value.kind == "busy"
-    await first.close()
-    await first.close()
-    after = LocalLauncher(slots=slots).transport(ClaudeAgentOptions())
-    await after.connect()
-    with pytest.raises(ClaudeTurnFailed):
-        await LocalLauncher(slots=slots).transport(ClaudeAgentOptions()).connect()
-    await after.close()
-
-
-@pytest.mark.asyncio
-async def test_a_cli_that_fails_to_start_gives_its_slot_back(monkeypatch):
-    async def fails(self):
-        raise RuntimeError("no cli")
-
-    slots = CliSlots(1)
-    monkeypatch.setattr(ScopedEnvTransport, "_start", fails)
-    with pytest.raises(RuntimeError):
-        await LocalLauncher(slots=slots).transport(ClaudeAgentOptions()).connect()
-    monkeypatch.setattr(CliSlots, "WAIT_S", 0.2)
-    monkeypatch.setattr(ScopedEnvTransport, "_start", lambda self: anyio.sleep(0))
-    await LocalLauncher(slots=slots).transport(ClaudeAgentOptions()).connect()
 
 
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="reads open descriptors from /proc")

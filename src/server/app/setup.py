@@ -528,6 +528,14 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to initialize PTC Agent: {e}")
         logger.warning("PTC Agent endpoints may not work correctly")
 
+    # A gate of the same kind, outside the catch-all: with the CLI inside
+    # cloud computers' sandboxes, a kind with no Medium tier would refuse every
+    # one of its computers as too small.
+    if agent_config is not None:
+        from src.server.services.claude_code.hosted import check_sandbox_tiers
+
+        check_sandbox_tiers(agent_config.sandbox)
+
     # Multi-worker hard gate (top level — must not be swallowed by the PTC
     # init catch-all): without the fence, two workers could both write one
     # thread's checkpoints. Refuse to boot rather than corrupt.

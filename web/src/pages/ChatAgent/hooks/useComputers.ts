@@ -223,7 +223,8 @@ export function patchComputerRow(
  * {@link invalidateMachineStorage} alongside. Claude Code's list of the
  * user's own computers names each one and is not polled when empty, so a
  * machine added, renamed or removed is read there again too, as is where
- * Claude Code stands as a whole.
+ * Claude Code stands as a whole and each cloud computer it names too small
+ * for Claude Code.
  */
 export function invalidateMachine(queryClient: QueryClient) {
   void queryClient.invalidateQueries({ queryKey: queryKeys.computers.lists() });

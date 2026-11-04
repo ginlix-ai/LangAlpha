@@ -128,6 +128,7 @@ describe('useWorkspaceClaudeCode', () => {
     ['hosted_paused', { mode: 'api_key', api_key_saved: true, offered: ['stored'], refusal: 'hosted_paused' }],
     ['hosted_paused', { mode: 'stored', offered: ['api_key'], refusal: 'hosted_paused' }],
     ['needs_own_computer', { blocked: true, offered: [], refusal: 'stored_blocked' }],
+    ['needs_own_computer', { mode: 'api_key', api_key_saved: true, refusal: 'needs_own_computer' }],
     ['hosted_off', { blocked: true, offered: ['api_key'], refusal: 'hosted_off' }],
     ['checking', { mode: 'stored', offered: ['stored'], runs_on: 'stored_token' }],
   ])('on a hosted computer reads %s off the verdict for the choice for cloud computers', async (state, choice) => {
@@ -136,6 +137,33 @@ describe('useWorkspaceClaudeCode', () => {
     };
     const { result } = run('cmp-daytona', OWN_ONLY, undefined, () => Promise.resolve(custody));
     await waitFor(() => expect(result.current).toEqual({ state, computerId: null, known: true }));
+  });
+
+  const SMALL = () => Promise.resolve({ computers: [MAC], cloud_refusals: { 'cmp-daytona': 'needs_bigger_computer' } });
+
+  it.each<[WorkspaceClaudeCode['state'], Partial<ClaudeCodeCustody>]>([
+    ['needs_bigger_computer', { mode: 'api_key', api_key_saved: true, runs_on: 'api_key' }],
+    ['needs_api_key', { mode: 'api_key', api_key_saved: false, refusal: 'needs_api_key' }],
+    ['hosted_off', { mode: 'local', refusal: 'hosted_off' }],
+  ])('on a cloud computer the server names too small reads %s, the credential first', async (state, choice) => {
+    const custody: ClaudeCodeCustody = {
+      mode: 'local', api_key_saved: false, offered: ['api_key'], blocked: false, runs_on: null, refusal: null, disclosure: null, ...choice,
+    };
+    const { result } = run('cmp-daytona', OWN_ONLY, SMALL, () => Promise.resolve(custody));
+    await waitFor(() => expect(result.current).toEqual({ state, computerId: null, known: true }));
+  });
+
+  // A self-hosted server offers no choice, and names the computer on the same list.
+  it.each<[ClaudeCodeStatus['state'], WorkspaceClaudeCode['state']]>([
+    ['signed_in', 'needs_bigger_computer'], ['unverified', 'needs_bigger_computer'], ['rejected', 'rejected'], ['no_token', 'no_token'],
+  ])('with the saved token %s on a cloud computer the server names too small, reads %s', async (state, expected) => {
+    const { result } = run('cmp-daytona', { ...RUNS_HERE, state }, SMALL);
+    await waitFor(() => expect(result.current).toEqual({ state: expected, computerId: null, known: true }));
+  });
+
+  it('runs on a cloud computer the server does not name', async () => {
+    const { result } = run('cmp-other', { ...RUNS_HERE, state: 'signed_in' }, SMALL);
+    await waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: null, known: true }));
   });
 
   // The status says what the stored token is doing once it reads the choice.
@@ -162,6 +190,12 @@ describe('useWorkspaceClaudeCode', () => {
     const { result } = run('cmp-daytona', RUNS_HERE, undefined, () => Promise.resolve({ mode: 'stored', api_key_saved: false, offered: ['stored'], blocked: false, runs_on: 'stored_token', refusal: null, disclosure: null }));
     await waitFor(() => expect(getClaudeCodeCustody).toHaveBeenCalled());
     await waitFor(() => expect(result.current).toEqual({ state: 'rejected', computerId: null, known: true }));
+  });
+
+  it('needs one of the user\'s own computers where no cloud computer runs it, whatever the stored token reads', async () => {
+    const { result } = run('cmp-daytona', { ...RUNS_HERE, state: 'signed_in' }, undefined, () => Promise.resolve({ mode: 'stored', api_key_saved: false, offered: ['stored'], blocked: false, runs_on: null, refusal: 'needs_own_computer', disclosure: null }));
+    await waitFor(() => expect(getClaudeCodeCustody).toHaveBeenCalled());
+    await waitFor(() => expect(result.current).toEqual({ state: 'needs_own_computer', computerId: null, known: true }));
   });
 
   it("follows an own computer's entry whatever the choice for cloud computers", async () => {

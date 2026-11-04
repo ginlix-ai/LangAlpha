@@ -3,7 +3,7 @@ import type { TFunction } from 'i18next';
 import {
   removeClaudeCodeComputerToken, removeClaudeCodeToken, saveClaudeCodeComputerToken, saveClaudeCodeToken,
   startClaudeCodeComputerSignIn, startClaudeCodeSignIn, submitClaudeCodeComputerSignInCode, submitClaudeCodeSignInCode,
-  type ClaudeCodeComputer, type ClaudeCodeStatus,
+  type ClaudeCodeComputer, type ClaudeCodeComputers, type ClaudeCodeStatus,
 } from '@/api/model';
 import { readOAuthError } from '@/api/oauth';
 import { CLAUDE_CODE_UNRUNNABLE } from '@/lib/claudeCode';
@@ -96,7 +96,8 @@ export function useTokenRoutes(target: TokenTarget) {
     }
   };
   const store = (entry: ClaudeCodeComputer) => {
-    queryClient.setQueryData<{ computers: ClaudeCodeComputer[] }>(queryKeys.features.claudeCodeComputers(), (list) => list && ({
+    queryClient.setQueryData<ClaudeCodeComputers>(queryKeys.features.claudeCodeComputers(), (list) => list && ({
+      ...list,
       computers: list.computers.map((c) => (c.computer_id === entry.computer_id ? entry : c)),
     }));
     void reread(queryKeys.features.claudeCodeStatus());

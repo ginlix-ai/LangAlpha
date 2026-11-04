@@ -68,7 +68,7 @@ export function ClaudeCodeHostedChoice({ onAddApiKey, onAddToken, onAsking }: {
   useEffect(() => onAsking(asking !== null), [asking, onAsking]);
   if (!custody) return null;
   const shown = choosing ?? custody.mode;
-  const paused = custody.refusal === 'hosted_paused';
+  const paused = custody.refusal === 'hosted_paused' || custody.refusal === 'needs_own_computer';
   const modes = MODES.filter(({ mode }) => mode === 'local' || mode === custody.mode || custody.offered.includes(mode));
 
   const apply = (mode: ClaudeCodeCustodyMode, disclosure?: string) => {

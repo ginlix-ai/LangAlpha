@@ -54,6 +54,7 @@ async def _resolve(
         patch("src.server.services.llm.clients.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
         patch(f"{HANDLER}.effective_flags_for_user", new_callable=AsyncMock, return_value={"claude_code_runtime": opted_in}),
         patch("src.server.services.llm.claude_code.rows_available", return_value=runs),
+        patch("src.server.services.llm.claude_code.live_cloud_turns", new_callable=AsyncMock, return_value=0),
         patch("src.server.services.claude_code.hosted.backend_available", return_value=runs),
         patch(f"{HANDLER}.cleanup_stale_model_preferences", new=cleanup),
     ):
@@ -100,7 +101,7 @@ async def test_a_token_a_turn_found_refused_is_refused_from_the_next_turn_on():
         ),
         pytest.raises(ClaudeTurnFailed),
     ):
-        token = HostedCredential("user-1", "saved_token")
+        token = HostedCredential("user-1", "saved_token", None)
         await token.read()
         await token.refused()
     assert cache.values == {token_check_key("sk-ant-oat01-tok"): False}
