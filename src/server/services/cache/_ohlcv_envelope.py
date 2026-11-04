@@ -6,7 +6,7 @@ check used by both DailyCacheService and IntradayCacheService.
 
 import time
 from bisect import bisect_left
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -33,7 +33,8 @@ _ET = ZoneInfo("America/New_York")
 # to their home venue, so their daily bars are stamped at venue midnight
 # instead of New York midnight; a delta refresh onto a v5 envelope would
 # splice the two encodings and draw the seam day twice.
-ENVELOPE_VERSION = 6
+# v7: the live series records the window it holds (``window``).
+ENVELOPE_VERSION = 7
 _ENVELOPE_V3 = 3
 
 _SOFT_TTL_RATIO: float = get_infrastructure_config().redis.swr.soft_ttl_ratio
@@ -105,6 +106,7 @@ def _build_envelope(
     publisher: Optional[str] = None,
     revision: int = 0,
     lineage: Optional[tuple[PriceTreatment, Tier]] = None,
+    window: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a v4 Series envelope (storage form).
 
@@ -139,6 +141,7 @@ def _build_envelope(
         "market_phase": market_phase,
         "complete": complete,
         "stored_ttl": stored_ttl,
+        "window": window or _NO_WINDOW,
     }
 
 
@@ -155,6 +158,8 @@ def adopt_v3_envelope(
     fetch, so staleness cooldowns and soft-TTL windows keep their meaning.
     ``publisher`` comes from the legacy key's source segment; unknown header
     fields are filled conservatively from the publisher's declared defaults.
+    The legacy live key carried no window, so the adopted series is taken as
+    the default one it was read and written for.
     """
     bars = v3.get("bars") or []
     for b in bars:
@@ -181,6 +186,7 @@ def adopt_v3_envelope(
         "market_phase": v3.get("market_phase"),
         "complete": v3.get("complete", False),
         "stored_ttl": v3.get("stored_ttl", 0),
+        "window": fetch_window(None),
     }
 
 
@@ -209,11 +215,177 @@ def _parse_envelope(raw: Any) -> Optional[Dict[str, Any]]:
             "stored_ttl": raw.get("stored_ttl", 0),
             "data_date": header.get("latest_trading_date"),
             "truncated": bool((header.get("coverage") or {}).get("truncated")),
+            "window": raw.get("window") or _NO_WINDOW,
             "header": header,
         }
     if raw.get("v") == _ENVELOPE_V3 and "bars" in raw:
         return raw
     return None
+
+
+# The window a live series holds. ``from`` is the earliest requested start
+# (ISO date) the series is complete from; ``default`` says it also holds a
+# fetch with no start, whose left edge each provider picks for itself. One
+# live key serves every window of an instrument, so a reader serves from it
+# only what the window covers, and a fill extends it rather than narrowing it.
+_NO_WINDOW: Dict[str, Any] = {"from": None, "default": False}
+
+
+def fetch_window(from_date: Optional[str]) -> Dict[str, Any]:
+    """The window a fetch starting at *from_date* (None: provider default) fills."""
+    if from_date is None:
+        return {"from": None, "default": True}
+    return {"from": from_date[:10], "default": False}
+
+
+def union_window(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    starts = [s for s in (a.get("from"), b.get("from")) if s]
+    return {"from": min(starts) if starts else None, "default": bool(a.get("default") or b.get("default"))}
+
+
+def window_covers(
+    envelope: Dict[str, Any], from_date: Optional[str], tz: Optional[ZoneInfo] = None,
+) -> bool:
+    """Whether the stored series holds everything a fetch from *from_date* returns.
+
+    A default-window series covers any start on or after its first bar: the
+    provider had nothing older to give inside that window.
+    """
+    window = envelope["window"]
+    if from_date is None:
+        return bool(window.get("default"))
+    start = from_date[:10]
+    if window.get("from") and start >= window["from"]:
+        return True
+    bars = envelope.get("bars")
+    if window.get("default") and bars:
+        first = watermark_to_date_str(_bar_time(bars[0]), tz=tz)
+        return first is not None and start >= first
+    return False
+
+
+def bars_from(
+    bars: List[Dict[str, Any]], from_date: Optional[str], tz: Optional[ZoneInfo] = None,
+) -> List[Dict[str, Any]]:
+    """The bars on or after *from_date* in the instrument's calendar.
+
+    A live series can reach back past the window a request asked for, so the
+    response is cut to that window and stays a function of the request.
+    """
+    if not from_date or not bars:
+        return bars
+    start = from_date[:10]
+    for i, bar in enumerate(bars):
+        day = watermark_to_date_str(_bar_time(bar), tz=tz)
+        if day is not None and day >= start:
+            return bars[i:] if i else bars
+    return []
+
+
+def extend_series(
+    stored: Optional[Dict[str, Any]],
+    bars: List[Dict[str, Any]],
+    source: Optional[str],
+    from_date: Optional[str],
+    *,
+    cut: bool = False,
+    tz: Optional[ZoneInfo] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """``(bars, window)`` for a fetch from *from_date* landing on *stored*.
+
+    A stored series from the same publisher that overlaps the fetch and
+    agrees with it on final history keeps the bars the fetch does not reach:
+    older ones in front, so a short window never narrows a longer series, and
+    newer ones behind, so a lagging answer never drops what a stream added.
+    Older bars need a final bar the fetch shares to check the seam against.
+    The window widens to the stored one when the result reaches back as far;
+    another publisher's series hands over nothing, its window included.
+    *cut* marks a truncated series refilled on the default window: the older
+    bars kept in front are the cut answer, so the window claims only the
+    whole days they hold.
+    """
+    window = fetch_window(from_date)
+    old = stored["bars"] if stored else []
+    if not old:
+        if stored and not bars:
+            window = union_window(window, stored["window"])
+        return bars, window
+    if not bars or not _same_series(stored, bars, source):
+        return bars, window
+    first, last = _bar_time(bars[0]), _bar_time(bars[-1])
+    watermark = stored.get("watermark")
+    held = {_bar_time(b) for b in old}
+    seam_checked = bool(watermark) and any(
+        _bar_time(b) < watermark and _bar_time(b) in held for b in bars
+    )
+    older = [b for b in old if _bar_time(b) < first] if seam_checked else []
+    merged = older + bars + [b for b in old if _bar_time(b) > last]
+    if _bar_time(merged[0]) <= _bar_time(old[0]):
+        window = union_window(window, stored["window"])
+        if cut and older:
+            day = date.fromisoformat(watermark_to_date_str(_bar_time(older[0]), tz=tz))
+            window = {**window, "from": (day + timedelta(days=1)).isoformat()}
+    return merged, window
+
+
+def _same_series(stored: Dict[str, Any], bars: List[Dict[str, Any]], source: Optional[str]) -> bool:
+    """Whether *bars* continue *stored*: its publisher, overlapping, same final history."""
+    old = stored["bars"]
+    return (
+        bool(source)
+        and source == (stored.get("header") or {}).get("publisher")
+        and _bar_time(bars[0]) <= _bar_time(old[-1])
+        and _bar_time(bars[-1]) >= _bar_time(old[0])
+        and not splice_is_discontinuous(old, bars, stored.get("watermark"))
+    )
+
+
+def fill_keeps_stored(
+    stored: Optional[Dict[str, Any]],
+    fetched: List[Dict[str, Any]],
+    series: List[Dict[str, Any]],
+    source: Optional[str],
+    head: Optional[str],
+) -> bool:
+    """Whether a sync fill leaves *stored* in place rather than writing *series*.
+
+    The fill, *series* being *fetched* extended over *stored*, reaches less
+    far back than the stored series and holds nothing newer: a start past
+    the head's lookback cap, answered by a shorter stand-in or by nothing.
+    It still replaces the series when the chain *head* answers with bars for
+    a series a stand-in filled, or when the series' own publisher moved its
+    final history (a split re-adjusted).
+    """
+    held = (stored or {}).get("bars")
+    if not held:
+        return False
+    if series and (
+        _bar_time(series[0]) <= _bar_time(held[0]) or _bar_time(series[-1]) > _bar_time(held[-1])
+    ):
+        return False
+    publisher = (stored.get("header") or {}).get("publisher")
+    if fetched and head and source == head != publisher:
+        return False
+    return not (source == publisher and splice_is_discontinuous(held, fetched, stored.get("watermark")))
+
+
+def refill_from(envelope: Optional[Dict[str, Any]], tz: Optional[ZoneInfo] = None) -> Optional[str]:
+    """Start date for refetching a stored live series whole.
+
+    The window's own start, reached back to the first stored bar when the
+    series also holds a default window (which may begin earlier), so the
+    refetch never asks for less than the series holds. None for a series
+    that holds only the default window.
+    """
+    if not envelope:
+        return None
+    window = envelope["window"]
+    start = window.get("from")
+    bars = envelope["bars"]
+    if start and window.get("default") and bars:
+        head = watermark_to_date_str(_bar_time(bars[0]), tz=tz)
+        return min(start, head) if head else start
+    return start
 
 
 def _merge_bars(

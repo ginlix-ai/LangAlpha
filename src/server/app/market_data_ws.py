@@ -27,6 +27,7 @@ from src.server.services.cache._ohlcv_envelope import (
     _build_envelope,
     _parse_envelope,
     canonical_series_key,
+    fetch_window,
     series_identity,
 )
 from src.server.services.cache._series_cache_core import spawn_bg_task
@@ -259,6 +260,7 @@ async def _backfill_from_rest(
                 instrument_key=instrument_key, schema=schema,
                 publisher=source or _WS_SOURCE,
                 revision=prior.get("revision", 0),
+                window=fetch_window(None),
             )
             await cache.set(cache_key, new_envelope, ttl=_WS_CACHE_TTL)
 
@@ -299,7 +301,8 @@ async def _flush_to_redis(cache_key: str, bars: list[dict]) -> None:
             raw = await cache.get(cache_key)
             envelope = _parse_envelope(raw) if raw else None
 
-            if envelope and envelope.get("bars"):
+            held = envelope if envelope and envelope.get("bars") else None
+            if held:
                 existing = envelope["bars"]
                 # Merge buffered bars into existing: update in-place or append
                 for new_bar in bars:
@@ -320,10 +323,12 @@ async def _flush_to_redis(cache_key: str, bars: list[dict]) -> None:
             # future refreshes to ginlix-data and mix conventions silently.
             prior = (envelope.get("header") or {}) if envelope else {}
             new_envelope = _build_envelope(
-                merged, phase, complete=False, stored_ttl=_WS_CACHE_TTL, truncated=False,
+                merged, phase, complete=False, stored_ttl=_WS_CACHE_TTL,
+                truncated=bool(held and held.get("truncated")),
                 instrument_key=instrument_key, schema=schema,
                 publisher=prior.get("publisher") or _WS_SOURCE,
                 revision=prior.get("revision", 0),
+                window=held.get("window") if held else None,
             )
             await cache.set(cache_key, new_envelope, ttl=_WS_CACHE_TTL)
     except asyncio.CancelledError:
