@@ -267,3 +267,15 @@ def test_the_agent_build_is_handed_the_turns_launcher_for_its_computer():
         assert inputs.claude_code_launcher(sandbox, None, None) == "launcher"
     picked.assert_called_once_with(sandbox, computer_id="c-1", user_id="user-1", admitted=None, saved=None)
     assert inputs.build_kwargs()["claude_code_launcher"] == inputs.claude_code_launcher
+
+@pytest.mark.asyncio
+async def test_claude_refusing_a_computers_own_token_ends_the_turn_saying_so():
+    """Not as a missing token: Settings shows the same computer as refused."""
+    launcher = turn_launcher(_ssh_sandbox(), computer_id=CID, user_id="user-1", admitted=None, saved=None)
+    launcher.source = "file"
+    cache = Cache()
+    with serving(cache), pytest.raises(ClaudeTurnFailed) as failed:
+        await launcher.refused()
+    assert failed.value.kind == "token_refused"
+    assert MachineAnswer(**cache.values[answer_key(CID)]).file == "refused"
+    assert claude_code_refusal(failed.value, "claude-code/sonnet")["reason"] == "token_refused"

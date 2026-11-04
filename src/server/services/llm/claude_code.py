@@ -282,7 +282,9 @@ async def require_computer_signed_in(model: str, user_id: str, computer_id: str)
     state = computer_state(answer, "signed_in" if relayed else None)
     if state in ("policy_blocked", "needs_perl", "computer_unsupported"):
         raise_claude_code_off(model, state)
-    if state in ("rejected", "no_token"):
+    if state == "rejected":
+        raise_claude_code_off(model, "token_refused")
+    if state == "no_token":
         raise_claude_code_off(model, "signed_out")
     return relays
 
