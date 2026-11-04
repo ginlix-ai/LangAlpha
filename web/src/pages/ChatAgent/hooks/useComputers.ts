@@ -222,13 +222,15 @@ export function patchComputerRow(
  * reason to pay for. A change that does move bytes calls
  * {@link invalidateMachineStorage} alongside. Claude Code's list of the
  * user's own computers names each one and is not polled when empty, so a
- * machine added, renamed or removed is read there again too.
+ * machine added, renamed or removed is read there again too, as is where
+ * Claude Code stands as a whole.
  */
 export function invalidateMachine(queryClient: QueryClient) {
   void queryClient.invalidateQueries({ queryKey: queryKeys.computers.lists() });
   void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
   void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.quota() });
   void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeSetup() });
 }
 
 /** Re-read the per-folder breakdown, if anyone is looking at it. */
@@ -430,6 +432,7 @@ export function useComputerStatusFanout(): void {
               if (status === 'running') {
                 invalidateMachineStorage(queryClient, computerId);
                 void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
+                void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeSetup() });
               }
               // A failed start still needs the row: the server keeps why on
               // it (`start_failure`) before it sends 'error', or 'stopped' for

@@ -8,61 +8,50 @@ import { copyText } from '@/lib/clipboard';
 
 export type AccessStatus = 'connected' | 'needs_reauth' | 'working' | 'unknown';
 
-/** The states a row has beside a connection's own, each a word in its colour:
- *  a key a provider refused or no longer takes, something that cannot run
- *  where it is, or something not connected now (nothing added yet, its
- *  computer offline, or off). */
-const WORDED_STATUS = {
+/** Each row status but `working` as its word beside a dot, whose colour
+ *  carries what it means: it works, it needs the user (a key a provider
+ *  refused or no longer takes, a sign-in to redo, something that cannot run
+ *  where it is), or it is not connected now (nothing added yet, its computer
+ *  offline, off, no computer it can run on, or not known). */
+const DOTTED = {
+  connected: { key: 'modelAccess.status.connected', color: 'var(--color-success)' },
+  needs_reauth: { key: 'modelAccess.status.needsReauth', color: 'var(--color-warning)' },
   refused: { key: 'modelAccess.status.keyRefused', color: 'var(--color-warning)' },
   withdrawn: { key: 'modelAccess.status.withdrawn', color: 'var(--color-warning)' },
   unavailable: { key: 'modelAccess.status.unavailable', color: 'var(--color-warning)' },
-  not_connected: { key: 'modelAccess.status.notConnected', color: 'var(--color-text-tertiary)' },
-  offline: { key: 'modelAccess.status.offline', color: 'var(--color-text-tertiary)' },
-  off: { key: 'modelAccess.status.off', color: 'var(--color-text-tertiary)' },
+  not_connected: { key: 'modelAccess.status.notConnected', color: 'var(--color-text-quaternary)' },
+  offline: { key: 'modelAccess.status.offline', color: 'var(--color-text-quaternary)' },
+  off: { key: 'modelAccess.status.off', color: 'var(--color-text-quaternary)' },
+  needs_computer: { key: 'modelAccess.status.needsComputer', color: 'var(--color-text-quaternary)' },
+  unknown: { key: 'modelAccess.status.unknown', color: 'var(--color-text-quaternary)' },
 } as const;
 
 /** Any row's status. */
-export type RowStatus = AccessStatus | keyof typeof WORDED_STATUS;
+export type RowStatus = AccessStatus | keyof typeof DOTTED;
 
-const isWorded = (status: RowStatus): status is keyof typeof WORDED_STATUS => status in WORDED_STATUS;
-
-/** One connection's live state, worded the same on every surface. */
+/** One connection's live state, worded the same on every surface: a glyph
+ *  of one width, the dot or the liveness glyph while it is checked, then
+ *  its word, so every status's word starts at one x. */
 export function StatusLabel({ status, className }: { status: RowStatus; className?: string }) {
   const { t } = useTranslation();
-  if (isWorded(status)) {
-    const { key, color } = WORDED_STATUS[status];
-    return <span className={cn('text-xs', className)} style={{ color }}>{t(key)}</span>;
-  }
-  if (status === 'working') {
-    return (
-      <span className={cn('inline-flex items-center gap-1.5 text-xs', className)} style={{ color: 'var(--color-text-tertiary)' }}>
-        <Loader size={12} style={{ color: 'var(--color-accent-primary)' }} />
-        {t('modelAccess.status.working')}
-      </span>
-    );
-  }
-  if (status === 'needs_reauth') {
-    return (
-      <span className={cn('inline-flex items-center gap-1 text-xs', className)} style={{ color: 'var(--color-warning)' }}>
-        <AlertTriangle aria-hidden="true" className="h-3 w-3 shrink-0" />
-        {t('modelAccess.status.needsReauth')}
-      </span>
-    );
-  }
-  if (status === 'unknown') {
-    return (
-      <span className={cn('text-xs', className)} style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('modelAccess.status.unknown')}
-      </span>
-    );
-  }
+  const dot = status === 'working' ? null : DOTTED[status];
   return (
     <span className={cn('inline-flex items-center gap-1.5 text-xs', className)} style={{ color: 'var(--color-text-secondary)' }}>
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--color-success)' }} />
-      {t('modelAccess.status.connected')}
+      <span aria-hidden="true" className="flex h-3 w-3 shrink-0 items-center justify-center">
+        {dot
+          ? <span className="h-1.5 w-1.5 rounded-full" style={{ background: dot.color }} />
+          : <Loader size={12} style={{ color: 'var(--color-accent-primary)' }} />}
+      </span>
+      {t(dot ? dot.key : 'modelAccess.status.working')}
     </span>
   );
 }
+
+/** A secondary button's look in Claude Code's view and token lines: a border
+ *  of the theme's own and no fill, where the outline variant's border is
+ *  near the background and its fill reads as a border on a card in the
+ *  light theme and as a fill in the dark. */
+export const ROW_BUTTON = 'tap-target border-(--color-border-default) bg-transparent';
 
 /** A row's status and its actions at the row's end, laid out alike in
  *  Settings and on a computer's page. */

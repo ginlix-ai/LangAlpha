@@ -6532,7 +6532,8 @@
       "configured": "已配置 API 密钥",
       "notConnected": "未连接",
       "offline": "离线",
-      "off": "已关闭"
+      "off": "已关闭",
+      "needsComputer": "没有电脑"
     },
     "before": {
       "need": "您需要",
@@ -6587,6 +6588,7 @@
       "addNew": "添加新 token",
       "replace": "替换",
       "remove": "移除",
+      "moreActions": "更多操作",
       "addTitle": "添加 setup token",
       "replaceTitle": "替换 setup token",
       "intro": "Claude Code 模式让你的 Claude 对话使用你自己的 Claude 套餐运行。它通过专为 LangAlpha 生成的 setup token 登录。",
@@ -6606,7 +6608,7 @@
         "token_rejected": "Claude 拒绝了此 token，它可能不完整、已过期或被撤销。请重新运行 claude setup-token 并粘贴新的 token。",
         "check_unavailable": "无法连接 Claude 验证此 token，未做任何保存。请重试。",
         "check_in_progress": "已有一个 token 正在验证，请稍候再试。",
-        "unavailable": "你的账户未开启 Claude Code。请在设置的实验功能中开启。",
+        "unavailable": "你的账户未开启 Claude Code。请在设置的模型接入中开启。",
         "redis_unavailable": "暂时无法保存 token，请稍后重试。",
         "computer_not_found": "这台电脑已不可用。",
         "needs_perl": "这台电脑上的 Claude Code 需要 perl。请安装 perl 后重试。",
@@ -6631,7 +6633,7 @@
         "fieldLabel": "来自 Claude 的代码",
         "fieldPlaceholder": "粘贴代码",
         "fail": {
-          "unavailable": "你的账户未开启 Claude Code。请在设置的实验功能中开启。",
+          "unavailable": "你的账户未开启 Claude Code。请在设置的模型接入中开启。",
           "computer_not_found": "这台电脑已不可用。",
           "needs_perl": "这台电脑上的 Claude Code 需要 perl。请安装 perl 后重试。",
           "computer_unsupported": "这台电脑运行的是 musl（例如 Alpine Linux），LangAlpha 的运行环境暂不支持。",
@@ -6666,7 +6668,8 @@
         "policyBlocked": "这台电脑上装有你所在组织的 Claude Code 策略，因此 LangAlpha 无法在这里运行 Claude Code。",
         "savedRejected": "Claude 拒绝了你已保存的 token，它可能已过期或被撤销。",
         "offline": "这台电脑未在运行，无法检查它的 token。",
-        "addOwn": "为它添加 token"
+        "addOwn": "为它添加 token",
+        "checking": "正在向 Claude 确认它的 token 是否有效"
       },
       "optOut": {
         "saved": "Claude Code 已关闭，但你的 setup token 仍处于保存状态。",
@@ -6700,12 +6703,85 @@
         "body": "LangAlpha 会立即删除你已保存的 setup token，正在使用它的 Claude Code 会停止运行。在你重新保存 token 之前，云端计算机上的对话不会使用你的 Claude 套餐运行。有自己 token 的电脑不受影响。",
         "confirm": "删除 token",
         "failed": "切换失败，你的 token 仍处于保存状态。请重试。"
+      },
+      "setup": {
+        "pickNote": "Claude Pro 或 Max，在你的电脑上运行",
+        "lead": "Claude Code 模式通过 Anthropic 的 Claude Agent SDK 运行 Claude Code，并接入 LangAlpha 的 Agent 框架和工具。用量计入你的 Claude 套餐。",
+        "learnMore": "了解更多",
+        "waysTitle": "连接电脑的方式",
+        "yourComputers": "你的电脑",
+        "viewComputer": "查看电脑",
+        "cloudNotYet": "云端计算机暂时还不能运行 Claude Code。",
+        "listSummary": "在 {{names}} 上运行",
+        "turnOn": "开启 Claude Code",
+        "mac": {
+          "name": "通过远程控制连接你的 Mac",
+          "noteBrowser": "下载 LangAlpha Mac 版，然后在应用中开启远程控制。",
+          "noteDesktop": "让 LangAlpha 的 Agent 在这台 Mac 上工作，Claude Code 随后就在这里运行。",
+          "getApp": "下载 Mac 版",
+          "turnOn": "开启远程控制"
+        },
+        "ssh": {
+          "name": "通过 SSH 连接的电脑",
+          "note": "任何你能通过 SSH 登录的 Mac 或 Linux 电脑。",
+          "add": "添加 SSH 电脑"
+        },
+        "noComputer": {
+          "title": "请先连接一台你自己的电脑",
+          "body": "Claude Code 在你自己的电脑上运行，但你还没有把任何电脑连接到 LangAlpha。用下面任一方式连接一台，再回到这里登录 Claude。",
+          "bodyCloud": "Claude Code 在你自己的电脑或中型及以上的云端计算机上运行，但你目前还没有能运行它的计算机。用下面任一方式连接一台你自己的电脑，再回到这里登录 Claude。"
+        },
+        "unsupported": {
+          "title": "你的电脑无法运行 Claude Code",
+          "body": "你的每台电脑上都有阻止 Claude Code 运行的问题。可以在那台电脑上解决，或者连接另一台电脑。"
+        },
+        "offline": {
+          "title": "{{name}} 处于离线状态",
+          "titleMany": "你的电脑都处于离线状态",
+          "body": "Claude Code 在你自己的电脑上运行，但 LangAlpha 现在连接不到你的电脑。等其中一台重新上线，就可以在这里登录 Claude。",
+          "helper": "在这台 Mac 上打开 LangAlpha，确认远程控制已开启。",
+          "ssh": "确认它已开机，并允许 LangAlpha 通过 SSH 连接。"
+        },
+        "ready": {
+          "title": "登录 Claude 即可开始",
+          "titleCloud": "设置 Claude Code 即可开始",
+          "titleKept": "重新开启 Claude Code",
+          "bodyKept": "{{name}} 上仍保留着 setup token。开启 Claude Code 即可再次使用。",
+          "bodyKeptMany": "下面的电脑上仍保留着 setup token。开启 Claude Code 即可再次使用。",
+          "body": "Claude Code 可以在 {{name}} 上运行。为它添加 setup token 后，Claude Code 模型就会出现在模型选择器中。",
+          "bodyMany": "Claude Code 可以在下面的电脑上运行。在你想使用它的每台电脑上添加 setup token。",
+          "bodySaved": "在下面添加 setup token 后，Claude Code 模型就会出现在模型选择器中。",
+          "bodyCloud": "在下面选择 Claude Code 在云端计算机上的运行方式后，它的模型就会出现在模型选择器中。",
+          "bodyTurnOn": "开启 Claude Code 后，即可选择它在云端计算机上的运行方式。"
+        },
+        "connected": {
+          "title": "Claude Code 已可使用",
+          "body": "在这些电脑上的工作区中，模型选择器里已有 Claude Code 模型。",
+          "bodyAny": "模型选择器里已有 Claude Code 模型。"
+        },
+        "checking": {
+          "title": "正在检查 setup token",
+          "body": "LangAlpha 正在向 Claude 确认每个 token 是否有效。"
+        },
+        "refused": {
+          "title": "请重新登录 Claude",
+          "body": "Claude 拒绝了 {{name}} 上的 setup token，它可能已过期或被撤销。添加新的 token 即可继续使用 Claude Code。",
+          "bodyAny": "Claude 拒绝了一个 setup token，它可能已过期或被撤销。添加新的 token 即可继续使用 Claude Code。"
+        },
+        "turnOff": {
+          "action": "关闭 Claude Code",
+          "title": "关闭 Claude Code？",
+          "body": "Claude Code 模型将从模型选择器中移除。电脑上的 setup token 会一直保留到你将其移除，因此你随时可以在这里重新开启。",
+          "confirm": "关闭",
+          "bodyStored": "Claude Code 模型将从模型选择器中移除，用于云端计算机的 setup token 也会被移除。你自己电脑上的 token 会一直保留，直到你将其移除。"
+        },
+        "savedName": "供没有自己 token 的电脑使用"
       }
     },
     "claude": {
       "name": "Claude",
       "intro": "在 claude.ai 登录，然后粘贴页面显示的代码。",
-      "pickNote": "Claude Pro 或 Max",
+      "pickNote": "Claude Pro 或 Max，由 LangAlpha 调用",
       "need": "Claude Pro 或 Max 套餐。",
       "usage": "用量计入您的 Claude 套餐，不消耗 LangAlpha 积分。",
       "usageOss": "用量计入您的 Claude 套餐。",

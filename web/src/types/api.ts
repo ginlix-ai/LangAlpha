@@ -80,6 +80,9 @@ export interface FeatureState {
   gate: 'none' | 'opt_in' | 'opt_out' | 'plan';
   min_tier: number | null;
   user_override: boolean | null;
+  /** Where the user turns it on when not in Experiments: Claude Code's
+   *  opt-in is made by connecting it under Model access. */
+  home?: 'model_access' | null;
 }
 
 // --- Workspace ---
