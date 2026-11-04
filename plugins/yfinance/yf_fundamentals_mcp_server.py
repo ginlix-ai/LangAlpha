@@ -324,7 +324,7 @@ def get_company_info(ticker: str) -> _OUT_GET_COMPANY_INFO:
 
 
 _OUT_GET_EARNINGS_DATES = output_model(
-    "GetEarningsDatesOut", envelope_schema(RECORDS, frame=("symbol",))
+    "GetEarningsDatesOut", envelope_schema(RECORDS, frame=("symbol", "timezone"))
 )
 
 
@@ -351,7 +351,10 @@ def get_earnings_dates(ticker: str) -> _OUT_GET_EARNINGS_DATES:
                 "not_found", f"No earnings dates for {symbol}.", symbol=symbol
             )
         return make_response(
-            serialize_records(dates), source=SOURCE, symbol=symbol
+            serialize_records(dates),
+            source=SOURCE,
+            symbol=symbol,
+            timezone=str(dates.index.tz),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
