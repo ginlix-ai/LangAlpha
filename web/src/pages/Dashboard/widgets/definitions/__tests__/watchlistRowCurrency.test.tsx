@@ -12,9 +12,8 @@ import type { WatchlistRow } from '../../../hooks/useWatchlistData';
 function row(over: Partial<WatchlistRow>): WatchlistRow {
   return {
     watchlist_item_id: 'w1', symbol: 'ACME', price: 100, change: 1, changePercent: 1,
-    isPositive: true, quoteAvailable: true, previousClose: 99,
-    earlyTradingChangePercent: null, lateTradingChangePercent: null,
-    currency: null, assetClass: null,
+    isPositive: true, quoteAvailable: true, session: { previousClose: 99 },
+    currency: null, assetClass: null, places: 2,
     ...over,
   };
 }

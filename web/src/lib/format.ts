@@ -135,6 +135,8 @@ export const integer = createFormatter({ maximumFractionDigits: 0 });
 export const fixed2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false });
 // `exceptZero` rather than `always`: a flat or sub-cent move prints `0.00`, not `-0.00`.
 export const signedFixed2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false, signDisplay: 'exceptZero' });
+/** The placeholder a quote figure prints while it has no value. */
+export const DASH = '—';
 export const compactNumberFixed2 = createFormatter({ notation: 'compact', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Calendar days, as a market's daily bar is dated: a `YYYY-MM-DD` with no

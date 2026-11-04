@@ -73,7 +73,7 @@ function QuoteHero({
   const { t } = useTranslation();
   const locale = useLocale();
   const narrow = useCardNarrow();
-  const money = (n: number): string => formatMoney(n, d.currency, locale);
+  const money = (n: number): string => formatMoney(n, d.currency, locale, { upTo: d.places });
   const stamp = badgeCarriesStamp(d) ? undefined : (d.asOfLocal ?? asOf);
   const stampEl = stamp && <span title={localTitle(asOfTs, locale)}>{stamp}</span>;
   const status = offSession(d.status) ? d.status : undefined;
@@ -146,7 +146,7 @@ function QuoteTable({
   const stampOf = (d: QuoteDisplay): string | undefined => (d.asOfLocal && !differs(d) ? d.asOfLocal : undefined);
   const showStamps = !narrow && displays.some(stampOf);
   const showName = displays.some((d) => d.name);
-  const money = (n: number, d: QuoteDisplay): string => formatMoney(n, d.currency, locale);
+  const money = (n: number, d: QuoteDisplay): string => formatMoney(n, d.currency, locale, { upTo: d.places });
 
   // The backend stamps a block in the clock its rows share; a mixed block has
   // none, so the reader's own clock stands in.

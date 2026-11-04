@@ -97,7 +97,7 @@ function MarketViewInner() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { prices: wsPrices, connectionStatus: wsStatus, dataLevel: wsDataLevel, ginlixDataEnabled, subscribe: wsSubscribe, unsubscribe: wsUnsubscribe, setPreviousClose, setDayOpen } = useMarketDataWSContext();
+  const { prices: wsPrices, connectionStatus: wsStatus, dataLevel: wsDataLevel, ginlixDataEnabled, subscribe: wsSubscribe, unsubscribe: wsUnsubscribe } = useMarketDataWSContext();
   // A chart link is the page's opening state, not a correction applied after
   // it: MarketChatPanel reads a symbol or workspace that changes after its
   // mount as a scope change the user made, and drops the forwarded `?thread`
@@ -111,6 +111,8 @@ function MarketViewInner() {
     () => displaySpelling(openingRoute.symbol || loadPref('symbol', 'GOOGL')) || 'GOOGL',
   );
   const [selectedStockDisplay, setSelectedStockDisplay] = useState<SymbolDisplayOverride | null>(null);
+  const wsHasData = wsPrices.has(selectedStock);
+  const streamsLive = wsStatus === 'connected' && wsHasData;
 
   const {
     stockInfo,
@@ -120,12 +122,7 @@ function MarketViewInner() {
     overviewLoading,
     overlayData,
     marketStatus,
-  } = useStockData({
-    selectedStock,
-    wsStatus,
-    setPreviousClose,
-    setDayOpen
-  });
+  } = useStockData({ selectedStock, streamsLive });
 
   const [chartMeta, setChartMeta] = useState<Record<string, unknown> | null>(null);
   // Venue market phase reported by the chart's bars responses (calendar-derived
@@ -346,7 +343,6 @@ function MarketViewInner() {
   // Display price: prefer WS live data over REST. useStockData only returns
   // the rows of the symbol on screen, so a switch shows dashes, not the last one's.
   const displayPrice = wsPrices.get(selectedStock) || realTimePrice;
-  const wsHasData = !!wsPrices.get(selectedStock);
   const quote = useStockQuoteModel({
     symbol: selectedStock,
     stockInfo,
@@ -428,11 +424,15 @@ function MarketViewInner() {
     if (displayPrice) {
       // The header's own currency: the row's code, or none for an index level.
       const code = quote.currency;
-      parts.push(`Real-time price: ${formatMoney(displayPrice.price, code, 'en-US')} (${formatMoney(displayPrice.change, code, 'en-US', { signed: true })} / ${displayPrice.changePercent.toFixed(2)}%)`);
+      const upTo = quote.places;
+      const change = displayPrice.change != null && displayPrice.changePercent != null
+        ? ` (${formatMoney(displayPrice.change, code, 'en-US', { signed: true, upTo })} / ${displayPrice.changePercent.toFixed(2)}%)`
+        : '';
+      parts.push(`Real-time price: ${formatMoney(displayPrice.price, code, 'en-US', { upTo })}${change}`);
     }
 
     setChartImageDesc(parts.join('\n'));
-  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice, quote.currency]);
+  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice, quote.currency, quote.places]);
 
   const handleSendMessage = useCallback(async (message: string, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort, fastMode }: { model?: string | null; reasoningEffort?: string | null; fastMode?: boolean | null } = {}) => {
     // Build additional_context from chart image + file attachments.

@@ -19,6 +19,7 @@ const createPortfolioRow = (overrides: Partial<PortfolioRow>): PortfolioRow => (
   average_cost: 0,
   currency: 'USD',
   marketValue: 0,
+  places: 2,
   ...overrides,
 });
 

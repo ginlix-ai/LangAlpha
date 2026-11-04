@@ -625,6 +625,8 @@ No price data available for the specified period."""
             # The chart renders the axis and tooltips off this — without it the
             # client falls back to a suffix guess and a CNY series reads as USD.
             **({"price_currency": ref.price_currency} if ref is not None else {}),
+            # A CN fund prints a tenth of a fen finer than a stock (3 places).
+            **({"asset_class": ref.asset_class.value} if ref is not None else {}),
             "ohlcv": ohlcv,
             "chart_ohlcv": chart_ohlcv,
             "chart_interval": chart_interval,

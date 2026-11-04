@@ -3477,6 +3477,7 @@
     "marketCap": "Market Cap",
     "periodHigh": "Period High",
     "periodLow": "Period Low",
+    "period": "Period",
     "high": "H",
     "low": "L",
     "vol": "Vol",
@@ -4217,6 +4218,8 @@
     "companyOverview": "Company Overview",
     "quote": {
       "live": "Live",
+      "preMarket": "Pre-market",
+      "afterHours": "After hours",
       "closed": "Closed",
       "delayed": "Delayed",
       "source": "Source: {{label}}",

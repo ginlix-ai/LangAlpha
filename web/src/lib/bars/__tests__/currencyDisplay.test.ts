@@ -7,6 +7,7 @@ import {
   currencySymbol,
   formatMoney,
   formatPrice,
+  quotePlaces,
   resolveCurrency,
   resolveDisplayCurrency,
 } from '../currencyDisplay';
@@ -146,6 +147,7 @@ describe('formatMoney', () => {
     expect(formatMoney(1500, 'CNY', 'zh-CN')).toBe('¥1,500.00');
     expect(formatMoney(-1.23, 'USD', 'zh-CN')).toBe('-US$1.23');
     expect(formatMoney(2.5e12, 'CNY', 'zh-CN', { compact: true })).toBe('¥2.50万亿');
+    expect(formatMoney(450e9, 'USD', 'zh-CN', { compact: true })).toBe('US$4500.00亿');
   });
 
   it('compacts large amounts with the sign still leading', () => {
@@ -176,5 +178,33 @@ describe('resolveCurrency', () => {
     expect(resolveCurrency('EUR', 'AAPL')).toBe('EUR');
     expect(resolveCurrency(null, '600519.SS')).toBe('CNY');
     expect(resolveCurrency(undefined, undefined)).toBe('USD');
+  });
+});
+
+describe('quotePlaces', () => {
+  it('keeps cents for a priced stock and four places under one unit', () => {
+    expect(quotePlaces('AAPL', { currency: 'USD', price: 331.9 })).toBe(2);
+    expect(quotePlaces('XXII', { currency: 'USD', price: 0.0483 })).toBe(4);
+  });
+
+  it('keeps a pence listing served in pounds at its pence places', () => {
+    expect(quotePlaces('VOD.L', { currency: 'GBP', price: 1.172 })).toBe(4);
+    expect(quotePlaces('SHEL.L', { currency: 'GBP', price: 38.635 })).toBe(4);
+    // A London line quoted in dollars has no pence to keep.
+    expect(quotePlaces('XYZ.L', { currency: 'USD', price: 12.5 })).toBe(2);
+  });
+
+  it("keeps a CN fund's 0.001 tick, and an index level at two", () => {
+    expect(quotePlaces('510300.SH', { currency: 'CNY', assetClass: 'fund', price: 4.092 })).toBe(3);
+    expect(quotePlaces('^GSPC', { price: 0.5 })).toBe(2);
+  });
+});
+
+describe('formatMoney upTo', () => {
+  it('prints the places a figure has, from two up to the cap', () => {
+    expect(formatMoney(0.0483, 'USD', 'en-US', { upTo: 4 })).toBe('$0.0483');
+    expect(formatMoney(0.64, 'USD', 'en-US', { upTo: 4 })).toBe('$0.64');
+    expect(formatMoney(1102.5, 'USD', 'en-US', { upTo: 4 })).toBe('$1,102.50');
+    expect(formatMoney(0.0035, 'GBP', 'en-US', { signed: true, upTo: 4 })).toBe('+£0.0035');
   });
 });

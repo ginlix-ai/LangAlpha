@@ -119,6 +119,23 @@ describe('InlineStockPriceCard freshness line', () => {
 });
 
 describe('InlineStockPriceCard headline', () => {
+  it('prints a sub-dollar close and its range at the listing places, not cents', () => {
+    render(
+      <InlineStockPriceCard
+        artifact={artifact({
+          symbol: 'XXII',
+          price_currency: 'USD',
+          ohlcv: [{ date: '2026-07-13', close: 0.0512 }, { date: '2026-07-14', close: 0.0483 }],
+          stats: { period_change_pct: -5.66, period_high: 0.0612, period_low: 0.0451 },
+        })}
+      />,
+    );
+
+    expect(screen.getByText('$0.0483')).toBeInTheDocument();
+    expect(screen.getByText('$0.0612')).toBeInTheDocument();
+    expect(screen.getByText('$0.0451')).toBeInTheDocument();
+  });
+
   it('prints no price for a bar still forming, and dates the card to its day', () => {
     const { container } = render(
       <InlineStockPriceCard

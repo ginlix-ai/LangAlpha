@@ -27,6 +27,9 @@ export interface ExchangeInfo {
    *  accepted, but `.SH` is the one stored, compared and shown (the backend's
    *  `display_spelling`). */
   displayAs?: string;
+  /** Places between the venue's quote unit and its currency's major unit:
+   *  London quotes in pence, which the backend serves in pounds. */
+  minorUnitPlaces?: number;
   /** Code prefix that marks an index on this venue. CN code ranges are
    *  partitioned by instrument type, so the code alone names the class
    *  (the backend's `_CN_INDEX_PREFIXES`). */
@@ -41,7 +44,7 @@ export interface ExchangeInfo {
 export const US_MARKET_TZ = 'America/New_York';
 
 const EXCHANGE_SUFFIXES: Record<string, ExchangeInfo> = {
-  L: { currency: 'GBP', foreign: true, tz: 'Europe/London', label: 'LON' }, // London
+  L: { currency: 'GBP', foreign: true, tz: 'Europe/London', label: 'LON', minorUnitPlaces: 2 }, // London
   HK: { currency: 'HKD', foreign: true, tz: 'Asia/Hong_Kong', label: 'HK', codeWidth: 4 }, // Hong Kong
   T: { currency: 'JPY', foreign: true, tz: 'Asia/Tokyo', label: 'TYO' }, // Tokyo
   TO: { currency: 'CAD', foreign: true, tz: 'America/Toronto', label: 'TSX' }, // Toronto
@@ -145,6 +148,12 @@ export function isIndexListing(symbol: string | null | undefined, assetClass?: s
 export function currencyForSymbol(symbol?: string | null): string {
   if (!symbol) return 'USD';
   return exchangeInfoForSymbol(symbol)?.currency ?? 'USD';
+}
+
+/** Places a GBP price from a pence-quoted venue carries past the penny. */
+export function minorUnitPlacesForSymbol(symbol?: string | null): number {
+  if (!symbol) return 0;
+  return exchangeInfoForSymbol(symbol)?.minorUnitPlaces ?? 0;
 }
 
 /** Short venue name for a ticker's listing (`HK`, `SH`, `LON`), or null for

@@ -8,27 +8,28 @@ import { useMarketDataWSContext } from '../contexts/MarketDataWSContext';
 import AddWatchlistItemDialog from '../../Dashboard/components/AddWatchlistItemDialog';
 import AddPortfolioHoldingDialog from '../../Dashboard/components/AddPortfolioHoldingDialog';
 import ConfirmDialog from '../../Dashboard/components/ConfirmDialog';
-import { getExtendedHoursInfo } from '@/lib/marketUtils';
-import { grouped2 } from '@/lib/format';
+import { sessionQuote } from '@/lib/marketUtils';
+import { formatMoney } from '@/lib/bars';
+import { DASH } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import type { ExtendedSessionFields } from '@/types/market';
 import './MarketSidebarPanel.css';
 
 interface SidebarRow {
   symbol: string;
   price: number;
-  previousClose?: number | null;
-  isPositive: boolean;
   changePercent?: number;
-  unrealizedPlPercent?: number;
+  unrealizedPlPercent?: number | null;
   watchlist_item_id?: string;
-  user_portfolio_id?: string;
-  earlyTradingChangePercent?: number | null;
-  lateTradingChangePercent?: number | null;
-  early_trading_change_percent?: number | null;
-  late_trading_change_percent?: number | null;
-  [key: string]: unknown;
+  user_portfolio_id?: string | number;
+  places: number;
+  session?: ExtendedSessionFields;
+  /** The symbol's latest socket print, which stands in for its extended-hours price. */
+  livePrice?: number | null;
 }
+
+type SidebarKind = 'watchlist' | 'portfolio';
 
 interface DeleteConfirmState {
   open: boolean;
@@ -92,51 +93,51 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
     setDeleteConfirm((p) => ({ ...p, open: false }));
   }, [deleteConfirm.onConfirm]);
 
-  const formatPrice = (price: number | null | undefined): string => {
-    if (price == null || price === 0) return '--';
-    return grouped2(Number(price), locale);
+  const formatPrice = (price: number | null | undefined, places: number): string => {
+    if (price == null || price === 0) return DASH;
+    return formatMoney(Number(price), null, locale, { upTo: places });
   };
 
   const formatChange = (val: number | null | undefined): string => {
-    if (val == null) return '--';
+    if (val == null) return DASH;
     const sign = val >= 0 ? '+' : '';
     return `${sign}${val.toFixed(2)}%`;
   };
 
-  const changeClass = (isPositive: boolean, val: number | null | undefined): string => {
+  const changeClass = (val: number | null | undefined): string => {
     if (val == null || val === 0) return 'market-sidebar-row-change--neutral';
-    return isPositive ? 'market-sidebar-row-change--positive' : 'market-sidebar-row-change--negative';
+    return val > 0 ? 'market-sidebar-row-change--positive' : 'market-sidebar-row-change--negative';
   };
 
-  const getExtendedHours = (row: SidebarRow) => getExtendedHoursInfo(marketStatus as Record<string, unknown> & { market?: string; afterHours?: boolean; earlyHours?: boolean }, row, { shortLabels: true });
-
-  const renderRows = (items: SidebarRow[], keyField: string, changeField: string, onDelete: (id: string) => void) => {
+  const renderRows = (items: SidebarRow[], kind: SidebarKind, onDelete: (id: string) => void) => {
     return items.map((row) => {
       const isActive = activeSymbol && row.symbol === activeSymbol.toUpperCase();
-      const { extPct, extType } = getExtendedHours(row);
-      // During extended hours, show close price as main; live price goes in ext line
-      const mainPrice = extType && row.previousClose != null ? row.previousClose : row.price;
+      const id = String(kind === 'watchlist' ? row.watchlist_item_id : row.user_portfolio_id);
+      // The stock header's split: in an extended session the official close
+      // and its change, with the extended print beside it.
+      const { headline, ext } = sessionQuote(marketStatus, row, { livePrice: row.livePrice ?? null, shortLabels: true });
+      const changeValue = kind === 'watchlist' ? headline.pct : row.unrealizedPlPercent;
       return (
         <div
-          key={row[keyField] as string}
+          key={id}
           className={`market-sidebar-row${isActive ? ' market-sidebar-row--active' : ''}`}
           onClick={() => onSymbolClick?.(row.symbol)}
         >
           <span className="market-sidebar-row-symbol">{row.symbol}</span>
-          <span className="market-sidebar-row-price">{formatPrice(mainPrice)}</span>
-          <span className={`market-sidebar-row-change ${changeClass(row.isPositive, row[changeField] as number | null | undefined)}`}>
-            {formatChange(row[changeField] as number | null | undefined)}
-            {extType && extPct != null && (
-              <span className="market-sidebar-row-ext" style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: extType === 'pre' ? 'var(--color-ext-pre)' : 'var(--color-ext-post)' }}>
-                {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
-                {formatPrice(row.price)} {extPct >= 0 ? '+' : ''}{extPct.toFixed(2)}%
+          <span className="market-sidebar-row-price">{formatPrice(headline.price, row.places)}</span>
+          <span className={`market-sidebar-row-change ${changeClass(changeValue)}`}>
+            {formatChange(changeValue)}
+            {ext && (
+              <span className="market-sidebar-row-ext" style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: ext.type === 'pre' ? 'var(--color-ext-pre)' : 'var(--color-ext-post)' }}>
+                {ext.type === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
+                {formatPrice(ext.price, row.places)} {ext.pct >= 0 ? '+' : ''}{ext.pct.toFixed(2)}%
               </span>
             )}
           </span>
           <span className="market-sidebar-row-actions">
             <button
               className="market-sidebar-row-delete"
-              onClick={(e: React.MouseEvent) => { e.stopPropagation(); onDelete(row[keyField] as string); }}
+              onClick={(e: React.MouseEvent) => { e.stopPropagation(); onDelete(id); }}
               title={t('marketView.sidebar.remove')}
             >
               <X size={12} />
@@ -169,15 +170,15 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
         return {
           ...row,
           price: ws.price,
+          livePrice: ws.price,
           changePercent: ws.changePercent ?? row.changePercent,
-          isPositive: ws.change >= 0,
         };
       }
-      // Portfolio: only overlay price and direction — preserve unrealizedPlPercent
+      // Portfolio: only overlay the price; the row's color stays its unrealized P/L.
       return {
         ...row,
         price: ws.price,
-        isPositive: ws.change >= 0,
+        livePrice: ws.price,
       };
     });
   }, [isWatchlist, watchlist.rows, portfolio.rows, wsPrices]);
@@ -281,8 +282,8 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
               </div>
             )
             : isWatchlist
-              ? renderRows(currentRows as SidebarRow[], 'watchlist_item_id', 'changePercent', watchlist.handleDelete)
-              : renderRows(currentRows as SidebarRow[], 'user_portfolio_id', 'unrealizedPlPercent', handlePortfolioDelete)}
+              ? renderRows(currentRows as SidebarRow[], 'watchlist', watchlist.handleDelete)
+              : renderRows(currentRows as SidebarRow[], 'portfolio', handlePortfolioDelete)}
       </div>
 
       {/* Footer */}

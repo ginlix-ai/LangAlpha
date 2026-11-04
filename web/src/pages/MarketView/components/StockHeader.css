@@ -139,7 +139,7 @@
 /* Data source indicator (Live / Delayed) — inline next to ticker */
 .stock-data-source {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   flex: 0 0 auto;
   gap: 5px;
   font-size: 0.6875rem;
@@ -180,11 +180,19 @@
   }
 }
 
+/* Sits on the baseline, then rises so its centre meets the middle of the
+   capitals, which is also the middle of a CJK label's glyphs. */
 .data-source-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
+  transform: translateY(calc(3px - 0.5cap));
+}
+
+/* Browsers without the cap unit take the figure for this face, 0.36em. */
+@supports not (height: 1cap) {
+  .data-source-dot { transform: translateY(calc(3px - 0.36em)); }
 }
 
 .data-source-dot--live {

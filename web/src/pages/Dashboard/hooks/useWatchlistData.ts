@@ -9,9 +9,10 @@ import {
 } from '../utils/api';
 import { useQuotes, snapshotToStockPrice } from '@/lib/quotes';
 import { quoteCurrency } from '@/lib/bars/exchanges';
+import { quotePlaces } from '@/lib/bars/currencyDisplay';
 import type { QuoteRow } from '../widgets/framework/snapshotSerializers';
 import { registerAuthReset } from '@/lib/authResets';
-import type { StockPrice } from '@/types/market';
+import type { ExtendedSessionFields, StockPrice } from '@/types/market';
 
 export interface WatchlistRow {
   watchlist_item_id: string;
@@ -21,13 +22,13 @@ export interface WatchlistRow {
   changePercent: number;
   isPositive: boolean;
   quoteAvailable?: boolean;
-  previousClose: number | null;
-  earlyTradingChangePercent: number | null;
-  lateTradingChangePercent: number | null;
   /** ISO code the snapshot was quoted in; null on a payload that predates it. */
   currency: string | null;
   /** The snapshot's asset class: an `index` row prints a level, not a price. */
   assetClass: string | null;
+  /** Places its prices print up to (lib/bars `quotePlaces`), from the quote's own currency and asset class. */
+  places: number;
+  session?: ExtendedSessionFields;
   [key: string]: unknown;
 }
 
@@ -177,19 +178,21 @@ export function useWatchlistData() {
       const sym = String(i.symbol || '').trim().toUpperCase();
       const p = bySym[sym] || {} as Partial<StockPrice>;
       const quoteAvailable = p.quoteAvailable !== false && p.price != null;
+      const price = quoteAvailable ? p.price ?? 0 : 0;
+      const currency = p.currency ?? null;
+      const assetClass = quotes[sym]?.asset_class ?? null;
       return {
         watchlist_item_id: i.watchlist_item_id,
         symbol: sym,
-        price: quoteAvailable ? p.price ?? 0 : 0,
+        price,
         change: quoteAvailable ? p.change ?? 0 : 0,
         changePercent: quoteAvailable ? p.changePercent ?? 0 : 0,
         isPositive: quoteAvailable ? p.isPositive ?? true : true,
         quoteAvailable,
-        previousClose: p.previousClose ?? null,
-        earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
-        lateTradingChangePercent: p.lateTradingChangePercent ?? null,
-        currency: p.currency ?? null,
-        assetClass: quotes[sym]?.asset_class ?? null,
+        session: p.session,
+        currency,
+        assetClass,
+        places: p.places ?? quotePlaces(sym, {}),
       };
     });
   }, [items, symbols, quotes]);

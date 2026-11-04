@@ -36,8 +36,10 @@ export {
   chartPriceFormat,
   currencyForSymbol,
   currencySymbol,
+  fixedUpTo,
   formatMoney,
   formatPrice,
+  quotePlaces,
   resolveCurrency,
   resolveDisplayCurrency,
 } from './currencyDisplay';

@@ -3484,6 +3484,7 @@
     "marketCap": "市值",
     "periodHigh": "区间最高",
     "periodLow": "区间最低",
+    "period": "区间",
     "high": "高",
     "low": "低",
     "vol": "量",
@@ -4200,6 +4201,8 @@
     "companyOverview": "公司概览",
     "quote": {
       "live": "实时",
+      "preMarket": "盘前",
+      "afterHours": "盘后",
       "closed": "已收盘",
       "delayed": "延迟",
       "source": "数据源：{{label}}",

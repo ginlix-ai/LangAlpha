@@ -3,6 +3,7 @@
  * legacy hooks return. Kept side-effect-free and framework-free so they are
  * trivially unit-testable and reusable by any consumer of the quote layer.
  */
+import { quotePlaces } from '@/lib/bars/currencyDisplay';
 import type { StockPrice } from '@/types/market';
 import type { QuoteRow } from './quoteBatcher';
 
@@ -13,41 +14,35 @@ export function snapshotRowSpellings(row: { symbol: string; requested?: string[]
 }
 
 /**
- * Decimals a row's prices are quoted to, mirroring the server's
- * `display_decimals_for`: CN funds tick in 0.001 CNY (the chart shows 3.912),
- * everything else keeps cents. The snapshot row carries no decimals of its own.
- */
-export function quoteDecimals(row: { asset_class?: string | null; currency?: string | null }): number {
-  return row.asset_class === 'fund' && (row.currency ?? '').toUpperCase() === 'CNY' ? 3 : 2;
-}
-
-export function roundQuote(value: number, decimals: number): number {
-  const f = 10 ** decimals;
-  return Math.round(value * f) / f;
-}
-
-/**
- * Map a raw snapshot quote row → the transformed `StockPrice` the watchlist and
- * portfolio hooks consume. Byte-for-byte equivalent to the per-symbol transform
- * in `getStockPrices` so migrated hooks produce identical rows.
+ * Map a raw snapshot quote row → the `StockPrice` the watchlist and portfolio
+ * hooks consume. Figures pass through unrounded, with the listing's places
+ * (lib/bars `quotePlaces`) worked out here from the row's own currency and
+ * asset class, since a cent-rounded 0.0483 reads 0.05 in every total computed
+ * from it.
  */
 export function snapshotToStockPrice(symbol: string, snap: QuoteRow | undefined | null): StockPrice {
   if (snap && snap.price != null) {
-    const dp = quoteDecimals(snap);
     const change = snap.change ?? 0;
-    const changePct = snap.change_percent ?? 0;
     return {
       symbol,
       currency: snap.currency ?? null,
-      price: roundQuote(snap.price, dp),
-      change: roundQuote(change, dp),
-      changePercent: Math.round(changePct * 100) / 100,
+      price: snap.price,
+      change,
+      changePercent: snap.change_percent ?? 0,
       isPositive: change >= 0,
       quoteAvailable: true,
-      previousClose: snap.previous_close ?? null,
-      earlyTradingChangePercent: snap.early_trading_change_percent ?? null,
-      lateTradingChangePercent: snap.late_trading_change_percent ?? null,
+      places: quotePlaces(symbol, { currency: snap.currency, assetClass: snap.asset_class, price: snap.previous_close ?? snap.price }),
+      session: {
+        previousClose: snap.previous_close ?? null,
+        regularClose: snap.regular_close ?? null,
+        regularTradingChange: snap.regular_trading_change ?? null,
+        lastMinuteClose: snap.last_minute_close ?? null,
+        earlyTradingChange: snap.early_trading_change ?? null,
+        lateTradingChange: snap.late_trading_change ?? null,
+        earlyTradingChangePercent: snap.early_trading_change_percent ?? null,
+        lateTradingChangePercent: snap.late_trading_change_percent ?? null,
+      },
     };
   }
-  return { symbol, price: 0, change: 0, changePercent: 0, isPositive: true, quoteAvailable: false };
+  return { symbol, price: 0, change: 0, changePercent: 0, isPositive: true, quoteAvailable: false, places: quotePlaces(symbol, {}) };
 }

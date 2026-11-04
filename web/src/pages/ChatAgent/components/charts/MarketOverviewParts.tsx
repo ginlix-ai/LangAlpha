@@ -65,7 +65,7 @@ export function MarketIndicesChart({ data }: PanelProps): React.ReactElement {
                 stats={[
                   ma20 != null && ['MA20', grouped2(ma20, locale)],
                   ma50 != null && ['MA50', grouped2(ma50, locale)],
-                  volatility != null && [t('toolArtifact.volatility'), `${(volatility * 100).toFixed(1)}%`],
+                  volatility != null && [t('toolArtifact.volatility'), `${volatility.toFixed(2)}%`],
                 ]}
               />
               <span style={{ marginLeft: 'auto' }}>
