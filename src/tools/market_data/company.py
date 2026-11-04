@@ -45,6 +45,7 @@ from .utils import finite_or_none, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
 from src.data_client.freshness import FreshnessLabel
 from src.data_client.ginlix_data.directory import display_names
+from src.data_client.normalize import minor_unit_places
 from market_protocol import AssetClass, InstrumentRef
 
 from ._shared import _fmp_request, _get_user_id, _mark_failure, _mark_no_data, _safe_result
@@ -105,6 +106,14 @@ def _margin(stmt: Dict, ratio_key: str, numerator_key: str) -> Optional[float]:
 
 def _first(rows: Any) -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
+
+
+def _quote_precision(cur: DisplaySpec, symbol: str) -> DisplaySpec:
+    """`cur` widened by the places a minor-unit listing needs in its major unit.
+
+    A 0.35p move is £0.0035: at the currency's own two places it would read +0.00.
+    """
+    return cur._replace(decimals=cur.decimals + minor_unit_places(symbol))
 
 
 def _plus(value: float) -> str:
@@ -481,7 +490,7 @@ def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
         if reg_change is not None and reg_change_pct is not None:
             sign = _plus(reg_change)
             out.append(
-                f"**Regular Close:** {fmt_price(reg_close, cur)} ({sign}{reg_change:.2f} / {sign}{reg_change_pct:.3f}%)"
+                f"**Regular Close:** {fmt_price(reg_close, cur)} ({sign}{reg_change:.{cur.decimals}f} / {sign}{reg_change_pct:.3f}%)"
             )
         else:
             out.append(f"**Regular Close:** {fmt_price(reg_close, cur)}")
@@ -494,14 +503,14 @@ def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
         if ext_change is not None and ext_change_pct is not None:
             sign = _plus(ext_change)
             out.append(
-                f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{ext_change:.2f} / {sign}{ext_change_pct:.3f}% from close)"
+                f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{ext_change:.{cur.decimals}f} / {sign}{ext_change_pct:.3f}% from close)"
             )
         else:
             diff = last_price - reg_close
             diff_pct = (diff / reg_close * 100) if reg_close else 0
             sign = _plus(diff)
             out.append(
-                f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{diff:.2f} / {sign}{diff_pct:.2f}% from close)"
+                f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{diff:.{cur.decimals}f} / {sign}{diff_pct:.2f}% from close)"
             )
 
     total_change = snap.get("change")
@@ -509,7 +518,7 @@ def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
     if total_change is not None and total_change_pct is not None:
         sign = _plus(total_change)
         out.append(
-            f"**Day Change (from prev close):** {sign}{total_change:.2f} / {sign}{total_change_pct:.3f}%"
+            f"**Day Change (from prev close):** {sign}{total_change:.{cur.decimals}f} / {sign}{total_change_pct:.3f}%"
         )
     return out + [""]
 
@@ -542,7 +551,7 @@ def _provider_price_line(fmp: Dict[str, Any], cur: DisplaySpec) -> Optional[str]
     change = finite_or_none(fmp.get("change"))
     change_pct = finite_or_none(fmp.get("changePercentage"))
     move = [
-        *([f"{_plus(change)}{change:.2f}"] if change is not None else []),
+        *([f"{_plus(change)}{change:.{cur.decimals}f}"] if change is not None else []),
         *([f"{_plus(change_pct)}{change_pct:.2f}%"] if change_pct is not None else []),
     ]
     line = f"**Price:** {fmt_price(price, cur)}"
@@ -556,7 +565,7 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
     fmp = inp.quote
     if snap is None and fmp is None:
         return []
-    cur = inp.cur
+    cur = _quote_precision(inp.cur, inp.symbol)
     session_name, current_time_et = get_market_session()
     status = snap.get("market_status", "") if snap is not None else ""
     label = _STATUS_LABELS.get(status, session_name.replace("_", " ").title())
@@ -811,7 +820,7 @@ def _company_text(inp: CompanyInputs) -> str:
         "",
         f"Company: {inp.name} ({inp.symbol})",
         f"Sector: {profile.get('sector') or 'N/A'} | Industry: {profile.get('industry') or 'N/A'}",
-        f"Market Cap: {market_cap} | Current Price: {fmt_price(price, cur)}{price_note}"
+        f"Market Cap: {market_cap} | Current Price: {fmt_price(price, _quote_precision(cur, inp.symbol))}{price_note}"
         if price
         else f"Market Cap: {market_cap}",
         "",

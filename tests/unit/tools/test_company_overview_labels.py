@@ -11,10 +11,12 @@ from datetime import datetime
 import pytest
 
 from src.tools.market_data import earnings
-from src.tools.market_data.company import _extended_session
+from src.tools.market_data.company import CompanyInputs, _company_text, _extended_session, _quote_lines
+from src.tools.market_data.display import _symbol_currency, resolve_listing
 from src.tools.market_data.earnings import join_earnings
 from src.tools.market_data.fiscal_periods import fiscal_period_lookup, report_period_ends
 from src.tools.market_data.sec_filings import _rows
+from src.tools.market_data.segments import SegmentBreakdown
 
 
 def test_each_report_maps_to_the_quarter_it_announced():
@@ -220,3 +222,48 @@ def test_a_missing_report_does_not_make_a_quarterly_issuer_half_yearly(report_da
     ]
     reports = join_earnings(rows, income, fiscal_period_lookup(income), eps_currency=None)
     assert reports[0].period == "Q4 FY2026"
+
+
+def _inputs(symbol, *, quote=None, snapshot=None, profile=None):
+    ref, _ = resolve_listing(symbol)
+    return CompanyInputs(
+        symbol=symbol, ref=ref, cur=_symbol_currency(ref), profile=profile or {}, name=symbol, name_en=None,
+        income=[], earnings=[], cash_flow=[], performance=None, metrics=None, ratios=None,
+        price_target=None, ratings=None, quote=quote, segments=SegmentBreakdown(None, None),
+        stmt_cur=None, cash_flow_cur=None, fiscal={}, snapshot=snapshot,
+    )
+
+
+def _quote_text(symbol, **kw):
+    return "\n".join(_quote_lines(_inputs(symbol, **kw)))
+
+
+def test_a_pence_listing_provider_quote_keeps_the_places_a_pence_move_needs():
+    text = _quote_text("VOD.L", quote={
+        "price": 1.172, "change": 0.0035, "changePercentage": 0.3,
+        "yearLow": 0.85235, "yearHigh": 1.32072,
+    })
+    assert "**Price:** £1.1720 (+0.0035 / +0.30%)" in text
+    assert "£0.8524 - £1.3207" in text
+
+
+def test_a_pence_listing_snapshot_keeps_the_places_a_pence_move_needs():
+    text = _quote_text("VOD.L", snapshot={
+        "price": 1.172, "change": 0.0035, "change_percent": 0.3,
+        "regular_trading_change": 0.0035, "regular_trading_change_percent": 0.3,
+        "open": 1.168, "previous_close": 1.1685, "low": 1.16, "high": 1.18,
+    })
+    assert "**Regular Close:** £1.1720 (+0.0035 / +0.300%)" in text
+    assert "**Day Change (from prev close):** +0.0035 / +0.300%" in text
+
+
+def test_a_pence_listing_headline_price_matches_its_quote_block():
+    quote = {"price": 1.172, "change": 0.0035, "changePercentage": 0.3}
+    text = _company_text(_inputs("VOD.L", quote=quote, profile={"price": 1.172}))
+    assert "Current Price: £1.1720" in text
+    assert "**Price:** £1.1720" in text
+
+
+def test_a_us_quote_keeps_two_places():
+    text = _quote_text("AAPL", quote={"price": 331.9, "change": 1.25, "changePercentage": 0.38})
+    assert "**Price:** $331.90 (+1.25 / +0.38%)" in text
