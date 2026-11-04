@@ -17,6 +17,8 @@ from mcp_servers._dates import (
     commodity_daily_days,
     daily_days,
     intraday_window,
+    rates_days,
+    upcoming_days,
 )
 from mcp_servers._envelope import error_from_exception
 
@@ -62,6 +64,71 @@ class TestCalendarDays:
     )
     def test_refused(self, lo, hi, detail):
         assert _refusal(calendar_days, lo, hi) == detail
+
+
+class TestUpcomingDays:
+    def test_absent_bounds_are_yesterday_and_a_week_after_it(self):
+        yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+        assert upcoming_days(None, "") == (
+            yesterday.isoformat(),
+            (yesterday + timedelta(days=7)).isoformat(),
+        )
+
+    def test_a_lone_start_ends_a_week_after_itself(self):
+        today = datetime.now(timezone.utc).date()
+        far = (today + timedelta(days=90)).isoformat()
+        assert upcoming_days("2026-10-01", None) == ("2026-10-01", "2026-10-08")
+        assert upcoming_days(far, None) == (far, (today + timedelta(days=97)).isoformat())
+
+    def test_a_lone_end_from_yesterday_on_keeps_the_default_start(self):
+        today = datetime.now(timezone.utc).date()
+        yesterday = (today - timedelta(days=1)).isoformat()
+        end = (today + timedelta(days=30)).isoformat()
+        assert upcoming_days(None, end) == (yesterday, end)
+        assert upcoming_days(None, yesterday) == (yesterday, yesterday)
+
+    def test_a_lone_end_before_yesterday_starts_a_week_before_itself(self):
+        yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+        day_before = yesterday - timedelta(days=1)
+        assert upcoming_days(None, "2020-01-31") == ("2020-01-24", "2020-01-31")
+        assert upcoming_days(None, day_before.isoformat()) == (
+            (day_before - timedelta(days=7)).isoformat(),
+            day_before.isoformat(),
+        )
+        assert upcoming_days(None, "2024-03-02") == ("2024-02-24", "2024-03-02")
+
+    def test_a_week_after_a_start_rolls_over_the_year(self):
+        assert upcoming_days("2026-12-28", None) == ("2026-12-28", "2027-01-04")
+
+    def test_a_week_beyond_the_calendar_is_refused(self):
+        assert _refusal(upcoming_days, "9999-12-30", None) == "date is out of range"
+        assert _refusal(upcoming_days, None, "0001-01-02") == "date is out of range"
+
+    def test_reversed_and_unreadable_bounds_are_refused_as_for_a_calendar(self):
+        assert _refusal(upcoming_days, "2026-10-16", "2026-10-09") == "from is after to"
+        assert _refusal(upcoming_days, "not-a-date", None) == (
+            "from must be an ISO date, not 'not-a-date'"
+        )
+
+
+class TestRatesDays:
+    def test_an_absent_end_is_today_and_an_absent_start_stays_absent(self):
+        today = datetime.now(timezone.utc).date().isoformat()
+        assert rates_days(None, None) == (None, today)
+        assert rates_days("2026-10-12", "") == ("2026-10-12", today)
+
+    def test_a_given_end_stands(self):
+        assert rates_days("2026-10-12", "2026-10-16") == ("2026-10-12", "2026-10-16")
+
+    def test_a_lone_future_start_is_refused_against_the_default_end(self):
+        today = datetime.now(timezone.utc).date()
+        start = (today + timedelta(days=30)).isoformat()
+        assert _refusal(rates_days, start, None) == (
+            f"from is after to, which is today ({today.isoformat()}) unless given"
+        )
+
+    def test_reversed_bounds_are_refused(self):
+        assert _refusal(rates_days, "2026-10-16", "2026-10-09") == "from is after to"
 
 
 class TestDailyDays:

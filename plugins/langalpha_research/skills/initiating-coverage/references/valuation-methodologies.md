@@ -102,7 +102,7 @@ Cost of Equity = Risk-Free Rate + Beta × Equity Risk Premium
 ```
 - Risk-Free Rate: 10-year Treasury yield
 - Beta: Regression of stock returns vs. market (or use comparable beta)
-- Equity Risk Premium: Call `get_market_risk_premium` and print the retrieval date beside it; the feed carries no observation date, so say so.
+- Equity Risk Premium: Call `get_market_risk_premium`, cite the table that `method` names, and say the figure is undated (`as_of` is null).
 
 **Cost of Debt:**
 ```

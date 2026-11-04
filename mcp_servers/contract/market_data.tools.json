@@ -744,7 +744,7 @@
     "tools": [
       {
         "name": "get_economic_indicator",
-        "description": "Fetch an economic indicator time series — GDP growth for the macro\noutlook, CPI/inflation for discount-rate assumptions, or unemployment and\nthe Fed funds rate for economic context.\n\nArgs:\n    name: Indicator — \"GDP\", \"CPI\", \"unemploymentRate\", \"federalFundsRate\",\n        \"inflationRate\", \"retailSales\", \"consumerSentiment\", \"nonFarmPayrolls\".\n    limit: Number of observations to fetch (default 50).\n\nReturns:\n    dict: {count, data, source, data_type, indicator}. data is a list of\n    observations; count is the observation total. Fields: date, value (and\n    for some series, name). Field names are FMP-native camelCase; date is\n    \"YYYY-MM-DD\"; observations are newest-first as returned by FMP. On error:\n    {error: <code>, detail, indicator}.\n",
+        "description": "Fetch a US economic indicator series: GDP, CPI, unemployment, Fed funds.\n\nReads about 16 years at most.\n\nArgs:\n    name: \"GDP\", \"CPI\", \"unemploymentRate\", \"federalFundsRate\", \"inflationRate\"\n        (10Y breakeven, not CPI), \"retailSales\", \"consumerSentiment\",\n        \"nonFarmPayrolls\".\n    limit: Observation count (default 50).\n\nReturns:\n    dict: {count, data, source, data_type, indicator, series?, missing_periods?,\n    truncated?}. data is {date, value} levels, newest-first; date is the period\n    start; CPI is an index (YoY %: 100 * (value / same month a year ago - 1),\n    matched by date). series: country, unit, frequency, adjustment;\n    missing_periods: absent months or quarters. truncated: true if a size\n    cap cut the oldest rows. On error: {error: <code>, detail, indicator}.\n",
         "inputSchema": {
           "properties": {
             "name": {
@@ -806,6 +806,17 @@
               "description": "Present and true if a size cap cut the oldest rows.",
               "type": "boolean"
             },
+            "series": {
+              "description": "What the series is: description, country, unit, frequency, adjustment. Absent for a series not described here.",
+              "type": "object"
+            },
+            "missing_periods": {
+              "description": "First days of monthly or quarterly periods that fall between the observations returned but that FMP has no observation for (present only when there are some).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -821,7 +832,7 @@
       },
       {
         "name": "get_economic_calendar",
-        "description": "Fetch economic events with prior, estimate, and actual values — build a\ncatalyst calendar, generate a morning note, or track Fed meetings, jobs\nreports, and CPI releases.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\" (default: today).\n    to_date: End date \"YYYY-MM-DD\" (default: 7 days from today).\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date}. data is a\n    list of events; count is the event total. Fields: date, country, event,\n    currency, previous, estimate, actual, change, changePercentage, impact,\n    unit. actual/estimate/previous are null for events not yet released.\n    Field names are FMP-native camelCase; date is \"YYYY-MM-DD HH:MM:SS\";\n    order is as returned by FMP. On error: {error: <code>, detail}.\n",
+        "description": "Fetch economic events, such as Fed meetings, jobs reports, and CPI releases.\n\nReads about two years at most.\n\nArgs:\n    from_date: \"YYYY-MM-DD\" (default: yesterday UTC, or 7 days before an\n        earlier to_date).\n    to_date: \"YYYY-MM-DD\" (default: 7 days after from_date).\n\nReturns:\n    dict: {count, data, source, data_type, timezone, from_date, to_date,\n    truncated?}. data is a list of events, oldest first: date, country, event,\n    currency, previous, estimate, actual, change, changePercentage, impact,\n    unit. actual is null before release; change and changePercentage (null\n    before release) compare actual with previous, not estimate. date is UTC\n    \"YYYY-MM-DD HH:MM:SS\". truncated: true if a size cap cut the latest dates.\n    On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "from_date": {
@@ -870,6 +881,10 @@
             }
           ],
           "properties": {
+            "timezone": {
+              "description": "IANA timezone of timestamps.",
+              "type": "string"
+            },
             "count": {
               "description": "Number of records in data.",
               "type": "integer"
@@ -1015,7 +1030,7 @@
       },
       {
         "name": "get_market_risk_premium",
-        "description": "Fetch market risk premium by country for CAPM/WACC — get the equity risk\npremium for a DCF cost of equity, or compare premiums across markets.\n\nReturns:\n    dict: {count, data, source, data_type}. data is a list of country\n    records; count is the record total. Fields: country, continent,\n    countryRiskPremium, totalEquityRiskPremium. Premiums are percent\n    (5.5 = 5.5%). Field names are FMP-native camelCase; order is by country\n    as returned by FMP (not time-ordered). On error: {error: <code>, detail}.\n",
+        "description": "Fetch market risk premium by country for CAPM/WACC — get the equity risk\npremium for a DCF cost of equity, or compare premiums across markets.\n\nReturns:\n    dict: {count, data, source, data_type, method, as_of}. data is a list of\n    country records; count is the record total. Fields: country, continent,\n    countryRiskPremium, totalEquityRiskPremium. Premiums are percent (5.5 =\n    5.5%). as_of is null: cite method (the source table) and report the figure\n    as undated. On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {},
           "title": "get_market_risk_premiumArguments",
@@ -1056,6 +1071,17 @@
             "data_type": {
               "type": "string"
             },
+            "method": {
+              "description": "What the premiums are and who publishes them.",
+              "type": "string"
+            },
+            "as_of": {
+              "description": "Date of the table; null because FMP does not date it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -1071,7 +1097,7 @@
       },
       {
         "name": "get_earnings_calendar",
-        "description": "Fetch the earnings calendar for all companies reporting in a date range —\nbuild a catalyst calendar, generate a morning note, or track earnings-season\nvolume.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\".\n    to_date: End date \"YYYY-MM-DD\".\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date}. data is a\n    list of reporter records; count is the record total. Fields: symbol,\n    date, epsActual, epsEstimated, revenueActual, revenueEstimated,\n    lastUpdated. actual fields are null before a company reports. Field names\n    are FMP-native camelCase; date is \"YYYY-MM-DD\"; order is as returned by\n    FMP. On error: {error: <code>, detail}.\n",
+        "description": "Fetch the earnings calendar for all companies reporting in a date range —\nbuild a catalyst calendar.\n\nReads about a month in peak season. Rows carry no market cap; yf_market\nget_earnings_calendar ranks US listings by it.\n\nArgs:\n    from_date: \"YYYY-MM-DD\".\n    to_date: \"YYYY-MM-DD\".\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date, truncated?}. data\n    is a list of reporter records, oldest first. Fields: symbol, date,\n    epsActual, epsEstimated, revenueActual, revenueEstimated, lastUpdated.\n    Amounts are in each listing's own currency, not converted (a suffixed\n    symbol such as 7203.T is non-US): compare only within one currency. date\n    is \"YYYY-MM-DD\". truncated: true if a size cap cut the latest dates. On\n    error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "from_date": {

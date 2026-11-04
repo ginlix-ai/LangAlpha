@@ -394,6 +394,22 @@ class TestRangeWalk:
         assert not rows.truncated and get_mock.await_count == 4
 
     @pytest.mark.asyncio
+    async def test_a_lone_earnings_bound_is_one_read_sorted_oldest_first(self):
+        from src.data_client.fmp.walk import Walk
+
+        get_mock, client = self._client(
+            lambda p: [{"symbol": "C", "date": "2026-10-16"}, {"symbol": "A", "date": "2026-10-02"}]
+        )
+        try:
+            rows = await client.get_earnings_calendar_by_date("2026-10-01")
+        finally:
+            await client.close()
+
+        assert isinstance(rows, Walk) and not rows.truncated
+        assert [r["symbol"] for r in rows] == ["A", "C"]
+        assert get_mock.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_a_read_the_call_cap_stops_keeps_the_end_its_reader_wants_and_says_so(self):
         from src.data_client.fmp import walk
 
@@ -632,3 +648,37 @@ class TestPriceReadCaps:
         finally:
             await client.close()
         assert out.truncated is truncated
+
+
+class TestEconomicIndicatorUnknownName:
+    @pytest.mark.asyncio
+    async def test_a_name_fmp_lacks_is_refused_as_invalid_input(self):
+        import src.data_client.fmp.fmp_client as fmp_client
+
+        async def fmp_get(url, params, headers):
+            # FMP answers a name it lacks with a 200 whose body is the text "Invalid name".
+            return httpx.Response(200, request=httpx.Request("GET", url), text="Invalid name")
+
+        client = _client_with_mocked_http(AsyncMock(side_effect=fmp_get))
+        try:
+            with pytest.raises(fmp_client.FMPRequestError) as info:
+                await client.get_economic_indicators("PPI", limit=3)
+        finally:
+            await client.close()
+
+        assert info.value.status_code == 422
+        assert str(info.value) == "FMP has no economic indicator named 'PPI'"
+
+    @pytest.mark.asyncio
+    async def test_any_other_non_json_answer_stays_an_upstream_failure(self):
+        async def fmp_get(url, params, headers):
+            return httpx.Response(200, request=httpx.Request("GET", url), text="<html>busy</html>")
+
+        client = _client_with_mocked_http(AsyncMock(side_effect=fmp_get))
+        try:
+            with pytest.raises(ValueError) as info:
+                await client.get_economic_indicators("CPI", limit=3)
+        finally:
+            await client.close()
+
+        assert not hasattr(info.value, "status_code")
