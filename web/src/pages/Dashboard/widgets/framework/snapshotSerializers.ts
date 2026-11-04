@@ -169,8 +169,6 @@ export interface QuoteRow {
   preMarket?: number;
   postMarket?: number;
   volume?: number;
-  shares?: number;
-  marketValue?: number | null;
   /** ISO code the row is quoted in. Null quotes a level in points (an index),
    *  printed bare; absent is a row from before currencies, in dollars. */
   currency?: string | null;
@@ -193,10 +191,6 @@ export function serializeQuoteRowToMarkdown(row: QuoteRow): string {
   if (row.preMarket !== undefined) lines.push(`pre-market ${formatQuoteAmount(row.preMarket, row.currency)}`);
   if (row.postMarket !== undefined) lines.push(`post-market ${formatQuoteAmount(row.postMarket, row.currency)}`);
   if (row.volume !== undefined) lines.push(`vol ${row.volume}`);
-  if (row.shares !== undefined) lines.push(`shares ${row.shares}`);
-  if (row.marketValue != null) {
-    lines.push(`mkt val ${formatQuoteAmount(row.marketValue, row.currency)}`);
-  }
   return lines.join('\n');
 }
 

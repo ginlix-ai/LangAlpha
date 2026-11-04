@@ -516,6 +516,7 @@ class InsightService:
     async def _build_user_context(self, user_id: str) -> str:
         """Build symbols context from user's watchlists and portfolio, capped."""
         from src.server.database.portfolio import get_user_portfolio
+        from src.tools.secretary.activity import holding_position
         from src.server.database.watchlist import (
             get_user_watchlists,
             get_watchlist_items,
@@ -549,18 +550,10 @@ class InsightService:
                 if sym and sym not in seen_symbols and len(seen_symbols) < self._max_symbols:
                     seen_symbols.add(sym)
                     name = h.get("name", "")
-                    qty = h.get("quantity", "")
-                    avg_cost = h.get("average_cost", "")
-                    lines.append(
-                        f"- {sym} ({name}) [portfolio: {qty} shares @ ${avg_cost}]"
-                    )
+                    lines.append(f"- {sym} ({name}) [portfolio: {holding_position(h)}]")
                 elif sym in seen_symbols:
                     # Symbol already from watchlist — add portfolio info
-                    qty = h.get("quantity", "")
-                    avg_cost = h.get("average_cost", "")
-                    lines.append(
-                        f"  ^ also in portfolio: {qty} shares @ ${avg_cost}"
-                    )
+                    lines.append(f"  ^ also in portfolio: {holding_position(h)}")
         except Exception as e:
             logger.warning(f"[MARKET_INSIGHT] Failed to fetch portfolio for {user_id}: {e}")
 

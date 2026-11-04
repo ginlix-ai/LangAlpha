@@ -110,19 +110,23 @@ async def update_portfolio_holding(
     request: PortfolioHoldingUpdate,
     user_id: CurrentUserId,
 ):
-    """Partial update. 404 if not found or not owned by the caller."""
-    holding = await db_update_portfolio_holding(
-        user_portfolio_id=holding_id,
-        user_id=user_id,
-        name=request.name,
-        quantity=request.quantity,
-        average_cost=request.average_cost,
-        currency=request.currency,
-        account_name=request.account_name,
-        notes=request.notes,
-        metadata=request.metadata,
-        first_purchased_at=request.first_purchased_at,
-    )
+    """Partial update. 404 if not found or not owned by the caller; 409 when
+    the currency is a pence code without the average cost it describes."""
+    try:
+        holding = await db_update_portfolio_holding(
+            user_portfolio_id=holding_id,
+            user_id=user_id,
+            name=request.name,
+            quantity=request.quantity,
+            average_cost=request.average_cost,
+            currency=request.currency,
+            account_name=request.account_name,
+            notes=request.notes,
+            metadata=request.metadata,
+            first_purchased_at=request.first_purchased_at,
+        )
+    except HoldingCurrencyMismatch as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
     if not holding:
         raise_not_found("Portfolio holding")
