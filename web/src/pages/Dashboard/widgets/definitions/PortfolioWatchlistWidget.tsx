@@ -15,7 +15,6 @@ import {
 import { PortfolioWatchlistConfigSchema } from '../framework/configSchemas';
 import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
-import type { PortfolioRow } from '../../hooks/usePortfolioData';
 import { watchlistQuoteRow } from '../../hooks/useWatchlistData';
 import { WidgetCardMeta } from '../framework/widgetCardSlots';
 import {
@@ -28,8 +27,13 @@ import {
   WatchlistRowItem,
   WatchlistTable,
 } from './_holdingsPrimitives';
-import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
-import { normalizePortfolioCurrency } from '../../utils/portfolioSummary';
+import {
+  formatPortfolioNavMarkdownLine,
+  portfolioRowData,
+  portfolioSummary,
+  serializePortfolioRowsToMarkdown,
+  serializePortfolioRowToMarkdown,
+} from './_holdingsHelpers';
 
 type PWTabKey = 'watchlist' | 'portfolio';
 
@@ -37,18 +41,6 @@ type PortfolioWatchlistConfig = {
   defaultTab?: PWTabKey;
   valuesHidden?: boolean;
 };
-
-function portfolioRowToQuote(r: PortfolioRow) {
-  const hasQuote = r.quoteAvailable !== false;
-  return {
-    symbol: r.symbol,
-    price: hasQuote ? r.price : undefined,
-    shares: r.quantity ?? undefined,
-    marketValue: hasQuote ? r.marketValue ?? undefined : undefined,
-    changePercent: hasQuote ? r.unrealizedPlPercent ?? undefined : undefined,
-    currency: normalizePortfolioCurrency(r.currency),
-  };
-}
 
 function PortfolioWatchlistWidget({
   instance,
@@ -90,12 +82,12 @@ function PortfolioWatchlistWidget({
           data: { tab: 'watchlist', rows },
         };
       }
-      const rows = portfolio.rows.map(portfolioRowToQuote);
+      const rows = portfolio.rows.map(portfolioRowData);
       const summary = portfolioSummary(portfolio.rows);
       const navLine = formatPortfolioNavMarkdownLine(summary, locale);
       const lines: string[] = [];
       if (navLine) lines.push(navLine, '');
-      lines.push(serializeQuoteRowsToMarkdown(rows));
+      lines.push(serializePortfolioRowsToMarkdown(rows));
       const text = wrapWidgetContext(
         'personal.portfolioWatchlist',
         { tab: 'portfolio', count: rows.length },
@@ -138,8 +130,7 @@ function PortfolioWatchlistWidget({
       }
       const row = portfolio.rows.find((r) => (r.user_portfolio_id ?? r.symbol) === rowId);
       if (!row) return null;
-      const quote = portfolioRowToQuote(row);
-      const body = serializeQuoteRowToMarkdown(quote);
+      const body = serializePortfolioRowToMarkdown(row);
       const text = wrapWidgetContext(
         'personal.portfolioWatchlist/row',
         { tab: 'portfolio', symbol: row.symbol },
@@ -156,7 +147,7 @@ function PortfolioWatchlistWidget({
         description: t('dashboard.widgets.portfolioWatchlist.headerHoldings'),
         captured_at: new Date().toISOString(),
         text,
-        data: { row: quote, tab: 'portfolio' },
+        data: { row: portfolioRowData(row), tab: 'portfolio' },
       };
     },
   });

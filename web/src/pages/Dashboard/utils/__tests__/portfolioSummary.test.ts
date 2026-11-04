@@ -158,6 +158,17 @@ describe('portfolioSummary', () => {
     expect(hkd.uncosted).toEqual([{ symbol: '0700.HK', value: 40140 }]);
   });
 
+  it('names the holdings a NAV line leaves out of its P/L', () => {
+    const summaries = portfolioSummary([
+      createPortfolioRow({ symbol: 'AAPL', marketValue: 3319, average_cost: 150, quantity: 10 }),
+      createPortfolioRow({ symbol: 'NVDA', marketValue: 1033.45, average_cost: null, quantity: 5 }),
+    ]);
+
+    expect(formatPortfolioNavMarkdownLine(summaries, 'en-US')).toBe(
+      '**NAV (USD)** USD 4352.45 (cost USD 1500.00, P/L +USD 1819.00 / +121.27%, excluding NVDA (USD 1033.45): no cost in USD)',
+    );
+  });
+
   it('formats portfolio money with the holding currency', () => {
     expect(formatPortfolioMoney(120, 'USD', 'en-US')).toBe('$120.00');
     expect(formatPortfolioMoney(800, 'HKD', 'en-US')).toBe('HK$800.00');
