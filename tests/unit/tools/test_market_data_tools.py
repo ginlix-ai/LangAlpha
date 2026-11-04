@@ -2083,10 +2083,11 @@ class TestFetchOptionsChain:
 # fetch_market_movers
 # ---------------------------------------------------------------------------
 
-def _mover(symbol, *, price, change_percent):
+def _mover(symbol, *, price, change_percent, traded_value=None, traded_at=None):
     """A mover as a MarketIntelSource hands it over."""
     return {"symbol": symbol, "price": price, "change": None,
-            "change_percent": change_percent, "volume": None}
+            "change_percent": change_percent, "volume": None,
+            "traded_value": traded_value, "traded_at": traded_at}
 
 
 class TestFetchMarketMovers:
@@ -2111,6 +2112,27 @@ class TestFetchMarketMovers:
         assert len(artifact["results"]) == 2
 
     @pytest.mark.asyncio
+    async def test_a_name_column_shows_only_when_a_name_is_known(self):
+        movers = [_mover("0700.HK", price=401.6, change_percent=5.0), _mover("NVDA", price=950.0, change_percent=8.5)]
+        provider = _make_fake_financial_provider(intel=_make_fake_intel_source(movers=movers))
+
+        async def name_tencent(rows):
+            for row in rows:
+                row["name"] = "Tencent" if row["symbol"] == "0700.HK" else None
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            with patch(f"{_QUOTES_MOD}.fill_quote_names", new=AsyncMock()):
+                unnamed, _ = await fetch_market_movers(direction="gainers")
+            with patch(f"{_QUOTES_MOD}.fill_quote_names", new=name_tencent):
+                named, _ = await fetch_market_movers(direction="gainers")
+
+        assert "| # | Symbol | Price | Change% | Last Trade (ET) |" in unnamed
+        assert "| NVDA | $950.00 |" in unnamed
+        assert "| # | Symbol | Name | Price | Change% | Last Trade (ET) |" in named
+        assert "| 0700.HK | Tencent |" in named
+        assert "| NVDA | N/A |" in named
+
+    @pytest.mark.asyncio
     async def test_vendor_row_is_priced_at_its_last_trade(self):
         """The vendor's row has no price or name field: the last trade is the
         price its change was measured at, the day bar's close stands in."""
@@ -2132,8 +2154,110 @@ class TestFetchMarketMovers:
         assert "$4.50" in content and "$2.50" in content
         first, second = artifact["results"]
         assert first == {"symbol": "ZZZZ", "name": None, "price": 4.5, "change": 1.5,
-                         "change_percent": 50.0, "volume": 1200.0, "currency": "USD"}
+                         "change_percent": 50.0, "volume": 1200.0, "traded_value": None,
+                         "traded_at": None, "currency": "USD"}
         assert second["price"] == 2.5
+
+    @pytest.mark.asyncio
+    async def test_a_mover_with_little_money_traded_is_excluded_and_named(self):
+        movers = [
+            _mover("WRNTW", price=0.08, change_percent=150.0, traded_value=900.0),
+            _mover("BIGG", price=12.0, change_percent=40.0, traded_value=5_000_000.0),
+            _mover("UNKN", price=3.0, change_percent=30.0),
+        ]
+        provider = _make_fake_financial_provider(intel=_make_fake_intel_source(movers=movers))
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, artifact = await fetch_market_movers(direction="gainers")
+
+        assert [r["symbol"] for r in artifact["results"]] == ["BIGG", "UNKN"]
+        assert "**Excluded (under $100,000 traded):** WRNTW" in content
+        assert "| WRNTW |" not in content
+
+    @pytest.mark.asyncio
+    async def test_when_every_mover_is_thin_it_says_none_traded_enough(self):
+        early = int(datetime(2026, 11, 4, 9, 19, tzinfo=timezone.utc).timestamp() * 1000)
+        movers = [_mover("WRNTW", price=0.08, change_percent=150.0, traded_value=900.0, traded_at=early)]
+        provider = _make_fake_financial_provider(intel=_make_fake_intel_source(movers=movers))
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_market_movers(direction="gainers")
+
+        assert "**Excluded (under $100,000 traded on 2026-11-04):** WRNTW" in content
+        assert "No gainer traded $100,000 or more on 2026-11-04." in content
+        assert "data available" not in content
+
+    @pytest.mark.asyncio
+    async def test_a_sub_dollar_price_keeps_four_places(self):
+        movers = [
+            _mover("SUBD", price=0.1896, change_percent=50.0),
+            _mover("WHOL", price=12.0, change_percent=40.0),
+        ]
+        provider = _make_fake_financial_provider(intel=_make_fake_intel_source(movers=movers))
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_market_movers(direction="gainers")
+
+        assert "| $0.1896 |" in content
+        assert "| $12.00 |" in content
+
+    @pytest.mark.asyncio
+    async def test_each_last_trade_names_its_session(self):
+        # 2026-11-03, a NYSE session: 19:59 ET is after the close, 13:11 ET inside it.
+        after_close = int(datetime(2026, 11, 4, 0, 59, tzinfo=timezone.utc).timestamp() * 1000)
+        in_session = int(datetime(2026, 11, 3, 18, 11, tzinfo=timezone.utc).timestamp() * 1000)
+        movers = [
+            _mover("AHUP", price=3.59, change_percent=262.4, traded_at=after_close),
+            _mover("RGUP", price=8.0, change_percent=40.0, traded_at=in_session),
+        ]
+        provider = _make_fake_financial_provider(intel=_make_fake_intel_source(movers=movers))
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_market_movers(direction="gainers")
+
+        assert "**Prices:** each stock's latest trade on 2026-11-03 (ET)" in content
+        assert "| +262.40% | 19:59 Extended Hours |" in content
+        assert "| +40.00% | 13:11 Regular Hours |" in content
+
+    @pytest.mark.asyncio
+    async def test_the_closing_cross_and_an_older_trade_read_as_what_they_are(self):
+        # The closing auction reports a moment after 16:00 ET; a name that last
+        # traded the session before keeps that day beside the newest one's.
+        cross = int(datetime(2026, 11, 3, 21, 0, 2, tzinfo=timezone.utc).timestamp() * 1000)
+        older = int(datetime(2026, 11, 3, 0, 58, tzinfo=timezone.utc).timestamp() * 1000)
+        after = int(datetime(2026, 11, 3, 21, 0, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        movers = [
+            _mover("CRSS", price=5.0, change_percent=30.0, traded_at=cross),
+            _mover("OLDR", price=2.0, change_percent=20.0, traded_at=older),
+            _mover("AFTR", price=3.0, change_percent=10.0, traded_at=after),
+        ]
+        provider = _make_fake_financial_provider(intel=_make_fake_intel_source(movers=movers))
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_market_movers(direction="gainers")
+
+        # The rows trade on two days, so the header claims neither.
+        assert "each stock's latest trade (ET); Change% is from the previous close" in content
+        assert "| +30.00% | 16:00 Regular Hours |" in content
+        assert "| +20.00% | 2026-11-02 19:58 Extended Hours |" in content
+        assert "| +10.00% | 16:00 Extended Hours |" in content
+
+    @pytest.mark.asyncio
+    async def test_a_row_priced_by_its_day_close_is_named_so(self):
+        traded = int(datetime(2026, 11, 3, 18, 11, tzinfo=timezone.utc).timestamp() * 1000)
+        movers = [
+            _mover("TRDD", price=5.0, change_percent=30.0, traded_at=traded),
+            _mover("BARR", price=2.0, change_percent=20.0),
+        ]
+        provider = _make_fake_financial_provider(intel=_make_fake_intel_source(movers=movers))
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_market_movers(direction="gainers")
+
+        assert (
+            "**Prices:** each stock's latest trade (ET), or its day close where Last Trade is N/A;"
+            " Change% is from the previous close"
+        ) in content
 
     @pytest.mark.asyncio
     async def test_losers(self):
@@ -2703,6 +2827,27 @@ class TestFetchQuote:
         assert "no data" not in content
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("spelling", ["^GSPC", "I:SPX", "SPX.INDEX"])
+    async def test_a_caret_index_is_asked_as_an_index_on_the_stocks_path(self, spelling):
+        # The legacy spelling of any index-only spelling is GSPC, which only
+        # the indices endpoint reads as the S&P 500; the stock stays on stocks.
+        rows = {
+            "stocks": [{"symbol": "AAPL", "last_trade_price": 230.0, "change_percent": 1.0}],
+            "indices": [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42}],
+        }
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(
+            side_effect=lambda symbols, asset_type, user_id: rows[asset_type]
+        )
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_quote(["AAPL", spelling])
+        asked = {c.kwargs["asset_type"]: c.args[0] for c in provider.get_snapshots.await_args_list}
+        assert asked == {"stocks": ["AAPL"], "indices": ["GSPC"]}
+        assert "GSPC  6,120.50" in content
+        assert "no data" not in content
+        assert [q["asset_class"] for q in artifact["quotes"]] == ["equity", "index"]
+
+    @pytest.mark.asyncio
     async def test_one_endpoint_failing_keeps_the_other_endpoints_rows(self):
         def answer(symbols, asset_type, user_id):
             if asset_type == "stocks":
@@ -2791,27 +2936,6 @@ class TestFetchQuote:
         with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             _, artifact = await fetch_quote(["SPX"], asset_type="indices")
         assert [q["asset_class"] for q in artifact["quotes"]] == ["index"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("spelling", ["^GSPC", "I:SPX", "SPX.INDEX"])
-    async def test_a_caret_index_is_asked_as_an_index_on_the_stocks_path(self, spelling):
-        # The legacy spelling of any index-only spelling is GSPC, which only
-        # the indices endpoint reads as the S&P 500; the stock stays on stocks.
-        rows = {
-            "stocks": [{"symbol": "AAPL", "last_trade_price": 230.0, "change_percent": 1.0}],
-            "indices": [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42}],
-        }
-        provider = AsyncMock()
-        provider.get_snapshots = AsyncMock(
-            side_effect=lambda symbols, asset_type, user_id: rows[asset_type]
-        )
-        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_quote(["AAPL", spelling])
-        asked = {c.kwargs["asset_type"]: c.args[0] for c in provider.get_snapshots.await_args_list}
-        assert asked == {"stocks": ["AAPL"], "indices": ["GSPC"]}
-        assert "GSPC  6,120.50" in content
-        assert "no data" not in content
-        assert [q["asset_class"] for q in artifact["quotes"]] == ["equity", "index"]
 
     @pytest.mark.asyncio
     async def test_a_bare_alias_asked_as_a_stock_is_the_stock(self):

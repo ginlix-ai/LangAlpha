@@ -2,16 +2,17 @@
 """Market intel snapshots: options chains, market movers, and live quotes."""
 
 from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import logging
 
 from langchain_core.runnables import RunnableConfig
 
-from .currency import fmt_price
+from .currency import fmt_price, fmt_quote
 from .display import (
     _symbol_currency,
     resolve_listing,
     resolve_ref,
+    venue_phase,
 )
 from .quote_format import (
     block_clock,
@@ -26,7 +27,8 @@ from src.data_client.ginlix_data.pagination import follow_cursor
 from src.data_client.market_data_provider import snapshot_key
 from src.observability import stamp_tool_provider
 from src.server.services.cache.quote_cache_service import QuoteCacheService
-from market_protocol import AssetClass, display_spelling, to_legacy_api
+from src.utils.market_hours import ET
+from market_protocol import AssetClass, InstrumentRef, MarketPhase, display_spelling, to_legacy_api
 
 from ._shared import _get_user_id, _mark_failure, _mark_no_data
 
@@ -197,6 +199,13 @@ def _movers_error(message: str) -> Tuple[str, Dict[str, Any]]:
     }
 
 
+# What "significant volume" means for a mover: the money traded in its session.
+_MIN_TRADED_VALUE = 100_000
+
+# How long after the bell the closing auction's print can report.
+_CLOSING_CROSS_REPORT = timedelta(seconds=10)
+
+
 class MoverCardRow(MoverRow):
     """A mover as the text and the card read it. The name and the currency are
     the tool's to add: the source names no mover, and a price is in its
@@ -204,6 +213,26 @@ class MoverCardRow(MoverRow):
 
     name: Optional[str]
     currency: Optional[str]
+
+
+def _trade_session(ref: Optional[InstrumentRef], at: Optional[datetime], day: date) -> str:
+    """A mover's last trade time (ET), dated when it is not *day*'s, and the
+    session it printed in.
+
+    A print in the seconds after the close is the closing auction's, which
+    crosses at the close and reports a moment later.
+    """
+    if at is None:
+        return "N/A"
+    when = f"{at:%H:%M}" if at.date() == day else f"{at:%Y-%m-%d %H:%M}"
+    phase = venue_phase(ref, at)
+    if phase is MarketPhase.POST and venue_phase(ref, at - _CLOSING_CROSS_REPORT) is MarketPhase.REGULAR:
+        phase = MarketPhase.REGULAR
+    if phase is MarketPhase.REGULAR:
+        return f"{when} Regular Hours"
+    if phase in (MarketPhase.PRE, MarketPhase.POST):
+        return f"{when} Extended Hours"
+    return when
 
 
 async def fetch_market_movers(
@@ -232,7 +261,26 @@ async def fetch_market_movers(
                 {"type": "market_movers", "results": []},
             )
 
-        movers = await provider.intel.get_movers(direction, user_id=user_id)
+        listed = await provider.intel.get_movers(direction, user_id=user_id)
+        # A source's own volume floor counts shares, which a sub-cent warrant
+        # clears with a few hundred dollars traded.
+        movers: List[MoverRow] = []
+        excluded: List[str] = []
+        for m in listed:
+            if m["traded_value"] is not None and m["traded_value"] < _MIN_TRADED_VALUE:
+                excluded.append(m["symbol"])
+            else:
+                movers.append(m)
+        traded = {m["symbol"]: datetime.fromtimestamp(m["traded_at"] / 1000, ET) for m in listed if m["traded_at"]}
+        newest = max(traded.values()).date() if traded else None
+
+        def shared_day(symbols: List[str]) -> str:
+            """' on <date>' when every one of *symbols* last traded that ET day."""
+            days = {traded[s].date() if s in traded else None for s in symbols}
+            return f" on {days.pop():%Y-%m-%d}" if len(days) == 1 and None not in days else ""
+
+        on_day = shared_day([m["symbol"] for m in movers])
+        excluded_day = shared_day(excluded)
         refs = [resolve_ref(m["symbol"]) for m in movers]
         rows: List[MoverCardRow] = [
             {**m, "name": None, "currency": ref.price_currency if ref is not None else None}
@@ -242,29 +290,48 @@ async def fetch_market_movers(
 
         retrieved_at = datetime.now(timezone.utc)
         timestamp = retrieved_at.strftime("%Y-%m-%d %H:%M UTC")
-        label = "Gainers" if direction == "gainers" else "Losers"
+        label, noun = ("Gainers", "gainer") if direction == "gainers" else ("Losers", "loser")
         lines: List[str] = []
         lines.append(f"## Market {label} ({len(rows)} stocks)")
         lines.append(f"**Retrieved:** {timestamp}")
+        if rows and any(m["symbol"] in traded for m in movers):
+            untimed = "" if all(m["symbol"] in traded for m in movers) else ", or its day close where Last Trade is N/A"
+            lines.append(
+                f"**Prices:** each stock's latest trade{on_day}"
+                f" (ET){untimed}; Change% is from the previous close"
+            )
+        if excluded:
+            lines.append(
+                f"**Excluded (under ${_MIN_TRADED_VALUE:,} traded{excluded_day}):** {', '.join(excluded)}"
+            )
         lines.append("")
 
         if not rows:
-            lines.append(f"No {direction} data available.")
+            lines.append(
+                f"No {noun} traded ${_MIN_TRADED_VALUE:,} or more{excluded_day}." if excluded
+                else f"No {direction} data available."
+            )
         else:
-            lines.append("| # | Symbol | Name | Price | Change% |")
-            lines.append("|---|--------|------|-------|---------|")
+            # Names come only for listings the directory knows (CN, HK); a column
+            # of N/A invites the reader to supply names from memory.
+            named = any(row["name"] for row in rows)
+            header = ["#", "Symbol", *(["Name"] if named else []), "Price", "Change%", "Last Trade (ET)"]
+            lines.append(f"| {' | '.join(header)} |")
+            lines.append(f"|{'|'.join('-' * (len(h) + 2) for h in header)}|")
             for i, (row, ref) in enumerate(zip(rows, refs), 1):
                 sym = row["symbol"]
                 name = row["name"] or "N/A"
                 if len(name) > 30:
                     name = name[:27] + "..."
-                price_str = fmt_price(row["price"], _symbol_currency(ref))
+                price_str = fmt_quote(row["price"], _symbol_currency(ref))
                 change_pct = row["change_percent"]
                 if change_pct is not None:
                     change_str = f"{change_pct:+.2f}%"
                 else:
                     change_str = "N/A"
-                lines.append(f"| {i} | {sym} | {name} | {price_str} | {change_str} |")
+                trade_str = _trade_session(ref, traded.get(sym), newest)
+                cells = [str(i), sym, *([name] if named else []), price_str, change_str, trade_str]
+                lines.append(f"| {' | '.join(cells)} |")
 
         content = "\n".join(lines)
         artifact = {

@@ -16,7 +16,7 @@ from .client import GinlixDataClient
 logger = logging.getLogger(__name__)
 
 
-def _epoch_ms(value: Any) -> int | None:
+def vendor_epoch_ms(value: Any) -> int | None:
     """Unix ms from a vendor epoch in s / ms / µs / ns (Massive stamps trades in ns)."""
     if not isinstance(value, (int, float)) or value <= 0:
         return None
@@ -238,9 +238,9 @@ class GinlixDataSource:
             "as_of": max(
                 (
                     ms for ms in (
-                        _epoch_ms((last_trade or {}).get("last_updated")),
-                        _epoch_ms((raw.get("last_quote") or {}).get("last_updated")),
-                        _epoch_ms(raw.get("last_updated")),
+                        vendor_epoch_ms((last_trade or {}).get("last_updated")),
+                        vendor_epoch_ms((raw.get("last_quote") or {}).get("last_updated")),
+                        vendor_epoch_ms(raw.get("last_updated")),
                     ) if ms
                 ),
                 default=None,
@@ -264,7 +264,7 @@ class GinlixDataSource:
             "late_trading_change_percent": session.get("late_trading_change_percent"),
             # When the last trade printed: the shown price's own time, which a
             # thin name's newer quote stamp in ``as_of`` does not share.
-            "last_trade_at": _epoch_ms((last_trade or {}).get("last_updated")),
+            "last_trade_at": vendor_epoch_ms((last_trade or {}).get("last_updated")),
         }
 
     async def close(self) -> None:

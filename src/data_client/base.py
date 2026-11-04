@@ -191,6 +191,10 @@ class MoverRow(TypedDict):
     change: float | None
     change_percent: float | None
     volume: float | None
+    #: Money traded in the session: volume at the session's average price.
+    traded_value: float | None
+    #: When ``price`` traded, Unix ms.
+    traded_at: int | None
 
 
 class MarketIntelSource(Protocol):

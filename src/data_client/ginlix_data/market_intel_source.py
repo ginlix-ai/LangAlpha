@@ -8,7 +8,7 @@ from typing import Any
 from src.data_client.base import MoverRow
 
 from .client import GinlixDataClient
-from .data_source import INTERVAL_MAP
+from .data_source import INTERVAL_MAP, vendor_epoch_ms
 
 logger = logging.getLogger(__name__)
 
@@ -96,13 +96,17 @@ class GinlixMarketIntelSource:
         measured at, and the day bar's close stands in when there is none.
         """
         day = raw.get("day") or {}
-        price = (raw.get("last_trade") or {}).get("price")
+        trade = raw.get("last_trade") or {}
+        price = trade.get("price")
+        volume, vwap = day.get("volume"), day.get("vwap")
         return {
             "symbol": raw.get("ticker") or "N/A",
             "price": price if price is not None else day.get("close"),
             "change": raw.get("change"),
             "change_percent": raw.get("change_percent"),
-            "volume": day.get("volume"),
+            "volume": volume,
+            "traded_value": volume * vwap if volume is not None and vwap is not None else None,
+            "traded_at": vendor_epoch_ms(trade.get("time")) if price is not None else None,
         }
 
     async def close(self) -> None:
