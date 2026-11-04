@@ -65,6 +65,11 @@ def described(prop: dict[str, Any], description: str) -> dict[str, Any]:
 #: server's bytes stable); unify them the next time the schemas may move.
 ERRORS: dict[str, Any] = described(RECORDS, "Error envelopes for symbols that failed.")
 
+#: ``make_response(truncated=True)``: present only on a read a cap cut short.
+TRUNCATED: dict[str, Any] = described(
+    BOOL, "Present and true when a page or row cap cut the read short; the oldest rows are missing."
+)
+
 #: The error arm's properties. Servers off the market-data envelope override
 #: ``detail`` — its wording and type drifted before the contract settled.
 ERROR_PROPS: dict[str, dict[str, Any]] = {

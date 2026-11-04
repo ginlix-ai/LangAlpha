@@ -49,7 +49,15 @@ except ModuleNotFoundError:  # imported as a package module (tests)
         normalize_interval,
     )
 
-from mcp_servers._schemas import RECORDS, STR, envelope_schema, output_model
+from mcp_servers._schemas import (
+    BOOL,
+    RECORDS,
+    STR,
+    TRUNCATED,
+    described,
+    envelope_schema,
+    output_model,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +129,10 @@ _OUT_GET_OPTIONS_CHAIN = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "currency", "timezone"),
-        echo={"underlying_ticker": STR},
+        echo={
+            "underlying_ticker": STR,
+            "truncated": described(BOOL, "Present and true when more contracts matched than limit."),
+        },
     ),
 )
 
@@ -186,13 +197,18 @@ async def get_options_chain(
         symbol=display,
         currency=currency,
         timezone=timezone,
+        truncated=result.get("truncated", False),
         underlying_ticker=display,
     )
 
 
 _OUT_GET_OPTIONS_PRICES = output_model(
     "GetOptionsPricesOut",
-    envelope_schema(RECORDS, frame=("symbol", "interval", "currency", "timezone")),
+    envelope_schema(
+        RECORDS,
+        frame=("symbol", "interval", "currency", "timezone"),
+        echo={"truncated": TRUNCATED},
+    ),
 )
 
 
@@ -247,7 +263,7 @@ async def get_options_prices(
     if isinstance(result, dict):
         return _ginlix_error(result, symbol=opt, interval=canonical)
 
-    data = list(reversed(result))  # normalize_bars is descending → ascending
+    data = list(reversed(result.bars))  # normalize_bars is descending → ascending
     return make_response(
         data,
         source="ginlix-data",
@@ -255,6 +271,7 @@ async def get_options_prices(
         interval=canonical,
         currency=currency,
         timezone=timezone,
+        truncated=result.truncated,
     )
 
 

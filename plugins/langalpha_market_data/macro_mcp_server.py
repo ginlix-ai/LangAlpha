@@ -35,6 +35,7 @@ from mcp_servers._schemas import (
     NULLABLE_STR,
     RECORDS,
     STR,
+    TRUNCATED,
     described,
     envelope_schema,
     output_model,
@@ -62,6 +63,7 @@ _OUT_GET_ECONOMIC_INDICATOR = output_model(
         echo={
             "data_type": STR,
             "indicator": described(STR, "Echoed indicator name."),
+            "truncated": TRUNCATED,
         },
     ),
 )
@@ -98,10 +100,15 @@ async def get_economic_indicator(
             _FMP_INDICATOR_NAMES.get(name, name), limit=limit
         )
 
+        if not isinstance(data or [], list):
+            # FMP answers some refusals with a 200 and an error object, not rows.
+            return make_error("upstream_error", _UPSTREAM_FAILED, indicator=name)
+
         return make_response(
             data or [],
             source=_SOURCE,
             data_type="economic_indicator",
+            truncated=getattr(data, "truncated", False),
             indicator=name,
         )
 
@@ -117,6 +124,7 @@ _OUT_GET_ECONOMIC_CALENDAR = output_model(
             "data_type": STR,
             "from_date": NULLABLE_STR,
             "to_date": NULLABLE_STR,
+            "truncated": TRUNCATED,
         },
     ),
 )
@@ -152,10 +160,15 @@ async def get_economic_calendar(
         lo, hi = calendar_days(from_date, to_date)
         data = await client.get_economic_calendar(from_date=lo, to_date=hi)
 
+        if not isinstance(data or [], list):
+            # FMP answers some refusals with a 200 and an error object, not rows.
+            return make_error("upstream_error", _UPSTREAM_FAILED)
+
         return make_response(
             data or [],
             source=_SOURCE,
             data_type="economic_calendar",
+            truncated=getattr(data, "truncated", False),
             from_date=from_date,
             to_date=to_date,
         )
@@ -172,6 +185,7 @@ _OUT_GET_TREASURY_RATES = output_model(
             "data_type": STR,
             "from_date": NULLABLE_STR,
             "to_date": NULLABLE_STR,
+            "truncated": TRUNCATED,
         },
     ),
 )
@@ -208,10 +222,15 @@ async def get_treasury_rates(
         lo, hi = calendar_days(from_date, to_date)
         data = await client.get_treasury_rates(from_date=lo, to_date=hi)
 
+        if not isinstance(data or [], list):
+            # FMP answers some refusals with a 200 and an error object, not rows.
+            return make_error("upstream_error", _UPSTREAM_FAILED)
+
         return make_response(
             data or [],
             source=_SOURCE,
             data_type="treasury_rates",
+            truncated=getattr(data, "truncated", False),
             from_date=from_date,
             to_date=to_date,
         )
@@ -260,7 +279,7 @@ _OUT_GET_EARNINGS_CALENDAR = output_model(
     "GetEarningsCalendarOut",
     envelope_schema(
         RECORDS,
-        echo={"data_type": STR, "from_date": STR, "to_date": STR},
+        echo={"data_type": STR, "from_date": STR, "to_date": STR, "truncated": TRUNCATED},
     ),
 )
 
@@ -295,10 +314,15 @@ async def get_earnings_calendar(
         lo, hi = calendar_days(from_date, to_date)
         data = await client.get_earnings_calendar_by_date(from_date=lo, to_date=hi)
 
+        if not isinstance(data or [], list):
+            # FMP answers some refusals with a 200 and an error object, not rows.
+            return make_error("upstream_error", _UPSTREAM_FAILED)
+
         return make_response(
             data or [],
             source=_SOURCE,
             data_type="earnings_calendar",
+            truncated=getattr(data, "truncated", False),
             from_date=from_date,
             to_date=to_date,
         )

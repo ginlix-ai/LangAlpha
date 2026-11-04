@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.data_client.base import FetchResult
+
 from .conftest import assert_error, assert_ok_envelope
 
 _MOD = "plugins.langalpha_market_data.price_data_mcp_server"
@@ -88,7 +90,7 @@ class TestGetStockData:
 
         client = _fmp_client()
         with patch.object(mod._ginlix, "fetch_stock_data",
-                          new=AsyncMock(return_value=list(_GINLIX_ROWS_DESC))), \
+                          new=AsyncMock(return_value=FetchResult(list(_GINLIX_ROWS_DESC)))), \
              patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await mod.get_stock_data(
                 "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-05",
@@ -105,7 +107,7 @@ class TestGetStockData:
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         client = _fmp_client()
-        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=[])), \
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=FetchResult([]))), \
              patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await mod.get_stock_data(
                 "AAPL", interval="1day", start_date="1995-01-03", end_date="1995-01-31",
@@ -120,7 +122,7 @@ class TestGetStockData:
 
         client = _fmp_client()
         client.get_stock_price = AsyncMock(side_effect=RuntimeError("429"))
-        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=[])), \
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=FetchResult([]))), \
              patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await mod.get_stock_data(
                 "AAPL", interval="1day", start_date="2026-10-17", end_date="2026-10-18",
@@ -692,3 +694,38 @@ class TestNormalization:
         assert _as_float("10.5") == 10.5
         assert _as_float("not_a_number") is None
         assert _as_float(42) == 42.0
+
+
+class TestTruncatedTier:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("truncated", [True, False])
+    async def test_the_tier_s_page_cap_reaches_the_envelope(self, truncated):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        fetched = FetchResult(list(_GINLIX_ROWS_DESC), truncated)
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=fetched)):
+            result = await mod.get_stock_data(
+                "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-05",
+            )
+
+        assert_ok_envelope(result, source="ginlix-data")
+        assert result.get("truncated", False) is truncated
+
+
+class TestTruncatedFmpTier:
+    @pytest.mark.asyncio
+    async def test_an_fmp_answer_a_cap_cut_says_so_after_the_window_filter(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+        from src.data_client.fmp.fmp_client import Walk
+
+        cut = Walk([{"date": "2025-01-02 10:00:00", "open": 1, "high": 1, "low": 1, "close": 1,
+                     "volume": 1}])
+        cut.truncated = True
+        client = _fmp_client(intraday=cut)
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await mod.get_stock_data(
+                "VOD.L", interval="5min", start_date="2024-12-01", end_date="2025-01-03",
+            )
+
+        assert_ok_envelope(result, source="fmp")
+        assert result["truncated"] is True

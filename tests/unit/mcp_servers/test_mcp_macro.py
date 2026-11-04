@@ -271,3 +271,51 @@ class TestGetEarningsCalendar:
             result = await get_earnings_calendar(from_date="2025-01-01", to_date="2025-01-31")
 
         assert_error(result, "client_unavailable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool, fetch, args",
+    [
+        ("get_economic_indicator", "get_economic_indicators", {"name": "CPI"}),
+        ("get_economic_calendar", "get_economic_calendar", {}),
+        ("get_treasury_rates", "get_treasury_rates", {}),
+        ("get_earnings_calendar", "get_earnings_calendar_by_date",
+         {"from_date": "2026-10-01", "to_date": "2026-10-16"}),
+    ],
+)
+async def test_a_read_the_call_cap_cut_says_so(tool, fetch, args):
+    import plugins.langalpha_market_data.macro_mcp_server as mod
+    from src.data_client.fmp.fmp_client import Walk
+
+    client = _make_fmp_client()
+    cut = Walk(await getattr(client, fetch)())
+    cut.truncated = True
+    setattr(client, fetch, AsyncMock(return_value=cut))
+    with patch(f"{_MOD}.get_fmp_client", return_value=client):
+        result = await getattr(mod, tool)(**args)
+
+    assert_ok_envelope(result, source="fmp")
+    assert result["truncated"] is True
+    with patch(f"{_MOD}.get_fmp_client", return_value=_make_fmp_client()):
+        assert "truncated" not in await getattr(mod, tool)(**args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "method", "args"),
+    [
+        ("get_economic_indicator", "get_economic_indicators", ("CPI",)),
+        ("get_economic_calendar", "get_economic_calendar", ("2025-01-01", "2025-01-31")),
+        ("get_treasury_rates", "get_treasury_rates", ("2025-01-01", "2025-01-31")),
+        ("get_earnings_calendar", "get_earnings_calendar_by_date", ("2025-01-01", "2025-01-31")),
+    ],
+)
+async def test_a_refusal_fmp_answers_with_a_200_is_an_upstream_error(tool, method, args):
+    import plugins.langalpha_market_data.macro_mcp_server as mod
+
+    client = _make_fmp_client()
+    setattr(client, method, AsyncMock(return_value={"Error Message": "Limit Reach"}))
+    with patch(f"{_MOD}.get_fmp_client", return_value=client):
+        result = await getattr(mod, tool)(*args)
+    assert_error(result, "upstream_error")

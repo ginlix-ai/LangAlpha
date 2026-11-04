@@ -802,6 +802,10 @@
               "description": "Echoed indicator name.",
               "type": "string"
             },
+            "truncated": {
+              "description": "Present and true when a page or row cap cut the read short; the oldest rows are missing.",
+              "type": "boolean"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -895,6 +899,10 @@
                 "null"
               ]
             },
+            "truncated": {
+              "description": "Present and true when a page or row cap cut the read short; the oldest rows are missing.",
+              "type": "boolean"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -987,6 +995,10 @@
                 "string",
                 "null"
               ]
+            },
+            "truncated": {
+              "description": "Present and true when a page or row cap cut the read short; the oldest rows are missing.",
+              "type": "boolean"
             },
             "error": {
               "description": "Machine-readable error code (error responses only).",
@@ -1118,6 +1130,10 @@
             },
             "to_date": {
               "type": "string"
+            },
+            "truncated": {
+              "description": "Present and true when a page or row cap cut the read short; the oldest rows are missing.",
+              "type": "boolean"
             },
             "error": {
               "description": "Machine-readable error code (error responses only).",
@@ -1265,6 +1281,10 @@
             "underlying_ticker": {
               "type": "string"
             },
+            "truncated": {
+              "description": "Present and true when more contracts matched than limit.",
+              "type": "boolean"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -1356,6 +1376,10 @@
             "source": {
               "description": "Upstream data source.",
               "type": "string"
+            },
+            "truncated": {
+              "description": "Present and true when a page or row cap cut the read short; the oldest rows are missing.",
+              "type": "boolean"
             },
             "error": {
               "description": "Machine-readable error code (error responses only).",
@@ -1541,6 +1565,13 @@
               "description": "Local-language company name; CN and HK listings only, omitted elsewhere.",
               "type": "string"
             },
+            "truncated": {
+              "description": "Present and true when a page or row cap cut the read short; the oldest rows are missing.",
+              "type": "boolean"
+            },
+            "incomplete": {
+              "type": "boolean"
+            },
             "error": {
               "description": "Machine-readable error code (error responses only).",
               "type": "string"
@@ -1658,6 +1689,13 @@
             "name": {
               "description": "Local-language company name; CN and HK listings only, omitted elsewhere.",
               "type": "string"
+            },
+            "truncated": {
+              "description": "Present and true when a page or row cap cut the read short; the oldest rows are missing.",
+              "type": "boolean"
+            },
+            "incomplete": {
+              "type": "boolean"
             },
             "error": {
               "description": "Machine-readable error code (error responses only).",

@@ -18,12 +18,14 @@ async def follow_cursor(
     max_pages: int = 10,
     label: str = "ginlix_data",
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Every ``results`` row a cursor walk reads, and whether more was left unread.
+    """Every ``results`` row a cursor walk reads, up to *limit*, and whether more
+    was left unread.
 
     Later pages resend every first-page param beside ``cursor``: some routes
     reject a bare cursor. The walk ends at the last page, an empty page or
     *limit* rows, and is cut short (``truncated``) by a cursor that does not
-    advance or by *max_pages*.
+    advance or by *max_pages*. More was left when a page held rows past
+    *limit* or a cursor was left to follow, an empty page's included.
     """
     rows: list[dict[str, Any]] = []
     params = dict(params)  # avoid mutating caller's dict
@@ -32,9 +34,13 @@ async def follow_cursor(
         body = await fetch_page(params)
         results = body.get("results") or []
         rows.extend(results)
+        if body.get("truncated"):
+            # The route could not follow its upstream past this page.
+            return rows[:limit], True
         cursor = body.get("next_cursor")
         if not cursor or not results or (limit is not None and len(rows) >= limit):
-            return rows[:limit], False
+            more = bool(cursor) or (limit is not None and len(rows) > limit)
+            return rows[:limit], more
         if cursor in seen:
             # The cursor did not advance: following it only re-reads this page.
             logger.warning("%s: cursor repeated on page %d, stopping", label, page)
@@ -44,17 +50,6 @@ async def follow_cursor(
         params["cursor"] = cursor
     logger.warning("%s: hit %d-page ceiling, data truncated", label, max_pages)
     return rows[:limit], True
-
-
-async def paginate_cursor(
-    fetch_page: FetchPage,
-    params: dict[str, Any],
-    limit: int,
-    max_pages: int = 10,
-) -> list[dict[str, Any]]:
-    """Up to *limit* rows of a cursor walk, for a caller with no use for truncation."""
-    rows, _ = await follow_cursor(fetch_page, params, limit=limit, max_pages=max_pages)
-    return rows
 
 
 def unique_by_time(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
