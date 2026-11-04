@@ -15,7 +15,7 @@ import asyncio
 
 from langchain_core.runnables import RunnableConfig
 
-from .currency import DisplaySpec, fmt_count, fmt_money, fmt_price
+from .currency import DisplaySpec, fmt_count, fmt_money, fmt_price, fmt_quote, quote_spec
 from .earnings import (
     EarningsReport,
     diluted_eps,
@@ -441,13 +441,13 @@ def _quote_detail_rows(
 ) -> List[Tuple[str, str]]:
     rows = []
     if open_:
-        rows.append(("Open", fmt_price(open_, cur)))
+        rows.append(("Open", fmt_quote(open_, cur)))
     if prev_close:
-        rows.append(("Previous Close", fmt_price(prev_close, cur)))
+        rows.append(("Previous Close", fmt_quote(prev_close, cur)))
     if low and high:
-        rows.append(("Day Range", f"{fmt_price(low, cur)} - {fmt_price(high, cur)}"))
+        rows.append(("Day Range", f"{fmt_quote(low, cur)} - {fmt_quote(high, cur)}"))
     if year_low and year_high:
-        rows.append(("52-Week Range", f"{fmt_price(year_low, cur)} - {fmt_price(year_high, cur)}"))
+        rows.append(("52-Week Range", f"{fmt_quote(year_low, cur)} - {fmt_quote(year_high, cur)}"))
     if volume:
         vol_str = fmt_count(volume)
         rows.append(("Volume", f"{vol_str} (Avg: {fmt_count(avg_volume)})" if avg_volume else vol_str))
@@ -565,7 +565,11 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
     fmp = inp.quote
     if snap is None and fmp is None:
         return []
-    cur = _quote_precision(inp.cur, inp.symbol)
+    price = current_price(snap) if snap is not None else finite_or_none(fmp.get("price"))
+    # The detail rows judge each figure's precision by its own size; the price
+    # lines and their moves take the shown price's.
+    base = _quote_precision(inp.cur, inp.symbol)
+    cur = quote_spec(base, price)
     session_name, current_time_et = get_market_session()
     status = snap.get("market_status", "") if snap is not None else ""
     label = _STATUS_LABELS.get(status, session_name.replace("_", " ").title())
@@ -590,7 +594,7 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
         # The snapshot has no 52-week range or average volume; the provider quote does.
         fmp = fmp or {}
         rows = _quote_detail_rows(
-            cur, snap.get("open"), snap.get("previous_close"), snap.get("low"), snap.get("high"),
+            base, snap.get("open"), snap.get("previous_close"), snap.get("low"), snap.get("high"),
             fmp.get("yearLow"), fmp.get("yearHigh"), snap.get("volume"), fmp.get("avgVolume"),
         )
     else:
@@ -598,7 +602,7 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
         if price_line:
             out += [price_line, ""]
         rows = _quote_detail_rows(
-            cur, fmp.get("open"), fmp.get("previousClose"), fmp.get("dayLow"), fmp.get("dayHigh"),
+            base, fmp.get("open"), fmp.get("previousClose"), fmp.get("dayLow"), fmp.get("dayHigh"),
             fmp.get("yearLow"), fmp.get("yearHigh"), fmp.get("volume"), fmp.get("avgVolume"),
         )
     if rows:
@@ -823,7 +827,7 @@ def _company_text(inp: CompanyInputs) -> str:
         "",
         f"Company: {inp.name} ({inp.symbol})",
         f"Sector: {profile.get('sector') or 'N/A'} | Industry: {profile.get('industry') or 'N/A'}",
-        f"Market Cap: {market_cap} | Current Price: {fmt_price(price, _quote_precision(cur, inp.symbol))}{price_note}"
+        f"Market Cap: {market_cap} | Current Price: {fmt_quote(price, _quote_precision(cur, inp.symbol))}{price_note}"
         if price
         else f"Market Cap: {market_cap}",
         "",

@@ -156,6 +156,17 @@ class TestCurrencyAndVenueAwareness:
         assert "ET" not in line
         assert "(" not in line
 
+    def test_a_sub_dollar_price_keeps_four_places(self):
+        assert "$0.3734" in format_quote_line(_snap(last_trade_price=0.3734))
+
+    def test_a_sub_unit_price_in_another_currency_keeps_its_own_places(self):
+        # An A-share ticks in fen: four places would invent precision.
+        line = format_quote_line(_snap(symbol="600000.SH", last_trade_price=0.85))
+        assert "CN¥0.85 " in line
+
+    def test_a_hong_kong_penny_stock_keeps_its_tick(self):
+        assert "HK$0.0370" in format_quote_line(_snap(symbol="1234.HK", last_trade_price=0.037))
+
     def test_unresolvable_symbol_falls_back_to_dollar(self):
         # A symbol the protocol can't resolve degrades to '$' with no suffix and
         # never raises (the formatter sits in tool-output + middleware paths).

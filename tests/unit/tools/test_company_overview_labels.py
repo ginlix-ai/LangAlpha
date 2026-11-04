@@ -270,6 +270,19 @@ def test_a_foreign_quote_says_when_its_price_printed():
     assert "| **Price as of:** 2026-07-01 15:00:00 UTC+8" in text
 
 
+def test_a_sub_dollar_quote_keeps_four_places():
+    quote = {"price": 0.3734, "change": 0.0123, "changePercentage": 3.4}
+    text = _company_text(_inputs("SUBD", quote=quote, profile={"price": 0.3734}))
+    assert "Current Price: $0.3734" in text
+    assert "**Price:** $0.3734 (+0.0123 / +3.40%)" in text
+
+
+def test_each_detail_figure_takes_its_own_precision():
+    quote = {"price": 0.3734, "change": 0.0123, "changePercentage": 3.4, "yearLow": 0.21, "yearHigh": 12.0}
+    text = _quote_text("SUBD", quote=quote)
+    assert "| 52-Week Range | $0.2100 - $12.00 |" in text
+
+
 def test_a_us_quote_keeps_two_places():
     text = _quote_text("AAPL", quote={"price": 331.9, "change": 1.25, "changePercentage": 0.38})
     assert "**Price:** $331.90 (+1.25 / +0.38%)" in text

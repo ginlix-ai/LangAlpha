@@ -14,10 +14,10 @@ from typing import Any, NamedTuple, Optional
 from src.data_client.freshness import Freshness, FreshnessLabel, is_live, measure_quote
 from market_protocol import AssetClass, InstrumentRef, MarketPhase, display_spelling
 
-from .currency import fmt_money, fmt_price
+from .currency import fmt_money
 from .display import (
     _is_us_clock,
-    _symbol_currency,
+    price_text,
     resolve_ref,
     venue_local_time,
     venue_phase,
@@ -137,19 +137,6 @@ def _symbol_label(snap: dict[str, Any]) -> str:
         return display_spelling(str(symbol))
     except Exception:
         return str(symbol)
-
-
-def _fmt_price(price: float, ref: Optional[InstrumentRef]) -> str:
-    """Currency-aware, thousands-grouped price for quote output; '$' on any failure.
-
-    Grouping is the get_quote house style, the only delta from the canonical
-    :func:`fmt_price`. Never raises: the formatter sits in tool-output and
-    market-watch middleware paths.
-    """
-    try:
-        return fmt_price(price, _symbol_currency(ref), group=True)
-    except Exception:
-        return f"${price:,.2f}"
 
 
 def _venue_clock(ref: Optional[InstrumentRef], at: Optional[datetime]) -> Optional[str]:
@@ -302,7 +289,7 @@ def _line(row: _Row, prev_price: Optional[float], at: Optional[datetime]) -> str
     parts = [_symbol_label(snap)]
     price = current_price(snap)
     if price is not None:
-        parts.append(_fmt_price(price, row.ref))
+        parts.append(price_text(price, row.ref))
     # A coin's vendors close its day at 00:00 UTC and report its volume as
     # money in the quote currency, not as a count of coins.
     coin = row.ref is not None and row.ref.asset_class is AssetClass.CRYPTO
@@ -388,7 +375,7 @@ def _venue_is_live(ref: Optional[InstrumentRef], session_name: str,
 def _stamp_entry(row: _Row, at: Optional[datetime] = None) -> str:
     """'NVDA $233.45 (+2.31%) @ 2026-07-01 10:30:00 CST' for one stamped row."""
     snap = row.snap
-    text = f"{_symbol_label(snap)} {_fmt_price(current_price(snap), row.ref)}"
+    text = f"{_symbol_label(snap)} {price_text(current_price(snap), row.ref)}"
     pct = finite_or_none(snap.get("change_percent"))
     if pct is not None:
         text += f" ({'+' if pct >= 0 else ''}{pct:.2f}%)"

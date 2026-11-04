@@ -23,7 +23,7 @@ from market_protocol import (
 from src.data_client.instrument_clock import clock_for_ref
 from src.data_client.normalize import listing_currency
 
-from .currency import DisplaySpec, fmt_price
+from .currency import DisplaySpec, fmt_quote
 
 
 def resolve_ref(
@@ -81,9 +81,10 @@ def _symbol_currency(ref: Optional[InstrumentRef]) -> DisplaySpec:
 
 
 def price_text(value: Optional[float], ref: Optional[InstrumentRef]) -> str:
-    """``$198.00`` or ``HK$318.20``: a price in its listing's currency, grouped."""
+    """``$198.00`` or ``HK$318.20``: a price in its listing's currency, grouped,
+    at the precision it quotes in (``$0.3734``)."""
     try:
-        return fmt_price(value, _symbol_currency(ref), group=True)
+        return fmt_quote(value, _symbol_currency(ref), group=True)
     except Exception:
         return f"{value:,.2f}" if value is not None else "N/A"
 
