@@ -49,6 +49,7 @@ from data_client.ginlix_data.cn_financial import GinlixDataCnFinancialSource
 from mcp_servers._envelope import error_from_exception, make_error, make_response
 from mcp_servers._schemas import (
     ANY,
+    BAR_LABELS,
     INT,
     RECORDS,
     RECORDS_BY_KEY,
@@ -688,6 +689,7 @@ _OUT_GET_TECHNICAL_INDICATOR = output_model(
             "indicator": STR,
             "period": described(INT, "Indicator lookback length."),
             "timeframe": described(STR, "FMP-native bar size."),
+            **BAR_LABELS,
         },
     ),
 )
@@ -700,22 +702,22 @@ async def get_technical_indicator(
     period: int = 14,
     timeframe: str = "1day",
 ) -> _OUT_GET_TECHNICAL_INDICATOR:
-    """Fetch a technical indicator time series over OHLCV bars — plot RSI,
-    overlay EMA/MACD, or screen by technical signals.
+    """Fetch a technical indicator time series over OHLCV bars.
 
     Args:
         symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SH".
         indicator: FMP name — "rsi", "ema", "sma", "wma", "adx", "williams".
-        period: Indicator lookback length (default 14).
+        period: Lookback length (default 14).
         timeframe: FMP-native bar — "1min"…"4hour", "1day" (default "1day").
 
     Returns:
         dict: {symbol, count, data, source, data_type, indicator, period,
-        timeframe}. data is a list of bars; count is the bar total. Fields: date,
-        open, high, low, close, volume, and the indicator value keyed by its
-        name. date is "YYYY-MM-DD" (1day) or "YYYY-MM-DD HH:MM:SS"
-        (intraday); field names are FMP-native camelCase; bars newest-first.
-        On error: {error: <code>, detail, symbol}.
+        timeframe, price_treatment, in_progress?}. data: list of {date, open,
+        high, low, close, volume, <indicator>} newest first, field names
+        FMP-native camelCase. date is "YYYY-MM-DD" (1day) or
+        "YYYY-MM-DD HH:MM:SS" (intraday). price_treatment:
+        raw|split_adjusted|dividend_adjusted. in_progress: date of the newest
+        bar while it forms. On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     if timeframe not in _BAR_SIZES:

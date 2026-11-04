@@ -54,6 +54,26 @@ NULLABLE_STR: dict[str, Any] = {"type": ["string", "null"]}
 
 STR_LIST: dict[str, Any] = {"type": "array", "items": STR}
 
+# Echo keys of a bar series (data_client.normalize.series_labels).
+PRICE_TREATMENT: dict[str, Any] = {
+    "type": "string",
+    "enum": ["raw", "split_adjusted", "dividend_adjusted"],
+    "description": "Adjustment of the prices: raw, split_adjusted or dividend_adjusted.",
+}
+IN_PROGRESS: dict[str, Any] = {
+    "type": "string",
+    "description": "Date of the newest bar while it is still forming; omitted otherwise.",
+}
+VOLUME_NOTE: dict[str, Any] = {
+    "type": "string",
+    "description": "Why volume is unreliable; omitted when it is not.",
+}
+BAR_LABELS: dict[str, dict[str, Any]] = {
+    "price_treatment": PRICE_TREATMENT,
+    "in_progress": IN_PROGRESS,
+    "volume_note": VOLUME_NOTE,
+}
+
 
 def described(prop: dict[str, Any], description: str) -> dict[str, Any]:
     """A vocabulary entry under a call-site-specific description."""
