@@ -7,24 +7,26 @@
 
 import React from 'react';
 import { Sunrise, Sunset } from 'lucide-react';
-import { fixed2, signedFixed2 } from '@/lib/format';
+import { signedFixed2 } from '@/lib/format';
+import { fixedUpTo } from '@/lib/bars';
 import { useLocale } from '@/hooks/useLocale';
 import type { StockQuoteModel } from '../hooks/useStockQuoteModel';
 
 interface ExtendedHoursPairProps {
   ext: NonNullable<StockQuoteModel['ext']>;
+  places: number;
   iconSize: number;
   className?: string;
   style?: React.CSSProperties;
 }
 
-export function ExtendedHoursPair({ ext, iconSize, className, style }: ExtendedHoursPairProps): React.ReactElement {
+export function ExtendedHoursPair({ ext, places, iconSize, className, style }: ExtendedHoursPairProps): React.ReactElement {
   const locale = useLocale();
   return (
     <span className={className} style={{ ...style, color: ext.type === 'pre' ? 'var(--color-ext-pre)' : 'var(--color-ext-post)' }}>
       {ext.type === 'pre' ? <Sunrise size={iconSize} /> : <Sunset size={iconSize} />}
-      {fixed2(ext.price, locale)}
-      {ext.change != null && <span>{signedFixed2(ext.change, locale)}</span>}
+      {fixedUpTo(ext.price, places, locale)}
+      {ext.change != null && <span>{fixedUpTo(ext.change, places, locale, { signed: true })}</span>}
       <span>({signedFixed2(ext.pct, locale)}%)</span>
     </span>
   );

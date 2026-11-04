@@ -24,8 +24,6 @@ const mocks = vi.hoisted(() => ({
     ginlixDataEnabled: false,
     subscribe: vi.fn(),
     unsubscribe: vi.fn(),
-    setPreviousClose: vi.fn(),
-    setDayOpen: vi.fn(),
   },
 }));
 

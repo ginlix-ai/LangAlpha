@@ -15,11 +15,12 @@ import type { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { stockKey, type QuoteRow } from './quoteBatcher';
 
-/** The live fields a WS aggregate frame contributes. */
+/** The live fields a WS aggregate frame contributes. A null change (no
+ *  previous close to measure it against) leaves the row's own pair alone. */
 export interface WsQuoteFields {
   price: number;
-  change: number;
-  changePercent: number;
+  change: number | null;
+  changePercent: number | null;
 }
 
 /**
@@ -43,8 +44,12 @@ export function writeQuoteFromWs(
       ...base,
       symbol: base.symbol ?? key,
       price: fields.price,
-      change: fields.change,
-      change_percent: fields.changePercent,
+      // A frame is a minute aggregate: its close is the row's last minute close,
+      // which an extended-hours row prints as its session price.
+      last_minute_close: fields.price,
+      ...(fields.change != null && fields.changePercent != null
+        ? { change: fields.change, change_percent: fields.changePercent }
+        : {}),
     };
   });
 }

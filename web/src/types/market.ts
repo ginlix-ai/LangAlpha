@@ -108,6 +108,18 @@ export interface SnapshotBatchResponse {
 
 // --- Stock Price ---
 
+/** A quote row's fields an extended-hours split reads (lib/marketUtils `sessionQuote`). */
+export interface ExtendedSessionFields {
+  previousClose?: number | null;
+  regularClose?: number | null;
+  regularTradingChange?: number | null;
+  lastMinuteClose?: number | null;
+  earlyTradingChange?: number | null;
+  lateTradingChange?: number | null;
+  earlyTradingChangePercent?: number | null;
+  lateTradingChangePercent?: number | null;
+}
+
 export interface StockPrice {
   symbol: string;
   /** ISO 4217 code from the snapshot; absent on older payloads. */
@@ -117,9 +129,10 @@ export interface StockPrice {
   changePercent: number;
   isPositive: boolean;
   quoteAvailable?: boolean;
-  previousClose?: number | null;
-  earlyTradingChangePercent?: number | null;
-  lateTradingChangePercent?: number | null;
+  /** Places this listing's prices print up to (lib/bars `quotePlaces`). */
+  places: number;
+  /** The extended-session fields; absent when there is no quote. */
+  session?: ExtendedSessionFields;
 }
 
 // --- Chart Data ---

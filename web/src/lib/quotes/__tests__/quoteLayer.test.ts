@@ -152,7 +152,7 @@ describe('writeQuoteFromWs', () => {
 });
 
 describe('snapshotToStockPrice', () => {
-  it('rounds and maps an available quote', () => {
+  it('maps an available quote at the precision it was quoted', () => {
     expect(
       snapshotToStockPrice('AAPL', {
         symbol: 'AAPL', price: 100.456, change: -1.234, change_percent: -1.216,
@@ -160,21 +160,24 @@ describe('snapshotToStockPrice', () => {
       }),
     ).toMatchObject({
       symbol: 'AAPL',
-      price: 100.46,
-      change: -1.23,
-      changePercent: -1.22,
+      price: 100.456,
+      change: -1.234,
+      changePercent: -1.216,
       isPositive: false,
       quoteAvailable: true,
-      previousClose: 101.69,
+      session: { previousClose: 101.69 },
     });
   });
 
-  it('keeps a CN fund price at its 3-decimal tick and a stock at cents', () => {
+  it('keeps a sub-cent tick and a CN fund price unrounded', () => {
+    expect(
+      snapshotToStockPrice('XXII', { symbol: 'XXII', price: 0.0483, change: -0.0258 }),
+    ).toMatchObject({ price: 0.0483, change: -0.0258 });
     expect(
       snapshotToStockPrice('510300.SH', {
         symbol: '510300.SH', price: 3.912, change: 0.0123, asset_class: 'fund', currency: 'CNY',
       }),
-    ).toMatchObject({ price: 3.912, change: 0.012 });
+    ).toMatchObject({ price: 3.912, change: 0.0123 });
     expect(
       snapshotToStockPrice('600519.SH', {
         symbol: '600519.SH', price: 1500.5, asset_class: 'equity', currency: 'CNY',
@@ -185,7 +188,7 @@ describe('snapshotToStockPrice', () => {
   it('marks a missing quote unavailable with zeroed display fields', () => {
     expect(snapshotToStockPrice('MSFT', null)).toEqual({
       symbol: 'MSFT', price: 0, change: 0, changePercent: 0,
-      isPositive: true, quoteAvailable: false,
+      isPositive: true, quoteAvailable: false, places: 2,
     });
   });
 });

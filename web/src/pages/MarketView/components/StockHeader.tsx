@@ -5,9 +5,9 @@ import { HeaderPill } from './HeaderPill';
 import { ExtendedHoursPair } from './ExtendedHoursPair';
 import './StockHeader.css';
 import type { StockSearchHit } from '@/lib/marketUtils';
-import { compactNumberFixed2, createDateFormatter, fixed2, signedFixed2 } from '@/lib/format';
-import { DASH, fixed2OrDash as fmt, quoteDotState, quoteSessionText, quoteSourceText, type StockQuoteModel } from '../hooks/useStockQuoteModel';
-import { venueLabelForSymbol } from '@/lib/bars';
+import { DASH, compactNumberFixed2, createDateFormatter, signedFixed2 } from '@/lib/format';
+import { priceOrDash, quoteDotState, quoteSessionText, quoteSourceText, type StockQuoteModel } from '../hooks/useStockQuoteModel';
+import { fixedUpTo, venueLabelForSymbol } from '@/lib/bars';
 import { chartFreshnessParts, freshnessSpecText, venueTime } from '@/lib/freshness';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useTranslation } from 'react-i18next';
@@ -67,8 +67,9 @@ const StockHeader = ({ symbol, quote: q, chartMeta: _chartMeta, onToggleOverview
   const {
     headline, status, tickAt, changePercent,
     previousClose, open, high, low, fiftyTwoWeekHigh, fiftyTwoWeekLow, averageVolume, shownVolume, volumeIsAverage,
-    displayName, displaySecondaryName, displayExchange, ext, currency,
+    displayName, displaySecondaryName, displayExchange, ext, currency, places,
   } = q;
+  const fmt = (n: number | null | undefined): string => priceOrDash(n, places, locale);
   const hasDayRange = high != null && low != null;
 
   // Two surfaces, measured independently: the quote and the chart routinely come
@@ -156,12 +157,12 @@ const StockHeader = ({ symbol, quote: q, chartMeta: _chartMeta, onToggleOverview
           {/* Figures print bare; the code names their currency once, here. An
               index level is points and names none. */}
           <div className={`stock-price ${headline.tone}`}>
-            {fmt(headline.price, locale)}
+            {fmt(headline.price)}
             {headline.price != null && currency && <span className="stock-price-currency">{currency}</span>}
           </div>
           {(headline.change != null && headline.pct != null) ? (
             <div className={`stock-change ${headline.tone}`}>
-              {signedFixed2(headline.change, locale)} {signedFixed2(headline.pct, locale)}%
+              {fixedUpTo(headline.change, places, locale, { signed: true })} {signedFixed2(headline.pct, locale)}%
             </div>
           ) : !ext && (
             <div className={`stock-change ${headline.tone}`}>{DASH}</div>
@@ -169,6 +170,7 @@ const StockHeader = ({ symbol, quote: q, chartMeta: _chartMeta, onToggleOverview
           {ext && (
             <ExtendedHoursPair
               ext={ext}
+              places={places}
               iconSize={13}
               className="stock-extended-hours"
               style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8125rem' }}
@@ -196,29 +198,29 @@ const StockHeader = ({ symbol, quote: q, chartMeta: _chartMeta, onToggleOverview
         <div className="stock-metrics">
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.prevClose')}</span>
-            <span className="metric-value">{fmt(previousClose, locale)}</span>
+            <span className="metric-value">{fmt(previousClose)}</span>
           </div>
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.open')}
               <span className="metrics-discrepancy-hint" title={t('marketView.header.openHint')}>!</span>
             </span>
-            <span className="metric-value">{fmt(open, locale)}</span>
+            <span className="metric-value">{fmt(open)}</span>
           </div>
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.low')}</span>
-            <span className="metric-value">{fmt(low, locale)}</span>
+            <span className="metric-value">{fmt(low)}</span>
           </div>
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.high')}</span>
-            <span className="metric-value">{fmt(high, locale)}</span>
+            <span className="metric-value">{fmt(high)}</span>
           </div>
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.high52w')}</span>
-            <span className="metric-value">{fmt(fiftyTwoWeekHigh, locale)}</span>
+            <span className="metric-value">{fmt(fiftyTwoWeekHigh)}</span>
           </div>
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.low52w')}</span>
-            <span className="metric-value">{fmt(fiftyTwoWeekLow, locale)}</span>
+            <span className="metric-value">{fmt(fiftyTwoWeekLow)}</span>
           </div>
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.avgVolume3m')}</span>
@@ -235,7 +237,7 @@ const StockHeader = ({ symbol, quote: q, chartMeta: _chartMeta, onToggleOverview
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.dayRange')}</span>
             <span className="metric-value">
-              {hasDayRange ? `${fixed2(low, locale)} – ${fixed2(high, locale)}` : DASH}
+              {hasDayRange ? `${fmt(low)} – ${fmt(high)}` : DASH}
             </span>
           </div>
           <div className="metric-item">

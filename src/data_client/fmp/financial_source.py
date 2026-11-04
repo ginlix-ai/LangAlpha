@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.data_client.normalize import scale_quote_prices
+
 from .fmp_client import FMPClient
 
 
@@ -18,10 +20,10 @@ class FMPFinancialSource:
         self._client = client
 
     async def get_company_profile(self, symbol: str) -> list[dict[str, Any]]:
-        return await self._client.get_profile(symbol)
+        return scale_quote_prices(await self._client.get_profile(symbol), symbol)
 
     async def get_realtime_quote(self, symbol: str) -> list[dict[str, Any]]:
-        return await self._client.get_quote(symbol)
+        return scale_quote_prices(await self._client.get_quote(symbol), symbol)
 
     async def get_income_statements(
         self, symbol: str, period: str = "quarter", limit: int = 8

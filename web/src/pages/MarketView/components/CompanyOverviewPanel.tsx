@@ -70,8 +70,9 @@ function QuoteSummary({ data, symbol }: QuoteSummaryProps) {
   const { quote } = data;
   if (!quote) return null;
 
-  const { displayPrice, displayChange, displayChangePct, currency, dualName } = deriveOverviewQuote(data, symbol);
+  const { displayPrice, displayChange, displayChangePct, currency, places, dualName } = deriveOverviewQuote(data, symbol);
   const money = (n: number): string => formatMoney(n, currency, locale);
+  const quoteMoney = (n: number | null): string => formatMoney(n, currency, locale, { upTo: places });
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -88,23 +89,23 @@ function QuoteSummary({ data, symbol }: QuoteSummaryProps) {
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: '1.375rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-          {formatMoney(displayPrice, currency, locale)}
+          {quoteMoney(displayPrice)}
         </span>
         {displayChange != null && (
           <span style={{ fontSize: '0.8125rem', color: displayChange >= 0 ? GREEN : RED }}>
-            {formatMoney(displayChange, currency, locale, { signed: true })}
+            {formatMoney(displayChange, currency, locale, { signed: true, upTo: places })}
             {displayChangePct != null && ` (${signedFixed2(displayChangePct, locale)}%)`}
           </span>
         )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
-        {quote.open != null && <QuoteStat label={t('toolArtifact.open')} value={money(quote.open)} />}
-        {quote.previousClose != null && <QuoteStat label={t('toolArtifact.prevClose')} value={money(quote.previousClose)} />}
+        {quote.open != null && <QuoteStat label={t('toolArtifact.open')} value={quoteMoney(quote.open)} />}
+        {quote.previousClose != null && <QuoteStat label={t('toolArtifact.prevClose')} value={quoteMoney(quote.previousClose)} />}
         {quote.dayLow != null && quote.dayHigh != null && (
-          <QuoteStat label={t('toolArtifact.dayRange')} value={`${money(quote.dayLow)} - ${money(quote.dayHigh)}`} />
+          <QuoteStat label={t('toolArtifact.dayRange')} value={`${quoteMoney(quote.dayLow)} - ${quoteMoney(quote.dayHigh)}`} />
         )}
         {quote.yearLow != null && quote.yearHigh != null && (
-          <QuoteStat label={t('toolArtifact.52wRange')} value={`${money(quote.yearLow)} - ${money(quote.yearHigh)}`} />
+          <QuoteStat label={t('toolArtifact.52wRange')} value={`${quoteMoney(quote.yearLow)} - ${quoteMoney(quote.yearHigh)}`} />
         )}
         {quote.volume != null && <QuoteStat label={t('toolArtifact.volume')} value={compactNumberFixed2(quote.volume, locale)} />}
         {quote.marketCap != null && <QuoteStat label={t('toolArtifact.marketCap')} value={formatMoney(quote.marketCap, currency, locale, { compact: true })} />}

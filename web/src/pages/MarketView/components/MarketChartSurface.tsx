@@ -77,8 +77,6 @@ function MarketChartSurfaceInner({
     ginlixDataEnabled,
     subscribe: wsSubscribe,
     unsubscribe: wsUnsubscribe,
-    setPreviousClose,
-    setDayOpen,
   } = useMarketDataWSContext();
 
   const [selectedInterval, setSelectedInterval] = useState<string>(timeframe);
@@ -93,6 +91,8 @@ function MarketChartSurfaceInner({
   // reads it; the chart resets it to null on a symbol switch.
   const [marketPhase, setMarketPhase] = useState<string | null>(null);
   const [showOverview, setShowOverview] = useState(false);
+  const wsHasData = wsPrices.has(symbol);
+  const streamsLive = wsStatus === 'connected' && wsHasData;
 
   const {
     stockInfo,
@@ -102,7 +102,7 @@ function MarketChartSurfaceInner({
     overviewLoading,
     overlayData,
     marketStatus,
-  } = useStockData({ selectedStock: symbol, wsStatus, setPreviousClose, setDayOpen });
+  } = useStockData({ selectedStock: symbol, streamsLive });
 
   // Load this symbol's persisted annotations (all timeframes) into the store so
   // MarketChart renders them — exactly as the live MarketView page does.
@@ -138,7 +138,6 @@ function MarketChartSurfaceInner({
   const displayPrice = wsPrices.get(symbol) || realTimePrice;
   const displayOverride = picked && picked.symbol === symbol.trim().toUpperCase() ? picked.display : null;
   const quote = overviewData?.quote || null;
-  const wsHasData = !!wsPrices.get(symbol);
   // The chart's own bars, measured apart from the quote: the header shows both.
   const [chartFreshness, setChartFreshness] = useState<Freshness | null>(null);
 

@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 from market_protocol import display_spelling, to_major_units
 
+from src.data_client.normalize import scale_quote_prices
+
 from .yahoo import yahoo_ticker
 
 logger = logging.getLogger(__name__)
@@ -175,7 +177,7 @@ def _get_profile(symbol: str) -> list[dict[str, Any]]:
         "price": float(fi.get("lastPrice", 0) or 0) or None,
         "beta": info.get("beta"),
     }
-    return [{k: _clean_value(v) for k, v in profile.items()}]
+    return scale_quote_prices([{k: _clean_value(v) for k, v in profile.items()}], symbol)
 
 
 def _get_realtime_quote(symbol: str) -> list[dict[str, Any]]:
@@ -186,23 +188,22 @@ def _get_realtime_quote(symbol: str) -> list[dict[str, Any]]:
     prev = float(fi.get("previousClose", 0) or 0)
     change = price - prev if prev else 0.0
     change_pct = (change / prev * 100) if prev else 0.0
-    return [
-        {
-            "symbol": symbol,
-            "name": info.get("longName") or info.get("shortName"),
-            "price": round(price, 4),
-            "change": round(change, 4),
-            "changePercentage": round(change_pct, 4),
-            "previousClose": round(prev, 4),
-            "open": round(float(fi.get("open", 0) or 0), 4),
-            "dayHigh": round(float(fi.get("dayHigh", 0) or 0), 4),
-            "dayLow": round(float(fi.get("dayLow", 0) or 0), 4),
-            "volume": int(fi.get("lastVolume", 0) or 0),
-            "marketCap": fi.get("marketCap"),
-            "pe": info.get("trailingPE"),
-            "eps": info.get("trailingEps"),
-        }
-    ]
+    row = {
+        "symbol": symbol,
+        "name": info.get("longName") or info.get("shortName"),
+        "price": round(price, 4),
+        "change": round(change, 4),
+        "changePercentage": round(change_pct, 4),
+        "previousClose": round(prev, 4),
+        "open": round(float(fi.get("open", 0) or 0), 4),
+        "dayHigh": round(float(fi.get("dayHigh", 0) or 0), 4),
+        "dayLow": round(float(fi.get("dayLow", 0) or 0), 4),
+        "volume": int(fi.get("lastVolume", 0) or 0),
+        "marketCap": fi.get("marketCap"),
+        "pe": info.get("trailingPE"),
+        "eps": info.get("trailingEps"),
+    }
+    return scale_quote_prices([row], symbol)
 
 
 def _get_income_statements(

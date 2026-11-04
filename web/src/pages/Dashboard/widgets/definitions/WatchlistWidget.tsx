@@ -55,7 +55,7 @@ function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
       // here only carries previousClose + a change-percent — passing
       // previousClose under the preMarket key would label yesterday's close
       // as the pre-market price in the agent's view. Adding correct ext-
-      // hours info would need marketStatus + getExtendedHoursInfo here.
+      // hours info would need marketStatus + sessionQuote here.
       const cleaned = watchlistQuoteRow(row);
       const body = serializeQuoteRowToMarkdown(cleaned);
       const text = wrapWidgetContext('watchlist.list/row', { symbol: row.symbol }, body);

@@ -8,9 +8,9 @@
 
 import { useMemo } from 'react';
 import type { TFunction } from 'i18next';
-import { fixed2 } from '@/lib/format';
-import { getExtendedHoursInfo } from '@/lib/marketUtils';
-import { quoteCurrency } from '@/lib/bars';
+import { DASH } from '@/lib/format';
+import { sessionQuote, type SessionQuote } from '@/lib/marketUtils';
+import { fixedUpTo, quoteCurrency, quotePlaces } from '@/lib/bars';
 import { resolveDualName, type SymbolDisplayOverride } from '@/lib/displayName';
 import { providerLabel } from '@/lib/providerLabels';
 import { FRESHNESS_TONE, freshnessSpecText, isLiveRow, resolveFreshnessBadge, type FreshnessSpec } from '@/lib/freshness';
@@ -34,10 +34,9 @@ export interface StockQuoteInputs {
   displayOverride?: SymbolDisplayOverride | null;
 }
 
-/** The placeholder a quote figure prints while it has no value. */
-export const DASH = '—';
-/** The quote figures' formatter: `fixed2` takes a number, this decides what an absent one shows. */
-export const fixed2OrDash = (n: number | null | undefined, locale: string): string => (n != null ? fixed2(n, locale) : DASH);
+/** The quote figures' formatter, up to the listing's places (`StockQuoteModel.places`), with a dash for an absent one. */
+export const priceOrDash = (n: number | null | undefined, places: number, locale: string): string =>
+  (n != null ? fixedUpTo(n, places, locale) : DASH);
 
 export type ChangeTone = 'positive' | 'negative' | '';
 
@@ -56,8 +55,12 @@ export interface StockQuoteModel {
    * cannot pick differently.
    */
   headline: { price: number | null; change: number | null; pct: number | null; tone: ChangeTone };
-  /** Live feed wins over the venue phase; an unknown phase reads as delayed. */
+  /** Places every price and price change of this quote prints up to (lib/bars `quotePlaces`). */
+  places: number;
+  /** Feed freshness for the dot: a closed venue wins over the live feed; an unknown phase reads as delayed. */
   status: QuoteStatus;
+  /** Venue calendar phase (`pre|open|post|closed`), which names the session label; null until known. */
+  phase: string | null;
   /** When the live tick arrived, for the time beside the Live badge. */
   tickAt: number | null;
   previousClose: number | null;
@@ -88,18 +91,8 @@ export interface StockQuoteModel {
   quoteIsFresh: boolean;
   /** When the quote row's price printed, epoch ms. */
   asOf: number | null;
-  /** Extended-hours session, when the venue is in one and the row carries it. */
-  ext: {
-    type: 'pre' | 'post';
-    price: number;
-    change: number | null;
-    pct: number;
-    /** The official close the big number shows meanwhile, with its own change pair. */
-    settledClose: number;
-    settledChange: number | null;
-    settledChangePct: number | null;
-    settledTone: ChangeTone;
-  } | null;
+  /** Extended-hours session, when the venue is in one and the row carries it; the headline holds the official close meanwhile. */
+  ext: SessionQuote['ext'];
 }
 
 function toneOf(n: number | null | undefined): ChangeTone {
@@ -116,40 +109,17 @@ export function deriveStockQuote({
   const tone = toneOf(change);
   const previousClose = snapshot?.previous_close ?? quoteData?.previousClose ?? null;
 
-  // Extended hours (market convention): the big number is the last official
-  // close — today's regular close after-hours, the previous close pre-market —
-  // with a coherent change pair against the previous close; the extended move
-  // renders on its own against its declared anchor. A live tick (has a
-  // timestamp; quote rows don't) overrides the derived ext price.
-  const { extPct, extType, extPrice, extChange, extAnchor, regularClose } = getExtendedHoursInfo(marketStatus, snapshot);
+  // A live tick (has a timestamp; quote rows don't) stands in for the
+  // derived extended-hours price.
   const tickAt = (realTimePrice as PriceUpdate | null)?.timestamp ?? null;
-  const tickPrice = tickAt != null ? (realTimePrice?.price ?? null) : null;
-  const extDisplayPrice = tickPrice ?? extPrice;
-  const extDisplayChange = tickPrice != null && extAnchor != null ? tickPrice - extAnchor : extChange;
-  const extDisplayPct = tickPrice != null && extAnchor ? ((tickPrice - extAnchor) / extAnchor) * 100 : extPct;
-  const settledClose = (extType === 'post' ? regularClose : previousClose) ?? null;
-  const settledChange = extType === 'post' && regularClose != null && previousClose != null ? regularClose - previousClose : null;
-  const settledChangePct = settledChange != null && previousClose ? (settledChange / previousClose) * 100 : null;
-
-  const ext = extType && settledClose != null && extDisplayPrice != null && extDisplayPct != null
-    ? {
-        type: extType,
-        price: extDisplayPrice,
-        change: extDisplayChange ?? null,
-        pct: extDisplayPct,
-        settledClose,
-        settledChange,
-        settledChangePct,
-        settledTone: toneOf(settledChange),
-      }
-    : null;
-
-  const headline = ext
-    ? { price: ext.settledClose, change: ext.settledChange, pct: ext.settledChangePct, tone: ext.settledTone }
-    : { price, change, pct: changePercent, tone };
+  const { headline: split, ext } = sessionQuote(marketStatus, { price, change, changePercent, session: snapshot }, {
+    previousClose,
+    livePrice: tickAt != null ? (realTimePrice?.price ?? null) : null,
+  });
+  const headline = { ...split, tone: toneOf(split.change) };
 
   const isLive = wsStatus === 'connected' && isUSEquity(symbol) && wsHasData;
-  const status: QuoteStatus = isLive ? 'live' : marketPhase === 'closed' ? 'closed' : 'delayed';
+  const status: QuoteStatus = marketPhase === 'closed' ? 'closed' : isLive ? 'live' : 'delayed';
   const providers = (marketStatus?.providers ?? []) as string[];
   const activeSource = isLive ? 'ginlix-data' : (snapshot?.source ?? null);
   const dataSources = activeSource ? [activeSource] : providers;
@@ -168,7 +138,9 @@ export function deriveStockQuote({
     changePercent,
     tone,
     headline,
+    places: quotePlaces(symbol, { currency: snapshot?.currency, assetClass: snapshot?.asset_class, price: previousClose ?? price }),
     status,
+    phase: marketPhase,
     tickAt,
     previousClose,
     open: realTimePrice?.open ?? stockInfo?.Open ?? null,
@@ -194,13 +166,17 @@ export function deriveStockQuote({
 }
 
 /**
- * The session word both presentations print. Live and closed belong to the
- * feed and the venue; otherwise the quote row's own freshness decides, and
- * with nothing stated it reads delayed, never realtime.
+ * The session word both presentations print. Outside the regular session the
+ * venue's calendar phase names it, and the dot beside it says how fresh the
+ * feed is; in the regular session, or with no phase known, the feed and then
+ * the quote row's own freshness decide, so a delayed price never reads live,
+ * and with nothing stated it reads delayed, never realtime.
  */
 export function quoteSessionText(t: TFunction, q: StockQuoteModel): string {
-  if (q.status === 'live') return t('marketView.quote.live');
   if (q.status === 'closed') return t('marketView.quote.closed');
+  if (q.phase === 'pre') return t('marketView.quote.preMarket');
+  if (q.phase === 'post') return t('marketView.quote.afterHours');
+  if (q.status === 'live') return t('marketView.quote.live');
   return freshnessSpecText(t, q.quoteBadge) ?? t('marketView.quote.delayed');
 }
 

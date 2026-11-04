@@ -38,7 +38,7 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
   if (!sent) return null;
 
   const closes = downsample(days).map((bar) => bar.close);
-  const money = (n: number): string => formatMoney(n, prices.currency, locale);
+  const money = (n: number): string => formatMoney(n, prices.currency, locale, { upTo: prices.places });
   const { first, mid, last } = sent;
 
   return (
@@ -46,6 +46,7 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
       <div className="term-line term-plot-lead">
         {sent.lastClose != null && <span className="term-big">{money(sent.lastClose)}</span>}
         <TermChange value={prices.changePct} />
+        {prices.changePct != null && <span className="term-t3 term-label">{t('toolArtifact.period')}</span>}
         {/* Publisher and lag of the plotted series live behind this tag. */}
         {prices.freshness && <FreshnessBadge freshness={prices.freshness} source={prices.source} chartSymbol={symbol ?? ''} />}
       </div>

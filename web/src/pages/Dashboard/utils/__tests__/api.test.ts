@@ -60,6 +60,7 @@ describe('getStockPrices', () => {
         changePercent: 0,
         isPositive: true,
         quoteAvailable: false,
+        places: 2,
       },
     ]);
   });

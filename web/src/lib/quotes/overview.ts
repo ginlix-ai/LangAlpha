@@ -9,6 +9,7 @@
  * client, and this module must load in a DOM-free test.
  */
 import { isIndexListing, quoteCurrency, resolveCurrency } from '@/lib/bars/exchanges';
+import { quotePlaces } from '@/lib/bars/currencyDisplay';
 import { resolveDualName, type DualName } from '@/lib/displayName';
 import type { Freshness } from '@/types/market';
 
@@ -146,6 +147,8 @@ export interface DerivedOverviewQuote {
   isIndex: boolean;
   /** What the quote's figures print in, or null for an index level. */
   currency: string | null;
+  /** Places the quote's prices print at (lib/bars `quotePlaces`). */
+  places: number;
   /** What the statements (revenue, cash flow, segments) print in: always money. */
   statementCurrency: string;
   /** What earnings print in: consensus figures in the trading currency, so an
@@ -175,6 +178,7 @@ export function deriveOverviewQuote(data: OverviewQuoteSource, symbol: string): 
     isIndex: isIndexListing(symbol, data.assetClass),
     // A payload without `currency` falls back to the venue suffix, not to USD.
     currency: quoteCurrency(data.currency, symbol, data.assetClass),
+    places: quotePlaces(symbol, { currency: data.currency, assetClass: data.assetClass, price: q.previousClose ?? displayPrice }),
     // Statement figures are money even where the quote is points, so an index
     // (which has no statements to print) still names its venue's currency.
     statementCurrency: data.reportedCurrency || resolveCurrency(data.currency, symbol),

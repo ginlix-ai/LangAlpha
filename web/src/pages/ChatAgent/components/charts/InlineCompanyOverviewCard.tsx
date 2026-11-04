@@ -53,7 +53,7 @@ export function OverviewQuote({ overview }: { overview: CompanyOverviewArtifact 
   if (!quote) return null;
 
   const q = deriveOverviewQuote(overview, overview.symbol || '');
-  const money = (n: number): string => formatMoney(n, q.currency, locale);
+  const money = (n: number): string => formatMoney(n, q.currency, locale, { upTo: q.places });
   const ranges = [
     quote.dayLow != null && quote.dayHigh != null &&
       ({ label: t('toolArtifact.termRange.day'), low: quote.dayLow, high: quote.dayHigh }),
@@ -66,6 +66,7 @@ export function OverviewQuote({ overview }: { overview: CompanyOverviewArtifact 
       <PriceHero
         figures={{
           currency: q.currency,
+          places: q.places,
           price: q.displayPrice,
           change: q.displayChange,
           changePct: q.displayChangePct,
@@ -88,7 +89,7 @@ export function OverviewQuote({ overview }: { overview: CompanyOverviewArtifact 
           quote.marketCap != null &&
             ([t('toolArtifact.marketCap'), formatMoney(quote.marketCap, q.currency, locale, { compact: true })] as const),
           quote.pe != null && ([t('toolArtifact.peRatio'), fixed2(quote.pe, locale)] as const),
-          quote.eps != null && ([t('toolArtifact.eps'), money(quote.eps)] as const),
+          quote.eps != null && ([t('toolArtifact.eps'), formatMoney(quote.eps, q.currency, locale)] as const),
         ]}
       />
       {ranges.length > 0 && (

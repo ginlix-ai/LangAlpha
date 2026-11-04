@@ -17,6 +17,14 @@ const CHART = [
   { date: '2026-07-14 11:00:00', close: 101 },
 ];
 
+describe('readStockPrices places', () => {
+  it('prints a CN fund at the tenth of a fen its listing quotes', () => {
+    const ohlcv = [{ date: '2026-07-14', close: 4.092 }];
+    expect(readStockPrices({ symbol: '510300.SH', price_currency: 'CNY', asset_class: 'fund', ohlcv }).places).toBe(3);
+    expect(readStockPrices({ symbol: '510300.SH', price_currency: 'CNY', ohlcv }).places).toBe(2);
+  });
+});
+
 describe('readStockPrices chart provenance', () => {
   it('credits the intraday series when the chart draws it', () => {
     const prices = readStockPrices({

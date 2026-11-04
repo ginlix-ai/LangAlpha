@@ -37,6 +37,14 @@ _SNAPSHOT_PRICE_FIELDS = (
     "price", "change", "previous_close", "open", "high", "low",
 )
 
+# Realtime-quote row fields that carry a price. changePercentage is a ratio,
+# volume and sharesOutstanding are counts, marketCap is already in the major
+# unit, and eps is per share in the reporting currency, so none of them scale.
+_QUOTE_PRICE_FIELDS = (
+    "price", "change", "previousClose", "open", "dayHigh", "dayLow",
+    "yearHigh", "yearLow", "priceAvg50", "priceAvg200",
+)
+
 
 class _Declared(NamedTuple):
     treatment: PriceTreatment
@@ -226,6 +234,22 @@ def scale_snapshot_prices(snap: dict, places: int) -> dict:
             if snap.get(field) is not None:
                 snap[field] = scale_price(snap[field], places)
     return snap
+
+
+def scale_quote_prices(rows: list[dict], symbol: str) -> list[dict]:
+    """Quote or profile *rows* with their price fields in *symbol*'s major unit.
+
+    FMP and Yahoo quote London listings in pence while the snapshot and bars are
+    already scaled to pounds, so a quote field read raw would sit beside them
+    100x off. Returns new rows; the input is left as the provider sent it.
+    """
+    places = minor_unit_places(symbol)
+    if not places:
+        return rows
+    return [
+        {**row, **{f: scale_price(row[f], places) for f in _QUOTE_PRICE_FIELDS if f in row}}
+        for row in rows
+    ]
 
 
 def change_from(

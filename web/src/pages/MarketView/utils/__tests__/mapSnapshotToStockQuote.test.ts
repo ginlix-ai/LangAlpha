@@ -12,10 +12,10 @@ describe('mapSnapshotToStockQuote precision', () => {
     });
   });
 
-  it('still rounds a stock to cents', () => {
-    const { realTimePrice } = mapSnapshotToStockQuote('AAPL', {
-      symbol: 'AAPL', price: 189.456, asset_class: 'equity', currency: 'USD',
+  it('keeps a sub-dollar stock at the places it was quoted, not cents', () => {
+    const { realTimePrice } = mapSnapshotToStockQuote('XXII', {
+      symbol: 'XXII', price: 0.0483, previous_close: 0.0741, change: -0.0258, asset_class: 'equity', currency: 'USD',
     });
-    expect(realTimePrice?.price).toBe(189.46);
+    expect(realTimePrice).toMatchObject({ price: 0.0483, previousClose: 0.0741, change: -0.0258 });
   });
 });
