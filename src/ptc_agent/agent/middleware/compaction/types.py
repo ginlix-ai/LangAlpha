@@ -90,6 +90,22 @@ class RebuildArm(TypedDict):
     summary: str | None
 
 
+class IdleClock(TypedDict):
+    """What a Claude turn's final answer on an hour's cache leaves for the
+    idle compaction that may follow it (see ``rebuild.TurnStartRebuilds.idle``), read off
+    the checkpoint between turns without replaying its messages."""
+
+    #: When the answer's request started, epoch seconds: the life of the
+    #: cache entry it read and wrote counts from there.
+    requested_at: float
+    #: When the request started that wrote the entry a summary keeping the
+    #: tail reads, the one at its cut; None where no such summary is due.
+    tail_requested_at: float | None
+    #: What keys the request's cache besides its messages and system
+    #: (``idle.request_digest``).
+    digest: str
+
+
 class CompactionState(UnsentThinkingState):
     """State for the compaction middleware.
 
@@ -129,6 +145,8 @@ class CompactionState(UnsentThinkingState):
     #: What the newest answer leaves for a read between turns (see
     #: ``rebuild.answer_reading``).
     _last_answer: Annotated[NotRequired[dict[str, Any]], PrivateStateAttr]
+    #: Main agent only, on Claude: see ``IdleClock``.
+    _idle_clock: Annotated[NotRequired[IdleClock], PrivateStateAttr]
     #: Set when a run starts and cleared by its first model call, which
     #: alone may take a turn that ended on tool results as a turn start (see
     #: ``utils.turn_start_cut``). Main agent only.

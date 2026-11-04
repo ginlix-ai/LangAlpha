@@ -268,6 +268,15 @@ compaction:
   # unless its prompt is due, rather than written to the cache whole again.
   # Reached only where token_threshold is higher. 0: off.
   cold_compact_tokens: 300000
+  # With the idle_compaction feature on (config.yaml features:), on a route
+  # whose cache entries live an hour (a Claude subscription), the two
+  # summaries above run while the thread is idle after a completed turn
+  # instead, lead_seconds before the cache entry they read expires, so they
+  # read the history at the cached rate and the next turn does not wait.
+  # threshold_tokens: the least context the one keeping the tail runs at;
+  # unset takes cold_compact_tokens.
+  idle_compact:
+    lead_seconds: 900
 
 # =============================================================================
 # TOOL CONFIGURATION

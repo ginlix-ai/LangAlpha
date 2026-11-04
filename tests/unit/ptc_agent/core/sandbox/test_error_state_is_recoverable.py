@@ -27,6 +27,7 @@ from ptc_agent.config.core import (
     SandboxConfig,
     SecurityConfig,
 )
+from ptc_agent.core.sandbox.attach_only import SandboxNotRunning, attach_only
 from ptc_agent.core.sandbox.files import _classify_by_liveness
 from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 from ptc_agent.core.sandbox.runtime import (
@@ -154,3 +155,17 @@ async def test_a_transition_that_times_out_is_transient_not_gone(state, expected
 
     assert not isinstance(excinfo.value, SandboxGoneError)
     assert expected_word in str(excinfo.value).lower()
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [RuntimeState.STOPPED, RuntimeState.STARTING, RuntimeState.ARCHIVED])
+async def test_an_attach_only_reconnect_never_brings_a_sandbox_up(state):
+    """A reader nobody waits on uses a sandbox only while it runs."""
+    sandbox = PTCSandbox(_config(), None)
+    sandbox.provider = _stuck_provider(state)
+
+    with attach_only(), patch("asyncio.sleep", new=AsyncMock()):
+        with pytest.raises(SandboxNotRunning):
+            await sandbox.reconnect("sbx-stuck")
+

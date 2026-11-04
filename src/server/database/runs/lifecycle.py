@@ -1207,6 +1207,24 @@ async def get_latest_attempt(
             return dict(row) if row else None
 
 
+async def get_latest_run_id(thread_id: str) -> Optional[str]:
+    """``get_latest_attempt``'s run id alone, for a poll that reads it every
+    second."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT conversation_response_id::text FROM conversation_responses
+                WHERE conversation_thread_id = %s
+                ORDER BY run_seq DESC
+                LIMIT 1
+                """,
+                (thread_id,),
+            )
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
 async def thread_has_dispatch_gen(thread_id: str, dispatch_gen: str) -> bool:
     """True if any attempt on this thread was admitted under this dispatch
     generation (``origin_dispatch_gen`` is stamped into run metadata at
