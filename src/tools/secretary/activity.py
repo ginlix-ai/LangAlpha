@@ -321,7 +321,13 @@ def _currency(holding: dict[str, Any]) -> str:
 
 
 def _holding(holding: dict[str, Any]) -> str:
-    text = f"{_one_line(holding.get('symbol'), 24)} {_number(holding.get('quantity'))}"
+    return f"{_one_line(holding.get('symbol'), 24)} {holding_position(holding)}"
+
+
+def holding_position(holding: dict[str, Any]) -> str:
+    """``qty @ cost CURRENCY``, the cost in the holding's own currency and left
+    out when none is on record. The insight prompt lists holdings this way too."""
+    text = _number(holding.get("quantity"))
     cost = holding.get("average_cost")
     if cost is not None:
         text += f" @ {_number(cost)}"
