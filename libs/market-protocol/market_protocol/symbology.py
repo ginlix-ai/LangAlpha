@@ -796,6 +796,16 @@ def to_display(ref: InstrumentRef) -> str:
     return to_legacy_api(ref)
 
 
+def to_request_spelling(ref: InstrumentRef) -> str:
+    """The spelling that asks for *ref* again: ``AAPL``, ``0700.HK``, ``^GSPC``.
+
+    A family index keeps its caret, since its bare legacy (``GSPC``) and display
+    (``SPX``) spellings both read as stock tickers.
+    """
+    legacy = to_legacy_api(ref)
+    return f"^{legacy}" if is_family_index(ref) else legacy
+
+
 def vendor_symbol(ref: InstrumentRef) -> str:
     """The legacy spelling with the venue suffix FMP and yfinance resolve (``600519.SS``).
 

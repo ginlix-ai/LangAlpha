@@ -22,9 +22,8 @@ from market_protocol import (
     CARET_INDEX_REGIONS,
     AssetClass,
     InvalidSymbol,
-    is_family_index,
     to_canonical,
-    to_legacy_api,
+    to_request_spelling,
 )
 
 from ._shared import _get_user_id, _mark_failure, _mark_no_data, _normalize_market_bars
@@ -90,11 +89,9 @@ def _basket_spelling(symbol: str) -> str:
     the protocol cannot resolve passes through as given.
     """
     try:
-        ref = to_canonical(symbol)
+        return to_request_spelling(to_canonical(symbol))
     except ValueError:
         return symbol
-    legacy = to_legacy_api(ref)
-    return f"^{legacy}" if is_family_index(ref) else legacy
 
 
 def _get_index_name(symbol: str) -> str:
