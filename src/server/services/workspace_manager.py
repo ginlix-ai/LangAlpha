@@ -966,11 +966,16 @@ class WorkspaceManager(ComputerManager):
 
         async def usage_loop():
             # First at once, so a deploy opens runs for the computers already
-            # running rather than a cycle later.
+            # running rather than a cycle later. A pass may take most of the
+            # interval pacing its metrics reads, so the next starts an
+            # interval after this one started, not after it ended.
             while not self._shutdown:
                 try:
+                    started = time.monotonic()
                     await self.sweep_usage()
-                    await asyncio.sleep(self.cleanup_interval)
+                    await asyncio.sleep(
+                        max(0.0, self.cleanup_interval - (time.monotonic() - started))
+                    )
                 except asyncio.CancelledError:
                     break
                 except Exception as e:

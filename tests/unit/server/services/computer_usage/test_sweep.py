@@ -47,7 +47,20 @@ def runs_db():
     with patch.object(sweep, "runs_db") as db:
         db.store_run_metrics = AsyncMock(return_value=True)
         db.store_run_metrics_error = AsyncMock()
-        db.claim_runs_for_metrics = AsyncMock(return_value=[])
+        # The claim filters ``db.claimable`` as the SQL does, by kind and,
+        # for a delete's read, computer; the periodic sweep claims per kind.
+        db.claimable = []
+
+        def claim(*, kinds, computer_id=None, limit, **_):
+            due = [
+                r
+                for r in db.claimable
+                if r["provider_kind"] in kinds
+                and (computer_id is None or r["computer_id"] == computer_id)
+            ]
+            return due[:limit]
+
+        db.claim_runs_for_metrics = AsyncMock(side_effect=claim)
         db.close_orphaned_runs = AsyncMock(return_value=0)
         db.get_running_computers_without_run = AsyncMock(return_value=[])
         yield db
@@ -227,10 +240,10 @@ async def test_a_slow_provider_times_out_rather_than_holding_the_sweep(runs_db):
     assert error.startswith("TimeoutError")
 
 
-async def test_collection_is_bounded_and_one_failing_run_spoils_no_other(runs_db):
-    runs_db.claim_runs_for_metrics.return_value = [
-        _run(run_id=f"run-{i}") for i in range(20)
-    ]
+async def test_a_kinds_reads_are_one_at_a_time_and_one_failing_run_spoils_no_other(
+    runs_db,
+):
+    runs_db.claimable = [_run(run_id=f"run-{i}") for i in range(20)]
     in_flight = 0
     peak = 0
 
@@ -250,41 +263,101 @@ async def test_collection_is_bounded_and_one_failing_run_spoils_no_other(runs_db
             raise ValueError("unreadable provider settings")
         return good
 
-    with (
-        patch.object(sweep, "CONCURRENCY", 4),
-        patch.object(sweep, "READ_INTERVAL_SECONDS", 0),
-    ):
+    with patch.object(sweep, "READ_INTERVAL_SECONDS", {"daytona": 0}):
         done = await sweep.collect_metrics(provider_for)
 
     assert done == 19
-    assert peak <= 4
-    assert runs_db.claim_runs_for_metrics.await_args.kwargs["kinds"] == ("daytona", "e2b")
-
-
-async def test_a_throttled_kind_is_not_read_again_but_another_kind_is(runs_db):
-    runs_db.claim_runs_for_metrics.return_value = [
-        _run(run_id="d-1", provider_kind="daytona"),
-        _run(run_id="d-2", provider_kind="daytona"),
-        _run(run_id="d-3", provider_kind="daytona"),
-        _run(run_id="e-1", provider_kind="e2b"),
+    assert peak == 1
+    claimed_kinds = [
+        call.kwargs["kinds"] for call in runs_db.claim_runs_for_metrics.await_args_list
     ]
-    daytona = _provider(error=SandboxRateLimitedError("slow down"))
+    assert sorted(claimed_kinds) == [("daytona",), ("e2b",)]
+
+
+async def test_a_refused_kind_backs_off_then_gives_up_its_cycle_alone(runs_db):
+    runs_db.claimable = [
+        _run(run_id=f"d-{i}", provider_kind="daytona") for i in range(5)
+    ] + [_run(run_id="e-1", provider_kind="e2b")]
+    starts: list[float] = []
+
+    async def refuse(sandbox_id, since, until=None):
+        starts.append(time.monotonic())
+        raise SandboxRateLimitedError("slow down")
+
+    daytona = MagicMock()
+    daytona.metrics_since = refuse
+    daytona.classify_error = MagicMock(return_value=SandboxFailureKind.UNKNOWN)
     e2b = _provider()
 
-    with patch.object(sweep, "READ_INTERVAL_SECONDS", 0.05):
+    with (
+        patch.object(sweep, "READ_INTERVAL_SECONDS", {"daytona": 0.05}),
+        patch.object(sweep, "DEFAULT_READ_INTERVAL_SECONDS", 0),
+    ):
         done = await sweep.collect_metrics(
             lambda run: daytona if run["provider_kind"] == "daytona" else e2b
         )
 
     assert done == 1
-    daytona.metrics_since.assert_awaited_once()
+    assert len(starts) == sweep.MAX_REFUSALS
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert all(gap >= 0.05 * sweep.REFUSAL_BACKOFF_INTERVALS - 0.01 for gap in gaps)
     e2b.metrics_since.assert_awaited_once()
 
 
+async def test_a_read_after_a_refusal_that_succeeds_resets_the_count(runs_db):
+    runs_db.claimable = [_run(run_id=f"d-{i}") for i in range(5)]
+    answers = iter(
+        [
+            SandboxRateLimitedError("slow down"),
+            [],
+            SandboxRateLimitedError("slow down"),
+            [],
+            [],
+        ]
+    )
+
+    async def read(sandbox_id, since, until=None):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    provider = MagicMock()
+    provider.metrics_since = read
+    provider.classify_error = MagicMock(return_value=SandboxFailureKind.UNKNOWN)
+    with patch.object(sweep, "READ_INTERVAL_SECONDS", {"daytona": 0.01}):
+        assert await sweep.collect_metrics(lambda run: provider) == 3
+
+
+async def test_a_kind_claims_only_the_runs_its_cycle_can_read(runs_db):
+    with patch.object(sweep, "READ_INTERVAL_SECONDS", {"daytona": 15.0}):
+        await sweep.collect_metrics(lambda run: _provider())
+
+    limits = {
+        call.kwargs["kinds"]: call.kwargs["limit"]
+        for call in runs_db.claim_runs_for_metrics.await_args_list
+    }
+    assert limits[("daytona",)] == int(sweep.CYCLE_BUDGET_SECONDS // 15) + 1
+    assert limits[("e2b",)] == sweep.CLAIM_LIMIT
+
+
+async def test_a_cycle_starts_no_read_past_its_budget(runs_db):
+    runs_db.claimable = [_run(run_id=f"d-{i}") for i in range(10)]
+    provider = _provider()
+    with (
+        # Reads start at 0, 0.2 and 0.4; the fourth would start past 0.5,
+        # with a tenth of a second to spare either way for a loaded machine.
+        patch.object(sweep, "READ_INTERVAL_SECONDS", {"daytona": 0.2}),
+        patch.object(sweep, "CYCLE_BUDGET_SECONDS", 0.5),
+        patch.object(sweep, "CLAIM_LIMIT", 10),
+    ):
+        await sweep.collect_metrics(lambda run: provider)
+
+    assert provider.metrics_since.await_count == 3
+
+
 async def _read_starts(runs_db, computer_id):
-    runs_db.claim_runs_for_metrics.return_value = [
-        _run(run_id=f"run-{i}") for i in range(3)
-    ]
+    runs_db.claimable = [_run(run_id=f"run-{i}") for i in range(3)]
     starts: list[float] = []
 
     async def read(sandbox_id, since, until=None):
@@ -293,10 +366,11 @@ async def _read_starts(runs_db, computer_id):
 
     provider = MagicMock()
     provider.metrics_since = read
-    with patch.object(sweep, "READ_INTERVAL_SECONDS", 0.05):
-        assert await sweep.collect_metrics(
-            lambda run: provider, computer_id=computer_id
-        ) == 3
+    with patch.object(sweep, "READ_INTERVAL_SECONDS", {"daytona": 0.05}):
+        assert (
+            await sweep.collect_metrics(lambda run: provider, computer_id=computer_id)
+            == 3
+        )
     return [b - a for a, b in zip(starts, starts[1:])]
 
 
@@ -367,7 +441,7 @@ async def test_a_failing_collector_lock_is_logged_not_raised(runs_db):
 
 
 async def test_the_delete_time_read_is_one_unspaced_read_of_that_computer(runs_db):
-    runs_db.claim_runs_for_metrics.return_value = [_run()]
+    runs_db.claimable = [_run()]
     provider = _provider()
 
     await sweep.fold_before_delete(lambda run: provider, "c-1")
@@ -406,9 +480,12 @@ async def test_an_open_run_with_nothing_settled_yet_is_not_read(runs_db):
     provider = _provider()
     just_now = datetime.now(timezone.utc)
 
-    assert await sweep.fold_run(
-        _run(started_at=just_now), provider, settle=timedelta(minutes=2)
-    ) is True
+    assert (
+        await sweep.fold_run(
+            _run(started_at=just_now), provider, settle=timedelta(minutes=2)
+        )
+        is True
+    )
     provider.metrics_since.assert_not_called()
 
 
@@ -425,17 +502,19 @@ async def test_a_closed_run_read_through_its_end_is_final_without_a_read(runs_db
 
 
 async def test_a_provider_that_cannot_be_built_is_recorded(runs_db):
-    runs_db.claim_runs_for_metrics.return_value = [_run()]
+    runs_db.claimable = [_run()]
 
     def provider_for(run):
         raise ValueError("unreadable provider settings")
 
-    with patch.object(sweep, "READ_INTERVAL_SECONDS", 0):
+    with patch.object(sweep, "READ_INTERVAL_SECONDS", {"daytona": 0}):
         assert await sweep.collect_metrics(provider_for) == 0
     runs_db.store_run_metrics_error.assert_awaited_once()
 
 
-async def test_a_delete_time_read_that_lost_the_cursor_reads_on_from_the_winner(runs_db):
+async def test_a_delete_time_read_that_lost_the_cursor_reads_on_from_the_winner(
+    runs_db,
+):
     winner_through = T0 + timedelta(minutes=8)
     runs_db.store_run_metrics.side_effect = [False, True]
     runs_db.get_computer_run = AsyncMock(
@@ -446,14 +525,19 @@ async def test_a_delete_time_read_that_lost_the_cursor_reads_on_from_the_winner(
             "metrics_final": False,
         }
     )
-    late = MetricSample(timestamp=winner_through + timedelta(minutes=1), cpu_used_pct=9.0)
+    late = MetricSample(
+        timestamp=winner_through + timedelta(minutes=1), cpu_used_pct=9.0
+    )
     provider = _provider([late])
 
     assert await sweep.fold_run(_run(), provider) is True
 
     first, second = provider.metrics_since.await_args_list
     assert first.args[1] == T0 and second.args[1] == winner_through
-    assert runs_db.store_run_metrics.await_args.kwargs["expected_through"] == winner_through
+    assert (
+        runs_db.store_run_metrics.await_args.kwargs["expected_through"]
+        == winner_through
+    )
 
 
 async def test_a_sweep_read_that_lost_the_cursor_leaves_it_to_the_winner(runs_db):
@@ -462,9 +546,36 @@ async def test_a_sweep_read_that_lost_the_cursor_leaves_it_to_the_winner(runs_db
     provider = _provider()
     start = datetime.now(timezone.utc) - timedelta(hours=1)
 
-    assert await sweep.fold_run(
-        _run(started_at=start), provider, settle=timedelta(minutes=2)
-    ) is True
+    assert (
+        await sweep.fold_run(
+            _run(started_at=start), provider, settle=timedelta(minutes=2)
+        )
+        is True
+    )
 
     runs_db.get_computer_run.assert_not_called()
     provider.metrics_since.assert_awaited_once()
+
+
+async def test_a_slow_read_starts_no_read_past_the_budget(runs_db):
+    runs_db.claimable = [_run(run_id=f"d-{i}") for i in range(5)]
+    reads = 0
+
+    async def slow(sandbox_id, since, until=None):
+        nonlocal reads
+        reads += 1
+        await asyncio.sleep(0.4)
+        return []
+
+    provider = MagicMock()
+    provider.metrics_since = slow
+    # Reads start at 0 and 0.4 (the second waits out the first); the third
+    # is due at 0.5 by its slot but the clock reads 0.8, past the 0.6 budget.
+    with (
+        patch.object(sweep, "READ_INTERVAL_SECONDS", {"daytona": 0.1}),
+        patch.object(sweep, "CYCLE_BUDGET_SECONDS", 0.6),
+        patch.object(sweep, "CLAIM_LIMIT", 5),
+    ):
+        await sweep.collect_metrics(lambda run: provider)
+
+    assert reads == 2
