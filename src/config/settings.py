@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from src.config.core import get_infrastructure_config
 from src.config.models import (
+    ClaudeCodeConfig,
     McpDescriptionsConfig,
     NewsPollConfig,
     OrderReconcileConfig,
@@ -374,6 +375,10 @@ def get_market_watch_max_symbols() -> int:
 
 def get_market_watch_target_warning_minutes() -> int:
     return get_infrastructure_config().market_watch.target_warning_minutes
+
+
+def get_claude_code_config() -> ClaudeCodeConfig:
+    return get_infrastructure_config().claude_code
 
 
 def get_redis_ttl_market_watch() -> int:

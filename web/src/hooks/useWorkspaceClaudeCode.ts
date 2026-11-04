@@ -1,14 +1,22 @@
 import { apiErrorStatus } from '@/api/errors';
 import type { ClaudeCodeComputerState } from '@/api/model';
 import { useClaudeCodeComputers, useClaudeCodeStatus } from './useClaudeCode';
+import { useClaudeCodeCustody } from './useClaudeCodeCustody';
 import { useWorkspace } from './useWorkspace';
+
+/** Why a turn on a cloud computer is refused, as the server's verdict gives it. */
+type CloudRefusal = 'hosted_off' | 'needs_api_key' | 'api_key_endpoint';
+const CLOUD_REFUSALS: ReadonlySet<string> = new Set<CloudRefusal>(['hosted_off', 'needs_api_key', 'api_key_endpoint']);
 
 /** Where Claude Code stands for a turn in one workspace, and the computer
  *  whose token that is, when it is one of the user's own. */
 export interface WorkspaceClaudeCode {
-  /** `needs_own_computer`: a hosted computer where this server runs no turn
-   *  on a saved token, so Claude Code runs nowhere for it. */
-  state: ClaudeCodeComputerState | 'needs_own_computer';
+  /** On a hosted computer where this server runs no turn on a saved token:
+   *  `needs_own_computer` where it offers no other way, so Claude Code runs
+   *  nowhere for it; else as the server's verdict for the user's choice
+   *  for cloud computers says: on their Anthropic API key (`api_key`), or the
+   *  reason it is refused for. */
+  state: ClaudeCodeComputerState | 'needs_own_computer' | CloudRefusal | 'api_key';
   computerId: string | null;
   /** Whether the workspace's computer, and which computers are the user's
    *  own, are read; until they are, `computerId` says nothing. */
@@ -19,10 +27,12 @@ export interface WorkspaceClaudeCode {
  * A workspace's turn runs Claude Code where its computer is. On the user's
  * own computer (one Claude Code lists) the CLI runs there, with the token
  * that computer's entry names. Elsewhere it runs on the token saved in
- * Settings where this server runs turns on one, and nowhere otherwise.
- * Until the workspace and the list are read, the rows wait as on a check,
- * and so they do when either could not be read, since which computer it is
- * on, or which computers are the user's own, is then unknown. A workspace's
+ * Settings where this server runs turns on one, and otherwise as the user
+ * chose for cloud computers where the server offers that choice, which waits
+ * as on a check until it is read. Until the workspace and the list are read,
+ * the rows wait as on a check, and so they do when either could not be read,
+ * since which computer it is on, or which computers are the user's own, is
+ * then unknown. A workspace's
  * read says which computer it is on when the server gave a row, or a 403 or
  * 404, since a workspace gone or not the user's is on no computer of theirs;
  * a placeholder (Home as of its first read, maybe before a start gave it a
@@ -32,6 +42,7 @@ export function useWorkspaceClaudeCode(workspaceId: string | null | undefined): 
   const status = useClaudeCodeStatus();
   const workspace = useWorkspace(workspaceId);
   const own = useClaudeCodeComputers();
+  const cloud = useClaudeCodeCustody();
   const workspaceKnown = !workspaceId
     || (workspace.data !== undefined && !workspace.isPlaceholderData)
     || [403, 404].includes(apiErrorStatus(workspace.error) ?? 0);
@@ -41,5 +52,9 @@ export function useWorkspaceClaudeCode(workspaceId: string | null | undefined): 
   const entry = own.computers.find((c) => c.computer_id === workspace.data?.computer_id);
   if (entry) return { state: entry.state, computerId: entry.computer_id, known };
   if (status.runsHere) return { state: status.state, computerId: null, known };
-  return { state: 'needs_own_computer', computerId: null, known };
+  if (cloud.isLoading || cloud.unread) return { state: 'checking', computerId: null, known };
+  if (!cloud.custody) return { state: 'needs_own_computer', computerId: null, known };
+  if (cloud.custody.runs_on === 'api_key') return { state: 'api_key', computerId: null, known };
+  const { refusal } = cloud.custody;
+  return { state: refusal && CLOUD_REFUSALS.has(refusal) ? refusal as CloudRefusal : 'hosted_off', computerId: null, known };
 }

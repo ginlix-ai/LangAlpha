@@ -10,7 +10,9 @@ from fastapi import HTTPException
 from ptc_agent.config.agent import AgentConfig, CredentialSource, LLMConfig
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SandboxConfig, SecurityConfig
 from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed
-from src.server.services.claude_code.saved import SavedToken, token_check_key
+from ptc_agent.agent.claude_code.launcher import Credential
+from src.server.services.claude_code.launchers import HostedCredential
+from src.server.services.claude_code.saved import token_check_key
 from src.server.services.llm.claude_code import CLAUDE_CODE_OFF
 from tests.unit.server.services.claude_code.fakes import Cache, serving
 from src.server.services.llm.config import resolve_llm_config, saved_default_model
@@ -54,6 +56,7 @@ async def _resolve(
         patch(f"{HANDLER}.effective_flags_for_user", new_callable=AsyncMock, return_value={"claude_code_runtime": opted_in}),
         patch("src.server.services.llm.claude_code.rows_available", return_value=runs),
         patch("src.server.services.llm.claude_code.backend_available", return_value=runs),
+        patch("src.server.services.claude_code.hosted.backend_available", return_value=runs),
         patch(f"{HANDLER}.cleanup_stale_model_preferences", new=cleanup),
     ):
         try:
@@ -92,16 +95,16 @@ async def test_a_token_a_turn_found_refused_is_refused_from_the_next_turn_on():
     with (
         serving(cache),
         patch("src.server.services.claude_code.saved.mark_access_token_refused", new_callable=AsyncMock, return_value=True),
-        patch("src.server.services.claude_code.saved.backend_available", return_value=True),
+        patch("src.server.services.claude_code.hosted.backend_available", return_value=True),
         patch(
-            "src.server.services.claude_code.saved.stored_row", new_callable=AsyncMock,
+            "src.server.services.claude_code.launchers.stored_row", new_callable=AsyncMock,
             return_value={"access_token": "sk-ant-oat01-tok", "updated_at": None},
         ),
         pytest.raises(ClaudeTurnFailed),
     ):
-        token = SavedToken("user-1")
+        token = HostedCredential("user-1", "saved_token")
         await token.read()
-        await token.refused("sk-ant-oat01-tok")
+        await token.refused(Credential("sk-ant-oat01-tok"))
     assert cache.values == {token_check_key("sk-ant-oat01-tok"): False}
     with pytest.raises(HTTPException) as refused:
         await _resolve({"preferred_model": CODE}, checked=cache.values[token_check_key("sk-ant-oat01-tok")])
@@ -134,7 +137,7 @@ async def test_an_opted_in_turn_resolves_to_the_runtime_target_on_the_users_own_
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")  # a fallback could be built, and is not
     config = await _resolve({"preferred_model": CODE, "fallback_models": ["claude-haiku-5-5"]})
     assert isinstance(config.llm_client, ClaudeCodeTarget) and config.llm_client.model == "claude-sonnet-5-5"
-    assert config.credential_source == CredentialSource.OAUTH
+    assert config.credential_source == CredentialSource.OAUTH and config.claude_code_hosted == "saved_token"
     assert config.fallback_llm_clients == [] and config.fallback_llm_names == []
     assert not any(isinstance(c, ClaudeCodeTarget) for c in config.subsidiary_llm_clients.values())
     assert config.llm.background == "claude-haiku-5-5", "Background follows the deployment, not a Claude Code primary"

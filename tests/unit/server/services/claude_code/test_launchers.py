@@ -14,10 +14,9 @@ from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 from ptc_agent.core import claude_code_managed
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from src.server.services.claude_code import checks
-from src.server.services.claude_code.launchers import turn_launcher
+from src.server.services.claude_code.launchers import HostedCredential, turn_launcher
 from src.server.services.claude_code.machine import ComputerToken, MachineAnswer, answer_key, computer_state
 from src.llms.claude_code import ClaudeTurnFailed
-from src.server.services.claude_code.saved import SavedToken
 from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, claude_code_refusal
 from src.server.services.thread_agent import AgentInputs
 from tests.unit.server.services.claude_code.fakes import Cache, serving
@@ -38,7 +37,7 @@ def _ssh_sandbox():
 @pytest.mark.parametrize("backend", [True, False])
 async def test_a_turn_on_an_own_computer_runs_there_and_relays_the_saved_token_only_self_hosted(backend):
     with patch("src.server.services.claude_code.launchers.backend_available", return_value=backend):
-        launcher = turn_launcher(_ssh_sandbox(), computer_id=CID, user_id="user-1")
+        launcher = turn_launcher(_ssh_sandbox(), computer_id=CID, user_id="user-1", admitted=None)
     assert isinstance(launcher, SSHLauncher) and launcher.install is True and launcher.token_file == CID
     assert (launcher.machine.root(), launcher.identity) == ("/home/me/langalpha", "user-1")
     assert await launcher.machine.link() == "the-link"
@@ -110,7 +109,7 @@ async def test_a_turn_first_to_find_claude_code_cannot_run_there_is_refused_as_a
     )
     sandbox = _ssh_sandbox()
     sandbox.runtime.link = AsyncMock(return_value=machine)
-    launcher = turn_launcher(sandbox, computer_id=CID, user_id="user-1")
+    launcher = turn_launcher(sandbox, computer_id=CID, user_id="user-1", admitted=None)
     cache = Cache()
     with serving(cache), pytest.raises(ClaudeTurnFailed) as refused:
         await launcher.prepare("t-1", None, [], identity="user-1", system_prompt="s")
@@ -209,8 +208,8 @@ async def test_a_turns_word_never_lands_over_an_answer_kept_after_it_read_the_la
 
 
 def test_a_turn_anywhere_else_runs_on_the_backend_with_the_saved_token():
-    launcher = turn_launcher(SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1")
-    assert isinstance(launcher, LocalLauncher) and isinstance(launcher.saved, SavedToken) and launcher.token is None
+    launcher = turn_launcher(SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1", admitted=None)
+    assert isinstance(launcher, LocalLauncher) and isinstance(launcher.saved, HostedCredential) and launcher.token is None
     assert launcher.saved.user_id == "user-1"
 
 
@@ -218,9 +217,9 @@ def test_a_turn_anywhere_else_runs_on_the_backend_with_the_saved_token():
 async def test_a_backend_turn_on_a_hosted_server_never_starts_and_is_refused_as_admission_refuses_it():
     """Admission read the workspace's computer before the session was taken,
     and the workspace may have moved off an own computer since."""
-    launcher = turn_launcher(SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1")
-    with patch("src.server.services.claude_code.saved.backend_available", return_value=False), \
-            patch("src.server.services.claude_code.saved.stored_row", AsyncMock(return_value={"access_token": "sk-ant-oat01-saved", "updated_at": None})), \
+    launcher = turn_launcher(SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1", admitted=None)
+    with patch("src.server.services.claude_code.hosted.backend_available", return_value=False), \
+            patch("src.server.services.claude_code.launchers.stored_row", AsyncMock(return_value={"access_token": "sk-ant-oat01-saved", "updated_at": None})), \
             patch("tempfile.mkdtemp") as laid_out, pytest.raises(ClaudeTurnFailed) as refused:
         await launcher.prepare("t-1", None, [], identity="user-1", system_prompt="s")
     laid_out.assert_not_called()
@@ -238,9 +237,11 @@ async def test_a_backend_turn_where_an_organizations_policy_is_installed_never_s
     (managed / "managed-settings.json").write_text("{}")
     monkeypatch.setattr(claude_code_managed, "CLAUDE_CODE_MANAGED_DIR_LINUX", str(managed))
     monkeypatch.setattr(claude_code_managed, "CLAUDE_CODE_MANAGED_DIR_MAC", str(managed))
-    launcher = turn_launcher(SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1")
-    with patch("src.server.services.claude_code.saved.backend_available", return_value=True), \
-            patch("src.server.services.claude_code.saved.stored_row", AsyncMock(return_value={"access_token": "sk-ant-oat01-saved", "updated_at": None})), \
+    launcher = turn_launcher(
+        SimpleNamespace(provider=MagicMock()), computer_id="c-2", user_id="user-1", admitted="saved_token",
+    )
+    with patch("src.server.services.claude_code.hosted.backend_available", return_value=True), \
+            patch("src.server.services.claude_code.launchers.stored_row", AsyncMock(return_value={"access_token": "sk-ant-oat01-saved", "updated_at": None})), \
             patch("tempfile.mkdtemp") as laid_out:
         for start in (lambda: launcher.prepare("t-1", None, [], identity="user-1", system_prompt="s"), launcher.scratch):
             with pytest.raises(ClaudeTurnFailed) as refused:
@@ -254,7 +255,7 @@ async def test_a_backend_turn_where_an_organizations_policy_is_installed_never_s
 
 def test_a_turn_on_an_own_computer_that_names_none_is_refused():
     with pytest.raises(RuntimeError, match="names that computer"):
-        turn_launcher(_ssh_sandbox(), computer_id=None, user_id="user-1")
+        turn_launcher(_ssh_sandbox(), computer_id=None, user_id="user-1", admitted=None)
 
 
 def test_the_agent_build_is_handed_the_turns_launcher_for_its_computer():
@@ -264,6 +265,6 @@ def test_the_agent_build_is_handed_the_turns_launcher_for_its_computer():
     )
     sandbox = _ssh_sandbox()
     with patch("src.server.services.claude_code.launchers.turn_launcher", return_value="launcher") as picked:
-        assert inputs.claude_code_launcher(sandbox) == "launcher"
-    picked.assert_called_once_with(sandbox, computer_id="c-1", user_id="user-1")
+        assert inputs.claude_code_launcher(sandbox, None) == "launcher"
+    picked.assert_called_once_with(sandbox, computer_id="c-1", user_id="user-1", admitted=None)
     assert inputs.build_kwargs()["claude_code_launcher"] == inputs.claude_code_launcher

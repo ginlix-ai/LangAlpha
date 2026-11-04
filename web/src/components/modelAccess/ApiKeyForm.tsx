@@ -37,7 +37,7 @@ export function useApiKeyForm(option: KeyOption, configured: readonly Configured
   // Which region's key a save replaces is read off the saved keys, so a save
   // waits for them (and only them, not the sign-ins): before, it would leave
   // the plan's key in two regions.
-  const { isLoading: keysLoading } = useApiKeys();
+  const { apiKeys, isLoading: keysLoading } = useApiKeys();
   const saved = configured.find((p) => p.provider === option.provider && p.access_type !== 'oauth') ?? null;
   // A coding plan is one subscription in one region, so a key for one region
   // replaces the plan's key in another: the plan's models then run on the
@@ -67,10 +67,13 @@ export function useApiKeyForm(option: KeyOption, configured: readonly Configured
   // A deployment's own key has no row of the user's to carry a base URL, so
   // moving the URL takes a key of their own.
   const ownKey = isOwnKey(saved);
+  // Every save turns the account's own keys on, so a key of the user's left
+  // off by that switch saves as it is, without being typed again.
+  const switchedOff = ownKey && (apiKeys as { byok_enabled?: unknown } | null)?.byok_enabled === false;
 
   const canSave = !keysLoading && (local
     ? !!baseUrl.trim()
-    : !!apiKey.trim() || (ownKey && baseChanged && !!baseUrl.trim()));
+    : !!apiKey.trim() || switchedOff || (ownKey && baseChanged && !!baseUrl.trim()));
 
   /** Saves and refreshes what the change makes stale; resolves to the provider
    *  the key was saved under, or null when the save was refused. */
@@ -95,7 +98,7 @@ export function useApiKeyForm(option: KeyOption, configured: readonly Configured
       // goes too.
       payload.api_keys = { [option.provider]: apiKey.trim() };
       if (override || local) payload.base_urls = { [option.provider]: url };
-    } else {
+    } else if (local || baseChanged) {
       // Only the base URL changed on a key already saved.
       payload.base_urls = { [option.provider]: local ? url : override };
     }

@@ -11,11 +11,11 @@ import type { SSEEvent } from '../types';
  * and a reload both read it, so a failed turn shows the same card either way.
  */
 export function readStreamFailure(
-  event: SSEEvent, message: string, workspaceId: string, t: (key: string) => string,
+  event: SSEEvent, message: string, workspaceId: string, t: (key: string, opts?: Record<string, unknown>) => string,
 ): StructuredError | undefined {
   if (event.type === 'claude_code_off') {
-    const { link, messageKey } = claudeCodeRefusal(event.reason, workspaceId);
-    const worded = messageKey ? t(messageKey) : message;
+    const { link, messageKey, messageValues } = claudeCodeRefusal(event.reason, workspaceId, event.limit);
+    const worded = messageKey ? t(messageKey, messageValues) : message;
     if (link) return { message: worded, links: [link] };
     if (messageKey) return { message: worded };
   }

@@ -195,6 +195,20 @@ async def _check_claude_code_continues(name: str | None, pin: str | None) -> Non
         raise AutomationRefusal(exc.detail["message"], field="llm_model") from None
 
 
+async def _check_claude_code_hosted(user_id: str, name: str | None, workspace_id: str | None, conn=None) -> None:
+    """Refuse a Claude Code row in a workspace on a cloud computer where the
+    user's choice for cloud computers refuses its turns, placed as admission
+    places them (``placement``), so every firing would fail; nothing is read
+    where no choice is offered. Read on ``conn``, the caller's."""
+    from src.server.services.claude_code.hosted import choice_offered, placement
+
+    if not (name and workspace_id and is_claude_code_model(name) and choice_offered()):
+        return
+    state = (await placement(user_id, workspace_id, conn=conn)).hosted
+    if state is not None and state.refusal is not None:
+        raise AutomationRefusal(CLAUDE_CODE_OFF[state.refusal], field="llm_model")
+
+
 def _check_home_model(user_id: str, name: str | None, workspace_id: str | None) -> None:
     """Refuse a Claude Code row in Home, whose Chief of Staff does not run on
     it, so every firing would fail until the automation is disabled."""
@@ -356,6 +370,7 @@ async def create_automation(
         )
     if data.llm_model:
         _check_home_model(user_id, data.llm_model, workspace_id)
+        await _check_claude_code_hosted(user_id, data.llm_model, workspace_id, conn)
         await _check_model(user_id, data.llm_model, model_pref)
         if data.thread_strategy == "continue" and data.conversation_thread_id:
             await _check_claude_code_continues(data.llm_model, str(data.conversation_thread_id))
@@ -495,6 +510,7 @@ async def update_automation(
     runs_on = update_kwargs.get("llm_model", current.get("llm_model"))
     if runs_on != current.get("llm_model") or moved_to != stored_in:
         _check_home_model(user_id, runs_on, moved_to)
+        await _check_claude_code_hosted(user_id, runs_on, moved_to, conn)
     pinned = update_kwargs.get("conversation_thread_id", stored_pin)
     strategy = update.thread_strategy or current.get("thread_strategy")
     if strategy == "continue" and (runs_on, pinned, strategy) != (

@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
-from src.llms.claude_code import ClaudeTurnFailed, backend_available
+from src.llms.claude_code import backend_available
 from ptc_agent.core.claude_code_managed import local_managed
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn
 from src.server.database.oauth_tokens import (
@@ -115,30 +115,6 @@ async def refuse(user_id: str, digest: str, saved_at: datetime) -> None:
         flagged = True
     if flagged:
         await keep_check(_check_key(digest), "refused")
-
-
-class SavedToken:
-    """The setup token ``user_id`` saved, as a backend turn's launcher reads
-    it (``launcher.TokenStore``): as each run starts, and recorded as refused
-    when Anthropic refuses it, so Settings and admission say so from then on,
-    as the turn it was refused on already does (``token_refused``).
-    A server whose backend runs no CLI refuses the run as admission does: the
-    workspace may have moved off the own computer admission found it on."""
-
-    def __init__(self, user_id: str) -> None:
-        self.user_id = user_id
-        self._read: dict | None = None
-
-    async def read(self) -> str | None:
-        if not backend_available():
-            raise ClaudeTurnFailed("needs_own_computer", "this server runs Claude Code only on the user's own computers")
-        self._read = await stored_row(self.user_id)
-        return self._read["access_token"] if self._read else None
-
-    async def refused(self, token: str) -> None:
-        if self._read is not None:
-            await refuse(self.user_id, token_hash(token), self._read["updated_at"])
-        raise ClaudeTurnFailed("token_refused", "Claude refused the saved setup token")
 
 
 def _launcher(token: str) -> LocalLauncher:

@@ -40,7 +40,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import anyio
 from anyio.streams.text import TextReceiveStream, TextSendStream
@@ -73,6 +73,11 @@ _THREAD_KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 #: The CLI reads an OAuth token from the descriptor this names, directly when
 #: it is a socket (macOS has no /proc/self/fd), and then drops the variable.
 TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+#: The same for an Anthropic API key, which the CLI reads once and keeps for
+#: the session (measured on CLI 2.1.310: a second query in one session runs
+#: on the key the descriptor gave the first).
+API_KEY_FD_ENV = "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR"
+_FD_ENV = {"setup_token": TOKEN_FD_ENV, "api_key": API_KEY_FD_ENV}
 #: The lines of the CLI's stderr kept, how long an exit waits for the last
 #: of them, and how much of them its log line holds.
 STDERR_KEPT = 50
@@ -114,21 +119,51 @@ def device_id(identity: str) -> str:
     return hmac.new(get_encryption_key().encode(), f"claude-code-device:{identity}".encode(), hashlib.sha256).hexdigest()
 
 
-def _token_socket(token: str) -> socket.socket:
-    """The child's end of a socket pair holding the token, for ``pass_fds``.
+@dataclass(frozen=True)
+class Credential:
+    """What a turn's CLI signs in with: a setup token or an Anthropic API
+    key, each handed over on a descriptor of its own (``_FD_ENV``)."""
+
+    secret: str = field(repr=False)
+    kind: Literal["setup_token", "api_key"] = "setup_token"
+
+
+def _token_socket(secret: str) -> socket.socket:
+    """The child's end of a socket pair holding the credential, for ``pass_fds``.
 
     Left non-inheritable: ``pass_fds`` hands it to the CLI alone, while under
     uvloop, the backend's loop, every other process the worker spawns
-    meanwhile would inherit an inheritable one and could read the token.
+    meanwhile would inherit an inheritable one and could read it.
     """
     child, ours = socket.socketpair()
     try:
         with ours:
-            ours.sendall(token.encode() + b"\n")
+            ours.sendall(secret.encode() + b"\n")
     except BaseException:
         child.close()
         raise
     return child
+
+
+class CliSlots:
+    """How many CLIs this worker runs at once: a run waits up to ``WAIT_S``
+    for a slot, then fails as ``busy`` before anything starts. It guards this
+    process's own children, so it is execution context, never read as status."""
+
+    WAIT_S = 30
+
+    def __init__(self, slots: int) -> None:
+        self.slots = slots
+        self._free = anyio.Semaphore(slots)
+
+    async def take(self) -> None:
+        with anyio.move_on_after(self.WAIT_S):
+            await self._free.acquire()
+            return
+        raise ClaudeTurnFailed("busy", f"all {self.slots} of this worker's Claude Code slots stayed in use")
+
+    def give(self) -> None:
+        self._free.release()
 
 
 @dataclass(frozen=True)
@@ -231,13 +266,13 @@ class Launcher(Protocol):
 
 
 class TokenStore(Protocol):
-    """Where a user's setup token is kept for their turns: read as each run
-    starts, so a token replaced meanwhile is the one it runs on, and told
-    when Anthropic refuses it."""
+    """Where the credential a user's turns run on is kept: read as each run
+    starts, so one replaced meanwhile is the one it runs on, and told when
+    Anthropic refuses it."""
 
-    async def read(self) -> str | None: ...
+    async def read(self) -> Credential | None: ...
 
-    async def refused(self, token: str) -> None: ...
+    async def refused(self, credential: Credential) -> None: ...
 
 
 class ScopedEnvTransport(SubprocessCLITransport):
@@ -248,11 +283,16 @@ class ScopedEnvTransport(SubprocessCLITransport):
     only, so a CLI that exits says why, as ``SSHTransport`` has it say.
     """
 
-    def __init__(self, *, options: ClaudeAgentOptions, base_env: dict[str, str], token: str | None) -> None:
+    def __init__(
+        self, *, options: ClaudeAgentOptions, base_env: dict[str, str], credential: Credential | None,
+        slots: CliSlots | None = None,
+    ) -> None:
         self._stderr: deque[str] = deque(maxlen=STDERR_KEPT)
         super().__init__(prompt=_no_prompt(), options=replace(options, stderr=self._stderr.append))
         self._base_env = base_env
-        self._token = token
+        self._credential = credential
+        self._slots = slots
+        self._holding = False
 
     async def read_messages(self) -> AsyncIterator[dict[str, Any]]:
         """The SDK's messages, with the CLI's own stderr on the ``ProcessError``
@@ -278,6 +318,31 @@ class ScopedEnvTransport(SubprocessCLITransport):
         return await exit_error(code, self._stderr, self._stderr_task.wait() if self._stderr_task is not None else None)
 
     async def connect(self) -> None:
+        """Start the CLI (``_start``) in one of the worker's ``slots``, held until
+        the transport closes, so the slots bound live CLIs alone."""
+        if self._process:
+            return
+        if self._slots is not None and not self._holding:
+            await self._slots.take()
+            self._holding = True
+        try:
+            await self._start()
+        except BaseException:
+            self._give_back()
+            raise
+
+    async def close(self) -> None:
+        try:
+            await super().close()
+        finally:
+            self._give_back()
+
+    def _give_back(self) -> None:
+        if self._holding:
+            self._holding = False
+            self._slots.give()
+
+    async def _start(self) -> None:
         """The SDK's ``connect`` (``SDK_CONNECT_SHA256``), changed in four places only.
 
         The environment is ``cli_env`` on ``base_env``, not ``os.environ``. The version
@@ -285,8 +350,8 @@ class ScopedEnvTransport(SubprocessCLITransport):
         environment, and the CLI is the one the pinned SDK bundles. The child
         starts in its own session, so a terminal's Ctrl-C or a job-control
         signal to the worker's process group never stops a CLI mid-turn; the
-        run's close ends it. The token reaches it through an inherited socket,
-        never its argv or environment.
+        run's close ends it. The credential reaches it through an inherited
+        socket, never its argv or environment.
         """
         if self._process:
             return
@@ -318,9 +383,9 @@ class ScopedEnvTransport(SubprocessCLITransport):
 
             stderr_dest = PIPE if self._options.stderr is not None else None
 
-            held = _token_socket(self._token) if self._token else None
+            held = _token_socket(self._credential.secret) if self._credential else None
             if held is not None:
-                process_env[TOKEN_FD_ENV] = str(held.fileno())
+                process_env[_FD_ENV[self._credential.kind]] = str(held.fileno())
             try:
                 self._process = await anyio.open_process(
                     cmd,
@@ -377,23 +442,26 @@ class LocalLauncher:
     the allowlist leaves out, so its lookup never lands on the machine's login
     and a turn given no token fails as logged out.
 
-    The CLI signs in with ``token``, a fixed one (the check of a token
-    before it is saved), else the one ``saved`` holds as the run starts,
-    which ``refused`` records as refused. ``env`` is for a test endpoint and
-    its dummy credential. A worker an organization's managed Claude Code
-    settings are installed on runs none (``local_managed``).
+    The CLI signs in with ``token``, a fixed setup token (the check of a
+    token before it is saved), else the credential ``saved`` holds as the
+    run starts, which ``refused`` reports refused. ``env`` is for a test
+    endpoint and its dummy credential. A worker an organization's managed
+    Claude Code settings are installed on runs none (``local_managed``).
+    With ``slots`` each CLI the run starts holds one of them while it runs.
     """
 
     env: dict[str, str] = field(default_factory=dict, repr=False)
     cli_path: str | None = None
     token: str | None = field(default=None, repr=False)
     saved: TokenStore | None = None
-    _used: str | None = field(default=None, init=False, repr=False)
+    slots: CliSlots | None = None
+    _used: Credential | None = field(default=None, init=False, repr=False)
 
     async def _ready(self) -> None:
-        """Take the run's token, then refuse the run, before the CLI starts,
-        where an organization's policy is installed, in admission's order."""
-        self._used = self.token or (await self.saved.read() if self.saved is not None else None)
+        """Take the run's credential, then refuse the run, before the CLI
+        starts, where an organization's policy is installed, in admission's
+        order."""
+        self._used = Credential(self.token) if self.token else (await self.saved.read() if self.saved is not None else None)
         if sources := await local_managed():
             raise ClaudeTurnFailed("policy_blocked", f"the worker holds managed Claude Code settings {list(sources)}")
 
@@ -408,7 +476,6 @@ class LocalLauncher:
         worker for as long as the thread is long.
         """
         await self._ready()
-        device = device_id(identity)
 
         def lay_out() -> Prepared:
             cwd = thread_dir(thread_key)
@@ -424,6 +491,7 @@ class LocalLauncher:
                 raise
             return prepared
 
+        device = device_id(identity)
         return await anyio.to_thread.run_sync(lay_out)
 
     async def scratch(self) -> Prepared:
@@ -444,7 +512,7 @@ class LocalLauncher:
 
     def transport(self, options: ClaudeAgentOptions) -> Transport:
         options = replace(options, cli_path=self.cli_path or options.cli_path)
-        return ScopedEnvTransport(options=options, base_env=self._base_env(), token=self._used)
+        return ScopedEnvTransport(options=options, base_env=self._base_env(), credential=self._used, slots=self.slots)
 
 
 async def _no_prompt():

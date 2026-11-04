@@ -121,6 +121,40 @@ export async function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
   return data as ClaudeCodeStatus;
 }
 
+/** Whether Claude Code runs for the user on cloud computers: it runs only on
+ *  their own computers (`local`), or on cloud computers too, with their
+ *  Anthropic API key (`api_key`). */
+export type ClaudeCodeCustodyMode = 'local' | 'api_key';
+
+/** `GET /api/v1/claude-code/custody`, and the answer to a choice made. */
+export interface ClaudeCodeCustody {
+  mode: ClaudeCodeCustodyMode;
+  /** An Anthropic API key is saved under Model access, the one `api_key` runs on. */
+  api_key_saved: boolean;
+  /** The server's verdict for a turn on a cloud computer: what it runs on,
+   *  else the reason it is refused for (a `claude_code_off` refusal reason). */
+  runs_on: 'api_key' | null;
+  refusal: string | null;
+}
+
+/** Null where this server offers no choice for cloud computers (404): a
+ *  self-hosted one, or one whose operator runs Claude Code only on the user's
+ *  own computers. */
+export async function getClaudeCodeCustody(): Promise<ClaudeCodeCustody | null> {
+  try {
+    const { data } = await api.get('/api/v1/claude-code/custody');
+    return data as ClaudeCodeCustody;
+  } catch (err) {
+    if (apiErrorStatus(err) === 404) return null;
+    throw err;
+  }
+}
+
+export async function setClaudeCodeCustody(mode: ClaudeCodeCustodyMode): Promise<ClaudeCodeCustody> {
+  const { data } = await api.put('/api/v1/claude-code/custody', { mode });
+  return data as ClaudeCodeCustody;
+}
+
 /** Saves the user's setup token once Anthropic takes it, which one real
  *  request checks, so it answers in seconds. A refusal carries the OAuth
  *  routes' `error` body (`readOAuthError`) and saves nothing. */

@@ -38,7 +38,10 @@ class ClaudeTurnFailed(RuntimeError):
     ``auth_failed``, ``plan_exhausted``, ``interrupted``, ``api_error``,
     ``no_result``, ``nothing_to_resume``, ``policy_blocked``, ``needs_perl``,
     ``computer_unsupported``, ``token_refused`` (Claude refused the saved
-    setup token, which its store reports in place of ``auth_failed``), or one of
+    setup token, which its store reports in place of ``auth_failed``), ``busy``
+    (no slot for the CLI on its worker), ``api_key_refused``, one of the
+    reasons a cloud computer's run is refused as it starts (``hosted.hosted``),
+    or one of
     ``TEMPLATES``, which words it.
     """
 

@@ -16,8 +16,10 @@ from fastapi import HTTPException
 
 from src.server.services.claude_code import saved
 from src.server.services.claude_code.machine import ComputerToken
-from src.server.services.claude_code.saved import SavedToken, token_check_key, token_hash
+from ptc_agent.agent.claude_code.launcher import Credential
 from src.llms.claude_code import ClaudeTurnFailed
+from src.server.services.claude_code.launchers import HostedCredential
+from src.server.services.claude_code.saved import token_check_key, token_hash
 from src.server.services.llm.claude_code import (
     CLAUDE_CODE_OFF,
     claude_code_refusal,
@@ -64,11 +66,15 @@ async def _admission_reason(row, cache):
 
 async def _refused_turn(cache, row=None):
     """A backend turn that read the saved token and then met Claude's refusal."""
-    with serving(cache), _store(row or _row()), patch(f"{SAVED}.backend_available", lambda: True):
-        token = SavedToken("user-1")
-        assert await token.read() == TOKEN
+    with (
+        serving(cache),
+        patch("src.server.services.claude_code.launchers.stored_row", AsyncMock(return_value=row or _row())),
+        patch("src.server.services.claude_code.hosted.backend_available", lambda: True),
+    ):
+        token = HostedCredential("user-1", "saved_token")
+        assert await token.read() == Credential(TOKEN)
         with pytest.raises(ClaudeTurnFailed) as failed:
-            await token.refused(TOKEN)
+            await token.refused(Credential(TOKEN))
     return failed.value
 
 

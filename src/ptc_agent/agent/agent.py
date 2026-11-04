@@ -294,7 +294,7 @@ class PTCAgent:
         window_coverage: WindowCoverage | None = None,
         cancel_notices: CancelNotices | None = None,
         computers: ComputerReach | None = None,
-        claude_code_launcher: "Callable[[PTCSandbox], Launcher] | None" = None,
+        claude_code_launcher: "Callable[[PTCSandbox, str | None], Launcher] | None" = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -342,7 +342,9 @@ class PTCAgent:
                 own Bash, ExecuteCode and file tools take a ``computer`` to run
                 on. None leaves every tool on this computer.
             claude_code_launcher: Where a Claude Code turn's CLI runs, given
-                the sandbox; the server picks it, and the token it signs in with.
+                the sandbox and the credential admission let a turn on a cloud
+                computer run on (``claude_code_hosted``); the server picks it,
+                and the token it signs in with.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent.
@@ -1226,7 +1228,7 @@ class PTCAgent:
             return claude_code_graph(
                 agent, system_prompt=system_prompt, target=turn.client,
                 user_id=user_id, thread_id=thread_id, checkpointer=checkpointer,
-                launcher=claude_code_launcher(sandbox),
+                launcher=claude_code_launcher(sandbox, self.config.claude_code_hosted),
                 entry=(skill_loader_middleware, context.turn, context.baseline),
                 middleware=deepagent_middleware,
                 baseline=context.baseline.frozen_block,

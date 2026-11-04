@@ -577,8 +577,9 @@ async def resolve_llm_config(
         await load_user_context(config, user_id, workspace_id, model_pref)
         selection = select_model(config, model_pref, slot, request_model)
         if is_claude_code_model(selection.effective_model):
-            await require_runnable(
-                config, selection.effective_model, role, user_id=user_id, workspace_id=workspace_id
+            config.claude_code_hosted = await require_runnable(
+                config, selection.effective_model, role, user_id=user_id, workspace_id=workspace_id,
+                thread_id=thread_id,
             )
             # A Claude Code turn stops when its plan runs out rather than move
             # to another model.

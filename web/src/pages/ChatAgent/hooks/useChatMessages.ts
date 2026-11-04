@@ -160,8 +160,13 @@ export function useChatMessages(
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  // A refused token can be the saved one or a computer's: all are read again.
-  const refreshClaudeCode = () => { void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() }); };
+  // A refused token can be the saved one or a computer's, and a cloud
+  // computer's refusal may mean the user's choice for it changed: all are
+  // read again.
+  const refreshClaudeCode = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.user.claudeCodeCustody() });
+  };
 
   // User locale/timezone — prefer saved preference, fall back to browser detection
   const { user } = useUser();
@@ -2078,9 +2083,9 @@ export function useChatMessages(
     // retry meets the same refusal. Without a working token, the change is
     // one the user makes in Settings.
     if (errorInfo?.type === 'claude_code_off' && worded) {
-      const { reread, link, messageKey } = claudeCodeRefusal(errorInfo.reason, workspaceId);
+      const { reread, link, messageKey, messageValues } = claudeCodeRefusal(errorInfo.reason, workspaceId, errorInfo.limit);
       if (reread) refreshClaudeCode();
-      const message = messageKey ? t(messageKey) : worded;
+      const message = messageKey ? t(messageKey, messageValues) : worded;
       return { banner: link ? { message, links: [link] } : message, answered: true };
     }
     return { banner: worded, answered: false };

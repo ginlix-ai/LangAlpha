@@ -60,6 +60,24 @@ class ClaudeCodeComputers(BaseModel):
     computers: list[ClaudeCodeComputer]
 
 
+class ClaudeCodeCustody(BaseModel):
+    """How the user's Claude Code turns on a cloud computer run: ``local``
+    runs none there (only on their own computers), ``api_key`` runs them on
+    their Anthropic API key, the one saved under Model access, which
+    ``api_key_saved`` says is there. ``runs_on`` and ``refusal`` are the verdict
+    admission gives such a turn: the credential it runs on, else the
+    ``CLAUDE_CODE_OFF`` reason it is refused for."""
+
+    mode: Literal["local", "api_key"]
+    api_key_saved: bool
+    runs_on: Literal["api_key"] | None = None
+    refusal: str | None = None
+
+
+class CustodyBody(BaseModel):
+    mode: Literal["local", "api_key"]
+
+
 class TokenBody(BaseModel):
     token: SecretStr
 

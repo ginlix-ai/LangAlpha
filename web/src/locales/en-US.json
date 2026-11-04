@@ -2551,7 +2551,10 @@
       "taskCostNote": "A rough estimate of how a typical task's cost changes with effort, compared with the default level.",
       "claudeCodeRejected": "Claude refused your setup token. Add a new one in Settings to use this model",
       "claudeCodeNeedsOwnComputer": "Runs only on workspaces on your own computers",
-      "claudeCodePolicyBlocked": "Your organization's Claude Code policy keeps it from running on this computer"
+      "claudeCodePolicyBlocked": "Your organization's Claude Code policy keeps it from running on this computer",
+      "claudeCodeHostedOff": "Choose in Settings how it runs on cloud computers",
+      "claudeCodeNeedsApiKey": "Add your Anthropic API key in Settings to use it on cloud computers",
+      "claudeCodeApiKeyEndpoint": "Clear the Base URL on your Anthropic API key in Settings to use it on cloud computers"
     },
     "voice": {
       "start": "Start voice input",
@@ -2690,7 +2693,13 @@
     },
     "claudeCode": {
       "off": {
-        "token_refused": "Claude refused your setup token. It may have expired or been revoked. Add a new one in Settings under Model access to use this model."
+        "token_refused": "Claude refused your setup token. It may have expired or been revoked. Add a new one in Settings under Model access to use this model.",
+        "hosted_off": "Claude Code runs only on your own computers for your account, so workspaces on cloud computers can't use Claude Code models. Choose where it runs in Settings under Model access, or move this workspace to one of your computers.",
+        "needs_api_key": "For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your Anthropic API key, and you haven't saved one. Add one in Settings under Model access, or move this workspace to one of your computers.",
+        "api_key_endpoint": "Claude Code on cloud computers sends your Anthropic API key only to Anthropic, and yours is set to a custom Base URL. Clear the Base URL in Settings under Model access, or move this workspace to one of your computers.",
+        "api_key_refused": "Anthropic refused your API key, or its account has no credit left. Check the key in Settings under Model access.",
+        "busy": "Claude Code is busy on this server right now. Try again in a minute.",
+        "too_many_turns": "You've reached the limit on Claude Code threads running at once on cloud computers ({{n}}). Try again when one finishes."
       }
     }
   },
@@ -6736,7 +6745,16 @@
         "saved": "Claude Code is off, but your setup token is still saved.",
         "computer": "Claude Code is off, but this computer still has its setup token."
       },
-      "savedTag": "Saved token"
+      "savedTag": "Saved token",
+      "hosted": {
+        "heading": "Where Claude Code runs",
+        "local": "Only on your own computers",
+        "localDetail": "Claude Code runs on your own computers, each with its own setup token, and LangAlpha keeps no copy. Workspaces on cloud computers can't use Claude Code models.",
+        "apiKey": "Also for cloud computers, with your Anthropic API key",
+        "apiKeyDetail": "For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your API key, working on the cloud computer. Usage is billed to your Anthropic Console account, where Max, Ultra and Team plans include monthly API credits. Your Claude plan's limits aren't used.",
+        "apiKeyEndpoint": "Your Anthropic API key is set to a custom Base URL, so Claude Code can't use it on cloud computers. Clear the Base URL on the key to use it.",
+        "needsApiKey": "Claude Code on cloud computers has no Anthropic API key to use. Add one, or save the one you have again, in Model access."
+      }
     },
     "claude": {
       "name": "Claude",
