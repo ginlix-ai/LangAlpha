@@ -60,8 +60,9 @@ WORKSPACE = "/home/workspace"
 NOTES_SUBDIR = thread_notes_subdir(THREAD)
 NOTES_DIR = f"{WORKSPACE}/{NOTES_SUBDIR}"
 
-#: Messages in view, the system prompt counted, at which a summary runs.
-THRESHOLD = 26
+#: Messages in view, the system prompt and the tool schemas counted, at which
+#: a summary runs.
+THRESHOLD = 28
 KEEP = 6
 #: Tool calls since the notes were last written at which a check-in is due.
 CHECK_IN_CALLS = 4

@@ -353,9 +353,11 @@ class NotesDueMiddleware(AgentMiddleware):
         it (``context_tokens``), over ``view``, the view compaction sends,
         without the attachments it removed or the results it hid.
 
-        The count runs short of the trigger's by the system prompt, which
-        state does not hold, so where no usage is reported the reminder comes
-        late by that much rather than never.
+        The count runs short of the trigger's by what the call sends ahead
+        of the messages (``sent_ahead``), the system prompt, its baseline
+        block and the tool schemas, which state does not hold, so where no
+        usage is reported the reminder comes late by that much rather than
+        never.
         """
         await read_ahead(view)
         reading = await context_tokens(state, view, self._estimate)
