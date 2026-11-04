@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from src.data_client.base import IntervalNotSupported
 from src.data_client.normalize import (
     build_series,
     change_from,
@@ -336,7 +337,7 @@ class YFinanceDataSource:
     ) -> list[dict[str, Any]]:
         yf_interval = _INTERVAL_MAP.get(interval)
         if yf_interval is None:
-            raise ValueError(
+            raise IntervalNotSupported(
                 f"Interval '{interval}' is not supported by yfinance"
             )
         api_symbol = self._api_symbol(symbol, is_index)

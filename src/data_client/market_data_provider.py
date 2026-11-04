@@ -35,7 +35,8 @@ from market_protocol.routing import (
     Surface,
 )
 
-from .base import FetchResult, MarketDataSource
+from .base import FetchResult, IntervalNotSupported, MarketDataSource
+from .fallbacks import Fallback, error_label, record, surfaced
 from .normalize import declared_venue, snapshot_tier
 
 # Fills names onto snapshot rows in place (the CN/HK local and English names).
@@ -103,6 +104,16 @@ def _route_ref(symbol: str, is_index: bool) -> InstrumentRef | None:
         return to_canonical(symbol, asset_class=AssetClass.INDEX if is_index else AssetClass.EQUITY)
     except ValueError:
         return None
+
+
+_CHAIN_READS = {"get_daily": "daily bars", "get_intraday": "intraday bars"}
+
+
+def _record_failures(
+    symbol: str, what: str, failures: list[tuple[str, Exception]], served_by: str | None
+) -> None:
+    for source, exc in failures:
+        record(Fallback(symbol, what, source, error_label(exc), served_by))
 
 
 def is_us_symbol(symbol: str) -> bool:
@@ -369,28 +380,19 @@ class MarketDataProvider:
         )
         if not candidates:
             raise MarketNotCovered(f"No data source configured for market of {symbol}")
-        last_exc: Exception | None = None
-        first_empty: tuple[list[dict[str, Any]], str, bool] | None = None
+        # With no bars anywhere, the first miss in chain order is the answer: an
+        # outage at the covering source stays an error, not a later source's
+        # "nothing here".
+        first_miss: tuple[list[dict[str, Any]], str, bool] | Exception | None = None
+        failures: list[tuple[str, Exception]] = []
+        refusal: IntervalNotSupported | None = None
         for entry in candidates:
             try:
                 result = await getattr(entry.source, method)(symbol=symbol, **kwargs)
-                if isinstance(result, FetchResult):
-                    bars, truncated = result.bars, result.truncated
-                else:
-                    bars, truncated = result, False
-                if not bars:
-                    # Empty is a soft miss — a source may cover the market but
-                    # not this symbol/window (e.g. lookback caps). Try the rest
-                    # of the chain before accepting it.
-                    if first_empty is None:
-                        first_empty = (bars, entry.name, truncated)
-                    logger.info(
-                        "market_data.empty_fallthrough | source=%s symbol=%s",
-                        entry.name,
-                        symbol,
-                    )
-                    continue
-                return bars, entry.name, truncated
+            except IntervalNotSupported as exc:
+                # Not a candidate for this width, so neither a miss nor a fallback.
+                refusal = refusal or exc
+                continue
             except Exception as exc:
                 logger.warning(
                     "market_data.fallback | source=%s symbol=%s error=%s",
@@ -398,10 +400,33 @@ class MarketDataProvider:
                     symbol,
                     exc,
                 )
-                last_exc = exc
-        if first_empty is not None:
-            return first_empty
-        raise last_exc  # type: ignore[misc]
+                failures.append((entry.name, exc))
+                first_miss = first_miss or exc
+                continue
+            if isinstance(result, FetchResult):
+                bars, truncated = result.bars, result.truncated
+            else:
+                bars, truncated = result, False
+            if bars:
+                _record_failures(symbol, _CHAIN_READS[method], failures, served_by=entry.name)
+                return bars, entry.name, truncated
+            # Empty is a soft miss — a source may cover the market but not this
+            # symbol/window (e.g. lookback caps). Try the rest of the chain
+            # before accepting it.
+            first_miss = first_miss or (bars, entry.name, truncated)
+            logger.info(
+                "market_data.empty_fallthrough | source=%s symbol=%s",
+                entry.name,
+                symbol,
+            )
+        # A failure behind an empty answer is recorded too: that source might
+        # have had the bars.
+        _record_failures(symbol, _CHAIN_READS[method], failures, served_by=None)
+        if isinstance(first_miss, Exception):
+            raise surfaced(*failures[0])
+        if first_miss is None:
+            raise refusal  # type: ignore[misc]  # every candidate refused the width
+        return first_miss
 
     async def _fetch_from(
         self, source_name: str, method: str, symbol: str, **kwargs: Any
@@ -543,11 +568,13 @@ class MarketDataProvider:
         is_index = asset_type == "indices"
         results_by_symbol: dict[str, dict[str, Any]] = {}
         venues: dict[str, str | None] = {}
-        last_exc: Exception | None = None
+        # Per symbol, the providers that failed it, in the order they were asked.
+        failures: dict[str, list[tuple[str, Exception]]] = {}
+        first_failure: tuple[str, Exception] | None = None
 
         async def serve(entry: ProviderEntry, batch: list[Any]) -> set[str]:
             """Ask one provider for *batch*; return the symbols it resolved."""
-            nonlocal last_exc
+            nonlocal first_failure
             try:
                 snapshots = await entry.source.get_snapshots(
                     symbols=batch,
@@ -559,7 +586,9 @@ class MarketDataProvider:
                     "market_data.snapshot.fallback | source=%s error=%s",
                     entry.name, exc,
                 )
-                last_exc = exc
+                first_failure = first_failure or (entry.name, exc)
+                for s in batch:
+                    failures.setdefault(snapshot_key(s), []).append((entry.name, exc))
                 return set()
 
             requested = {snapshot_key(s) for s in batch}
@@ -623,6 +652,10 @@ class MarketDataProvider:
             resolved = set().union(*answered)
             pending = [s for s in pending if snapshot_key(s) not in resolved]
 
+        for key, failed in failures.items():
+            served = results_by_symbol.get(key)
+            _record_failures(key, "quote", failed, served_by=served["source"] if served else None)
+
         if results_by_symbol:
             if self._name_rows is not None:
                 await self._name_rows(results_by_symbol.values())
@@ -632,8 +665,8 @@ class MarketDataProvider:
                 if snapshot_key(symbol) in results_by_symbol
             ]
 
-        if last_exc:
-            raise last_exc
+        if first_failure:
+            raise surfaced(*first_failure)
         return []
 
     async def get_market_status(
