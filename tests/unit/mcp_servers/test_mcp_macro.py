@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -122,6 +123,123 @@ class TestGetEconomicIndicator:
         assert result["indicator"] == "GDP"
 
 
+class TestIndicatorSeries:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name, frequency",
+        [
+            ("GDP", "quarterly"),
+            ("CPI", "monthly"),
+            ("unemploymentRate", "monthly"),
+            ("federalFundsRate", "monthly"),
+            ("inflationRate", "daily"),
+            ("retailSales", "monthly"),
+            ("consumerSentiment", "monthly"),
+            ("nonFarmPayrolls", "monthly"),
+        ],
+    )
+    async def test_every_documented_name_says_what_it_is(self, name, frequency):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_indicator(name)
+
+        series = result["series"]
+        assert series["country"] == "US"
+        assert series["frequency"] == frequency
+        assert series["unit"] and series["description"] and series["adjustment"]
+
+    @pytest.mark.asyncio
+    async def test_the_breakeven_is_not_described_as_cpi(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_indicator("inflationRate")
+
+        assert "breakeven" in result["series"]["description"]
+        assert "not CPI" in result["series"]["description"]
+
+    @pytest.mark.asyncio
+    async def test_a_name_without_a_description_carries_none(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_indicator("durableGoods")
+
+        assert "series" not in result
+        assert "missing_periods" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_month_is_marked(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        client.get_economic_indicators = AsyncMock(return_value=[
+            {"date": "2025-12-01", "value": 326.0},
+            {"date": "2025-11-01", "value": 325.1},
+            {"date": "2025-09-01", "value": 324.2},
+            {"date": "2025-07-01", "value": 323.0},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_indicator("CPI")
+
+        assert result["missing_periods"] == ["2025-10-01", "2025-08-01"]
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_quarter_is_marked_and_a_whole_series_is_not(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        client.get_economic_indicators = AsyncMock(return_value=[
+            {"date": "2026-07-01", "value": 3},
+            {"date": "2026-01-01", "value": 1},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            gap = await get_economic_indicator("GDP")
+        client.get_economic_indicators = AsyncMock(return_value=[
+            {"date": "2026-07-01", "value": 3},
+            {"date": "2026-04-01", "value": 2},
+            {"date": "2026-01-01", "value": 1},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            whole = await get_economic_indicator("GDP")
+
+        assert gap["missing_periods"] == ["2026-04-01"]
+        assert "missing_periods" not in whole
+
+    @pytest.mark.asyncio
+    async def test_daily_series_have_no_gaps_to_mark(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        client.get_economic_indicators = AsyncMock(return_value=[
+            {"date": "2026-11-02", "value": 2.29},
+            {"date": "2026-10-30", "value": 2.34},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_indicator("inflationRate")
+
+        assert "missing_periods" not in result
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_name_reads_as_invalid_input(self):
+        from data_client.fmp import FMPRequestError
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        client.get_economic_indicators = AsyncMock(
+            side_effect=FMPRequestError("FMP has no economic indicator named 'PPI'", status_code=422)
+        )
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_indicator("PPI")
+
+        assert_error(result, "invalid_argument")
+        assert result["detail"] == "FMP has no economic indicator named 'PPI'"
+
+
 # ---------------------------------------------------------------------------
 # get_economic_calendar
 # ---------------------------------------------------------------------------
@@ -143,15 +261,71 @@ class TestGetEconomicCalendar:
         )
 
     @pytest.mark.asyncio
-    async def test_default_dates(self):
+    async def test_default_dates_are_yesterday_through_a_week_after_it(self):
         from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
 
+        yesterday_day = datetime.now(timezone.utc).date() - timedelta(days=1)
+        yesterday = yesterday_day.isoformat()
+        week = (yesterday_day + timedelta(days=7)).isoformat()
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_economic_calendar()
 
-        assert result["from_date"] is None
-        assert result["to_date"] is None
+        client.get_economic_calendar.assert_awaited_once_with(from_date=yesterday, to_date=week)
+        assert result["from_date"] == yesterday
+        assert result["to_date"] == week
+
+    @pytest.mark.asyncio
+    async def test_a_lone_future_start_reads_the_week_after_it(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_calendar(from_date="2099-01-01")
+
+        client.get_economic_calendar.assert_awaited_once_with(
+            from_date="2099-01-01", to_date="2099-01-08"
+        )
+        assert result["to_date"] == "2099-01-08"
+
+    @pytest.mark.asyncio
+    async def test_a_lone_past_end_reads_the_week_before_it(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_calendar(to_date="2020-01-31")
+
+        client.get_economic_calendar.assert_awaited_once_with(
+            from_date="2020-01-24", to_date="2020-01-31"
+        )
+        assert result["from_date"] == "2020-01-24"
+
+    @pytest.mark.asyncio
+    async def test_times_are_labeled_utc(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_calendar(from_date="2025-01-01", to_date="2025-01-31")
+
+        assert result["timezone"] == "UTC"
+
+    @pytest.mark.asyncio
+    async def test_an_unreleased_event_has_no_change_percentage(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
+
+        client = _make_fmp_client()
+        client.get_economic_calendar = AsyncMock(return_value=[
+            {"event": "ISM Services PMI", "actual": None, "change": None, "changePercentage": 0},
+            {"event": "Durable Goods", "actual": 2.3, "change": 2, "changePercentage": 666.667},
+            {"event": "Holiday", "actual": None},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_calendar(from_date="2025-01-01", to_date="2025-01-31")
+
+        assert [e.get("changePercentage") for e in result["data"]] == [None, 666.667, None]
+        assert "changePercentage" not in result["data"][2]
 
 
 @pytest.mark.asyncio
@@ -212,6 +386,19 @@ class TestGetTreasuryRates:
         )
         assert result["from_date"] == "2025-01-01"
 
+    @pytest.mark.asyncio
+    async def test_no_end_reads_to_today(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_treasury_rates
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_treasury_rates()
+
+        client.get_treasury_rates.assert_awaited_once_with(from_date=None, to_date=today)
+        assert result["from_date"] is None
+        assert result["to_date"] == today
+
 
 # ---------------------------------------------------------------------------
 # get_market_risk_premium
@@ -229,6 +416,17 @@ class TestGetMarketRiskPremium:
         assert_ok_envelope(result, count=1)
         assert result["data_type"] == "market_risk_premium"
         assert result["data"][0]["country"] == "United States"
+
+    @pytest.mark.asyncio
+    async def test_names_its_source_and_says_it_is_undated(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_market_risk_premium
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_market_risk_premium()
+
+        assert "Damodaran" in result["method"]
+        assert result["as_of"] is None
 
     @pytest.mark.asyncio
     async def test_api_error(self):

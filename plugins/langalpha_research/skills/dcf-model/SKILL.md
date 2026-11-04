@@ -66,14 +66,14 @@ Do not build the model end to end and present it complete.
 - **Ratios and metrics**: `get_financial_ratios(symbol)`; **growth rates**: `get_growth_metrics(symbol)`
 - **Historical valuation**: `get_historical_valuation(symbol)` for the DCF fair value against price and the enterprise-value history; the exit-multiple back-check takes its comparison from `evToEBITDA` in `get_financial_ratios`
 - **Risk-free rate**: macro MCP `get_treasury_rates()`, the 10Y
-- **Equity risk premium**: macro MCP `get_market_risk_premium()`; the record carries no observation date, so the as-of is the retrieval date and the basis comment says so
+- **Equity risk premium**: macro MCP `get_market_risk_premium()`; `as_of` is null (the table is undated), so the basis comment cites the table that `method` names and says it is undated, not the run date
 - **Consensus and price**: `get_company_overview`
 - **Beta**: `yf_fundamentals` MCP `compare_valuations([symbol])`, the `beta` field on the symbol's record; where the basis comment needs a window and frequency the model controls, regress the name's returns against an index over bars from `yf_price` MCP `get_stock_history(ticker, period="5y", interval="1month")` and record that basis instead
 - **Web search and fetch**: current price, debt and cash when a tool does not carry them
 
 Validate before building: net debt against net cash, diluted shares against recent buybacks or issuance, historical margins against the business model, growth against sector norms, tax rate in a defensible range.
 
-**Done when** every input the model needs exists with a source and an as-of, and the validation list above has been walked.
+**Done when** every input the model needs exists with a source and an as-of (or is marked undated), and the validation list above has been walked.
 
 ### Step 2: Historical Analysis (3-5 years)
 

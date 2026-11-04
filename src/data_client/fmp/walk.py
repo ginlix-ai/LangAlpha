@@ -163,7 +163,15 @@ async def read_indicator(
 
     async def read(lo: date, hi: date) -> Any:
         params = {"name": name, "from": lo.isoformat(), "to": hi.isoformat()}
-        return await patiently(lambda: request("economic-indicators", params=params))
+        try:
+            return await patiently(lambda: request("economic-indicators", params=params))
+        except json.JSONDecodeError as exc:
+            if exc.doc.strip() != "Invalid name":
+                raise
+            # FMP answers a name it lacks with a 200 whose body is the text "Invalid name".
+            from .fmp_client import FMPRequestError
+
+            raise FMPRequestError(f"FMP has no economic indicator named {name!r}", status_code=422) from exc
 
     def keep(lo: date, hi: date, answer: list) -> list:
         inside = [

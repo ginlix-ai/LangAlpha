@@ -115,11 +115,11 @@ This workflow document focuses on execution steps. Reference the methodology fil
    Inputs:
    - Risk-Free Rate: [10-year yield from get_treasury_rates, with its as-of date]
    - Beta: [the `beta` field from `yf_fundamentals` MCP `compare_valuations`, or the peer-set average when the name has too little history]
-   - Equity Risk Premium: [Call get_market_risk_premium; it publishes no observation date, so the as-of is the retrieval date, labelled as such]
+   - Equity Risk Premium: [Call get_market_risk_premium; cite the table that `method` names and say it is undated]
 
    Example:
    Cost of Equity = rf + beta x ERP
-   rf comes from get_treasury_rates with its as-of date; ERP comes from get_market_risk_premium with the retrieval date as its as-of.
+   rf comes from get_treasury_rates with its as-of date; ERP comes from get_market_risk_premium, cited by its `method` and marked undated.
    ```
 
 **3. Determine Cost of Debt**

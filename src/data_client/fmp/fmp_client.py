@@ -1010,7 +1010,8 @@ class FMPClient:
     ) -> List[Dict]:
         """Reporters in the range; with both bounds a :class:`Walk` (see
         :meth:`_range`), paged past FMP's 4,000-row answer. A lone bound is one
-        read, as the economic calendar's is."""
+        read, as the economic calendar's is, sorted oldest first as the range
+        read is."""
         if from_date and to_date:
             return await self._range(
                 "earnings-calendar",
@@ -1025,4 +1026,7 @@ class FMPClient:
             params["from"] = from_date
         if to_date:
             params["to"] = to_date
-        return await self._make_request("earnings-calendar", params=params)
+        rows = await self._make_request("earnings-calendar", params=params)
+        if not isinstance(rows, list):
+            return rows
+        return Walk(sorted(rows, key=lambda row: str(row.get("date"))))
