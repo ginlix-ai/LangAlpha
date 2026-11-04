@@ -23,7 +23,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from .enums import MarketPhase
-from .symbology import ALWAYS_24_7, WEEKDAYS_24_5, _MICS
+from .symbology import ALWAYS_24_7, FUTURES_MIC, WEEKDAYS_24_5, _MICS
 
 logger = logging.getLogger(__name__)
 
@@ -156,10 +156,26 @@ def _xcals(calendar_id: str):
     with _xcals_lock:
         cal = _xcals_built.get(calendar_id)
         if cal is None:
-            import exchange_calendars as xcals
-
-            cal = _xcals_built[calendar_id] = xcals.get_calendar(calendar_id, start=_XCALS_START)
+            cal = _xcals_built[calendar_id] = _build_xcals(calendar_id)
     return cal
+
+
+def _build_xcals(calendar_id: str):
+    import exchange_calendars as xcals
+
+    if calendar_id != FUTURES_MIC:
+        return xcals.get_calendar(calendar_id, start=_XCALS_START)
+    from exchange_calendars.exchange_calendar_cmes import CMESExchangeCalendar
+
+    class GlobexCalendar(CMESExchangeCalendar):
+        """CME Globex: the CMES holidays and early closes, plus the daily halt
+        from 16:00 to 17:00 Chicago that CMES leaves out. The standard Globex
+        week (ES, GC, CL, ZN); grains keep shorter hours."""
+
+        name = FUTURES_MIC
+        close_times = ((None, time(16)),)
+
+    return GlobexCalendar(start=_XCALS_START)
 
 
 def _zone(cal) -> ZoneInfo:
@@ -350,6 +366,9 @@ class XcalsCalendar:
         self.calendar_id = calendar_id
         self.tz = _zone(_xcals(calendar_id))
         self._extended = _EXTENDED_HOURS.get(calendar_id)
+        # A session that opens the evening before its date (CME Globex) is
+        # already running on the eve, so the next day's session counts too.
+        self._opens_on_eve = _xcals(calendar_id).open_offset < 0
 
     def _bounds(self, d: date) -> tuple[int, int, int | None, int | None] | None:
         return _session_bounds(self.calendar_id, d.isoformat())
@@ -385,10 +404,19 @@ class XcalsCalendar:
         for i in range(_WALK_DAYS):
             yield d + timedelta(days=i * step)
 
+    def _session_date(self, at: datetime, ms: int) -> date:
+        """The local date of *at*, or the next day once its session has opened on this evening."""
+        today = at.astimezone(self.tz).date()
+        if self._opens_on_eve:
+            open_ms = self.session_open_ms(today + timedelta(days=1))
+            if open_ms is not None and open_ms <= ms:
+                return today + timedelta(days=1)
+        return today
+
     def phase_at(self, at: datetime) -> MarketPhase:
         at = _aware(at)
         ms = int(at.timestamp() * 1000)
-        local_date = at.astimezone(self.tz).date()
+        local_date = self._session_date(at, ms)
         bounds = self._bounds(local_date)
         if bounds is None:
             return MarketPhase.CLOSED
@@ -440,7 +468,7 @@ class XcalsCalendar:
     def latest_trading_date(self, at: datetime) -> date:
         at = _aware(at)
         ms = int(at.timestamp() * 1000)
-        today = at.astimezone(self.tz).date()
+        today = self._session_date(at, ms)
         day_start = self._day_start_ms(today)
         if day_start is not None and ms >= day_start:
             return today
