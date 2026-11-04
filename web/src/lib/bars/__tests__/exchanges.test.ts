@@ -117,8 +117,13 @@ describe('displaySpelling', () => {
     expect(displaySpelling(' 600519.SH ')).toBe('600519.SH');
     expect(displaySpelling('000001.sz')).toBe('000001.SZ');
     expect(displaySpelling('aapl')).toBe('AAPL');
-    expect(displaySpelling('brk.b')).toBe('BRK.B');
     expect(displaySpelling('^gspc')).toBe('^GSPC');
+  });
+
+  it('spells a US class share dashed, as the server stores it', () => {
+    expect(displaySpelling('brk.b')).toBe('BRK-B');
+    expect(displaySpelling('BF-B')).toBe('BF-B');
+    expect(displaySpelling('SAP.F')).toBe('SAP.F');
   });
 
   it('writes an HKEX code at four digits, as the server stores it', () => {

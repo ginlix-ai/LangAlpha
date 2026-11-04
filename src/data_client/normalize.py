@@ -99,30 +99,16 @@ def adjusts_nothing(asset_class: AssetClass | None, venue: str | None) -> bool:
     :func:`declared_venue`."""
     return asset_class in NO_CORPORATE_ACTIONS or venue == FUTURES_MIC
 
-# US dotted class-share suffixes (BRK.B, BF.B), kept from the pre-CMDP
-# classifier. They live here, not in the instrument clock that also reads them,
-# because this module ships to the sandbox, which has no ``src`` package.
-_US_CLASS_SUFFIXES = {"A", "B", "C"}
-
-
-def is_us_class_share(ref: InstrumentRef) -> bool:
-    """A dotted US class share (BRK.B, BF.B). The protocol knows no such
-    suffix, so the listing parses to the unknown venue; any other suffix there
-    (NOVO-B.CO, PETR4.SA) is a foreign venue it does not know either."""
-    stem, dot, suffix = ref.symbol.rpartition(".")
-    return ref.mic == UNKNOWN_MIC and bool(dot and stem) and suffix.upper() in _US_CLASS_SUFFIXES
-
-
 def declared_venue(ref: InstrumentRef | None) -> str | None:
     """The venue key a declaration ranks *ref* on; None for no instrument.
 
     A listing on a venue the protocol does not know takes XNYS as its default
     home, which would read as the US tape and earn a US-only realtime grant.
-    It keys as the unknown venue instead, except a US class share.
+    It keys as the unknown venue instead.
     """
     if ref is None:
         return None
-    if ref.mic == UNKNOWN_MIC and not is_us_class_share(ref):
+    if ref.mic == UNKNOWN_MIC:
         return UNKNOWN_MIC
     return ref.calendar_id
 
@@ -284,7 +270,7 @@ def bar_in_progress(
         return False
     if last < today:
         return False
-    if ref.mic == UNKNOWN_MIC and not is_us_class_share(ref):
+    if ref.mic == UNKNOWN_MIC:
         return True
     start = first if seconds is not None else max(first, today)
     regular_only = regular_only or ref.asset_class is AssetClass.INDEX

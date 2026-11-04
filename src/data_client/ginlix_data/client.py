@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from .pagination import follow_cursor, unique_by_time
+from .symbols import stock_ticker
 from .v2_routes import GinlixDataV2Routes, path_segment
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,8 @@ class GinlixDataClient(GinlixDataV2Routes):
             params["to"] = to_date
 
         headers = self._user_headers(user_id)
+        if market == "stock":
+            symbol = stock_ticker(symbol)
         url = f"/api/v1/data/aggregates/{path_segment(market)}/{path_segment(symbol)}"
 
         async def fetch_page(page_params: dict[str, Any]) -> dict[str, Any]:
@@ -110,7 +113,7 @@ class GinlixDataClient(GinlixDataV2Routes):
         """
         params: dict[str, Any] = {"limit": limit}
         if ticker:
-            params["ticker"] = ticker
+            params["ticker"] = stock_ticker(ticker)
         if published_after:
             params["published_utc.gte"] = published_after
         if published_before:
@@ -148,7 +151,9 @@ class GinlixDataClient(GinlixDataV2Routes):
             raise ValueError(f"invalid asset_type: {asset_type!r}")
         resp = await self.http.get(
             f"/api/v1/data/snapshots/{asset_type}",
-            params={"symbols": ",".join(symbols)},
+            params={"symbols": ",".join(
+                map(stock_ticker, symbols) if asset_type == "stocks" else symbols
+            )},
             headers=self._user_headers(user_id),
         )
         resp.raise_for_status()
@@ -193,7 +198,7 @@ class GinlixDataClient(GinlixDataV2Routes):
         ``GET /api/v1/data/options/contracts``
         """
         params: dict[str, Any] = {
-            "underlying_ticker": underlying_ticker,
+            "underlying_ticker": stock_ticker(underlying_ticker),
             "limit": limit,
         }
         if contract_type:
@@ -255,7 +260,7 @@ class GinlixDataClient(GinlixDataV2Routes):
         """
         resp = await self.http.get(
             "/api/v1/data/stocks/short-interest",
-            params={"ticker": symbol, "limit": limit, "sort": sort},
+            params={"ticker": stock_ticker(symbol), "limit": limit, "sort": sort},
             headers=self._user_headers(user_id),
         )
         resp.raise_for_status()
@@ -278,7 +283,7 @@ class GinlixDataClient(GinlixDataV2Routes):
         """
         resp = await self.http.get(
             "/api/v1/data/stocks/short-volume",
-            params={"ticker": symbol, "limit": limit, "sort": sort},
+            params={"ticker": stock_ticker(symbol), "limit": limit, "sort": sort},
             headers=self._user_headers(user_id),
         )
         resp.raise_for_status()
@@ -298,7 +303,7 @@ class GinlixDataClient(GinlixDataV2Routes):
         """
         resp = await self.http.get(
             "/api/v1/data/stocks/float",
-            params={"ticker": symbol},
+            params={"ticker": stock_ticker(symbol)},
             headers=self._user_headers(user_id),
         )
         resp.raise_for_status()

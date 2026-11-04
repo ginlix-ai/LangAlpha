@@ -134,6 +134,23 @@ def _venue_currency(symbol: str, mic: str, default: str) -> str:
     return default
 
 
+# A US class share is spelled with a dot by its exchange and Massive (BRK.B)
+# and with a dash by Yahoo and FMP (BRK-B). Both name one listing, keyed and
+# shown dashed, the spelling FMP and yfinance resolve. Only these classes read
+# so: a lone letter after a dot names a venue elsewhere (SAP.F is Frankfurt).
+_US_CLASS_SUFFIXES = frozenset("ABC")
+
+
+def us_class_share(symbol: str) -> tuple[str, str] | None:
+    """``(stem, class)`` when *symbol* is a US class share in either spelling
+    (BRK.B, BRK-B), else None."""
+    for separator in ".-":
+        stem, found, share_class = symbol.rpartition(separator)
+        if found and share_class in _US_CLASS_SUFFIXES and stem.isascii() and stem.isalpha():
+            return stem, share_class
+    return None
+
+
 def _venue_code(symbol: str, mic: str) -> str:
     """HKEX codes are written with and without leading zeros (700, 0700,
     00700); all name one listing, so they collapse to the four-digit form
@@ -534,6 +551,11 @@ def _venue_ref(
     code space already separates it from stocks)."""
     _require_stem(symbol)
     symbol = _venue_code(symbol, mic)
+    share = us_class_share(symbol)
+    if share is not None and (mic == UNKNOWN_MIC or _MICS[mic].market == "us"):
+        symbol = "-".join(share)
+        if mic == UNKNOWN_MIC:
+            mic = US_DEFAULT_MIC
     # Seeds are keyed by our spelling on the parsed venue, so AMD.DE (or its
     # key AMD.XETR) never picks up the seed that pins US AMD to XNAS.
     seed = _seed_registry().get(_spell(symbol, mic)) or {}
@@ -725,7 +747,8 @@ def to_canonical(
         stem, mic = venue
         return _venue_ref(stem, mic, asset_class=asset_class)
     if "." in bare:
-        # Unknown suffix (e.g. share classes): whole string is the symbol.
+        # Unknown suffix: the whole string is the symbol, on the unknown venue
+        # unless it is a US class share (BRK.B).
         return _venue_ref(bare, UNKNOWN_MIC, asset_class=asset_class)
     return _venue_ref(bare, US_DEFAULT_MIC, asset_class=asset_class)
 
@@ -733,8 +756,8 @@ def to_canonical(
 def from_instrument_key(key: str) -> InstrumentRef:
     """Ref for a key received from another service. Raises ValueError.
 
-    ``to_canonical`` reads an unknown last segment as part of the symbol (a
-    share class), so a key minted on a venue a newer pin added would resolve
+    ``to_canonical`` reads an unknown last segment as part of the symbol,
+    so a key minted on a venue a newer pin added would resolve
     here to a different key, on the US calendar and in dollars. A key from the
     wire is refused instead when its segment is not one this pin knows.
     """
@@ -788,7 +811,8 @@ def _respell_suffix(symbol: str, *, vendor: bool) -> str:
     s = _clean(symbol)
     venue = _venue_suffix_split(s)
     if venue is None:
-        return s
+        share = us_class_share(s)
+        return "-".join(share) if share else s
     stem, mic = venue
     return _spell(_venue_code(stem, mic), mic, vendor=vendor)
 
@@ -798,10 +822,11 @@ def display_spelling(symbol: str) -> str:
 
     For strings that never went through :func:`to_canonical`: what a vendor row
     or a user typed, on its way into storage or a comparison (``600519.ss``
-    becomes ``600519.SH``, ``700.HK`` becomes ``0700.HK``). Only a venue-suffixed
-    symbol is respelled, so a caret, a family index or an unknown suffix
-    survives. It never raises, and so it validates nothing: what goes into a
-    request or a URL comes from :func:`vendor_spelling` or :func:`to_canonical`.
+    becomes ``600519.SH``, ``700.HK`` becomes ``0700.HK``, ``BRK.B`` becomes
+    ``BRK-B``). Only a venue suffix or a US class share is respelled, so a
+    caret, a family index or an unknown suffix survives. It never raises, and
+    so it validates nothing: what goes into a request or a URL comes from
+    :func:`vendor_spelling` or :func:`to_canonical`.
     """
     return _respell_suffix(symbol, vendor=False)
 

@@ -77,7 +77,7 @@ describe('SymbolSearch', () => {
     fireEvent.change(input, { target: { value: 'brk' } });
     await rest();
     fireEvent.click(screen.getByText('Berkshire'));
-    expect(onPick).toHaveBeenCalledWith('BRK.B', expect.objectContaining({ name: 'Berkshire' }));
+    expect(onPick).toHaveBeenCalledWith('BRK-B', expect.objectContaining({ name: 'Berkshire' }));
   });
 
   it('does not pick a company name typed as a ticker', async () => {

@@ -100,10 +100,10 @@ class TestCreate:
                 {"trigger_config": {"symbol": "600519.SH", "conditions": [{"type": "price_below", "value": 1500}]}},
                 "; watching 600519.SH as a CN stock",
             ),
-            # A dotted class share parses to no known venue but trades on the US tape.
+            # A dotted class share is the US listing its dashed spelling names.
             (
                 {"trigger_config": {"symbol": "BRK.B", "conditions": [{"type": "price_below", "value": 500}]}},
-                "; watching BRK.B as a US stock",
+                "; watching BRK-B as a US stock",
             ),
             (
                 {"trigger_config": {"symbol": "PETR4.SA", "conditions": [{"type": "price_below", "value": 40}]}},

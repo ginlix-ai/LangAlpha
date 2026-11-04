@@ -394,3 +394,29 @@ class TestPaginateCursorSaysWhenMoreMatched:
         answers = iter(pages)
         rows, truncated = await follow_cursor(AsyncMock(side_effect=lambda p: next(answers)), {}, limit=limit)
         assert len(rows) <= limit and truncated is more
+
+
+class TestFetchStockDataClassShare:
+    @pytest.mark.parametrize("spelling", ["BRK.B", "BRK-B"])
+    @pytest.mark.asyncio
+    async def test_a_us_class_share_is_asked_for_in_massives_spelling(self, spelling):
+        asked: list[httpx.Request] = []
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            asked.append(request)
+            return httpx.Response(200, json={"results": []})
+
+        client = GinlixMCPClient()
+        client._http = httpx.AsyncClient(
+            base_url="http://ginlix-data.test", transport=httpx.MockTransport(answer)
+        )
+        try:
+            await client.fetch_stock_data(spelling, "1day", "2026-10-01", "2026-10-08")
+            await client.fetch_short_data(spelling)
+            await client.fetch_options_chain(spelling)
+        finally:
+            await client.close()
+
+        assert asked[0].url.path == "/api/v1/data/aggregates/stock/BRK.B"
+        assert [r.url.params["ticker"] for r in asked[1:3]] == ["BRK.B", "BRK.B"]
+        assert asked[3].url.params["underlying_ticker"] == "BRK.B"

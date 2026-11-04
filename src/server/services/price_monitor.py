@@ -39,7 +39,7 @@ from src.server.models.automation import (
     PriceTriggerConfig,
     RetriggerMode,
 )
-from src.data_client.instrument_clock import clock_for, clock_for_ref, is_us_class_share
+from src.data_client.instrument_clock import clock_for, clock_for_ref
 from src.server.services.market_data_feed import MarketDataFeed
 
 logger = logging.getLogger(__name__)
@@ -86,10 +86,14 @@ def _to_ws_symbol(symbol: str, market: MarketType) -> str:
 
 
 def _from_ws_symbol(ws_symbol: str) -> str:
-    """Wire format → bare symbol (for WS bar → automation lookup)."""
+    """Wire format → bare symbol (for WS bar → automation lookup).
+
+    The stock feed spells a class share as Massive does (BRK.B), where alerts
+    are keyed in our spelling (BRK-B).
+    """
     if ws_symbol.startswith("I:"):
         return ws_symbol[2:]
-    return ws_symbol
+    return display_spelling(ws_symbol)
 
 
 def _from_display_symbol(symbol: str) -> str:
@@ -233,14 +237,14 @@ def watched_listing(symbol: str, market: MarketType) -> Optional[InstrumentRef]:
 def watched_market(symbol: str, market: MarketType) -> Optional[str]:
     """The market an alert's listing is watched in (``us``, ``cn``, ``hk`` ...), None when unreadable.
 
-    A dotted class share (BRK.B, BF.B) parses to the unknown venue, since the
-    protocol knows no such suffix, yet the WebSocket carries it as the US
-    ticker it is. Any other unknown suffix stays ``other`` and is polled.
+    A dotted class share (BRK.B, BF.B) resolves to its US listing, which the
+    WebSocket carries. Any other suffix the protocol does not know stays
+    ``other`` and is polled.
     """
     ref = watched_listing(symbol, market)
     if ref is None:
         return None
-    return "us" if is_us_class_share(ref) else market_of(ref)
+    return market_of(ref)
 
 
 def _is_us_symbol(symbol: str, market: MarketType) -> bool:

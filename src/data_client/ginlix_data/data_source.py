@@ -9,7 +9,7 @@ from typing import Any
 from src.data_client.base import FetchResult
 from src.data_client.normalize import build_series
 from market_protocol import InstrumentRef, Series
-from market_protocol import index_families, to_legacy_api
+from market_protocol import display_spelling, index_families, to_legacy_api
 
 from .client import GinlixDataClient
 
@@ -213,9 +213,12 @@ class GinlixDataSource:
         last_trade = raw.get("last_trade", {})
         last_minute = raw.get("last_minute", {})
         ticker = raw.get("ticker", "")
-        # For indices, reverse-map I:SPX → GSPC etc.
+        # For indices, reverse-map I:SPX → GSPC etc.; a stock comes back in
+        # Massive's spelling (BRK.B) and leaves in ours (BRK-B).
         if asset_type == "indices":
             ticker = _REVERSE_INDEX_TICKERS.get(ticker, ticker.removeprefix("I:"))
+        else:
+            ticker = display_spelling(ticker)
         return {
             "symbol": ticker,
             "name": raw.get("name"),

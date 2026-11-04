@@ -17,6 +17,7 @@ from typing import Any, Callable, Coroutine, Optional
 import websockets
 
 from src.config.settings import GINLIX_DATA_WS_URL
+from src.data_client.ginlix_data.symbols import stock_ticker
 from market_protocol import AssetClass, OhlcvBar, to_canonical
 
 logger = logging.getLogger(__name__)
@@ -313,7 +314,7 @@ class MarketDataFeed:
             self._symbol_refcount[ikey] += 1
             if self._symbol_refcount[ikey] == 1:
                 # First subscriber's spelling becomes the provider wire symbol.
-                upstream = sym.upper()
+                upstream = stock_ticker(sym) if self._market == "stock" else sym.upper()
                 self._upstream_symbol[ikey] = upstream
                 new_upstream.append(upstream)
 
