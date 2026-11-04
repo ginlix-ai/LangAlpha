@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
+from ptc_agent.agent.claude_code.sandbox_launcher import SandboxLink
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 from ptc_agent.core import claude_code_managed
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
@@ -40,10 +41,10 @@ async def test_a_turn_on_an_own_computer_runs_there_and_relays_the_saved_token_o
     assert isinstance(launcher, SSHLauncher) and launcher.install is True and launcher.token_file == CID
     assert (launcher.machine.root(), launcher.identity) == ("/home/me/langalpha", "user-1")
     assert await launcher.machine.link() == "the-link"
-    assert (launcher.relay is not None) is (saved is not None)
+    assert (launcher.credential is not None) is (saved is not None)
     cache = Cache()
     with serving(cache):
-        await launcher.on_refused("file")
+        await launcher.on_file_refused()
     assert MachineAnswer(**cache.values[answer_key(CID)]).file == "refused", "recorded for that computer"
     cache = Cache()
     with serving(cache):
@@ -103,7 +104,7 @@ async def test_a_turn_first_to_find_claude_code_cannot_run_there_is_refused_as_a
     with the refusal admission gives from then on, and what it keeps still
     names the token file there, so Settings offers to remove it."""
     machine = SimpleNamespace(
-        target=SimpleNamespace(host="studio"),
+        host="studio",
         run=AsyncMock(return_value=SimpleNamespace(exit_code=0, stdout=f"\n1\n{runs}\n".encode(), stderr=b"")),
     )
     sandbox = _ssh_sandbox()
@@ -134,7 +135,7 @@ async def test_a_refusal_never_overrides_an_answer_kept_since_the_turn_was_built
     cache = Cache()
     _kept(cache, kept, token.built_at + (1 if later else -1))
     with serving(cache):
-        await token.refused("file")
+        await token.file_refused()
     assert MachineAnswer(**cache.values[answer_key(CID)]).file == file
 
 
@@ -189,7 +190,7 @@ async def test_a_turn_that_found_no_token_file_keeps_that(origin, kept, later, f
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "word",
-    [lambda token: token.refused("file"), lambda token: token.blocked(False), lambda token: token.announced("none")],
+    [lambda token: token.file_refused(), lambda token: token.blocked(False), lambda token: token.announced("none")],
     ids=["refused", "blocked", "announced"],
 )
 async def test_a_turns_word_never_lands_over_an_answer_kept_after_it_read_the_last_one(word):
@@ -279,3 +280,24 @@ async def test_claude_refusing_a_computers_own_token_ends_the_turn_saying_so():
     assert failed.value.kind == "token_refused"
     assert MachineAnswer(**cache.values[answer_key(CID)]).file == "refused"
     assert claude_code_refusal(failed.value, "claude-code/sonnet")["reason"] == "token_refused"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("on", [True, False], ids=["sandbox-placement", "worker-placement"])
+async def test_a_cloud_computers_cli_runs_in_its_sandbox_only_where_the_switch_is_on(on, monkeypatch):
+    from src.server.services.claude_code import launchers
+
+    config = SimpleNamespace(sandbox_placement=on, worker_cli_slots=8)
+    monkeypatch.setattr(launchers, "get_claude_code_config", lambda: config)
+    sandbox = MagicMock()
+    sandbox.working_dir = "/home/workspace"
+    sandbox.wait_ready = AsyncMock()
+    launcher = turn_launcher(sandbox, computer_id=CID, user_id="user-1", admitted="api_key", saved=None)
+    if not on:
+        assert isinstance(launcher, LocalLauncher)
+        return
+    assert isinstance(launcher, SSHLauncher) and launcher.token_file is None
+    assert isinstance(launcher.credential, HostedCredential)
+    assert (launcher.credential.user_id, launcher.credential.admitted) == ("user-1", "api_key")
+    assert (launcher.machine.root(), launcher.identity) == ("/home/workspace", "user-1")
+    link = await launcher.machine.link()
+    assert isinstance(link, SandboxLink) and link.runtime is sandbox.runtime and await launcher.machine.link() is link

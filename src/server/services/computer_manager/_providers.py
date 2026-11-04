@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from ptc_agent.core.sandbox.providers._ssh_transport import Machine
+from ptc_agent.core.sandbox.providers._ssh_transport import Link, Machine
 from ptc_agent.core.sandbox.runtime import (
     HostUnavailablePolicy,
     SandboxGoneError,
@@ -200,7 +200,7 @@ class ProviderMixin:
         finally:
             await provider.close()
 
-    async def machine_link(self, computer: Dict[str, Any]) -> Machine:
+    async def machine_link(self, computer: Dict[str, Any]) -> Machine[Link]:
         """An own computer's machine, for work on the machine itself rather
         than in the computer (its Claude Code token), dialed once here so one
         out of reach says so at once. Never started, so the computer's state

@@ -24,7 +24,8 @@ import pytest
 from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError
 
 from ptc_agent.agent.claude_code import ssh_launcher
-from ptc_agent.agent.claude_code.launcher import _INHERITED, TOKEN_FD_ENV, cli_env
+from ptc_agent.agent.claude_code.launcher import _INHERITED, cli_env
+from ptc_agent.agent.claude_code.machine_token import API_KEY_FD_ENV, TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.machine_token import NO_PERL, STREAM_BOOT
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher, kill_if_cli, remote_session_path
 from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS, _COMMAND_SLOTS, Machine
@@ -51,10 +52,8 @@ def _machine_at(root) -> Machine:
 
 
 def _launcher(relay: bool) -> SSHLauncher:
-    async def stored() -> str:  # pragma: no cover - the transport calls it, not the script
-        return STORED
-
-    return SSHLauncher(_machine_at("/m/root"), identity="u", token_file=CID, relay=stored if relay else None,
+    store = SimpleNamespace(read=AsyncMock(), refused=AsyncMock())  # the transport reads it, not the script
+    return SSHLauncher(_machine_at("/m/root"), identity="u", token_file=CID, credential=store if relay else None,
                        env={"ANTHROPIC_BASE_URL": "http://api.test"})
 
 
@@ -70,15 +69,20 @@ def _machine(tmp_path: Path, token: str | None = TOKEN, mode: int = 0o600) -> di
             "SSH_CONNECTION": "10.0.0.1 1 10.0.0.2 22", "MACHINE_SECRET": "machine-only"}
 
 
+def _relayed(secret: str, kind: str = "setup_token") -> bytes:
+    """The line the transport relays a credential on."""
+    return f"{kind} {secret}\n".encode()
+
+
 def _run(tmp_path: Path, machine: dict[str, str], *, relay: bool, after: bytes = b"") -> tuple[str, dict]:
     """Run the launcher's command as sshd would; what the shim announced and what the stand-in CLI saw."""
     seen = tmp_path / "seen.json"
     cli = tmp_path / "claude"
     cli.write_text(
         f"#!{sys.executable}\nimport json, os, socket, sys\n"
-        f"fd = os.environ.get({TOKEN_FD_ENV!r})\n"
-        "token = socket.socket(fileno=int(fd)).recv(4096).decode().strip() if fd else None\n"
-        f"json.dump({{'env': dict(os.environ), 'argv': sys.argv, 'token': token, 'stdin': sys.stdin.read()}}, open({str(seen)!r}, 'w'))\n"
+        f"var = next((v for v in ({TOKEN_FD_ENV!r}, {API_KEY_FD_ENV!r}) if v in os.environ), None)\n"
+        "token = socket.socket(fileno=int(os.environ[var])).recv(4096).decode().strip() if var else None\n"
+        f"json.dump({{'env': dict(os.environ), 'argv': sys.argv, 'token': token, 'var': var, 'stdin': sys.stdin.read()}}, open({str(seen)!r}, 'w'))\n"
     )
     cli.chmod(0o755)
     options = ClaudeAgentOptions(cli_path=str(cli), cwd=str(tmp_path),
@@ -109,10 +113,25 @@ def test_the_cli_gets_the_machines_token_through_a_socket_and_a_clean_environmen
 
 
 def test_a_machine_without_a_token_is_relayed_one_line_and_the_cli_gets_the_rest_of_the_stream(tmp_path):
-    announced, seen = _run(tmp_path, _machine(tmp_path, token=None), relay=True, after=STORED.encode() + b"\n{\"a\":1}\n")
+    announced, seen = _run(tmp_path, _machine(tmp_path, token=None), relay=True, after=_relayed(STORED) + b"{\"a\":1}\n")
     assert announced == "langalpha-token relay"
-    assert seen["token"] == STORED and seen["stdin"] == '{"a":1}\n'
+    assert (seen["token"], seen["var"], seen["stdin"]) == (STORED, TOKEN_FD_ENV, '{"a":1}\n')
     assert not any(STORED in v for v in seen["env"].values())
+
+
+def test_a_relayed_api_key_reaches_the_cli_on_the_api_keys_descriptor(tmp_path):
+    key = "sk-ant-api03-" + "4" * 80
+    _, seen = _run(tmp_path, _machine(tmp_path, token=None), relay=True, after=_relayed(key, "api_key"))
+    assert (seen["token"], seen["var"]) == (key, API_KEY_FD_ENV)
+
+
+def test_a_relayed_line_of_no_known_kind_starts_nothing_and_echoes_nothing(tmp_path):
+    machine = _machine(tmp_path, token=None)
+    for line in (b"oauth " + STORED.encode() + b"\n", STORED.encode() + b"\n"):
+        done = subprocess.run(["sh", "-c", STREAM_BOOT], input=_launcher(True).command(
+            ClaudeAgentOptions(cli_path=sys.executable, cwd=str(tmp_path))).encode() + b"\n" + line,
+            env=machine, capture_output=True, timeout=30)
+        assert done.returncode != 0 and STORED.encode() not in done.stderr + done.stdout
 
 
 def test_a_relayed_empty_line_or_no_relay_starts_the_cli_with_no_token(tmp_path):
@@ -134,7 +153,7 @@ def test_a_token_file_not_kept_privately_is_ignored(tmp_path, how):
         path.symlink_to(target)
     announced, seen = _run(tmp_path, machine, relay=False)
     assert announced == "langalpha-token none" and seen["token"] is None
-    relayed, seen = _run(tmp_path, machine, relay=True, after=STORED.encode() + b"\n")
+    relayed, seen = _run(tmp_path, machine, relay=True, after=_relayed(STORED))
     assert relayed == "langalpha-token relay" and seen["token"] == STORED
 
 
@@ -153,7 +172,7 @@ def test_the_base_is_under_the_root_read_once_the_connection_is_resolved():
 class _ManagedLink:
     """A link whose machine answers the managed-sources test, naming ``managed``."""
 
-    target = SimpleNamespace(host="studio")
+    host = "studio"
 
     def __init__(self, order: list[str], *, managed: str = "", perl: bool = True, token: bool = False) -> None:
         self.order = order

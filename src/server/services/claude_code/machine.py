@@ -46,9 +46,10 @@ from src.utils.cache.redis_cache import get_cache_client
 from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, SHORT_TTL_S, Held, in_background, run_check, ttl
 from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, changing, rows_on
 from .hosted import saved_token_runs
-from .saved import refuse, stored_row, token_hash, token_state, usable
+from .saved import refusal_stamp, refuse, stored_row, token_state, usable
 
 if TYPE_CHECKING:
+    from ptc_agent.agent.claude_code.launcher import Credential
     from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 
 logger = logging.getLogger(__name__)
@@ -88,8 +89,6 @@ _NOT_RUNNABLE: dict[str, tuple[str, bool]] = {
     "policy_blocked": (POLICY_BLOCKED, False), "needs_perl": (NEEDS_PERL, True),
     "computer_unsupported": (MUSL_UNSUPPORTED, False),
 }
-#: Which token Claude refused on a run there, as the launcher reports it.
-Refused = Literal["file", "relay"]
 
 
 def answer_key(computer_id: str) -> str:
@@ -232,10 +231,11 @@ async def keep_unless_newer(computer_id: str, answer: MachineAnswer | None, sinc
 class ComputerToken:
     """What a turn on an own computer signs in with, as the backend sees it.
 
-    ``relay`` hands the CLI the user's saved token when the machine asks for
-    it, unless Claude is known to refuse it, remembering only its hash;
+    As the run's ``TokenStore``, ``read`` hands the CLI the user's saved
+    token when the machine asks for it, unless Claude is known to refuse it,
+    remembering only its hash, and ``refused`` hears that Claude refused it;
     ``announced`` hears whether the machine had a token file of the
-    computer's, and ``refused`` that Claude refused the token the run used,
+    computer's, and ``file_refused`` that Claude refused that file,
     so Settings and admission say so from then on, as ``blocked`` hears that
     an organization's policy is installed there, ``no_perl`` that the
     machine has no perl and ``unsupported`` that it runs musl. None of
@@ -255,13 +255,15 @@ class ComputerToken:
         last = await read_answer(self.computer_id)
         return last is None or last.checked_at <= self.built_at, last
 
-    async def relay(self) -> str | None:
+    async def read(self) -> Credential | None:
+        from ptc_agent.agent.claude_code.launcher import Credential
+
         row = await stored_row(self.user_id) if await saved_token_runs(self.user_id) else None
         if row is None or not await usable(row):
             self._relayed = None
             return None
-        self._relayed = token_hash(row["access_token"]), row["updated_at"]
-        return row["access_token"]
+        self._relayed = refusal_stamp(row)
+        return Credential(row["access_token"])
 
     async def announced(self, source: Literal["file", "relay", "none"]) -> None:
         """Keep that the machine had no token file a turn could use when it
@@ -275,11 +277,12 @@ class ComputerToken:
             folder = last.folder if last else None
             await keep_unless_newer(self.computer_id, MachineAnswer("none", folder=folder), self.built_at)
 
-    async def refused(self, source: Refused) -> None:
-        if source == "relay":
-            if self._relayed is not None:
-                await refuse(self.user_id, *self._relayed)
-            raise ClaudeTurnFailed("token_refused", "Claude refused the saved setup token relayed to the computer")
+    async def refused(self) -> None:
+        if self._relayed is not None:
+            await refuse(self.user_id, *self._relayed)
+        raise ClaudeTurnFailed("token_refused", "Claude refused the saved setup token relayed to the computer")
+
+    async def file_refused(self) -> None:
         current, last = await self._last()
         if current:
             await keep_unless_newer(self.computer_id, carried(last, "refused"), self.built_at)
@@ -303,14 +306,14 @@ class ComputerToken:
             await keep_unless_newer(self.computer_id, carried(last, file, present=present), self.built_at)
 
 
-async def machine_of(computer: Mapping[str, Any]) -> Machine:
+async def machine_of(computer: Mapping[str, Any]) -> Machine[Link]:
     """The computer's machine, dialed without starting the computer. Raises when it cannot be reached."""
     from src.server.services.workspace_manager import WorkspaceManager
 
     return await WorkspaceManager.get_instance().machine_link(dict(computer))
 
 
-def check_launcher(machine: Machine, user_id: str, token_file: str) -> SSHLauncher:
+def check_launcher(machine: Machine[Link], user_id: str, token_file: str) -> SSHLauncher:
     """A launcher signed in with the token file ``token_file`` names only, the
     computer's or a staged one, as a check of that token needs, and one that
     never installs the CLI nor waits long for a CLI slot: a check must end
@@ -321,7 +324,7 @@ def check_launcher(machine: Machine, user_id: str, token_file: str) -> SSHLaunch
 
 
 async def check_machine(
-    machine: Machine, user_id: str, computer_id: str, last: MachineAnswer | None, *, look_only: bool = False,
+    machine: Machine[Link], user_id: str, computer_id: str, last: MachineAnswer | None, *, look_only: bool = False,
 ) -> MachineAnswer:
     """The machine's token as it stands: whether a usable one is there, and if
     so whether Claude serves it, by one minimal turn on the machine, which
@@ -522,7 +525,7 @@ class MachineHome:
         self.lock = change_lock(self.computer_id)
         self.sign_in = PendingSignIn(f"claude_code:sign_in:{user_id}:{self.computer_id}")
         self.who = f"user_id={user_id} computer_id={self.computer_id}"
-        self._machine: Machine | None = None
+        self._machine: Machine[Link] | None = None
         #: The tokens' folder the token was put in, as the machine named it, which ``keep`` records.
         self._folder: str | None = None
 
@@ -534,7 +537,7 @@ class MachineHome:
         return cls(user_id, computer)
 
     @property
-    def machine(self) -> Machine:
+    def machine(self) -> Machine[Link]:
         if self._machine is None:
             raise RuntimeError("ready the home before changing its token")
         return self._machine

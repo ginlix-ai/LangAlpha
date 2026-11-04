@@ -57,6 +57,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
     logger,
 )
 
+from ptc_agent.agent.claude_code.machine_token import _FD_ENV
 from ptc_agent.core.claude_code_managed import local_managed
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.database.encryption import get_encryption_key
@@ -70,14 +71,6 @@ _INHERITED = (
     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "NODE_EXTRA_CA_CERTS",
 )
 _THREAD_KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
-#: The CLI reads an OAuth token from the descriptor this names, directly when
-#: it is a socket (macOS has no /proc/self/fd), and then drops the variable.
-TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
-#: The same for an Anthropic API key, which the CLI reads once and keeps for
-#: the session (measured on CLI 2.1.310: a second query in one session runs
-#: on the key the descriptor gave the first).
-API_KEY_FD_ENV = "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR"
-_FD_ENV = {"setup_token": TOKEN_FD_ENV, "api_key": API_KEY_FD_ENV}
 #: The lines of the CLI's stderr kept, how long an exit waits for the last
 #: of them, and how much of them its log line holds.
 STDERR_KEPT = 50
@@ -268,11 +261,12 @@ class Launcher(Protocol):
 class TokenStore(Protocol):
     """Where the credential a user's turns run on is kept: read as each run
     starts, so one replaced meanwhile is the one it runs on, and told when
-    Anthropic refuses it."""
+    Anthropic refuses what its last read returned. ``refused`` takes nothing:
+    the store knows what it handed out."""
 
     async def read(self) -> Credential | None: ...
 
-    async def refused(self, credential: Credential) -> None: ...
+    async def refused(self) -> None: ...
 
 
 class ScopedEnvTransport(SubprocessCLITransport):
@@ -501,7 +495,7 @@ class LocalLauncher:
 
     async def refused(self) -> None:
         if self.saved is not None and self._used:
-            await self.saved.refused(self._used)
+            await self.saved.refused()
 
     async def release(self, prepared: Prepared) -> None:
         """Remove the turn's config dir. The thread's cwd stays: it holds nothing, and another run of the thread may be in it."""

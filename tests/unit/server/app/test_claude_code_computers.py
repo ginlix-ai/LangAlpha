@@ -158,7 +158,7 @@ class _World:
     def __init__(self):
         self.machine, self.cache, self.computer = _Machine(), Cache(), _computer()
         self.tunnel_live, self.backend, self.opted_in, self.rows, self.saved = True, False, True, True, None
-        link = SimpleNamespace(run=self.machine.run, target=SimpleNamespace(host="studio"))
+        link = SimpleNamespace(run=self.machine.run, host="studio")
         self.handle = Machine(AsyncMock(return_value=link), lambda: "/home/me/langalpha")
         self.dialed: list[dict] = []
         self.dial_error: BaseException | None = None
@@ -425,7 +425,7 @@ async def test_a_turns_refusal_while_a_status_check_runs_is_not_overwritten_by_t
     world.machine.token = "sk-ant-oat01-mine"
 
     async def refused_meanwhile(launcher, model):
-        await machines.ComputerToken(USER, CID).refused("file")
+        await machines.ComputerToken(USER, CID).file_refused()
         return True
 
     with patch("ptc_agent.agent.claude_code.runtime.token_works", new=refused_meanwhile):
@@ -448,7 +448,7 @@ async def test_a_pasted_token_is_staged_checked_there_then_put_in_place_and_kept
     assert (world.machine.token, world.machine.staged) == ("sk-ant-oat01-pasted", None)
     assert world.machine.calls == ["facts", "install", "write", "check", "promote"]
     [launcher] = world.machine.checked
-    assert (launcher.machine, launcher.identity, launcher.relay, launcher.install) == (world.handle, USER, None, False)
+    assert (launcher.machine, launcher.identity, launcher.credential, launcher.install) == (world.handle, USER, None, False)
     assert launcher.token_file == STAGED, "the check signs in with the staged token, not the one in use"
     assert launcher.slot_wait_s == START_TIMEOUT_S, "a check waits only briefly for a CLI slot"
     assert _kept(world.cache).file == "works"

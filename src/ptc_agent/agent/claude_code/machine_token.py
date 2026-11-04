@@ -85,14 +85,27 @@ def checked_name(name: str) -> str:
     return name
 
 
+#: The CLI reads an OAuth token from the descriptor this names, directly when
+#: it is a socket (macOS has no /proc/self/fd), and then drops the variable.
+TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+#: The same for an Anthropic API key, which the CLI reads once and keeps for
+#: the session (measured on CLI 2.1.310: a second query in one session runs
+#: on the key the descriptor gave the first).
+API_KEY_FD_ENV = "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR"
+#: The descriptor variable of each kind of credential, the shim's too (``shim``).
+_FD_ENV = {"setup_token": TOKEN_FD_ENV, "api_key": API_KEY_FD_ENV}
+
+
 @functools.cache
 def _perl(name: str) -> str:
     return Path(__file__).with_name(name).read_text()
 
 
 def shim() -> str:
-    """The perl that starts the CLI with the turn's token (``token_shim.pl``)."""
-    return _perl("token_file.pl") + _perl("token_shim.pl")
+    """The perl that starts the CLI with the turn's credential (``token_shim.pl``),
+    given each kind's descriptor variable (``_FD_ENV``)."""
+    table = ", ".join(f"{kind} => '{name}'" for kind, name in _FD_ENV.items())
+    return _perl("token_file.pl") + f"my %fd = ({table});\n" + _perl("token_shim.pl")
 
 
 def state_script() -> str:
@@ -114,7 +127,7 @@ async def _capped(link: Link, stream: Any) -> bytes:
     while chunk := await stream.read(OUTPUT_CAP):
         out += chunk
         if len(out) > OUTPUT_CAP:
-            raise RuntimeError(f"{link.target.host} printed more than {OUTPUT_CAP} bytes in reply to a token script")
+            raise RuntimeError(f"{link.host} printed more than {OUTPUT_CAP} bytes in reply to a token script")
     return bytes(out)
 
 
@@ -139,7 +152,7 @@ async def _run_stream(link: Link, script: str, data: bytes = b"") -> tuple[int |
 def _check(ok: bool, link: Link, doing: str, status: int | None, err: str) -> None:
     """Raise unless ``ok``, naming what could not be done there in the machine's own words."""
     if not ok:
-        raise RuntimeError(f"Could not {doing} on {link.target.host}: {err or f'exit {status}'}")
+        raise RuntimeError(f"Could not {doing} on {link.host}: {err or f'exit {status}'}")
 
 
 async def stage_machine_token(link: Link, computer_id: str, token: str) -> str:

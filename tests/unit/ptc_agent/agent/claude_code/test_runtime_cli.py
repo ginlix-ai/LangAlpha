@@ -705,8 +705,8 @@ class _SavedToken:
     async def read(self) -> Credential:
         return Credential(self.token)
 
-    async def refused(self, credential: Credential) -> None:
-        self.refusals.append(credential.secret)
+    async def refused(self) -> None:
+        self.refusals.append(self.token)
 
 
 async def test_a_turn_runs_on_the_saved_token_and_reports_one_anthropic_refuses():

@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 
-from ptc_agent.agent.claude_code.launcher import TOKEN_FD_ENV
+from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.machine_token import (
     STREAM_BOOT,
     discard_staged_token,
@@ -148,7 +148,7 @@ async def test_a_machine_on_musl_reads_as_unsupported_and_is_refused_before_the_
 
 def _turn(container: str, *, relay: bool, after: str = "") -> list[str]:
     """The turn's command, as the CLI's channel runs it, with the stand-in CLI."""
-    launcher = SSHLauncher(Machine(None, lambda: "/root"), identity="u", token_file=CID, relay=(lambda: None) if relay else None)
+    launcher = SSHLauncher(Machine(None, lambda: "/root"), identity="u", token_file=CID, credential=object() if relay else None)
     options = ClaudeAgentOptions(cli_path=CLI, cwd="/tmp", env={"CLAUDE_CONFIG_DIR": "/tmp/cfg", "ODD": "it's\na \"value\" $HOME"})
     done = subprocess.run(
         ["docker", "exec", "-i", "-e", f"HOME={HOME}", "-e", "MACHINE_SECRET=machine-only", container, "sh", "-c", STREAM_BOOT],
@@ -166,7 +166,7 @@ def test_a_turns_command_runs_under_bash_3_2_and_busybox(container):
     assert f"HOME={HOME}" in env and "CLAUDE_CONFIG_DIR=/tmp/cfg" in env and not any("MACHINE_SECRET" in e for e in env)
     assert not any(TOKEN in e for e in env)
     assert asyncio.run(remove_machine_token(link, CID))
-    announced, token, *_ = _turn(container, relay=True, after=OLD + "\n")
+    announced, token, *_ = _turn(container, relay=True, after=f"setup_token {OLD}\n")
     assert (announced, token) == ("langalpha-token relay", f"token={OLD}")
 
 

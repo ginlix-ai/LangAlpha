@@ -31,6 +31,7 @@ from langgraph.prebuilt import ToolNode
 from ptc_agent.agent.claude_code.runtime import ClaudeTurnFailed, build_claude_code_graph, token_works
 from ptc_agent.agent.claude_code import ssh_launcher
 from ptc_agent.agent.claude_code.cli_install import CliMissing
+from ptc_agent.agent.claude_code.launcher import Credential
 from ptc_agent.agent.claude_code.machine_token import (
     machine_state,
     promote_machine_token,
@@ -262,16 +263,19 @@ class Relay:
     def __init__(self, token: str | None) -> None:
         self.token, self.reads, self.refusals = token, 0, []
 
-    async def read(self) -> str | None:
+    async def read(self) -> Credential | None:
         self.reads += 1
-        return self.token
+        return Credential(self.token) if self.token else None
 
-    async def refused(self, source: str) -> None:
-        self.refusals.append(source)
+    async def refused(self) -> None:
+        self.refusals.append("relay")
+
+    async def file_refused(self) -> None:
+        self.refusals.append("file")
 
 
 async def _turn(m: Machine, api: FakeMessagesAPI, thread: str, text: str, relay: Relay | None = None) -> tuple[SSHLauncher, dict]:
-    launcher = _launcher(m, api, relay=relay.read if relay else None, on_refused=relay.refused if relay else None)
+    launcher = _launcher(m, api, credential=relay, on_file_refused=relay.file_refused if relay else None)
     values = await run_turn(SPEC, launcher, _graph(m), thread, [HumanMessage(text)])
     return launcher, values
 
@@ -376,7 +380,7 @@ async def test_the_token_check_runs_on_the_machine_with_the_token_a_turn_there_w
     assert await token_works(good, "claude-haiku-5-5") and good.source == "file"
     await remove_machine_token(link, CID)
     relayed = Relay("sk-ant-oat01-revoked")
-    bad = _launcher(machine, api, relay=relayed.read)
+    bad = _launcher(machine, api, credential=relayed)
     assert not await token_works(bad, "claude-haiku-5-5") and bad.source == "relay"
     assert api.credentials[0] == TOKEN and set(api.credentials[1:]) == {"sk-ant-oat01-revoked"}
     _after_turn(machine)

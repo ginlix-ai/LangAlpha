@@ -856,7 +856,7 @@ class SSHProvider(SandboxProvider):
     async def get(self, sandbox_id: str) -> SSHRuntime:
         return self._runtime(sandbox_id)
 
-    def machine(self, sandbox_id: str) -> Machine:
+    def machine(self, sandbox_id: str) -> Machine[Link]:
         """The computer's machine, for work that runs its own channels on it
         (a Claude Code turn, its token). It holds nothing of this provider's,
         since the connection pool is the process's, so it outlives the
