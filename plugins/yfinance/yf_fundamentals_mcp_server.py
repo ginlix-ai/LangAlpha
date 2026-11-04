@@ -44,7 +44,13 @@ from mcp_servers._schemas import (
     envelope_schema,
     output_model,
 )
-from mcp_servers._yf_common import boundary, format_datetime, safe_detail, serialize_records
+from mcp_servers._yf_common import (
+    boundary,
+    format_datetime,
+    minor_unit,
+    safe_detail,
+    serialize_records,
+)
 
 SOURCE = "yfinance"
 
@@ -67,7 +73,35 @@ def _serialize_dataframe(df: pd.DataFrame) -> dict:
         df.index = df.index.strftime("%Y-%m-%d")
     if isinstance(df.columns, pd.DatetimeIndex):
         df.columns = df.columns.strftime("%Y-%m-%d")
-    return json.loads(df.fillna("N/A").to_json(orient="index"))
+    return json.loads(df.to_json(orient="index"))
+
+
+def _financial_currency(stock: yf.Ticker) -> str | None:
+    """ISO code the statements are reported in; None when Yahoo does not say.
+
+    It can differ from the quote currency (TSM trades in USD and reports in
+    TWD, 0700.HK trades in HKD and reports in CNY).
+    """
+    try:
+        code = stock.info.get("financialCurrency")
+    except Exception:  # noqa: BLE001 - the statement is still worth returning
+        return None
+    return code if isinstance(code, str) and code else None
+
+
+_CROSS_CURRENCY_KEYS = (
+    "priceToBook",
+    "priceToSalesTrailing12Months",
+    "enterpriseToEbitda",
+    "enterpriseToRevenue",
+    "enterpriseValue",
+)
+
+
+def _same_currency(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return True
+    return (minor_unit(a) or (a,))[0].upper() == (minor_unit(b) or (b,))[0].upper()
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +120,7 @@ _OUT_GET_INCOME_STATEMENT = output_model(
     "GetIncomeStatementOut",
     envelope_schema(
         OBJECTS_BY_KEY,
-        frame=("symbol",),
+        frame=("symbol", "currency"),
         echo={"quarterly": BOOL},
     ),
 )
@@ -121,7 +155,12 @@ def get_income_statement(
             )
         data = _serialize_dataframe(df)
         return make_response(
-            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
+            data,
+            source=SOURCE,
+            symbol=symbol,
+            count=len(data),
+            quarterly=quarterly,
+            currency=_financial_currency(stock),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -133,7 +172,7 @@ _OUT_GET_BALANCE_SHEET = output_model(
     "GetBalanceSheetOut",
     envelope_schema(
         OBJECTS_BY_KEY,
-        frame=("symbol",),
+        frame=("symbol", "currency"),
         echo={"quarterly": BOOL},
     ),
 )
@@ -166,7 +205,12 @@ def get_balance_sheet(ticker: str, quarterly: bool = True) -> _OUT_GET_BALANCE_S
             )
         data = _serialize_dataframe(df)
         return make_response(
-            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
+            data,
+            source=SOURCE,
+            symbol=symbol,
+            count=len(data),
+            quarterly=quarterly,
+            currency=_financial_currency(stock),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -178,7 +222,7 @@ _OUT_GET_CASH_FLOW = output_model(
     "GetCashFlowOut",
     envelope_schema(
         OBJECTS_BY_KEY,
-        frame=("symbol",),
+        frame=("symbol", "currency"),
         echo={"quarterly": BOOL},
     ),
 )
@@ -211,7 +255,12 @@ def get_cash_flow(ticker: str, quarterly: bool = True) -> _OUT_GET_CASH_FLOW:
             )
         data = _serialize_dataframe(df)
         return make_response(
-            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
+            data,
+            source=SOURCE,
+            symbol=symbol,
+            count=len(data),
+            quarterly=quarterly,
+            currency=_financial_currency(stock),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -357,6 +406,9 @@ _OUT_COMPARE_FINANCIALS = output_model(
         echo={
             "statement_type": STR,
             "quarterly": BOOL,
+            "currencies": described(
+                OBJECT, "Reporting currency per symbol, where Yahoo declares one."
+            ),
             "successful_tickers": STR_LIST,
             "errors": _ERRORS,
         },
@@ -394,6 +446,7 @@ def compare_financials(
         )
 
     data: dict[str, dict] = {}
+    currencies: dict[str, str] = {}
     errors: list[dict] = []
     total = 0
 
@@ -421,6 +474,9 @@ def compare_financials(
             serialized = _serialize_dataframe(df)
             data[symbol] = serialized
             total += len(serialized)
+            currency = _financial_currency(stock)
+            if currency:
+                currencies[symbol] = currency
         except Exception as e:  # noqa: BLE001
             errors.append(
                 make_error(
@@ -436,6 +492,7 @@ def compare_financials(
         count=total,
         statement_type=statement_type,
         quarterly=quarterly,
+        currencies=currencies,
         successful_tickers=list(data.keys()),
     )
     if errors:
@@ -493,13 +550,21 @@ def compare_valuations(tickers: List[str]) -> _OUT_COMPARE_VALUATIONS:
                 )
                 continue
 
-            valuations = {}
+            currency = info.get("currency")
+            financial_currency = info.get("financialCurrency")
+            valuations = {
+                "currency": currency,
+                "financial_currency": financial_currency,
+            }
+            mixed = not _same_currency(currency, financial_currency)
             for key in valuation_keys:
                 val = info.get(key)
                 snake_key = "".join(
                     ["_" + c.lower() if c.isupper() else c for c in key]
                 ).lstrip("_")
                 if val is None or (isinstance(val, float) and val != val):
+                    valuations[snake_key] = None
+                elif mixed and key in _CROSS_CURRENCY_KEYS:
                     valuations[snake_key] = None
                 else:
                     valuations[snake_key] = val
