@@ -328,12 +328,14 @@ class TestGetNews:
                 "link": "https://example.com/a",
                 "providerPublishTime": 1700000000,
                 "type": "STORY",
+                "relatedTickers": ["AAPL", "MSFT"],
             }
         ]
         result = get_news("AAPL", count=5)
         assert_ok_envelope(result, symbol="AAPL", count=1)
         assert result["data"][0] == {
             "id": "abc",
+            "relatedTickers": ["AAPL", "MSFT"],
             "content": {
                 "title": "Headline",
                 "contentType": "STORY",

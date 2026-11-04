@@ -247,6 +247,7 @@ def _search_news(yf_symbol: str, count: int) -> list[dict]:
         articles.append(
             {
                 "id": item.get("uuid"),
+                "relatedTickers": item.get("relatedTickers"),
                 "content": {
                     "title": item.get("title"),
                     "contentType": item.get("type"),
