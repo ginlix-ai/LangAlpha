@@ -27,13 +27,17 @@ from typing import Any, List, Optional
 
 import pandas as pd
 import yfinance as yf
+from data_client.normalize import series_labels
+from market_protocol import InstrumentRef, PriceTreatment, to_canonical
 
 from mcp_servers._envelope import make_error, make_response, normalize_interval
 from mcp_servers._schemas import (
     ERRORS,
+    IN_PROGRESS,
     INT,
     OBJECT,
     OBJECTS_BY_KEY,
+    PRICE_TREATMENT,
     RECORDS,
     STR,
     envelope_schema,
@@ -62,6 +66,24 @@ _SUPPORTED_INTERVALS = sorted(_YF_INTERVAL) + sorted(_YF_NATIVE_INTERVALS)
 # ---------------------------------------------------------------------------
 # Boundary + serialization helpers
 # ---------------------------------------------------------------------------
+
+
+def _ref(ticker: str) -> Optional[InstrumentRef]:
+    try:
+        return to_canonical(ticker)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _series_labels(ticker: str, history: list[dict], interval: str) -> dict[str, str]:
+    """:func:`series_labels` for *history*. Its history is auto-adjusted for
+    dividends, so what yfinance's declaration calls split-adjusted is
+    dividend-adjusted here."""
+    newest = history[-1]["date"] if history else None
+    labels = series_labels(SOURCE, _ref(ticker), interval, newest)
+    if labels["price_treatment"] == PriceTreatment.SPLIT_ADJUSTED.value:
+        labels["price_treatment"] = PriceTreatment.DIVIDEND_ADJUSTED.value
+    return labels
 
 
 def _index_tz(index: Any) -> Optional[str]:
@@ -218,7 +240,7 @@ _OUT_GET_STOCK_HISTORY = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={"period": STR},
+        echo={"period": STR, "price_treatment": PRICE_TREATMENT, "in_progress": IN_PROGRESS},
     ),
 )
 
@@ -229,22 +251,21 @@ def get_stock_history(
     period: str = "1y",
     interval: str = "1d",
 ) -> _OUT_GET_STOCK_HISTORY:
-    """Historical OHLCV price bars for one stock — charts, returns, technicals.
+    """Historical OHLCV price bars for one stock.
 
     Args:
         ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
         period: 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,ytd,max.
         interval: 1min|5min|15min|30min|1hour|1day|1week|1month (native
-            2m|90m|5d|3mo accepted; 4hour unsupported). Intraday lookback is
-            capped by yfinance.
+            2m|90m|5d|3mo accepted; 4hour unsupported).
 
     Returns:
         dict: {symbol, interval, period, currency, timezone, count, data,
-        source}. data is a list of {date, open, high, low, close, volume,
-        dividends?, splits?}
-        ascending (oldest first); date is exchange-local "YYYY-MM-DD" or
-        "YYYY-MM-DD HH:MM:SS" intraday, timezone is the IANA zone, prices in
-        `currency` major units (minor-unit GBp/pence auto-converted to major).
+        source, price_treatment, in_progress?}. data: list of {date, open, high,
+        low, close, volume, dividends?, splits?} ascending (oldest first); date
+        exchange-local "YYYY-MM-DD[ HH:MM:SS]"; prices in `currency` major
+        units. price_treatment: raw|dividend_adjusted. in_progress: date of the
+        last bar while it forms.
         On error: {error, detail} — not_found|unsupported_interval|upstream_error.
     """
     symbol, yf_symbol, currency = boundary(ticker)
@@ -272,6 +293,7 @@ def get_stock_history(
             currency=resp_currency,
             timezone=_index_tz(df.index),
             period=period,
+            **_series_labels(ticker, history, echo_interval),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -295,7 +317,7 @@ def get_multiple_stocks_history(
     period: str = "1y",
     interval: str = "1d",
 ) -> _OUT_GET_MULTIPLE_STOCKS_HISTORY:
-    """Historical OHLCV bars for several stocks — compare price series.
+    """Historical OHLCV bars for several stocks.
 
     Args:
         tickers: Symbols, e.g. ["AAPL", "MSFT", "0700.HK"].
@@ -304,14 +326,15 @@ def get_multiple_stocks_history(
             2m|90m|5d|3mo accepted; 4hour unsupported).
 
     Returns:
-        dict: {interval, count, data, source, period, errors?}. data is keyed by
-        canonical symbol → {count, currency?, timezone?, data}; each inner data
-        is a list of {date, open, high, low, close, volume, dividends?, splits?}
-        ascending (oldest first), exchange-local "YYYY-MM-DD[ HH:MM:SS]"; count
-        is total bars. Prices in major units (GBp/pence auto-converted).
-        Failed symbols are listed in errors as
-        {error, detail, symbol}; a bad interval returns
-        {error: unsupported_interval, detail, supported}.
+        dict: {interval, count, data, source, period, errors?}. data maps
+        canonical symbol → {count, currency?, timezone?, price_treatment,
+        in_progress?, data}; inner data: list of {date, open, high, low, close,
+        volume, dividends?, splits?} ascending (oldest first), exchange-local
+        "YYYY-MM-DD[ HH:MM:SS]"; count is total bars. Prices in major units.
+        price_treatment: raw|dividend_adjusted. in_progress: date of the last
+        bar while it forms. Failed symbols are listed in errors as {error,
+        detail, symbol}; a bad interval returns {error: unsupported_interval,
+        detail, supported}.
     """
     yf_interval, echo_interval, err = _resolve_interval(interval)
     if err is not None:
@@ -334,6 +357,7 @@ def get_multiple_stocks_history(
             tz = _index_tz(df.index)
             if tz:
                 entry["timezone"] = tz
+            entry.update(_series_labels(t, history, echo_interval))
             entry["data"] = history
             per_ticker[symbol] = entry
             total += len(history)

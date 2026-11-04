@@ -645,7 +645,7 @@
       },
       {
         "name": "get_technical_indicator",
-        "description": "Fetch a technical indicator time series over OHLCV bars — plot RSI,\noverlay EMA/MACD, or screen by technical signals.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    indicator: FMP name — \"rsi\", \"ema\", \"sma\", \"wma\", \"adx\", \"williams\".\n    period: Indicator lookback length (default 14).\n    timeframe: FMP-native bar — \"1min\"…\"4hour\", \"1day\" (default \"1day\").\n\nReturns:\n    dict: {symbol, count, data, source, data_type, indicator, period,\n    timeframe}. data is a list of bars; count is the bar total. Fields: date,\n    open, high, low, close, volume, and the indicator value keyed by its\n    name. date is \"YYYY-MM-DD\" (1day) or \"YYYY-MM-DD HH:MM:SS\"\n    (intraday); field names are FMP-native camelCase; bars newest-first.\n    On error: {error: <code>, detail, symbol}.\n",
+        "description": "Fetch a technical indicator time series over OHLCV bars.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    indicator: FMP name — \"rsi\", \"ema\", \"sma\", \"wma\", \"adx\", \"williams\".\n    period: Lookback length (default 14).\n    timeframe: FMP-native bar — \"1min\"…\"4hour\", \"1day\" (default \"1day\").\n\nReturns:\n    dict: {symbol, count, data, source, data_type, indicator, period,\n    timeframe, price_treatment, in_progress?}. data: list of {date, open,\n    high, low, close, volume, <indicator>} newest first, field names\n    FMP-native camelCase. date is \"YYYY-MM-DD\" (1day) or\n    \"YYYY-MM-DD HH:MM:SS\" (intraday). price_treatment:\n    raw|split_adjusted|dividend_adjusted. in_progress: date of the newest\n    bar while it forms. On error: {error: <code>, detail, symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -722,6 +722,23 @@
             },
             "timeframe": {
               "description": "FMP-native bar size.",
+              "type": "string"
+            },
+            "price_treatment": {
+              "description": "Adjustment of the prices: raw, split_adjusted or dividend_adjusted.",
+              "enum": [
+                "raw",
+                "split_adjusted",
+                "dividend_adjusted"
+              ],
+              "type": "string"
+            },
+            "in_progress": {
+              "description": "Date of the newest bar while it is still forming; omitted otherwise.",
+              "type": "string"
+            },
+            "volume_note": {
+              "description": "Why volume is unreliable; omitted when it is not.",
               "type": "string"
             },
             "error": {
@@ -1496,7 +1513,7 @@
     "tools": [
       {
         "name": "get_stock_data",
-        "description": "Fetch OHLCV price bars for a stock; use for historical charts/analysis.\n\nIntervals: 1min|5min|15min|30min|1hour|4hour|1day (aliases like \"1d\"/\"daily\"\naccepted). start_date and end_date are required for intraday.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\", LSE \"VOD.L\".\n    interval: Bar size; one of the intervals above.\n    start_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n    end_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n\nReturns:\n    dict: {symbol, interval, currency, timezone, count, data, source,\n    name?}. data: list of {date, open, high, low, close, volume} ascending\n    (oldest first); date exchange-local \"YYYY-MM-DD\" (daily) or\n    \"YYYY-MM-DD HH:MM:SS\" (intraday); prices in `currency` major units.\n    name: local-language company name, CN and HK listings only. On error:\n    {error: <code>, detail}.\n",
+        "description": "Fetch OHLCV price bars for a stock.\n\nIntervals: 1min|5min|15min|30min|1hour|4hour|1day. Intraday needs start_date\nand end_date.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\", LSE \"VOD.L\".\n    interval: See above.\n    start_date: \"YYYY-MM-DD[ HH:MM]\".\n    end_date: Same format.\n\nReturns:\n    dict: {symbol, interval, currency, timezone, count, data, source,\n    price_treatment, name?, in_progress?, truncated?, incomplete?}. data:\n    list of {date, open, high, low, close, volume} ascending (oldest first);\n    date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in `currency` major\n    units. price_treatment: raw|split_adjusted|dividend_adjusted.\n    in_progress: date of a forming last bar; some daily feeds omit it.\n    truncated: true if a size cap cut the oldest bars. incomplete: true if\n    bars in the window are missing. On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -1587,6 +1604,23 @@
               "description": "Upstream data source.",
               "type": "string"
             },
+            "price_treatment": {
+              "description": "Adjustment of the prices: raw, split_adjusted or dividend_adjusted.",
+              "enum": [
+                "raw",
+                "split_adjusted",
+                "dividend_adjusted"
+              ],
+              "type": "string"
+            },
+            "in_progress": {
+              "description": "Date of the newest bar while it is still forming; omitted otherwise.",
+              "type": "string"
+            },
+            "volume_note": {
+              "description": "Why volume is unreliable; omitted when it is not.",
+              "type": "string"
+            },
             "name": {
               "description": "Local-language company name; CN and HK listings only, omitted elsewhere.",
               "type": "string"
@@ -1614,7 +1648,7 @@
       },
       {
         "name": "get_asset_data",
-        "description": "Fetch OHLCV bars for a stock, commodity, crypto, or forex pair.\n\nIntervals: 1min|5min|1hour|1day (stock adds 15min|30min|4hour); dates\nrequired for intraday.\n\nArgs:\n    symbol: Stock \"AAPL\", commodity \"GCUSD\", crypto \"BTCUSD\", forex \"EURUSD\".\n    asset_type: One of stock|commodity|crypto|forex.\n    interval: Bar size; see intervals above.\n    from_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n    to_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n\nReturns:\n    dict: {symbol, asset_type, interval, currency, timezone, count, data,\n    source, name?}. data: list of {date, open, high, low, close, volume}\n    ascending (oldest first); date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\";\n    prices in `currency` major units. name: local-language company name,\n    CN and HK stock listings only. On error: {error: <code>, detail}.\n",
+        "description": "Fetch OHLCV bars for a stock, commodity, crypto, or forex pair.\n\nIntervals: 1min|5min|1hour|1day; intraday needs dates.\n\nArgs:\n    symbol: Commodity \"GCUSD\", crypto \"BTCUSD\", forex \"EURUSD\".\n    asset_type: stock|commodity|crypto|forex.\n    interval: See above.\n    from_date: \"YYYY-MM-DD[ HH:MM]\".\n    to_date: Same format.\n\nReturns:\n    dict: {symbol, asset_type, interval, currency, timezone, count, data,\n    source, price_treatment, name?, in_progress?, truncated?, incomplete?}.\n    data: list of {date, open, high, low, close, volume} ascending; date\n    exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in `currency` major\n    units. price_treatment: raw|split_adjusted|dividend_adjusted.\n    in_progress: date of a forming last bar. truncated: true if a size cap\n    cut the oldest bars. incomplete: true if bars in the window are missing.\n    On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -1711,6 +1745,23 @@
               "type": "string"
             },
             "asset_type": {
+              "type": "string"
+            },
+            "price_treatment": {
+              "description": "Adjustment of the prices: raw, split_adjusted or dividend_adjusted.",
+              "enum": [
+                "raw",
+                "split_adjusted",
+                "dividend_adjusted"
+              ],
+              "type": "string"
+            },
+            "in_progress": {
+              "description": "Date of the newest bar while it is still forming; omitted otherwise.",
+              "type": "string"
+            },
+            "volume_note": {
+              "description": "Why volume is unreliable; omitted when it is not.",
               "type": "string"
             },
             "name": {

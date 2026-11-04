@@ -73,6 +73,17 @@ def _no_company_snapshot():
 # Helpers — canned data
 # ---------------------------------------------------------------------------
 
+def _frozen_clock(at: datetime):
+    """Patch the session rule's clock (``src.data_client.normalize``) to read *at* as now."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return at.astimezone(tz) if tz else at
+
+    return patch("src.data_client.normalize.datetime", _Frozen)
+
+
 def _make_daily_records(n: int, symbol: str = "AAPL", base_price: float = 150.0):
     """Generate n canned daily OHLCV records (newest-first) in formatter format."""
     records = []
@@ -348,6 +359,35 @@ class TestFetchDailyPrices:
         assert artifact["type"] == "stock_prices"
         assert artifact["symbol"] == "AAPL"
         assert len(artifact["ohlcv"]) == 5
+
+    @pytest.mark.asyncio
+    async def test_forming_session_is_marked_in_the_table(self):
+        # Bars open 2025-01-01..03; the 01-03 session is still running.
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(3))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider), \
+                _frozen_clock(_ET.localize(datetime(2025, 1, 3, 11, 0))):
+            content, _ = await fetch_daily_prices("AAPL", limit=3)
+
+        assert "| 2025-01-03 (in progress) |" in content
+        assert "| 2025-01-02 |" in content
+
+    @pytest.mark.asyncio
+    async def test_forming_session_is_marked_in_the_summary(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(17))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider), \
+                _frozen_clock(_ET.localize(datetime(2025, 1, 17, 11, 0))):
+            content, _ = await fetch_daily_prices("AAPL", limit=17)
+
+        assert "| Period Close (in progress) |" in content
+
+    @pytest.mark.asyncio
+    async def test_settled_session_is_not_marked(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(3))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider), \
+                _frozen_clock(_ET.localize(datetime(2025, 1, 3, 20, 1))):
+            content, _ = await fetch_daily_prices("AAPL", limit=3)
+
+        assert "(in progress)" not in content
 
     @pytest.mark.asyncio
     async def test_long_period_returns_summary(self):
@@ -1687,6 +1727,39 @@ class TestFetchIndexDaySnapshot:
             _, artifact, _ = await _fetch_index_day_snapshot(["^GSPC"], "2026-07-01")
 
         assert artifact["indices"]["^GSPC"]["freshness"] is not None
+
+    @pytest.mark.asyncio
+    async def test_running_session_row_is_marked_in_progress(self):
+        from src.tools.market_data.market_overview import _fetch_index_day_snapshot
+
+        # Bars open 2025-01-01..30; the 01-30 session is still running.
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(30))
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider), \
+                _frozen_clock(_ET.localize(datetime(2025, 1, 30, 11, 0))):
+            content, _, _ = await _fetch_index_day_snapshot(["^GSPC"], "2025-01-30")
+
+        assert "| 2025-01-30 (in progress) |" in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hour, marked", [(11, True), (17, False)])
+    async def test_a_snapshot_row_is_in_progress_only_while_its_session_runs(self, hour, marked):
+        from src.tools.market_data.market_overview import _fetch_index_day_snapshot
+
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(30))
+        row = {
+            "date": "2025-01-31", "open": 6100.0, "high": 6130.0, "low": 6090.0, "close": 6120.5,
+            "volume": None, "change": 20.5, "changePercent": 0.34, "symbol": "^GSPC", "forming": True,
+        }
+        snap = {"symbol": "GSPC", "price": 6120.5, "source": "ginlix-data", "tier": "delayed_15m"}
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider), \
+                patch(f"{_MKT_MOD}._forming_bar", return_value=row), \
+                _frozen_clock(_ET.localize(datetime(2025, 1, 31, hour, 0))):
+            content, _, _ = await _fetch_index_day_snapshot(
+                ["^GSPC"], "2025-01-31", snaps={"GSPC": snap}
+            )
+
+        assert "2025-01-31" in content
+        assert ("2025-01-31 (in progress)" in content) is marked
 
     @pytest.mark.asyncio
     async def test_partial_failure_lists_missing_symbols(self):

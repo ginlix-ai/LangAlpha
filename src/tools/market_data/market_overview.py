@@ -17,7 +17,7 @@ from src.data_client import get_financial_data_provider, get_market_data_provide
 from src.data_client.freshness import measure_daily
 from src.data_client.instrument_clock import clock_for
 from src.data_client.market_data_provider import MarketNotCovered, snapshot_key
-from src.data_client.normalize import change_from
+from src.data_client.normalize import change_from, series_in_progress
 from market_protocol import (
     CARET_INDEX_REGIONS,
     AssetClass,
@@ -270,7 +270,7 @@ def _format_index_day_row(symbol: str, latest: Dict[str, Any]) -> str:
         move_str = "N/A"
     volume = latest.get("volume")
     volume_str = fmt_count(volume) if volume else "—"
-    date_str = f"{latest.get('date')} (intraday)" if latest.get("forming") else latest.get("date")
+    date_str = f"{latest.get('date')} (in progress)" if latest.get("forming") else latest.get("date")
     return (
         f"| {_get_index_name(symbol)} ({symbol}) | {close_str} "
         f"| {move_str} | {volume_str} | {date_str} |"
@@ -415,6 +415,8 @@ async def _fetch_index_day_snapshot(
         if not bars:
             missing.append(symbol)
             continue
+        ref = resolve_ref(symbol, AssetClass.INDEX)
+        bars[0] = {**bars[0], "forming": series_in_progress(source, ref, bars[0].get("date"), "1day")}
         latest = bars[0]  # newest-first
         day_date = latest.get("date")
         if day_date and (snapshot_date is None or day_date > snapshot_date):

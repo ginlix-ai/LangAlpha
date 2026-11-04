@@ -14,8 +14,9 @@ chain, so conversion happens exactly once per path.
 
 from __future__ import annotations
 
+import calendar
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
@@ -27,8 +28,9 @@ from market_protocol import (
     to_major_units,
 )
 from market_protocol import build_series as _build_series
+from market_protocol.calendars import get_calendar
 from market_protocol.enums import AssetClass, PriceTreatment, Tier
-from market_protocol.symbology import MINOR_UNIT_PLACES, UNKNOWN_MIC
+from market_protocol.symbology import FUTURES_MIC, MINOR_UNIT_PLACES, UNKNOWN_MIC
 
 # Snapshot fields whose values carry a price and therefore scale with the
 # quote's minor-currency unit. change_percent (and pre/post percents) are
@@ -87,6 +89,16 @@ _REGULAR_SESSION_BARS = frozenset({"fmp", "yfinance"})
 _US_TAPE = market_home("us")[0]
 _CN_CALENDAR = market_home("cn")[0]
 
+# An index or a pair has no corporate action to adjust for.
+NO_CORPORATE_ACTIONS = frozenset({AssetClass.INDEX, AssetClass.CRYPTO, AssetClass.FX})
+
+
+def adjusts_nothing(asset_class: AssetClass | None, venue: str | None) -> bool:
+    """Whether an instrument has no corporate action to adjust for: an index,
+    a pair, or anything on CME Globex (a future, a commodity). *venue* is a
+    :func:`declared_venue`."""
+    return asset_class in NO_CORPORATE_ACTIONS or venue == FUTURES_MIC
+
 # US dotted class-share suffixes (BRK.B, BF.B), kept from the pre-CMDP
 # classifier. They live here, not in the instrument clock that also reads them,
 # because this module ships to the sandbox, which has no ``src`` package.
@@ -142,11 +154,14 @@ def publisher_lineage(
     The per-class rule behind :func:`series_lineage`, kept for a caller that
     knows an asset class but has no instrument (the data probe declaring a
     whole routing cell). Tushare's qfq join exists only for equities
-    (``adj_factor``). *venue* is a :func:`declared_venue`; None keeps the
+    (``adj_factor``), and an index, a pair or a futures contract is unadjusted
+    from every publisher. *venue* is a :func:`declared_venue`; None keeps the
     publisher-wide declaration.
     """
     treatment, tier, _ = _declared(publisher, venue)
-    if publisher == "tushare" and asset_class in (AssetClass.INDEX, AssetClass.FUND):
+    if adjusts_nothing(asset_class, venue) or (
+        publisher == "tushare" and asset_class is AssetClass.FUND
+    ):
         treatment = PriceTreatment.RAW
     elif publisher == "fmp" and venue == _CN_CALENDAR:
         treatment = PriceTreatment.RAW
@@ -169,6 +184,164 @@ def series_lineage(
     if ref is None:
         return publisher_lineage(publisher)
     return publisher_lineage(publisher, ref.asset_class, declared_venue(ref))
+
+
+# Widths of the intraday intervals, by their legacy spelling and yfinance's
+# native 2m and 90m.
+_INTRADAY_SECONDS = {
+    "1s": 1, "1min": 60, "2m": 120, "5min": 300, "15min": 900, "30min": 1800,
+    "1hour": 3600, "90m": 5400, "4hour": 14400,
+}
+
+# How far behind the venue a series of each tier runs.
+_TIER_LAG_S = {Tier.DELAYED_15M: 900}
+
+# Each venue's regular weekday close (exchange_calendars 4.13.2), and the
+# after-hours close where it has one, for a runtime without exchange_calendars.
+# Half days and holidays are not modelled. Globex closes in Chicago whatever
+# zone a ref's labels use (a commodity's are New York's).
+_REGULAR_CLOSE = {
+    "XAMS": time(17, 30), "XASX": time(16), "XBOM": time(15, 30), "XETR": time(17, 30),
+    "XHKG": time(16), "XKRX": time(15, 30), "XLON": time(16, 30), "XMAD": time(17, 30),
+    "XMIL": time(17, 30), "XNYS": time(16), "XPAR": time(17, 30), "XSES": time(17),
+    "XSHG": time(15), "XSWX": time(17, 30), "XTAI": time(13, 30), "XTKS": time(15, 30),
+    "XTSE": time(16),
+    FUTURES_MIC: time(16, tzinfo=ZoneInfo("America/Chicago")),
+}
+_EXTENDED_CLOSE = {"XNYS": time(20)}
+
+
+def _period_last_day(first: date, interval: str) -> date:
+    """The last calendar day a bar opening on *first* covers."""
+    if interval in ("1week", "5d"):
+        return first + timedelta(days=6)
+    months = {"1month": 1, "3mo": 3}.get(interval)
+    if months:
+        year, month = divmod(first.month - 1 + months - 1, 12)
+        year += first.year
+        return date(year, month + 1, calendar.monthrange(year, month + 1)[1])
+    return first
+
+
+def _session_end_ms(cal: Any, day: date, regular_only: bool) -> int | None:
+    """When session *day*'s bars stop changing: the after-hours close where the
+    venue has one and the series takes it, else the close; None when *day* has
+    no session."""
+    extended = None if regular_only else getattr(cal, "extended_bounds_ms", None)
+    hours = extended(day) if extended else None
+    return hours[1] if hours else cal.session_close_ms(day)
+
+
+def _fixed_session_end_ms(ref: InstrumentRef, day: date, regular_only: bool) -> int | None:
+    """:func:`_session_end_ms` from the venue's fixed weekday hours; None on a
+    weekend or for a venue without them."""
+    close = None if regular_only else _EXTENDED_CLOSE.get(ref.calendar_id)
+    close = close or _REGULAR_CLOSE.get(ref.calendar_id)
+    if close is None or day.weekday() >= 5:
+        return None
+    return int(datetime.combine(day, close, close.tzinfo or ZoneInfo(ref.tz)).timestamp() * 1000)
+
+
+def bar_in_progress(
+    label: str | None,
+    ref: InstrumentRef | None,
+    interval: str,
+    now: datetime | None = None,
+    *,
+    tier: Tier | None = None,
+    regular_only: bool = False,
+) -> bool:
+    """Whether the bar labelled *label* is still forming at *now*.
+
+    *label* is the exchange-local date or datetime :func:`normalize_bars`
+    writes, and *interval* is canonical (``1min`` ... ``1month``). An intraday bar
+    forms until its width or its session runs out, the session being the next
+    day's where it opens the evening before (CME Globex); a longer bar until the last
+    session it covers ends, after-hours included, since a US daily aggregate
+    keeps taking after-hours prints until 20:00 ET. An index, or a
+    *regular_only* series, settles at the regular close. A delayed *tier* reaches
+    each of those moments its delay late. No vendor marks this, so it comes
+    from the venue calendar; a runtime without ``exchange_calendars`` takes
+    the venue's fixed weekday close instead. At an unknown venue a bar is
+    forming while its period reaches the venue's today.
+    """
+    if not label or ref is None:
+        return False
+    now = (now or datetime.now(timezone.utc)) - timedelta(seconds=_TIER_LAG_S.get(tier, 0))
+    tz = ZoneInfo(ref.tz)
+    today = now.astimezone(tz).date()
+    seconds = _INTRADAY_SECONDS.get(interval)
+    try:
+        if seconds is not None:
+            opened = datetime.fromisoformat(label).replace(tzinfo=tz)
+            if now >= opened + timedelta(seconds=seconds):
+                return False
+            first, last = opened.date(), opened.date() + timedelta(days=1)
+        else:
+            first = date.fromisoformat(label[:10])
+            last = _period_last_day(first, interval)
+    except ValueError:
+        return False
+    if last < today:
+        return False
+    if ref.mic == UNKNOWN_MIC and not is_us_class_share(ref):
+        return True
+    start = first if seconds is not None else max(first, today)
+    regular_only = regular_only or ref.asset_class is AssetClass.INDEX
+    days = [start + timedelta(days=i) for i in range((last - start).days + 1)]
+    try:
+        cal = get_calendar(ref.calendar_id)
+        ends = [_session_end_ms(cal, day, regular_only) for day in days]
+    except (ImportError, ValueError):
+        ends = [_fixed_session_end_ms(ref, day, regular_only) for day in days]
+    now_ms = int(now.timestamp() * 1000)
+    if seconds is not None:
+        opened_ms = int(opened.timestamp() * 1000)
+        end = next((end for end in ends if end is not None and end > opened_ms), None)
+        return end is not None and end > now_ms
+    return any(end is not None and end > now_ms for end in ends)
+
+
+def series_in_progress(
+    publisher: str | None, ref: InstrumentRef | None, label: str | None, interval: str
+) -> bool:
+    """:func:`bar_in_progress` for *publisher*'s series of *ref*: late by its
+    tier's delay, and ending at the regular close where its bars do."""
+    return bar_in_progress(
+        label, ref, interval,
+        tier=series_lineage(publisher, ref)[1], regular_only=bars_regular_only(publisher),
+    )
+
+
+# FMP's CN intraday bars carry a single print's size on an unpredictable subset
+# of bars (6x to 48x below Yahoo's on 600519.SH), and no other source holds
+# whole CN minute sessions to read instead.
+_CN_INTRADAY_VOLUME_NOTE = (
+    "FMP reports a fraction of the real volume on some CN intraday bars; "
+    "volume totals and volume-weighted figures understate."
+)
+
+
+def series_labels(
+    publisher: str | None,
+    ref: InstrumentRef | None,
+    interval: str,
+    newest: str | None,
+) -> dict[str, str]:
+    """Envelope keys for a bar series: the price treatment *publisher* declares
+    for *ref*, ``in_progress`` naming the newest bar while it still forms, and
+    ``volume_note`` where the volume is known to be unreliable."""
+    labels = {"price_treatment": series_lineage(publisher, ref)[0].value}
+    if series_in_progress(publisher, ref, newest, interval):
+        labels["in_progress"] = newest
+    if (
+        publisher == "fmp"
+        and interval in _INTRADAY_SECONDS
+        and ref is not None
+        and ref.calendar_id == _CN_CALENDAR
+    ):
+        labels["volume_note"] = _CN_INTRADAY_VOLUME_NOTE
+    return labels
 
 
 def ref_for_key(instrument_key: str | None) -> InstrumentRef | None:

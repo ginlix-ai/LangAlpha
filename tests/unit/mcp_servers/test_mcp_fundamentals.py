@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from .conftest import assert_error, assert_ok_envelope
+from .conftest import assert_error, assert_ok_envelope, frozen_clock
 
 _MOD = "plugins.langalpha_market_data.fundamentals_mcp_server"
 
@@ -325,6 +327,23 @@ class TestGetTechnicalIndicator:
         client.get_technical_indicator.assert_awaited_once_with(
             "AAPL", indicator="rsi", period=14, timeframe="1day",
         )
+
+    @pytest.mark.asyncio
+    async def test_newest_bar_of_a_running_session_is_in_progress(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        client.get_technical_indicator = AsyncMock(return_value=[
+            {"date": "2025-01-03 00:00:00", "close": 2, "rsi": 55},
+            {"date": "2025-01-02 00:00:00", "close": 1, "rsi": 50},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client), \
+                frozen_clock(datetime(2025, 1, 3, 11, 0, tzinfo=ZoneInfo("America/New_York"))):
+            result = await get_technical_indicator("AAPL", indicator="rsi")
+
+        assert result["price_treatment"] == "split_adjusted"
+        assert result["in_progress"] == "2025-01-03"
+        assert [r["date"] for r in result["data"]] == ["2025-01-03", "2025-01-02"]
 
     @pytest.mark.asyncio
     async def test_caret_index_reaches_fmp_with_its_caret(self):
