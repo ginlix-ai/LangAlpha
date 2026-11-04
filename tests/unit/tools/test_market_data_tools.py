@@ -2464,7 +2464,7 @@ class TestFetchQuote:
         assert cn["freshness"]["measured"] is True
         assert cn["freshness"]["actual_latest"] == cn["as_of"]
         # as_of_local is the PRINT time in venue local time, not retrieval.
-        assert cn["as_of_local"].endswith("CST")
+        assert cn["as_of_local"].endswith("UTC+8")
         assert artifact["all_realtime"] is False
 
     @pytest.mark.asyncio

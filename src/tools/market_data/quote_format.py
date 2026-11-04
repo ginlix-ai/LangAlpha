@@ -21,6 +21,7 @@ from .display import (
     resolve_ref,
     venue_local_time,
     venue_phase,
+    zone_label,
 )
 from .utils import finite_or_none, get_market_session
 from src.utils.market_hours import ET
@@ -158,8 +159,7 @@ def _venue_clock(ref: Optional[InstrumentRef], at: Optional[datetime]) -> Option
         local = venue_local_time(ref, at)
         if local is None:
             return None
-        abbrev = local.strftime("%Z") or ref.tz
-        return f"{local.strftime('%Y-%m-%d %H:%M:%S')} {abbrev}"
+        return f"{local:%Y-%m-%d %H:%M:%S} {zone_label(local)}"
     except Exception:
         return None
 

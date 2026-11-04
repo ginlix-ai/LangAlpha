@@ -3,10 +3,12 @@
 import re
 from datetime import datetime, timezone
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytz
 
 from market_protocol import AssetClass, MarketPhase
+from src.tools.market_data.display import zone_label
 from src.tools.market_data.quote_format import (
     block_clock,
     build_live_stamp,
@@ -215,7 +217,7 @@ class TestLiveStampIsVenueGated:
             stamp = build_live_stamp([self._cn_snap()], at=self._SHANGHAI_1030)
         assert stamp is not None
         assert "600519.SH" in stamp and "(+1.25%)" in stamp
-        assert "2026-07-01 10:30:00 CST" in stamp
+        assert "2026-07-01 10:30:00 UTC+8" in stamp
         assert "ET" not in stamp
 
     def test_us_only_stamp_is_unchanged(self):
@@ -288,7 +290,7 @@ class TestFreshnessSplitsTheStamp:
             stamp = build_live_stamp(
                 [self._cn_realtime(self._CN_1030)], at=self._CN_1030
             )
-        assert "2026-09-09 10:29:50 CST" in stamp
+        assert "2026-09-09 10:29:50 UTC+8" in stamp
 
     def test_mixed_batch_splits_into_two_groups(self):
         # Both venues are open at 10:30 CST/HKT on their own calendars, so the
@@ -333,9 +335,23 @@ class TestFreshnessSplitsTheStamp:
 def test_block_clock_uses_the_clock_its_rows_share():
     at = datetime(2026, 9, 27, 1, 0, tzinfo=timezone.utc)
     assert block_clock([{"symbol": "AAPL"}, {"symbol": "MSFT"}], at) == "2026-09-26 21:00:00 ET"
-    assert block_clock([{"symbol": "600519.SS"}, {"symbol": "000858.SZ"}], at) == "2026-09-27 09:00:00 CST"
+    assert block_clock([{"symbol": "600519.SS"}, {"symbol": "000858.SZ"}], at) == "2026-09-27 09:00:00 UTC+8"
     # Mixed venues: no clock is neutral, so the card falls back to the reader's.
     assert block_clock([{"symbol": "600519.SS"}, {"symbol": "AAPL"}], at) is None
+
+
+def test_a_zone_with_only_a_numeric_abbreviation_prints_its_utc_offset():
+    at = datetime(2026, 9, 27, 1, 0, tzinfo=timezone.utc)
+    assert zone_label(at.astimezone(ZoneInfo("Asia/Singapore"))) == "UTC+8"
+    assert zone_label(at.astimezone(ZoneInfo("America/Sao_Paulo"))) == "UTC-3"
+    assert zone_label(at.astimezone(ZoneInfo("Asia/Hong_Kong"))) == "HKT"
+
+
+def test_an_abbreviation_two_zones_share_prints_its_utc_offset():
+    summer = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    assert zone_label(summer.astimezone(ZoneInfo("Asia/Shanghai"))) == "UTC+8"
+    assert zone_label(summer.astimezone(ZoneInfo("Asia/Kolkata"))) == "UTC+5:30"
+    assert zone_label(summer.astimezone(ZoneInfo("Europe/London"))) == "UTC+1"
 
 
 class TestKnownAssetClass:

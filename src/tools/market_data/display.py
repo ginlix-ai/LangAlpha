@@ -184,6 +184,22 @@ def venue_local_time(
         return None
 
 
+# Abbreviations that name more than one venue's zone: CST is China, Taiwan and
+# US Central, IST India and Israel, BST British Summer and Bangladesh.
+_AMBIGUOUS_ZONES = frozenset({"CST", "IST", "BST"})
+
+
+def zone_label(local: datetime) -> str:
+    """The zone of an aware time as tool text prints it: ``HKT``, or ``UTC+8``
+    where the abbreviation is ambiguous, numeric (``+08``) or missing."""
+    abbrev = local.strftime("%Z")
+    if abbrev and abbrev[0] not in "+-" and abbrev not in _AMBIGUOUS_ZONES:
+        return abbrev
+    minutes = int(local.utcoffset().total_seconds() // 60)
+    hours, rest = divmod(abs(minutes), 60)
+    return f"UTC{'-' if minutes < 0 else '+'}{hours}{f':{rest:02d}' if rest else ''}"
+
+
 # MarketPhase -> display label for the "Market Status:" quote line.
 _PHASE_LABELS: Dict[MarketPhase, str] = {
     MarketPhase.PRE: "Pre-Market",
@@ -220,4 +236,4 @@ def _market_status_line(
     if phase is None or local is None:
         return None
     label = _PHASE_LABELS.get(phase, phase.value.replace("_", " ").title())
-    return f"**Market Status:** {label} | **As of:** {local.strftime('%H:%M %Z')}"
+    return f"**Market Status:** {label} | **As of:** {local:%H:%M} {zone_label(local)}"
