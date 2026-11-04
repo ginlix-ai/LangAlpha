@@ -98,7 +98,7 @@
       },
       {
         "name": "get_financial_ratios",
-        "description": "Fetch raw historical key metrics and financial ratios — track P/E, ROE,\nand margins over time, or compare valuation across companies.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period}. data is\n    {key_metrics, ratios}, each a list of period records; count is the total.\n    key_metrics fields: date, marketCap, enterpriseValue, evToEBITDA,\n    freeCashFlowYield. ratios fields: date, netProfitMargin, returnOnEquity,\n    currentRatio, debtToEquityRatio, priceToEarningsRatio. Field names are\n    FMP-native camelCase; date is \"YYYY-MM-DD\"; records are newest-first as\n    returned by FMP. On error: {error: <code>, detail, symbol}.\n",
+        "description": "Fetch raw historical key metrics and financial ratios.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period}. data is\n    {key_metrics, ratios}, each a list of period records, newest first; count\n    is the total. key_metrics fields: date, marketCap, enterpriseValue,\n    evToEBITDA, freeCashFlowYield. ratios fields: date, netProfitMargin,\n    returnOnEquity, currentRatio, debtToEquityRatio, priceToEarningsRatio.\n    Field names are FMP-native camelCase; date is \"YYYY-MM-DD\". A quarter\n    row's flow-based fields (P/S, EV/EBITDA, yields, returns) cover that\n    quarter alone, but its P/E fields annualize the quarter's EPS (x4). On\n    error: {error: <code>, detail, symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -186,7 +186,7 @@
       },
       {
         "name": "get_growth_metrics",
-        "description": "Fetch raw historical growth rates for trend analysis — chart revenue/EPS\ntrajectory or compare growth across competitors.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period}. data is\n    {financial_growth, income_statement_growth}, each a list; count is the\n    total. financial_growth fields: date, revenueGrowth, netIncomeGrowth,\n    epsgrowth; income_statement_growth fields: date, growthRevenue,\n    growthNetIncome, growthEPS. Growth values are decimal fractions\n    (0.1 = 10%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";\n    records are newest-first as returned by FMP. On error:\n    {error: <code>, detail, symbol}.\n",
+        "description": "Fetch raw historical growth rates.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period}. data is\n    {financial_growth, income_statement_growth}, each a list, newest first;\n    count is the total. financial_growth fields: date, revenueGrowth,\n    netIncomeGrowth, epsgrowth; income_statement_growth fields: date,\n    growthRevenue, growthNetIncome, growthEPS. Growth values are decimal\n    fractions (0.1 = 10%); a quarter row grows on the prior quarter, not the\n    year-ago one. Field names are FMP-native camelCase; date is\n    \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -274,7 +274,7 @@
       },
       {
         "name": "get_historical_valuation",
-        "description": "Fetch DCF fair value and enterprise value history — track fair value vs\nprice or build valuation trend charts.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period}. data is\n    {current_dcf, historical_dcf, enterprise_value}, each a list; count is\n    the total. current_dcf fields: symbol, date, dcf, stockPrice.\n    historical_dcf is always [] — the stable FMP API no longer exposes it.\n    enterprise_value fields: date, stockPrice, marketCapitalization,\n    enterpriseValue. Field names are FMP-native camelCase; date is\n    \"YYYY-MM-DD\"; enterprise_value is newest-first as returned by FMP. On\n    error: {error: <code>, detail, symbol}.\n",
+        "description": "Fetch DCF fair value and enterprise value history.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, currency, count, data, source, data_type, period}. data\n    is {current_dcf, historical_dcf, enterprise_value}, each a list; count\n    is the total. current_dcf fields: symbol, date, dcf, stockPrice, per\n    share in `currency` (absent when the venue is unknown). historical_dcf\n    is always []. enterprise_value fields, newest first: date,\n    reportedCurrency, stockPrice, marketCapitalization, enterpriseValue,\n    priced in reportedCurrency (the filings' currency, which can differ\n    from `currency`; null when unknown). Field names are FMP-native\n    camelCase; date is \"YYYY-MM-DD\".\n    On error: {error: <code>, detail, symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -341,6 +341,10 @@
               "description": "Upstream data source.",
               "type": "string"
             },
+            "currency": {
+              "description": "ISO 4217 currency of current_dcf's dcf and stockPrice; omitted when the listing's venue is unknown.",
+              "type": "string"
+            },
             "data_type": {
               "type": "string"
             },
@@ -362,7 +366,7 @@
       },
       {
         "name": "get_insider_trades",
-        "description": "Fetch insider trading transactions and aggregate buy/sell statistics —\ndetect insider buying clusters, screen unusual activity, or gauge C-suite\nconfidence.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n    limit: Number of recent transactions to fetch (default 50).\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is {trades, stats},\n    each a list; count is the total across both. trades fields: symbol,\n    filingDate, transactionDate, reportingName, transactionType,\n    securitiesTransacted, price. stats fields: year, quarter, totalBought,\n    totalSold, buySellRatio. Field names are FMP-native camelCase; dates are\n    \"YYYY-MM-DD\"; trades are newest-first as returned by FMP. On error:\n    {error: <code>, detail, symbol}.\n",
+        "description": "Fetch insider transactions from SEC Form 4 filings, with quarterly totals.\nHK and A-share listings return empty lists.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\".\n    limit: Number of recent transactions (default 50).\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is {trades, stats},\n    each a list; count is the total across both. trades fields, newest\n    first: filingDate, transactionDate, reportingName, transactionType,\n    securitiesTransacted, price. Only \"P-Purchase\" and \"S-Sale\" are\n    open-market trades; others are awards, exercises or tax withholding.\n    stats, one row per calendar quarter: year, quarter, totalPurchases,\n    totalSales (counts of P and S trades), totalAcquired, totalDisposed\n    (shares, all transaction types). Field names are FMP-native camelCase;\n    dates are \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -438,7 +442,7 @@
       },
       {
         "name": "get_dividends_and_splits",
-        "description": "Fetch historical dividend payments and stock splits — analyze dividend\ngrowth, adjust prices for splits, or compare dividend history across peers.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is\n    {dividends, splits}, each a list; count is the total across both.\n    dividends fields: date, recordDate, paymentDate, declarationDate,\n    adjDividend, dividend, yield, frequency. splits fields: date, numerator,\n    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";\n    records are newest-first as returned by FMP. On error:\n    {error: <code>, detail, symbol}.\n",
+        "description": "Fetch historical dividend payments and stock splits.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is\n    {dividends, splits}, each a list, newest first; count is the total\n    across both. dividends fields: date, recordDate, paymentDate,\n    declarationDate, adjDividend (split-adjusted), dividend (as paid), yield\n    (percent, 0.34 = 0.34%), frequency. splits fields: date, numerator,\n    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\".\n    On error: {error: <code>, detail, symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -509,7 +513,7 @@
       },
       {
         "name": "get_shares_float",
-        "description": "Fetch shares float, outstanding shares, and float percentage — flag\nlow-float names, gauge ownership concentration, or screen squeeze candidates.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is a list of\n    records; count is the record total. Fields: symbol, date, freeFloat,\n    floatShares, outstandingShares. Field names are FMP-native camelCase;\n    date is \"YYYY-MM-DD\"; latest snapshot first as returned by FMP. On error:\n    {error: <code>, detail, symbol}.\n",
+        "description": "Fetch shares float, outstanding shares, and float percentage.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is a list of\n    records; count is the record total. Fields: symbol, date, freeFloat\n    (percent, 99.8 = 99.8%), floatShares, outstandingShares; an ADR counts\n    ADS units, not ordinary shares. date is \"YYYY-MM-DD\": the day FMP\n    refreshed the record, not the as-of date of the counts, which can be\n    months older; an A-share row's date is the trading day of its counts.\n    Field names are FMP-native camelCase. On error: {error: <code>, detail,\n    symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -1791,7 +1795,7 @@
       },
       {
         "name": "get_short_data",
-        "description": "Fetch short interest and/or short volume for a US stock (short-squeeze work).\n\nShort interest is FINRA bi-monthly (settlement_date); short volume is daily\noff-exchange (date). ginlix-data only.\n\nArgs:\n    symbol: Stock ticker, e.g. \"AAPL\".\n    data_type: \"short_interest\", \"short_volume\", or \"both\" (default).\n    from_date: \"YYYY-MM-DD\" start filter (optional).\n    to_date: \"YYYY-MM-DD\" end filter (optional).\n    limit: Max records per section (default 20, max 50000).\n\nReturns:\n    dict: {symbol, timezone, count, data, source, data_type}. data is a dict\n    of {short_interest, short_volume} lists (requested sections only), newest\n    first. Record fields are vendor-native (e.g. settlement_date,\n    short_volume_ratio). Partial failures appear in an `errors` map. On\n    error: {error: <code>, detail}.\n",
+        "description": "Fetch short interest and/or short volume for a US stock.\n\nShort interest is FINRA bi-monthly (settlement_date); short volume is daily\noff-exchange (date).\n\nArgs:\n    symbol: Stock ticker, e.g. \"AAPL\".\n    data_type: \"short_interest\", \"short_volume\", or \"both\" (default).\n    from_date: \"YYYY-MM-DD\" start filter (optional).\n    to_date: \"YYYY-MM-DD\" end filter (optional).\n    limit: Max records per section (default 20, max 50000).\n\nReturns:\n    dict: {symbol, timezone, count, data, source, data_type}. data is a dict\n    of {short_interest, short_volume} lists (requested sections only), newest\n    first. Record fields are vendor-native (e.g. settlement_date);\n    short_volume_ratio is a percent (43.3 = 43.3%). Partial failures appear\n    in an `errors` map. On error: {error: <code>, detail}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
