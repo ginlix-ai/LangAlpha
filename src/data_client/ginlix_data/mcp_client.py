@@ -17,9 +17,10 @@ from typing import Any
 
 import httpx
 
+from ..base import FetchResult
 from ..market_data_provider import is_us_symbol
 from ..normalize import normalize_bars, symbol_timezone
-from .pagination import follow_cursor, paginate_cursor, unique_by_time
+from .pagination import follow_cursor, unique_by_time
 from .v2_routes import GinlixDataV2Routes, path_segment
 
 logger = logging.getLogger(__name__)
@@ -272,11 +273,13 @@ class GinlixMCPClient(GinlixDataV2Routes):
 
     async def _fetch_paginated_bars(
         self, url: str, params: dict[str, Any],
-    ) -> list[dict]:
-        """Every bar of an aggregates cursor walk, one per timestamp.
+    ) -> FetchResult:
+        """Every bar of an aggregates cursor walk, one per timestamp, and whether it was cut.
 
         Later pages keep the first page's params: the route requires ``from``
-        and ``to`` on every call, so a cursor alone is rejected.
+        and ``to`` on every call, so a cursor alone is rejected. The walk runs
+        newest first, so one the page cap ends loses the oldest bars, not the
+        newest.
         """
 
         async def fetch_page(page_params: dict[str, Any]) -> dict[str, Any]:
@@ -284,8 +287,10 @@ class GinlixMCPClient(GinlixDataV2Routes):
             resp.raise_for_status()
             return resp.json()
 
-        bars, _ = await follow_cursor(fetch_page, params, max_pages=_MAX_PAGES, label=url)
-        return unique_by_time(bars)
+        bars, truncated = await follow_cursor(
+            fetch_page, {**params, "sort": "desc"}, max_pages=_MAX_PAGES, label=url,
+        )
+        return FetchResult(unique_by_time(bars), truncated)
 
     # -- data fetching -------------------------------------------------------
 
@@ -297,7 +302,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
         end_date: str | None = None,
         *,
         market: str = "stock",
-    ) -> list[dict] | dict | None:
+    ) -> FetchResult | dict | None:
         """Fetch stock OHLCV from ginlix-data with auto-pagination.
 
         ``market`` is the aggregates route's market segment: ``index`` takes
@@ -305,7 +310,8 @@ class GinlixMCPClient(GinlixDataV2Routes):
         stock symbols would not recognize.
 
         Returns:
-            ``list[dict]``: Normalized OHLCV bars on success.
+            ``FetchResult``: Normalized OHLCV bars, newest first, on success;
+            ``truncated`` when the page cap left the oldest bars unread.
             ``dict``: Error dict on HTTP/validation error.
             ``None``: Not available (non-US symbol, no client, unsupported
             interval, a window it cannot read or one that ends before it
@@ -349,13 +355,13 @@ class GinlixMCPClient(GinlixDataV2Routes):
         }
 
         try:
-            all_bars = await self._fetch_paginated_bars(
+            fetched = await self._fetch_paginated_bars(
                 f"/api/v1/data/aggregates/{path_segment(market)}/{path_segment(symbol)}", params,
             )
-            normalized = normalize_bars(all_bars, symbol, intraday=intraday)
+            normalized = normalize_bars(fetched.bars, symbol, intraday=intraday)
             if intraday:
                 normalized = filter_bars_by_time(normalized, start, stop)
-            return normalized
+            return FetchResult(normalized, fetched.truncated)
         except httpx.HTTPStatusError as e:
             error = self._error_dict("Stock data fetch", e)
             status = e.response.status_code
@@ -381,7 +387,8 @@ class GinlixMCPClient(GinlixDataV2Routes):
     ) -> dict:
         """Fetch options contracts with auto-pagination.
 
-        Returns a dict with ``results`` list of contracts, or an error dict.
+        Returns a dict with a ``results`` list of contracts and ``truncated``
+        (more matched than *limit*), or an error dict.
         """
         if not await self.ensure():
             return {"error": "Options data requires ginlix-data (not configured)."}
@@ -410,8 +417,8 @@ class GinlixMCPClient(GinlixDataV2Routes):
                 resp.raise_for_status()
                 return resp.json()
 
-            results = await paginate_cursor(_fetch_page, params, limit=limit)
-            return {"results": results}
+            results, truncated = await follow_cursor(_fetch_page, params, limit=limit)
+            return {"results": results, "truncated": truncated}
         except Exception as e:  # noqa: BLE001
             return self._error_dict("Options chain fetch", e)
 
@@ -421,10 +428,11 @@ class GinlixMCPClient(GinlixDataV2Routes):
         from_date: str | None = None,
         to_date: str | None = None,
         interval: str = "1day",
-    ) -> list[dict] | dict:
+    ) -> FetchResult | dict:
         """Fetch OHLCV bars for an options contract.
 
-        Returns normalized OHLCV bars on success, or an error dict.
+        Returns normalized OHLCV bars, newest first, on success (``truncated``
+        when the page cap left the oldest bars unread), or an error dict.
         """
         if not await self.ensure():
             return {"error": "Options data requires ginlix-data (not configured)."}
@@ -448,12 +456,12 @@ class GinlixMCPClient(GinlixDataV2Routes):
             params["to"] = to_date
 
         try:
-            all_bars = await self._fetch_paginated_bars(
+            fetched = await self._fetch_paginated_bars(
                 f"/api/v1/data/aggregates/option/{path_segment(options_ticker)}", params,
             )
             intraday = interval_lower not in DAILY_INTERVALS
-            normalized = normalize_bars(all_bars, options_ticker, intraday=intraday)
-            return normalized
+            normalized = normalize_bars(fetched.bars, options_ticker, intraday=intraday)
+            return FetchResult(normalized, fetched.truncated)
         except Exception as e:  # noqa: BLE001
             return self._error_dict("Options prices fetch", e)
 

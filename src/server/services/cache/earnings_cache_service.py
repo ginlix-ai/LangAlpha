@@ -14,7 +14,7 @@ _TTL = 86400  # 24 hours
 
 
 def _cache_key(from_date: str, to_date: str) -> str:
-    return f"earnings:{from_date}:{to_date}"
+    return f"earnings:v2:{from_date}:{to_date}"
 
 
 class EarningsCacheService:

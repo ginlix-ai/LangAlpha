@@ -49,6 +49,19 @@ Rules:
 - Vendor-native record payloads (FMP fundamentals/macro) may stay raw inside `data`,
   but the envelope around them is standard and the docstring names the key leaf
   fields and says the field names are vendor-native.
+- **A read a page or row cap cut short says so**: `truncated: true` beside `data`
+  (`make_response(truncated=...)`), absent on a complete read. A cut read keeps
+  the end its reader wants and the docstring names the end lost: price and rate
+  history keeps the newest rows, a calendar keeps the start of its window and
+  loses the latest dates. Reads that walk several pages or calls (ginlix-data
+  cursors, FMP's 90-day and 4,000-row windows) walk from the kept end so the cap
+  always falls on the other, and drop a row identical to one already read. A
+  vendor refusal part-way through such a walk fails the read: `truncated` means
+  only a size cap.
+- **Bars missing inside the window say so**: `incomplete: true` beside `data`
+  (`make_response(incomplete=...)`) when the source reports sessions missing
+  within the window it was asked for (a CN refetch that failed), absent
+  otherwise. It is not a cap and names no end.
 
 ## Error envelope
 

@@ -84,10 +84,12 @@ from mcp_servers._dates import (
     intraday_window,
 )
 from mcp_servers._schemas import (
+    INCOMPLETE,
     OBJECT,
     RECORDS,
     RECORDS_BY_KEY,
     STR,
+    TRUNCATED,
     described,
     envelope_schema,
     output_model,
@@ -257,8 +259,12 @@ async def _fetch_stock_bars(
             except ValueError:
                 end = datetime.now(_tz.utc)
             cn_start = (end - timedelta(days=_CN_DEFAULT_DAILY_DAYS)).strftime("%Y-%m-%d")
+        incomplete = False
         try:
-            bars = (await _cn.get_daily(legacy, cn_start, end_date)).bars
+            fetched = await _cn.get_daily(legacy, cn_start, end_date)
+            # The series' coverage flag marks sessions missing inside the window
+            # (a refetch that failed), not a cap cutting either end.
+            bars, incomplete = fetched.bars, fetched.truncated
         except httpx.HTTPError as exc:
             # An upstream miss (a 503, a 429, a dropped connection) is expected and
             # the chain answers instead, so one line is enough.
@@ -275,6 +281,7 @@ async def _fetch_stock_bars(
                 "interval": canonical,
                 "currency": currency,
                 "timezone": timezone,
+                "incomplete": incomplete,
             }, None
 
     # The legacy spelling of a family index is bare (GSPC), which every vendor
@@ -313,14 +320,15 @@ async def _fetch_stock_bars(
     elif ginlix_result is not None:
         # Already-normalized display rows, descending → flip to ascending.
         tier = {
-            "data": list(reversed(ginlix_result)),
+            "data": list(reversed(ginlix_result.bars)),
             "source": "ginlix-data",
             "symbol": display,
             "interval": canonical,
             "currency": currency,
             "timezone": timezone,
+            "truncated": ginlix_result.truncated,
         }
-        if populated(ginlix_result):
+        if populated(ginlix_result.bars):
             return tier, None
         # No bars is a miss too: Massive answers a range older than its history
         # with none (AAPL in 1995), which FMP still holds. The empty answer
@@ -360,6 +368,7 @@ async def _fetch_stock_bars(
         return miss or (None, make_error(
             "upstream_error", "FMP fetch failed.", symbol=display, interval=canonical
         ))
+    truncated = getattr(rows, "truncated", False)
     if window is not None:
         rows = window.rows(rows or [])
 
@@ -373,6 +382,7 @@ async def _fetch_stock_bars(
         "interval": canonical,
         "currency": currency,
         "timezone": timezone,
+        "truncated": truncated,
     }, None
 
 
@@ -390,7 +400,7 @@ _OUT_GET_STOCK_DATA = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={"name": _NAME_ECHO},
+        echo={"name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": INCOMPLETE},
     ),
 )
 
@@ -432,7 +442,7 @@ _OUT_GET_ASSET_DATA = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={"asset_type": STR, "name": _NAME_ECHO},
+        echo={"asset_type": STR, "name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": INCOMPLETE},
     ),
 )
 
@@ -546,6 +556,7 @@ async def get_asset_data(
         return error_from_exception(
             e, "FMP fetch failed.", symbol=display, interval=canonical
         )
+    truncated = getattr(rows, "truncated", False)
     if window is not None and isinstance(rows, list):
         rows = window.rows(rows)
 
@@ -557,6 +568,7 @@ async def get_asset_data(
         interval=canonical,
         currency=currency,
         timezone=timezone,
+        truncated=truncated,
         asset_type=at,
     )
 

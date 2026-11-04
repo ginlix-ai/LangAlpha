@@ -65,6 +65,17 @@ def described(prop: dict[str, Any], description: str) -> dict[str, Any]:
 #: server's bytes stable); unify them the next time the schemas may move.
 ERRORS: dict[str, Any] = described(RECORDS, "Error envelopes for symbols that failed.")
 
+#: ``make_response(truncated=True)``: present only on a read a cap cut short,
+#: naming the end it lost: price and rate history its oldest rows, a calendar
+#: its latest dates.
+TRUNCATED: dict[str, Any] = described(BOOL, "Present and true if a size cap cut the oldest rows.")
+TRUNCATED_LATEST: dict[str, Any] = described(
+    BOOL, "Present and true if a size cap cut the latest dates."
+)
+#: ``make_response(incomplete=True)``: present only when the source reports bars
+#: missing inside the window, which is not a cap.
+INCOMPLETE: dict[str, Any] = described(BOOL, "Present and true if bars in the window are missing.")
+
 #: The error arm's properties. Servers off the market-data envelope override
 #: ``detail`` — its wording and type drifted before the contract settled.
 ERROR_PROPS: dict[str, dict[str, Any]] = {

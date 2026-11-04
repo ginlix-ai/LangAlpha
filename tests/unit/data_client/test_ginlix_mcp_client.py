@@ -255,7 +255,7 @@ class TestFetchStockDataWindow:
         finally:
             await client.close()
 
-        assert [r["date"][11:16] for r in reversed(rows)] == kept
+        assert [r["date"][11:16] for r in reversed(rows.bars)] == kept
 
     @pytest.mark.asyncio
     async def test_offset_bounds_ask_for_the_exchange_day(self):
@@ -289,7 +289,7 @@ class TestFetchStockDataWindow:
             await client.close()
 
         assert (asked[0]["from"], asked[0]["to"]) == ("2026-10-15", "2026-10-15")
-        assert [r["date"] for r in reversed(rows)] == [
+        assert [r["date"] for r in reversed(rows.bars)] == [
             "2026-10-15 14:00:00", "2026-10-15 16:00:00"
         ]
 
@@ -318,3 +318,79 @@ class TestFetchStockDataWindow:
         finally:
             await client.close()
         assert asked == []
+
+
+class TestFetchStockDataPageCap:
+    @staticmethod
+    def _client(answer):
+        client = GinlixMCPClient()
+        client._http = httpx.AsyncClient(
+            base_url="http://ginlix-data.test", transport=httpx.MockTransport(answer)
+        )
+        return client
+
+    @staticmethod
+    def _bar(day: int) -> dict:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        opened = datetime(2026, 10, day, 9, 30, tzinfo=ZoneInfo("America/New_York"))
+        return {"time": int(opened.timestamp() * 1000), "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}
+
+    @pytest.mark.asyncio
+    async def test_a_walk_the_page_cap_ends_keeps_the_newest_bars_and_says_so(self, monkeypatch):
+        monkeypatch.setattr(mcp_client, "_MAX_PAGES", 2)
+        asked = []
+
+        def answer(request):
+            asked.append(dict(request.url.params))
+            # Newest first, one day a page, always more to read.
+            return httpx.Response(
+                200, json={"results": [self._bar(17 - len(asked))], "next_cursor": f"c{len(asked)}"}
+            )
+
+        client = self._client(answer)
+        try:
+            fetched = await client.fetch_stock_data("AAPL", "1day", "2026-10-01", "2026-10-16")
+        finally:
+            await client.close()
+
+        assert [p["sort"] for p in asked] == ["desc", "desc"]
+        assert fetched.truncated
+        assert [r["date"] for r in fetched.bars] == ["2026-10-16", "2026-10-15"]
+
+    @pytest.mark.asyncio
+    async def test_a_walk_that_reaches_its_last_page_is_whole(self):
+        client = self._client(lambda request: httpx.Response(200, json={"results": [self._bar(16)]}))
+        try:
+            fetched = await client.fetch_stock_data("AAPL", "1day", "2026-10-01", "2026-10-16")
+        finally:
+            await client.close()
+
+        assert not fetched.truncated and len(fetched.bars) == 1
+
+
+class TestPaginateCursorSaysWhenMoreMatched:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("pages", "limit", "more"),
+        [
+            # The limit came first with a cursor left: more matched.
+            ([{"results": [1, 2], "next_cursor": "c1"}], 2, True),
+            # A page held more rows than the limit asked for.
+            ([{"results": [1, 2, 3]}], 2, True),
+            # The walk read every page.
+            ([{"results": [1], "next_cursor": "c1"}, {"results": [2]}], 5, False),
+            ([{"results": [1, 2]}], 2, False),
+            # The route could not follow its upstream past this page.
+            ([{"results": [1], "next_cursor": "c1", "truncated": True}], 5, True),
+            # An empty page that still carries a cursor left the rest unread.
+            ([{"results": [1], "next_cursor": "c1"}, {"results": [], "next_cursor": "c2"}], 5, True),
+        ],
+    )
+    async def test_more_than_limit_is_reported(self, pages, limit, more):
+        from src.data_client.ginlix_data.pagination import follow_cursor
+
+        answers = iter(pages)
+        rows, truncated = await follow_cursor(AsyncMock(side_effect=lambda p: next(answers)), {}, limit=limit)
+        assert len(rows) <= limit and truncated is more
