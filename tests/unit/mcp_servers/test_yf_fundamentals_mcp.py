@@ -439,3 +439,92 @@ class TestGetMultipleStocksEarnings:
         result = get_multiple_stocks_earnings(["AAPL"])
         assert result["data"] == {}
         assert result["errors"][0]["error"] == "upstream_error"
+
+
+# ============================================================================
+# Currencies
+# ============================================================================
+
+
+class TestStatementCurrency:
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
+    def test_statement_names_its_reporting_currency(
+        self, mock_ticker_cls, mock_financial_df
+    ):
+        stock = Mock()
+        stock.quarterly_income_stmt = mock_financial_df
+        stock.info = {"currency": "HKD", "financialCurrency": "CNY"}
+        mock_ticker_cls.return_value = stock
+
+        result = get_income_statement("0700.HK")
+
+        assert result["currency"] == "CNY"
+
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
+    def test_missing_cells_are_null_not_a_string(self, mock_ticker_cls):
+        stock = Mock()
+        stock.quarterly_income_stmt = pd.DataFrame(
+            {pd.Timestamp("2024-03-31"): [1.0], pd.Timestamp("2023-12-31"): [None]},
+            index=["Total Revenue"],
+        )
+        stock.info = {}
+        mock_ticker_cls.return_value = stock
+
+        result = get_income_statement("AAPL")
+
+        assert result["data"]["Total Revenue"]["2023-12-31"] is None
+        assert "currency" not in result
+
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
+    def test_compare_financials_maps_currencies_by_symbol(
+        self, mock_ticker_cls, mock_financial_df
+    ):
+        stock = Mock()
+        stock.quarterly_income_stmt = mock_financial_df
+        stock.info = {"financialCurrency": "TWD"}
+        mock_ticker_cls.return_value = stock
+
+        result = compare_financials(["TSM"])
+
+        assert result["currencies"] == {"TSM": "TWD"}
+
+
+class TestValuationCurrencies:
+    @staticmethod
+    def _info(currency, financial_currency):
+        return {
+            "currency": currency,
+            "financialCurrency": financial_currency,
+            "trailingPE": 26.0,
+            "priceToBook": 77.0,
+            "priceToSalesTrailing12Months": 0.4,
+            "enterpriseToEbitda": 3.7,
+            "enterpriseToRevenue": 2.7,
+            "enterpriseValue": 1.3e13,
+            "marketCap": 2.1e12,
+        }
+
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
+    def test_multiples_across_currencies_are_null(self, mock_ticker_cls):
+        mock_ticker_cls.return_value = Mock(info=self._info("USD", "TWD"))
+
+        row = compare_valuations(["TSM"])["data"]["TSM"]
+
+        assert (row["currency"], row["financial_currency"]) == ("USD", "TWD")
+        for key in (
+            "price_to_book",
+            "price_to_sales_trailing12_months",
+            "enterprise_to_ebitda",
+            "enterprise_to_revenue",
+            "enterprise_value",
+        ):
+            assert row[key] is None
+        assert row["trailing_p_e"] == 26.0
+        assert row["market_cap"] == 2.1e12
+
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
+    def test_same_currency_and_minor_units_keep_their_multiples(self, mock_ticker_cls):
+        for currency, financial in (("USD", "USD"), ("GBp", "GBP"), ("ILA", "ILS")):
+            mock_ticker_cls.return_value = Mock(info=self._info(currency, financial))
+            row = compare_valuations(["X"])["data"]["X"]
+            assert row["price_to_book"] == 77.0

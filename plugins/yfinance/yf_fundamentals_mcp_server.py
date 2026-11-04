@@ -44,7 +44,13 @@ from mcp_servers._schemas import (
     envelope_schema,
     output_model,
 )
-from mcp_servers._yf_common import boundary, format_datetime, safe_detail, serialize_records
+from mcp_servers._yf_common import (
+    boundary,
+    format_datetime,
+    minor_unit,
+    safe_detail,
+    serialize_records,
+)
 
 SOURCE = "yfinance"
 
@@ -67,7 +73,35 @@ def _serialize_dataframe(df: pd.DataFrame) -> dict:
         df.index = df.index.strftime("%Y-%m-%d")
     if isinstance(df.columns, pd.DatetimeIndex):
         df.columns = df.columns.strftime("%Y-%m-%d")
-    return json.loads(df.fillna("N/A").to_json(orient="index"))
+    return json.loads(df.to_json(orient="index"))
+
+
+def _financial_currency(stock: yf.Ticker) -> str | None:
+    """ISO code the statements are reported in; None when Yahoo does not say.
+
+    It can differ from the quote currency (TSM trades in USD and reports in
+    TWD, 0700.HK trades in HKD and reports in CNY).
+    """
+    try:
+        code = stock.info.get("financialCurrency")
+    except Exception:  # noqa: BLE001 - the statement is still worth returning
+        return None
+    return code if isinstance(code, str) and code else None
+
+
+_CROSS_CURRENCY_KEYS = (
+    "priceToBook",
+    "priceToSalesTrailing12Months",
+    "enterpriseToEbitda",
+    "enterpriseToRevenue",
+    "enterpriseValue",
+)
+
+
+def _same_currency(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return True
+    return (minor_unit(a) or (a,))[0].upper() == (minor_unit(b) or (b,))[0].upper()
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +120,7 @@ _OUT_GET_INCOME_STATEMENT = output_model(
     "GetIncomeStatementOut",
     envelope_schema(
         OBJECTS_BY_KEY,
-        frame=("symbol",),
+        frame=("symbol", "currency"),
         echo={"quarterly": BOOL},
     ),
 )
@@ -104,12 +138,12 @@ def get_income_statement(
         quarterly: Quarterly if True, else annual.
 
     Returns:
-        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
-        {metric: {date: value}} — metric names are Yahoo-native (e.g.
-        "Total Revenue", "Net Income"); date keys are "YYYY-MM-DD" ordered newest
-        first; values are in the company's reporting currency (native units).
-        count is the number of metrics. On error: {error, detail, symbol} with
-        error not_found|upstream_error.
+        dict: {symbol, currency?, quarterly, count, data, source}. data is
+        Yahoo-native {metric: {date: value}}, metric names Yahoo-native
+        (e.g. "Total Revenue", "Net Income"); date keys "YYYY-MM-DD" newest
+        first; values in `currency`, the reporting currency (may differ from
+        the trading one), null where missing. count is the number of metrics.
+        On error: {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -121,7 +155,12 @@ def get_income_statement(
             )
         data = _serialize_dataframe(df)
         return make_response(
-            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
+            data,
+            source=SOURCE,
+            symbol=symbol,
+            count=len(data),
+            quarterly=quarterly,
+            currency=_financial_currency(stock),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -133,7 +172,7 @@ _OUT_GET_BALANCE_SHEET = output_model(
     "GetBalanceSheetOut",
     envelope_schema(
         OBJECTS_BY_KEY,
-        frame=("symbol",),
+        frame=("symbol", "currency"),
         echo={"quarterly": BOOL},
     ),
 )
@@ -149,12 +188,12 @@ def get_balance_sheet(ticker: str, quarterly: bool = True) -> _OUT_GET_BALANCE_S
         quarterly: Quarterly if True, else annual.
 
     Returns:
-        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
-        {metric: {date: value}} — metric names Yahoo-native (e.g. "Total Assets",
-        "Total Debt"); date keys "YYYY-MM-DD" ordered newest first; values in the
-        company's reporting currency (native units). count is the number of
-        metrics. On error: {error, detail, symbol} with error
-        not_found|upstream_error.
+        dict: {symbol, currency?, quarterly, count, data, source}. data is
+        Yahoo-native {metric: {date: value}}, metric names Yahoo-native
+        (e.g. "Total Assets", "Total Debt"); date keys "YYYY-MM-DD" newest
+        first; values in `currency`, the reporting currency (may differ from
+        the trading one), null where missing. count is the number of metrics.
+        On error: {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -166,7 +205,12 @@ def get_balance_sheet(ticker: str, quarterly: bool = True) -> _OUT_GET_BALANCE_S
             )
         data = _serialize_dataframe(df)
         return make_response(
-            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
+            data,
+            source=SOURCE,
+            symbol=symbol,
+            count=len(data),
+            quarterly=quarterly,
+            currency=_financial_currency(stock),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -178,7 +222,7 @@ _OUT_GET_CASH_FLOW = output_model(
     "GetCashFlowOut",
     envelope_schema(
         OBJECTS_BY_KEY,
-        frame=("symbol",),
+        frame=("symbol", "currency"),
         echo={"quarterly": BOOL},
     ),
 )
@@ -194,12 +238,13 @@ def get_cash_flow(ticker: str, quarterly: bool = True) -> _OUT_GET_CASH_FLOW:
         quarterly: Quarterly if True, else annual.
 
     Returns:
-        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native
-        {metric: {date: value}} — metric names Yahoo-native (e.g.
-        "Operating Cash Flow", "Capital Expenditure"); date keys "YYYY-MM-DD"
-        ordered newest first; values in the company's reporting currency (native
-        units). count is the number of metrics. On error:
-        {error, detail, symbol} with error not_found|upstream_error.
+        dict: {symbol, currency?, quarterly, count, data, source}. data is
+        Yahoo-native {metric: {date: value}}, metric names Yahoo-native
+        (e.g. "Operating Cash Flow", "Capital Expenditure"); date keys
+        "YYYY-MM-DD" newest first; values in `currency`, the reporting
+        currency (may differ from the trading one), null where missing. count
+        is the number of metrics. On error: {error, detail, symbol} with
+        error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -211,7 +256,12 @@ def get_cash_flow(ticker: str, quarterly: bool = True) -> _OUT_GET_CASH_FLOW:
             )
         data = _serialize_dataframe(df)
         return make_response(
-            data, source=SOURCE, symbol=symbol, count=len(data), quarterly=quarterly
+            data,
+            source=SOURCE,
+            symbol=symbol,
+            count=len(data),
+            quarterly=quarterly,
+            currency=_financial_currency(stock),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -275,7 +325,7 @@ def get_company_info(ticker: str) -> _OUT_GET_COMPANY_INFO:
 
 
 _OUT_GET_EARNINGS_DATES = output_model(
-    "GetEarningsDatesOut", envelope_schema(RECORDS, frame=("symbol",))
+    "GetEarningsDatesOut", envelope_schema(RECORDS, frame=("symbol", "timezone"))
 )
 
 
@@ -288,10 +338,11 @@ def get_earnings_dates(ticker: str) -> _OUT_GET_EARNINGS_DATES:
         ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
-        dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records {earnings_date, eps_estimate, reported_eps, surprise_pct} ordered
-        newest first (future dates included, with null reported_eps/surprise_pct);
-        earnings_date is exchange-local "YYYY-MM-DD HH:MM:SS". On error:
+        dict: {symbol, timezone, count, data, source}. data is a list of
+        Yahoo-native records {earnings_date, eps_estimate, reported_eps,
+        surprise_pct} ordered newest first (future dates included, with null
+        reported_eps/surprise_pct); earnings_date is "YYYY-MM-DD HH:MM:SS" in
+        `timezone`; surprise_pct is in percent (6.7 = 6.7%). On error:
         {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
@@ -302,7 +353,10 @@ def get_earnings_dates(ticker: str) -> _OUT_GET_EARNINGS_DATES:
                 "not_found", f"No earnings dates for {symbol}.", symbol=symbol
             )
         return make_response(
-            serialize_records(dates), source=SOURCE, symbol=symbol
+            serialize_records(dates),
+            source=SOURCE,
+            symbol=symbol,
+            timezone=str(dates.index.tz),
         )
     except Exception as e:  # noqa: BLE001
         return make_error(
@@ -325,8 +379,9 @@ def get_earnings_data(ticker: str) -> _OUT_GET_EARNINGS_DATA:
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records {quarter, epsestimate, epsactual, epsdifference, surprisepercent}
-        in Yahoo's order (oldest first); quarter is "YYYY-MM-DD". On error:
+        records {quarter, epsestimate, epsactual, epsdifference,
+        surprisepercent} in Yahoo's order (oldest first); quarter is
+        "YYYY-MM-DD"; surprisepercent is a fraction (0.067 = 6.7%). On error:
         {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
@@ -357,6 +412,9 @@ _OUT_COMPARE_FINANCIALS = output_model(
         echo={
             "statement_type": STR,
             "quarterly": BOOL,
+            "currencies": described(
+                OBJECT, "Reporting currency per symbol, where Yahoo declares one."
+            ),
             "successful_tickers": STR_LIST,
             "errors": _ERRORS,
         },
@@ -378,12 +436,13 @@ def compare_financials(
         quarterly: Quarterly if True, else annual.
 
     Returns:
-        dict: {statement_type, quarterly, count, data, source,
+        dict: {statement_type, quarterly, currencies, count, data, source,
         successful_tickers, errors?}. data is keyed by canonical symbol →
         Yahoo-native {metric: {date: value}} (date keys "YYYY-MM-DD" newest
-        first, reporting-currency native units, Yahoo-native metric names); count
-        is total metrics across symbols. Failed/empty symbols are omitted and
-        listed in errors as {error, detail, symbol}. On a bad statement_type:
+        first, Yahoo-native metric names, null where missing); currencies maps
+        each symbol to its values' currency; count is total metrics across
+        symbols. Failed/empty symbols are omitted and listed in errors as
+        {error, detail, symbol}. On a bad statement_type:
         {error: invalid_argument, detail, supported}.
     """
     if statement_type not in ("income", "balance", "cashflow"):
@@ -394,6 +453,7 @@ def compare_financials(
         )
 
     data: dict[str, dict] = {}
+    currencies: dict[str, str] = {}
     errors: list[dict] = []
     total = 0
 
@@ -421,6 +481,9 @@ def compare_financials(
             serialized = _serialize_dataframe(df)
             data[symbol] = serialized
             total += len(serialized)
+            currency = _financial_currency(stock)
+            if currency:
+                currencies[symbol] = currency
         except Exception as e:  # noqa: BLE001
             errors.append(
                 make_error(
@@ -436,6 +499,7 @@ def compare_financials(
         count=total,
         statement_type=statement_type,
         quarterly=quarterly,
+        currencies=currencies,
         successful_tickers=list(data.keys()),
     )
     if errors:
@@ -461,14 +525,15 @@ def compare_valuations(tickers: List[str]) -> _OUT_COMPARE_VALUATIONS:
 
     Returns:
         dict: {count, data, source, successful_tickers, errors?}. data is keyed
-        by canonical symbol → a dict of snake_case metrics: trailing_p_e,
-        forward_p_e, price_to_book, price_to_sales_trailing12_months,
-        enterprise_to_ebitda, enterprise_to_revenue, peg_ratio, dividend_yield,
-        payout_ratio, market_cap, enterprise_value, beta,
+        by canonical symbol → metrics: currency, financial_currency,
+        trailing_p_e, forward_p_e, price_to_book,
+        price_to_sales_trailing12_months, enterprise_to_ebitda,
+        enterprise_to_revenue, peg_ratio, dividend_yield (percent),
+        payout_ratio (fraction), market_cap, enterprise_value, beta,
         fifty_two_week_high/low, fifty_day_average, two_hundred_day_average,
-        current_price (nulls where absent); count is the number of symbols
-        returned. Failed symbols are omitted and listed in errors as
-        {error, detail, symbol}.
+        current_price. price_to_book, price_to_sales_*, enterprise_* are null
+        when currency differs from financial_currency. Failed symbols are
+        omitted, listed in errors as {error, detail, symbol}.
     """
     valuation_keys = [
         "trailingPE", "forwardPE", "priceToBook", "priceToSalesTrailing12Months",
@@ -493,13 +558,21 @@ def compare_valuations(tickers: List[str]) -> _OUT_COMPARE_VALUATIONS:
                 )
                 continue
 
-            valuations = {}
+            currency = info.get("currency")
+            financial_currency = info.get("financialCurrency")
+            valuations = {
+                "currency": currency,
+                "financial_currency": financial_currency,
+            }
+            mixed = not _same_currency(currency, financial_currency)
             for key in valuation_keys:
                 val = info.get(key)
                 snake_key = "".join(
                     ["_" + c.lower() if c.isupper() else c for c in key]
                 ).lstrip("_")
                 if val is None or (isinstance(val, float) and val != val):
+                    valuations[snake_key] = None
+                elif mixed and key in _CROSS_CURRENCY_KEYS:
                     valuations[snake_key] = None
                 else:
                     valuations[snake_key] = val
@@ -545,9 +618,10 @@ def get_multiple_stocks_earnings(
         dict: {count, data, source, successful_tickers, errors?}. data is keyed
         by canonical symbol → {count, earnings}; each earnings is a list of
         Yahoo-native records {quarter, epsestimate, epsactual, epsdifference,
-        surprisepercent} in Yahoo's order (oldest first), quarter "YYYY-MM-DD".
-        Top-level count is total earnings records across symbols. Failed/empty
-        symbols are omitted and listed in errors as {error, detail, symbol}.
+        surprisepercent} in Yahoo's order (oldest first), quarter
+        "YYYY-MM-DD", surprisepercent a fraction (0.067 = 6.7%). Top-level
+        count is total earnings records across symbols. Failed/empty symbols
+        are omitted and listed in errors as {error, detail, symbol}.
     """
     data: dict[str, dict] = {}
     errors: list[dict] = []

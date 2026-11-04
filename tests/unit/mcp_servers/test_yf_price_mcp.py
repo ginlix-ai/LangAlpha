@@ -410,7 +410,9 @@ class TestGetMultipleStocksDividends:
         assert "errors" not in result
 
     @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
-    def test_partial_failure(self, mock_ticker_cls, mock_dividends_series):
+    def test_partial_failure(
+        self, mock_ticker_cls, mock_dividends_series, empty_series
+    ):
         def side_effect(ticker):
             m = Mock()
             if ticker == "BAD":
@@ -419,6 +421,7 @@ class TestGetMultipleStocksDividends:
                 )
             else:
                 m.dividends = mock_dividends_series
+                m.splits = empty_series
             return m
 
         mock_ticker_cls.side_effect = side_effect
@@ -545,3 +548,93 @@ class TestMinorUnitConversion:
         assert_ok_envelope(result, currency="GBP")
         assert result["data"]["dividends"][0]["amount"] == 0.5  # 50 pence → £0.50
         assert result["data"]["splits"][0]["ratio"] == 4.0  # ratio NOT scaled
+
+
+# ============================================================================
+# Price precision and dividends as paid
+# ============================================================================
+
+
+class TestPricePrecision:
+    def test_sub_dollar_and_fx_prices_keep_their_digits(self):
+        from plugins.yfinance.yf_price_mcp_server import _round_price
+
+        assert _round_price(0.07411399483680725) == 0.074114
+        assert _round_price(1.1194399595260620) == 1.11944
+        assert _round_price(331.9000244140625) == 331.9
+        assert _round_price(712345.6789) == 712345.68
+        assert _round_price(0.0) == 0.0
+
+    def test_history_bars_are_not_flattened_to_two_decimals(self):
+        from plugins.yfinance.yf_price_mcp_server import _serialize_history
+
+        df = pd.DataFrame(
+            {
+                "Open": [0.07546],
+                "High": [0.076147],
+                "Low": [0.073184],
+                "Close": [0.074114],
+                "Volume": [1],
+            },
+            index=pd.DatetimeIndex(["2026-11-02"]),
+        )
+        bar = _serialize_history(df)[0]
+        assert (bar["open"], bar["low"], bar["close"]) == (0.07546, 0.073184, 0.074114)
+
+
+class TestDividendsAsPaid:
+    def test_later_splits_are_multiplied_back(self):
+        from plugins.yfinance.yf_price_mcp_server import _dividend_records
+
+        dividends = pd.Series(
+            [0.0005357142, 0.27],
+            index=pd.DatetimeIndex(["1987-08-10", "2026-08-10"]),
+        )
+        splits = pd.Series(
+            [2.0, 2.0, 2.0, 7.0, 4.0],
+            index=pd.DatetimeIndex(
+                ["1987-06-16", "2000-06-21", "2005-02-28", "2014-06-09", "2020-08-31"]
+            ),
+        )
+        records = _dividend_records(dividends, splits, 1.0)
+        assert [r["amount"] for r in records] == [0.06, 0.27]
+
+    def test_history_bars_keep_dividends_on_the_price_basis(self):
+        from plugins.yfinance.yf_price_mcp_server import _serialize_history
+
+        df = pd.DataFrame(
+            {
+                "Open": [1.0, 1.0, 1.0],
+                "High": [1.0, 1.0, 1.0],
+                "Low": [1.0, 1.0, 1.0],
+                "Close": [1.0, 1.0, 1.0],
+                "Volume": [1, 1, 1],
+                "Dividends": [0.0125, 0.0, 0.0],
+                "Stock Splits": [0.0, 4.0, 0.0],
+            },
+            index=pd.date_range("2024-01-01", periods=3, freq="D"),
+        )
+        assert [bar["dividends"] for bar in _serialize_history(df)] == [0.0125, 0.0, 0.0]
+
+
+class TestUnknownSymbol:
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
+    def test_unknown_symbol_is_not_found_not_an_outage(self, mock_ticker_cls, empty_df):
+        stock = Mock()
+        stock.history.return_value = empty_df
+        stock.history_metadata = {}
+        type(stock).fast_info = property(
+            lambda self: (_ for _ in ()).throw(KeyError("currency"))
+        )
+        mock_ticker_cls.return_value = stock
+
+        assert_error(get_stock_history("EURUSD"), "not_found")
+
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
+    def test_unknown_symbol_has_no_dividends_to_report(self, mock_ticker_cls):
+        mock_ticker_cls.return_value = Mock(dividends=None, splits=None)
+
+        assert_error(get_dividends_and_splits("ZZZZQQ"), "not_found")
+        multi = get_multiple_stocks_dividends(["ZZZZQQ"])
+        assert multi["errors"][0]["error"] == "not_found"
+        assert multi["data"] == {}

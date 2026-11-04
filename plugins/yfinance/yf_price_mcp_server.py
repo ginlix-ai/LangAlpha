@@ -22,6 +22,7 @@ try:
 except ModuleNotFoundError:  # imported as a package module (tests)
     from mcp_servers._bootstrap import MCPServer
 
+import math
 from typing import Any, List, Optional
 
 import pandas as pd
@@ -38,7 +39,7 @@ from mcp_servers._schemas import (
     envelope_schema,
     output_model,
 )
-from mcp_servers._yf_common import boundary, format_datetime, safe_detail
+from mcp_servers._yf_common import boundary, format_datetime, minor_unit, safe_detail
 
 SOURCE = "yfinance"
 
@@ -57,18 +58,6 @@ _YF_INTERVAL = {
 # and echoed verbatim. (4hour is canonical but yfinance has no such bar.)
 _YF_NATIVE_INTERVALS = frozenset({"2m", "90m", "5d", "3mo"})
 _SUPPORTED_INTERVALS = sorted(_YF_INTERVAL) + sorted(_YF_NATIVE_INTERVALS)
-
-# Minor-unit quote currencies yfinance may declare → (major ISO 4217, divisor).
-# Keyed on the spelling Yahoo reports (case-sensitive); a case-insensitive
-# fallback covers casing drift. e.g. LSE quotes arrive in pence ("GBp").
-_MINOR_UNITS = {
-    "GBp": ("GBP", 100),
-    "GBX": ("GBP", 100),
-    "ZAc": ("ZAR", 100),
-    "ILA": ("ILS", 100),
-}
-_MINOR_UNITS_CI = {code.lower(): conv for code, conv in _MINOR_UNITS.items()}
-
 
 # ---------------------------------------------------------------------------
 # Boundary + serialization helpers
@@ -113,22 +102,12 @@ def _declared_currency(stock: Any) -> Optional[str]:
         cur = meta.get("currency")
         if isinstance(cur, str) and cur:
             return cur
-    fast = getattr(stock, "fast_info", None)
-    if fast is not None:
-        try:
-            cur = fast["currency"]
-        except Exception:  # noqa: BLE001
-            cur = getattr(fast, "currency", None)
-        if isinstance(cur, str) and cur:
-            return cur
-    return None
-
-
-def _minor_unit(code: Optional[str]) -> Optional[tuple[str, int]]:
-    """(major ISO 4217, divisor) if ``code`` is a minor-unit currency, else None."""
-    if not isinstance(code, str):
-        return None
-    return _MINOR_UNITS.get(code) or _MINOR_UNITS_CI.get(code.lower())
+    try:
+        fast = getattr(stock, "fast_info", None)
+        cur = fast["currency"] if fast is not None else None
+    except Exception:  # noqa: BLE001 - an unknown symbol raises KeyError here
+        cur = None
+    return cur if isinstance(cur, str) and cur else None
 
 
 def _price_scale(stock: Any, ref_currency: Optional[str]) -> tuple[Optional[str], float]:
@@ -138,13 +117,50 @@ def _price_scale(stock: Any, ref_currency: Optional[str]) -> tuple[Optional[str]
     major code (GBP) and a divisor to convert price fields; otherwise keep the
     boundary ``ref_currency`` and a no-op divisor of 1.
     """
-    minor = _minor_unit(_declared_currency(stock))
+    minor = minor_unit(_declared_currency(stock))
     if minor is not None:
         return minor[0], float(minor[1])
     return ref_currency, 1.0
 
 
 _OHLC_COLUMNS = ("Open", "High", "Low", "Close")
+
+
+def _round_price(value: float) -> float:
+    """Six significant digits, never fewer than two decimals.
+
+    Yahoo sends float32-grade values, so the digits past the sixth are noise,
+    while a fixed two decimals flattens sub-dollar quotes: an FX day range of
+    30 pips and DOGE's 7.4 to 7.6 cent move would both read as one price.
+    """
+    if value == 0 or not math.isfinite(value):
+        return value
+    return round(value, max(2, 5 - math.floor(math.log10(abs(value)))))
+
+
+def _as_paid_dividends(dividends: pd.Series, splits: pd.Series) -> pd.Series:
+    """Dividends per share as declared on their date.
+
+    yfinance divides each dividend by every split that came after it (AAPL's
+    1987 dividends read 0.0005 against 0.12 paid), so multiplying those splits
+    back gives the amount paid. Splits are listed beside these amounts, and
+    applying them to adjusted amounts would count each one twice.
+    """
+    factors = [(idx, float(ratio)) for idx, ratio in splits.items() if ratio > 0]
+    paid = []
+    for idx, amount in dividends.items():
+        later = math.prod(r for split_date, r in factors if split_date > idx)
+        paid.append(float(amount) * later)
+    return pd.Series(paid, index=dividends.index, dtype="float64")
+
+
+def _dividend_records(
+    dividends: pd.Series, splits: pd.Series, divisor: float
+) -> list[dict]:
+    return [
+        {"date": idx.strftime("%Y-%m-%d"), "amount": _round_price(val / divisor)}
+        for idx, val in _as_paid_dividends(dividends, splits).items()
+    ]
 
 
 def _serialize_history(df: pd.DataFrame, price_divisor: float = 1.0) -> list[dict]:
@@ -169,21 +185,20 @@ def _serialize_history(df: pd.DataFrame, price_divisor: float = 1.0) -> list[dic
     if df.empty:
         return []
 
-    decimals = 4 if price_divisor != 1 else 2
     records = []
     for idx, row in df.iterrows():
         dt_str = format_datetime(idx)
         volume = row["Volume"]
         record = {
             "date": dt_str,
-            "open": round(float(row["Open"]) / price_divisor, decimals),
-            "high": round(float(row["High"]) / price_divisor, decimals),
-            "low": round(float(row["Low"]) / price_divisor, decimals),
-            "close": round(float(row["Close"]) / price_divisor, decimals),
+            "open": _round_price(float(row["Open"]) / price_divisor),
+            "high": _round_price(float(row["High"]) / price_divisor),
+            "low": _round_price(float(row["Low"]) / price_divisor),
+            "close": _round_price(float(row["Close"]) / price_divisor),
             "volume": int(volume) if pd.notna(volume) else 0,
         }
         if "Dividends" in df.columns:
-            record["dividends"] = round(float(row["Dividends"]) / price_divisor, 4)
+            record["dividends"] = _round_price(float(row["Dividends"]) / price_divisor)
         if "Stock Splits" in df.columns:
             record["splits"] = float(row["Stock Splits"])
         records.append(record)
@@ -355,8 +370,7 @@ _OUT_GET_DIVIDENDS_AND_SPLITS = output_model(
 
 @mcp.tool()
 def get_dividends_and_splits(ticker: str) -> _OUT_GET_DIVIDENDS_AND_SPLITS:
-    """Full dividend and stock-split history for one ticker. Use for
-    total-return, yield, and adjustment analysis.
+    """Full dividend and stock-split history for one ticker.
 
     Args:
         ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
@@ -365,23 +379,24 @@ def get_dividends_and_splits(ticker: str) -> _OUT_GET_DIVIDENDS_AND_SPLITS:
         dict: {symbol, currency, timezone, count, data, source,
         dividend_count, split_count}. data is
         {dividends: [{date, amount}], splits: [{date, ratio}]}, each ascending
-        (oldest first); date is exchange-local "YYYY-MM-DD", amounts in
-        `currency` major units (minor-unit quotes like GBp are converted, e.g.
-        pence→pounds), ratio is the split factor (e.g. 4.0 = 4-for-1);
-        count is dividends + splits. On error: {error, detail, symbol} with
-        error upstream_error.
+        (oldest first); date is exchange-local "YYYY-MM-DD"; amount is per
+        share as paid, in `currency` major units (minor-unit quotes like GBp
+        are converted), not adjusted for later splits; ratio is the split
+        factor (4.0 = 4-for-1); count is dividends + splits. On error:
+        {error, detail, symbol} — not_found | upstream_error.
     """
     symbol, yf_symbol, currency = boundary(ticker)
     try:
         stock = yf.Ticker(yf_symbol)
         dividends_series = stock.dividends
+        if dividends_series is None:
+            return make_error(
+                "not_found", f"No dividend data for {symbol}.", symbol=symbol
+            )
         splits_series = stock.splits
         resp_currency, divisor = _price_scale(stock, currency)
 
-        dividends = [
-            {"date": idx.strftime("%Y-%m-%d"), "amount": round(float(val) / divisor, 4)}
-            for idx, val in dividends_series.items()
-        ]
+        dividends = _dividend_records(dividends_series, splits_series, divisor)
         splits = [
             {"date": idx.strftime("%Y-%m-%d"), "ratio": float(val)}
             for idx, val in splits_series.items()
@@ -423,10 +438,11 @@ def get_multiple_stocks_dividends(tickers: List[str]) -> _OUT_GET_MULTIPLE_STOCK
         dict: {count, data, source, errors?}. data is keyed by canonical symbol
         → {count, currency?, dividends}; each dividends is a list of
         {date, amount} ascending (oldest first), date exchange-local
-        "YYYY-MM-DD", amounts in that symbol's major currency units (minor-unit
-        quotes like GBp are converted, e.g. pence→pounds); count is the total
-        dividends across symbols. Failed symbols are omitted from data and listed
-        in errors as {error, detail, symbol}.
+        "YYYY-MM-DD", amount per share as paid, in that symbol's major
+        currency units (minor-unit quotes like GBp are converted), not
+        adjusted for later splits; count is the total dividends across
+        symbols. Failed symbols are omitted from data and listed in errors as
+        {error, detail, symbol}.
     """
     per_ticker: dict[str, Any] = {}
     errors: list[dict] = []
@@ -436,12 +452,15 @@ def get_multiple_stocks_dividends(tickers: List[str]) -> _OUT_GET_MULTIPLE_STOCK
         symbol, yf_symbol, currency = boundary(t)
         try:
             stock = yf.Ticker(yf_symbol)
-            dividends_series = stock.dividends
+            if stock.dividends is None:
+                errors.append(
+                    make_error(
+                        "not_found", f"No dividend data for {symbol}.", symbol=symbol
+                    )
+                )
+                continue
             resp_currency, divisor = _price_scale(stock, currency)
-            dividends = [
-                {"date": idx.strftime("%Y-%m-%d"), "amount": round(float(val) / divisor, 4)}
-                for idx, val in dividends_series.items()
-            ]
+            dividends = _dividend_records(stock.dividends, stock.splits, divisor)
             entry: dict[str, Any] = {"count": len(dividends)}
             if resp_currency:
                 entry["currency"] = resp_currency

@@ -65,6 +65,30 @@ def guard_cookie_cache() -> None:
 guard_cookie_cache()
 
 
+# Minor-unit quote currencies yfinance may declare → (major ISO 4217, divisor).
+# Keyed on the spelling Yahoo reports (case-sensitive); a case-insensitive
+# fallback covers casing drift, except where lowercasing would collide with
+# the major code. e.g. LSE quotes arrive in pence ("GBp"), while "GBP" is pounds.
+_MINOR_UNITS = {
+    "GBp": ("GBP", 100),
+    "GBX": ("GBP", 100),
+    "ZAc": ("ZAR", 100),
+    "ILA": ("ILS", 100),
+}
+_MINOR_UNITS_CI = {
+    code.lower(): conv
+    for code, conv in _MINOR_UNITS.items()
+    if code.lower() != conv[0].lower()
+}
+
+
+def minor_unit(code: Optional[str]) -> Optional[tuple[str, int]]:
+    """(major ISO 4217, divisor) if ``code`` is a minor-unit currency, else None."""
+    if not isinstance(code, str):
+        return None
+    return _MINOR_UNITS.get(code) or _MINOR_UNITS_CI.get(code.lower())
+
+
 def yfinance_symbol(ref: InstrumentRef) -> str:
     """Yahoo's spelling: ``^GSPC`` for a family index, ``600519.SS``, ``EURUSD=X`` for FX."""
     if is_family_index(ref):

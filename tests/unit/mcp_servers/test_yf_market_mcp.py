@@ -200,39 +200,71 @@ class TestGetEarningsCalendar:
     @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_earnings_calendar(self, mock_yf):
         mock_cal = MagicMock()
-        mock_cal.earnings_calendar = pd.DataFrame(
+        mock_cal.get_earnings_calendar.return_value = pd.DataFrame(
             {
-                "Symbol": ["AAPL", "MSFT"],
-                "Earnings Date": ["2026-01-15", "2026-01-16"],
-            }
+                "Marketcap": [1.0e9, 3.0e12, 5.0e9],
+                "Event Start Date": pd.to_datetime(
+                    ["2026-01-15 21:00", "2026-01-16 13:30", "2026-02-01 00:00"],
+                    utc=True,
+                ),
+            },
+            index=pd.Index(["SMALL", "AAPL", "LATE"], name="Symbol"),
         )
         mock_yf.Calendars.return_value = mock_cal
 
         result = get_earnings_calendar("2026-01-01", "2026-01-31")
 
-        mock_yf.Calendars.assert_called_once_with(start="2026-01-01", end="2026-01-31")
+        mock_yf.Calendars.assert_called_once_with(start="2026-01-01", end="2026-02-01")
+        mock_cal.get_earnings_calendar.assert_called_once_with(
+            filter_most_active=False, limit=100, force=True
+        )
         assert_ok_envelope(result, source="yfinance", count=2)
         assert result["start"] == "2026-01-01"
         assert result["end"] == "2026-01-31"
-        assert result["data"][0]["symbol"] == "AAPL"
+        assert "truncated" not in result
+        assert result["timezone"] == "America/New_York"
+        assert [row["symbol"] for row in result["data"]] == ["AAPL", "SMALL"]
+        assert result["data"][0]["event_start_date"] == "2026-01-16 08:30:00"
+
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
+    def test_full_page_is_reported_as_truncated(self, mock_yf):
+        mock_cal = MagicMock()
+        mock_cal.get_earnings_calendar.return_value = pd.DataFrame(
+            {
+                "Marketcap": [float(i) for i in range(100)],
+                "Event Start Date": pd.to_datetime(["2026-01-15 21:00"] * 100, utc=True),
+            },
+            index=pd.Index([f"T{i}" for i in range(100)], name="Symbol"),
+        )
+        mock_yf.Calendars.return_value = mock_cal
+
+        result = get_earnings_calendar("2026-01-15", "2026-01-15")
+
+        assert result["truncated"] is True
 
     @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_empty_calendar(self, mock_yf):
         mock_cal = MagicMock()
-        mock_cal.earnings_calendar = pd.DataFrame()
+        mock_cal.get_earnings_calendar.return_value = pd.DataFrame(
+            {"Marketcap": [], "Event Start Date": []}
+        )
         mock_yf.Calendars.return_value = mock_cal
 
         result = get_earnings_calendar("2026-06-01", "2026-06-02")
 
         assert_ok_envelope(result, count=0)
+        assert result["timezone"] == "America/New_York"
 
     @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_calendar_error(self, mock_yf):
-        mock_yf.Calendars.side_effect = Exception("bad dates")
+        mock_yf.Calendars.side_effect = Exception("down")
 
-        result = get_earnings_calendar("invalid", "invalid")
+        result = get_earnings_calendar("2026-06-01", "2026-06-02")
 
         assert_error(result, "upstream_error")
+
+    def test_malformed_dates_are_invalid_arguments(self):
+        assert_error(get_earnings_calendar("invalid", "2026-06-02"), "invalid_argument")
 
 
 class TestGetSectorInfo:
@@ -302,3 +334,64 @@ class TestGetIndustryInfo:
 
         assert_error(result, "upstream_error")
         assert result["industry"] == "nonexistent"
+
+
+class TestScreenStaleness:
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
+    def test_quotes_that_did_not_trade_in_the_session_are_flagged(self, mock_yf):
+        today = 1_793_739_602
+        mock_yf.screen.return_value = {
+            "quotes": [
+                {"symbol": "OTCX", "regularMarketTime": today - 30 * 3600},
+                {"symbol": "EARLY", "regularMarketTime": today - 7 * 3600},
+                {"symbol": "NYSEX", "regularMarketTime": today},
+                {"symbol": "NOTIME"},
+            ]
+        }
+
+        result = screen_stocks([{"operator": "gt", "operands": ["percentchange", 3]}])
+
+        flags = {q["symbol"]: q.get("stale_price") for q in result["data"]["quotes"]}
+        assert flags == {"OTCX": True, "EARLY": None, "NYSEX": None, "NOTIME": None}
+        assert all("stale_price" not in q for q in result["data"]["quotes"][1:])
+
+
+class TestMarketStatusTimes:
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
+    def test_session_times_are_exchange_local(self, mock_yf):
+        from datetime import datetime, timezone
+
+        market = MagicMock()
+        market.status = {
+            "open": datetime(2026, 11, 3, 14, 30, tzinfo=timezone.utc),
+            "close": datetime(2026, 11, 3, 21, 0, tzinfo=timezone.utc),
+            "timezone": {"short": "EST", "$text": "America/New_York"},
+        }
+        market.summary = {}
+        mock_yf.Market.return_value = market
+
+        result = get_market_status("US")
+
+        assert result["timezone"] == "America/New_York"
+        assert result["data"]["status"]["open"] == "2026-11-03 09:30:00"
+        assert result["data"]["status"]["close"] == "2026-11-03 16:00:00"
+
+
+class TestCalendarTruncation:
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
+    def test_rows_filtered_after_a_full_page_still_report_truncated(self, mock_yf):
+        cal = MagicMock()
+        stamps = ["2026-01-15 21:00"] * 99 + ["2026-01-16 00:00"]
+        cal.get_earnings_calendar.return_value = pd.DataFrame(
+            {
+                "Marketcap": [float(i) for i in range(100)],
+                "Event Start Date": pd.to_datetime(stamps, utc=True),
+            },
+            index=pd.Index([f"T{i}" for i in range(100)], name="Symbol"),
+        )
+        mock_yf.Calendars.return_value = cal
+
+        result = get_earnings_calendar("2026-01-15", "2026-01-15")
+
+        assert result["count"] == 99
+        assert result["truncated"] is True
