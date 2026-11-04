@@ -89,7 +89,7 @@ dependencies = [
     "rich>=14.2.0",
     "redis>=5.0.0",
     "langchain-qwq>=0.3.0",
-    "edgartools>=5.7.2",
+    "edgartools>=5.62.1",
     "langsmith-fetch>=0.3.1",
     "structlog",
     # Floor at 0.6.11: that release made the messages delta reducer non-minting
