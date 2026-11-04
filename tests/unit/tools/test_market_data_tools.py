@@ -2771,6 +2771,17 @@ class TestFetchQuote:
         assert "$233.45" in content
 
     @pytest.mark.asyncio
+    async def test_a_pre_market_row_is_priced_at_its_last_trade(self):
+        # Before the open a snapshot has no session close, only the last trade.
+        snaps = [{"symbol": "AAPL", "price": None, "last_trade_price": 332.21, "change_percent": 0.09,
+                  "previous_close": 331.9, "market_status": "early_trading", "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_quote(["AAPL"])
+        assert "AAPL  $332.21" in content
+        assert artifact["quotes"][0]["price"] == 332.21
+
+    @pytest.mark.asyncio
     async def test_stamping_a_row_leaves_the_fetched_row_alone(self):
         # Requests that share one fetch share its rows, so the tool stamps a copy.
         snaps = [{"symbol": "NVDA", "last_trade_price": 233.45, "tier": "realtime"}]

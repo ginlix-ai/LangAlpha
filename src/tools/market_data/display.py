@@ -221,24 +221,25 @@ def _market_status_line(
 ) -> Optional[str]:
     """The ``**Market Status:** <phase> | **As of:** <clock>`` quote line.
 
-    US listings keep the snapshot/session-driven ``us_label`` and the ET clock
-    (byte-identical to legacy output). Non-US listings derive the phase from the
-    exchange calendar and stamp the exchange-local clock (e.g. HKT), since the
-    US-Eastern phase is meaningless for them, then *printed_at*, the venue-local
-    time the shown price printed: the clock is when it was read, and a closed or
-    delayed venue's price is older. Returns ``None`` when a non-US ref is
+    US listings keep the snapshot/session-driven ``us_label`` and the ET clock.
+    Non-US listings derive the phase from the exchange calendar and stamp the
+    exchange-local clock (e.g. HKT), since the US-Eastern phase is meaningless
+    for them. Either then gives *printed_at*, the venue-local time the shown
+    price printed: the clock is when it was read, and a closed or delayed
+    venue's price, or a thin name's old trade, is older. Returns ``None`` when a non-US ref is
     missing or its calendar can't be read, so the caller omits the line rather
     than asserting a wrong phase.
     """
     if is_us:
-        return f"**Market Status:** {us_label} | **As of:** {us_clock_et.strftime('%H:%M ET')}"
-    if ref is None:
-        return None
-    now = datetime.now(timezone.utc)
-    phase = venue_phase(ref, now)
-    local = venue_local_time(ref, now)
-    if phase is None or local is None:
-        return None
-    label = _PHASE_LABELS.get(phase, phase.value.replace("_", " ").title())
-    line = f"**Market Status:** {label} | **As of:** {local:%H:%M} {zone_label(local)}"
+        line = f"**Market Status:** {us_label} | **As of:** {us_clock_et.strftime('%H:%M ET')}"
+    else:
+        if ref is None:
+            return None
+        now = datetime.now(timezone.utc)
+        phase = venue_phase(ref, now)
+        local = venue_local_time(ref, now)
+        if phase is None or local is None:
+            return None
+        label = _PHASE_LABELS.get(phase, phase.value.replace("_", " ").title())
+        line = f"**Market Status:** {label} | **As of:** {local:%H:%M} {zone_label(local)}"
     return f"{line} | **Price as of:** {printed_at}" if printed_at else line

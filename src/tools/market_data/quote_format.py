@@ -52,6 +52,13 @@ def inside_delay(freshness: dict[str, Any]) -> bool:
     return freshness.get("label") == FreshnessLabel.DELAYED and bool(freshness.get("measured"))
 
 
+def close_settled(phase: Optional[MarketPhase], freshness: dict[str, Any]) -> bool:
+    """Whether a listing's regular close is final in venue *phase*: the regular
+    session is over (an after-hours venue is not closed, but its close is set)
+    and the row is not still inside a delay that predates it."""
+    return phase not in (None, MarketPhase.REGULAR, MarketPhase.LUNCH) and not inside_delay(freshness)
+
+
 def holds_close(freshness: dict[str, Any]) -> bool:
     """Whether a row on a closed venue holds the session's final price: a current
     or delayed one does, unless it is still inside its delay."""

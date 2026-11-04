@@ -6,7 +6,7 @@ label read N/A), its actual EPS is on the consensus basis, and the last
 after-hours trade headlined a closed market unlabeled.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -300,6 +300,61 @@ def test_an_unsettled_session_shows_the_last_trade_and_one_move(monkeypatch):
     })
     assert "**Last Price:** $405.60\n**Day Change (from prev close):** +5.60 / +1.400%" in text
     assert "405.30" not in text
+
+
+def test_a_pre_market_snapshot_shows_its_trade_not_the_prior_session(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.PRE)
+    snapshot = {
+        "last_trade_price": 332.21, "previous_close": 331.9, "market_status": "early_trading",
+        "change": 0.31, "change_percent": 0.0934, "early_trading_change": 0.31,
+        "early_trading_change_percent": 0.0934, "volume": 149_088, "tier": "realtime",
+    }
+    prior = {"price": 331.9, "change": -6.42, "changePercentage": -1.9, "open": 325.58, "previousClose": 338.32}
+    text = _company_text(_inputs("AAPL", quote=prior, snapshot=snapshot, profile={"price": 331.9}))
+    assert "Current Price: $332.21 (extended-hours trade; see Quote)" in text
+    assert "**Pre-Market Price:** $332.21\n**Day Change (from prev close):** +0.31 / +0.093%" in text
+    assert "| Previous Close | $331.90 |" in text
+    assert "**Price:**" not in text and "325.58" not in text and "338.32" not in text
+
+
+def test_a_pre_market_status_with_no_pre_market_trade_yet_is_no_pre_market_price(monkeypatch):
+    # Right after the pre-market opens, the last trade can still be the day before's.
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.PRE)
+    # Two days back is an earlier ET date even across a 25-hour fall-back day.
+    earlier = int((datetime.now(timezone.utc) - timedelta(days=2)).timestamp() * 1000)
+    snapshot = {
+        "last_trade_price": 332.21, "last_trade_at": earlier, "previous_close": 331.9,
+        "market_status": "early_trading", "change": 0.31, "change_percent": 0.0934, "tier": "realtime",
+    }
+    prior = {"price": 331.9, "change": -6.42, "changePercentage": -1.9, "open": 325.58, "previousClose": 338.32}
+    text = _company_text(_inputs("AAPL", quote=prior, snapshot=snapshot, profile={"price": 331.9}))
+    assert "**Last Price:** $332.21" in text
+    assert "Pre-Market Price" not in text
+
+
+def test_a_closed_market_still_settling_names_only_an_extended_trade(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.CLOSED)
+    monkeypatch.setattr(company, "stamp_quote", lambda snap, ref=None: {
+        "freshness": {"label": "delayed", "measured": True, "closed": True}})
+    snapshot = {"price": 338.32, "last_trade_price": 338.32, "previous_close": 331.9,
+                "market_status": "closed", "tier": "delayed_15m"}
+    assert "**Last Price:** $338.32" in _quote_text("AAPL", snapshot=snapshot)
+    late = {**snapshot, "last_trade_price": 329.03, "late_trading_change": -9.29}
+    assert "**Last Extended-Hours Price:** $329.03" in _quote_text("AAPL", snapshot=late)
+    odd_lot = {**snapshot, "last_trade_price": 338.31, "late_trading_change": 0.0, "market_status": "late_trading"}
+    assert "**Last Price:** $338.31" in _quote_text("AAPL", snapshot=odd_lot)
+
+
+def test_a_us_quote_whose_trade_is_older_than_the_live_window_says_when_it_printed(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.PRE)
+    monkeypatch.setattr(company, "stamp_quote", lambda snap, ref=None: {
+        "freshness": {"label": "live", "measured": True}})
+    thin = int(datetime(2026, 11, 6, 9, 4, 20, tzinfo=timezone.utc).timestamp() * 1000)
+    snapshot = {"last_trade_price": 1939.86, "last_trade_at": thin, "previous_close": 1950.0,
+                "market_status": "early_trading", "early_trading_change": -10.14, "tier": "realtime"}
+    assert "| **Price as of:** 2026-11-06 04:04:20 ET" in _quote_text("MKL", snapshot=snapshot)
+    fresh = {**snapshot, "last_trade_at": int(datetime.now(timezone.utc).timestamp() * 1000)}
+    assert "Price as of" not in _quote_text("MKL", snapshot=fresh)
 
 
 def test_a_foreign_quote_says_when_its_price_printed():

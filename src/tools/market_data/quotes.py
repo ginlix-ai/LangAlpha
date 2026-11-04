@@ -16,6 +16,7 @@ from .display import (
 )
 from .quote_format import (
     block_clock,
+    current_price,
     format_quote_block,
     stamp_quote,
 )
@@ -403,6 +404,9 @@ async def fetch_quote(
             # stock read as an index has its after-hours print called closed.
             snap = {**row, "asset_class": ref.asset_class.value}
             snap.update(stamp_quote(snap, retrieved_at, ref=ref))
+            # The row's price is the one its line shows: the last trade, which
+            # before the open is all a snapshot has.
+            snap["price"] = current_price(snap)
             # The card prints each row in its listing currency; an index level
             # is a bare number, so index rows carry none.
             if ref.asset_class is not AssetClass.INDEX and not snap.get("currency"):
