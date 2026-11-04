@@ -482,7 +482,11 @@ async def get_asset_data(
     # commodity / crypto / forex — FMP direct (the provider chain and ginlix
     # cover equities/indexes only). Currency + timezone from canonical identity.
     hint = {"crypto": AssetClass.CRYPTO, "forex": AssetClass.FX}.get(at)
-    display, _legacy, currency, timezone, _ref = _resolve(symbol, asset_class=hint)
+    display, _legacy, currency, timezone, ref = _resolve(symbol, asset_class=hint)
+    # FMP spells a pair as one run (BTCUSD, EURUSD), however the caller did,
+    # so the BTC-USD this tool answers with can be sent back.
+    pair = ref is not None and ref.asset_class in (AssetClass.CRYPTO, AssetClass.FX)
+    fmp_symbol = ref.symbol.replace("-", "") if pair else symbol
     canonical, err = _resolve_interval(interval, _ASSET_INTERVALS, symbol=display)
     if err is not None:
         return err
@@ -516,9 +520,9 @@ async def get_asset_data(
             else:
                 lo, hi = daily_days(from_date, to_date)
                 if at == "crypto":
-                    rows = await client.get_crypto_price(symbol, from_date=lo, to_date=hi)
+                    rows = await client.get_crypto_price(fmp_symbol, from_date=lo, to_date=hi)
                 else:
-                    rows = await client.get_forex_price(symbol, from_date=lo, to_date=hi)
+                    rows = await client.get_forex_price(fmp_symbol, from_date=lo, to_date=hi)
         elif at == "commodity":
             # FMP labels a commodity in New York time, the zone its envelope
             # states, so its labels stand.
@@ -532,11 +536,11 @@ async def get_asset_data(
             window = intraday_window(from_date, to_date, timezone, labels=NEW_YORK)
             if at == "crypto":
                 rows = await client.get_crypto_intraday_chart(
-                    symbol, canonical, from_date=window.from_day, to_date=window.to_day
+                    fmp_symbol, canonical, from_date=window.from_day, to_date=window.to_day
                 )
             else:
                 rows = await client.get_forex_intraday_chart(
-                    symbol, canonical, from_date=window.from_day, to_date=window.to_day
+                    fmp_symbol, canonical, from_date=window.from_day, to_date=window.to_day
                 )
     except Exception as e:  # noqa: BLE001
         return error_from_exception(

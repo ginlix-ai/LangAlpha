@@ -70,6 +70,7 @@ def _symbol_currency(ref: Optional[InstrumentRef]) -> DisplaySpec:
             ref.price_currency,
             display_decimals_for(ref.price_currency, ref.asset_class),
             bare=ref.asset_class is AssetClass.INDEX,
+            trim=ref.asset_class is AssetClass.CRYPTO,
         )
     except Exception:
         return DisplaySpec(None, 2)
@@ -114,6 +115,7 @@ _MIC_MARKET_LABELS: Dict[str, str] = {
     "XSES": "Singapore Stock",
     "XBOM": "India Stock",
     "XNSE": "India Stock",
+    "GLBX": "Futures",
 }
 
 

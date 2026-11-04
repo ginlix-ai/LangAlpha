@@ -206,6 +206,19 @@ class TestDaily:
         bars = [_bar(datetime(2026, 9, 3, 16, 0, tzinfo=ET))]
         assert measure_daily("AAPL", bars, now=US_MIDSESSION).label == "stale"
 
+    def test_a_futures_day_is_read_on_its_globex_date(self):
+        # Yahoo stamps a CME day at New York midnight, restamped to Chicago's.
+        # On the eve (Monday 23:30 Chicago) Tuesday's session is open, but
+        # Monday's bar is still the newest a vendor may have, and Tuesday's
+        # once Yahoo rolls is current, not a future bar.
+        ct = ZoneInfo("America/Chicago")
+        monday = [_bar(datetime(2026, 11, 9, 0, 0, tzinfo=ct))]
+        tuesday = [_bar(datetime(2026, 11, 10, 0, 0, tzinfo=ct))]
+        assert measure_daily("GC=F", monday, now=datetime(2026, 11, 9, 10, 0, tzinfo=ct)).label == "live"
+        eve = datetime(2026, 11, 9, 23, 30, tzinfo=ct)
+        assert measure_daily("GC=F", tuesday, now=eve).label == "live"
+        assert measure_daily("GC=F", monday, now=eve).label == "live"
+
     def test_a_complete_series_says_whether_the_venue_is_closed(self):
         bars = _cn_bars(15, 0)
         assert measure_daily("600519.SS", bars, now=CN_AFTER_CLOSE).closed is True

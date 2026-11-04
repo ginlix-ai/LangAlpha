@@ -11,6 +11,7 @@ from src.data_client.yfinance.data_source import (
     _fetch_history,
     _place_in_sessions,
 )
+from src.data_client.yfinance.yahoo import yahoo_symbol
 
 
 def _history_kwargs(**call_kwargs) -> dict:
@@ -135,3 +136,34 @@ async def test_get_snapshots_stocks_pass_symbol_through_unchanged():
         result = await YFinanceDataSource().get_snapshots(["AAPL"])
 
     assert result == [{"symbol": "AAPL", "price": 190.0}]
+
+
+@pytest.mark.parametrize(
+    ("symbol", "yahoo"),
+    [
+        # On Yahoo, EUR-USD is a defunct coin and USD-JPY is no symbol at all.
+        ("EUR-USD", "EURUSD=X"), ("USD-JPY", "USDJPY=X"), ("JPY=X", "USDJPY=X"),
+        ("BTCUSD", "BTC-USD"), ("BTC-USD", "BTC-USD"),
+        ("600519.SH", "600519.SS"), ("GC=F", "GC=F"), ("AAPL", "AAPL"),
+    ],
+)
+def test_yahoo_spells_pairs_its_own_way(symbol, yahoo):
+    assert yahoo_symbol(symbol) == yahoo
+
+
+def test_a_daily_bar_keeps_yahoos_date_in_the_instruments_zone():
+    """Yahoo stamps an FX day at London midnight, the previous evening in UTC in summer."""
+    import pandas as pd
+    from zoneinfo import ZoneInfo
+
+    london = ZoneInfo("Europe/London")
+    days = pd.DatetimeIndex([pd.Timestamp("2026-07-01", tz=london), pd.Timestamp("2026-07-02", tz=london)])
+    frame = pd.DataFrame(
+        {"Open": [1.14, 1.13], "High": [1.15, 1.14], "Low": [1.13, 1.12], "Close": [1.14, 1.13], "Volume": [0, 0]},
+        index=days,
+    )
+    ticker = MagicMock()
+    ticker.history.return_value = frame
+    with patch("src.data_client.yfinance.yahoo.yf.Ticker", return_value=ticker):
+        bars = _fetch_history("EURUSD=X", "1d", "2026-07-01", "2026-07-02", day_tz=ZoneInfo("UTC"))
+    assert [b["time"] for b in bars] == [1782864000000, 1782950400000]  # 00:00 UTC on each date
