@@ -33,6 +33,7 @@ jobs:
       cli: ${{ steps.filter.outputs.cli }}
       market_protocol: ${{ steps.filter.outputs.market_protocol }}
       chartkit: ${{ steps.filter.outputs.chartkit }}
+      edgar_engine: ${{ steps.filter.outputs.edgar_engine }}
       claude_code_scripts: ${{ steps.filter.outputs.claude_code_scripts }}
     steps:
       - uses: dorny/paths-filter@v3
@@ -63,6 +64,9 @@ jobs:
               - *workflow
               - libs/chartkit/**
               - libs/market-protocol/**
+            edgar_engine:
+              - *workflow
+              - libs/edgar-engine/**
             claude_code_scripts:
               - *workflow
               - src/ptc_agent/agent/claude_code/**
@@ -164,6 +168,31 @@ jobs:
     defaults:
       run:
         working-directory: libs/chartkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv sync --locked --no-editable
+      - run: uv run --locked --no-editable pytest -v --tb=short
+
+  # libs/edgar-engine follows the market-protocol pattern: its own environment,
+  # an installed copy, the Python floor and the backend's version. Tests that
+  # read EDGAR are marked network and stay out of CI.
+  edgar-engine:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.edgar_engine != 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    defaults:
+      run:
+        working-directory: libs/edgar-engine
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

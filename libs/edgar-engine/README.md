@@ -1,0 +1,62 @@
+# langalpha-edgar-engine
+
+Structured data from SEC EDGAR filings, built on [edgartools](https://github.com/dgunning/edgartools). It uses
+edgartools for company lookup, filing lists and downloads, and does its own parsing, so it works on edgartools
+5.62 and 6.0 alike (it never touches the legacy `edgar.files` parser or `ChunkedDocument`).
+
+## Sections
+
+`edgar_engine.sections` splits a filing into its items: 10-K and 10-K405 (Items 1 to 16), 10-Q (Part I and II
+items, keyed `I-2`, `II-1A`), 8-K (`2.02` since August 2004, the old `1` to `12` before), 20-F (1 to 19,
+4A, 16A to 16K) and 40-F (titled sections: `AIF`, `MDA`, `DCP`, `ACFE`, `CODE`, `FEES`, ...). It covers every
+era of EDGAR, from 1993 plain-text filings to inline XBRL.
+
+```python
+from edgar import set_identity
+from edgar_engine.cache import SectionsCache
+from edgar_engine.sections import get_sections
+
+set_identity("Your Name you@example.com")
+sections = get_sections("AAPL", "10-K", fiscal_year=2019, cache=SectionsCache())
+mdna = sections["7"]
+mdna.status       # "present", "stub" (points elsewhere) or "xref" (mapped by a cross-reference index)
+mdna.text         # the item's text, lossless
+mdna.target       # for a stub: where its content is (kind, description, and the text when it is in this filing)
+```
+
+`extract_sections(submission)` does the same for a full-text submission you already hold (the accession's
+`.txt` file), and `sections_for_filing(filing)` for an edgartools `Filing`.
+
+**How items are found.** The engine renders the main document (and, for annual reports, every Exhibit 13) into
+lines, one per paragraph, heading or table row, without deleting anything: page numbers, running headers and
+number-only table cells stay. An item heading is "Item" and the item's number at the start of a line. For
+each item in the form's order, the longest stretch from one of its headings to the nearest later item that has
+a heading wins, so a table-of-contents entry, which only reaches the next contents line, loses to the body. A
+stretch also ends at a PART heading of a later part, SIGNATURES or the signature paragraph, the financial
+statement pages (for the last item), an 8-K section divider, or the end of the document. Tables of contents
+are recognised as dense runs of headings with page numbers, so an item printed only there is not taken from
+them. 10-Q filings are split into Part I and Part II first. 40-F sections are found by their titles.
+
+**Stubs and cross-references.** An item whose own text only points elsewhere ("incorporated by reference to the
+proxy statement", "see Note 7", "is set forth under 'Market Risk' on pages 20 to 23 of the Annual Report") is a
+stub. The engine resolves its target only inside the filing: another item, a note to the statements, a
+captioned section, the exhibit index, the financial statement pages or a printed page range, in the main
+document or an Exhibit 13. When the pointer names nothing it can find, the stub keeps the target's kind and
+description and no text, never a guess. Items with no heading that a cross-reference index maps to pages are
+returned as `xref` with the mapped pages.
+
+## Filings and cache
+
+`edgar_engine.filings.select_filing(company, form, fiscal_year=..., fiscal_period=..., period_end=...)` picks a
+filing for any period, not only the latest. Fiscal labels come from the filer's own XBRL facts where they exist
+and from the report date and fiscal year end otherwise. `edgar_engine.cache` keys parsed sections and raw
+submissions by accession over a small `Store` interface; `LocalDirStore` (a directory, `EDGAR_ENGINE_CACHE` or
+`~/.cache/edgar-engine`) is the default, and object storage plugs in by implementing `get`, `put` and `delete`.
+Cached sections are keyed by `SECTIONS_VERSION`, so an engine change never serves stale results.
+
+## Tests
+
+```bash
+cd libs/edgar-engine && uv run pytest          # unit tests, no network
+uv run pytest -m network                       # also read a few public filings from EDGAR
+```

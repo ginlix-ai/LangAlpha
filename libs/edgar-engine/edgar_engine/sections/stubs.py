@@ -1,0 +1,302 @@
+"""Cross-reference stubs: items that only say where their content is, and the in-document targets they name.
+
+A stub is a short item whose own text is a pointer ("incorporated by reference to the proxy statement",
+"see Note 7", "is set forth under 'Market Risk' on pages 20 to 23 of the Annual Report"). Its target is
+resolved only inside this filing (the main document and any Exhibit 13): another item, a note to the
+statements, a captioned section, the exhibit index, the financial-statement pages, or a printed page
+range. When the pointer names nothing that can be found, the stub keeps its kind and description and no
+span, never a guessed one.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from .boundaries import ItemSpan, normalize
+
+_POINTER = re.compile(
+    r"incorporated (?:herein |in this \w+ )?by reference|(?:is|are|will be|has been|have been|appears?|is being)\s+"
+    r"(?:included|contained|set forth|presented|incorporated|provided|disclosed|found|filed|furnished|listed|described|reported)"
+    r"|\bsee\b|refer(?:ence is made)? to|\bset forth (?:in|under|on)|\bcontained (?:in|under)|\bappears? (?:on|under|in)", re.I)
+_ANSWER = re.compile(r"^(?:none|not applicable|n/?a|omitted|reserved|\[reserved\])\W*$", re.I)
+_OWN_ANSWER = re.compile(r"\bno material changes?\b|\bthere (?:have|has) been no\b|\belected to (?:provide|furnish|prepare)\b|"
+                         r"\bnot applicable\b|\bwe lease\b|\b(?:is|are) not (?:a )?party\b", re.I)
+_PROXY = re.compile(r"proxy statement|information statement|proxy materials", re.I)
+_ANNUAL = re.compile(r"annual report to (?:share|stock)holders|exhibit 13|annual report\b(?! on form)", re.I)
+_OTHER_FILING = re.compile(r"(?:annual|quarterly) report on form 10-[KQ]|form 10-K for the (?:fiscal )?year|previously filed|registration statement", re.I)
+_EXHIBIT = re.compile(r"\bexhibits? (?:99|13|1\d|\d)[\d.]*\b|filed (?:herewith )?as (?:an )?exhibit|attached (?:hereto )?as exhibit", re.I)
+_ITEM_REF = re.compile(r"\b(?:Part\s+(?P<part>IV|I{1,3})\s*,?\s*)?Items?\s+(?P<num>\d{1,2}(?:\.\d{2})?[A-K]?)\b", re.I)
+_NOTE_REF = re.compile(r"\b(?:Notes?|Footnotes?)\s+(?P<n>\d{1,2})\b", re.I)
+_SUB_REF = re.compile(r"\bItems?\s+\d{1,2}[A-K]?\s*\.\s*[A-Z]\b|\bItems?\s+\d{1,2}\([a-z]\)", re.I)
+_STATEMENT_ITEMS = {"10-K": {"8"}, "20-F": {"17", "18"}, "10-Q": {"I-1"}}
+_LIST_ITEMS = {"10-K": {"14", "15"}, "20-F": {"19"}}
+_CAPTION = re.compile(r"[\"\u201c\u201d](?P<c>[^\"\u201c\u201d]{3,120})[\"\u201c\u201d]|(?:caption|captioned|heading|headings|section|entitled)\s+(?P<d>[A-Z][\w,&'\u2019\- ]{3,100}?)(?=\s+(?:on|in|of|at|beginning)\b|[.;,]|$)")
+_PAGES = re.compile(r"\bpages?\s+(?P<a>F-\s?\d{1,3}|\d{1,3})(?:\s*(?:-|\u2013|\u2014|to|through|and)\s*(?P<b>F-\s?\d{1,3}|\d{1,3}))?", re.I)
+_EXHIBIT_INDEX_REF = re.compile(r"exhibit index|index to exhibits|exhibits index", re.I)
+_FS_REF = re.compile(r"page F-\s?\d|pages F-|index to (?:the )?(?:consolidated )?financial statements|financial statements (?:and (?:the )?notes thereto )?(?:beginning|commencing|which begin|that begin|appear|included|filed)", re.I)
+_EXHIBIT_INDEX = re.compile(r"(?:EXHIBIT INDEX|INDEX TO EXHIBITS|EXHIBITS INDEX)\s*[.:]?", re.I)
+_FS_OPENER = re.compile(r"(?:INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS\b.*|REPORTS? OF INDEPENDENT (?:REGISTERED PUBLIC ACCOUNTING FIRMS?|AUDITORS?|ACCOUNTANTS?|CERTIFIED PUBLIC ACCOUNTANTS?)\b.*)", re.I)
+_PAGE_LINE = re.compile(r"(?:page\s+)?-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?", re.I)
+_SENT = re.compile(r"[.;:]\s*$")
+
+
+@dataclass
+class TargetSpan:
+    kind: str
+    description: str
+    doc: str | None = None
+    lines: list[tuple[int, int]] = field(default_factory=list)
+    via: str | None = None
+
+
+def _words(s: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", normalize(s).lower()))
+
+
+def _heading_like(line: str) -> bool:
+    s = normalize(line)
+    if not s or len(s) > 120 or " | " in s or _SENT.search(s) and len(s) > 60:
+        return False
+    words = [w for w in re.findall(r"[A-Za-z][\w'\u2019]*", s)]
+    if not words:
+        return False
+    caps = sum(1 for w in words if w[0].isupper() or w.lower() in ("and", "of", "the", "to", "in", "for", "on", "or", "a", "an"))
+    return caps >= 0.8 * len(words)
+
+
+def is_stub(body: str) -> bool:
+    """The item's own text only points elsewhere: short, holds a pointer, and little else."""
+    text = " ".join(body.split())
+    if not text or len(text) > 2500 or _ANSWER.match(text):
+        return False
+    sentences = [x for x in re.split(r"(?<=[.;])\s+", text) if x.strip()]
+    pointer = [x for x in sentences if _POINTER.search(x)]
+    if not pointer:
+        return False
+    if any(_OWN_ANSWER.search(x) for x in sentences):
+        return False
+    other = sum(sum(ch.isalnum() for ch in x) for x in sentences if not _POINTER.search(x) and not _ANSWER.match(x))
+    return other <= 80
+
+
+class Resolver:
+    def __init__(self, lines: list[str], line_doc: list[int], documents: list[dict], spans: dict[str, ItemSpan],
+                 family: str, toc: set[int]):
+        self.lines, self.line_doc, self.documents, self.spans, self.family, self.toc = lines, line_doc, documents, spans, family, toc
+        self.ex13 = [i for i, d in enumerate(documents) if d["type"].upper().startswith("EX-13")]
+        self._running: dict[int, set[str]] = {}
+        self._footer_cache: dict[int, dict[str, int]] = {}
+
+    def _docs_for(self, pointer: str) -> list[int]:
+        if self.ex13 and _ANNUAL.search(pointer):
+            return self.ex13 + [0]
+        return [0] + self.ex13
+
+    def _doc_range(self, d: int) -> tuple[int, int]:
+        return self.documents[d]["line_start"], self.documents[d]["line_end"]
+
+    def _outside(self, ln: int, own: tuple[int, int]) -> bool:
+        return not (own[0] <= ln < own[1]) and ln not in self.toc
+
+    def resolve(self, iid: str, pointer: str, own: tuple[int, int], index_row: bool = False) -> TargetSpan:
+        """index_row: the pointer is a contents or cross-reference row, which names its own item."""
+        kind = ("proxy" if _PROXY.search(pointer) else "annual_report" if _ANNUAL.search(pointer) and not self.ex13
+                else "exhibit" if _EXHIBIT.search(pointer) and not _ANNUAL.search(pointer)
+                else "other_filing" if _OTHER_FILING.search(pointer) else "in_document")
+        t = TargetSpan(kind, " ".join(pointer.split())[:300])
+        if kind in ("proxy", "other_filing", "annual_report"):
+            return t
+        finders = (self._located,) if index_row else (
+            self._statements, self._note, self._exhibit_index, self._item, self._located)
+        for finder in finders:
+            rng = finder(iid, pointer, own)
+            if rng:
+                t.kind, t.lines, t.via = "in_document", rng, finder.__name__.strip("_")
+                return t
+        if kind == "in_document" and not re.search(r"\bpages?\b|\bnote\b|\bitem\b|caption|heading|exhibit 13|annual report", pointer, re.I):
+            t.kind = "none_stated"
+        return t
+
+    def index_row(self, iid: str, row: int, rows: list) -> TargetSpan:
+        """An item with no body heading, mapped by a contents or cross-reference row: its quoted captions or
+        page reference, else the pages from its row's page to the page before the next item's row."""
+        t = self.resolve(iid, self.lines[row], (row, row + 1), index_row=True)
+        if t.lines:
+            return t
+        text = normalize(self.lines[row])
+        page = re.search(r"(?:^|[\s|])(\d{1,3})\s*$", text)
+        if not page:
+            return t
+        nxt = next((h for h in rows if h.line > row and iid not in h.ids), None)
+        npage = re.search(r"(?:^|[\s|])(\d{1,3})\s*$", normalize(self.lines[nxt.line])) if nxt else None
+        if npage and int(npage.group(1)) > int(page.group(1)):
+            for d in range(len(self.documents)):
+                rng = self._page_range(d, page.group(1), str(int(npage.group(1)) - 1))
+                if rng and rng[0] > row:
+                    t.kind, t.lines, t.via = "in_document", [rng], "index_pages"
+                    return t
+        title = re.sub(r"^(?:PART\s+[IV]+\W*)?ITEMS?\s*[\dA-Z.,\s]*?(?=[A-Z][a-z])|[\s|]*\d{1,3}\s*$", "", text).strip(" |.-")
+        if len(title.split()) >= 2:
+            rng = self._located(iid, f"\u201c{title}\u201d on page {page.group(1)}", (row, row + 1))
+            if rng:
+                t.kind, t.lines, t.via = "in_document", rng, "index_caption"
+        return t
+
+    def _item(self, iid, pointer, own):
+        """Only a pointer to a whole item: one that also names a note, a caption or a sub-item points inside
+        the item, and a statements item pointing at the exhibits item means the statements it lists."""
+        if _NOTE_REF.search(pointer) or _CAPTION.search(pointer) or _SUB_REF.search(pointer):
+            return None
+        for m in _ITEM_REF.finditer(pointer):
+            if re.search(r"(?:this|such)\s+(?:Part\s+\w+\s*,?\s*)?$", pointer[max(0, m.start() - 20):m.start()], re.I):
+                continue
+            num = m.group("num").upper()
+            key = num
+            if self.family == "10-Q":
+                key = f"{m.group('part').upper()}-{num}" if m.group("part") else next(
+                    (k for k in (f"I-{num}", f"II-{num}") if k in self.spans and k != iid), None)
+            sp = self.spans.get(key)
+            if not sp or key == iid or sp.start == own[0]:
+                continue
+            if iid in _STATEMENT_ITEMS.get(self.family, ()) and key in _LIST_ITEMS.get(self.family, ()):
+                return None
+            return [(sp.start, sp.end)]
+        return None
+
+    def _note(self, iid, pointer, own):
+        m = _NOTE_REF.search(pointer)
+        if not m:
+            return None
+        n = m.group("n")
+        head = re.compile(rf"(?:NOTE\s*{n}\b|\(\s*{n}\s*\)\s*[A-Z]|{n}\s*[.:\-\u2013\u2014)]\s*[A-Z])", re.I)
+        any_note = re.compile(r"(?:NOTE\s*(\d{1,2}|[A-Z])\b|\(\s*\d{1,2}\s*\)\s*[A-Z]|(\d{1,2})\s*[.:\-\u2013\u2014)]\s*[A-Z][A-Za-z ,&'\u2019\-]{3,90}$)", re.I)
+        for d in self._docs_for(pointer):
+            a, b = self._doc_range(d)
+            strong = [ln for ln in range(a, b) if self._outside(ln, own) and re.match(rf"NOTE\s*{n}\s*[.:\-\u2013\u2014)]?\s*[A-Z]", normalize(self.lines[ln]), re.I)]
+            hits = strong or [ln for ln in range(a, b) if self._outside(ln, own) and len(self.lines[ln]) <= 150
+                              and head.match(normalize(self.lines[ln])) and _heading_like(re.sub(r"^\W*\d+\W*", "", normalize(self.lines[ln])))]
+            if not hits:
+                continue
+            s = hits[0]
+            cap = next((sp.end for sp in self.spans.values() if sp.start <= s < sp.end), b)
+            e = next((ln for ln in range(s + 1, cap) if len(self.lines[ln]) <= 150 and any_note.match(normalize(self.lines[ln]))
+                      and not head.match(normalize(self.lines[ln]))), cap)
+            return [(s, e)]
+        return None
+
+    def _exhibit_index(self, iid, pointer, own):
+        if not _EXHIBIT_INDEX_REF.search(pointer):
+            return None
+        for d in [0] + self.ex13:
+            a, b = self._doc_range(d)
+            for ln in range(a, b):
+                if self._outside(ln, own) and _EXHIBIT_INDEX.fullmatch(normalize(self.lines[ln])):
+                    return [(ln, b)]
+        return None
+
+    def _statements(self, iid, pointer, own):
+        """The financial-statement pages: from their opener to the last F-page footer, else to the exhibit
+        index, SIGNATURES or the end of the document."""
+        if iid not in _STATEMENT_ITEMS.get(self.family, ()) or (_PAGES.search(pointer) and not _FS_REF.search(pointer)):
+            return None
+        back = max(sp.end for sp in self.spans.values())
+        docs = self.ex13 if self.ex13 and _ANNUAL.search(pointer) else [0] + self.ex13
+        for d in docs:
+            a, b = self._doc_range(d)
+            for ln in range(max(a, back) if d == 0 else a, b):
+                s = normalize(self.lines[ln])
+                if self._outside(ln, own) and len(s) <= 120 and _FS_OPENER.fullmatch(s) and not re.search(r"\d\s*$", s):
+                    end = next((x for x in range(ln + 1, b) if _EXHIBIT_INDEX.fullmatch(normalize(self.lines[x]))
+                                or re.fullmatch(r"SIGNATURES?", normalize(self.lines[x]))), b)
+                    fpages = [x for p, x in self._footers(d).items() if p.startswith("F") and ln < x < end]
+                    return [(ln, max(fpages) + 1 if fpages else end)]
+        return None
+
+    def _footers(self, d: int) -> dict[str, int]:
+        """Printed page number -> its footer line. A footer is a short line that is a page number alone or a
+        number beside a running text that repeats on many pages ("IKON OFFICE SOLUTIONS 37")."""
+        if d in self._footer_cache:
+            return self._footer_cache[d]
+        a, b = self._doc_range(d)
+        cands = []
+        for ln in range(a, b):
+            s = normalize(self.lines[ln])
+            if len(s) > 80:
+                continue
+            m = re.fullmatch(r"(?P<pre>.*?)[\s|]*(?:page\s+)?-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?", s, re.I) or \
+                re.fullmatch(r"-?\s?(?P<p>(?:F-\s?)?\d{1,3})\s?-?[\s|]+(?P<pre>\D.*)", s, re.I)
+            if m:
+                cands.append((m.group("pre").strip(" |-").lower(), m.group("p").replace(" ", "").upper(), ln))
+        stems: dict[str, set] = {}
+        for stem, p, _ in cands:
+            stems.setdefault(stem, set()).add(p)
+        out: dict[str, int] = {}
+        for prefix in ("", "F-"):
+            seq = [(int(p[len(prefix):]), ln) for stem, p, ln in cands
+                   if (stem == "" or len(stems[stem]) >= 3) and p.startswith(prefix) and p[len(prefix):].isdigit()]
+            chain: list[tuple[int, int]] = []
+            for v, ln in seq:
+                if not chain or 0 < v - chain[-1][0] <= 3:
+                    chain.append((v, ln))
+                elif v == 1 or (len(chain) < 3 and v > chain[-1][0]):
+                    chain = [(v, ln)] if len(chain) < 3 else chain
+            if len(chain) >= 3:
+                for v, ln in chain:
+                    out.setdefault(f"{prefix}{v}", ln)
+        self._footer_cache[d] = out
+        return out
+
+    def _page_range(self, d: int, lo: str, hi: str) -> tuple[int, int] | None:
+        """Lines of printed pages lo..hi, without the running header that opens the first page."""
+        f = self._footers(d)
+        if lo not in f or hi not in f or f[hi] < f[lo]:
+            return None
+        prev = [ln for ln in f.values() if ln < f[lo]]
+        a, b = self._doc_range(d)
+        start = max(prev) + 1 if prev else a
+        if d not in self._running:
+            counts: dict[str, int] = {}
+            for ln in range(a, b):
+                k = normalize(self.lines[ln])
+                if len(k) <= 100:
+                    counts[k] = counts.get(k, 0) + 1
+            self._running[d] = {k for k, n in counts.items() if n >= 5 and k}
+        while start < f[hi] and normalize(self.lines[start]) in self._running[d]:
+            start += 1
+        return (start, f[hi] + 1)
+
+    def _located(self, iid, pointer, own):
+        """Captioned sections and printed page ranges. A caption found inside the cited pages starts there;
+        a caption with no pages runs to the next heading of the same style."""
+        caps = [(m.group("c") or m.group("d") or "").strip(" .,;") for m in _CAPTION.finditer(pointer)]
+        caps = [c for c in caps if len(_words(c).split()) >= 2 and not re.match(r"(?i)item\s+\d", c)]
+        pages = [(m.group("a").replace(" ", "").upper(), (m.group("b") or m.group("a")).replace(" ", "").upper())
+                 for m in _PAGES.finditer(pointer)]
+        for d in self._docs_for(pointer):
+            out = []
+            confirmed = not (caps and pages)
+            for lo, hi in pages:
+                rng = self._page_range(d, lo, hi)
+                if rng:
+                    out.append(rng)
+            for cap in caps:
+                w = _words(cap)
+                a, b = self._doc_range(d)
+                hits = [ln for ln in range(a, b) if self._outside(ln, own) and _heading_like(self.lines[ln])
+                        and _words(self.lines[ln]).startswith(w) and len(_words(self.lines[ln])) <= len(w) + 40]
+                inside = [ln for ln in hits for r0, r1 in out if r0 <= ln < r1]
+                if inside:
+                    out = [(max(r0, inside[0]) if r0 <= inside[0] < r1 else r0, r1) for r0, r1 in out]
+                    confirmed = True
+                    continue
+                if not hits or pages:
+                    continue
+                hit = hits[0]
+                upper = normalize(self.lines[hit]).isupper()
+                end = next((ln for ln in range(hit + 1, b) if _heading_like(self.lines[ln]) and normalize(self.lines[ln]).isupper() == upper
+                            and sum(ch.isalpha() for ch in self.lines[ln]) >= 8 and not normalize(self.lines[ln]).startswith("(")
+                            and any(len(x) >= 80 and " | " not in x for x in self.lines[ln + 1:ln + 3])), b)
+                out.append((hit, end))
+            if out and confirmed:
+                return sorted(set(out))
+        return None
