@@ -95,6 +95,10 @@ TRUNCATED_LATEST: dict[str, Any] = described(
 #: ``make_response(incomplete=True)``: present only when the source reports bars
 #: missing inside the window, which is not a cap.
 INCOMPLETE: dict[str, Any] = described(BOOL, "Present and true if bars in the window are missing.")
+#: Present only when a failed first source left the answer to FMP.
+FALLBACK_FROM: dict[str, Any] = described(
+    STR, "Present if the first source failed and FMP answered instead; names that source."
+)
 
 #: The error arm's properties. Servers off the market-data envelope override
 #: ``detail`` — its wording and type drifted before the contract settled.

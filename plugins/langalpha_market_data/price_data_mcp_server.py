@@ -92,6 +92,7 @@ from mcp_servers._dates import (
 )
 from mcp_servers._schemas import (
     BAR_LABELS,
+    FALLBACK_FROM,
     INCOMPLETE,
     OBJECT,
     RECORDS,
@@ -265,40 +266,65 @@ async def _fetch_stock_bars(
 
     # CN A-shares, daily bars only: ginlix-data's minute history is short, so
     # CN intraday stays on the existing fallbacks.
-    # Empty/error falls through the chain unchanged.
-    if not intraday and symbol_market(legacy) == "cn":
-        # The window runs back from the end the caller gave, else from today.
-        cn_start = start_date
-        if not start_date:
-            try:
-                end = datetime.strptime((end_date or "")[:10], "%Y-%m-%d")
-            except ValueError:
-                end = datetime.now(_tz.utc)
-            cn_start = (end - timedelta(days=_CN_DEFAULT_DAILY_DAYS)).strftime("%Y-%m-%d")
-        incomplete = False
+    if intraday or symbol_market(legacy) != "cn":
+        return await _fetch_chain_bars(resolved, canonical, start_date, end_date)
+
+    # The window runs back from the end the caller gave, else from today.
+    cn_start = start_date
+    if not start_date:
         try:
-            fetched = await _cn.get_daily(legacy, cn_start, end_date)
-            # The series' coverage flag marks sessions missing inside the window
-            # (a refetch that failed), not a cap cutting either end.
-            bars, incomplete = fetched.bars, fetched.truncated
-        except httpx.HTTPError as exc:
-            # An upstream miss (a 503, a 429, a dropped connection) is expected and
-            # the chain answers instead, so one line is enough.
-            logger.warning("ginlix-data CN daily unavailable for %s: %s", display, _http_miss(exc))
-            bars = []
-        except Exception:  # noqa: BLE001 - soft miss, chain continues
-            logger.warning("ginlix-data CN daily failed for %s", display, exc_info=True)
-            bars = []
-        if bars:
+            end = datetime.strptime((end_date or "")[:10], "%Y-%m-%d")
+        except ValueError:
+            end = datetime.now(_tz.utc)
+        cn_start = (end - timedelta(days=_CN_DEFAULT_DAILY_DAYS)).strftime("%Y-%m-%d")
+    try:
+        fetched = await _cn.get_daily(legacy, cn_start, end_date)
+    except httpx.HTTPError as exc:
+        # An upstream miss (a 503, a 429, a dropped connection) is expected and
+        # the chain answers instead, so one line is enough.
+        failed = _http_miss(exc)
+        logger.warning("ginlix-data CN daily unavailable for %s: %s", display, failed)
+    except Exception as exc:  # noqa: BLE001 - the chain answers instead
+        failed = type(exc).__name__
+        logger.warning("ginlix-data CN daily failed for %s", display, exc_info=True)
+    else:
+        if fetched.bars:
             return {
-                "data": _display_rows(bars, legacy, intraday=False),
+                "data": _display_rows(fetched.bars, legacy, intraday=False),
                 "source": "tushare",
                 "symbol": display,
                 "interval": canonical,
                 "currency": currency,
                 "timezone": timezone,
-                "incomplete": incomplete,
+                # The series' coverage flag marks sessions missing inside the
+                # window (a refetch that failed), not a cap cutting either end.
+                "incomplete": fetched.truncated,
             }, None
+        return await _fetch_chain_bars(resolved, canonical, start_date, end_date)
+    # A failed tushare read is not a miss: the chain's rows name it, and with
+    # none the read is an error.
+    ok, err = await _fetch_chain_bars(resolved, canonical, start_date, end_date)
+    if ok is not None and ok["data"]:
+        return {**ok, "fallback_from": "tushare"}, None
+    if err is not None:
+        return None, {**err, "detail": f"tushare failed ({failed}) and {err['detail']}"}
+    return None, make_error(
+        "upstream_error",
+        f"tushare failed ({failed}) and FMP has no rows for this listing",
+        symbol=display,
+        interval=canonical,
+    )
+
+
+async def _fetch_chain_bars(
+    resolved: _Resolved,
+    canonical: str,
+    start_date: Optional[str],
+    end_date: Optional[str],
+) -> tuple[Optional[dict], Optional[dict]]:
+    """Bars from ginlix-data's US tier, else FMP, in the shape of ``_fetch_stock_bars``."""
+    display, legacy, currency, timezone, ref = resolved
+    intraday = canonical not in DAILY_INTERVALS
 
     # The legacy spelling of a family index is bare (GSPC), which every vendor
     # reads as a stock ticker: FMP needs ^GSPC, Massive its I:SPX index ticker.
@@ -416,7 +442,10 @@ _OUT_GET_STOCK_DATA = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={**BAR_LABELS, "name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": INCOMPLETE},
+        echo={
+            **BAR_LABELS, "name": _NAME_ECHO, "truncated": TRUNCATED, "incomplete": INCOMPLETE,
+            "fallback_from": FALLBACK_FROM,
+        },
     ),
 )
 
@@ -462,7 +491,7 @@ _OUT_GET_ASSET_DATA = output_model(
         frame=("symbol", "interval", "currency", "timezone"),
         echo={
             "asset_type": STR, **BAR_LABELS, "name": _NAME_ECHO,
-            "truncated": TRUNCATED, "incomplete": INCOMPLETE,
+            "truncated": TRUNCATED, "incomplete": INCOMPLETE, "fallback_from": FALLBACK_FROM,
         },
     ),
 )
