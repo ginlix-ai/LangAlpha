@@ -7,11 +7,12 @@ portfolio holdings in PostgreSQL.
 
 import logging
 from datetime import datetime
-from decimal import Decimal
+from decimal import Context, Decimal
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from market_protocol import AssetClass, to_canonical
+from market_protocol.symbology import MINOR_UNIT_PLACES
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
@@ -24,11 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 class HoldingCurrencyMismatch(ValueError):
-    """A write into an existing holding named a currency other than the holding's.
+    """A write named a currency the holding's average cost is not in.
 
-    Merging would average two costs in different currencies, so the write is
-    refused. A distinct type so a caller answers it as a conflict without
-    reading every ValueError as one.
+    Merging would average two costs in different currencies, and relabeling a
+    holding as pence without its cost would read the stored pounds as pence,
+    so the write is refused. A distinct type so a caller answers it as a
+    conflict without reading every ValueError as one.
     """
 
 
@@ -41,6 +43,41 @@ _ASSET_CLASS_OF_TYPE = {
     "crypto": AssetClass.CRYPTO,
     "currency": AssetClass.FX,
 }
+
+
+# Search labels London listings in pence, but every quote the app serves for
+# them is in pounds. Pence is GBX in any case, or GBp, where case is all that
+# tells it from GBP: upper-cased, a pence cost used to pass for a pounds one.
+_MAJOR_OF_MINOR = {"GBX": "GBP"}
+
+# A weighted average rarely terminates. Twelve significant digits keep a
+# sub-cent cost (0.00001234) exact to a part in 10^12 and keep the 28-digit
+# expansion out of the unconstrained column and everything that prints it.
+_MERGED_COST = Context(prec=12)
+
+
+def _minor_unit(currency: str) -> Optional[str]:
+    code = currency.strip()
+    unit = "GBX" if code == "GBp" else code.upper()
+    return unit if unit in _MAJOR_OF_MINOR else None
+
+
+def canonical_holding_cost(
+    currency: Optional[str], average_cost: Optional[Decimal]
+) -> tuple[Optional[str], Optional[Decimal]]:
+    """The currency and average cost a holding is stored in.
+
+    A cost in pence is stored in pounds, the unit its quotes are read in, so
+    two costs in one holding always compare. Every writer of a holding passes
+    its currency through here, so the merge guard can compare codes exactly.
+    """
+    if currency is None:
+        return None, average_cost
+    unit = _minor_unit(currency)
+    if unit:
+        places = MINOR_UNIT_PLACES[unit]
+        return _MAJOR_OF_MINOR[unit], None if average_cost is None else average_cost.scaleb(-places)
+    return currency.strip().upper() or None, average_cost
 
 
 def default_holding_currency(symbol: str, instrument_type: str) -> str:
@@ -142,7 +179,20 @@ async def update_portfolio_holding(
 
     Returns:
         Updated portfolio holding dict or None if not found
+
+    Raises:
+        HoldingCurrencyMismatch: ``currency`` is a pence code without an
+            ``average_cost`` to convert to pounds, on a holding the caller owns.
     """
+    if currency is not None and average_cost is None and _minor_unit(currency):
+        if not await get_portfolio_holding(user_portfolio_id, user_id):
+            return None
+        raise HoldingCurrencyMismatch(
+            f"{currency.strip()} is a cost in pence, which is stored in GBP. Give the "
+            f"average cost in the same write, or set the currency to GBP."
+        )
+    currency, average_cost = canonical_holding_cost(currency, average_cost)
+
     builder = UpdateQueryBuilder()
     builder.add_field("name", name)
     builder.add_field("quantity", quantity)
@@ -211,7 +261,8 @@ async def upsert_portfolio_holding(
         exchange: Exchange name
         name: Full instrument name
         average_cost: Average cost per unit
-        currency: Currency code. Omitted, a new holding takes its listing's
+        currency: Currency code, stored as ``canonical_holding_cost`` reads it.
+            Omitted, a new holding takes its listing's
             (``default_holding_currency``) and a merge keeps the holding's.
         account_name: Account name (e.g., 'Robinhood')
         notes: User notes
@@ -234,6 +285,7 @@ async def upsert_portfolio_holding(
             notes, metadata, first_purchased_at, created_at, updated_at
     """
     symbol = normalize_symbol(symbol)
+    currency, average_cost = canonical_holding_cost(currency, average_cost)
 
     async with get_db_connection() as conn:
         # Explicit transaction for atomicity (autocommit is ON by default)
@@ -256,12 +308,12 @@ async def upsert_portfolio_holding(
 
                 if existing:
                     held_in = existing["currency"]
-                    if currency and held_in and currency.upper() != held_in.upper():
+                    if currency and held_in and currency != held_in:
                         where = f" ({account_name})" if account_name else ""
                         raise HoldingCurrencyMismatch(
-                            f"{symbol}{where} is held in {held_in.upper()}, so a cost in "
-                            f"{currency.upper()} cannot be averaged into it. Give the cost "
-                            f"in {held_in.upper()}, or change the holding's currency first."
+                            f"{symbol}{where} is held in {held_in}, so a cost in "
+                            f"{currency} cannot be averaged into it. Give the cost "
+                            f"in {held_in}, or change the holding's currency first."
                         )
 
                     existing_qty = existing["quantity"] or Decimal("0")
@@ -272,9 +324,10 @@ async def upsert_portfolio_holding(
                     if total_qty == 0:
                         merged_avg_cost = None
                     elif existing_cost is not None and average_cost is not None:
-                        merged_avg_cost = (
-                            existing_qty * existing_cost + quantity * average_cost
-                        ) / total_qty
+                        merged_avg_cost = _MERGED_COST.divide(
+                            existing_qty * existing_cost + quantity * average_cost,
+                            total_qty,
+                        )
                     elif average_cost is not None:
                         merged_avg_cost = average_cost
                     elif existing_cost is not None:

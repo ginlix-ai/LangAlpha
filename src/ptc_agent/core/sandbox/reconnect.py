@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from ptc_agent.core.sandbox.attach_only import SandboxNotRunning, attaching_only
 from ptc_agent.core.sandbox.retry import RetryPolicy
 from ptc_agent.core.sandbox.runtime import (
     SandboxFailureKind,
@@ -125,6 +126,8 @@ async def _reconnect(
     if state_value != "running":
         sandbox.livefs_lost = True
         sandbox.livefs = None
+        if attaching_only():
+            raise SandboxNotRunning(f"sandbox {sandbox_id} is {state_value}")
     if state_value == "running":
         logger.debug("Sandbox already started, skipping start", sandbox_id=sandbox_id)
     elif state_value == "stopped":

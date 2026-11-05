@@ -23,7 +23,9 @@ from src.server.services.computer_errors import ProviderNotOffered, UnknownResou
 from src.server.services.computer_manager import (
     ComputerBinding,
     ComputerManager,
+    ComputerNotRunning,
     SessionMetadata,
+    attach_only,
 )
 from src.server.services.computer_manager._types import WorkspaceNotOnComputer
 from src.server.services.workspace_manager import WorkspaceManager
@@ -5074,3 +5076,91 @@ async def test_legacy_adoption_carries_always_on_only_to_a_kind_that_holds_it(
     ):
         await manager._adopt_workspace_onto_computer("source", workspace=source)
     assert create.await_args.kwargs["is_always_on"] is always_on
+
+
+# ---------------------------------------------------------------------------
+# An acquire that may only attach
+# ---------------------------------------------------------------------------
+
+
+class TestAttachOnly(_Base):
+    """A reader nobody waits on (an idle compaction) uses a machine only while
+    it runs, and its attach is fenced against a stop without counting as the
+    activity that would keep the machine up."""
+
+    @pytest.mark.parametrize("attaching", [True, False], ids=["attach_only", "acquire"])
+    @pytest.mark.asyncio
+    async def test_an_attach_only_acquire_fences_the_machine_without_stamping_activity(self, attaching):
+        manager = _make_manager()
+        session = _make_session()
+        session._initialized = False
+        session.initialize = AsyncMock()
+        session.sandbox.sandbox_id = "sandbox-live"
+        workspace = {"workspace_id": "ws-new", "sandbox_id": None, "status": "running", "computer_id": "comp-1"}
+        patches = (
+            ("_apply_session_platform_secret", AsyncMock()),
+            ("_apply_session_mcp", AsyncMock(return_value=None)),
+            ("_sync_sandbox_assets", AsyncMock()),
+            ("_reconcile_skills", AsyncMock()),
+            ("_maybe_migrate_sandbox", AsyncMock(return_value=None)),
+        )
+        with ExitStack() as stack:
+            for name, new in patches:
+                stack.enter_context(patch.object(manager, name, new=new))
+            stack.enter_context(patch.object(manager, "_session_handle", return_value=session))
+            stack.enter_context(
+                patch(f"{_LIFECYCLE}.adopt_computer_sandbox_into_workspaces", AsyncMock(return_value=["ws-new"]))
+            )
+            fence = stack.enter_context(patch(f"{_LIFECYCLE}.fence_running_computer", AsyncMock(return_value=True)))
+            stamp = stack.enter_context(patch(f"{_LIFECYCLE}.stamp_running_computer", AsyncMock(return_value=True)))
+            if attaching:
+                stack.enter_context(attach_only())
+            await manager._attach_running_session(
+                _make_binding("ws-new", provider_ref="sandbox-live"), workspace, "user-1", None, lambda _p: None
+            )
+
+        assert fence.await_count == (1 if attaching else 0)
+        assert stamp.await_count == (0 if attaching else 1)
+
+    @pytest.mark.parametrize(
+        "acquire",
+        [
+            lambda m, b: m._await_stop_and_retry(b, user_id=None, workspace_user_id=None, on_state_observed=None, attempt=0),
+            lambda m, b: m._await_in_flight_start(
+                b, user_id=None, workspace_user_id=None, on_state_observed=None, mark=lambda _p: None, attempt=0
+            ),
+            lambda m, b: m._claim_and_restart(b, None, None, from_status="stopped"),
+            lambda m, b: m._recover_sandbox(b, "user-1", None),
+        ],
+        ids=["stopping", "starting", "stopped", "rebuild"],
+    )
+    @pytest.mark.asyncio
+    async def test_an_attach_only_acquire_never_waits_for_starts_or_rebuilds_a_machine(self, acquire):
+        manager = _make_manager()
+
+        with attach_only(), pytest.raises(ComputerNotRunning):
+            await acquire(manager, _make_binding("ws-a"))
+
+
+
+    @pytest.mark.asyncio
+    async def test_an_attach_only_acquire_never_migrates_a_running_sandbox(self):
+        """The migration backs the sandbox up, claims the computer and deletes
+        the sandbox before any rebuild would be refused."""
+        manager = _make_manager()
+        session = _make_session()
+        session.sandbox.working_dir = "/old/workspace"
+        backup = AsyncMock()
+
+        with (
+            patch.object(manager, "_machine_has_active_tasks", AsyncMock(return_value=False)),
+            patch.object(manager, "_backup_machine_files_to_db", backup),
+            attach_only(),
+            pytest.raises(ComputerNotRunning),
+        ):
+            await manager._maybe_migrate_sandbox(
+                _make_binding("ws-a"), "user-1", session, {"config": {"sandbox_config_hash": "stale"}}
+            )
+
+        backup.assert_not_awaited()
+

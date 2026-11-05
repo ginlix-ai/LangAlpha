@@ -161,6 +161,18 @@ class TestPortfolioParseAndDiff:
         }])
         assert _diff_portfolio(payload, [existing]).updates[0]["currency"] == "CNY"
 
+    def test_a_pence_row_is_parsed_in_pounds(self):
+        payload = self._make_payload("v1", [
+            {"symbol": "VOD.L", "instrument_type": "stock", "quantity": "10",
+             "average_cost": "205", "currency": "GBp"},
+            {"symbol": "AAPL", "instrument_type": "stock", "quantity": "1",
+             "average_cost": "150", "currency": " usd "},
+        ])
+        parsed = io.parse_portfolio(payload)
+        assert [(h["currency"], h["average_cost"]) for h in parsed] == [
+            ("GBP", Decimal("2.05")), ("USD", Decimal("150")),
+        ]
+
     def test_a_held_row_with_no_currency_on_record_takes_its_listings(self):
         existing = _portfolio_row(symbol="600519.SH", currency=None, exchange=None, name=None)
         payload = self._make_payload("v1", [{

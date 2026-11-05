@@ -7,15 +7,10 @@ import { Briefcase } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { useWidgetContextExport } from '../framework/contextSnapshot';
-import {
-  serializeQuoteRowsToMarkdown,
-  serializeQuoteRowToMarkdown,
-  wrapWidgetContext,
-} from '../framework/snapshotSerializers';
+import { wrapWidgetContext } from '../framework/snapshotSerializers';
 import { PortfolioConfigSchema } from '../framework/configSchemas';
 import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
-import type { PortfolioRow } from '../../hooks/usePortfolioData';
 import { WidgetCardMeta } from '../framework/widgetCardSlots';
 import {
   HoldingsAddButton,
@@ -25,22 +20,15 @@ import {
   PortfolioRowItem,
   PortfolioTable,
 } from './_holdingsPrimitives';
-import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
-import { normalizePortfolioCurrency } from '../../utils/portfolioSummary';
+import {
+  formatPortfolioNavMarkdownLine,
+  portfolioRowData,
+  portfolioSummary,
+  serializePortfolioRowsToMarkdown,
+  serializePortfolioRowToMarkdown,
+} from './_holdingsHelpers';
 
 type PortfolioConfig = { valuesHidden?: boolean };
-
-function rowToQuote(r: PortfolioRow) {
-  const hasQuote = r.quoteAvailable !== false;
-  return {
-    symbol: r.symbol,
-    price: hasQuote ? r.price : undefined,
-    shares: r.quantity ?? undefined,
-    marketValue: hasQuote ? r.marketValue ?? undefined : undefined,
-    changePercent: hasQuote ? r.unrealizedPlPercent ?? undefined : undefined,
-    currency: normalizePortfolioCurrency(r.currency),
-  };
-}
 
 function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<PortfolioConfig>) {
   const { t } = useTranslation();
@@ -49,12 +37,12 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
 
   useWidgetContextExport(instance.id, {
     full: () => {
-      const rows = portfolio.rows.map(rowToQuote);
+      const rows = portfolio.rows.map(portfolioRowData);
       const summary = portfolioSummary(portfolio.rows);
       const navLine = formatPortfolioNavMarkdownLine(summary, locale);
       const lines: string[] = [];
       if (navLine) lines.push(navLine, '');
-      lines.push(serializeQuoteRowsToMarkdown(rows));
+      lines.push(serializePortfolioRowsToMarkdown(rows));
       const text = wrapWidgetContext('portfolio.holdings', { count: rows.length }, lines.join('\n'));
       return {
         widget_type: 'portfolio.holdings',
@@ -69,8 +57,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
     rows: (rowId: string) => {
       const row = portfolio.rows.find((r) => (r.user_portfolio_id ?? r.symbol) === rowId);
       if (!row) return null;
-      const quote = rowToQuote(row);
-      const body = serializeQuoteRowToMarkdown(quote);
+      const body = serializePortfolioRowToMarkdown(row);
       const text = wrapWidgetContext('portfolio.holdings/row', { symbol: row.symbol }, body);
       return {
         widget_type: 'portfolio.holdings/row',
@@ -83,7 +70,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
         description: t('dashboard.widgets.portfolio.title'),
         captured_at: new Date().toISOString(),
         text,
-        data: { row: quote },
+        data: { row: portfolioRowData(row) },
       };
     },
   });

@@ -23,6 +23,7 @@ from ptc_agent.core.project_context import ProjectContext
 from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed, claude_replied_last, is_claude_code_model
 from src.server.contracts.run_times import run_settled_at
 from src.server.handlers.cancellation import cancellation_as_http
+from src.server.services.computer_manager import ComputerNotRunning, attaching_only
 from src.server.services.history.projector import context_window_record
 from src.server.services.thread_agent import thread_route
 from src.server.utils.checkpoint_helpers import (
@@ -79,8 +80,12 @@ class ThreadAgent:
         with project_bound(self.project):
             return await self.graph.turn.compact_between_turns(self.state.values)
 
-    async def write(self, values: dict, verb: str) -> None:
-        await _update_graph_state(self.graph, self.state, values, self.thread_id, verb)
+    async def write(self, values: dict, verb: str, *, saver: Any = None) -> bool:
+        """Write ``values`` where the state was read (``_update_graph_state``),
+        through ``saver`` when given: a fence's, for a write that must die
+        with its lock while the agent was built and read without one."""
+        graph = self.graph if saver is None else self.graph.agent.copy(update={"checkpointer": saver})
+        return await _update_graph_state(graph, self.state, values, self.thread_id, verb)
 
 
 async def _thread_agent(
@@ -92,6 +97,7 @@ async def _thread_agent(
     *,
     held: AsyncExitStack,
     role: AgentRole = "analyst",
+    checkpoint_id: str | None = None,
 ) -> ThreadAgent:
     """Validate thread, build graph, get state, build backend.
 
@@ -107,6 +113,10 @@ async def _thread_agent(
     the prompt a model call between turns sends have to be that turn's, or
     the provider's cache misses and a provider's own compaction is refused.
     What only a turn has (its row, its run, its relay sessions) it leaves out.
+
+    Inside ``attach_only`` the computer's session is taken only while it
+    runs, and ``ComputerNotRunning`` raised otherwise. ``checkpoint_id`` reads
+    the state there rather than where the next turn would start.
     """
     from src.server.database import conversation as qr_db
     from src.server.database.workspace import get_workspace
@@ -138,9 +148,16 @@ async def _thread_agent(
     # Session
     workspace_manager = WorkspaceManager.get_instance()
     try:
-        session = await workspace_manager.get_session_for_workspace(
-            workspace_id, user_id=user_id
-        )
+        if attaching_only():
+            session = await workspace_manager.get_session_if_running(
+                workspace_id, user_id=user_id
+            )
+            if session is None:
+                raise ComputerNotRunning(f"workspace {workspace_id} is not running")
+        else:
+            session = await workspace_manager.get_session_for_workspace(
+                workspace_id, user_id=user_id
+            )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
@@ -191,13 +208,13 @@ async def _thread_agent(
         config=effective_config,
         checkpointer=checkpointer,
         # Only a summary reads the cache clock (see ``_previous_run``).
-        turn_context=await _previous_run(thread_id) if verb == "compact" else None,
+        turn_context=await _previous_run(thread_id) if verb in ("compact", "idle_compact") else None,
         **inputs.build_kwargs(),
     )
 
     # State with timeout, read where the next turn would start, so the write
     # lands on the thread's pointer rather than on a branch a fork abandoned.
-    base_checkpoint_id = await turn_base_checkpoint_id(checkpointer, thread_id)
+    base_checkpoint_id = checkpoint_id or await turn_base_checkpoint_id(checkpointer, thread_id)
     try:
         state = await asyncio.wait_for(
             graph.aget_state(build_checkpoint_config(thread_id, base_checkpoint_id)),
@@ -230,10 +247,10 @@ async def _thread_agent(
 
 async def _update_graph_state(
     graph, state, values: dict, thread_id: str, verb: str
-) -> None:
+) -> bool:
     """Write ``values`` onto the checkpoint ``state`` was read at, and move
     the thread's commit pointer onto the write when it still points there
-    (``update_at_commit``).
+    (``update_at_commit``); whether it moved.
 
     Left beside the pointer, the write is seen by the next turn, which runs
     from the latest checkpoint, but not by anything reading the committed
@@ -255,6 +272,7 @@ async def _update_graph_state(
             f"[{verb}] thread {thread_id}: commit pointer is not at {built_on}, "
             "left in place"
         )
+    return advanced
 
 
 async def _summary_since_the_turn(thread_id: str, state):
@@ -302,6 +320,38 @@ async def _summary_since_the_turn(thread_id: str, state):
     return message
 
 
+def _summary_props(*, original_count: int, new_count: int, summary_text: str, source: str) -> dict:
+    """What replay's marker and the client read of a summary installed
+    between turns. Action "summarize" is the wire protocol's."""
+    return {
+        "action": "summarize",
+        "signal": "complete",
+        "original_message_count": original_count,
+        "new_message_count": new_count,
+        "summary_length": len(summary_text),
+        "source": source,
+    }
+
+
+async def compaction_write(agent: ThreadAgent, compaction) -> dict:
+    """The values installing ``compaction`` between turns with the marker
+    replay shows the summary by, the same a manual /compact writes
+    (``_installed``); replay reads the "View summary" panel's text from the
+    summary the marker names."""
+    props = _summary_props(
+        original_count=compaction.original_count,
+        new_count=len(compaction.messages),
+        summary_text=compaction.summary.text,
+        source=compaction.summary.source,
+    )
+    marker = context_window_record(
+        props,
+        summary_message_id=compaction.event["summary_message"].id,
+        replaced=await _summary_since_the_turn(agent.thread_id, agent.state),
+    )
+    return {**compaction.update(agent.state.values), "ui": [marker]}
+
+
 @asynccontextmanager
 async def _hold_thread_mutation(thread_id: str, verb: str):
     """Hold the exclusive-T mutation fence for a manual /compact|/offload|
@@ -341,12 +391,26 @@ async def _previous_run(thread_id: str) -> TurnContext:
 
 async def _resolver(user_id: str, thread_id: str, meta: dict, route):
     """``thread_resolver`` for a call between turns, which no composer
-    started, so the thread's row sets its effort and fast mode."""
+    started, so the thread's row sets its effort and fast mode, and its
+    latest run the subagents its tools name, as that run's build was given
+    them: tools that differ from the turn's miss its whole cached prefix. A
+    failed read builds the default subagents."""
     from src.server.database.api_keys import is_byok_active
+    from src.server.database.runs import lifecycle as tl_db
     from src.server.services.thread_agent import thread_resolver
 
+    try:
+        latest = await tl_db.get_latest_attempt(thread_id)
+    except Exception:
+        logger.debug("latest run read failed for thread %s", thread_id, exc_info=True)
+        latest = None
     return thread_resolver(
-        user_id, thread_id, route, thread=meta, is_byok=await is_byok_active(user_id)
+        user_id,
+        thread_id,
+        route,
+        thread=meta,
+        is_byok=await is_byok_active(user_id),
+        enabled_subagents=((latest or {}).get("metadata") or {}).get("subagents_enabled"),
     )
 
 
@@ -544,14 +608,9 @@ async def _installed(
     and the response the client reads. Action "summarize" is the wire
     protocol's; ``marker`` names the summary replay reads the "View summary"
     panel from, when the thread's messages hold one."""
-    props = {
-        "action": "summarize",
-        "signal": "complete",
-        "original_message_count": original_count,
-        "new_message_count": new_count,
-        "summary_length": len(summary_text),
-        "source": source,
-    }
+    props = _summary_props(
+        original_count=original_count, new_count=new_count, summary_text=summary_text, source=source
+    )
     await agent.write({**update, "ui": [context_window_record(props, **marker)]}, "compact")
     logger.info(
         f"Manual compaction completed for thread {agent.thread_id}: "

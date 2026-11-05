@@ -18,6 +18,7 @@ from src.server.database.workspace_file import WorkspaceSyncBusy
 from src.server.database.workspace_folders import WorkspaceFolderMoving
 from src.server.services import transcripts
 from src.server.services.computer_manager import _thread_dirs
+from src.server.services.computer_manager._attach_only import for_every_acquire
 from src.server.services.livefs import cache
 from src.server.services.persistence import restore
 from src.server.services.persistence.file import FilePersistenceService
@@ -343,6 +344,7 @@ class BringUpMixin:
             )
 
             async def _run(job: BringUp) -> None:
+                for_every_acquire()
                 try:
                     await job.run()
                 finally:

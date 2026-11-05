@@ -72,7 +72,7 @@ from src.llms.provider_compaction import (
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY
-from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, Measure, asked
+from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, IdleCompact, IdleSkipped, Measure, asked
 from ptc_agent.agent.middleware.compaction.types import CompactionState, OffloadSettings
 from ptc_agent.agent.middleware.compaction.fitting import Fit, Fitted, reported_usage
 from ptc_agent.agent.middleware.compaction.compact import (
@@ -101,6 +101,7 @@ from ptc_agent.agent.middleware.compaction.notes import (
     last_step_wrote_notes,
     rebuild_notes_ask,
 )
+from ptc_agent.agent.middleware.compaction.idle import idle_clock, idle_cut, stamping
 from ptc_agent.agent.middleware.compaction.rebuild import (
     LAST_ANSWER_KEY,
     StalePinRebuilds,
@@ -373,7 +374,9 @@ class CompactionMiddleware(AgentMiddleware):
         context reaches the threshold, or when the model refuses the view as
         too long, and taking attachments out of what is kept until it fits.
         A call made between turns (``between_turns``) is answered with what
-        it asks instead."""
+        it asks instead. Each answer is stamped with when its request
+        started (``stamp_request_start``)."""
+        handler = stamping(handler)
         ensure_message_ids(request.messages)
         view = await self.view(request.messages, request.state)
         await read_ahead(view)
@@ -438,7 +441,7 @@ class CompactionMiddleware(AgentMiddleware):
                 if not notes_step:
                     if plan.waits is not None:
                         _log_rebuild("deferred", plan.waits)
-                    return self._answered(request, response, reading=reading)
+                    return self._answered(request, response, reading=reading, view=view)
                 if ask is not None:
                     response = dataclasses.replace(response, result=[ask, *response.result])
                 _log_rebuild("deferred", "notes_step")
@@ -581,6 +584,11 @@ class CompactionMiddleware(AgentMiddleware):
         )
         return keep_cutoff(view, tokens=tokens, estimate=self._estimate(model))
 
+    def _keep_tail_cut(self, view: list[AnyMessage], model: Any) -> int:
+        """Where Claude's own summary keeping the tail cuts ``view``: on an
+        answer, whose request wrote the cache entry that summary reads."""
+        return provider_cutoff(view, self._cutoff(view, model))
+
     async def _between_turns(
         self,
         request: ModelRequest,
@@ -594,6 +602,8 @@ class CompactionMiddleware(AgentMiddleware):
             return (await context_tokens(request.state, view, self._estimate(request.model), system)).tokens
         if isinstance(ask, HandOff):
             return await self._hand_off(request, handler, view, notes=self._notes_dir is not None)
+        if isinstance(ask, IdleCompact):
+            return await self._idle(request, handler, view)
         # A due thread's summary keeps no turns here too, so the next turn
         # takes the new prompt.
         plan = self._rebuilds.between_turns(request, view, time.time())
@@ -609,6 +619,42 @@ class CompactionMiddleware(AgentMiddleware):
         compaction = await self._summarize(request, handler, view, cutoff)
         if plan.waits is not None:
             _log_rebuild("deferred", plan.waits)
+        return compaction
+
+    async def _idle(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        view: list[AnyMessage],
+    ) -> Compaction:
+        """The summary of a thread idle after a turn (``TurnStartRebuilds.idle``),
+        written only by the provider from its cache: the summarizer would read
+        the whole history at the uncached rate, which is the cost this runs
+        early to avoid (``idle_cut`` says where, and when it no longer may).
+
+        Raises:
+            IdleSkipped: Naming why nothing is summarized.
+            NoOwnSummary: The provider wrote no summary.
+        """
+        if not self._native or native_kind(request.model) != "anthropic":
+            raise IdleSkipped("not_native")
+        system = [request.system_message] if request.system_message is not None else []
+        reading = await context_tokens(request.state, view, self._estimate(request.model), system)
+        plan = self._rebuilds.idle(request, view, reading.tokens, self._token_threshold)
+        cut = idle_cut(request, view, plan, self._keep_tail_cut(view, request.model), time.time())
+        thread_id, agent = run_ids()
+        logger.info(
+            "[Compaction] idle=fire kind=%s tokens=%d threshold=%d thread_id=%s agent=%s",
+            "I1" if plan.cut else "I2",
+            reading.tokens,
+            self._token_threshold,
+            thread_id,
+            agent,
+        )
+        own = functools.partial(self._provider_summary, request, handler, notes=self._notes_dir is not None)
+        compaction = await self._compact(request, view, cut, self._transcript_target(), own, own_only=True)
+        if plan.cut:
+            _log_rebuild("yes", plan.reason)
         return compaction
 
     @staticmethod
@@ -656,9 +702,11 @@ class CompactionMiddleware(AgentMiddleware):
         own: Own | None = None,
         *,
         carried: bool = False,
+        own_only: bool = False,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, by ``own`` when given,
-        this agent's model being the fallback (see ``Summarizer.compact``).
+        this agent's model being the fallback unless ``own_only`` (see
+        ``Summarizer.compact``).
 
         Start is outside the try, so a start that fails opened no window. A
         cancellation still emits error before it propagates: otherwise the
@@ -683,6 +731,7 @@ class CompactionMiddleware(AgentMiddleware):
                 ),
                 own=own,
                 carried=carried,
+                own_only=own_only,
             )
         except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
@@ -792,24 +841,38 @@ class CompactionMiddleware(AgentMiddleware):
         *,
         spared: int = 0,
         reading: ContextReading | None = None,
+        view: list[AnyMessage] | None = None,
     ) -> ExtendedModelResponse:
         """``response``, with ``update`` and the state the next call reads:
         the context size this call measured, less the ``spared`` tokens of
         attachments ``update`` takes out of the next one, and when the model
         answered, which the next turn's Tier 1 measures its pause from.
         ``reading`` is the trigger's reading of the view this call was sent
-        as it was, which its growth is stamped from; a call that was sent a
-        summary or a fitted view has none. The run's first call is past once
-        it answers (see ``abefore_agent``), and an arm lasts one call (see
-        ``rebuild``) unless ``update`` sets it again."""
+        as it was, which its growth is stamped from, and ``view`` that view;
+        a call that was sent a summary or a fitted view has neither. The run's
+        first call is past once it answers (see ``abefore_agent``), an arm lasts one
+        call (see ``rebuild``) unless ``update`` sets it again, and the main agent's
+        final answer leaves the idle clock (``idle.idle_clock``)."""
         answer, input_tokens, output_tokens = self._extract_token_usage(response, reading)
         opened = {"_run_first_call": False} if request.state.get("_run_first_call") else {}
         disarmed = {"_rebuild_armed": None} if request.state.get("_rebuild_armed") else {}
+        cached_input = max(input_tokens - spared, 0)
         if answer is not None and isinstance(self._rebuilds, TurnStartRebuilds):
             previous = request.state.get(LAST_ANSWER_KEY)
             opened[LAST_ANSWER_KEY] = answer_reading(
                 answer, self._token_threshold, request.model, previous, self._rebuilds
             )
+            idle = idle_clock(
+                request,
+                answer,
+                view,
+                cached_input + output_tokens,
+                rebuilds=self._rebuilds,
+                native=self._native,
+                tail_cut=lambda whole: self._keep_tail_cut(whole, request.model),
+            )
+            if idle is not None:
+                opened["_idle_clock"] = idle
         return ExtendedModelResponse(
             model_response=response,
             command=Command(
@@ -817,7 +880,7 @@ class CompactionMiddleware(AgentMiddleware):
                     **disarmed,
                     **(update or {}),
                     **opened,
-                    "_cached_input_tokens": max(input_tokens - spared, 0),
+                    "_cached_input_tokens": cached_input,
                     "_cached_output_tokens": output_tokens,
                     "_last_model_response_at": time.time(),
                 }

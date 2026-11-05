@@ -652,8 +652,10 @@
         "deleteConfirm": "删除",
         "quantityLabel": "数量 *",
         "quantityPlaceholder": "例如：10.5",
+        "averageCostIn": "每股平均成本（{{currency}}） *",
         "averageCostLabel": "每股平均成本 *",
         "averageCostPlaceholder": "例如：175.50",
+        "averageCostPlaceholderMinorUnit": "例如：1.75",
         "notesLabel": "备注",
         "notesPlaceholder": "可选",
         "cancel": "取消",
@@ -841,7 +843,9 @@
         "colValue": "市值",
         "colPl": "盈亏",
         "cost": "成本",
-        "totalPl": "总盈亏"
+        "totalPl": "总盈亏",
+        "plExcludes": "盈亏未计入 {{symbols}}（无 {{currency}} 成本）",
+        "andMore": "其余 {{n}} 个"
       },
       "tickerTape": {
         "title": "行情滚动条",
@@ -1291,7 +1295,9 @@
       "quantityLabel": "数量",
       "quantityPlaceholder": "例如 10.5",
       "averageCostLabel": "平均成本",
+      "averageCostIn": "平均成本（{{currency}}）",
       "averageCostPlaceholder": "例如 175.50",
+      "averageCostPlaceholderMinorUnit": "例如 1.75",
       "accountNameLabel": "账户名称",
       "accountNamePlaceholder": "例如 Robinhood",
       "notesLabel": "备注",

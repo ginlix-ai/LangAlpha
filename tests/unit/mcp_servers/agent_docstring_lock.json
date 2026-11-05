@@ -163,20 +163,19 @@
   },
   "mcp:fundamentals:get_dividends_and_splits": {
     "doc_lines": [
-      "Fetch historical dividend payments and stock splits — analyze dividend",
-      "growth, adjust prices for splits, or compare dividend history across peers.",
+      "Fetch historical dividend payments and stock splits.",
       "",
       "Args:",
       "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
       "",
       "Returns:",
       "    dict: {symbol, count, data, source, data_type}. data is",
-      "    {dividends, splits}, each a list; count is the total across both.",
-      "    dividends fields: date, recordDate, paymentDate, declarationDate,",
-      "    adjDividend, dividend, yield, frequency. splits fields: date, numerator,",
-      "    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";",
-      "    records are newest-first as returned by FMP. On error:",
-      "    {error: <code>, detail, symbol}."
+      "    {dividends, splits}, each a list, newest first; count is the total",
+      "    across both. dividends fields: date, recordDate, paymentDate,",
+      "    declarationDate, adjDividend (split-adjusted), dividend (as paid), yield",
+      "    (percent, 0.34 = 0.34%), frequency. splits fields: date, numerator,",
+      "    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\".",
+      "    On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "symbol"
@@ -187,8 +186,7 @@
   },
   "mcp:fundamentals:get_financial_ratios": {
     "doc_lines": [
-      "Fetch raw historical key metrics and financial ratios — track P/E, ROE,",
-      "and margins over time, or compare valuation across companies.",
+      "Fetch raw historical key metrics and financial ratios.",
       "",
       "Args:",
       "    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".",
@@ -197,14 +195,15 @@
       "",
       "Returns:",
       "    dict: {symbol, count, data, source, data_type, period}. data is",
-      "    {key_metrics, ratios}, each a list of period records; count is the total.",
-      "    key_metrics fields: date, marketCap, enterpriseValue, evToEBITDA,",
-      "    freeCashFlowYield. ratios fields: date, netProfitMargin, returnOnEquity,",
-      "    currentRatio, debtToEquityRatio, priceToEarningsRatio. Field names are",
-      "    FMP-native camelCase; date is \"YYYY-MM-DD\"; records are newest-first as",
-      "    returned by FMP. When period=\"quarter\" returns 0 records, an",
-      "    optional note suggests period=\"annual\". On error: {error: <code>,",
-      "    detail, symbol}."
+      "    {key_metrics, ratios}, each a list of records, newest first; count is",
+      "    the total. key_metrics fields: date, marketCap, enterpriseValue,",
+      "    evToEBITDA, freeCashFlowYield. ratios fields: date, netProfitMargin,",
+      "    returnOnEquity, currentRatio, debtToEquityRatio, priceToEarningsRatio.",
+      "    Field names are FMP-native camelCase; date is \"YYYY-MM-DD\". A quarter",
+      "    row's flow-based fields (P/S, EV/EBITDA, yields, returns) cover that",
+      "    quarter alone, but its P/E fields annualize the quarter's EPS (x4). An",
+      "    empty quarterly read adds a note suggesting period=\"annual\". On error:",
+      "    {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -247,8 +246,7 @@
   },
   "mcp:fundamentals:get_growth_metrics": {
     "doc_lines": [
-      "Fetch raw historical growth rates for trend analysis — chart revenue/EPS",
-      "trajectory or compare growth across competitors.",
+      "Fetch raw historical growth rates.",
       "",
       "Args:",
       "    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".",
@@ -257,14 +255,14 @@
       "",
       "Returns:",
       "    dict: {symbol, count, data, source, data_type, period}. data is",
-      "    {financial_growth, income_statement_growth}, each a list; count is the",
-      "    total. financial_growth fields: date, revenueGrowth, netIncomeGrowth,",
-      "    epsgrowth; income_statement_growth fields: date, growthRevenue,",
-      "    growthNetIncome, growthEPS. Growth values are decimal fractions",
-      "    (0.1 = 10%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";",
-      "    records are newest-first as returned by FMP. When period=\"quarter\"",
-      "    returns 0 records, an optional note suggests period=\"annual\". On error:",
-      "    {error: <code>, detail, symbol}."
+      "    {financial_growth, income_statement_growth}, each a list, newest first;",
+      "    count is the total. financial_growth fields: date, revenueGrowth,",
+      "    netIncomeGrowth, epsgrowth; income_statement_growth fields: date,",
+      "    growthRevenue, growthNetIncome, growthEPS. Growth values are decimal",
+      "    fractions (0.1 = 10%); a quarter row grows on the prior quarter, not the",
+      "    year-ago one. Field names are FMP-native camelCase; date is",
+      "    \"YYYY-MM-DD\". When period=\"quarter\" returns 0 records, an optional note",
+      "    suggests period=\"annual\". On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -277,8 +275,7 @@
   },
   "mcp:fundamentals:get_historical_valuation": {
     "doc_lines": [
-      "Fetch DCF fair value and enterprise value history — track fair value vs",
-      "price or build valuation trend charts.",
+      "Fetch DCF fair value and enterprise value history.",
       "",
       "Args:",
       "    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".",
@@ -286,14 +283,16 @@
       "    limit: Number of periods (default 10).",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type, period}. data is",
-      "    {current_dcf, historical_dcf, enterprise_value}, each a list; count is",
-      "    the total. current_dcf fields: symbol, date, dcf, stockPrice.",
-      "    historical_dcf is always [] — the stable FMP API no longer exposes it.",
-      "    enterprise_value fields: date, stockPrice, marketCapitalization,",
-      "    enterpriseValue. Field names are FMP-native camelCase; date is",
-      "    \"YYYY-MM-DD\"; enterprise_value is newest-first as returned by FMP. On",
-      "    error: {error: <code>, detail, symbol}."
+      "    dict: {symbol, currency, count, data, source, data_type, period}. data",
+      "    is {current_dcf, historical_dcf, enterprise_value}, each a list; count",
+      "    is the total. current_dcf fields: symbol, date, dcf, stockPrice, per",
+      "    share in `currency` (absent when the venue is unknown). historical_dcf",
+      "    is always []. enterprise_value fields, newest first: date,",
+      "    reportedCurrency, stockPrice, marketCapitalization, enterpriseValue,",
+      "    priced in reportedCurrency (the filings' currency, which can differ",
+      "    from `currency`; null when unknown). Field names are FMP-native",
+      "    camelCase; date is \"YYYY-MM-DD\".",
+      "    On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -306,22 +305,23 @@
   },
   "mcp:fundamentals:get_insider_trades": {
     "doc_lines": [
-      "Fetch insider trading transactions and aggregate buy/sell statistics —",
-      "detect insider buying clusters, screen unusual activity, or gauge C-suite",
-      "confidence.",
+      "Fetch insider transactions from SEC Form 4 filings, with quarterly totals.",
+      "HK and A-share listings return empty lists.",
       "",
       "Args:",
-      "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
-      "    limit: Number of recent transactions to fetch (default 50).",
+      "    symbol: Ticker, e.g. \"AAPL\".",
+      "    limit: Number of recent transactions (default 50).",
       "",
       "Returns:",
       "    dict: {symbol, count, data, source, data_type}. data is {trades, stats},",
-      "    each a list; count is the total across both. trades fields: symbol,",
-      "    filingDate, transactionDate, reportingName, transactionType,",
-      "    securitiesTransacted, price. stats fields: year, quarter, totalBought,",
-      "    totalSold, buySellRatio. Field names are FMP-native camelCase; dates are",
-      "    \"YYYY-MM-DD\"; trades are newest-first as returned by FMP. On error:",
-      "    {error: <code>, detail, symbol}."
+      "    each a list; count is the total across both. trades fields, newest",
+      "    first: filingDate, transactionDate, reportingName, transactionType,",
+      "    securitiesTransacted, price. Only \"P-Purchase\" and \"S-Sale\" are",
+      "    open-market trades; others are awards, exercises or tax withholding.",
+      "    stats, one row per calendar quarter: year, quarter, totalPurchases,",
+      "    totalSales (counts of P and S trades), totalAcquired, totalDisposed",
+      "    (shares, all transaction types). Field names are FMP-native camelCase;",
+      "    dates are \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -355,18 +355,20 @@
   },
   "mcp:fundamentals:get_shares_float": {
     "doc_lines": [
-      "Fetch shares float, outstanding shares, and float percentage — flag",
-      "low-float names, gauge ownership concentration, or screen squeeze candidates.",
+      "Fetch shares float, outstanding shares, and float percentage.",
       "",
       "Args:",
       "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
       "",
       "Returns:",
       "    dict: {symbol, count, data, source, data_type}. data is a list of",
-      "    records; count is the record total. Fields: symbol, date, freeFloat,",
-      "    floatShares, outstandingShares. Field names are FMP-native camelCase;",
-      "    date is \"YYYY-MM-DD\"; latest snapshot first as returned by FMP. On error:",
-      "    {error: <code>, detail, symbol}."
+      "    records; count is the record total. Fields: symbol, date, freeFloat",
+      "    (percent, 99.8 = 99.8%), floatShares, outstandingShares; an ADR counts",
+      "    ADS units, not ordinary shares. date is \"YYYY-MM-DD\": the day FMP",
+      "    refreshed the record, not the as-of date of the counts, which can be",
+      "    months older; an A-share row's date is the trading day of its counts.",
+      "    Field names are FMP-native camelCase. On error: {error: <code>, detail,",
+      "    symbol}."
     ],
     "params": [
       "symbol"
@@ -657,10 +659,10 @@
   },
   "mcp:price_data:get_short_data": {
     "doc_lines": [
-      "Fetch short interest and/or short volume for a US stock (short-squeeze work).",
+      "Fetch short interest and/or short volume for a US stock.",
       "",
       "Short interest is FINRA bi-monthly (settlement_date); short volume is daily",
-      "off-exchange (date). ginlix-data only.",
+      "off-exchange (date).",
       "",
       "Args:",
       "    symbol: Stock ticker, e.g. \"AAPL\".",
@@ -672,9 +674,9 @@
       "Returns:",
       "    dict: {symbol, timezone, count, data, source, data_type}. data is a dict",
       "    of {short_interest, short_volume} lists (requested sections only), newest",
-      "    first. Record fields are vendor-native (e.g. settlement_date,",
-      "    short_volume_ratio). Partial failures appear in an `errors` map. On",
-      "    error: {error: <code>, detail}."
+      "    first. Record fields are vendor-native (e.g. settlement_date);",
+      "    short_volume_ratio is a percent (43.3 = 43.3%). Partial failures appear",
+      "    in an `errors` map. On error: {error: <code>, detail}."
     ],
     "params": [
       "data_type",

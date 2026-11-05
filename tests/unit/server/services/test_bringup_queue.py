@@ -24,7 +24,7 @@ from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from src.server.database.conversation import ThreadPrefixes
 from src.server.database.workspace_file import WorkspaceSyncBusy
 from src.server.database.workspace_folders import WorkspaceFolderMoving
-from src.server.services.computer_manager import _bringup
+from src.server.services.computer_manager import _bringup, attach_only, attaching_only
 from src.server.services.computer_manager._bringup import BringUpMixin
 from src.server.services.computer_manager._sessions import SessionCacheMixin
 
@@ -641,3 +641,18 @@ async def test_a_thread_delete_drops_the_stamp_even_on_a_stopped_machine(manager
     ):
         await manager.prune_thread_dirs_if_running("A")
     assert redis.values == {}
+
+
+async def test_a_bring_up_an_attach_only_acquire_starts_serves_every_acquire(manager, sandbox, monkeypatch):
+    """Later acquires join the job, which must not refuse them a start."""
+    seen = []
+
+    async def run(job):
+        seen.append(attaching_only())
+
+    monkeypatch.setattr(_bringup.BringUp, "run", run)
+    with attach_only():
+        _schedule(manager, sandbox, "A", urgent=True)
+    await _drain(manager)
+
+    assert seen == [False]

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, NotRequired, Optional, TypedDict
 
 from src.config import env
+from src.config.features import is_feature_enabled_system
 from src.server.contracts.status import to_public
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
 
@@ -60,6 +61,18 @@ class AutomationSettlePayload(TypedDict):
     execution_id: str
     automation_id: str
     user_id: Optional[str]
+    workspace_id: Optional[str]
+
+
+#: A completed turn's outbox job arming its thread's idle compaction
+#: (``services.idle_compaction``).
+IDLE_COMPACT_HOOK = "idle_compact"
+
+
+class IdleCompactPayload(TypedDict):
+    thread_id: str
+    run_id: str
+    user_id: str
     workspace_id: Optional[str]
 
 
@@ -213,6 +226,26 @@ def build_finalize_jobs(
                     # A thread's pushes reach APNs in run order, so an older
                     # one sent slowly can't land after, and replace, a newer.
                     ordering_key=f"push:{thread_id}",
+                )
+            )
+
+        if user_id and final_status == "completed" and is_feature_enabled_system("idle_compaction"):
+            # A completed turn may leave its thread idle on a warm prompt
+            # cache, which an idle compaction summarizes before it expires.
+            # Whether it does is read off the checkpoint the turn committed,
+            # so the job runs after the commit. No ordering_key: the executor
+            # arms only for the thread's latest run. With the feature off no
+            # job is written, so a turn costs nothing.
+            jobs.append(
+                HookJob(
+                    hook_type=IDLE_COMPACT_HOOK,
+                    idempotency_key=f"{run_id}:{IDLE_COMPACT_HOOK}",
+                    payload=IdleCompactPayload(
+                        thread_id=thread_id,
+                        run_id=run_id,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                    ),
                 )
             )
 

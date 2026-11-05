@@ -8,6 +8,7 @@ user context building, and schedule computation.
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -570,6 +571,24 @@ class TestBuildUserContext:
         # Only two lines total -- no duplicate "- AAPL" entry
         main_entries = [l for l in lines if l.startswith("- AAPL")]
         assert len(main_entries) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_holding_reads_in_its_own_currency(self):
+        holdings = [
+            {"symbol": "600519.SH", "name": "Kweichow Moutai", "quantity": Decimal("100.00000000"),
+             "average_cost": Decimal("1400.0000"), "currency": "CNY"},
+            {"symbol": "NVDA", "name": "NVIDIA", "quantity": Decimal("5"),
+             "average_cost": None, "currency": "USD"},
+        ]
+
+        with patch("src.server.database.watchlist.get_user_watchlists", new_callable=AsyncMock, return_value=[]), \
+             patch("src.server.database.portfolio.get_user_portfolio", new_callable=AsyncMock, return_value=holdings):
+            result = await InsightService()._build_user_context("user-cny")
+
+        assert result.split("\n") == [
+            "- 600519.SH (Kweichow Moutai) [portfolio: 100 @ 1400 CNY]",
+            "- NVDA (NVIDIA) [portfolio: 5]",
+        ]
 
 
 # ---------------------------------------------------------------------------

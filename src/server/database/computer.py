@@ -1119,6 +1119,31 @@ async def stamp_running_computer(
         return cur.rowcount > 0
 
 
+async def fence_running_computer(
+    computer_id: str,
+    *,
+    conn=None,
+) -> bool:
+    """``stamp_running_computer``'s fence without its activity stamp, for an
+    attach that must not keep the machine up: ``updated_at`` moves under a
+    stop judged on an earlier read, and a stop first refuses it. A row with
+    no ``last_activity_at``, whose idle clock falls back to ``updated_at``,
+    keeps the old value there first."""
+    async with _computer_cursor(conn) as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET last_activity_at = COALESCE(last_activity_at, updated_at),
+                updated_at = NOW()
+            WHERE computer_id = %s
+              AND {FENCE_NOT_DELETED}
+              AND status = 'running'
+            """,
+            (computer_id,),
+        )
+        return cur.rowcount > 0
+
+
 async def rename_computer(
     computer_id: str,
     name: str,

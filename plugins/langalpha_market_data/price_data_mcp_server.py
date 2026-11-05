@@ -624,10 +624,10 @@ async def get_short_data(
     to_date: Optional[str] = None,
     limit: int = 20,
 ) -> _OUT_GET_SHORT_DATA:
-    """Fetch short interest and/or short volume for a US stock (short-squeeze work).
+    """Fetch short interest and/or short volume for a US stock.
 
     Short interest is FINRA bi-monthly (settlement_date); short volume is daily
-    off-exchange (date). ginlix-data only.
+    off-exchange (date).
 
     Args:
         symbol: Stock ticker, e.g. "AAPL".
@@ -639,9 +639,9 @@ async def get_short_data(
     Returns:
         dict: {symbol, timezone, count, data, source, data_type}. data is a dict
         of {short_interest, short_volume} lists (requested sections only), newest
-        first. Record fields are vendor-native (e.g. settlement_date,
-        short_volume_ratio). Partial failures appear in an `errors` map. On
-        error: {error: <code>, detail}.
+        first. Record fields are vendor-native (e.g. settlement_date);
+        short_volume_ratio is a percent (43.3 = 43.3%). Partial failures appear
+        in an `errors` map. On error: {error: <code>, detail}.
     """
     display, legacy, _currency, timezone, _ref = _resolve(symbol)
 
