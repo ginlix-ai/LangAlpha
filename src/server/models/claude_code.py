@@ -60,6 +60,33 @@ class ClaudeCodeComputers(BaseModel):
     computers: list[ClaudeCodeComputer]
 
 
+#: Where the user's Claude Code stands as a whole, the first that holds: a
+#: token works somewhere (``connected``), one is being checked
+#: (``checking``), one was refused or has expired (``refused``), somewhere
+#: runs it once a token is added (``not_connected``), an own computer is out
+#: of reach (``offline``), every own computer has something that stops it
+#: (``unsupported``), or nothing the user has can run it (``no_computer``).
+SetupState = Literal["connected", "checking", "refused", "not_connected", "offline", "unsupported", "no_computer"]
+
+
+class ClaudeCodeSetup(BaseModel):
+    """Claude Code's entry under Connect a subscription, read whether the user
+    turned it on or not. ``on`` is their opt-in, which adding a first token
+    makes; until then an own computer reads ``off`` where it is reachable
+    and ``offline`` where it is not. ``saved_token_runs``: this server runs
+    turns on a setup token the user adds in Settings, so one can be added
+    there whatever their computers. ``cloud``: users choose how Claude Code
+    runs for workspaces on this server's cloud computers, so a computer of
+    their own is not the only place it runs. A self-hosted server's own
+    machine is the user's, so it never sets this."""
+
+    state: SetupState
+    on: bool
+    computers: list[ClaudeCodeComputer]
+    saved_token_runs: bool = False
+    cloud: bool = False
+
+
 #: The credentials a user may choose for their turns on a cloud computer.
 HostedMode = Literal["api_key", "stored"]
 

@@ -2,6 +2,7 @@ import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/r
 import { queryKeys } from '../lib/queryKeys';
 import { getFeatures, setFeatureOverride } from '../api/features';
 import type { FeatureState } from '../types/api';
+import type { ClaudeCodeSetup } from '../api/model';
 
 // Flags change rarely; a 5-minute window avoids re-fetching on every mount
 // while still picking up server-side changes within a session.
@@ -45,8 +46,13 @@ export function useSetFeatureOverride() {
   return useMutation({
     mutationFn: ({ key, enabled }: { key: string; enabled: boolean | null }) =>
       setFeatureOverride(key, enabled),
-    onSuccess: (features: FeatureState[], { key }) => {
+    onSuccess: (features: FeatureState[], { key, enabled }) => {
       queryClient.setQueryData(queryKeys.features.list(), features);
+      // The setup answer says whether Claude Code is on; a reread that fails
+      // must not leave it saying otherwise.
+      if (key === 'claude_code_runtime' && enabled !== null) {
+        queryClient.setQueryData<ClaudeCodeSetup | null>(queryKeys.features.claudeCodeSetup(), (setup) => setup && { ...setup, on: enabled });
+      }
       queryClient.invalidateQueries({ queryKey: queryKeys.features.of(key) });
     },
     onError: () => {

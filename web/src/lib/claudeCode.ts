@@ -1,9 +1,14 @@
-import type { ClaudeCodeCustodyMode } from '@/api/model';
+import type { ClaudeCodeCustodyMode, ClaudeCodeSetupState } from '@/api/model';
+import type { RowStatus } from '@/components/modelAccess/parts';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import type { ErrorLinkSpec } from '@/utils/rateLimitError';
 
 /** The provider and sdk of the models a turn runs on Claude Code. */
 export const CLAUDE_CODE = 'claude-code';
+
+/** The flag whose per-user override is the user's opt-in, made by adding a
+ *  first token under Model access. */
+export const CLAUDE_CODE_FEATURE = 'claude_code_runtime';
 
 /** A model a turn runs on Claude Code: an analyst's conversation only. */
 export const isClaudeCodeModel = (meta?: { sdk?: string }) => meta?.sdk === CLAUDE_CODE;
@@ -16,6 +21,23 @@ export const CLAUDE_CODE_CONNECTION: ConfiguredProvider = {
   display_name: 'Claude Code',
   access_type: 'oauth',
   state: 'connected',
+};
+
+/** Where the user docs explain Claude Code mode, and the anchor of its
+ *  requirements, which the states that cannot run it yet point at. */
+export const CLAUDE_CODE_DOCS_URL = 'https://docs.langalpha.ai/concepts/claude-code/';
+export const CLAUDE_CODE_REQUIREMENTS_URL = `${CLAUDE_CODE_DOCS_URL}#requirements`;
+
+/** Claude Code's status word on its row under Connect a subscription and in
+ *  Model access, by where it stands as a whole. */
+export const CLAUDE_CODE_SETUP_STATUS: Readonly<Record<ClaudeCodeSetupState, RowStatus>> = {
+  connected: 'connected',
+  checking: 'working',
+  refused: 'needs_reauth',
+  not_connected: 'not_connected',
+  offline: 'offline',
+  unsupported: 'unavailable',
+  no_computer: 'needs_computer',
 };
 
 /** Settings → Model access. */
@@ -66,6 +88,7 @@ export const CLAUDE_CODE_UNRUNNABLE: ReadonlySet<string> = new Set(['policy_bloc
 /** The refusals the app words itself, in the user's language; any other
  *  keeps the server's English words. */
 const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
+  account: 'chat.claudeCode.off.account',
   token_refused: 'chat.claudeCode.off.token_refused',
   hosted_off: 'chat.claudeCode.off.hosted_off',
   hosted_paused: 'chat.claudeCode.off.hosted_paused',
@@ -100,7 +123,8 @@ const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set(['hosted_off', '
  * whether the server's next read of the tokens and of the user's choice for
  * cloud computers changed, so they are read again, the link that fixes it,
  * and the key it is worded by where the app words it (`messageKey`, with
- * `messageValues`). No token (`signed_out`) or one Claude refused
+ * `messageValues`). Claude Code off for the account (`account`) is turned
+ * back on in its view under Model access. No token (`signed_out`) or one Claude refused
  * (`token_refused`), stored or not, is fixed with a new one in Settings; a
  * computer where Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`) is fixed
  * by no token. On a cloud computer, the choice of how it runs there
@@ -125,6 +149,7 @@ export function claudeCodeRefusal(
   if (reason === 'signed_out' || reason === 'token_refused') {
     return { reread: true, link: claudeCodeTokenLink(workspaceId), messageKey };
   }
+  if (reason === 'account') return { reread: true, link: CLAUDE_CODE_CHOICE_LINK, messageKey };
   return {
     reread: CLAUDE_CODE_UNRUNNABLE.has(reason) || CLAUDE_CODE_CHOICE_CHANGED.has(reason),
     link: CLAUDE_CODE_CLOUD_LINKS[reason] ?? null,

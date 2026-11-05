@@ -67,6 +67,12 @@ export function formatTimestamp(ts: string | null | undefined, locale: string): 
 }
 
 const listFormat = perLocale((locale) => new Intl.ListFormat(locale, { type: 'conjunction' }));
+const unitListFormat = perLocale((locale) => new Intl.ListFormat(locale, { type: 'unit' }));
+
+/** Names listed with no conjunction, as the locale says "A, B, C". */
+export function formatUnitList(items: readonly string[], locale: string): string {
+  return unitListFormat(locale).format(items);
+}
 
 /** Names joined as the locale says "A, B and C". A Chinese conjunction is a
  *  word and is spaced from a Latin name or a number beside it (`moomoo 和

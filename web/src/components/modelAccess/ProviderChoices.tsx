@@ -2,7 +2,7 @@ import { ChevronRight } from 'lucide-react';
 import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
 import { llmProviderArt } from '@/lib/brandArt';
 import { cn } from '@/lib/utils';
-import { StatusLabel } from './parts';
+import { StatusLabel, type RowStatus } from './parts';
 
 /**
  * One provider to pick: its mark, its name and a note under it, and
@@ -14,6 +14,7 @@ export function ProviderChoice({
   name,
   note,
   connected,
+  status,
   onPick,
   layout = 'list',
 }: {
@@ -21,6 +22,8 @@ export function ProviderChoice({
   name: string;
   note?: string;
   connected: boolean;
+  /** A status of its own in place of Connected, for a choice that can stand in more states than connected or not. */
+  status?: RowStatus;
   onPick: () => void;
   layout?: 'list' | 'grid';
 }) {
@@ -40,7 +43,7 @@ export function ProviderChoice({
           <span className="truncate text-sm" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
           {note && <span className={cn('text-xs', !list && 'line-clamp-2')} style={{ color: 'var(--color-text-tertiary)' }}>{note}</span>}
         </span>
-        {connected && <StatusLabel status="connected" className="shrink-0" />}
+        {status ? <StatusLabel status={status} className="shrink-0" /> : connected && <StatusLabel status="connected" className="shrink-0" />}
         {list && <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />}
       </button>
     </li>

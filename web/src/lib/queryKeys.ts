@@ -35,6 +35,7 @@ export const queryKeys = {
     claudeCode: () => queryKeys.features.of('claude_code_runtime'),
     claudeCodeStatus: () => [...queryKeys.features.claudeCode(), 'status'],
     claudeCodeComputers: () => [...queryKeys.features.claudeCode(), 'computers'],
+    claudeCodeSetup: () => [...queryKeys.features.claudeCode(), 'setup'],
   },
   platform: {
     all:    ['platform'],

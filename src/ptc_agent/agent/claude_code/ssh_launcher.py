@@ -326,6 +326,8 @@ class SSHLauncher:
     async def refused(self) -> None:
         if self.source in ("file", "relay") and self.on_refused is not None:
             await self.on_refused(self.source)
+        if self.source == "file":
+            raise ClaudeTurnFailed("token_refused", "Claude refused the computer's own setup token")
 
     def command(self, options: ClaudeAgentOptions) -> str:
         """The script the channel runs: the CLI under the shim, in a clean environment.
