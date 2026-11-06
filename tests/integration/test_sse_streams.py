@@ -98,6 +98,9 @@ async def test_unified_consumer_paths_against_real_redis(real_cache, thread_id, 
 
     # Patch get_cache_client so the consumer uses our test client.
     monkeypatch.setattr(sfl_mod, "get_cache_client", lambda: real_cache)
+    # The empty read that ends a drained stream waits out one BLOCK, about 4s
+    # at the production default, which would hold each scenario to its timeout.
+    monkeypatch.setattr(sfl_mod, "xread_block_ms", lambda: 100)
 
     # Simulate workflow lifecycle via a flag the terminal_check reads.
     workflow_done = asyncio.Event()
