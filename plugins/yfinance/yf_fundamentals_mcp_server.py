@@ -380,8 +380,10 @@ def get_earnings_data(ticker: str) -> _OUT_GET_EARNINGS_DATA:
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
         records {quarter, epsestimate, epsactual, epsdifference,
-        surprisepercent} in Yahoo's order (oldest first); quarter is
-        "YYYY-MM-DD"; surprisepercent is a fraction (0.067 = 6.7%). On error:
+        surprisepercent, methodology?} in Yahoo's order (oldest first); quarter
+        is "YYYY-MM-DD"; surprisepercent is a fraction (0.067 = 6.7%).
+        methodology (gaap or normalized, a non-GAAP basis) is the basis of
+        every EPS figure; do not compare across bases. On error:
         {error, detail, symbol} with error not_found|upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
@@ -618,8 +620,10 @@ def get_multiple_stocks_earnings(
         dict: {count, data, source, successful_tickers, errors?}. data is keyed
         by canonical symbol → {count, earnings}; each earnings is a list of
         Yahoo-native records {quarter, epsestimate, epsactual, epsdifference,
-        surprisepercent} in Yahoo's order (oldest first), quarter
-        "YYYY-MM-DD", surprisepercent a fraction (0.067 = 6.7%). Top-level
+        surprisepercent, methodology?} in Yahoo's order (oldest first), quarter
+        "YYYY-MM-DD", surprisepercent a fraction (0.067 = 6.7%). methodology
+        (gaap or normalized, a non-GAAP basis) is the basis of every EPS
+        figure; do not compare across bases. Top-level
         count is total earnings records across symbols. Failed/empty symbols
         are omitted and listed in errors as {error, detail, symbol}.
     """
