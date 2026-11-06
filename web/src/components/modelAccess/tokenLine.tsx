@@ -20,15 +20,13 @@ export interface TokenLine {
   actions: TokenAction[];
 }
 
-/** Each button's label, the sheet it opens (none for Remove, which asks
- *  first), and whether it stands out, as one adding a token where there is
- *  none does. */
-export const TOKEN_ACTIONS: Record<TokenAction, { label: string; sheet: SheetAction | null; prominent: boolean }> = {
-  add: { label: 'modelAccess.claudeCode.add', sheet: 'add', prominent: true },
-  addNew: { label: 'modelAccess.claudeCode.addNew', sheet: 'add', prominent: true },
-  addOwn: { label: 'modelAccess.claudeCode.computer.addOwn', sheet: 'add', prominent: false },
-  replace: { label: 'modelAccess.claudeCode.replace', sheet: 'replace', prominent: false },
-  remove: { label: 'modelAccess.claudeCode.remove', sheet: null, prominent: false },
+/** Each button's label and the sheet it opens (none for Remove, which asks first). */
+export const TOKEN_ACTIONS: Record<TokenAction, { label: string; sheet: SheetAction | null }> = {
+  add: { label: 'modelAccess.claudeCode.add', sheet: 'add' },
+  addNew: { label: 'modelAccess.claudeCode.addNew', sheet: 'add' },
+  addOwn: { label: 'modelAccess.claudeCode.computer.addOwn', sheet: 'add' },
+  replace: { label: 'modelAccess.claudeCode.replace', sheet: 'replace' },
+  remove: { label: 'modelAccess.claudeCode.remove', sheet: null },
 };
 
 /** The sheet a link to a line opens: the one its first sheet button would. */
@@ -83,10 +81,10 @@ function savedTokenLine(t: TFunction, locale: string, status: ReturnType<typeof 
   }
   const at = expiry(status.expiresAt);
   if (at && at.getTime() <= now) {
-    return { status: 'not_connected', detail: dated('modelAccess.claudeCode.expired', locale, at), actions: ['addNew', 'remove'] };
+    return { status: 'needs_reauth', detail: dated('modelAccess.claudeCode.expired', locale, at), actions: ['addNew', 'remove'] };
   }
   if (status.state === 'rejected') {
-    return { status: 'not_connected', detail: t('modelAccess.claudeCode.rejected'), actions: ['addNew', 'remove'] };
+    return { status: 'needs_reauth', detail: t('modelAccess.claudeCode.rejected'), actions: ['addNew', 'remove'] };
   }
   if (at && at.getTime() - now <= EXPIRES_SOON_MS) {
     return { status: 'connected', detail: dated('modelAccess.claudeCode.expiresSoon', locale, at), actions: ['addNew', 'remove'] };
@@ -102,7 +100,7 @@ function savedTokenLine(t: TFunction, locale: string, status: ReturnType<typeof 
  * where it cannot run (an organization's policy is installed there, no perl,
  * musl), only a token left on the computer shows, to be removed.
  */
-export function computerTokenLine(t: TFunction, locale: string, entry: ClaudeCodeComputer): TokenLine | null {
+export function computerTokenLine(t: TFunction, locale: string, entry: ClaudeCodeComputer, now: number): TokenLine | null {
   const own = entry.source === 'machine';
   const lead = own
     ? t('modelAccess.claudeCode.computer.ownToken')
@@ -123,14 +121,21 @@ export function computerTokenLine(t: TFunction, locale: string, entry: ClaudeCod
     case 'no_token':
       return { status: 'not_connected', detail: t('modelAccess.claudeCode.computer.noToken'), actions: ['add'] };
     case 'checking':
-      return { status: 'working', detail: lead, actions };
+      return { status: 'working', detail: lead ?? t('modelAccess.claudeCode.computer.checking'), actions };
     case 'rejected':
       return own
-        ? { status: 'not_connected', detail: t('modelAccess.claudeCode.rejected'), actions: ['addNew', 'remove'] }
-        : { status: 'not_connected', detail: t('modelAccess.claudeCode.computer.savedRejected'), actions };
+        ? { status: 'needs_reauth', detail: t('modelAccess.claudeCode.rejected'), actions: ['addNew', 'remove'] }
+        : { status: 'needs_reauth', detail: t('modelAccess.claudeCode.computer.savedRejected'), actions };
     case 'unverified':
-    case 'signed_in':
+    case 'signed_in': {
+      const at = expiry(entry.expires_at);
+      if (at && at.getTime() <= now) {
+        return own
+          ? { status: 'needs_reauth', detail: dated('modelAccess.claudeCode.expired', locale, at), actions: ['addNew', 'remove'] }
+          : { status: 'needs_reauth', detail: t('modelAccess.claudeCode.computer.savedRejected'), actions };
+      }
       return { status: 'connected', detail: described(locale, [lead, entry.email], entry.expires_at), actions };
+    }
   }
 }
 
@@ -156,7 +161,7 @@ export function useClaudeCodeTokenRows(): TokenRow[] {
   const now = useNow();
   const { computers } = useClaudeCodeComputers({ whenOff: true });
   const computerRows = computers.flatMap((c) => {
-    const line = computerTokenLine(t, locale, c);
+    const line = computerTokenLine(t, locale, c, now);
     return line ? [{ key: c.computer_id, target: computerTokenTarget(c), tag: c.name, line }] : [];
   });
   const savedLine = savedTokenLine(t, locale, status, now);

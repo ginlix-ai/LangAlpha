@@ -37,8 +37,10 @@ dependencies = [
     # >=1.2.16 is the release verified without our old shims: 1.2.13 snapshots a
     # new branch's delta channels (a run or update from an older checkpoint no
     # longer replays the writes it dropped), and 1.2.15 stamps ids on
-    # update_state writes.
-    "langgraph>=1.2.16,<2",
+    # update_state writes. >=1.2.19: a node's TracePolicy reaches tracers only
+    # (langchain-ai/langgraph#9486); before it, the policy src/observability
+    # sets on middleware hooks also emptied what stream_mode="messages" emits.
+    "langgraph>=1.2.19,<2",
     # ceiling mirrors langgraph<2 — the postgres saver serializes the same delta
     # blobs and moves in lockstep with core, so it can't cross a major on its own.
     # >=3.2.0: the history walk waits for a target past the first page
@@ -74,7 +76,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2.9",
     "alembic>=1.15.0",
     "sqlalchemy>=2.0.0",
-    "yfinance>=1.2.0",
+    "yfinance>=1.8.0",
     "matplotlib",
     "mplfinance==0.12.10b0",
     "tabulate",
@@ -178,10 +180,6 @@ packages = ["src/ptc_agent"]
 
 [tool.uv]
 required-version = ">=0.6.15"
-
-# yfinance caps curl_cffi<0.14 but works fine with 0.14+ (tested).
-# scrapling[fetchers] requires curl_cffi>=0.14. Override to resolve the conflict.
-override-dependencies = ["curl_cffi>=0.14"]
 
 [tool.ruff]
 extend-exclude = ["src/llms/vendor", "src/ptc_agent/core/sandbox/livefs_runtime/mfusepy.py"]

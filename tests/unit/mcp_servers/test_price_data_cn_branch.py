@@ -2,7 +2,9 @@
 
 Locks the branch contract: CN daily requests are served from ginlix-data's
 protocol route with source="tushare" (the upstream vendor); CN intraday skips
-it; an empty/erroring result falls through the existing chain unchanged.
+it; an empty result falls through the existing chain unchanged, and an erroring
+one falls through but is named: the chain's rows carry `fallback_from`, and
+with none the read is an error.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import pytest
 
 from src.data_client.base import FetchResult
 
-from .conftest import assert_ok_envelope
+from .conftest import assert_error, assert_ok_envelope
 
 _MOD = "plugins.langalpha_market_data.price_data_mcp_server"
 
@@ -160,6 +162,7 @@ class TestCnDailyBranch:
             result = await mod.get_stock_data("600519.SS", interval="1day")
 
         assert_ok_envelope(result, source="fmp")
+        assert "fallback_from" not in result
         client.get_stock_price.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -175,8 +178,37 @@ class TestCnDailyBranch:
             result = await mod.get_stock_data("600519.SS", interval="1day")
 
         assert_ok_envelope(result, source="fmp")
-        # A soft miss still leaves a trace, as the fundamentals CN branch does.
+        assert result["fallback_from"] == "tushare"
+        # A failed read leaves a trace, as the fundamentals CN branch does.
         assert "ginlix-data CN daily failed for 600519.SH" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_cn_daily_error_then_no_chain_rows_is_an_error(self):
+        # A Beijing listing FMP does not carry: an outage must not read as a
+        # listing with no bars.
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = AsyncMock()
+        client.get_stock_price = AsyncMock(return_value=[])
+        with patch.object(mod._cn, "get_daily", side_effect=RuntimeError("boom")), \
+                _force_fmp_path(mod), \
+                patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await mod.get_stock_data("920799.BJ", interval="1day")
+
+        assert_error(result, "upstream_error", detail_excludes=("boom",))
+        assert result["detail"] == "tushare failed (RuntimeError) and FMP has no rows for this listing"
+
+    @pytest.mark.asyncio
+    async def test_cn_daily_error_then_chain_error_keeps_its_code(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        with patch.object(mod._cn, "get_daily", side_effect=RuntimeError("boom")), \
+                _force_fmp_path(mod), \
+                patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
+            result = await mod.get_stock_data("920799.BJ", interval="1day")
+
+        assert_error(result, "client_unavailable", detail_excludes=("boom", "no key"))
+        assert result["detail"].startswith("tushare failed (RuntimeError) and FMP client unavailable")
 
     @pytest.mark.asyncio
     async def test_cn_daily_upstream_miss_logs_one_line(self, caplog):
@@ -204,6 +236,25 @@ class TestCnDailyBranch:
             "ginlix-data CN daily unavailable for 600519.SH: HTTPStatusError 503"
         )
         assert record.exc_info is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "start, end, detail",
+        [
+            ("2025-01-31", "2025-01-01", "start is after end"),
+            ("01/01/2025", None, "start_date must be YYYY-MM-DD, not '01/01/2025'"),
+        ],
+    )
+    async def test_bad_bounds_are_refused_before_tushare_is_asked(self, start, end, detail):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        daily = AsyncMock(side_effect=AssertionError("tushare was asked"))
+        with patch.object(mod._cn, "get_daily", new=daily):
+            result = await mod.get_stock_data("600519.SH", start_date=start, end_date=end)
+
+        assert_error(result, "invalid_argument", symbol="600519.SH")
+        assert result["detail"] == detail
+        daily.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_us_symbol_skips_the_cn_daily_route(self):

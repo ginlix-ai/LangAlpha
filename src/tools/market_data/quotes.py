@@ -18,7 +18,7 @@ from .quote_format import (
     format_quote_block,
     stamp_quote,
 )
-from src.data_client import get_financial_data_provider, get_market_data_provider
+from src.data_client import fallbacks, get_financial_data_provider, get_market_data_provider
 from src.data_client.base import MoverRow
 from src.data_client.freshness import is_live
 from src.data_client.ginlix_data.directory import fill_quote_names
@@ -292,7 +292,8 @@ async def fetch_quote(
     if asset_type not in ("stocks", "indices"):
         asset_type = "stocks"
     asset_class = AssetClass.INDEX if asset_type == "indices" else AssetClass.EQUITY
-    syms = [display_spelling(s) for s in (symbols or []) if s and s.strip()][:20]
+    # Two spellings of one listing (BRK.B, BRK-B) ask for it once.
+    syms = list(dict.fromkeys(display_spelling(s) for s in (symbols or []) if s and s.strip()))[:20]
     if not syms:
         return "No symbols provided.", empty
     try:
@@ -314,6 +315,8 @@ async def fetch_quote(
 
             served = [(asked[k], s) for s in snaps if (k := snapshot_key(s.get("symbol"))) in asked]
             filled = await fill_from_daily(served, list(asked.values()), user_id)
+            for _, row in filled[len(served):]:
+                fallbacks.answered(snapshot_key(row.get("symbol")), "quote", "daily close")
             snaps = [*snaps, *(row for _, row in filled[len(served):])]
         # The card names each row as the REST routes do; a daily row has none.
         await fill_quote_names(snaps)
@@ -353,8 +356,11 @@ async def fetch_quote(
         # "SPX" is requested as "GSPC"), but report under the caller's input
         # label, matched as the provider chain matches its rows.
         returned = {snapshot_key(s.get("symbol")) for s in snaps}
+        # A listing whose sources failed is named in the fallback note, not here.
+        failed = {f.symbol for f in fallbacks.taken() if f.what == "quote" and f.served_by is None}
         missing = sorted(
-            syms[i] for i, r in enumerate(resolved) if snapshot_key(r) not in returned
+            syms[i] for i, r in enumerate(resolved)
+            if snapshot_key(r) not in returned and snapshot_key(r) not in failed
         )
         if missing:
             content += f"\n(no data: {', '.join(missing)})"

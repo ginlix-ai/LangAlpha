@@ -37,17 +37,26 @@ from data_client.ginlix_data import (
     close_ginlix_mcp_client,
     get_ginlix_mcp_client,
 )
-from market_protocol import to_canonical, to_display
+from market_protocol import market_of, to_canonical, to_display
 
 try:
-    from _envelope import error_from_upstream, make_error, make_response, normalize_interval
-except ModuleNotFoundError:  # imported as a package module (tests)
-    from mcp_servers._envelope import (
+    from _envelope import (
+        error_from_exception,
         error_from_upstream,
         make_error,
         make_response,
         normalize_interval,
     )
+except ModuleNotFoundError:  # imported as a package module (tests)
+    from mcp_servers._envelope import (
+        error_from_exception,
+        error_from_upstream,
+        make_error,
+        make_response,
+        normalize_interval,
+    )
+
+from mcp_servers._dates import DateBoundError, daily_days
 
 from mcp_servers._schemas import (
     BOOL,
@@ -149,6 +158,8 @@ async def get_options_chain(
 ) -> _OUT_GET_OPTIONS_CHAIN:
     """List an underlying's options contracts; use to find contract tickers.
 
+    US-listed underlyings only; a listing on a known non-US venue is refused.
+
     Args:
         underlying_ticker: Underlying stock ticker, e.g. "AAPL".
         contract_type: "call" or "put" (default: both).
@@ -169,7 +180,16 @@ async def get_options_chain(
         ref = to_canonical(underlying_ticker)
         display, currency, timezone = to_display(ref), ref.price_currency, ref.tz
     except Exception:  # noqa: BLE001
-        display, currency, timezone = underlying_ticker, None, None
+        ref, display, currency, timezone = None, underlying_ticker, None, None
+
+    # ginlix-data lists US contracts only, so a listing it does not cover would
+    # read as one with no options. A venue the protocol does not know stays.
+    if ref is not None and market_of(ref) not in ("us", "other"):
+        return make_error(
+            "invalid_argument",
+            f"Options chains cover US-listed underlyings only; {display} is not one.",
+            symbol=display,
+        )
 
     if not await _ginlix.ensure():
         return make_error(
@@ -248,6 +268,15 @@ async def get_options_prices(
             symbol=opt,
             interval=interval,
             supported=sorted(_OPTION_INTERVALS),
+        )
+
+    # Bounds are read as the price tools read them, so a reversed or unreadable
+    # one is refused in their words rather than by the vendor.
+    try:
+        daily_days(from_date, to_date)
+    except DateBoundError as e:
+        return error_from_exception(
+            e, "Options prices fetch failed.", symbol=opt, interval=canonical
         )
 
     if not await _ginlix.ensure():

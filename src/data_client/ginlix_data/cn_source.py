@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from market_protocol import InstrumentRef, OhlcvBar, market_home, market_of, to_canonical
 from market_protocol.intervals import schema_for_legacy
 
-from src.data_client.base import FetchResult
+from src.data_client.base import FetchResult, IntervalNotSupported
 from src.data_client.normalize import series_lineage
 
 from .v2_routes import GinlixDataV2Routes
@@ -165,7 +165,7 @@ class GinlixDataCnSource:
         except ValueError:
             schema = None
         if schema not in _INTRADAY_SCHEMAS:
-            raise ValueError(f"Interval '{interval}' is not supported by this data source")
+            raise IntervalNotSupported(f"Interval '{interval}' is not supported by this data source")
         return await self._bars(symbol, schema, from_date, to_date, user_id)
 
     async def get_snapshots(

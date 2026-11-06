@@ -10,11 +10,14 @@ estimate is the model's where it is known to part from tiktoken (Claude).
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import AIMessage, AnyMessage
+from langchain.agents.middleware.types import ModelRequest
+from langchain_anthropic.chat_models import convert_to_anthropic_tool
+from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 
 from ptc_agent.agent.middleware.compaction.summarize import model_label
 from ptc_agent.agent.middleware.compaction.types import TokenCounter
@@ -80,6 +83,23 @@ def keep_tokens_for(
     return min(claude_keep_tokens if is_claude(model) else keep_tokens, threshold // 3)
 
 
+def sent_ahead(request: ModelRequest, appended: str = "") -> list[Any]:
+    """What ``request`` sends its model ahead of the messages, as messages
+    an ``Estimate`` counts: the system message, the block ``appended`` to
+    it by a middleware further in (the thread's baseline), and the tool
+    schemas as one message of their JSON, in the shape Claude is sent them.
+    The provider counts all of it as input: on the main agent the schemas
+    measure about 18k to 27k tokens and the baseline about 7k, which an
+    estimate of the system prompt and messages alone fell short by."""
+    ahead = [request.system_message] if request.system_message is not None else []
+    if appended:
+        ahead.append(SystemMessage(appended))
+    if request.tools:
+        schemas = [tool if isinstance(tool, dict) else convert_to_anthropic_tool(tool) for tool in request.tools]
+        ahead.append(SystemMessage(json.dumps(schemas, ensure_ascii=False, default=str)))
+    return ahead
+
+
 def measured_tokens(state: Mapping[str, Any]) -> int | None:
     """The context size the last model call reported, which the next call's
     summary trigger reads; None before any call has reported usage."""
@@ -108,11 +128,13 @@ async def context_tokens(
     state: Mapping[str, Any],
     view: Sequence[AnyMessage],
     estimate: Estimate,
-    system: Sequence[Any] = (),
+    ahead: Callable[[], Sequence[Any]] | None = None,
 ) -> ContextReading:
     """The context ``view`` makes, as the summary trigger reads it: what the
     last call measured plus an estimate of what has been added since, else
-    an estimate of the whole of it.
+    an estimate of the whole of it, with what the call sends ahead of the
+    view, which the measurement counts too: ``ahead`` gives it
+    (``sent_ahead``), read only where nothing was measured.
 
     The measurement ends at the newest answer, which its output tokens
     count, so everything after it is new: the results of that answer's tool
@@ -123,14 +145,17 @@ async def context_tokens(
     Read before every model call, so only the added part is counted, on the
     loop. A whole history, read after a summary between turns or a cut after
     a pause, is tens of milliseconds of tokenizing, and its text goes to a
-    thread so the other turns on the loop do not wait on it; its attachments
-    are counted on the loop, which their parse cache is kept on.
+    thread so the other turns on the loop do not wait on it, with what is
+    sent ahead of it built there too: the tool schemas alone serialize to
+    tens of thousands of tokens. Its attachments are counted on the loop,
+    which their parse cache is kept on; nothing sent ahead holds any.
     """
     measured = measured_tokens(state)
     if measured is None:
-        whole = [*system, *view]
-        tokens = await asyncio.to_thread(estimate.counter, whole)
-        return ContextReading(tokens + attachment_tokens(whole, estimate.cost), estimate)
+        tokens = await asyncio.to_thread(
+            lambda: estimate.counter([*(ahead() if ahead is not None else ()), *view])
+        )
+        return ContextReading(tokens + attachment_tokens(view, estimate.cost), estimate)
     answered = next(
         (i for i in range(len(view) - 1, -1, -1) if isinstance(view[i], AIMessage)),
         None,

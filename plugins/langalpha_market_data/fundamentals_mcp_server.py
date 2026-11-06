@@ -3,12 +3,12 @@
 
 Fundamental data for programmatic analysis via MCP. A CN listing is served
 first from ginlix-data (vendor Tushare), whose rows come in FMP's camelCase
-shape; every other listing, and any CN miss, comes from FMP. Ratios are the
-exception: FMP answers first there, since only it prices the valuation fields,
-and ginlix-data answers a CN listing FMP cannot. Historical valuation, insider
-trades and technical indicators come from FMP alone. `source` names the vendor
-that answered, and the envelope around `data` is the standard market-data
-contract (AGENT_CONTRACT.md).
+shape; every other listing, and any CN miss, comes from FMP. A CN read that
+failed, rather than came back empty, still falls back to FMP, but the answer
+then says so (`fallback_from`), and an FMP miss after it is an error.
+Historical valuation, insider trades and technical indicators come from FMP
+alone. `source` names the vendor that answered, and the envelope around
+`data` is the standard market-data contract (AGENT_CONTRACT.md).
 
 Tools:
 - get_financial_statements: Raw income/balance/cash flow (multi-year)
@@ -56,6 +56,7 @@ from mcp_servers._envelope import error_from_exception, make_error, make_respons
 from mcp_servers._schemas import (
     ANY,
     BAR_LABELS,
+    FALLBACK_FROM,
     INT,
     RECORDS,
     RECORDS_BY_KEY,
@@ -85,6 +86,7 @@ _SOURCE = "fmp"
 _SOURCE_TUSHARE = "tushare"
 _CLIENT_UNAVAILABLE = "FMP client is unavailable"
 _UPSTREAM_FAILED = "FMP request failed"
+_CN_FAILED = "tushare failed"
 
 # The bar sizes the hosted technicals read accepts, in the order its refusal
 # lists them. FMP answers any other as a bare 400, so the refusal is made here,
@@ -92,6 +94,9 @@ _UPSTREAM_FAILED = "FMP request failed"
 _BAR_SIZES = ("1min", "5min", "15min", "30min", "1hour", "4hour", "1day")
 
 _tushare_financial = None
+
+#: Echo key of the CN tools: set only when a failed tushare read left the answer to FMP.
+_FALLBACK = {"fallback_from": FALLBACK_FROM}
 
 
 def _canonical(symbol: str) -> str:
@@ -121,8 +126,7 @@ def _fmp_symbol(symbol: str) -> str:
 def _tushare_for(symbol: str) -> GinlixDataCnFinancialSource | None:
     """CN fundamentals (vendor: Tushare) served by ginlix-data, for CN symbols.
 
-    Returns ``None`` otherwise; callers fall through to the FMP path, and an
-    unreachable ginlix-data or an empty result does the same (soft miss).
+    Returns ``None`` otherwise, and :func:`_cn_first` goes straight to FMP.
     """
     if symbol_market(symbol) != "cn":
         return None
@@ -139,35 +143,69 @@ def _http_miss(exc: httpx.HTTPError) -> str:
     return type(exc).__name__
 
 
-async def _from_tushare(disp: str, fetch, *, data_type: str, **extra):
-    """Serve a CN tool from tushare, or ``None`` to fall through to FMP.
+async def _from_fmp(disp: str, read, *, data_type: str, **extra) -> dict:
+    """Answer a tool from FMP: *read* takes the client and returns the payload.
 
-    The single definition of the cn-branch contract: gate on ``_tushare_for``,
-    treat any tushare error or empty payload as a soft miss (``None`` → the
-    caller's FMP path answers), and envelope hits with ``source="tushare"``.
-    *disp* is the display spelling, so a canonical ``600519.XSHG`` still gates
-    in as a CN listing.
+    The one place an FMP read gets its client, its envelope and its error, so a
+    tool passes only what it reads.
     """
-    ts = _tushare_for(disp)
-    if ts is None:
-        return None
     try:
-        data = await fetch(ts)
+        client = await get_fmp_client()
+    except Exception:  # noqa: BLE001
+        return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
+    try:
+        payload = await read(client)
+    except Exception as e:  # noqa: BLE001
+        return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+    return make_response(
+        payload or [], source=_SOURCE, symbol=disp, data_type=data_type, **extra
+    )
+
+
+async def _cn_first(disp: str, cn_read, fmp_read, *, data_type: str, **extra) -> dict:
+    """Serve a tool from tushare for a CN listing, from FMP otherwise.
+
+    The single definition of the cn-branch contract: gate on ``_tushare_for``
+    and a configured ginlix-data, envelope a tushare hit with
+    ``source="tushare"``, and let an empty payload fall through to FMP, read by
+    *fmp_read*. A tushare error falls through too, but it is not a miss: FMP's
+    rows then carry ``fallback_from``, an FMP error keeps its code with the
+    tushare failure named, and an empty FMP answer becomes ``upstream_error``,
+    since neither source answered. *disp* is the display spelling, so a
+    canonical ``600519.XSHG`` still gates in as a CN listing.
+    """
+    def fmp():
+        return _from_fmp(disp, fmp_read, data_type=data_type, **extra)
+
+    ts = _tushare_for(disp)
+    if ts is None or not await get_ginlix_mcp_client().ensure():
+        return await fmp()
+    try:
+        data = await cn_read(ts)
     except httpx.HTTPError as exc:
         # An upstream miss (a 503, a 429, a dropped connection) is expected; the
         # FMP path answers instead, so one line is enough.
-        logger.warning(
-            "ginlix-data %s unavailable for %s: %s", data_type, disp, _http_miss(exc)
-        )
-        return None
-    except Exception:  # noqa: BLE001 — soft miss, fall through to FMP
+        failed = _http_miss(exc)
+        logger.warning("ginlix-data %s unavailable for %s: %s", data_type, disp, failed)
+    except Exception as exc:  # noqa: BLE001 — FMP answers instead
+        failed = type(exc).__name__
         logger.warning("ginlix-data %s failed for %s", data_type, disp, exc_info=True)
-        return None
-    if not populated(data):
-        return None
-    return make_response(
-        data, source=_SOURCE_TUSHARE, symbol=disp, data_type=data_type, **extra
-    )
+    else:
+        if populated(data):
+            return make_response(
+                data, source=_SOURCE_TUSHARE, symbol=disp, data_type=data_type, **extra
+            )
+        return await fmp()
+    answer = await fmp()
+    if "error" in answer:
+        return {**answer, "detail": f"{_CN_FAILED} ({failed}) and FMP did too: {answer['detail']}"}
+    if not populated(answer["data"]):
+        return make_error(
+            "upstream_error",
+            f"{_CN_FAILED} ({failed}) and FMP has no rows for this listing",
+            symbol=disp,
+        )
+    return {**answer, "fallback_from": _SOURCE_TUSHARE}
 
 
 #: Set by ``_add_quarterly_empty_note``; omitted unless a quarterly read is empty.
@@ -195,6 +233,7 @@ _OUT_GET_FINANCIAL_STATEMENTS = output_model(
             "statement_type": STR,
             "period": STR,
             "note": _QUARTERLY_NOTE,
+            **_FALLBACK,
         },
     ),
 )
@@ -217,13 +256,14 @@ async def get_financial_statements(
         limit: Number of periods (default 10).
 
     Returns:
-        dict: {symbol, count, data, source, data_type, statement_type, period}.
-        One statement_type → a list of period records; "all" → {income_statement,
-        balance_sheet, cash_flow} lists with count the total. Common camelCase
-        fields: date, revenue, netIncome, eps, totalAssets, operatingCashFlow.
-        date is "YYYY-MM-DD"; records are newest-first as returned by FMP. When
-        period="quarter" returns 0 records, an optional note suggests
-        period="annual". On error: {error: <code>, detail, symbol}.
+        dict: {symbol, count, data, source, data_type, statement_type, period,
+        fallback_from?, note?}. One statement_type → a list of period records;
+        "all" → {income_statement, balance_sheet, cash_flow} lists with count the
+        total. Common camelCase fields: date, revenue, netIncome, eps,
+        totalAssets, operatingCashFlow. date is "YYYY-MM-DD"; records are
+        newest-first. fallback_from: source that failed before FMP answered.
+        An empty quarterly read adds a note. On error: {error: <code>, detail,
+        symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
@@ -242,49 +282,32 @@ async def get_financial_statements(
         )
         return {"income_statement": income, "balance_sheet": balance, "cash_flow": cash}
 
-    cn = await _from_tushare(
-        disp, _cn_statements,
-        data_type="financial_statements", statement_type=statement_type, period=period,
-    )
-    if cn is not None:
-        return cn
-
-    try:
-        client = await get_fmp_client()
-    except Exception:  # noqa: BLE001
-        return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
-
-    try:
+    async def _fmp_statements(client):
         if statement_type == "income":
-            data = await client.get_income_statement(api, period=period, limit=limit)
-        elif statement_type == "balance":
-            data = await client.get_balance_sheet(api, period=period, limit=limit)
-        elif statement_type == "cash":
-            data = await client.get_cash_flow(api, period=period, limit=limit)
-        else:  # "all"
-            income = await client.get_income_statement(api, period=period, limit=limit)
-            balance = await client.get_balance_sheet(api, period=period, limit=limit)
-            cash_flow = await client.get_cash_flow(api, period=period, limit=limit)
-            data = {
-                "income_statement": income or [],
-                "balance_sheet": balance or [],
-                "cash_flow": cash_flow or [],
-            }
+            return await client.get_income_statement(api, period=period, limit=limit)
+        if statement_type == "balance":
+            return await client.get_balance_sheet(api, period=period, limit=limit)
+        if statement_type == "cash":
+            return await client.get_cash_flow(api, period=period, limit=limit)
+        income = await client.get_income_statement(api, period=period, limit=limit)  # "all"
+        balance = await client.get_balance_sheet(api, period=period, limit=limit)
+        cash_flow = await client.get_cash_flow(api, period=period, limit=limit)
+        return {
+            "income_statement": income or [],
+            "balance_sheet": balance or [],
+            "cash_flow": cash_flow or [],
+        }
 
-        result = make_response(
-            data if statement_type == "all" else (data or []),
-            source=_SOURCE,
-            symbol=disp,
-            data_type="financial_statements",
-            statement_type=statement_type,
-            period=period,
-        )
-        _add_quarterly_empty_note(result, period)
-
-        return result
-
-    except Exception as e:  # noqa: BLE001
-        return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+    result = await _cn_first(
+        disp,
+        _cn_statements,
+        _fmp_statements,
+        data_type="financial_statements",
+        statement_type=statement_type,
+        period=period,
+    )
+    _add_quarterly_empty_note(result, period)
+    return result
 
 
 _OUT_GET_FINANCIAL_RATIOS = output_model(
@@ -292,7 +315,7 @@ _OUT_GET_FINANCIAL_RATIOS = output_model(
     envelope_schema(
         RECORDS_BY_KEY,
         frame=("symbol",),
-        echo={"data_type": STR, "period": STR, "note": _QUARTERLY_NOTE},
+        echo={"data_type": STR, "period": STR, "note": _QUARTERLY_NOTE, **_FALLBACK},
     ),
 )
 
@@ -311,15 +334,15 @@ async def get_financial_ratios(
         limit: Number of periods (default 10).
 
     Returns:
-        dict: {symbol, count, data, source, data_type, period}. data is
-        {key_metrics, ratios}, each a list of records, newest first; count is
-        the total. key_metrics fields: date, marketCap, enterpriseValue,
-        evToEBITDA, freeCashFlowYield. ratios fields: date, netProfitMargin,
-        returnOnEquity, currentRatio, debtToEquityRatio, priceToEarningsRatio.
-        Field names are FMP-native camelCase; date is "YYYY-MM-DD". A quarter
-        row's flow-based fields (P/S, EV/EBITDA, yields, returns) cover that
-        quarter alone, but its P/E fields annualize the quarter's EPS (x4). An
-        empty quarterly read adds a note suggesting period="annual". On error:
+        dict: {symbol, count, data, source, data_type, period, fallback_from?,
+        note?}. data is {key_metrics, ratios}: period records, newest first.
+        key_metrics fields: marketCap, enterpriseValue, evToEBITDA,
+        freeCashFlowYield. ratios fields: netProfitMargin, returnOnEquity,
+        currentRatio, debtToEquityRatio, priceToEarningsRatio. source "tushare"
+        rows lack price-based fields (see get_historical_valuation). date is
+        "YYYY-MM-DD". Quarter rows: flow-based fields cover that quarter alone;
+        P/E fields annualize its EPS (x4). fallback_from: source that failed
+        before FMP answered. An empty quarterly read adds a note. On error:
         {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
@@ -332,35 +355,19 @@ async def get_financial_ratios(
         )
         return {"key_metrics": key_metrics, "ratios": ratios}
 
-    # FMP first, the reverse of the other CN branches: the valuation fields
-    # promised above (marketCap, enterpriseValue, priceToEarningsRatio) are
-    # priced per period, and ginlix-data's CN rows carry only the accounting
-    # half. Those rows still answer a CN listing that FMP cannot.
-    async def _or_cn(fmp_answer: dict) -> dict:
-        cn = await _from_tushare(
-            disp, _cn_ratios, data_type="financial_ratios", period=period
-        )
-        return fmp_answer if cn is None else cn
-
-    try:
-        client = await get_fmp_client()
-    except Exception:  # noqa: BLE001
-        return await _or_cn(
-            make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
-        )
-
-    try:
+    async def _fmp_ratios(client):
         key_metrics = await client.get_key_metrics(api, period=period, limit=limit)
         ratios = await client.get_financial_ratios(api, period=period, limit=limit)
-    except Exception as e:  # noqa: BLE001
-        return await _or_cn(error_from_exception(e, _UPSTREAM_FAILED, symbol=disp))
+        return {"key_metrics": key_metrics or [], "ratios": ratios or []}
 
-    data = {"key_metrics": key_metrics or [], "ratios": ratios or []}
-    answer = make_response(
-        data, source=_SOURCE, symbol=disp, data_type="financial_ratios", period=period
+    # CN rows carry the accounting half only: ginlix-data prices no period, so
+    # they have no marketCap, enterpriseValue or priceToEarningsRatio, and FMP's
+    # are not mixed in to stand for them.
+    result = await _cn_first(
+        disp, _cn_ratios, _fmp_ratios, data_type="financial_ratios", period=period
     )
-    _add_quarterly_empty_note(answer, period)
-    return answer if populated(data) else await _or_cn(answer)
+    _add_quarterly_empty_note(result, period)
+    return result
 
 
 _OUT_GET_GROWTH_METRICS = output_model(
@@ -368,7 +375,7 @@ _OUT_GET_GROWTH_METRICS = output_model(
     envelope_schema(
         RECORDS_BY_KEY,
         frame=("symbol",),
-        echo={"data_type": STR, "period": STR, "note": _QUARTERLY_NOTE},
+        echo={"data_type": STR, "period": STR, "note": _QUARTERLY_NOTE, **_FALLBACK},
     ),
 )
 
@@ -387,52 +394,37 @@ async def get_growth_metrics(
         limit: Number of periods (default 10).
 
     Returns:
-        dict: {symbol, count, data, source, data_type, period}. data is
-        {financial_growth, income_statement_growth}, each a list, newest first;
-        count is the total. financial_growth fields: date, revenueGrowth,
-        netIncomeGrowth, epsgrowth; income_statement_growth fields: date,
-        growthRevenue, growthNetIncome, growthEPS. Growth values are decimal
-        fractions (0.1 = 10%); a quarter row grows on the prior quarter, not the
-        year-ago one. Field names are FMP-native camelCase; date is
-        "YYYY-MM-DD". When period="quarter" returns 0 records, an optional note
-        suggests period="annual". On error: {error: <code>, detail, symbol}.
+        dict: {symbol, count, data, source, data_type, period, fallback_from?,
+        note?}. data is {financial_growth, income_statement_growth}, each a
+        list, newest first; count is the total. financial_growth fields: date,
+        revenueGrowth, netIncomeGrowth, epsgrowth; income_statement_growth
+        fields: date, growthRevenue, growthNetIncome, growthEPS. Growth values
+        are decimal fractions (0.1 = 10%); a quarter row grows on the prior
+        quarter, not the year-ago one. Field names are FMP-native camelCase; date is
+        "YYYY-MM-DD". fallback_from: source that failed before FMP answered.
+        An empty quarterly read adds a note. On error: {error: <code>, detail,
+        symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
 
-    cn = await _from_tushare(
-        disp,
-        lambda ts: ts.get_growth_periods(disp, period=period, limit=limit),
-        data_type="growth_metrics", period=period,
-    )
-    if cn is not None:
-        return cn
-
-    try:
-        client = await get_fmp_client()
-    except Exception:  # noqa: BLE001
-        return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
-
-    try:
+    async def _fmp_growth(client):
         financial_growth = await client.get_financial_growth(api, period=period, limit=limit)
         income_growth = await client.get_income_statement_growth(api, period=period, limit=limit)
+        return {
+            "financial_growth": financial_growth or [],
+            "income_statement_growth": income_growth or [],
+        }
 
-        result = make_response(
-            {
-                "financial_growth": financial_growth or [],
-                "income_statement_growth": income_growth or [],
-            },
-            source=_SOURCE,
-            symbol=disp,
-            data_type="growth_metrics",
-            period=period,
-        )
-        _add_quarterly_empty_note(result, period)
-
-        return result
-
-    except Exception as e:  # noqa: BLE001
-        return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+    result = await _cn_first(
+        disp,
+        lambda ts: ts.get_growth_periods(disp, period=period, limit=limit),
+        _fmp_growth,
+        data_type="growth_metrics",
+        period=period,
+    )
+    _add_quarterly_empty_note(result, period)
+    return result
 
 
 _OUT_GET_HISTORICAL_VALUATION = output_model(
@@ -593,7 +585,7 @@ _OUT_GET_DIVIDENDS_AND_SPLITS = output_model(
     envelope_schema(
         RECORDS_BY_KEY,
         frame=("symbol",),
-        echo={"data_type": STR},
+        echo={"data_type": STR, **_FALLBACK},
     ),
 )
 
@@ -608,40 +600,29 @@ async def get_dividends_and_splits(
         symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
-        dict: {symbol, count, data, source, data_type}. data is
+        dict: {symbol, count, data, source, data_type, fallback_from?}. data is
         {dividends, splits}, each a list, newest first; count is the total
         across both. dividends fields: date, recordDate, paymentDate,
         declarationDate, adjDividend (split-adjusted), dividend (as paid), yield
         (percent, 0.34 = 0.34%), frequency. splits fields: date, numerator,
         denominator. Field names are FMP-native camelCase; date is "YYYY-MM-DD".
-        On error: {error: <code>, detail, symbol}.
+        fallback_from: source that failed before FMP answered. On error:
+        {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
-    cn = await _from_tushare(
-        disp, lambda ts: ts.get_dividends(disp), data_type="dividends_and_splits"
-    )
-    if cn is not None:
-        return cn
 
-    try:
-        client = await get_fmp_client()
-    except Exception:  # noqa: BLE001
-        return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
-
-    try:
+    async def _fmp_dividends(client):
         dividends = await client.get_dividends(api)
         splits = await client.get_splits(api)
+        return {"dividends": dividends or [], "splits": splits or []}
 
-        return make_response(
-            {"dividends": dividends or [], "splits": splits or []},
-            source=_SOURCE,
-            symbol=disp,
-            data_type="dividends_and_splits",
-        )
-
-    except Exception as e:  # noqa: BLE001
-        return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+    return await _cn_first(
+        disp,
+        lambda ts: ts.get_dividends(disp),
+        _fmp_dividends,
+        data_type="dividends_and_splits",
+    )
 
 
 _OUT_GET_SHARES_FLOAT = output_model(
@@ -649,7 +630,7 @@ _OUT_GET_SHARES_FLOAT = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol",),
-        echo={"data_type": STR},
+        echo={"data_type": STR, **_FALLBACK},
     ),
 )
 
@@ -664,44 +645,31 @@ async def get_shares_float(
         symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
-        dict: {symbol, count, data, source, data_type}. data is a list of
-        records; count is the record total. Fields: symbol, date, freeFloat
+        dict: {symbol, count, data, source, data_type, fallback_from?}. data is
+        a list of records; count is the record total. Fields: symbol, date, freeFloat
         (percent, 99.8 = 99.8%), floatShares, outstandingShares; an ADR counts
         ADS units, not ordinary shares. date is "YYYY-MM-DD": the day FMP
         refreshed the record, not the as-of date of the counts, which can be
         months older; an A-share row's date is the trading day of its counts.
-        Field names are FMP-native camelCase. On error: {error: <code>, detail,
-        symbol}.
+        Field names are FMP-native camelCase. fallback_from: source that failed
+        before FMP answered. On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
-    cn = await _from_tushare(
-        disp, lambda ts: ts.get_shares_float(disp), data_type="shares_float"
-    )
-    if cn is not None:
-        return cn
 
-    try:
-        client = await get_fmp_client()
-    except Exception:  # noqa: BLE001
-        return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
-
-    try:
-        data = await client.get_shares_float(api)
-
+    async def _fmp_float(client):
         # FMP stamps the row with its refresh time; the contract is a bare date.
-        return make_response(
-            [
-                {**row, "date": str(row["date"])[:10]} if row.get("date") else row
-                for row in data or []
-            ],
-            source=_SOURCE,
-            symbol=disp,
-            data_type="shares_float",
-        )
+        return [
+            {**row, "date": str(row["date"])[:10]} if row.get("date") else row
+            for row in await client.get_shares_float(api) or []
+        ]
 
-    except Exception as e:  # noqa: BLE001
-        return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+    return await _cn_first(
+        disp,
+        lambda ts: ts.get_shares_float(disp),
+        _fmp_float,
+        data_type="shares_float",
+    )
 
 
 _OUT_GET_KEY_EXECUTIVES = output_model(
@@ -709,7 +677,7 @@ _OUT_GET_KEY_EXECUTIVES = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol",),
-        echo={"data_type": STR},
+        echo={"data_type": STR, **_FALLBACK},
     ),
 )
 
@@ -725,37 +693,22 @@ async def get_key_executives(
         symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
-        dict: {symbol, count, data, source, data_type}. data is a list of
-        executive records; count is the record total. Fields: name, title, pay,
-        currencyPay, gender, yearBorn, titleSince. Field names are FMP-native
-        camelCase; pay is an integer in currencyPay units; order is as returned
-        by FMP (not time-ordered). On error: {error: <code>, detail, symbol}.
+        dict: {symbol, count, data, source, data_type, fallback_from?}. data is
+        a list of executive records; count is the record total. Fields: name,
+        title, pay, currencyPay, gender, yearBorn, titleSince. Field names are
+        FMP-native camelCase; pay is an integer in currencyPay units; not
+        time-ordered. fallback_from: source that failed before FMP answered.
+        On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
-    cn = await _from_tushare(
-        disp, lambda ts: ts.get_key_executives(disp), data_type="key_executives"
+
+    return await _cn_first(
+        disp,
+        lambda ts: ts.get_key_executives(disp),
+        lambda client: client.get_key_executives(api),
+        data_type="key_executives",
     )
-    if cn is not None:
-        return cn
-
-    try:
-        client = await get_fmp_client()
-    except Exception:  # noqa: BLE001
-        return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
-
-    try:
-        data = await client.get_key_executives(api)
-
-        return make_response(
-            data or [],
-            source=_SOURCE,
-            symbol=disp,
-            data_type="key_executives",
-        )
-
-    except Exception as e:  # noqa: BLE001
-        return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
 
 
 _OUT_GET_TECHNICAL_INDICATOR = output_model(

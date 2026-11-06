@@ -21,6 +21,7 @@ from ..base import FetchResult
 from ..market_data_provider import is_us_symbol
 from ..normalize import normalize_bars, symbol_timezone
 from .pagination import follow_cursor, unique_by_time
+from .symbols import stock_ticker
 from .v2_routes import GinlixDataV2Routes, path_segment
 
 logger = logging.getLogger(__name__)
@@ -355,8 +356,9 @@ class GinlixMCPClient(GinlixDataV2Routes):
         }
 
         try:
+            ticker = stock_ticker(symbol) if market == "stock" else symbol
             fetched = await self._fetch_paginated_bars(
-                f"/api/v1/data/aggregates/{path_segment(market)}/{path_segment(symbol)}", params,
+                f"/api/v1/data/aggregates/{path_segment(market)}/{path_segment(ticker)}", params,
             )
             normalized = normalize_bars(fetched.bars, symbol, intraday=intraday)
             if intraday:
@@ -395,7 +397,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
 
         page_size = min(limit, 1000)
         params: dict[str, Any] = {
-            "underlying_ticker": underlying_ticker,
+            "underlying_ticker": stock_ticker(underlying_ticker),
             "limit": page_size,
         }
         if contract_type:
@@ -512,7 +514,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
 
         if data_type in ("short_interest", "both"):
             params: dict[str, Any] = {
-                "ticker": symbol,
+                "ticker": stock_ticker(symbol),
                 "limit": limit,
                 "sort": "settlement_date.desc",
             }
@@ -531,7 +533,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
 
         if data_type in ("short_volume", "both"):
             params = {
-                "ticker": symbol,
+                "ticker": stock_ticker(symbol),
                 "limit": limit,
                 "sort": "date.desc",
             }

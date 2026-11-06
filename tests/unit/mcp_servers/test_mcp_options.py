@@ -100,6 +100,18 @@ class TestGetOptionsChain:
 
         assert_error(result, "not_found")
 
+    @pytest.mark.asyncio
+    async def test_an_underlying_outside_the_us_is_refused(self):
+        import plugins.langalpha_market_data.options_mcp_server as mod
+
+        fetch = AsyncMock()
+        with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_chain", new=fetch):
+            result = await mod.get_options_chain("0700.HK")
+
+        assert_error(result, "invalid_argument", symbol="0700.HK")
+        assert "currency" not in result
+        fetch.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # get_options_prices
@@ -122,6 +134,25 @@ class TestGetOptionsPrices:
             result = await mod.get_options_prices(_OPT, "2025-01-01", "2025-01-31")
 
         assert_error(result, "client_unavailable")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "lo, hi, detail",
+        [
+            ("2025-01-31", "2025-01-01", "start is after end"),
+            ("01/01/2025", "2025-01-31", "from_date must be YYYY-MM-DD, not '01/01/2025'"),
+        ],
+    )
+    async def test_bounds_refused_as_the_price_tools_refuse_them(self, lo, hi, detail):
+        import plugins.langalpha_market_data.options_mcp_server as mod
+
+        fetch = AsyncMock()
+        with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
+            result = await mod.get_options_prices(_OPT, lo, hi)
+
+        assert_error(result, "invalid_argument", symbol=_OPT)
+        assert result["detail"] == detail
+        fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_success_ascending_and_underlying_currency(self):

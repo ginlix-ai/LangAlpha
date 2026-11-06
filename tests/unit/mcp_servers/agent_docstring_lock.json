@@ -115,28 +115,20 @@
   },
   "direct:screen_stocks": {
     "doc_lines": [
-      "Screen/discover stocks by fundamental and market filters — market cap, price,",
-      "volume, beta, dividend, sector, industry, exchange, country, and type — via the",
-      "FMP company screener.",
+      "Screen/discover stocks by market cap, price, volume, beta, dividend, sector,",
+      "industry, exchange and country via the FMP company screener. Funds and ETFs",
+      "are left out unless is_etf or is_fund is True.",
+      "Thresholds compare in each listing's own currency (yen on a JP screen), and",
+      "London prices and dividends in pence.",
       "",
       "Args:",
-      "    market_cap_more_than: Minimum market capitalization (e.g. 1e9 for $1B).",
-      "    market_cap_lower_than: Maximum market capitalization.",
-      "    price_more_than: Minimum share price.",
-      "    price_lower_than: Maximum share price.",
-      "    volume_more_than: Minimum daily volume.",
-      "    volume_lower_than: Maximum daily volume.",
-      "    beta_more_than: Minimum beta.",
-      "    beta_lower_than: Maximum beta.",
-      "    dividend_more_than: Minimum dividend yield.",
-      "    dividend_lower_than: Maximum dividend yield.",
+      "    market_cap_more_than: e.g. 1e9 for $1B on a US listing.",
+      "    dividend_more_than, dividend_lower_than: Annual dividend per share, not a yield.",
       "    sector: e.g. \"Technology\", \"Healthcare\", \"Financial Services\".",
       "    industry: e.g. \"Software\", \"Biotechnology\".",
       "    exchange: e.g. \"NASDAQ\", \"NYSE\", \"AMEX\".",
-      "    country: e.g. \"US\", \"CN\", \"GB\".",
-      "    is_etf: ETFs only (True) or exclude ETFs (False).",
-      "    is_fund: Funds only (True) or exclude funds (False).",
-      "    is_actively_trading: Restrict to actively trading names.",
+      "    country: Issuer's domicile, e.g. \"US\", \"CN\", \"GB\"; keeps its listings on",
+      "        that country's own exchanges. For listings abroad (ADRs), pass exchange.",
       "    limit: Max results (default 50)."
     ],
     "params": [
@@ -169,13 +161,14 @@
       "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type}. data is",
+      "    dict: {symbol, count, data, source, data_type, fallback_from?}. data is",
       "    {dividends, splits}, each a list, newest first; count is the total",
       "    across both. dividends fields: date, recordDate, paymentDate,",
       "    declarationDate, adjDividend (split-adjusted), dividend (as paid), yield",
       "    (percent, 0.34 = 0.34%), frequency. splits fields: date, numerator,",
       "    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\".",
-      "    On error: {error: <code>, detail, symbol}."
+      "    fallback_from: source that failed before FMP answered. On error:",
+      "    {error: <code>, detail, symbol}."
     ],
     "params": [
       "symbol"
@@ -194,15 +187,15 @@
       "    limit: Number of periods (default 10).",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type, period}. data is",
-      "    {key_metrics, ratios}, each a list of records, newest first; count is",
-      "    the total. key_metrics fields: date, marketCap, enterpriseValue,",
-      "    evToEBITDA, freeCashFlowYield. ratios fields: date, netProfitMargin,",
-      "    returnOnEquity, currentRatio, debtToEquityRatio, priceToEarningsRatio.",
-      "    Field names are FMP-native camelCase; date is \"YYYY-MM-DD\". A quarter",
-      "    row's flow-based fields (P/S, EV/EBITDA, yields, returns) cover that",
-      "    quarter alone, but its P/E fields annualize the quarter's EPS (x4). An",
-      "    empty quarterly read adds a note suggesting period=\"annual\". On error:",
+      "    dict: {symbol, count, data, source, data_type, period, fallback_from?,",
+      "    note?}. data is {key_metrics, ratios}: period records, newest first.",
+      "    key_metrics fields: marketCap, enterpriseValue, evToEBITDA,",
+      "    freeCashFlowYield. ratios fields: netProfitMargin, returnOnEquity,",
+      "    currentRatio, debtToEquityRatio, priceToEarningsRatio. source \"tushare\"",
+      "    rows lack price-based fields (see get_historical_valuation). date is",
+      "    \"YYYY-MM-DD\". Quarter rows: flow-based fields cover that quarter alone;",
+      "    P/E fields annualize its EPS (x4). fallback_from: source that failed",
+      "    before FMP answered. An empty quarterly read adds a note. On error:",
       "    {error: <code>, detail, symbol}."
     ],
     "params": [
@@ -226,13 +219,14 @@
       "    limit: Number of periods (default 10).",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type, statement_type, period}.",
-      "    One statement_type → a list of period records; \"all\" → {income_statement,",
-      "    balance_sheet, cash_flow} lists with count the total. Common camelCase",
-      "    fields: date, revenue, netIncome, eps, totalAssets, operatingCashFlow.",
-      "    date is \"YYYY-MM-DD\"; records are newest-first as returned by FMP. When",
-      "    period=\"quarter\" returns 0 records, an optional note suggests",
-      "    period=\"annual\". On error: {error: <code>, detail, symbol}."
+      "    dict: {symbol, count, data, source, data_type, statement_type, period,",
+      "    fallback_from?, note?}. One statement_type → a list of period records;",
+      "    \"all\" → {income_statement, balance_sheet, cash_flow} lists with count the",
+      "    total. Common camelCase fields: date, revenue, netIncome, eps,",
+      "    totalAssets, operatingCashFlow. date is \"YYYY-MM-DD\"; records are",
+      "    newest-first. fallback_from: source that failed before FMP answered.",
+      "    An empty quarterly read adds a note. On error: {error: <code>, detail,",
+      "    symbol}."
     ],
     "params": [
       "limit",
@@ -254,15 +248,16 @@
       "    limit: Number of periods (default 10).",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type, period}. data is",
-      "    {financial_growth, income_statement_growth}, each a list, newest first;",
-      "    count is the total. financial_growth fields: date, revenueGrowth,",
-      "    netIncomeGrowth, epsgrowth; income_statement_growth fields: date,",
-      "    growthRevenue, growthNetIncome, growthEPS. Growth values are decimal",
-      "    fractions (0.1 = 10%); a quarter row grows on the prior quarter, not the",
-      "    year-ago one. Field names are FMP-native camelCase; date is",
-      "    \"YYYY-MM-DD\". When period=\"quarter\" returns 0 records, an optional note",
-      "    suggests period=\"annual\". On error: {error: <code>, detail, symbol}."
+      "    dict: {symbol, count, data, source, data_type, period, fallback_from?,",
+      "    note?}. data is {financial_growth, income_statement_growth}, each a",
+      "    list, newest first; count is the total. financial_growth fields: date,",
+      "    revenueGrowth, netIncomeGrowth, epsgrowth; income_statement_growth",
+      "    fields: date, growthRevenue, growthNetIncome, growthEPS. Growth values",
+      "    are decimal fractions (0.1 = 10%); a quarter row grows on the prior",
+      "    quarter, not the year-ago one. Field names are FMP-native camelCase; date is",
+      "    \"YYYY-MM-DD\". fallback_from: source that failed before FMP answered.",
+      "    An empty quarterly read adds a note. On error: {error: <code>, detail,",
+      "    symbol}."
     ],
     "params": [
       "limit",
@@ -340,11 +335,12 @@
       "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type}. data is a list of",
-      "    executive records; count is the record total. Fields: name, title, pay,",
-      "    currencyPay, gender, yearBorn, titleSince. Field names are FMP-native",
-      "    camelCase; pay is an integer in currencyPay units; order is as returned",
-      "    by FMP (not time-ordered). On error: {error: <code>, detail, symbol}."
+      "    dict: {symbol, count, data, source, data_type, fallback_from?}. data is",
+      "    a list of executive records; count is the record total. Fields: name,",
+      "    title, pay, currencyPay, gender, yearBorn, titleSince. Field names are",
+      "    FMP-native camelCase; pay is an integer in currencyPay units; not",
+      "    time-ordered. fallback_from: source that failed before FMP answered.",
+      "    On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "symbol"
@@ -361,14 +357,14 @@
       "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type}. data is a list of",
-      "    records; count is the record total. Fields: symbol, date, freeFloat",
+      "    dict: {symbol, count, data, source, data_type, fallback_from?}. data is",
+      "    a list of records; count is the record total. Fields: symbol, date, freeFloat",
       "    (percent, 99.8 = 99.8%), floatShares, outstandingShares; an ADR counts",
       "    ADS units, not ordinary shares. date is \"YYYY-MM-DD\": the day FMP",
       "    refreshed the record, not the as-of date of the counts, which can be",
       "    months older; an A-share row's date is the trading day of its counts.",
-      "    Field names are FMP-native camelCase. On error: {error: <code>, detail,",
-      "    symbol}."
+      "    Field names are FMP-native camelCase. fallback_from: source that failed",
+      "    before FMP answered. On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "symbol"
@@ -533,6 +529,8 @@
   "mcp:options:get_options_chain": {
     "doc_lines": [
       "List an underlying's options contracts; use to find contract tickers.",
+      "",
+      "US-listed underlyings only; a listing on a known non-US venue is refused.",
       "",
       "Args:",
       "    underlying_ticker: Underlying stock ticker, e.g. \"AAPL\".",
@@ -776,12 +774,14 @@
       "Returns:",
       "    dict: {symbol, count, data, source}. data is a list of Yahoo-native",
       "    records, one per period {period (0q, +1q, 0y, +1y), period_end?,",
-      "    numberofanalysts, avg, low, high, yearagoeps, growth,",
+      "    numberofanalysts, avg, low, high, yearagoeps, growth, methodology?,",
       "    year_ago_stale?} in Yahoo's period order; growth is a fraction (0.07",
-      "    = 7%). year_ago_stale: true when the year-ago basis is out of date;",
-      "    yearagoeps and growth are then null and period_end may still name",
-      "    the period just reported. Empty data means none published. On",
-      "    error: {error, detail, symbol} with error upstream_error."
+      "    = 7%). methodology (gaap or normalized, a non-GAAP basis) is the basis",
+      "    of every EPS figure; do not compare across bases. year_ago_stale: true",
+      "    when the year-ago basis is out of date; yearagoeps and growth are then",
+      "    null and period_end may still name the period just reported. Empty",
+      "    data means none published. On error: {error, detail, symbol} with error",
+      "    upstream_error."
     ],
     "params": [
       "ticker"
@@ -800,8 +800,10 @@
       "",
       "Returns:",
       "    dict: {symbol, count, data, source}. data is a list of Yahoo-native",
-      "    records {quarter, epsestimate, epsactual, epsdifference, surprisepercent}",
-      "    in Yahoo's order (oldest first); quarter is \"YYYY-MM-DD\". Empty data",
+      "    records {quarter, epsestimate, epsactual, epsdifference,",
+      "    surprisepercent, methodology?} in Yahoo's order (oldest first); quarter",
+      "    is \"YYYY-MM-DD\". methodology (gaap or normalized, a non-GAAP basis) is",
+      "    the basis of every EPS figure; do not compare across bases. Empty data",
       "    means none reported. On error: {error, detail, symbol} with error",
       "    upstream_error."
     ],
@@ -959,9 +961,11 @@
       "    dict: {symbol, count, data, source}. data is a list of raw Yahoo-native",
       "    article dicts in Yahoo's order (most recent first); each has nested",
       "    `content` with title, publisher, url, and publish-date fields (exact",
-      "    shape is Yahoo-native and varies), and may carry relatedTickers; check",
-      "    it before treating an item as about this ticker. Empty data means no",
-      "    articles. On error: {error, detail, symbol} with error upstream_error."
+      "    shape is Yahoo-native and varies). content.finance.stockTickers",
+      "    [{symbol}] lists the tickers an article covers (relatedTickers on the",
+      "    search fallback); check them before treating an item as about this",
+      "    ticker. Empty data means no articles. On error: {error, detail, symbol}",
+      "    with error upstream_error."
     ],
     "params": [
       "count",
@@ -1181,8 +1185,10 @@
       "Returns:",
       "    dict: {symbol, count, data, source}. data is a list of Yahoo-native",
       "    records {quarter, epsestimate, epsactual, epsdifference,",
-      "    surprisepercent} in Yahoo's order (oldest first); quarter is",
-      "    \"YYYY-MM-DD\"; surprisepercent is a fraction (0.067 = 6.7%). On error:",
+      "    surprisepercent, methodology?} in Yahoo's order (oldest first); quarter",
+      "    is \"YYYY-MM-DD\"; surprisepercent is a fraction (0.067 = 6.7%).",
+      "    methodology (gaap or normalized, a non-GAAP basis) is the basis of",
+      "    every EPS figure; do not compare across bases. On error:",
       "    {error, detail, symbol} with error not_found|upstream_error."
     ],
     "params": [
@@ -1251,8 +1257,10 @@
       "    dict: {count, data, source, successful_tickers, errors?}. data is keyed",
       "    by canonical symbol → {count, earnings}; each earnings is a list of",
       "    Yahoo-native records {quarter, epsestimate, epsactual, epsdifference,",
-      "    surprisepercent} in Yahoo's order (oldest first), quarter",
-      "    \"YYYY-MM-DD\", surprisepercent a fraction (0.067 = 6.7%). Top-level",
+      "    surprisepercent, methodology?} in Yahoo's order (oldest first), quarter",
+      "    \"YYYY-MM-DD\", surprisepercent a fraction (0.067 = 6.7%). methodology",
+      "    (gaap or normalized, a non-GAAP basis) is the basis of every EPS",
+      "    figure; do not compare across bases. Top-level",
       "    count is total earnings records across symbols. Failed/empty symbols",
       "    are omitted and listed in errors as {error, detail, symbol}."
     ],

@@ -89,6 +89,7 @@ from ptc_agent.agent.middleware.compaction.measure import (
     estimate_for,
     keep_cutoff,
     keep_tokens_for,
+    sent_ahead,
     stamp_context_growth,
 )
 from ptc_agent.agent.middleware.compaction.summarize import (
@@ -324,6 +325,8 @@ class CompactionMiddleware(AgentMiddleware):
         self._carries: tuple[WindowCarry, ...] = ()
         # When a due prompt is rebuilt; see with_turn_start_rebuilds.
         self._rebuilds: StalePinRebuilds = StalePinRebuilds()
+        # The baseline block a call is sent; see with_baseline.
+        self._baseline: Callable[[Any], str] | None = None
 
     @classmethod
     def for_agent(
@@ -386,9 +389,8 @@ class CompactionMiddleware(AgentMiddleware):
             between.answered = True
             return ModelResponse(result=[])
 
-        system = [request.system_message] if request.system_message is not None else []
         estimate = self._estimate(request.model)
-        reading = await context_tokens(request.state, view, estimate, system)
+        reading = await context_tokens(request.state, view, estimate, functools.partial(self._ahead, request))
         tokens = reading.tokens
         # A stale system prompt stays while any thinking it bound is in view,
         # so at a turn start the summary keeps none: its own request still
@@ -450,7 +452,7 @@ class CompactionMiddleware(AgentMiddleware):
         cutoff = plan.cut or self._cutoff(view, request.model)
         fit = Fit(
             self._token_threshold,
-            system,
+            await asyncio.to_thread(lambda: estimate.counter(self._ahead(request))),
             estimate,
             lossless=self._native and native_kind(request.model) == "anthropic",
         )
@@ -577,6 +579,14 @@ class CompactionMiddleware(AgentMiddleware):
         its attachments as the model is charged for them."""
         return estimate_for(model, self._summarizer.counter, self._cost(model))
 
+    def _ahead(self, request: ModelRequest) -> list[Any]:
+        """What ``request`` sends ahead of its messages once the middlewares
+        further in have run (``sent_ahead``): the baseline block appended to
+        its system message too, where the stack has one (``with_baseline``).
+        Built off the loop, since every tool schema is converted and
+        serialized."""
+        return sent_ahead(request, self._baseline(request.state) if self._baseline is not None else "")
+
     def _cutoff(self, view: list[AnyMessage], model: Any) -> int:
         """Where a summary of ``view`` for ``model`` ends (``keep_cutoff``)."""
         tokens = keep_tokens_for(
@@ -598,8 +608,8 @@ class CompactionMiddleware(AgentMiddleware):
     ) -> Compaction | HumanMessage | int | None:
         """What a call between turns asks for (see ``between_turns``)."""
         if isinstance(ask, Measure):
-            system = [request.system_message] if request.system_message is not None else []
-            return (await context_tokens(request.state, view, self._estimate(request.model), system)).tokens
+            ahead = functools.partial(self._ahead, request)
+            return (await context_tokens(request.state, view, self._estimate(request.model), ahead)).tokens
         if isinstance(ask, HandOff):
             return await self._hand_off(request, handler, view, notes=self._notes_dir is not None)
         if isinstance(ask, IdleCompact):
@@ -638,8 +648,8 @@ class CompactionMiddleware(AgentMiddleware):
         """
         if not self._native or native_kind(request.model) != "anthropic":
             raise IdleSkipped("not_native")
-        system = [request.system_message] if request.system_message is not None else []
-        reading = await context_tokens(request.state, view, self._estimate(request.model), system)
+        ahead = functools.partial(self._ahead, request)
+        reading = await context_tokens(request.state, view, self._estimate(request.model), ahead)
         plan = self._rebuilds.idle(request, view, reading.tokens, self._token_threshold)
         cut = idle_cut(request, view, plan, self._keep_tail_cut(view, request.model), time.time())
         thread_id, agent = run_ids()
@@ -1019,6 +1029,17 @@ class CompactionMiddleware(AgentMiddleware):
         """
         main = copy.copy(self)
         main._rebuilds = rebuilds
+        return main
+
+    def with_baseline(self, block: Callable[[Any], str]) -> CompactionMiddleware:
+        """This middleware, counting the baseline block a call is sent,
+        ``block`` of the state, where nothing measured the context: the
+        context stack appends it to the system message further in, so the
+        request this middleware reads does not hold it yet. For the main
+        agent's stack, whose baseline sits inside compaction.
+        """
+        main = copy.copy(self)
+        main._baseline = block
         return main
 
     def with_scratchpad_notes(self, notes_dir: str) -> CompactionMiddleware:

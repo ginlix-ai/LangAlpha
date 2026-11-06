@@ -301,9 +301,11 @@ def get_news(ticker: str, count: int = 10, tab: str = "news") -> _OUT_GET_NEWS:
         dict: {symbol, count, data, source}. data is a list of raw Yahoo-native
         article dicts in Yahoo's order (most recent first); each has nested
         `content` with title, publisher, url, and publish-date fields (exact
-        shape is Yahoo-native and varies), and may carry relatedTickers; check
-        it before treating an item as about this ticker. Empty data means no
-        articles. On error: {error, detail, symbol} with error upstream_error.
+        shape is Yahoo-native and varies). content.finance.stockTickers
+        [{symbol}] lists the tickers an article covers (relatedTickers on the
+        search fallback); check them before treating an item as about this
+        ticker. Empty data means no articles. On error: {error, detail, symbol}
+        with error upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:
@@ -404,8 +406,10 @@ def get_earnings_history(ticker: str) -> _OUT_GET_EARNINGS_HISTORY:
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
-        records {quarter, epsestimate, epsactual, epsdifference, surprisepercent}
-        in Yahoo's order (oldest first); quarter is "YYYY-MM-DD". Empty data
+        records {quarter, epsestimate, epsactual, epsdifference,
+        surprisepercent, methodology?} in Yahoo's order (oldest first); quarter
+        is "YYYY-MM-DD". methodology (gaap or normalized, a non-GAAP basis) is
+        the basis of every EPS figure; do not compare across bases. Empty data
         means none reported. On error: {error, detail, symbol} with error
         upstream_error.
     """
@@ -453,7 +457,10 @@ def _flag_stale_periods(
 def _annotate_periods(
     stock: yf.Ticker, records: list[dict], stale_keys: tuple[str, ...]
 ) -> list[dict]:
-    trend = getattr(getattr(stock, "_analysis", None), "_earnings_trend", None) or []
+    cached = getattr(getattr(stock, "_analysis", None), "_earnings_trend", None) or {}
+    # yfinance < 1.8 caches the trend list itself; 1.8 keys it by EPS methodology
+    # and a computer keeps the yfinance it was built with, so both can run this file.
+    trend = cached if isinstance(cached, list) else (cached.get(None) or {}).get("trend", [])
     ends = {item["period"]: item["endDate"] for item in trend if item.get("endDate")}
     try:
         history = stock.earnings_history
@@ -478,12 +485,14 @@ def get_earnings_estimates(ticker: str) -> _OUT_GET_EARNINGS_ESTIMATES:
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
         records, one per period {period (0q, +1q, 0y, +1y), period_end?,
-        numberofanalysts, avg, low, high, yearagoeps, growth,
+        numberofanalysts, avg, low, high, yearagoeps, growth, methodology?,
         year_ago_stale?} in Yahoo's period order; growth is a fraction (0.07
-        = 7%). year_ago_stale: true when the year-ago basis is out of date;
-        yearagoeps and growth are then null and period_end may still name
-        the period just reported. Empty data means none published. On
-        error: {error, detail, symbol} with error upstream_error.
+        = 7%). methodology (gaap or normalized, a non-GAAP basis) is the basis
+        of every EPS figure; do not compare across bases. year_ago_stale: true
+        when the year-ago basis is out of date; yearagoeps and growth are then
+        null and period_end may still name the period just reported. Empty
+        data means none published. On error: {error, detail, symbol} with error
+        upstream_error.
     """
     symbol, yf_symbol, _ = boundary(ticker)
     try:

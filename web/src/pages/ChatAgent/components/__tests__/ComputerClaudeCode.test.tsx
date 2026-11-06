@@ -3,7 +3,7 @@
  * which token it uses, and the actions, which the Computers dialog opens.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 import type { ClaudeCodeComputer } from '@/api/model';
 import type { MachineActions } from '../computerParts';
@@ -23,6 +23,16 @@ function render() {
   return { ...view, actions };
 }
 
+
+/** Remove is a line's button where it is the only action, and the item of
+ *  its More actions menu beside any other. */
+function clickRemove(row: HTMLElement) {
+  const more = within(row).queryByRole('button', { name: 'More actions' });
+  if (!more) return fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+  fireEvent.keyDown(more, { key: 'Enter' });
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Remove' }));
+}
+
 describe('ComputerClaudeCode', () => {
   it('says which token the computer uses, and opens its sheet for what the button does', () => {
     mocks.entry = MAC;
@@ -32,7 +42,7 @@ describe('ComputerClaudeCode', () => {
     expect(screen.getByText('Uses its own token')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
     expect(actions.claudeCodeToken).toHaveBeenCalledWith('replace');
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    clickRemove(document.body);
     expect(actions.removeClaudeCodeToken).toHaveBeenCalledTimes(1);
   });
 

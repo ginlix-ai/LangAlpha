@@ -267,11 +267,7 @@ class GinlixDataCnFinancialSource:
                 return []
         params = {_SCREEN_PARAMS[k]: v for k, v in given.items() if k in _SCREEN_PARAMS}
         params["limit"] = min(int(given.get("limit", 25) or 25), 250)
-        try:
-            rows = await self.client.screen_v2(market="cn", **params)
-        except httpx.HTTPError as exc:
-            logger.info("ginlix_data.cn.screen_unavailable | error=%s", type(exc).__name__)
-            return []
+        rows = await self.client.screen_v2(market="cn", **params)
         for r in rows:
             key = r.pop("instrument_key", None)
             try:
@@ -369,11 +365,7 @@ class GinlixDataCnIntelSource:
             key = to_canonical(underlying).instrument_key
         except ValueError:
             return {"results": []}
-        try:
-            rows = await self.client.get_options_chain_v2(key, **filters)
-        except httpx.HTTPError as exc:
-            logger.info("ginlix_data.cn.options_chain_unavailable | error=%s", type(exc).__name__)
-            return {"results": []}
+        rows = await self.client.get_options_chain_v2(key, **filters)
         for r in rows:
             r["underlying_ticker"] = underlying
         return {"results": rows}
@@ -389,15 +381,11 @@ class GinlixDataCnIntelSource:
         """Daily contract bars; any other interval is a miss the chain falls through."""
         if interval not in ("1day", "daily"):
             return []
-        try:
-            # Contract codes travel in the exchange's own spelling (``.SH``).
-            return await self.client.get_options_bars_v2(
-                display_spelling(options_ticker), market="cn",
-                from_date=from_date, to_date=to_date,
-            )
-        except httpx.HTTPError as exc:
-            logger.info("ginlix_data.cn.options_bars_unavailable | error=%s", type(exc).__name__)
-            return []
+        # Contract codes travel in the exchange's own spelling (``.SH``).
+        return await self.client.get_options_bars_v2(
+            display_spelling(options_ticker), market="cn",
+            from_date=from_date, to_date=to_date,
+        )
 
     async def close(self) -> None:
         pass

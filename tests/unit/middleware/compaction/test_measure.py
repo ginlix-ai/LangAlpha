@@ -3,14 +3,23 @@ call measured it, estimated, as Claude counts for Claude, where not."""
 
 from __future__ import annotations
 
+import json
+import threading
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 
 from ptc_agent.agent.middleware.compaction import measure, utils
+from ptc_agent.agent.middleware.compaction import middleware as middleware_module
+from ptc_agent.agent.middleware.compaction.compact import Compaction
 from ptc_agent.agent.middleware.compaction.measure import Estimate, keep_cutoff
 from ptc_agent.agent.middleware.compaction.middleware import CompactionMiddleware
+from ptc_agent.agent.middleware.compaction.summarize import Summary
+from ptc_agent.agent.middleware.compaction.utils import build_summary_message
 
 
 def _call(tool_call_id: str) -> dict:
@@ -163,3 +172,126 @@ def test_no_tail_takes_more_than_a_third_of_the_threshold():
     # A 64k window's 48k threshold.
     assert measure.keep_tokens_for(claude, 20_000, 32_000, 48_000) == 16_000
     assert measure.keep_tokens_for(other, 20_000, 32_000, 48_000) == 16_000
+
+
+class TestSentAhead:
+    """Where no call measured the context, what the call sends ahead of its
+    messages is estimated with them: the system message, the baseline block
+    the stack appends to it further in, and the tool schemas, all of which
+    the provider counts as input."""
+
+    @staticmethod
+    def _count(messages) -> int:
+        """A message's tokens are its text's length."""
+        return sum(len(m.text) for m in messages)
+
+    def _middleware(self, compactions: list, *, baseline: bool) -> CompactionMiddleware:
+        async def compact(messages, view, cutoff, **_):
+            compactions.append(cutoff)
+            return Compaction(
+                event={
+                    "summary_message": build_summary_message("condensed", None),
+                    "cutoff_index": cutoff,
+                    "anchor_message_id": view[cutoff].id,
+                },
+                summary=Summary("condensed", "model", view[:cutoff]),
+                original_count=len(view),
+                preserved=view[cutoff:],
+            )
+
+        mw = CompactionMiddleware(
+            SimpleNamespace(counter=self._count, compact=compact),
+            token_threshold=1_000,
+            keep_tokens=0,
+            self_summary=False,
+        )
+        mw._cutoff = lambda view, model: len(view) - 1
+        return mw.with_baseline(lambda state: "b" * 300) if baseline else mw
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tools", "baseline", "summarized"),
+        [(True, True, True), (False, True, False), (True, False, False)],
+        ids=["all_of_it", "no_tools", "no_baseline"],
+    )
+    async def test_an_unmeasured_turn_start_counts_what_the_call_sends(self, tools, baseline, summarized):
+        # 500 of messages and system, 300 of baseline, about 400 of schema:
+        # only all of it together is over the 1,000 threshold.
+        compactions: list = []
+
+        await self._turn_start(self._middleware(compactions, baseline=baseline), tools=tools)
+
+        assert bool(compactions) is summarized
+
+    @pytest.mark.asyncio
+    async def test_what_the_call_sends_ahead_is_built_off_the_loop(self, monkeypatch):
+        # The turn start's reading and the summary's fit each build it, every
+        # schema converted and serialized; neither on the loop.
+        built: list[int] = []
+        real = middleware_module.sent_ahead
+
+        def sent_ahead(request, appended=""):
+            built.append(threading.get_ident())
+            return real(request, appended)
+
+        monkeypatch.setattr(middleware_module, "sent_ahead", sent_ahead)
+        compactions: list = []
+
+        await self._turn_start(self._middleware(compactions, baseline=True), tools=True)
+
+        assert compactions and len(built) == 2
+        assert threading.get_ident() not in built
+
+    async def _turn_start(self, mw: CompactionMiddleware, *, tools: bool) -> None:
+        lookup = StructuredTool.from_function(lambda query: query, name="lookup", description="d" * 300)
+        messages = [HumanMessage("x" * 100, id="h0"), AIMessage("x" * 100, id="a1"), HumanMessage("x" * 100, id="h2")]
+
+        async def handler(request):
+            return ModelResponse(result=[AIMessage("done", id="done")])
+
+        request = ModelRequest(
+            model=GenericFakeChatModel(messages=iter([])),
+            messages=messages,
+            system_message=SystemMessage("s" * 200),
+            tool_choice=None,
+            tools=[lookup] if tools else [],
+            response_format=None,
+            state={"messages": messages},
+            runtime=None,
+        )
+        await mw.awrap_model_call(request, handler)
+
+    @pytest.mark.asyncio
+    async def test_a_measured_context_reads_nothing_ahead(self):
+        def ahead():
+            raise AssertionError("read although the last call measured it")
+
+        state = {"_cached_input_tokens": 900, "_cached_output_tokens": 10}
+        view = [HumanMessage("x" * 10, id="h0"), AIMessage("x" * 20, id="a1")]
+
+        reading = await measure.context_tokens(state, view, Estimate(self._count), ahead)
+        assert reading.tokens == 910
+
+    def test_the_schemas_are_sent_as_claude_is_sent_them(self):
+        lookup = StructuredTool.from_function(lambda query: query, name="lookup", description="Look it up.")
+        server = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
+        request = ModelRequest(
+            model=None,
+            messages=[],
+            system_message=SystemMessage("the prompt"),
+            tool_choice=None,
+            tools=[lookup, server],
+            response_format=None,
+            state={},
+            runtime=None,
+        )
+
+        system, baseline, schemas = measure.sent_ahead(request, "the baseline")
+        assert (system.text, baseline.text) == ("the prompt", "the baseline")
+        sent, kept = json.loads(schemas.text)
+        assert (sent["name"], sent["description"], sent["input_schema"]["required"]) == (
+            "lookup",
+            "Look it up.",
+            ["query"],
+        )
+        assert kept == server

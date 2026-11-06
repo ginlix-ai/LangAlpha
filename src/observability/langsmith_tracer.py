@@ -9,8 +9,16 @@ from building its own, and the runs still land where they did.
 
 Since every run passes through it, it also writes the stamps LangSmith is
 filtered on (the build, a model call's billed cost, a tool run's outcome;
-keys in ``langsmith_run``) and stops a model or tool call resending its
-inputs when it closes.
+keys in ``langsmith_run``) and stops a run resending its inputs when it closes.
+
+It also keeps the stored conversation out of runs that only carry it along.
+Every middleware hook and graph node receives the whole agent state, and
+LangSmith's zstd window (512 KiB at the SDK's level 1) cannot fold copies of a
+conversation larger than that, so about 70 copies per model call were 96% of
+what a turn uploaded. A middleware hook's run records no inputs
+(``configure_trace_payloads``), and a graph node's run records how many
+messages its state held; the model call's own run still holds the full prompt.
+``langsmith_full_payloads`` restores both.
 """
 
 from __future__ import annotations
@@ -57,12 +65,75 @@ _INPUT_COST_KEYS = (
 _PARSE_INPUT = BaseTool._parse_input.__code__
 
 
+def _full_payloads() -> bool:
+    from src.config.settings import is_langsmith_full_payloads_enabled
+
+    return is_langsmith_full_payloads_enabled()
+
+
+def configure_trace_payloads() -> None:
+    """Keep middleware hook runs' inputs out of LangSmith, unless configured not to.
+
+    The policy is process-wide and read as each span is created, so calling
+    this once at startup covers every agent built before or after. langgraph
+    hands the emptied payload to tracers only (>=1.2.19), so streaming and the
+    other callbacks still see the real state.
+    """
+    from langchain.agents.middleware import configure_trace_policy
+    from langgraph.types import TracePolicy, omit_payload
+
+    configure_trace_policy(
+        None if _full_payloads() else TracePolicy(process_inputs=omit_payload)
+    )
+
+
+def _without_messages(value: Any) -> Any:
+    """``value`` with a state's message list replaced by its count.
+
+    Copies rather than mutates: the dicts are the graph's own input. A tool
+    node's input carries the state under ``state`` beside its tool call.
+    """
+    if not isinstance(value, dict):
+        return value
+    out = value
+    messages = value.get("messages")
+    if isinstance(messages, list) and messages:
+        out = {**value, "messages": _message_count(messages)}
+    state = value.get("state")
+    if isinstance(state, dict) and isinstance(state.get("messages"), list):
+        out = {**out, "state": _without_messages(state)}
+    return out
+
+
+def _is_graph_node(run: Run) -> bool:
+    """Whether ``run`` is a graph node's, whose input is its graph's state.
+
+    Not a graph's own run: a turn's root holds the user's new message, which
+    LangSmith's thread view reads, and a subagent's holds its task.
+    """
+    node = (run.metadata or {}).get("langgraph_node")
+    return run.parent_run_id is not None and node is not None and run.name == node
+
+
+def _message_count(messages: list[Any]) -> str:
+    last = messages[-1]
+    last_id = getattr(last, "id", None) or (
+        last.get("id") if isinstance(last, dict) else None
+    )
+    return f"<{len(messages)} messages, last id {last_id}>"
+
+
 class NonRetainingTracer(LangChainTracer):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         # One per run tree and shared with its copies, so a model with no
         # pricing card logs its miss once per turn, as billing does.
         self._pricer = PricingResolver()
+        self._slim = not _full_payloads()
+        # Each open chain run's inputs as posted, by run id, so its close can
+        # tell whether they changed since. Shared with copies, which may close
+        # a run another opened.
+        self._posted_inputs: dict[UUID, Any] = {}
 
     def copy_with_metadata_defaults(
         self,
@@ -76,6 +147,7 @@ class NonRetainingTracer(LangChainTracer):
             super().copy_with_metadata_defaults(metadata=metadata, tags=tags),
         )
         copy._pricer = self._pricer
+        copy._posted_inputs = self._posted_inputs
         return copy
 
     def _start_trace(self, run: Run) -> None:
@@ -90,9 +162,42 @@ class NonRetainingTracer(LangChainTracer):
             # starts and are posted then, but langchain_core resends them with
             # every update unless this flag is set, and nothing sets it; for a
             # model call that doubles the largest upload a turn makes.
-            # LangSmith clears it if the inputs change after the post. Not for
-            # chains: one can receive its inputs at its end.
+            # LangSmith clears it if the inputs change after the post. Chains
+            # are settled when they close (_settle_chain_inputs): one can
+            # receive its inputs at its end.
             run.extra["inputs_is_truthy"] = True
+
+    def _on_chain_start(self, run: Run) -> None:
+        if self._slim:
+            if _is_graph_node(run):
+                run.inputs = _without_messages(run.inputs)
+            if not run.extra.get("defers_inputs"):
+                self._posted_inputs[run.id] = run.inputs
+        super()._on_chain_start(run)
+
+    def _on_chain_end(self, run: Run) -> None:
+        self._settle_chain_inputs(run)
+        super()._on_chain_end(run)
+
+    def _on_chain_error(self, run: Run) -> None:
+        self._settle_chain_inputs(run)
+        super()._on_chain_error(run)
+
+    def _settle_chain_inputs(self, run: Run) -> None:
+        """Send a chain's inputs again at its close only if they changed.
+
+        langchain_core resends them with every update, and a graph node's
+        inputs are the whole state. A chain given its inputs at its end gets
+        a new dict without the flag being cleared, so the dict itself, not the
+        flag, says whether the post already holds them.
+        """
+        if not self._slim:
+            return
+        posted = self._posted_inputs.pop(run.id, None)
+        if posted is not None and posted is run.inputs:
+            run.extra["inputs_is_truthy"] = True
+        elif _is_graph_node(run):
+            run.inputs = _without_messages(run.inputs)
 
     @staticmethod
     def _add_child_run(parent_run: Run, child_run: Run) -> None:

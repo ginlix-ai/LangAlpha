@@ -68,6 +68,7 @@ export function useTokenRoutes(target: TokenTarget) {
     const store = (status: ClaudeCodeStatus) => {
       queryClient.setQueryData(queryKeys.features.claudeCodeStatus(), status);
       void reread(queryKeys.features.claudeCodeComputers());
+      void reread(queryKeys.features.claudeCodeSetup());
     };
     return {
       save: async (token: string) => store(await saveClaudeCodeToken(token)),
@@ -87,7 +88,10 @@ export function useTokenRoutes(target: TokenTarget) {
     try {
       return await call;
     } catch (err) {
-      if (CLAUDE_CODE_UNRUNNABLE.has(readOAuthError(err)?.code ?? '')) void reread(queryKeys.features.claudeCodeComputers());
+      if (CLAUDE_CODE_UNRUNNABLE.has(readOAuthError(err)?.code ?? '')) {
+        void reread(queryKeys.features.claudeCodeComputers());
+        void reread(queryKeys.features.claudeCodeSetup());
+      }
       throw err;
     }
   };
@@ -96,6 +100,7 @@ export function useTokenRoutes(target: TokenTarget) {
       computers: list.computers.map((c) => (c.computer_id === entry.computer_id ? entry : c)),
     }));
     void reread(queryKeys.features.claudeCodeStatus());
+    void reread(queryKeys.features.claudeCodeSetup());
   };
   return {
     save: async (token: string) => store(await rereadIfBlocked(saveClaudeCodeComputerToken(computerId, token))),

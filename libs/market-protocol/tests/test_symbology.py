@@ -188,7 +188,7 @@ class TestJunkInput:
     @pytest.mark.parametrize(
         ("spelling", "key"),
         [
-            ("BRK.B", "BRK.B.XXXX"), ("BRK-B", "BRK-B.XNYS"), ("M&M.NS", "M&M.XNSE"),
+            ("BRK.B", "BRK-B.XNYS"), ("BRK-B", "BRK-B.XNYS"), ("M&M.NS", "M&M.XNSE"),
             ("ES=F", "ES=F.GLBX"), ("^GSPC", "SPX.INDEX"), ("I:SPX", "SPX.INDEX"),
             ("EURUSD=X", "EUR-USD.FX"), ("BTC-USD.CRYPTO", "BTC-USD.CRYPTO"),
             # Surrounding whitespace is trimmed, as a pasted symbol carries it.
@@ -386,11 +386,28 @@ class TestEquityResolution:
         assert ref.currency == "GBP"
         assert ref.display_unit == "GBX"  # hint only; conversion is per-provider
 
-    def test_unknown_suffix_is_share_class_not_venue(self):
-        ref = to_canonical("BRK.B")
-        assert ref.symbol == "BRK.B"
-        assert ref.mic == "XXXX"
+    @pytest.mark.parametrize(
+        "spelling",
+        ["BRK.B", "BRK-B", "brk.b", "BRK.B.US", "BRK.B.XNYS", "BRK-B.XNYS", "BRK.B.XXXX"],
+    )
+    def test_a_us_class_share_is_one_listing_however_spelled(self, spelling):
+        # The exchange and Massive write BRK.B, FMP and yfinance BRK-B; a key
+        # an older pin minted on the unknown venue names the listing too.
+        ref = to_canonical(spelling)
+        assert ref.instrument_key == "BRK-B.XNYS"
+        assert (to_display(ref), vendor_symbol(ref)) == ("BRK-B", "BRK-B")
+        assert market_of(ref) == "us"
+
+    @pytest.mark.parametrize("spelling", ["SAP.F", "ABC.V", "BRK.D", "NOVO-B.CO", "0700.B"])
+    def test_another_unknown_suffix_stays_on_the_unknown_venue(self, spelling):
+        ref = to_canonical(spelling)
+        assert (ref.symbol, ref.mic) == (spelling, "XXXX")
         assert ref.tz == "America/New_York"
+
+    def test_no_class_suffix_names_a_venue(self):
+        # A class letter that were also a venue suffix would read a foreign
+        # listing (X.B on that venue) as a US class share.
+        assert not symbology._US_CLASS_SUFFIXES & set(symbology._SUFFIX_TO_MIC)
 
     def test_asset_class_hint_beats_index_autodetect(self):
         ref = to_canonical("SPX", asset_class=AssetClass.EQUITY)
@@ -532,7 +549,10 @@ class TestSuffixSpellings:
             ("600519．ｓｓ", "600519.SH", "600519.SS"),
             # A family index keeps its vendor name; that respelling is to_display's.
             ("GSPC", "GSPC", "GSPC"),
-            ("BRK.B", "BRK.B", "BRK.B"),
+            # A US class share takes the dash every vendor but Massive reads.
+            ("BRK.B", "BRK-B", "BRK-B"),
+            ("bf-b", "BF-B", "BF-B"),
+            ("BRK.D", "BRK.D", "BRK.D"),
         ],
     )
     def test_respell(self, raw, display, vendor):

@@ -11,6 +11,7 @@ import { TokenActions } from '@/components/modelAccess/ClaudeCodeToken';
 import { computerTokenLine } from '@/components/modelAccess/tokenLine';
 import { useClaudeCodeComputers } from '@/hooks/useClaudeCode';
 import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
 import { CLAUDE_CODE_CONNECTION } from '@/lib/claudeCode';
 
 import type { MachineActions } from './computerParts';
@@ -18,9 +19,10 @@ import type { MachineActions } from './computerParts';
 export function ComputerClaudeCode({ computerId, actions }: { computerId: string; actions: MachineActions }) {
   const { t } = useTranslation();
   const locale = useLocale();
+  const now = useNow();
   // Read with Claude Code off too, which still offers to remove a token left here.
   const entry = useClaudeCodeComputers({ whenOff: true }).computers.find((c) => c.computer_id === computerId);
-  const line = entry && computerTokenLine(t, locale, entry);
+  const line = entry && computerTokenLine(t, locale, entry, now);
   if (!line) return null;
   return (
     <section className="computer-details-group">

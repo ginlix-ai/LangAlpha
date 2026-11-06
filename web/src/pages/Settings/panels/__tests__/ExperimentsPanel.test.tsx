@@ -85,4 +85,12 @@ describe('ExperimentsPanel', () => {
     expect(screen.getByText('Something new.')).toBeInTheDocument();
     expect(screen.getByText('It may cost more.')).toBeInTheDocument();
   });
+
+  // Claude Code is turned on by connecting it under Model access, not here.
+  it('leaves out a feature turned on elsewhere', async () => {
+    h.features = [WAKEUPS, feature({ key: 'claude_code_runtime', label: 'Claude Code runtime (preview)', home: 'model_access' })];
+    renderWithProviders(<ExperimentsPanel />);
+    expect(await screen.findByText('Wakeups')).toBeInTheDocument();
+    expect(screen.queryByText('Claude Code runtime (preview)')).toBeNull();
+  });
 });

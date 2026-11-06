@@ -84,16 +84,23 @@ export function KeyRow({ p, place, onManage }: { p: ConfiguredProvider; place?: 
   );
 }
 
-export function Group({ title, children, empty }: { title: string; children: React.ReactNode[]; empty: string }) {
+export function Group({ title, children, empty, subgrid = false }: {
+  title: string;
+  children: React.ReactNode[];
+  empty: string;
+  /** Lays its rows on the columns of the grid it sits in, so the rows of
+   *  cards stacked in that grid line up with each other. */
+  subgrid?: boolean;
+}) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <h3 className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>{title}</h3>
+    <div className={subgrid ? 'col-span-full grid grid-cols-subgrid gap-y-1.5' : 'flex flex-col gap-1.5'}>
+      <h3 className={cn('text-xs font-medium', subgrid && 'col-span-full')} style={{ color: 'var(--color-text-tertiary)' }}>{title}</h3>
       {children.length > 0 ? (
-        <ul className="divide-y rounded-lg" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)', borderColor: 'var(--color-border-muted)' }}>
+        <ul className={cn('divide-y rounded-lg', subgrid && 'col-span-full grid grid-cols-subgrid')} style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)', borderColor: 'var(--color-border-muted)' }}>
           {children}
         </ul>
       ) : (
-        <QuietNote>{empty}</QuietNote>
+        <QuietNote className={cn(subgrid && 'col-span-full')}>{empty}</QuietNote>
       )}
     </div>
   );

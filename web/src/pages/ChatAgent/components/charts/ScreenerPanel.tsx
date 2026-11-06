@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { formatMoney } from '@/lib/bars';
+import { formatMoney, quotePlaces } from '@/lib/bars';
 import { compactNumberFixed2 } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
 import { readScreener, type PanelProps, type ScreenerRow } from './cardReaders';
@@ -19,7 +19,9 @@ export function StockScreenerTable({ data }: PanelProps): React.ReactElement {
     return <div className="term-t3" style={{ padding: 16 }}>{t('toolArtifact.noScreenerResults')}</div>;
   }
 
-  const money = (n: number, row: ScreenerRow) => formatMoney(n, row.currency, locale);
+  // A pence quote served in pounds keeps its places (3.17p is £0.0317).
+  const money = (n: number, row: ScreenerRow) =>
+    formatMoney(n, row.currency, locale, { upTo: quotePlaces(row.symbol, { currency: row.currency, price: n }) });
 
   const columns: Array<SortColumn<ScreenerRow>> = [
     { key: 'symbol', label: t('toolArtifact.symbol'), className: 'term-strong', value: (r) => r.symbol, cell: (r) => <MarketLink symbol={r.symbol} inline /> },

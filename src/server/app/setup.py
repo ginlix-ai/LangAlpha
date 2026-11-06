@@ -214,6 +214,10 @@ async def lifespan(app: FastAPI):
     # threads are owned by the worker process, not a dead pre-fork parent.
     init_otel_runtime()
 
+    from src.observability.langsmith_tracer import configure_trace_payloads
+
+    configure_trace_payloads()
+
     # Container hardening diagnostics: confirm tini is PID 1 and log cgroup PID limit.
     # If PID 1 is python (not tini), `init: true` in compose silently failed and
     # orphaned browser subprocesses will accumulate until cgroup exhausts.

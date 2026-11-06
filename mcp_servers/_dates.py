@@ -17,9 +17,15 @@ from zoneinfo import ZoneInfo
 
 #: The FMP client's undated daily window: this many days back to the end, today (UTC) if none.
 _FMP_DAILY_LOOKBACK_DAYS = 500
+#: UTC+14, where each date begins first: "today" there has begun at every venue.
+_EARLIEST_ZONE = timezone(timedelta(hours=14))
 
 #: An event calendar given one bound, or none, spans this many days.
 _CALENDAR_SPAN_DAYS = 7
+
+#: A tool's names for its start and end bounds, which its refusals quote.
+Bounds = tuple[str, str]
+FROM_TO: Bounds = ("from_date", "to_date")
 
 #: FMP labels a currency or crypto pair's intraday bars, and a commodity's, in New York time.
 NEW_YORK = "America/New_York"
@@ -105,31 +111,51 @@ def _iso(day: Optional[date]) -> Optional[str]:
     return day.isoformat() if day else None
 
 
-def _no_future_start(start: Optional[date], end: Optional[date]) -> None:
+def _no_future_start(start: Optional[date], end: Optional[date], what: str) -> None:
     # Against the default end, today, a lone future start would read "start is
-    # after end", naming an end the caller never gave.
-    today = datetime.now(timezone.utc).date()
+    # after end", naming an end the caller never gave. Today is the latest date
+    # anywhere, so a venue ahead of UTC can ask for its own today.
+    today = datetime.now(_EARLIEST_ZONE).date()
     if start and not end and start > today:
-        raise DateBoundError(f"from_date is in the future (today is {today.isoformat()} UTC)")
+        raise DateBoundError(
+            f"{what} is in the future (the latest date anywhere is {today.isoformat()})"
+        )
 
 
 def _back_from(start: Optional[date], end: Optional[date]) -> Optional[date]:
     # The client's window runs back from today, which a lone old end would
     # reverse; run it back from the end the caller gave, as the CN path does.
     if end and not start:
-        return end - timedelta(days=_FMP_DAILY_LOOKBACK_DAYS)
+        try:
+            return end - timedelta(days=_FMP_DAILY_LOOKBACK_DAYS)
+        except OverflowError:
+            raise DateBoundError("date is out of range") from None
     return start
 
 
 def daily_days(
-    from_date: Optional[str], to_date: Optional[str]
+    from_date: Optional[str], to_date: Optional[str], names: Bounds = FROM_TO
 ) -> tuple[Optional[str], Optional[str]]:
     """A daily FMP bar read's bounds as ISO days; with neither, the client's default stands."""
-    start, end = _day(from_date, "from_date"), _day(to_date, "to_date")
-    _no_future_start(start, end)
+    start, end = _day(from_date, names[0]), _day(to_date, names[1])
+    _no_future_start(start, end, names[0])
     if start and end and start > end:
         raise DateBoundError("start is after end")
     return _iso(_back_from(start, end)), _iso(end)
+
+
+def whole_daily_days(
+    from_date: Optional[str], to_date: Optional[str], names: Bounds = FROM_TO
+) -> tuple[str, str]:
+    """``daily_days`` with both bounds set, so a source that reads only a whole
+    window answers an undated read as FMP would: a start the FMP client's
+    lookback before today (UTC), and an end of today at the venue whose day
+    starts first, so a session ahead of UTC keeps its forming bar."""
+    lo, hi = daily_days(from_date, to_date, names)
+    if hi:
+        return lo, hi
+    start = lo or _iso(datetime.now(timezone.utc).date() - timedelta(days=_FMP_DAILY_LOOKBACK_DAYS))
+    return start, datetime.now(_EARLIEST_ZONE).date().isoformat()
 
 
 def commodity_daily_days(
@@ -138,7 +164,7 @@ def commodity_daily_days(
     """A daily commodity read's bounds, read as ``daily_days`` reads them; a
     reversed pair is worded as the hosted commodity route words it."""
     start, end = _day(from_date, "from_date"), _day(to_date, "to_date")
-    _no_future_start(start, end)
+    _no_future_start(start, end, "from_date")
     if start and end and start > end:
         raise DateBoundError("from is after to")
     return _iso(_back_from(start, end)), _iso(end)
@@ -202,7 +228,11 @@ def _instant(value: str, zone: tzinfo, what: str) -> datetime:
 
 
 def intraday_window(
-    from_date: str, to_date: str, zone_name: Optional[str], labels: Optional[str] = None
+    from_date: str,
+    to_date: str,
+    zone_name: Optional[str],
+    labels: Optional[str] = None,
+    names: Bounds = FROM_TO,
 ) -> IntradayWindow:
     """An intraday read's bounds in *zone_name*: a bare day spans the whole day, a time counts to the second.
 
@@ -212,8 +242,8 @@ def intraday_window(
     """
     zone = ZoneInfo(zone_name or "UTC")
     label_zone = ZoneInfo(labels) if labels else zone
-    start = _instant(from_date, zone, "from_date")
-    end = _instant(to_date, zone, "to_date")
+    start = _instant(from_date, zone, names[0])
+    end = _instant(to_date, zone, names[1])
     bare_end = len(to_date.strip()) <= 10
     end_ms = _ms(end + (timedelta(days=1) if bare_end else timedelta(seconds=1)), zone) - 1
     start_ms = _ms(start, zone)

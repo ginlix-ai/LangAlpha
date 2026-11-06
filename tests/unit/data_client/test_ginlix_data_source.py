@@ -80,3 +80,9 @@ def test_the_print_time_is_the_last_trade_in_ms():
     assert GinlixDataSource._normalize_snapshot(index, "indices")["as_of"] == 1_789_000_000_000
 
     assert GinlixDataSource._normalize_snapshot({"ticker": "TST", "session": {}})["as_of"] is None
+
+
+def test_a_class_share_row_comes_back_in_our_spelling():
+    # Massive answers BRK.B; FMP's fallback row for the same listing reads BRK-B.
+    raw = {"ticker": "BRK.B", "session": {"close": 557.07}}
+    assert GinlixDataSource._normalize_snapshot(raw)["symbol"] == "BRK-B"

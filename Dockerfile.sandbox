@@ -115,17 +115,15 @@ ENV NUMEXPR_NUM_THREADS=${SANDBOX_CPUS}
 # ---------- Python packages ----------
 # Mirrors DEFAULT_DEPENDENCIES in src/ptc_agent/core/sandbox/_defaults.py
 # (the list the Daytona snapshot installs). Keep both in sync.
-# Override curl_cffi cap: yfinance pins <0.14 but works fine with 0.14+
-# (tested). scrapling[all] requires >=0.14. Override resolves the conflict.
+# yfinance is pinned to the version the server locks, so a rebuild cannot move
+# the sandbox's Yahoo client ahead of it.
 # --compile-bytecode: uv writes none by default, so each new container would
 # compile these packages on its first import.
-RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
-    && uv pip install --system --compile-bytecode \
-    --override /tmp/overrides.txt \
+RUN uv pip install --system --compile-bytecode \
     mcp==2.0.0 fastapi \
     pandas requests aiohttp "httpx[http2]" \
     numpy scipy scikit-learn statsmodels \
-    yfinance exchange-calendars==4.13.2 \
+    yfinance==1.8.0 exchange-calendars==4.13.2 \
     matplotlib seaborn plotly \
     pillow opencv-python-headless scikit-image \
     openpyxl xlrd python-docx pypdf \
@@ -134,7 +132,6 @@ RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
     "scrapling[all]==0.4.15" html-to-markdown trafilatura youtube-transcript-api \
     "playwright==${PLAYWRIGHT_VERSION}" \
     tqdm tabulate \
-    && rm /tmp/overrides.txt \
     && uv cache clean \
     && rm -rf /root/.cache/pip
 

@@ -16,7 +16,8 @@ export function ExperimentsPanel() {
   const setFeatureOverrideMutation = useSetFeatureOverride();
   const { t } = useTranslation();
 
-  const overridable = (featuresData ?? []).filter((f) => f.gate === 'opt_in' || f.gate === 'opt_out');
+  // A feature turned on elsewhere (`home`) is not offered here as well.
+  const overridable = (featuresData ?? []).filter((f) => (f.gate === 'opt_in' || f.gate === 'opt_out') && !f.home);
   // Wait out the features query before committing to the empty state, so it
   // never flashes before the real list lands.
   if (overridable.length === 0 && isFeaturesLoading) return null;

@@ -115,3 +115,43 @@ describe('useMarketDataWS day figures', () => {
     expect(result.current.prices.size).toBe(0);
   });
 });
+
+describe('useMarketDataWS class shares', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(et(12, 0));
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ enabled: true }) })));
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('files a print the feed spells BRK.B under each spelling that subscribed', async () => {
+    qc.setQueryData(queryKeys.quote.detail('BRK-B'), { ...ROW, symbol: 'BRK-B', previous_close: 490 });
+    const { result } = await mountHook();
+    act(() => { result.current.subscribe(['BRK-B']); });
+    push({ ev: 'AM', sym: 'BRK.B', o: 500, h: 501, l: 499, c: 500, v: 10, s: et(12, 0) });
+    expect(result.current.prices.get('BRK-B')).toMatchObject({ symbol: 'BRK-B', price: 500 });
+    expect(result.current.prices.has('BRK.B')).toBe(false);
+
+    act(() => { result.current.subscribe(['BRK.B']); });
+    push({ ev: 'AM', sym: 'BRK.B', o: 502, h: 502, l: 502, c: 502, v: 10, s: et(12, 1) });
+    for (const spelling of ['BRK-B', 'BRK.B']) {
+      expect(result.current.prices.get(spelling)).toMatchObject({ price: 502, change: 12, volume: 20 });
+    }
+  });
+
+  it("takes the day's figures from the spelling whose quote row is from the print's day", async () => {
+    qc.setQueryData(queryKeys.quote.detail('BRK-B'), { ...ROW, symbol: 'BRK-B', open: 470, as_of: et(11, 30) - 86400000 });
+    qc.setQueryData(queryKeys.quote.detail('BRK.B'), { ...ROW, symbol: 'BRK.B', open: 495, high: 510, low: 490 });
+    const { result } = await mountHook();
+    act(() => { result.current.subscribe(['BRK-B', 'BRK.B']); });
+    push({ ev: 'AM', sym: 'BRK.B', o: 500, h: 501, l: 499, c: 500, v: 10, s: et(12, 0) });
+    expect(result.current.prices.get('BRK-B')).toMatchObject({ open: 495, high: 510, low: 490 });
+  });
+});

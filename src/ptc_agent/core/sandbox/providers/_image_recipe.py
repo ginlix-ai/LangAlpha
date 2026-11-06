@@ -232,17 +232,10 @@ def image_steps(
         Env(sandbox_thread_env(cpu)),
         Run(
             (
-                # yfinance pins curl_cffi<0.14 but scrapling[all] requires >=0.14.
-                # Override resolves the conflict (tested, yfinance works with 0.14+).
-                # Written in the same command: E2B's builder does not carry /tmp
-                # from a cached step into the next one.
                 # uv writes no bytecode by default, so every new sandbox would
                 # compile pandas, yfinance and the rest on its first import.
-                "echo 'curl_cffi>=0.14' > /tmp/overrides.txt"
-                " && uv pip install --system --compile-bytecode"
-                " --override /tmp/overrides.txt "
+                "uv pip install --system --compile-bytecode "
                 + " ".join(dependencies)
-                + " && rm /tmp/overrides.txt"
                 + " && uv cache clean && rm -rf /root/.cache/pip",
                 # Scrapling browser setup (Camoufox for StealthyFetcher). Its
                 # Chromium is the one npx already placed in the shared

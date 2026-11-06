@@ -40,6 +40,14 @@ redis_warm_on_startup: true
 # turns it on in its APP_ENV overlay.
 brokerage_marks_warm_on_startup: false
 langsmith_tracing: false
+# Off: a middleware hook's LangSmith run keeps its name, timing, outputs and
+# errors but not its inputs, and a graph node's run records how many messages
+# its state held rather than the messages, which the model call's own run
+# already holds. Each copy is the whole stored conversation, about 70 per model
+# call, and they were 96% of what a turn uploaded. On restores both, for
+# debugging a middleware, except where a middleware sets its own trace policy
+# (deepagents' PatchToolCallsMiddleware always omits its inputs).
+langsmith_full_payloads: false
 
 # User-facing product features. Each entry overrides the code catalog
 # (src/config/features.py) for this deployment; unset fields inherit the

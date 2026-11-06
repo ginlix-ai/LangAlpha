@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getClaudeCodeComputers, getClaudeCodeStatus, type ClaudeCodeState } from '@/api/model';
+import { getClaudeCodeComputers, getClaudeCodeSetup, getClaudeCodeStatus, type ClaudeCodeState } from '@/api/model';
 import { queryKeys } from '@/lib/queryKeys';
 import { isFeatureEnabled, useFeatures } from './useFeatures';
 
@@ -102,4 +102,37 @@ export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
   }, [behindSaved, queryClient]);
   // A failed read again keeps the list it had, which still says whose they are.
   return { computers: data?.computers ?? [], isLoading: featuresLoading || isLoading, unread: isError && !data };
+}
+
+/**
+ * Claude Code's entry under Connect a subscription: where it stands as a
+ * whole, read whether the user turned it on or not, so the entry is there
+ * whenever the server offers Claude Code and says what is missing. Null
+ * where the server offers none. Read again every 5 s while a token is being
+ * checked, and as the next working token expires; every token change and the opt-in reread it with the other
+ * Claude Code reads, as a computer added, removed or started does. Read
+ * again whenever Settings opens, since a computer can come online (a Mac's
+ * Remote control turned on) with no change made here.
+ */
+export function useClaudeCodeSetup() {
+  const saved = useClaudeCodeStatus();
+  const { data, isLoading, isError } = useQuery({
+    queryKey: queryKeys.features.claudeCodeSetup(),
+    queryFn: () => getClaudeCodeSetup(),
+    staleTime: 60_000,
+    refetchOnMount: 'always',
+    retry: 1,
+    refetchInterval: (query) => {
+      const setup = query.state.data;
+      if (setup?.state === 'checking') return CHECKING_POLL_MS;
+      if (setup?.state !== 'connected') return false;
+      // Read again as the next working token expires, which may be the one it is connected by.
+      const waits = [{ state: saved.state, expires_at: saved.expiresAt }, ...setup.computers]
+        .map(({ state, expires_at }) => untilExpiry(state, expires_at))
+        .filter((wait): wait is number => wait !== false);
+      return waits.length > 0 ? Math.min(...waits) : false;
+    },
+  });
+  // A failed read is not "not offered": the entry stays, its status unknown.
+  return { setup: data ?? null, isLoading, unread: isError && data === undefined };
 }

@@ -11,6 +11,8 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ptc_agent.agent.middleware.compaction.compact import Compaction
+from ptc_agent.agent.middleware.compaction.fitting import Fit
+from ptc_agent.agent.middleware.compaction.measure import Estimate
 from ptc_agent.agent.middleware.compaction.middleware import CompactionMiddleware
 from ptc_agent.agent.middleware.compaction.offloading import offload_view
 from ptc_agent.agent.middleware.compaction.summarize import Summary
@@ -175,6 +177,17 @@ def _removed(path: str) -> str:
         f"[{path} (2 pages) was removed from the conversation to fit the context "
         "window. Read it again by page range if you need it.]"
     )
+
+
+async def test_what_the_call_sends_ahead_of_its_messages_counts_toward_the_fit():
+    # One 2-page PDF fits under the threshold beside its messages alone, not
+    # beside the system prompt and tool schemas the call is sent too.
+    kept = _history()[-2:]
+    estimate = Estimate(lambda msgs: 10 * len(list(msgs)))
+    assert 2 * PDF_PAGE_TOKENS + 20 < THRESHOLD
+
+    assert Fit(THRESHOLD, 0, estimate)._to_remove(kept, everything=False) == set()
+    assert Fit(THRESHOLD, THRESHOLD // 2, estimate)._to_remove(kept, everything=False) == {"t2"}
 
 
 async def test_over_the_threshold_the_oldest_attachments_go_until_it_fits():

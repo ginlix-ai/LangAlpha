@@ -1,8 +1,9 @@
 /**
- * Claude Code on the user's own computers in Settings: one row per computer
- * that says which token it uses and offers the one next step for it, its
- * sheet adds the token to that computer, and with Claude Code off a token
- * left behind still shows, to be removed.
+ * Claude Code on the user's own computers in Settings: Model access lists
+ * Claude Code as one row, whose view has one row per computer that says which
+ * token it uses and offers the one next step for it, its sheet adds the token
+ * to that computer, and with Claude Code off a token left behind still shows,
+ * to be removed.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
@@ -11,7 +12,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { renderWithProviders } from '@/test/utils';
 import { queryKeys } from '@/lib/queryKeys';
 import { claudeCodeTokenUrl } from '@/lib/claudeCode';
-import type { ClaudeCodeComputer, ClaudeCodeStatus } from '@/api/model';
+import type { ClaudeCodeComputer, ClaudeCodeSetup, ClaudeCodeStatus } from '@/api/model';
 
 vi.mock('@/hooks/useProviderCatalog', () => ({
   useProviderCatalog: () => ({ keyGroups: [], planGroups: [], localEntries: [], placeOf: () => undefined, optionFor: () => null }),
@@ -20,6 +21,7 @@ vi.mock('@/hooks/useConfiguredProviders', () => ({
   useConfiguredProviders: () => ({ providers: [], withdrawn: [], configuredSet: new Set(), statusLoading: false, statusError: false }),
 }));
 vi.mock('@/api/model', () => ({
+  getClaudeCodeSetup: vi.fn(),
   getClaudeCodeStatus: vi.fn(),
   getClaudeCodeComputers: vi.fn(),
   saveClaudeCodeToken: vi.fn(),
@@ -38,7 +40,7 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => ({
 }));
 
 import {
-  getClaudeCodeComputers, getClaudeCodeStatus, removeClaudeCodeComputerToken, saveClaudeCodeComputerToken,
+  getClaudeCodeComputers, getClaudeCodeSetup, getClaudeCodeStatus, removeClaudeCodeComputerToken, saveClaudeCodeComputerToken,
 } from '@/api/model';
 import { getWorkspace } from '@/pages/ChatAgent/utils/api';
 import { ModelAccessSection } from '../ModelAccessSection';
@@ -56,21 +58,50 @@ const status = (s: Partial<ClaudeCodeStatus>): ClaudeCodeStatus => ({ enabled: t
 const failed = (code: number) => Object.assign(new Error(`Request failed with status code ${code}`), { response: { status: code, data: {} } });
 const workspace = (workspaceId: string, computerId: string) => ({ workspace_id: workspaceId, name: 'Desk', is_home: false, computer_id: computerId });
 
-/** `workspaces`: the computer of each workspace already read. */
+/** `flag`: Claude Code is on. `workspaces`: the computer of each workspace already read. */
 function render({ flag = true, computers = [MAC, BOX], account = status({}), route = '/', workspaces = {} }: {
   flag?: boolean; computers?: ClaudeCodeComputer[]; account?: ClaudeCodeStatus; route?: string; workspaces?: Record<string, string>;
 } = {}) {
+  const setup: ClaudeCodeSetup = {
+    state: flag ? 'connected' : 'not_connected', on: flag, computers, saved_token_runs: !flag || account.state !== 'off', cloud: false,
+  };
+  (getClaudeCodeSetup as Mock).mockResolvedValue(setup);
   (getClaudeCodeStatus as Mock).mockResolvedValue(account);
   (getClaudeCodeComputers as Mock).mockResolvedValue({ computers });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
-  queryClient.setQueryData(queryKeys.features.list(), [{ key: 'claude_code_runtime', enabled: flag }]);
+  queryClient.setQueryData(queryKeys.features.list(), [{ key: 'claude_code_runtime', enabled: flag, gate: 'opt_in' }]);
   for (const [id, computerId] of Object.entries(workspaces)) queryClient.setQueryData(queryKeys.workspaces.detail(id), workspace(id, computerId));
   return renderWithProviders(<ModelAccessSection />, { queryClient, route });
 }
 
-/** A computer's row, found by the computer's name beside "Claude Code". */
-const rowOf = async (name: string) => (await screen.findByText(name)).closest('li') as HTMLElement;
-const buttonsOf = (row: HTMLElement) => within(row).queryAllByRole('button').map((b) => b.textContent);
+/** Claude Code's view, opened once from its one row in the list. */
+const view = async () => {
+  const open = screen.queryByRole('dialog', { name: 'Claude Code', hidden: true });
+  if (open) return open;
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage' }));
+  return screen.findByRole('dialog', { name: 'Claude Code' });
+};
+/** A computer's row in the view, found by the computer's name. */
+const rowOf = async (name: string) => (await within(await view()).findByText(name)).closest('li') as HTMLElement;
+/** The saved token's row, in the view's Saved token group. */
+const savedRowOf = async () => within((await within(await view()).findByText('Saved token')).parentElement as HTMLElement).getByRole('listitem');
+/** The list is read once Claude Code's row is there, before any view is opened. */
+const listRead = async () => {
+  await screen.findByText('Claude Code');
+  await waitFor(() => expect(getClaudeCodeComputers).toHaveBeenCalled());
+  await act(async () => {});
+};
+const buttonsOf = (row: HTMLElement) => within(row).queryAllByRole('button').map((b) => b.textContent || b.getAttribute('aria-label'));
+
+
+/** Remove is a line's button where it is the only action, and the item of
+ *  its More actions menu beside any other. */
+function clickRemove(row: HTMLElement) {
+  const more = within(row).queryByRole('button', { name: 'More actions' });
+  if (!more) return fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+  fireEvent.keyDown(more, { key: 'Enter' });
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Remove' }));
+}
 
 describe('ModelAccessSection: Claude Code on own computers', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -78,10 +109,9 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
   it('gives each own computer a row that says it uses its own token, and replaces or removes it', async () => {
     render();
     const row = await rowOf('Studio Mac');
-    expect(within(row).getByText('Claude Code')).toBeInTheDocument();
     expect(within(row).getByText('Connected')).toBeInTheDocument();
     expect(within(row).getByText('Oct 29, 2027').parentElement).toHaveTextContent(/^Uses its own token · user@example\.com · Expires by Oct 29, 2027$/);
-    expect(buttonsOf(row)).toEqual(['Replace', 'Remove']);
+    expect(buttonsOf(row)).toEqual(['Replace', 'More actions']);
   });
 
   it('offers a token to a computer with none', async () => {
@@ -112,8 +142,8 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     render({ computers: [{ ...BOX, state: 'signed_in', source: 'saved', own_file: true }], account: status({ state: 'signed_in', saved: true }) });
     const row = await rowOf('Lab box');
     expect(within(row).getByText('Uses your saved token')).toBeInTheDocument();
-    expect(buttonsOf(row)).toEqual(['Add its own token', 'Remove']);
-    fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+    expect(buttonsOf(row)).toEqual(['Add its own token', 'More actions']);
+    clickRemove(row);
     const dialog = screen.getByRole('dialog', { name: 'Remove the setup token from Lab box?' });
     expect(within(dialog).getByText(/Claude Code there then uses your saved token/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove token' }));
@@ -127,12 +157,12 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     expect(buttonsOf(row)).toEqual(['Add setup token']);
   });
 
-  it('says a computer that is not running cannot be checked, and offers nothing', async () => {
+  it('says a computer that is not running cannot be checked, and offers only to view it', async () => {
     render({ computers: [{ ...MAC, state: 'offline' }] });
     const row = await rowOf('Studio Mac');
     expect(within(row).getByText('Offline')).toBeInTheDocument();
     expect(within(row).getByText("This computer isn't running, so its token can't be checked.")).toBeInTheDocument();
-    expect(buttonsOf(row)).toEqual([]);
+    expect(buttonsOf(row)).toEqual(['View computer']);
   });
 
   it("says Claude Code can't run on a computer an organization's policy is installed on, and invites no token there", async () => {
@@ -151,7 +181,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     "says Claude Code can't run on this server where an organization's policy is installed on it (saved %s)",
     async (saved, buttons) => {
       render({ computers: [BOX], account: status({ state: 'policy_blocked', saved }) });
-      const row = (await screen.findByText('Saved token')).closest('li') as HTMLElement;
+      const row = await savedRowOf();
       expect(within(row).getByText('Unavailable')).toBeInTheDocument();
       expect(within(row).getByText("Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here.")).toBeInTheDocument();
       expect(buttonsOf(row)).toEqual(buttons);
@@ -190,7 +220,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
       render({ computers: [{ ...MAC, state: 'checking' }, BOX] });
       const row = await rowOf('Studio Mac');
       expect(within(row).getByText('Checking')).toBeInTheDocument();
-      expect(buttonsOf(row)).toEqual(['Replace', 'Remove']);
+      expect(buttonsOf(row)).toEqual(['Replace', 'More actions']);
       expect(getClaudeCodeComputers).toHaveBeenCalledTimes(1);
       (getClaudeCodeComputers as Mock).mockResolvedValue({ computers: [MAC, BOX] });
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
@@ -217,7 +247,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     expect(signIn.compareDocumentPosition(paste) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.change(paste, { target: { value: TOKEN } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save token' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a setup token for Lab box' })).toBeNull());
     expect(saveClaudeCodeComputerToken).toHaveBeenCalledWith('cmp-box', TOKEN);
     const row = await rowOf('Lab box');
     expect(within(row).getByText('Connected')).toBeInTheDocument();
@@ -227,7 +257,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
   it("removes a computer's token from that computer, after asking", async () => {
     (removeClaudeCodeComputerToken as Mock).mockResolvedValue(undefined);
     render();
-    fireEvent.click(within(await rowOf('Studio Mac')).getByRole('button', { name: 'Remove' }));
+    clickRemove(await rowOf('Studio Mac'));
     const dialog = screen.getByRole('dialog', { name: 'Remove the setup token from Studio Mac?' });
     expect(within(dialog).getByText(/won't run there until you add a new one/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove token' }));
@@ -236,8 +266,9 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
 
   it('says the saved token takes over, where this server runs turns on one', async () => {
     render({ account: status({ state: 'signed_in', saved: true }) });
-    await screen.findByText('Uses its own token', { exact: false });
-    fireEvent.click(within(await rowOf('Studio Mac')).getByRole('button', { name: 'Remove' }));
+    const mac = await rowOf('Studio Mac');
+    await within(mac).findByText('Uses its own token', { exact: false });
+    clickRemove(mac);
     expect(screen.getByText(/Claude Code there then uses your saved token/)).toBeInTheDocument();
   });
 
@@ -250,7 +281,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     ['the computer runs musl', status({ state: 'signed_in', saved: true }), { ...MAC, state: 'computer_unsupported' as const }],
   ])('says nothing of the saved token taking over where %s', async (_, account, entry) => {
     render({ account, computers: [entry] });
-    fireEvent.click(within(await rowOf('Studio Mac')).getByRole('button', { name: 'Remove' }));
+    clickRemove(await rowOf('Studio Mac'));
     expect(screen.getByText(/won't run there until you add a new one/)).toBeInTheDocument();
   });
 
@@ -273,8 +304,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     let answer!: (w: unknown) => void;
     (getWorkspace as Mock).mockReturnValue(new Promise((r) => { answer = r; }));
     render({ route: claudeCodeTokenUrl('ws-mac') });
-    await rowOf('Studio Mac');
-    await act(async () => {});
+    await listRead();
     expect(screen.queryByRole('dialog')).toBeNull();
     await act(async () => { answer(workspace('ws-mac', 'cmp-mac')); });
     expect(await screen.findByRole('dialog', { name: 'Replace the setup token on Studio Mac' })).toBeInTheDocument();
@@ -285,7 +315,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
   it('opens no sheet from a link while the workspace it names cannot be read, and keeps the link', async () => {
     (getWorkspace as Mock).mockRejectedValue(failed(500));
     const { queryClient } = render({ route: claudeCodeTokenUrl('ws-mac') });
-    await rowOf('Studio Mac');
+    await listRead();
     await waitFor(() => expect(queryClient.getQueryState(queryKeys.workspaces.detail('ws-mac'))?.status).toBe('error'));
     await act(async () => {});
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -299,8 +329,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     (getWorkspace as Mock).mockReturnValue(new Promise((r) => { answer = r; }));
     const { queryClient } = render({ route: claudeCodeTokenUrl('ws-home') });
     queryClient.setQueryData(queryKeys.workspaces.home(), { ...workspace('ws-home', ''), computer_id: null, is_home: true });
-    await rowOf('Studio Mac');
-    await act(async () => {});
+    await listRead();
     expect(screen.queryByRole('dialog')).toBeNull();
     await act(async () => { answer({ ...workspace('ws-home', 'cmp-mac'), is_home: true }); });
     expect(await screen.findByRole('dialog', { name: 'Replace the setup token on Studio Mac' })).toBeInTheDocument();
@@ -312,32 +341,56 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     expect(await screen.findByRole('dialog', { name: 'Add a setup token' })).toBeInTheDocument();
   });
 
-  it("names the saved token beside computers' rows, and only there", async () => {
+  it("names the saved token in a group of its own beside the computers' rows, and only there", async () => {
     render({ account: status({ state: 'signed_in', saved: true }) });
-    const saved = (await screen.findByText('Saved token')).closest('li') as HTMLElement;
-    expect(buttonsOf(saved)).toEqual(['Replace', 'Remove']);
+    const saved = await savedRowOf();
+    expect(within(saved).getByText('For computers without a token')).toBeInTheDocument();
+    expect(buttonsOf(saved)).toEqual(['Replace', 'More actions']);
+    const computers = (await within(await view()).findByText('Your computers')).parentElement as HTMLElement;
+    expect(within(computers).queryByText('For computers without a token')).toBeNull();
+    expect(within(computers).queryByText('Saved token')).toBeNull();
   });
 
   // A hosted deployment runs Claude Code only on the user's own computers.
   it('shows no saved token, and opens none from a link, where no saved token runs', async () => {
     render({ account: status({ state: 'off' }), route: '/?connect=claude-code' });
+    await listRead();
+    expect(screen.queryByRole('dialog')).toBeNull();
     await rowOf('Studio Mac');
     expect(screen.queryByText('Saved token')).toBeNull();
     expect(screen.queryByText('Its own setup token, not your Claude Code sign-in')).toBeNull();
-    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   describe('with Claude Code off', () => {
-    it('keeps the saved token and a computer that holds one, each offering Remove only', async () => {
-      render({ flag: false, computers: [{ ...MAC, state: 'off' }, { ...BOX, state: 'off' }], account: status({ enabled: false, state: 'off', saved: true }) });
-      const row = await rowOf('Studio Mac');
-      expect(within(row).getByText('Off')).toBeInTheDocument();
-      expect(within(row).getByText('Claude Code is off, but this computer still has its setup token.')).toBeInTheDocument();
-      expect(buttonsOf(row)).toEqual(['Remove']);
-      const saved = (await screen.findByText('Claude Code is off, but your setup token is still saved.')).closest('li') as HTMLElement;
+    const left = () => render({
+      flag: false,
+      computers: [{ ...MAC, state: 'off', own_file: true }, { ...BOX, state: 'off' }],
+      account: status({ enabled: false, state: 'off', saved: true }),
+    });
+
+    it('keeps one Claude Code row in the list while a token is left behind, saying it is off', async () => {
+      left();
+      const listRow = (await screen.findByText('Claude Code')).closest('li') as HTMLElement;
+      expect(within(listRow).getByText('Off')).toBeInTheDocument();
+      expect(within(listRow).getByText('Claude Code is off, but your setup token is still saved.')).toBeInTheDocument();
+      expect(buttonsOf(listRow)).toEqual(['Manage']);
+    });
+
+    it('offers to remove the token a computer holds, and a first token to one that holds none', async () => {
+      left();
+      const mac = await rowOf('Studio Mac');
+      expect(within(mac).getByText('Off')).toBeInTheDocument();
+      expect(within(mac).getByText('Claude Code is off, but this computer still has its setup token.')).toBeInTheDocument();
+      expect(buttonsOf(mac)).toEqual(['Remove']);
+      expect(buttonsOf(await rowOf('Lab box'))).toEqual(['Add setup token']);
+    });
+
+    it('offers to remove the saved token left behind', async () => {
+      left();
+      const saved = await savedRowOf();
+      expect(within(saved).getByText('Off')).toBeInTheDocument();
+      expect(within(saved).getByText('Claude Code is off, but your setup token is still saved.')).toBeInTheDocument();
       expect(buttonsOf(saved)).toEqual(['Remove']);
-      // A computer with no token of its own has nothing left to remove.
-      expect(screen.queryByText('Lab box')).toBeNull();
     });
 
     it('shows nothing when no token is left, and the list reads as empty', async () => {

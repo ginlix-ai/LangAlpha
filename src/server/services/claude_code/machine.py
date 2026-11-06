@@ -430,11 +430,15 @@ async def _from_answer(
 
 async def _status(
     user_id: str, computer: Mapping[str, Any], tunnels: dict[str, dict[str, Any]] | None, saved: dict | None,
+    *, mark_offline: bool = False,
 ) -> ClaudeCodeComputer:
     """The computer's kept answer. On a miss with the computer awake, one
     worker checks it in the background and reads answer checking until it
-    lands; one asleep or out of reach reads as it last answered."""
+    lands; one asleep or out of reach reads as it last answered, or with
+    ``mark_offline`` as ``offline``, since no turn runs there until it is back."""
     computer_id = str(computer["computer_id"])
+    if mark_offline and not (_awake(computer, tunnels) and not await get_cache_client().get(unreached_key(computer_id))):
+        return _entry(computer, "offline")
     answer = await read_answer(computer_id)
     if answer is not None and answer.fresh:
         return await _from_answer(user_id, computer, answer, saved)
@@ -448,29 +452,37 @@ async def _status(
     return _entry(computer, "offline")
 
 
-async def _off(user_id: str, computer: Mapping[str, Any], tunnels: dict[str, dict[str, Any]] | None) -> ClaudeCodeComputer:
+async def _off(
+    user_id: str, computer: Mapping[str, Any], tunnels: dict[str, dict[str, Any]] | None, *, mark_offline: bool = False,
+) -> ClaudeCodeComputer:
     """A computer while Claude Code is off for the user, naming the token it
     last held, which Settings still offers to remove. With no answer kept
     (it lapsed, or Redis lost it) and the computer awake, one worker looks
     in the background for a token file there, never running a check, so a
-    token left on the machine is named from the next read on."""
+    token left on the machine is named from the next read on. With
+    ``mark_offline``, one asleep or that a recent dial could not reach reads
+    ``offline``."""
     computer_id = str(computer["computer_id"])
     answer = await read_answer(computer_id)
-    if answer is None and _awake(computer, tunnels) and not await get_cache_client().get(unreached_key(computer_id)):
+    reachable = _awake(computer, tunnels) and not await get_cache_client().get(unreached_key(computer_id))
+    if answer is None and reachable:
         await in_background(
             change_lock(computer_id), LOOK_S, partial(_check_then_keep, user_id, computer_id, None, look_only=True),
         )
-    return _entry(computer, "off", "machine" if answer is not None and answer.names_file else None)
+    source = "machine" if answer is not None and answer.names_file else None
+    return _entry(computer, "off" if reachable or not mark_offline else "offline", source)
 
 
-async def list_computers(user_id: str) -> ClaudeCodeComputers:
-    """Every own computer of the user's and where Claude Code stands on it."""
+async def list_computers(user_id: str, *, mark_offline: bool = False) -> ClaudeCodeComputers:
+    """Every own computer of the user's and where Claude Code stands on it;
+    ``mark_offline`` tells one out of reach (``_off``, ``_status``)."""
     computers = [c for c in await get_computer_roster(user_id) if is_own_computer(c)]
     if not await rows_on(user_id):
         tunnels = await tunnels_for(user_id, computers)
-        return ClaudeCodeComputers(computers=list(await asyncio.gather(*(_off(user_id, c, tunnels) for c in computers))))
+        entries = await asyncio.gather(*(_off(user_id, c, tunnels, mark_offline=mark_offline) for c in computers))
+        return ClaudeCodeComputers(computers=list(entries))
     tunnels, saved = await asyncio.gather(tunnels_for(user_id, computers), _relayed(user_id))
-    entries = await asyncio.gather(*(_status(user_id, c, tunnels, saved) for c in computers))
+    entries = await asyncio.gather(*(_status(user_id, c, tunnels, saved, mark_offline=mark_offline) for c in computers))
     return ClaudeCodeComputers(computers=list(entries))
 
 

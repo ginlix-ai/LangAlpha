@@ -346,6 +346,32 @@ class TestFormatPriceSummary:
 
 class TestFetchDailyPrices:
     @pytest.mark.asyncio
+    async def test_side_reads_record_no_fallback_the_answer_did_not_take(self):
+        # The live stamp and the intraday chart are extras to the daily table:
+        # their misses are not the answer's, so they stay out of its note.
+        from src.data_client.fallbacks import Fallback, record, recording
+
+        def missed(what, result):
+            async def read(*_, **__):
+                record(Fallback("AAPL", what, "ginlix-data", "ConnectError", None))
+                return result
+            return read
+
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(30))
+        provider.get_daily_with_source.side_effect = missed(
+            "daily bars", (_make_provider_bars(30), "fmp", False)
+        )
+        provider.get_intraday_with_source.side_effect = missed("intraday bars", ([], "fmp", False))
+        provider.get_snapshots = AsyncMock(side_effect=missed("quote", []))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider), \
+                recording() as taken:
+            await fetch_daily_prices("AAPL")
+
+        provider.get_intraday_with_source.assert_awaited()
+        provider.get_snapshots.assert_awaited()
+        assert [f.what for f in taken] == ["daily bars"]
+
+    @pytest.mark.asyncio
     async def test_short_period_returns_table(self):
         """< 14 days should return markdown table format."""
         bars = _make_provider_bars(5)
@@ -2519,6 +2545,46 @@ class TestFetchQuote:
 
         assert "(no data: 920395.BJ)" in content
         daily.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_two_spellings_of_one_listing_are_quoted_once(self):
+        snaps = [{"symbol": "BRK-B", "price": 557.07, "change_percent": 0.2,
+                  "volume": 1, "last_trade_price": 557.07, "market_status": "open"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_quote(["BRK.B", "BRK-B"])
+        assert provider.get_snapshots.await_args.args[0] == ["BRK-B"]
+        assert len(artifact["quotes"]) == 1 and content.count("BRK-B") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_listing_whose_sources_failed_is_named_as_a_fallback_not_no_data(self):
+        from src.data_client.market_data_provider import MarketDataProvider, ProviderEntry
+        from src.tools.market_data.tool import get_quote
+
+        class _Tushare:
+            async def get_snapshots(self, **_):
+                raise ConnectionError("down")
+
+        class _Fmp:
+            async def get_snapshots(self, symbols, **_):
+                return [{"symbol": "600519.SH", "price": 1255.79, "change_percent": -0.22,
+                         "volume": 1, "last_trade_price": 1255.79}]
+
+        provider = MarketDataProvider([
+            ProviderEntry("tushare", _Tushare(), {"cn"}), ProviderEntry("fmp", _Fmp(), {"all"}),
+        ])
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+                patch(f"{_QUOTES_MOD}.fill_quote_names", new=AsyncMock()), \
+                patch(f"{_DAILY_MOD}.clock_for_ref") as clock:
+            clock.return_value.is_closed.return_value = False
+            msg = await get_quote.ainvoke({
+                "type": "tool_call", "name": "get_quote", "id": "tc-1",
+                "args": {"symbols": ["920799.BJ", "600519.SH"]},
+            })
+
+        assert "no data" not in msg.content
+        assert "- 600519.SH: tushare failed (ConnectionError); fmp answered quote" in msg.content
+        assert "- 920799.BJ: tushare failed (ConnectionError); no source answered quote" in msg.content
 
     @pytest.mark.asyncio
     async def test_reports_missing_symbols(self):

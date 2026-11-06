@@ -57,9 +57,6 @@ _RIPGREP_SHA256 = {
     "x86_64-apple-darwin": "af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1",
     "aarch64-apple-darwin": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4",
 }
-# yfinance pins curl_cffi<0.14 but scrapling[all] requires >=0.14, as in the
-# sandbox image.
-_OVERRIDES = ("curl_cffi>=0.14",)
 # What the sandbox image's OS provides and a machine may not. uv's Python reads
 # time zones from the OS's zoneinfo, which minimal images leave out, and
 # zoneinfo falls back to this package.
@@ -134,7 +131,6 @@ def recipe_hash() -> str:
         "uv": [UV_VERSION, _UV_SHA256],
         "python": PYTHON_VERSION,
         "packages": _PACKAGES,
-        "overrides": _OVERRIDES,
         "ripgrep": [RIPGREP_VERSION, _RIPGREP_SHA256],
         "browsers": layer_hashes()["browsers"],
         "revision": 2,
@@ -150,7 +146,7 @@ def layer_hashes() -> dict[str, str]:
     """What each stamped layer was installed from; a layer reinstalls when its
     hash changes."""
     return {
-        "packages": _hash(_PACKAGES, _OVERRIDES),
+        "packages": _hash(_PACKAGES),
         "browsers": _hash(SANDBOX_PLAYWRIGHT_VERSION, _LAUNCHER, _MISSING_BROWSERS),
     }
 
@@ -225,7 +221,6 @@ def bootstrap_script(*, lock_wait_s: int) -> str:
     uv_sha = " ".join(f"{a}={s}" for a, s in _UV_SHA256.items())
     rg_sha = " ".join(f"{a}={s}" for a, s in _RIPGREP_SHA256.items())
     packages = " ".join(shlex.quote(p) for p in _PACKAGES)
-    overrides = "\\n".join(_OVERRIDES)
     # The script names its folders under $L, which it sets to the base.
     p = RuntimePaths.under("$L")
     return f"""set -euo pipefail
@@ -304,9 +299,7 @@ fi
 if ! current packages {layers["packages"]}; then
   phase packages
   echo "Installing packages"
-  printf '{overrides}\\n' > "$t/overrides.txt"
-  "{p.bin}/uv" pip install --python "{p.venv_bin}/python" --compile-bytecode \\
-    --override "$t/overrides.txt" {packages}
+  "{p.bin}/uv" pip install --python "{p.venv_bin}/python" --compile-bytecode {packages}
   record packages {layers["packages"]}
 fi
 

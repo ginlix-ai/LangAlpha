@@ -116,6 +116,39 @@ export async function removeClaudeCodeComputerToken(computerId: string): Promise
   await api.delete(`${computerPath(computerId)}/token`);
 }
 
+/** Where the user's Claude Code stands as a whole, the first that holds: a
+ *  token works somewhere, one is being checked, one was refused or expired,
+ *  somewhere runs it once a token is added, an own computer is out of reach,
+ *  every own computer has something that stops it, or nothing the user has
+ *  runs it. */
+export type ClaudeCodeSetupState = 'connected' | 'checking' | 'refused' | 'not_connected' | 'offline' | 'unsupported' | 'no_computer';
+
+/** `GET /api/v1/claude-code/setup`, read whether the user turned Claude Code
+ *  on (`on`) or not. Until they do, an own computer reads `off` where it is
+ *  reachable and `offline` where it is not. */
+export interface ClaudeCodeSetup {
+  state: ClaudeCodeSetupState;
+  on: boolean;
+  computers: ClaudeCodeComputer[];
+  /** This server runs turns on a setup token added in Settings, so one can
+   *  be added there whatever the user's computers. */
+  saved_token_runs: boolean;
+  /** This server runs Claude Code for workspaces on cloud computers too. */
+  cloud: boolean;
+}
+
+/** Null where this server offers no Claude Code (404), or one from before
+ *  this route, which shows none. */
+export async function getClaudeCodeSetup(): Promise<ClaudeCodeSetup | null> {
+  try {
+    const { data } = await api.get('/api/v1/claude-code/setup');
+    return data as ClaudeCodeSetup;
+  } catch (err) {
+    if (apiErrorStatus(err) === 404) return null;
+    throw err;
+  }
+}
+
 export async function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
   const { data } = await api.get('/api/v1/claude-code/status');
   return data as ClaudeCodeStatus;

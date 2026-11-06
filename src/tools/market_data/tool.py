@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
+from ._shared import names_fallbacks
 from .implementations import (
     fetch_company_overview,
     fetch_daily_prices,
@@ -28,6 +29,7 @@ from .implementations import (
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_daily_prices(
     symbol: str,
     config: RunnableConfig,
@@ -52,6 +54,7 @@ async def get_daily_prices(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_company_overview(
     symbol: str,
     config: RunnableConfig,
@@ -68,6 +71,7 @@ async def get_company_overview(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_quote(
     symbols: List[str],
     config: RunnableConfig,
@@ -86,6 +90,7 @@ async def get_quote(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_market_overview(
     config: RunnableConfig,
     region: str = "us",
@@ -111,6 +116,7 @@ async def get_market_overview(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def screen_stocks(
     market_cap_more_than: Optional[float] = None,
     market_cap_lower_than: Optional[float] = None,
@@ -132,28 +138,20 @@ async def screen_stocks(
     limit: int = 50,
 ) -> Tuple[Union[str, List[Dict[str, Any]]], Dict[str, Any]]:
     """
-    Screen/discover stocks by fundamental and market filters — market cap, price,
-    volume, beta, dividend, sector, industry, exchange, country, and type — via the
-    FMP company screener.
+    Screen/discover stocks by market cap, price, volume, beta, dividend, sector,
+    industry, exchange and country via the FMP company screener. Funds and ETFs
+    are left out unless is_etf or is_fund is True.
+    Thresholds compare in each listing's own currency (yen on a JP screen), and
+    London prices and dividends in pence.
 
     Args:
-        market_cap_more_than: Minimum market capitalization (e.g. 1e9 for $1B).
-        market_cap_lower_than: Maximum market capitalization.
-        price_more_than: Minimum share price.
-        price_lower_than: Maximum share price.
-        volume_more_than: Minimum daily volume.
-        volume_lower_than: Maximum daily volume.
-        beta_more_than: Minimum beta.
-        beta_lower_than: Maximum beta.
-        dividend_more_than: Minimum dividend yield.
-        dividend_lower_than: Maximum dividend yield.
+        market_cap_more_than: e.g. 1e9 for $1B on a US listing.
+        dividend_more_than, dividend_lower_than: Annual dividend per share, not a yield.
         sector: e.g. "Technology", "Healthcare", "Financial Services".
         industry: e.g. "Software", "Biotechnology".
         exchange: e.g. "NASDAQ", "NYSE", "AMEX".
-        country: e.g. "US", "CN", "GB".
-        is_etf: ETFs only (True) or exclude ETFs (False).
-        is_fund: Funds only (True) or exclude funds (False).
-        is_actively_trading: Restrict to actively trading names.
+        country: Issuer's domicile, e.g. "US", "CN", "GB"; keeps its listings on
+            that country's own exchanges. For listings abroad (ADRs), pass exchange.
         limit: Max results (default 50).
     """
     content, artifact = await fetch_stock_screener(
@@ -180,6 +178,7 @@ async def screen_stocks(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_options_chain(
     underlying: str,
     config: RunnableConfig,

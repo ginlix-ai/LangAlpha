@@ -1,6 +1,7 @@
 """The setup token a user's Claude Code turns sign in with on the backend:
 saving, removing, and whether it works, for Settings and the model picker.
 
+- GET    /api/v1/claude-code/setup           Where the user's Claude Code stands as a whole, opted in or not
 - GET    /api/v1/claude-code/status          Whether the user's Claude Code models can run
 - POST   /api/v1/claude-code/sign-in         Start a sign-in that makes a setup token
 - POST   /api/v1/claude-code/sign-in/code    Finish it with the code Claude's page shows
@@ -15,14 +16,22 @@ and the choice for cloud computers ``hosted``.
 
 from fastapi import APIRouter, Response
 
-from src.server.models.claude_code import ClaudeCodeCustody, ClaudeCodeStatus, CodeBody, CustodyBody, TokenBody
+from src.server.models.claude_code import ClaudeCodeCustody, ClaudeCodeSetup, ClaudeCodeStatus, CodeBody, CustodyBody, TokenBody
 from src.server.services.claude_code import flow, hosted, saved
 from src.server.services.claude_code.flow import backend_on, pasted_code, pasted_token, require
 from src.server.services.claude_code.saved import SavedHome
+from src.server.services.claude_code.setup_state import setup_state
 from src.server.services.oauth_signin import OAuthRefusal
 from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/claude-code", tags=["claude-code"])
+
+
+@router.get("/setup", response_model=ClaudeCodeSetup)
+async def get_setup(x_user_id: CurrentUserId):
+    current = await setup_state(x_user_id)
+    require(current is not None, "This server doesn't offer Claude Code.")
+    return current
 
 
 @router.get("/status", response_model=ClaudeCodeStatus)

@@ -69,11 +69,11 @@ async def test_an_own_computer_runs_on_a_hosted_server_with_nothing_known_of_it(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("file", ["refused", "none", "invalid"])
-async def test_an_own_computer_known_to_have_no_usable_token_is_refused(file):
+@pytest.mark.parametrize(("file", "reason"), [("refused", "token_refused"), ("none", "signed_out"), ("invalid", "token_refused")])
+async def test_an_own_computer_known_to_have_no_usable_token_is_refused_as_settings_shows_it(file, reason):
     with pytest.raises(HTTPException) as refused:
         await _admit(OWN, cache=_Cache({answer_key("c-1"): _answer(file)}))
-    assert _reason(refused) == "signed_out"
+    assert _reason(refused) == reason
 
 
 @pytest.mark.asyncio
@@ -104,7 +104,7 @@ async def test_an_answer_kept_with_a_field_no_longer_known_still_reads():
     kept = {answer_key("c-1"): _answer("refused", managed=["settings"])}
     with pytest.raises(HTTPException) as refused:
         await _admit(OWN, cache=_Cache(kept))
-    assert _reason(refused) == "signed_out"
+    assert _reason(refused) == "token_refused"
 
 
 @pytest.mark.asyncio

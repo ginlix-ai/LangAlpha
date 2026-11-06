@@ -5,14 +5,13 @@ from typing import Optional, Dict, Any, Tuple
 from datetime import datetime, timezone
 import logging
 
+from market_protocol import AssetClass, display_decimals_for
+from market_protocol.symbology import MINOR_UNIT_PLACES
 
 from ._shared import _mark_failure
-from .currency import fmt_count, fmt_money, fmt_price
-from .display import (
-    _symbol_currency,
-    resolve_ref,
-)
+from .currency import DisplaySpec, fmt_count, fmt_money, fmt_price
 from src.data_client import get_financial_data_provider
+from src.data_client.normalize import screen_row_units
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +34,46 @@ _SCREENER_PARAM_MAP = {
 }
 
 
-def _screened_currency(results: list) -> Optional[str]:
-    """The listing currency every returned row shares; None (dollars) otherwise.
+# Spellings a caller uses for a country the screens know only by its ISO code.
+_COUNTRY_ALIASES = {"UK": "GB", "USA": "US", "CHN": "CN", "CHINA": "CN"}
 
-    The screen that answers a market applies the price and cap thresholds in
-    that market's currency (a CN screen in CNY), so the echoed filter has to
-    name it. A mixed answer has no single currency and keeps the dollar.
+_UNKNOWN_UNIT = DisplaySpec(None, 2, bare=True)
+
+
+def _row_specs(stock: Dict[str, Any]) -> Tuple[DisplaySpec, DisplaySpec]:
+    """(price, dividend) specs for *stock*, from the units ``screen_row_units`` named.
+
+    A pence quote keeps its places in pounds (0.35p is £0.0035), with trailing
+    zeros dropped so a whole-penny price still reads £37.84.
     """
-    currencies = set()
-    for row in results:
-        ref = resolve_ref(row.get("symbol")) if isinstance(row, dict) else None
-        if ref is not None and ref.price_currency:
-            currencies.add(ref.price_currency)
-    return currencies.pop() if len(currencies) == 1 else None
+    currency = stock["currency"]
+    if currency is None:
+        return _UNKNOWN_UNIT, _UNKNOWN_UNIT
+    try:
+        decimals = display_decimals_for(currency, AssetClass.EQUITY)
+    except Exception:
+        decimals = 2
+    places = MINOR_UNIT_PLACES.get(stock["quoteUnit"] or "", 0)
+    return (
+        DisplaySpec(currency, decimals + places, trim=bool(places)),
+        DisplaySpec(currency, max(decimals, 2) + places, trim=True),
+    )
+
+
+def _threshold_units(rows: list) -> Tuple[DisplaySpec, DisplaySpec]:
+    """(money unit, quote unit) the screen applied its thresholds in.
+
+    Each listing is compared in its own currency (a JP screen in yen), and a
+    London price or dividend in pence although its cap is in pounds. Only a
+    screen whose rows all share one unit can name it; any other prints the
+    bare figure.
+    """
+    currencies = {row["currency"] for row in rows}
+    if len(currencies) != 1 or None in currencies:
+        return _UNKNOWN_UNIT, _UNKNOWN_UNIT
+    quote_units = {row["quoteUnit"] for row in rows}
+    quote_unit = DisplaySpec(quote_units.pop(), 2) if len(quote_units) == 1 else _UNKNOWN_UNIT
+    return DisplaySpec(currencies.pop(), 2), quote_unit
 
 
 async def fetch_stock_screener(
@@ -76,6 +102,9 @@ async def fetch_stock_screener(
     Returns:
         Tuple of (markdown content, artifact dict for frontend rendering)
     """
+    if country:
+        country = country.strip().upper()
+        country = _COUNTRY_ALIASES.get(country, country)
     try:
         provider = await get_financial_data_provider()
         financial = provider.financial
@@ -131,8 +160,11 @@ async def fetch_stock_screener(
                 {"type": "stock_screener", "results": [], "filters": api_params, "count": 0},
             )
 
-        # Build active filters summary for display
-        filter_cur = _screened_currency(results)
+        results = screen_row_units(results)
+        # A screen of every venue compares each listing in its own currency,
+        # whatever the few rows it returns happen to share.
+        unscoped = not country and not exchange
+        money_unit, quote_unit = (_UNKNOWN_UNIT, _UNKNOWN_UNIT) if unscoped else _threshold_units(results)
         active_filters = {}
         if sector:
             active_filters["Sector"] = sector
@@ -142,26 +174,21 @@ async def fetch_stock_screener(
             active_filters["Exchange"] = exchange
         if country:
             active_filters["Country"] = country
-        if market_cap_more_than is not None:
-            active_filters["Mkt Cap >"] = fmt_money(market_cap_more_than, filter_cur)
-        if market_cap_lower_than is not None:
-            active_filters["Mkt Cap <"] = fmt_money(market_cap_lower_than, filter_cur)
-        if price_more_than is not None:
-            active_filters["Price >"] = fmt_price(price_more_than, filter_cur)
-        if price_lower_than is not None:
-            active_filters["Price <"] = fmt_price(price_lower_than, filter_cur)
-        if volume_more_than is not None:
-            active_filters["Vol >"] = fmt_count(volume_more_than)
-        if volume_lower_than is not None:
-            active_filters["Vol <"] = fmt_count(volume_lower_than)
-        if beta_more_than is not None:
-            active_filters["Beta >"] = f"{beta_more_than:.2f}"
-        if beta_lower_than is not None:
-            active_filters["Beta <"] = f"{beta_lower_than:.2f}"
-        if dividend_more_than is not None:
-            active_filters["Dividend/Share >"] = f"{dividend_more_than:.2f}"
-        if dividend_lower_than is not None:
-            active_filters["Dividend/Share <"] = f"{dividend_lower_than:.2f}"
+        # (label, bar, how it prints, whether it is money)
+        bars = [
+            ("Mkt Cap >", market_cap_more_than, lambda v: fmt_money(v, money_unit), True),
+            ("Mkt Cap <", market_cap_lower_than, lambda v: fmt_money(v, money_unit), True),
+            ("Price >", price_more_than, lambda v: fmt_price(v, quote_unit), True),
+            ("Price <", price_lower_than, lambda v: fmt_price(v, quote_unit), True),
+            ("Vol >", volume_more_than, lambda v: fmt_count(v, places=0), False),
+            ("Vol <", volume_lower_than, lambda v: fmt_count(v, places=0), False),
+            ("Beta >", beta_more_than, lambda v: f"{v:.2f}", False),
+            ("Beta <", beta_lower_than, lambda v: f"{v:.2f}", False),
+            ("Dividend/Share >", dividend_more_than, lambda v: fmt_price(v, quote_unit), True),
+            ("Dividend/Share <", dividend_lower_than, lambda v: fmt_price(v, quote_unit), True),
+        ]
+        active_filters.update((label, show(bar)) for label, bar, show, _ in bars if bar is not None)
+        priced = any(money and bar is not None for _, bar, _, money in bars)
 
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         lines = []
@@ -171,38 +198,33 @@ async def fetch_stock_screener(
 
         if active_filters:
             filter_parts = [f"{k}: {v}" for k, v in active_filters.items()]
-            lines.append(f"**Filters:** {' | '.join(filter_parts)}")
+            mixed = " (each listing's own currency)" if priced and money_unit.currency is None else ""
+            lines.append(f"**Filters:** {' | '.join(filter_parts)}{mixed}")
             lines.append("")
 
-        # Results table
-        lines.append("| Symbol | Name | Price | Mkt Cap | Sector | Beta | Volume | Change% |")
-        lines.append("|--------|------|-------|---------|--------|------|--------|---------|")
-
+        table = []
         for stock in results:
-            sym = stock.get("symbol", "N/A")
-            # A CN row carries these keys as null, which .get's default misses.
+            price_spec, dividend_spec = _row_specs(stock)
             name = stock.get("companyName") or "N/A"
-            if len(name) > 25:
-                name = name[:22] + "..."
-            price = stock.get("price")
-            mkt_cap = stock.get("marketCap")
-            sect = stock.get("sector") or "N/A"
             beta = stock.get("beta")
-            volume = stock.get("volume")
             change = stock.get("change")
-
-            row_cur = _symbol_currency(resolve_ref(sym))
-            price_str = fmt_price(price, row_cur)
-            cap_str = fmt_money(mkt_cap, row_cur)
-            beta_str = f"{beta:.2f}" if beta is not None else "N/A"
-            vol_str = fmt_count(volume) if volume is not None else "N/A"
-            if change is not None:
-                sign = "+" if change >= 0 else ""
-                change_str = f"{sign}{change:.2f}%"
-            else:
-                change_str = "N/A"
-
-            lines.append(f"| {sym} | {name} | {price_str} | {cap_str} | {sect} | {beta_str} | {vol_str} | {change_str} |")
+            table.append({
+                "Symbol": stock.get("symbol") or "N/A",
+                "Name": name if len(name) <= 25 else name[:22] + "...",
+                "Price": fmt_price(stock.get("price"), price_spec),
+                "Mkt Cap": fmt_money(stock.get("marketCap"), price_spec),
+                "Sector": stock.get("sector") or "N/A",
+                "Beta": f"{beta:.2f}" if beta is not None else "N/A",
+                "Volume": fmt_count(stock.get("volume"), places=0),
+                "Dividend/Share": fmt_price(stock.get("lastAnnualDividend"), dividend_spec),
+                "Change%": f"{change:+.2f}%" if change is not None else "N/A",
+            })
+        # A column no row fills says nothing: FMP's screen sends no change, the
+        # CN one no volume, sector or beta.
+        heads = [h for h in table[0] if any(row[h] != "N/A" for row in table)]
+        lines.append(f"| {' | '.join(heads)} |")
+        lines.append(f"|{'|'.join('-' * (len(h) + 2) for h in heads)}|")
+        lines.extend(f"| {' | '.join(row[h] for h in heads)} |" for row in table)
 
         content = "\n".join(lines)
 

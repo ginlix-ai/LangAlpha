@@ -2700,6 +2700,7 @@
     },
     "claudeCode": {
       "off": {
+        "account": "Claude Code is off for your account. Turn it on in Settings under Model access, or pick another model.",
         "token_refused": "Claude refused your setup token. It may have expired or been revoked. Add a new one in Settings under Model access to use this model.",
         "hosted_off": "Claude Code runs only on your own computers for your account, so workspaces on cloud computers can't use Claude Code models. Choose where it runs in Settings under Model access, or move this workspace to one of your computers.",
         "needs_api_key": "For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your Anthropic API key, and you haven't saved one. Add one in Settings under Model access, or move this workspace to one of your computers.",
@@ -6620,7 +6621,8 @@
       "configured": "API key configured",
       "notConnected": "Not connected",
       "offline": "Offline",
-      "off": "Off"
+      "off": "Off",
+      "needsComputer": "No computer"
     },
     "before": {
       "need": "What you need",
@@ -6675,6 +6677,7 @@
       "addNew": "Add new token",
       "replace": "Replace",
       "remove": "Remove",
+      "moreActions": "More actions",
       "addTitle": "Add a setup token",
       "replaceTitle": "Replace setup token",
       "intro": "Claude Code mode runs your Claude threads on your own Claude plan. It signs in with a setup token made for LangAlpha.",
@@ -6694,7 +6697,7 @@
         "token_rejected": "Claude refused this token. It may be incomplete, expired or revoked. Run claude setup-token again and paste the new one.",
         "check_unavailable": "Couldn't reach Claude to check the token, so nothing was saved. Try again.",
         "check_in_progress": "A token is already being checked. Wait a moment, then try again.",
-        "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Experiments.",
+        "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Model access.",
         "redis_unavailable": "Saving a token isn't available right now. Try again in a moment.",
         "computer_not_found": "This computer isn't available anymore.",
         "needs_perl": "Claude Code needs perl on this computer. Install perl, then try again.",
@@ -6719,7 +6722,7 @@
         "fieldLabel": "Code from Claude",
         "fieldPlaceholder": "Paste the code",
         "fail": {
-          "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Experiments.",
+          "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Model access.",
           "computer_not_found": "This computer isn't available anymore.",
           "needs_perl": "Claude Code needs perl on this computer. Install perl, then try again.",
           "computer_unsupported": "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet.",
@@ -6754,7 +6757,8 @@
         "policyBlocked": "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here.",
         "savedRejected": "Claude refused your saved token. It may have expired or been revoked.",
         "offline": "This computer isn't running, so its token can't be checked.",
-        "addOwn": "Add its own token"
+        "addOwn": "Add its own token",
+        "checking": "Asking Claude whether its token works"
       },
       "optOut": {
         "saved": "Claude Code is off, but your setup token is still saved.",
@@ -6788,12 +6792,85 @@
         "body": "LangAlpha deletes your stored setup token now, and Claude Code turns using it stop. Threads on cloud computers won't run on your Claude plan until you store a token again. Computers with their own token aren't affected.",
         "confirm": "Delete token",
         "failed": "Couldn't switch. Your token is still stored. Try again."
+      },
+      "setup": {
+        "pickNote": "Claude Pro or Max, run on your computer",
+        "lead": "Claude Code mode runs Anthropic's Claude Code through the Claude Agent SDK, inside LangAlpha's harness and tools. Usage counts against your Claude plan.",
+        "learnMore": "Learn more",
+        "waysTitle": "Ways to connect a computer",
+        "yourComputers": "Your computers",
+        "viewComputer": "View computer",
+        "cloudNotYet": "Cloud computers can't run Claude Code yet.",
+        "listSummary": "On {{names}}",
+        "turnOn": "Turn on Claude Code",
+        "mac": {
+          "name": "Your Mac, with Remote control",
+          "noteBrowser": "Get the LangAlpha app for Mac, then turn on Remote control in it.",
+          "noteDesktop": "Lets the LangAlpha Agent work on this Mac, where Claude Code then runs.",
+          "getApp": "Get the Mac app",
+          "turnOn": "Turn on Remote control"
+        },
+        "ssh": {
+          "name": "A computer over SSH",
+          "note": "Any Mac or Linux computer you can sign in to over SSH.",
+          "add": "Add SSH computer"
+        },
+        "noComputer": {
+          "title": "Connect a computer of your own first",
+          "body": "Claude Code runs on a computer of your own, and none is connected to LangAlpha yet. Connect one either way below, then come back here to sign in to Claude.",
+          "bodyCloud": "Claude Code runs on a computer of your own or a Medium or larger cloud computer, and none of yours can run it yet. Connect a computer of your own either way below, then come back here to sign in to Claude."
+        },
+        "unsupported": {
+          "title": "Claude Code can't run on your computers",
+          "body": "Something on each of your computers stops Claude Code. Fix it there, or connect another computer."
+        },
+        "offline": {
+          "title": "{{name}} is offline",
+          "titleMany": "Your computers are offline",
+          "body": "Claude Code runs on a computer of your own, and LangAlpha can't reach yours right now. Once one is back online, you can sign in to Claude here.",
+          "helper": "Open LangAlpha on this Mac and check that Remote control is on.",
+          "ssh": "Check that it's on and accepts SSH from LangAlpha."
+        },
+        "ready": {
+          "title": "Sign in to Claude to start",
+          "titleCloud": "Set up Claude Code to start",
+          "titleKept": "Turn Claude Code back on",
+          "bodyKept": "{{name}} still has its setup token. Turn on Claude Code to use it again.",
+          "bodyKeptMany": "Your computers below still have their setup tokens. Turn on Claude Code to use them again.",
+          "body": "Claude Code can run on {{name}}. Add a setup token for it, and Claude Code models join your model picker.",
+          "bodyMany": "Claude Code can run on the computers below. Add a setup token on each one you want it on.",
+          "bodySaved": "Add a setup token below, and Claude Code models join your model picker.",
+          "bodyCloud": "Choose how Claude Code runs on cloud computers below, and its models join your model picker.",
+          "bodyTurnOn": "Turn on Claude Code to choose how it runs on cloud computers."
+        },
+        "connected": {
+          "title": "Claude Code is ready",
+          "body": "Claude Code models are in your model picker for workspaces on these computers.",
+          "bodyAny": "Claude Code models are in your model picker."
+        },
+        "checking": {
+          "title": "Checking your setup tokens",
+          "body": "LangAlpha is asking Claude whether each token works."
+        },
+        "refused": {
+          "title": "Sign in to Claude again",
+          "body": "Claude refused the setup token on {{name}}. It may have expired or been revoked. Add a new token to keep using Claude Code.",
+          "bodyAny": "Claude refused a setup token. It may have expired or been revoked. Add a new token to keep using Claude Code."
+        },
+        "turnOff": {
+          "action": "Turn off Claude Code",
+          "title": "Turn off Claude Code?",
+          "body": "Claude Code models leave your model picker. Setup tokens on your computers stay until you remove them, so you can turn it back on here at any time.",
+          "confirm": "Turn off",
+          "bodyStored": "Claude Code models leave your model picker, and the setup token for cloud computers is removed. Tokens on your own computers stay until you remove them."
+        },
+        "savedName": "For computers without a token"
       }
     },
     "claude": {
       "name": "Claude",
       "intro": "Sign in on claude.ai, then paste the code it shows you.",
-      "pickNote": "Claude Pro or Max",
+      "pickNote": "Claude Pro or Max, called by LangAlpha",
       "need": "A Claude Pro or Max plan.",
       "usage": "Usage counts against your Claude plan, not your LangAlpha credits.",
       "usageOss": "Usage counts against your Claude plan.",

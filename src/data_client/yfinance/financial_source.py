@@ -16,9 +16,12 @@ from zoneinfo import ZoneInfo
 
 import yfinance as yf
 from market_protocol import display_spelling, to_major_units
+from market_protocol.symbology import MINOR_UNIT_PLACES
 
+from src.data_client.base import SCREEN_HOME_EXCHANGES
 from src.data_client.normalize import scale_quote_prices
 
+from .data_source import _fetch_single_snapshot
 from .yahoo import yahoo_ticker
 
 logger = logging.getLogger(__name__)
@@ -141,15 +144,40 @@ _SCREENER_FILTER_MAP: dict[str, tuple[str, str]] = {
     "volumeLowerThan": ("dayvolume", "LT"),
     "betaMoreThan": ("beta", "GT"),
     "betaLowerThan": ("beta", "LT"),
-    "dividendMoreThan": ("forward_dividend_yield", "GT"),
-    "dividendLowerThan": ("forward_dividend_yield", "LT"),
+    # Per share, as FMP and the CN screen compare it, not a yield.
+    "dividendMoreThan": ("forward_dividend_per_share", "GT"),
+    "dividendLowerThan": ("forward_dividend_per_share", "LT"),
 }
 
-# FMP exchange name → Yahoo Finance exchange codes
+# The country of each screen exchange name: its home exchanges, and BSE, which
+# India's screen leaves out only because its lines repeat NSE's.
+_EXCHANGE_COUNTRY = {n: c for c, names in SCREEN_HOME_EXCHANGES.items() for n in names} | {"BSE": "IN"}
+
+# Yahoo's codes for each screen exchange name.
 _EXCHANGE_TO_YF: dict[str, list[str]] = {
-    "NASDAQ": ["NMS", "NGM", "NCM"],
     "NYSE": ["NYQ"],
+    "NASDAQ": ["NMS", "NGM", "NCM"],
     "AMEX": ["ASE"],
+    "CBOE": ["BTS"],
+    "SHH": ["SHH"],
+    "SHZ": ["SHZ"],
+    "HKSE": ["HKG"],
+    "LSE": ["LSE"],
+    "JPX": ["JPX"],
+    "TSX": ["TOR"],
+    "ASX": ["ASX"],
+    "XETRA": ["GER"],
+    "PAR": ["PAR"],
+    "AMS": ["AMS"],
+    "MIL": ["MIL"],
+    "BME": ["MCE"],
+    "SIX": ["EBS"],
+    "KSC": ["KSC"],
+    "KOE": ["KOE"],
+    "TAI": ["TAI"],
+    "SES": ["SES"],
+    "NSE": ["NSI"],
+    "BSE": ["BSE"],
 }
 
 
@@ -181,29 +209,33 @@ def _get_profile(symbol: str) -> list[dict[str, Any]]:
 
 
 def _get_realtime_quote(symbol: str) -> list[dict[str, Any]]:
+    snap = _fetch_single_snapshot(symbol)
+    if snap is None:
+        return []
     ticker = yahoo_ticker(symbol)
-    fi = ticker.fast_info
     info = ticker.info or {}
-    price = float(fi.get("lastPrice", 0) or 0)
-    prev = float(fi.get("previousClose", 0) or 0)
-    change = price - prev if prev else 0.0
-    change_pct = (change / prev * 100) if prev else 0.0
     row = {
         "symbol": symbol,
         "name": info.get("longName") or info.get("shortName"),
-        "price": round(price, 4),
-        "change": round(change, 4),
-        "changePercentage": round(change_pct, 4),
-        "previousClose": round(prev, 4),
-        "open": round(float(fi.get("open", 0) or 0), 4),
-        "dayHigh": round(float(fi.get("dayHigh", 0) or 0), 4),
-        "dayLow": round(float(fi.get("dayLow", 0) or 0), 4),
-        "volume": int(fi.get("lastVolume", 0) or 0),
-        "marketCap": fi.get("marketCap"),
+        "price": snap["price"],
+        "change": snap["change"],
+        "changePercentage": snap["change_percent"],
+        "previousClose": snap["previous_close"],
+        "open": snap["open"],
+        "dayHigh": snap["high"],
+        "dayLow": snap["low"],
+        "volume": snap["volume"],
+        "marketCap": info.get("marketCap"),
         "pe": info.get("trailingPE"),
         "eps": info.get("trailingEps"),
     }
-    return scale_quote_prices([row], symbol)
+    row = scale_quote_prices([row], symbol)[0]
+    if row["marketCap"] is None:
+        # Yahoo's info omits it for some listings (A-shares); price it here on
+        # the scaled price, since fast_info's own multiplies a pence quote.
+        shares = _clean_value(ticker.fast_info.get("shares"))
+        row["marketCap"] = shares * row["price"] if shares else None
+    return [row]
 
 
 def _get_income_statements(
@@ -445,12 +477,10 @@ def _get_earnings_history(symbol: str, limit: int) -> list[dict[str, Any]]:
 def _get_single_sector_perf(sector_name: str, etf_symbol: str) -> dict[str, Any] | None:
     """Fetch daily change for one sector via its representative ETF."""
     try:
-        fi = yahoo_ticker(etf_symbol).fast_info
-        price = float(fi.get("lastPrice", 0) or 0)
-        prev = float(fi.get("previousClose", 0) or 0)
-        if not prev:
+        snap = _fetch_single_snapshot(etf_symbol)
+        pct = snap["change_percent"] if snap else None
+        if pct is None:
             return None
-        pct = (price - prev) / prev * 100
         sign = "+" if pct >= 0 else ""
         return {
             "sector": sector_name,
@@ -461,72 +491,193 @@ def _get_single_sector_perf(sector_name: str, etf_symbol: str) -> dict[str, Any]
         return None
 
 
+# Yahoo's largest screen page, and the pages a screen that filters its rows
+# reads at most: enough for every London line (about 3,450).
+_PAGE = 250
+_HELD_PAGES = 16
+
+# Regions whose screens can hold a line quoted in a minor unit.
+_MINOR_UNIT_REGIONS = {"GB", "ZA", "IL"}
+
+# Yahoo's spelling of the minor units it compares a line in, and the venues
+# (Yahoo codes) that quote lines in them.
+_MINOR_UNIT_CURRENCIES = {"GBp", "ZAc", "ILA"}
+_MINOR_UNIT_VENUES = ["LSE", "CXE", "AQS", "JNB", "TLV"]
+
+# A minor unit is a hundredth of its currency (pence, cents, agorot).
+_MINOR = 10 ** MINOR_UNIT_PLACES["GBX"]
+
+# Bars Yahoo compares on a minor-unit line apart from price: the row field each
+# is held to, and the bar's scale on such a line (its cap in pence, its
+# dividend in pounds while the bar is in pence).
+_HELD_PER_ROW = {
+    "intradaymarketcap": ("marketCap", _MINOR),
+    "forward_dividend_per_share": ("lastAnnualDividend", 1 / _MINOR),
+}
+
+
+def _quote_unit(currency: str | None, dividend_rate: float | None) -> dict[str, Any]:
+    """The unit a Yahoo screen row is in, with its dividend in that unit.
+
+    Yahoo names each line's currency, a minor unit in its own spelling. A pence,
+    cents or agorot line quotes its price in that unit but its dividend rate in
+    the major one, so the rate moves to the minor unit beside it. Cents (ZAc),
+    agorot (ILA) and fils (KWF) are units the protocol does not scale, so those
+    rows name no currency.
+    """
+    dividend = dividend_rate
+    if currency in _MINOR_UNIT_CURRENCIES and dividend_rate is not None:
+        dividend = dividend_rate * _MINOR
+    if currency == "GBp":
+        return {"currency": "GBP", "quoteUnit": "GBX", "lastAnnualDividend": dividend}
+    if currency in ("ZAc", "ILA", "KWF"):
+        return {"currency": None, "lastAnnualDividend": dividend}
+    return {"currency": currency, "lastAnnualDividend": dividend_rate}
+
+
+def _screen_query(
+    filters: dict[str, Any], minor_lines: bool = False,
+) -> tuple[Any, list[tuple[str, str, float]]]:
+    """Yahoo's query for FMP-style *filters*, and the bars each row is then held to.
+
+    A bar arrives as FMP compares it: a London price and dividend in pence, a
+    cap in the major unit. Yahoo compares a pence line's cap in pence but its
+    dividend in pounds, and a major-unit line in its own unit. Where both kinds
+    of line can appear, Yahoo gets the bound loose enough for either, and each
+    row is held to the bar in its own unit; a row lacking the field fails.
+    *minor_lines* asks for the minor-unit venues alone, with each bar as such a
+    line is compared.
+    """
+    from yfinance.screener.query import EquityQuery
+
+    country = (filters.get("country") or "").upper()
+    names = [n.strip() for n in (filters.get("exchange") or "").upper().split(",") if n.strip()]
+    codes = [c for n in names for c in _EXCHANGE_TO_YF.get(n, [n])]
+    # Yahoo's region is where a line lists, so a GB screen also returns Cboe
+    # Europe copies of UK lines; a country screen keeps to its own exchanges.
+    home = [c for n in SCREEN_HOME_EXCHANGES.get(country, ()) for c in _EXCHANGE_TO_YF[n]]
+    if country and any(_EXCHANGE_COUNTRY.get(n, country) != country for n in names):
+        raise ValueError(
+            "Yahoo's country is where a line lists, so it cannot pair with another country's exchange;"
+            " pass exchange alone to screen listings abroad"
+        )
+    mixed = country in _MINOR_UNIT_REGIONS or any(c in _MINOR_UNIT_VENUES for c in codes)
+
+    nodes: list[EquityQuery] = []
+    held: list[tuple[str, str, float]] = []
+    for fmp_key, (yf_field, op) in _SCREENER_FILTER_MAP.items():
+        val = filters.get(fmp_key)
+        if val is None:
+            continue
+        val = float(val)
+        if minor_lines and yf_field in _HELD_PER_ROW:
+            val *= _HELD_PER_ROW[yf_field][1]
+        elif mixed and yf_field in _HELD_PER_ROW:
+            row_field, scale = _HELD_PER_ROW[yf_field]
+            held.append((row_field, op, val))
+            val = (min if op == "GT" else max)(val, val * scale)
+        nodes.append(EquityQuery(op, [yf_field, val]))
+    for field in ("sector", "industry"):
+        if filters.get(field):
+            nodes.append(EquityQuery("EQ", [field, filters[field]]))
+    if minor_lines:
+        nodes.append(EquityQuery("IS-IN", ["exchange", *_MINOR_UNIT_VENUES]))
+    elif codes or home:
+        nodes.append(EquityQuery("IS-IN", ["exchange", *(codes or home)]))
+    if country:
+        nodes.append(EquityQuery("EQ", ["region", country.lower()]))
+    if not nodes:
+        # A screen with no filter is every listing with a cap, as FMP's is.
+        nodes.append(EquityQuery("GT", ["intradaymarketcap", 0]))
+    return (nodes[0] if len(nodes) == 1 else EquityQuery("AND", nodes)), held
+
+
 def _screen_stocks_sync(**filters: Any) -> list[dict[str, Any]]:
-    """Run yfinance screener with FMP-compatible filter kwargs."""
+    """Run yfinance screener with FMP-compatible filter kwargs, largest caps first."""
     try:
-        from yfinance.screener.query import EquityQuery
         from yfinance.screener.screener import screen as yf_screen
     except ImportError:
         logger.warning("yfinance screener module not available")
         return []
 
-    limit = min(int(filters.pop("limit", 25)), 250)
+    if filters.get("isEtf") or filters.get("isFund"):
+        raise ValueError("Yahoo's screen covers stocks only; a fund or ETF screen needs FMP")
+    limit = min(int(filters.pop("limit", 25)), _PAGE)
+    query, held = _screen_query(filters)
+    unscoped = not filters.get("country") and not filters.get("exchange")
+    if not (unscoped and _sets_a_held_bar(filters)):
+        return _read_screen(yf_screen, query, limit, held=held)
+    # A screen of every venue compares a minor-unit line in that unit, so it
+    # reads the other lines and the minor-unit lines as two screens, each against
+    # the bar in its own unit, and ranks the two by cap in the major unit.
+    major = _read_screen(
+        yf_screen, query, limit, keep=lambda q: q.get("currency") not in _MINOR_UNIT_CURRENCIES,
+    )
+    minor = _read_screen(
+        yf_screen, _screen_query(filters, minor_lines=True)[0], limit,
+        keep=lambda q: q.get("currency") in _MINOR_UNIT_CURRENCIES,
+    )
+    rows = sorted(major + minor, key=lambda r: (r["marketCap"] is not None, r["marketCap"] or 0), reverse=True)
+    return rows[:limit]
 
-    # Build EquityQuery nodes from FMP-style camelCase filters
-    nodes: list[EquityQuery] = []
 
-    for fmp_key, (yf_field, op) in _SCREENER_FILTER_MAP.items():
-        val = filters.get(fmp_key)
-        if val is not None:
-            nodes.append(EquityQuery(op, [yf_field, float(val)]))
+def _sets_a_held_bar(filters: dict[str, Any]) -> bool:
+    """Whether *filters* bound a field Yahoo compares in a minor unit apart from price."""
+    return any(
+        filters.get(key) is not None
+        for key, (yf_field, _) in _SCREENER_FILTER_MAP.items()
+        if yf_field in _HELD_PER_ROW
+    )
 
-    sector = filters.get("sector")
-    if sector:
-        nodes.append(EquityQuery("EQ", ["sector", sector]))
 
-    industry = filters.get("industry")
-    if industry:
-        nodes.append(EquityQuery("EQ", ["industry", industry]))
+def _read_screen(
+    yf_screen: Any,
+    query: Any,
+    limit: int,
+    held: list[tuple[str, str, float]] = (),
+    keep: Any = None,
+    pages: int = _HELD_PAGES,
+) -> list[dict[str, Any]]:
+    """Up to *limit* rows of *query*, largest caps first.
 
-    exchange = filters.get("exchange")
-    if exchange:
-        yf_codes = _EXCHANGE_TO_YF.get(exchange.upper())
-        if yf_codes:
-            nodes.append(EquityQuery("IS-IN", ["exchange", *yf_codes]))
-        else:
-            nodes.append(EquityQuery("EQ", ["exchange", exchange]))
+    A row is kept when *keep* takes its quote and it clears every *held* bar.
+    A screen that drops rows pages on until it has its rows or Yahoo runs out,
+    reading at most *pages* pages.
+    """
+    filtered = bool(held) or keep is not None
+    kept: list[dict[str, Any]] = []
+    for page in range(pages if filtered else 1):
+        # A failed page raises: a part of the screen, or none, is not its answer.
+        result = yf_screen(
+            query, offset=page * _PAGE, size=_PAGE if filtered else limit,
+            sortField="intradaymarketcap", sortAsc=False,
+        )
+        quotes = result.get("quotes", []) if isinstance(result, dict) else []
+        kept += [
+            row for q in quotes if keep is None or keep(q)
+            for row in [_screen_row(q)]
+            if all(row[f] is not None and (row[f] > bar if op == "GT" else row[f] < bar) for f, op, bar in held)
+        ]
+        if len(kept) >= limit or len(quotes) < _PAGE:
+            break
+        if filtered and page == pages - 1:
+            logger.warning("yfinance screen read %d pages short of %d rows", pages, limit)
+    return kept[:limit]
 
-    country = filters.get("country")
-    if country:
-        nodes.append(EquityQuery("EQ", ["region", country.lower()]))
 
-    try:
-        if not nodes:
-            result = yf_screen("most_actives", count=limit)
-        elif len(nodes) == 1:
-            result = yf_screen(nodes[0], size=limit)
-        else:
-            result = yf_screen(EquityQuery("AND", nodes), size=limit)
-    except Exception:
-        logger.warning("yfinance screener query failed", exc_info=True)
-        return []
-
-    quotes = result.get("quotes", []) if isinstance(result, dict) else []
-
-    # Remap Yahoo Finance quote fields → FMP-compatible keys
-    output: list[dict[str, Any]] = []
-    for q in quotes:
-        output.append({
-            "symbol": display_spelling(q.get("symbol") or ""),
-            "companyName": q.get("shortName") or q.get("longName", ""),
-            "price": _clean_value(q.get("regularMarketPrice")),
-            "marketCap": _clean_value(q.get("marketCap")),
-            "sector": q.get("sector"),
-            "beta": _clean_value(q.get("beta")),
-            "volume": _clean_value(q.get("regularMarketVolume")),
-            "change": _clean_value(q.get("regularMarketChangePercent")),
-        })
-    return output
+def _screen_row(q: dict[str, Any]) -> dict[str, Any]:
+    """A Yahoo screen quote in FMP's screener keys."""
+    return {
+        **_quote_unit(q.get("currency"), _clean_value(q.get("dividendRate"))),
+        "symbol": display_spelling(q.get("symbol") or ""),
+        "companyName": q.get("shortName") or q.get("longName", ""),
+        "price": _clean_value(q.get("regularMarketPrice")),
+        "marketCap": _clean_value(q.get("marketCap")),
+        "sector": q.get("sector"),
+        "beta": _clean_value(q.get("beta")),
+        "volume": _clean_value(q.get("regularMarketVolume")),
+        "change": _clean_value(q.get("regularMarketChangePercent")),
+    }
 
 
 def _search_stocks(query: str, limit: int) -> list[dict[str, Any]]:
