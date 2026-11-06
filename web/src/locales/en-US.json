@@ -1288,6 +1288,9 @@
       "summary": "Summary",
       "summaryMeta": "AI",
       "tickerImpact": "Ticker impact",
+      "tickerImpactMeta": "AI",
+      "tickerImpactNote": "Sentiment and notes are estimated by the news vendor's AI model, so they may not match the article's own view.",
+      "unscored": "Unscored",
       "topics": "Topics",
       "attachedNews": "News: {{title}}",
       "sentiment": {
