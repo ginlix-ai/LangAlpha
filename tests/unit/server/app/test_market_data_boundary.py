@@ -26,9 +26,10 @@ class TestBoundarySymbol:
         assert _boundary_symbol("VOD.L") == "VOD.L"
 
     def test_us_class_shares_survive(self):
-        # Dotted class shares must not lose their suffix (BRK.B ≠ BRK).
-        assert _boundary_symbol("BRK.B") == "BRK.B"
-        assert _boundary_symbol("BF.B") == "BF.B"
+        # A class share keeps its class (BRK.B is not BRK), in the dashed
+        # spelling every vendor but Massive reads.
+        assert _boundary_symbol("BRK.B") == "BRK-B"
+        assert _boundary_symbol("BF.B") == "BF-B"
 
     def test_exchange_listed_index_keeps_no_caret(self):
         # CN exchange indexes resolve INDEX on a venue MIC; a caret would

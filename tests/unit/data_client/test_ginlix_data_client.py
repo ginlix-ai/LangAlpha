@@ -348,3 +348,36 @@ async def test_a_fundamentals_limit_past_the_route_cap_is_clamped():
     await client.get_fundamentals_v2("600519.XSHG", "income", period="quarter", limit=1000)
 
     assert transport.captured_params[0]["limit"] == str(MAX_FUNDAMENTAL_ROWS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spelling", ["BRK-B", "BRK.B", "brk-b"])
+async def test_a_us_class_share_leaves_in_massives_spelling(spelling):
+    # Massive finds BRK.B and nothing under FMP's BRK-B.
+    requests: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"results": []})
+
+    client = GinlixDataClient(base_url="http://ginlix-data.test")
+    client.http = httpx.AsyncClient(
+        base_url="http://ginlix-data.test", transport=httpx.MockTransport(answer)
+    )
+    await client.get_aggregates(market="stock", symbol=spelling)
+    await client.get_snapshots("stocks", [spelling, "AAPL"])
+    await client.get_short_interest(spelling)
+    await client.get_short_volume(spelling)
+    await client.get_float(spelling)
+    await client.get_options_contracts(spelling)
+    await client.get_news(spelling)
+    await client.get_aggregates(market="index", symbol="I:SPX")
+    await client.get_snapshots("indices", ["I:SPX"])
+
+    assert requests[0].url.path == "/api/v1/data/aggregates/stock/BRK.B"
+    assert requests[1].url.params["symbols"] == "BRK.B,AAPL"
+    assert [r.url.params["ticker"] for r in requests[2:5]] == ["BRK.B"] * 3
+    assert requests[5].url.params["underlying_ticker"] == "BRK.B"
+    assert requests[6].url.params["ticker"] == "BRK.B"
+    assert requests[7].url.path == "/api/v1/data/aggregates/index/I:SPX"
+    assert requests[8].url.params["symbols"] == "I:SPX"

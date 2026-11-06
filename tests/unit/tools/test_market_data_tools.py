@@ -2521,6 +2521,16 @@ class TestFetchQuote:
         daily.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_two_spellings_of_one_listing_are_quoted_once(self):
+        snaps = [{"symbol": "BRK-B", "price": 557.07, "change_percent": 0.2,
+                  "volume": 1, "last_trade_price": 557.07, "market_status": "open"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_quote(["BRK.B", "BRK-B"])
+        assert provider.get_snapshots.await_args.args[0] == ["BRK-B"]
+        assert len(artifact["quotes"]) == 1 and content.count("BRK-B") == 1
+
+    @pytest.mark.asyncio
     async def test_reports_missing_symbols(self):
         snaps = [{"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
                   "volume": 1, "last_trade_price": 233.45, "market_status": "open"}]

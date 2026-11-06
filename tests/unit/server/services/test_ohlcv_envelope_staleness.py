@@ -17,9 +17,7 @@ from zoneinfo import ZoneInfo
 
 from market_protocol.enums import Tier
 
-from src.data_client.market_data_provider import symbol_market
 from src.data_client.instrument_clock import (
-    _US_CLASS_SUFFIXES,
     CalendarClock,
     clock_for,
 )
@@ -383,8 +381,7 @@ class TestDailyWatermarkStale:
         assert is_watermark_stale(env, "1day", now=tue_open, symbol="GSPC", is_index=True) is True
 
     def test_us_dotted_class_share_keeps_backstop(self):
-        # BRK.B / BF.B classify as "other" (unmapped suffix), not a foreign
-        # region, so the US backstop must still engage for them.
+        # BRK.B / BF.B are US listings, so the US backstop engages for them.
         tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
         env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
         assert is_watermark_stale(env, "1day", now=tue_open, symbol="BRK.B") is True
@@ -536,14 +533,6 @@ class TestDailyPostCloseSettle:
 # ---------------------------------------------------------------------------
 
 class TestClockClassification:
-    def test_us_class_suffixes_are_not_region_suffixes(self):
-        # Trusting the class-share suffixes as US-calendar is safe only while
-        # none of them doubles as a foreign region suffix (the venue table
-        # already carries single-letter codes like L/T). A future addition
-        # must fail here, not silently misclassify foreign symbols.
-        for suffix in _US_CLASS_SUFFIXES:
-            assert symbol_market(f"X.{suffix}") == "other", suffix
-
     def test_bare_us_ticker_gets_us_clock_with_backstop(self):
         clock = clock_for("AAPL")
         assert _is_us_clock(clock) and clock.daily_backstop is True

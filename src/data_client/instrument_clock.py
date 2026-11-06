@@ -29,7 +29,6 @@ from market_protocol.calendars import (
 )
 from market_protocol.enums import AssetClass, MarketPhase
 from market_protocol.symbology import UNKNOWN_MIC
-from src.data_client.normalize import _US_CLASS_SUFFIXES, is_us_class_share  # noqa: F401 (re-export)
 from src.utils.market_hours import LEGACY_PHASE, interval_seconds
 
 logger = logging.getLogger(__name__)
@@ -246,9 +245,7 @@ def _classify(ref: InstrumentRef, is_index: bool, regular_only: bool = False) ->
         backstop = ref.calendar_id != "XNYS" or ref.index_family in _US_CALENDAR_INDEXES
         return CalendarClock(cal, daily_backstop=backstop, regular_only=True)
     if ref.calendar_id == "XNYS" and ref.mic == UNKNOWN_MIC:
-        return CalendarClock(
-            cal, daily_backstop=is_us_class_share(ref), regular_only=regular_only,
-        )
+        return CalendarClock(cal, daily_backstop=False, regular_only=regular_only)
     return CalendarClock(cal, regular_only=regular_only)
 
 

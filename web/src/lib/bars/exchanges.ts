@@ -110,9 +110,19 @@ function exchangeInfoForSymbol(symbol: string): ExchangeInfo | null {
 }
 
 /**
+ * A US class share's stem and class in either spelling (`BRK.B`, `BRK-B`),
+ * or null. Only these classes read so: a lone letter after a dot names a venue
+ * elsewhere (`SAP.F` is Frankfurt).
+ */
+export function usClassShare(symbol: string): [string, string] | null {
+  const share = /^([A-Z]+)[.-]([ABC])$/.exec(symbol);
+  return share ? [share[1], share[2]] : null;
+}
+
+/**
  * The spelling a symbol is stored, compared and shown in: trimmed, uppercased,
  * and with its venue suffix and code in our form (`600519.ss` becomes
- * `600519.SH`, `700.HK` becomes `0700.HK`). Mirrors the backend's
+ * `600519.SH`, `700.HK` becomes `0700.HK`, `BRK.B` becomes `BRK-B`). Mirrors the backend's
  * `display_spelling`, so applying it where a symbol enters the page means
  * every key built from it matches the server's. A Chinese IME's full-width
  * forms fold first, and its ideographic full stop reads as a dot.
@@ -120,7 +130,10 @@ function exchangeInfoForSymbol(symbol: string): ExchangeInfo | null {
 export function displaySpelling(symbol: string): string {
   const s = symbol.normalize('NFKC').replace(/。/g, '.').trim().toUpperCase();
   const venue = splitVenueSuffix(s);
-  if (!venue) return s;
+  if (!venue) {
+    const share = usClassShare(s);
+    return share ? share.join('-') : s;
+  }
   const { stem, info } = venue;
   const code =
     info.codeWidth && /^\d+$/.test(stem)

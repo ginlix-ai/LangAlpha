@@ -505,3 +505,26 @@ class TestConnectionBackoff:
         monkeypatch.setattr(feed_mod.asyncio, "wait_for", _fake_wait_for)
         await feed._connection_loop()
         return timeouts
+
+
+class TestClassShareWireSymbol:
+    """A US class share subscribes upstream in Massive's spelling (BRK.B),
+    whichever spelling the first consumer used; the feed finds nothing for BRK-B."""
+
+    def setup_method(self):
+        MarketDataFeed._instances = {}
+        self.manager = MarketDataFeed(market="stock", interval="second", tier="realtime")
+
+    @pytest.mark.asyncio
+    async def test_both_spellings_share_one_dotted_subscription(self):
+        sent, unsent = [], []
+        self.manager._send_subscribe = AsyncMock(side_effect=lambda syms: sent.extend(syms))
+        self.manager._send_unsubscribe = AsyncMock(side_effect=lambda syms: unsent.extend(syms))
+        h1 = self.manager.register_consumer("c1", lambda r, b: None)
+        h2 = self.manager.register_consumer("c2", lambda r, b: None)
+        await h1.subscribe(["BRK-B"])
+        await h2.subscribe(["BRK.B"])
+        assert sent == ["BRK.B"]
+        await h1.unsubscribe(["BRK-B"])
+        await h2.unsubscribe(["BRK.B"])
+        assert unsent == ["BRK.B"]

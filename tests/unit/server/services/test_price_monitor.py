@@ -505,12 +505,30 @@ class TestLoadAutomations:
                 await svc._load_automations()
 
         assert svc._monitored_listings == {
-            ("600519.SH", MarketType.STOCK), ("HSI", MarketType.INDEX), ("BRK.B", MarketType.STOCK),
+            ("600519.SH", MarketType.STOCK), ("HSI", MarketType.INDEX), ("BRK-B", MarketType.STOCK),
         }
-        assert svc._stock_ws_symbols == {"BRK.B"}
+        assert svc._stock_ws_symbols == {"BRK-B"}
         assert svc._index_ws_symbols == set()
-        svc._stock_handle.subscribe.assert_called_once_with(["BRK.B"])
+        svc._stock_handle.subscribe.assert_called_once_with(["BRK-B"])
         svc._index_handle.subscribe.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_class_share_bar_reaches_its_alert(self):
+        """The feed spells a class share as Massive does (BRK.B); the alert is
+        keyed in our spelling (BRK-B), and the bar still has to find it."""
+        svc = PriceMonitorService()
+        svc._stock_handle = AsyncMock()
+        auto = _make_automation(symbol="BRK.B")
+
+        with patch("src.server.database.automation.get_active_price_automations", AsyncMock(return_value=[auto])):
+            with patch.object(svc._evaluator, "refresh_references", new_callable=AsyncMock):
+                await svc._load_automations()
+
+        with patch.object(svc, "_evaluate_and_trigger", new_callable=AsyncMock) as mock_eval:
+            bar = {"symbol": "BRK.B", "close": 480.0, "open": 481.0, "high": 482.0, "low": 479.0, "volume": 100, "time": 1710000000000}
+            await svc._on_message('{"ev":"AM"}', bar)
+            assert mock_eval.await_count == 1
+            assert mock_eval.await_args.args[1] == 480.0
 
 
 class TestPollSnapshots:
@@ -831,7 +849,7 @@ class TestNonUsSymbolsPollInSession:
 
     @pytest.mark.parametrize("symbol, market, us", [
         ("AAPL", MarketType.STOCK, True),
-        # A dotted class share parses to no known venue, but trades on the US tape.
+        # A dotted class share is the US listing its dashed spelling names.
         ("BRK.B", MarketType.STOCK, True),
         ("BF.B", MarketType.STOCK, True),
         # Any other suffix the protocol does not know is a foreign venue, polled.

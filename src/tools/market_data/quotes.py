@@ -292,7 +292,8 @@ async def fetch_quote(
     if asset_type not in ("stocks", "indices"):
         asset_type = "stocks"
     asset_class = AssetClass.INDEX if asset_type == "indices" else AssetClass.EQUITY
-    syms = [display_spelling(s) for s in (symbols or []) if s and s.strip()][:20]
+    # Two spellings of one listing (BRK.B, BRK-B) ask for it once.
+    syms = list(dict.fromkeys(display_spelling(s) for s in (symbols or []) if s and s.strip()))[:20]
     if not syms:
         return "No symbols provided.", empty
     try:

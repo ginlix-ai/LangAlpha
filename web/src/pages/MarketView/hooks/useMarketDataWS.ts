@@ -15,7 +15,7 @@ import { getAccessToken } from '@/lib/authToken';
 import { writeQuoteFromWs } from '@/lib/quotes';
 import { stockKey, type QuoteRow } from '@/lib/quotes/quoteBatcher';
 import { queryKeys } from '@/lib/queryKeys';
-import { timezoneForSymbol } from '@/lib/bars/exchanges';
+import { timezoneForSymbol, usClassShare } from '@/lib/bars/exchanges';
 import { getExtendedHoursType } from '@/lib/bars/marketSession';
 import { dateStrInTz, utcMsToChartSec } from '@/lib/utils';
 // Reconnect parameters
@@ -28,6 +28,15 @@ const HIDDEN_CLOSE_DELAY_MS = 60000; // close 60s after page hidden
 // keepalives after the close, so its being connected says nothing about data.
 const TICK_MAX_AGE_MS = 5 * 60000;
 const TICK_SWEEP_MS = 30000;
+
+// The feed spells a US class share as Massive does (BRK.B) whichever spelling
+// subscribed to it (BRK-B), so a print belongs to each subscribed spelling.
+function subscribedSpellings(subscribed: Map<string, number>, symbol: string): string[] {
+  const share = usClassShare(symbol);
+  if (!share) return [symbol];
+  const spellings = [share.join('.'), share.join('-')].filter((s) => subscribed.has(s));
+  return spellings.length > 0 ? spellings : [symbol];
+}
 
 export interface BarData {
   time: number;
@@ -151,6 +160,7 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
       console.warn('[WS] aggregate missing symbol/close:', { symbol, close });
       return;
     }
+    const spellings = subscribedSpellings(subscribedRef.current, symbol);
 
     // Session OHLCV tracking
     // Timestamp is Unix ms from ginlix-data; convert to chart seconds in the
@@ -165,8 +175,11 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
     // the day's figures the socket cannot: the previous close every change is
     // measured against, and the regular session's open, high and low before
     // the first tick. Only a row printed on the tick's venue day speaks for it.
-    const row = queryClient.getQueryData<QuoteRow | null>(queryKeys.quote.detail(stockKey(symbol)));
-    const rowToday = row?.as_of != null && dateStrInTz(row.as_of, venueTz) === barDate ? row : null;
+    const rows = spellings
+      .map((s) => queryClient.getQueryData<QuoteRow | null>(queryKeys.quote.detail(stockKey(s))))
+      .filter((r): r is QuoteRow => r != null);
+    const rowToday = rows.find((r) => r.as_of != null && dateStrInTz(r.as_of, venueTz) === barDate) ?? null;
+    const row = rowToday ?? rows[0];
     let session = sessionDataRef.current.get(symbol);
     if (!session || session.date !== barDate) {
       session = { date: barDate, open: null, high: null, low: null, volume: 0 };
@@ -210,17 +223,17 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
       barData: { time: barTime, open, high, low, close, volume },
     };
 
-    receivedAtRef.current.set(symbol, Date.now());
+    spellings.forEach((s) => receivedAtRef.current.set(s, Date.now()));
     setPrices((prev) => {
       const next = new Map(prev);
-      next.set(symbol, priceUpdate);
+      spellings.forEach((s) => next.set(s, { ...priceUpdate, symbol: s }));
       return next;
     });
 
     // Write-through into the shared quote cache so REST and WS agree. Only the
     // live fields (price/change) are merged; name/previous_close/day-OHLC from
     // the REST snapshot are preserved, and an unwatched symbol is never seeded.
-    writeQuoteFromWs(queryClient, symbol, { price: close, change, changePercent });
+    spellings.forEach((s) => writeQuoteFromWs(queryClient, s, { price: close, change, changePercent }));
   }, [resetStaleTimer, queryClient]);
 
   /**
