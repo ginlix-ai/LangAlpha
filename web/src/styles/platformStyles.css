@@ -631,7 +631,10 @@
   border-color: var(--color-term-edge);
 }
 :root:not([data-card-style]) :is(.settings-search, .plugins-search) input { border-radius: 3px; font-family: var(--font-mono); }
-:root[data-card-style='balanced'] .plugins-search input { border-radius: 999px; }
+/* Balanced draws a search the shape of the buttons beside it; a form field
+   stays a box, so it does not read as a search. */
+:root[data-card-style='balanced'] :is(.settings-search, .plugins-search) input { border-radius: 999px; }
+:root[data-card-style='balanced'] [data-slot='input']:has(input[type='search']) { border-radius: 999px !important; }
 
 /* Cards: open boxes in the open styles, their rows parted by the card's
    divider. Quiet keeps the filled card it already draws. */

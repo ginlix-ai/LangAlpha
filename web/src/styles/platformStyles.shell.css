@@ -96,6 +96,8 @@
   font-size: 0.75rem;
 }
 :root[data-card-style='balanced'] .dashboard-search-form { border-radius: 999px !important; }
+/* The news filters sit in a row of pill tabs, so they are pills too. */
+:root[data-card-style='balanced'] .dash-filters .dash-field { border-radius: 999px; padding-inline: 0.5rem; }
 :root:not([data-card-style]) .dashboard-search-dropdown-item { padding-block: 8px; }
 :root:not([data-card-style]) .dashboard-search-dropdown-name { font-size: 0.75rem; }
 
