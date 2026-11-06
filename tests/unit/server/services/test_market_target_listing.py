@@ -48,7 +48,7 @@ def test_unknown_suffix_is_refused():
     assert "never be checked" in refusal
 
 
-@pytest.mark.parametrize("symbol", ["123456", "0700", "7203"])
+@pytest.mark.parametrize("symbol", ["123456", "0700", "7203", "^000300"])
 def test_a_bare_number_is_refused(symbol):
     listing, refusal = target_listing(symbol)
     assert listing is None

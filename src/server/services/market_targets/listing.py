@@ -80,7 +80,7 @@ def target_listing(symbol: str) -> Tuple[Optional[TargetListing], Optional[str]]
     price monitor cannot watch it."""
     if is_pair_symbol(symbol):
         return None, LISTING_PAIR
-    if is_unsuffixed_code(symbol):
+    if is_unsuffixed_code(symbol.removeprefix("^")):
         return None, LISTING_NO_SUFFIX
     if symbol.startswith("^"):
         key, market = index_ticker(symbol).removeprefix("I:"), MarketType.INDEX
