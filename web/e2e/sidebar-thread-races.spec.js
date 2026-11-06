@@ -99,20 +99,31 @@ test('a sidebar rename and a gallery rename of one thread reach the server in th
   // Lists read the saved title, as the server's would: each rename reads them
   // again once its write answers.
   const listed = () => ALL.map((th) => (th.thread_id === T1 && applied.length ? { ...th, title: applied.at(-1) } : th));
+  let galleryReads = 0;
+  let answerGalleryRead;
+  const galleryReadHeld = new Promise((r) => { answerGalleryRead = r; });
+  let answerFirstWrite;
+  const firstWriteHeld = new Promise((r) => { answerFirstWrite = r; });
   await open(page, `/chat/${WS_ID}`, {
-    'GET /threads': (route) => json(route, { threads: listed(), total: ALL.length }),
+    'GET /threads': async (route) => {
+      // Read as the request arrives, so a read made before the rename answers
+      // with the title from before it.
+      const body = { threads: listed(), total: ALL.length };
+      // The gallery's first page (the tree reads 10) is still out when the
+      // sidebar renames.
+      if (new URL(route.request().url()).searchParams.get('limit') === '20' && galleryReads++ === 0) await galleryReadHeld;
+      return json(route, body);
+    },
     'PATCH /threads/*': async (route) => {
       const body = JSON.parse(route.request().postData() || '{}');
-      // The first answer is slow: the second write must still land after it.
-      if (applied.length === 0 && body.title === 'Sidebar title') await new Promise((r) => setTimeout(r, 1500));
+      // The first write answers only once the second is made: the second must
+      // still land after it.
+      if (applied.length === 0 && body.title === 'Sidebar title') await firstWriteHeld;
       applied.push(body.title);
       return json(route, { ...ALL[0], ...body, updated_at: new Date().toISOString() });
     },
   });
-  // The gallery mounts after the tree. A rename made before its list arrives
-  // reaches no card, and the list then reads the old title while the slow
-  // write is still out.
-  await expect(page.locator('main').getByRole('heading', { name: 'AMD recovery entry plan' })).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => galleryReads, { timeout: 15_000 }).toBe(1);
 
   await threadRow(page, 'AMD recovery').click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Rename' }).click();
@@ -122,15 +133,22 @@ test('a sidebar rename and a gallery rename of one thread reach the server in th
   await page.mouse.move(700, 700);
   await field.fill('Sidebar title');
   await field.press('Enter');
+  await expect(threadRow(page, 'Sidebar title')).toBeVisible();
 
+  // The gallery's read answers with the title from before the rename, while
+  // the rename's write is still out: the card shows the rename all the same.
+  answerGalleryRead();
   const card = page.locator('main').getByText('Sidebar title').first();
-  await expect(card).toBeVisible();
+  // The gallery's first render, which on the dev server can take a while.
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  expect(applied).toEqual([]);
   await card.hover();
   await page.locator('main button[title="Rename thread"]').first().click();
   const input = page.getByPlaceholder('Enter thread title');
   await input.fill('Gallery title');
   await input.press('Enter');
 
+  answerFirstWrite();
   await expect.poll(() => applied.length, { timeout: 10_000 }).toBe(2);
   expect(applied).toEqual(['Sidebar title', 'Gallery title']);
 });
