@@ -8,6 +8,7 @@ rewrite ours.
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -235,6 +236,14 @@ class TestTurns:
     )
 
     def test_overlapping_removals_each_keep_the_others_removal(self, tmp_path):
+        # The run that waits for the lock sleeps a second between tries; a
+        # shorter sleep keeps the race and its ten attempts out of the clock.
+        stub = tmp_path / "bin"
+        stub.mkdir()
+        (stub / "sleep").write_text(
+            f"#!/bin/sh\nexec {shutil.which('sleep', path='/usr/bin:/bin')} 0.2\n"
+        )
+        (stub / "sleep").chmod(0o755)
         for attempt in range(10):
             home = tmp_path / str(attempt)
             home.mkdir()
@@ -244,7 +253,7 @@ class TestTurns:
             runs = [
                 subprocess.Popen(
                     ["sh", "-c", remove_script(key)],
-                    env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+                    env={"HOME": str(home), "PATH": f"{stub}:/usr/bin:/bin"},
                     stdout=subprocess.PIPE,
                     text=True,
                 )

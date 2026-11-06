@@ -18,7 +18,9 @@ composite's own tests leave out: there the two are one directory.
 
 from __future__ import annotations
 
+import contextlib
 import functools
+import io
 import json
 import os
 import posixpath
@@ -29,8 +31,10 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1604,8 +1608,10 @@ def _rg(
     filters = ["--glob", glob] if glob else []
     if file_type:
         filters += ["--type", file_type]
+    # One thread: these trees hold a few files, and rg's thread start is
+    # most of each of the class's thousand-odd runs.
     done = subprocess.run(
-        ["rg", "--no-config", "-l", *filters, ".", *paths],
+        ["rg", "--no-config", "-j1", "-l", *filters, ".", *paths],
         cwd=folder,
         capture_output=True,
         text=True,
@@ -1635,16 +1641,35 @@ def _rg_on(disk: str, root: str):
 
 
 class _LocalRuntime:
-    """Runs the sandbox's glob script with this interpreter."""
+    """Runs the sandbox's glob script with this interpreter.
+
+    In this process when the command is the ``python3 -I -c`` one
+    ``aglob_files`` sends: the same code, as ``__main__`` with the same
+    argument, without the interpreter start that made these cases slow.
+    """
 
     async def exec(self, command: str, timeout: int = 60):
-        command = command.replace("python3", sys.executable, 1)
-        done = subprocess.run(
-            ["/bin/sh", "-c", command], capture_output=True, text=True
-        )
-        return SimpleNamespace(
-            stdout=done.stdout, stderr=done.stderr, exit_code=done.returncode
-        )
+        argv = shlex.split(command)
+        if argv[:3] != ["python3", "-I", "-c"] or len(argv) != 5:
+            command = command.replace("python3", sys.executable, 1)
+            done = subprocess.run(
+                ["/bin/sh", "-c", command], capture_output=True, text=True
+            )
+            return SimpleNamespace(
+                stdout=done.stdout, stderr=done.stderr, exit_code=done.returncode
+            )
+        out, err, code = io.StringIO(), io.StringIO(), 0
+        with (
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+            mock.patch.object(sys, "argv", ["-c", argv[4]]),
+        ):
+            try:
+                exec(argv[3], {"__name__": "__main__"})
+            except Exception:
+                traceback.print_exc()
+                code = 1
+        return SimpleNamespace(stdout=out.getvalue(), stderr=err.getvalue(), exit_code=code)
 
 
 def _agents_glob(runtime_call):
@@ -1809,6 +1834,30 @@ GLOB_PATTERNS = (
 )
 
 
+@pytest.fixture(scope="class")
+def mirror(tmp_path_factory) -> dict:
+    """Where a class's cases keep the one copy they all read."""
+    return {"tmp": tmp_path_factory.mktemp("mirror")}
+
+
+async def _mirrored_once(mirror: dict, store, monkeypatch, *, linked: bool, disk_glob=False):
+    """``_mirrored`` (and ``_link_the_mount``) once per class: every case reads
+    the same copy and none writes to it, and building it took longer than
+    most cases take to check. The mount's place is set again for each case,
+    since a case's monkeypatch undoes it."""
+    if "files" not in mirror:
+        tmp = mirror["tmp"]
+        files, root, folder = await _mirrored(tmp, store)
+        if linked:
+            _link_the_mount(tmp, root, folder, monkeypatch)
+        if disk_glob:
+            files._sandbox.aglob_paths = AsyncMock(side_effect=_disk_glob)
+        mirror.update(files=files, root=root, folder=folder, mount=sandbox_files.MOUNT)
+    if linked:
+        monkeypatch.setattr(sandbox_files, "MOUNT", mirror["mount"])
+    return mirror["files"], mirror["root"], mirror["folder"]
+
+
 class TestGlobInARouteMatchesTheDisk:
     """Glob finds what the sandbox's own glob finds in a copy of the route's
     files on disk, linked in as the file mount links them, a file it finds by
@@ -1817,10 +1866,9 @@ class TestGlobInARouteMatchesTheDisk:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pattern", GLOB_PATTERNS)
     async def test_the_composite_finds_what_the_disk_glob_finds(
-        self, tmp_path, store, automations, profile_rows, monkeypatch, pattern
+        self, mirror, store, automations, profile_rows, monkeypatch, pattern
     ):
-        files, root, folder = await _mirrored(tmp_path, store)
-        _link_the_mount(tmp_path, root, folder, monkeypatch)
+        files, root, folder = await _mirrored_once(mirror, store, monkeypatch, linked=True)
         pattern = pattern.replace("{root}", root).replace("{folder}", folder)
         differences = {}
         for path in GLOB_PATHS:
@@ -1855,14 +1903,14 @@ class TestAGlobThatClimbsIsTheDisks:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pattern", CLIMBING_PATTERNS)
     async def test_with_the_mount_up(
-        self, tmp_path, store, automations, profile_rows, monkeypatch, pattern
+        self, mirror, store, automations, profile_rows, monkeypatch, pattern
     ):
         """A `..` steps back out of whatever the name before it is on disk,
         a folder, a link into the mount, a file or nothing, so Glob lists
         what the sandbox's own glob lists there."""
-        files, root, folder = await _mirrored(tmp_path, store)
-        _link_the_mount(tmp_path, root, folder, monkeypatch)
-        files._sandbox.aglob_paths = AsyncMock(side_effect=_disk_glob)
+        files, root, folder = await _mirrored_once(
+            mirror, store, monkeypatch, linked=True, disk_glob=True
+        )
         differences = {}
         for path in (".", ".agents", ".agents/user", ".agents/user/profile"):
             base = files.normalize_path(path)
@@ -2017,9 +2065,9 @@ class TestGrepFilterMatchesRgOnDisk:
         ("file_type", "glob"), [(None, glob) for glob in RG_FILTERS] + list(RG_TYPES)
     )
     async def test_the_composite_finds_what_rg_finds(
-        self, tmp_path, store, automations, profile_rows, file_type, glob
+        self, mirror, store, automations, profile_rows, monkeypatch, file_type, glob
     ):
-        files, root, folder = await _mirrored(tmp_path, store)
+        files, root, folder = await _mirrored_once(mirror, store, monkeypatch, linked=False)
         differences = {}
         for path in (*RG_PATHS, f"{root}/.agents"):
             base = files.normalize_path(path)

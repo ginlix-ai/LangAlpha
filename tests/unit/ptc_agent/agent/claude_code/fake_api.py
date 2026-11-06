@@ -95,6 +95,12 @@ async def _anything(request: web.Request) -> web.Response:
     return web.json_response({})
 
 
+async def _policy_limits(request: web.Request) -> web.Response:
+    # A first-party CLI asks this before its first request and retries an
+    # answer it can't read for about 5s, which every launch would wait out.
+    return web.json_response({"restrictions": {}})
+
+
 def _api_host_cert(folder: Path) -> tuple[str, str, str]:
     """A CA and an api.anthropic.com certificate it signed, for one run: (ca, cert chain, key)."""
     from cryptography import x509
@@ -159,6 +165,7 @@ class FakeMessagesAPI:
     async def __aenter__(self) -> FakeMessagesAPI:
         app = web.Application(client_max_size=64 * 1024 * 1024)
         app.router.add_post("/v1/messages", self._messages)
+        app.router.add_get("/api/claude_code/policy_limits", _policy_limits)
         app.router.add_route("*", "/{tail:.*}", _anything)
         self._runner = web.AppRunner(app)
         await self._runner.setup()

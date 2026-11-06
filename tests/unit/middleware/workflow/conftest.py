@@ -8,7 +8,25 @@ module that owns them.
 
 from __future__ import annotations
 
+import gc
 from types import SimpleNamespace
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _frozen_heap():
+    """Keep the rest of the suite's heap out of each run's ``gc.collect()``.
+
+    quickjs-rs's ``ThreadWorker.close()`` runs a full collection on every
+    workflow run so QuickJS objects die on their own thread. Over the whole
+    suite's heap that was most of these modules' time; frozen objects are
+    skipped, and the run's own objects, created after the freeze, are still
+    collected.
+    """
+    gc.freeze()
+    yield
+    gc.unfreeze()
 
 
 def workflow_script(

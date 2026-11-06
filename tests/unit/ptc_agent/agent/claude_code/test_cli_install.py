@@ -98,11 +98,13 @@ def env(tmp_path):
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(served))
     handler.log_message = lambda *a: None
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # shutdown() waits out the loop's poll, half a second by default, per test.
+    threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True).start()
     try:
         yield Env(tmp_path, f"http://127.0.0.1:{server.server_address[1]}", served)
     finally:
         server.shutdown()
+        server.server_close()
 
 
 V1 = b"#!/bin/sh\necho claude one\n" + b"x" * 4096
