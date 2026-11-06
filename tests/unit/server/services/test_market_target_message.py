@@ -32,6 +32,11 @@ def test_an_expiring_index_alert_names_it_the_same_way():
     assert "Your target on ^GSPC (down 1% from the previous close) has not hit" in block
 
 
+def test_a_sub_dollar_alert_quotes_the_price_it_traded_at():
+    stock = {**_INDEX_TARGET, "symbol": "SUBD", "market": "stock", "armed_price": 0.4012, "fired_price": 0.3734}
+    assert "it traded at $0.3734" in render_notice(stock, "hit")
+
+
 def test_a_stock_alert_keeps_its_symbol():
     stock = {**_INDEX_TARGET, "symbol": "NVDA", "market": "stock"}
     assert render_notice(stock, "hit").splitlines()[2].startswith("NVDA hit your target")

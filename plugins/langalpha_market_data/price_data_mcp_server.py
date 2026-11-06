@@ -61,8 +61,8 @@ from market_protocol import (
     is_family_index,
     market_of,
     to_canonical,
-    to_display,
     to_legacy_api,
+    to_request_spelling,
 )
 from market_protocol.enums import AssetClass
 from market_protocol.symbology import FUTURES_MIC
@@ -152,14 +152,15 @@ _Resolved = tuple[str, str, Optional[str], Optional[str], Optional[InstrumentRef
 def _resolve(symbol: str, asset_class: Optional[AssetClass] = None) -> _Resolved:
     """Resolve a caller symbol via the protocol registry.
 
-    Returns ``(display, legacy, currency, timezone, ref)``: the canonical display
-    spelling, the legacy provider spelling, ISO-4217 price currency, IANA
-    timezone, and the ref itself. Falls back to the raw symbol with unknown
-    currency/tz and no ref.
+    Returns ``(display, legacy, currency, timezone, ref)``: the spelling the
+    tool answers with, the legacy provider spelling, ISO-4217 price currency,
+    IANA timezone, and the ref itself. Falls back to the raw symbol with unknown
+    currency/tz and no ref. A family index answers as ``^GSPC``, never its
+    family name: a bare ``SPX`` sent back would read as a stock listing.
     """
     try:
         ref = to_canonical(symbol, asset_class=asset_class)
-        return to_display(ref), to_legacy_api(ref), ref.price_currency, ref.tz, ref
+        return to_request_spelling(ref), to_legacy_api(ref), ref.price_currency, ref.tz, ref
     except Exception:  # noqa: BLE001
         return symbol, symbol, None, None, None
 
@@ -353,9 +354,10 @@ async def _fetch_chain_bars(
             )
 
     # The legacy spelling of a family index is bare (GSPC), which every vendor
-    # reads as a stock ticker: FMP needs ^GSPC, Massive its I:SPX index ticker.
+    # reads as a stock ticker: FMP takes the request spelling (^GSPC), Massive
+    # its I:SPX index ticker.
     family = ref is not None and is_family_index(ref)
-    fmp_symbol = f"^{legacy}" if family else legacy
+    fmp_symbol = display
 
     # ginlix-data's US tier: US equities, and US family indexes on the index
     # market. A foreign family index has no tier and goes straight to FMP, as
@@ -698,7 +700,7 @@ async def get_short_data(
         short_volume_ratio is a percent (43.3 = 43.3%). Partial failures appear
         in an `errors` map. On error: {error: <code>, detail}.
     """
-    display, legacy, _currency, timezone, ref = _resolve(symbol)
+    display, legacy, _currency, timezone, ref = _resolve(symbol, asset_class=AssetClass.EQUITY)
 
     # FINRA's figures cover US listings only, so another market's listing would
     # read as one with no short activity. A venue the protocol does not know stays.

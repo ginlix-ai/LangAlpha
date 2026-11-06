@@ -18,6 +18,7 @@ from market_protocol import (
     market_of,
     parse_instrument_key,
     to_canonical,
+    to_request_spelling,
     to_display,
     to_legacy_api,
     vendor_spelling,
@@ -883,3 +884,14 @@ class TestBarePairsAndFutures:
         # The provider chain carries to_legacy_api's spelling and re-reads it.
         ref = to_canonical(spelling)
         assert to_canonical(to_legacy_api(ref), asset_class=AssetClass.EQUITY) == ref
+
+
+@pytest.mark.parametrize(
+    ("spelling", "asked"),
+    [("SPX", "^GSPC"), ("^GSPC", "^GSPC"), ("I:NDX", "^NDX"), ("^HSI", "^HSI"), ("0700.HK", "0700.HK"),
+     ("000001.SH", "000001.SH"), ("BRK.B", "BRK-B")],
+)
+def test_the_request_spelling_asks_for_the_same_instrument_on_a_stock_path(spelling, asked):
+    ref = to_canonical(spelling, asset_class=AssetClass.INDEX if spelling == "SPX" else None)
+    assert to_request_spelling(ref) == asked
+    assert to_canonical(asked, asset_class=AssetClass.EQUITY) == ref

@@ -119,21 +119,6 @@ _EARNINGS_KEY_MAP: dict[str, str] = {
     "surprisepct": "surprisePercentage",
 }
 
-# SPDR sector ETF symbols — stable proxies for GICS sector performance
-_SECTOR_ETFS: dict[str, str] = {
-    "Basic Materials": "XLB",
-    "Communication Services": "XLC",
-    "Consumer Cyclical": "XLY",
-    "Consumer Defensive": "XLP",
-    "Energy": "XLE",
-    "Financial Services": "XLF",
-    "Healthcare": "XLV",
-    "Industrials": "XLI",
-    "Real Estate": "XLRE",
-    "Technology": "XLK",
-    "Utilities": "XLU",
-}
-
 # FMP camelCase screener filter → (yfinance screener field, operator)
 _SCREENER_FILTER_MAP: dict[str, tuple[str, str]] = {
     "marketCapMoreThan": ("intradaymarketcap", "GT"),
@@ -474,23 +459,6 @@ def _get_earnings_history(symbol: str, limit: int) -> list[dict[str, Any]]:
     return records
 
 
-def _get_single_sector_perf(sector_name: str, etf_symbol: str) -> dict[str, Any] | None:
-    """Fetch daily change for one sector via its representative ETF."""
-    try:
-        snap = _fetch_single_snapshot(etf_symbol)
-        pct = snap["change_percent"] if snap else None
-        if pct is None:
-            return None
-        sign = "+" if pct >= 0 else ""
-        return {
-            "sector": sector_name,
-            "changePctStr": f"{sign}{pct:.2f}%",
-        }
-    except Exception:
-        logger.debug("Failed to fetch sector perf for %s (%s)", sector_name, etf_symbol)
-        return None
-
-
 # Yahoo's largest screen page, and the pages a screen that filters its rows
 # reads at most: enough for every London line (about 3,450).
 _PAGE = 250
@@ -741,18 +709,6 @@ class YFinanceFinancialSource:
         self, symbol: str, segment_type: str = "product", **kwargs: Any
     ) -> list[dict[str, Any]]:
         return []  # Not available in yfinance
-
-    async def get_sector_performance(
-        self, target_date: str | None = None
-    ) -> list[dict[str, Any]]:
-        # yfinance has no date-aware sector endpoint; we always return today's snapshot.
-        del target_date
-        tasks = [
-            asyncio.to_thread(_get_single_sector_perf, name, etf)
-            for name, etf in _SECTOR_ETFS.items()
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        return [r for r in results if isinstance(r, dict)]
 
     async def screen_stocks(self, **filters: Any) -> list[dict[str, Any]]:
         return await asyncio.to_thread(_screen_stocks_sync, **filters)

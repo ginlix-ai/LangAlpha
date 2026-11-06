@@ -197,16 +197,6 @@ class TestFinancialDataSourceContract:
         if data:
             assert isinstance(data[0], dict)
 
-    async def test_get_sector_performance(self, source):
-        data = await source.get_sector_performance()
-        assert isinstance(data, list) and len(data) > 0
-        row = data[0]
-        assert "sector" in row
-        # _format_sector_change_pct renders averageChange into changePctStr;
-        # both keys are expected on the row.
-        assert "changePctStr" in row
-        assert row["changePctStr"].endswith("%")
-
     async def test_screen_stocks(self, source):
         data = await source.screen_stocks(
             sector="Technology",

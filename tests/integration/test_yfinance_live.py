@@ -180,25 +180,6 @@ class TestYFinanceFinancialSourceLive:
         hit = next(r for r in result if r["symbol"] == "AAPL")
         assert hit["name"]
 
-    async def test_get_sector_performance(self):
-        from src.data_client.yfinance.financial_source import YFinanceFinancialSource
-
-        src = YFinanceFinancialSource()
-        result = await src.get_sector_performance()
-        assert len(result) >= 8, f"Expected most sectors, got {len(result)}"
-        sector_names = {r["sector"] for r in result}
-        # At least these major sectors should be present
-        assert "Technology" in sector_names
-        assert "Healthcare" in sector_names
-        assert "Energy" in sector_names
-        # Check format
-        for r in result:
-            assert "changePctStr" in r
-            pct_str = r["changePctStr"]
-            assert pct_str.endswith("%")
-            # Should be parseable as float after stripping % and +
-            float(pct_str.replace("%", "").replace("+", ""))
-
     async def test_screen_stocks_no_filters(self):
         from src.data_client.yfinance.financial_source import YFinanceFinancialSource
 

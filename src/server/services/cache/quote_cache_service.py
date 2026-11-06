@@ -9,6 +9,7 @@ batched provider call, and TTL is phase-aware per the instrument's calendar.
 
 import asyncio
 import logging
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -60,7 +61,9 @@ _NO_DATA = {"__no_data__": True}
 # and daily-fallback rows say ``regular_only`` (no extended-hours prints).
 # v9: keys carry the asset class, so an index-hinted miss for an equity's
 # instrument_key (0700.HK) cannot negative-cache the equity read.
-_QUOTE_SCHEMA_VERSION = 9
+# v10: ginlix-data rows carry ``last_trade_at``, and an index row the feed
+# rolled past its stamp carries no stale stamp or move.
+_QUOTE_SCHEMA_VERSION = 10
 
 
 def _closed_recently(cal: MarketCalendar, now: datetime, window: timedelta) -> bool:
@@ -91,6 +94,19 @@ def _predates_last_session(cal: MarketCalendar, now: datetime, as_of: Any) -> bo
 def _asset_type(ref: InstrumentRef) -> str:
     """The provider call *ref* is fetched through, by its resolved asset class."""
     return "indices" if ref.asset_class is AssetClass.INDEX else "stocks"
+
+
+@dataclass(frozen=True)
+class QuoteFailure:
+    """A fill that raised, and the instruments it left with no row.
+
+    ``shared`` when every failed fill was led by another request, whose
+    error it is to raise.
+    """
+
+    error: Exception
+    refs: List[InstrumentRef]
+    shared: bool = False
 
 
 def _quote_ttl(
@@ -172,23 +188,54 @@ class QuoteCacheService:
         otherwise drop the cached rows and the daily fallback of every other
         instrument in a watchlist batch.
         """
+        quotes, failure = await self.fetch_quotes(refs, user_id, daily_fallback=daily_fallback)
+        if failure is not None and not failure.shared and not quotes:
+            raise failure.error
+        return quotes
+
+    async def fetch_quotes(
+        self,
+        refs: List[InstrumentRef],
+        user_id: Optional[str] = None,
+        *,
+        daily_fallback: bool = False,
+        fresh: bool = False,
+    ) -> Tuple[List[Tuple[InstrumentRef, Dict[str, Any]]], Optional[QuoteFailure]]:
+        """:meth:`get_quotes` that returns a failed fill instead of raising it,
+        naming the instruments it left with no row, so a caller can tell an
+        instrument it could not reach from one no provider quotes.
+
+        ``fresh`` asks the provider chain for every instrument, past cached
+        rows and other requests' fills (its rows still write through), so the
+        fallbacks the chain takes are recorded in the caller's context.
+        """
         refs = list({self.quote_key(ref): ref for ref in refs}.values())
-        quotes, failure = await self._cached_quotes(refs, user_id)
+        if fresh and refs:
+            request = [(ref, self.quote_key(ref)) for ref in refs]
+            try:
+                rows, failure = await self._fetch_batch(request, user_id)
+            except Exception as exc:
+                rows, failure = {}, QuoteFailure(exc, refs)
+            quotes = [(ref, rows[key]) for ref, key in request if key in rows]
+        else:
+            quotes, failure = await self._cached_quotes(refs, user_id)
         if daily_fallback:
             quotes = await fill_from_daily(quotes, refs, user_id)
-        if failure is not None and not quotes:
-            raise failure
+        if failure is not None:
+            answered = {self.quote_key(ref) for ref, _ in quotes}
+            unreached = [ref for ref in failure.refs if self.quote_key(ref) not in answered]
+            failure = replace(failure, refs=unreached) if unreached else None
         # Names are identity, not quote data. A row filled while the directory
         # was unreachable would otherwise stay nameless for the whole
         # closed-phase TTL, and a daily-fallback row never had one; the
         # directory's own cache keeps this read cheap.
         await fill_quote_names(row for _, row in quotes)
-        return quotes
+        return quotes, failure
 
     async def _cached_quotes(
         self, refs: List[InstrumentRef], user_id: Optional[str],
-    ) -> Tuple[List[Tuple[InstrumentRef, Dict[str, Any]]], Optional[Exception]]:
-        """The rows the cache, this request's fill and shared fills serve, and the fill's error."""
+    ) -> Tuple[List[Tuple[InstrumentRef, Dict[str, Any]]], Optional[QuoteFailure]]:
+        """The rows the cache, this request's fill and shared fills serve, and the fill's failure."""
         if not refs:
             return [], None
         request = [(ref, self.quote_key(ref)) for ref in refs]
@@ -197,20 +244,20 @@ class QuoteCacheService:
         cached = await cache.mget([key for _, key in request])
         rows: Dict[str, Dict[str, Any]] = {}
         to_fetch: list[tuple[InstrumentRef, str]] = []
-        followers: list[tuple[str, asyncio.Future]] = []
+        followers: list[tuple[InstrumentRef, str, asyncio.Future]] = []
 
         for (ref, key), hit in zip(request, cached):
             if hit is not None:
                 if not hit.get("__no_data__"):
                     rows[key] = hit
             elif key in self._inflight:
-                followers.append((key, self._inflight[key]))
+                followers.append((ref, key, self._inflight[key]))
             else:
                 fut: asyncio.Future = asyncio.get_running_loop().create_future()
                 self._inflight[key] = fut
                 to_fetch.append((ref, key))
 
-        failure: Optional[Exception] = None
+        failure: Optional[QuoteFailure] = None
         fetched: Dict[str, Dict[str, Any]] = {}
         if to_fetch:
             try:
@@ -227,37 +274,52 @@ class QuoteCacheService:
                             fut.cancel()
                 if not isinstance(exc, Exception):
                     raise
-                failure = exc
+                failure = QuoteFailure(exc, [ref for ref, _ in to_fetch])
+            unreached = {self.quote_key(ref) for ref in failure.refs} if failure else set()
             for _, key in to_fetch:
                 row = fetched.get(key)
                 if row is not None:
                     rows[key] = row
                 fut = self._inflight.pop(key, None)
                 if fut and not fut.done():
-                    fut.set_result(row)
+                    if key in unreached:
+                        fut.set_exception(failure.error)
+                        fut.exception()
+                    else:
+                        fut.set_result(row)
 
-        for key, fut in followers:
-            # The leader's failure is the leader's problem: a follower treats a
-            # cancelled or errored shared future as a miss for this cycle (the
-            # next poll refetches) instead of 500-ing its own request.
+        shared: list[InstrumentRef] = []
+        shared_error: Optional[Exception] = None
+        for ref, key, fut in followers:
+            # The leader's failure is the leader's to raise: a follower reports
+            # an errored shared fill's instrument as unreached rather than
+            # 500-ing its own request, and a cancelled one is a miss for this
+            # cycle (the next poll refetches).
             try:
                 row = await asyncio.shield(fut)
             except asyncio.CancelledError:
                 if not fut.cancelled():
                     raise  # this request was cancelled, not the leader's
                 continue
-            except Exception:
+            except Exception as exc:
+                shared.append(ref)
+                shared_error = exc
                 continue
             if row is not None:
                 rows[key] = row
 
+        if shared:
+            failure = (
+                replace(failure, refs=[*failure.refs, *shared]) if failure is not None
+                else QuoteFailure(shared_error, shared, shared=True)
+            )
         return [(ref, rows[key]) for ref, key in request if key in rows], failure
 
     async def _fetch_batch(
         self,
         to_fetch: list[tuple[InstrumentRef, str]],
         user_id: Optional[str],
-    ) -> Tuple[Dict[str, Dict[str, Any]], Optional[Exception]]:
+    ) -> Tuple[Dict[str, Dict[str, Any]], Optional[QuoteFailure]]:
         """Batched provider call per asset class; write-through with phase TTL.
 
         Partitioned by the RESOLVED instrument, not the caller's endpoint: a
@@ -289,14 +351,14 @@ class QuoteCacheService:
             return_exceptions=True,
         )
         answered: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        failure: Optional[Exception] = None
+        error: Optional[Exception] = None
         for (asset_type, refs), result in zip(partitions.items(), results):
             if not isinstance(result, BaseException):
                 answered[asset_type] = result
                 continue
             if not isinstance(result, Exception):
                 raise result
-            failure = result
+            error = result
             logger.warning(
                 "quote_cache.partition_failed | asset_type=%s symbols=%d error=%s",
                 asset_type, len(refs), result,
@@ -305,10 +367,12 @@ class QuoteCacheService:
         cache = get_cache_client()
         out: Dict[str, Dict[str, Any]] = {}
         writes: list[tuple[str, Any, int]] = []
+        unreached: list[InstrumentRef] = []
         for ref, key in to_fetch:
             served = answered.get(_asset_type(ref))
             if served is None:
-                continue  # its partition raised
+                unreached.append(ref)  # its partition raised
+                continue
             # Read back via the ref-derived legacy spelling so every alias of
             # one instrument (e.g. ^IXIC / ^COMP) finds its row.
             row = served.get(snapshot_key(to_legacy_api(ref)))
@@ -321,4 +385,4 @@ class QuoteCacheService:
         # per-key set() took a connection each, so a 250-symbol fill — the
         # batch cap — could exhaust a 150-slot pool from a single request.
         await cache.set_many(writes)
-        return out, failure
+        return out, (QuoteFailure(error, unreached) if error is not None else None)

@@ -20,7 +20,7 @@ from src.server.services.market_targets.listing import (
     shown_symbol,
 )
 from src.server.services.wakeups.message import Quote, quote_price
-from src.tools.market_data.display import pct_text, price_text, venue_local_time
+from src.tools.market_data.display import pct_text, price_text, venue_local_time, zone_label
 
 ALERT_OPEN = "<market-alert>"
 ALERT_CLOSE = "</market-alert>"
@@ -42,7 +42,7 @@ def _venue_time(ref: Optional[InstrumentRef], value: Any) -> Optional[str]:
     if at is None:
         return None
     local = venue_local_time(ref, at) or at.astimezone(timezone.utc)
-    return f"{local.strftime('%Y-%m-%d %H:%M')} {local.strftime('%Z') or 'UTC'}"
+    return f"{local:%Y-%m-%d %H:%M} {zone_label(local)}"
 
 
 def _target_phrase(target: Mapping[str, Any], ref: Optional[InstrumentRef]) -> str:

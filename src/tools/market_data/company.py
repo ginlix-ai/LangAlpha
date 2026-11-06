@@ -15,7 +15,7 @@ import asyncio
 
 from langchain_core.runnables import RunnableConfig
 
-from .currency import DisplaySpec, fmt_count, fmt_money, fmt_price
+from .currency import DisplaySpec, fmt_count, fmt_money, fmt_price, fmt_quote, quote_spec
 from .earnings import (
     EarningsReport,
     diluted_eps,
@@ -30,12 +30,17 @@ from .display import (
     _market_status_line,
     _symbol_currency,
     resolve_listing,
+    venue_phase,
 )
 from .index_overview import fetch_index_overview, index_overview_text
 from .quote_format import (
     FRESHNESS_WORDS,
     build_live_stamp,
     current_price,
+    close_settled,
+    holds_close,
+    price_clock,
+    print_time,
     stamp_provider_quote,
     stamp_quote,
 )
@@ -43,9 +48,9 @@ from .sec_filings import PeriodicFiling, fetch_periodic_filings
 from .segments import SegmentBreakdown, fetch_segments, segment_lines
 from .utils import finite_or_none, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
-from src.data_client.freshness import FreshnessLabel
 from src.data_client.ginlix_data.directory import display_names
-from src.data_client.normalize import minor_unit_places
+from src.data_client.normalize import change_from, minor_unit_places
+from src.utils.market_hours import ET
 from market_protocol import AssetClass, InstrumentRef
 
 from ._shared import _fmp_request, _get_user_id, _mark_failure, _mark_no_data, _safe_result
@@ -169,7 +174,7 @@ class CompanyInputs:
 
     @property
     def has_snapshot(self) -> bool:
-        return self.snapshot is not None and self.snapshot.get("price") is not None
+        return self.snapshot is not None and current_price(self.snapshot) is not None
 
     @property
     def price(self) -> Optional[float]:
@@ -319,6 +324,7 @@ def _artifact_quote(inp: CompanyInputs) -> Optional[Dict[str, Any]]:
     if inp.has_snapshot:
         snap = inp.snapshot
         return {
+            "price": current_price(snap),
             "regularClose": snap.get("price"),
             "lastTradePrice": snap.get("last_trade_price"),
             "marketStatus": snap.get("market_status"),
@@ -441,13 +447,13 @@ def _quote_detail_rows(
 ) -> List[Tuple[str, str]]:
     rows = []
     if open_:
-        rows.append(("Open", fmt_price(open_, cur)))
+        rows.append(("Open", fmt_quote(open_, cur)))
     if prev_close:
-        rows.append(("Previous Close", fmt_price(prev_close, cur)))
+        rows.append(("Previous Close", fmt_quote(prev_close, cur)))
     if low and high:
-        rows.append(("Day Range", f"{fmt_price(low, cur)} - {fmt_price(high, cur)}"))
+        rows.append(("Day Range", f"{fmt_quote(low, cur)} - {fmt_quote(high, cur)}"))
     if year_low and year_high:
-        rows.append(("52-Week Range", f"{fmt_price(year_low, cur)} - {fmt_price(year_high, cur)}"))
+        rows.append(("52-Week Range", f"{fmt_quote(year_low, cur)} - {fmt_quote(year_high, cur)}"))
     if volume:
         vol_str = fmt_count(volume)
         rows.append(("Volume", f"{vol_str} (Avg: {fmt_count(avg_volume)})" if avg_volume else vol_str))
@@ -474,26 +480,42 @@ def _extended_session(snap: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """
     named = _EXTENDED_SESSIONS.get(snap.get("market_status") or "")
     last, close = finite_or_none(snap.get("last_trade_price")), finite_or_none(snap.get("price"))
-    if named is None or last is None or close is None or last == close:
+    if named is None or last is None or last == close:
         return None
     return None if finite_or_none(snap.get(f"{named[1]}_change")) == 0 else named
 
 
-def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
-    """Regular close, the extended-hours print off it, and the day's move."""
+def _running_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
+    """The last trade and its move from the previous close, until the session settles.
+
+    Until then the snapshot's close is a running figure behind the last trade,
+    and before the open there is none yet.
+    """
+    price = current_price(snap)
+    named = _extended_session(snap)
+    printed = print_time(snap)
+    if named and named[1] == "early_trading" and printed and printed.astimezone(ET).date() < datetime.now(ET).date():
+        named = None  # no pre-market trade yet: the last one is a previous day's
+    label = (named or ("Last", None))[0]
+    change, change_pct = change_from(price, snap.get("previous_close")) if price is not None else (None, None)
+    if change is None:
+        change, change_pct = snap.get("change"), snap.get("change_percent")
+    return [f"**{label} Price:** {fmt_price(price, cur)}", *_day_change_line(change, change_pct, cur), ""]
+
+
+def _settled_price_lines(snap: Dict[str, Any], reg_close: float, cur: DisplaySpec) -> List[str]:
+    """The regular close, any extended-hours trade off it, and the day's move."""
     out = []
-    reg_close = snap.get("price")  # session.close = regular session close
     last_price = snap.get("last_trade_price")  # actual current price
     reg_change = snap.get("regular_trading_change")
     reg_change_pct = snap.get("regular_trading_change_percent")
-    if reg_close is not None:
-        if reg_change is not None and reg_change_pct is not None:
-            sign = _plus(reg_change)
-            out.append(
-                f"**Regular Close:** {fmt_price(reg_close, cur)} ({sign}{reg_change:.{cur.decimals}f} / {sign}{reg_change_pct:.3f}%)"
-            )
-        else:
-            out.append(f"**Regular Close:** {fmt_price(reg_close, cur)}")
+    if reg_change is not None and reg_change_pct is not None:
+        sign = _plus(reg_change)
+        out.append(
+            f"**Regular Close:** {fmt_quote(reg_close, cur)} ({sign}{reg_change:.{cur.decimals}f} / {sign}{reg_change_pct:.3f}%)"
+        )
+    else:
+        out.append(f"**Regular Close:** {fmt_quote(reg_close, cur)}")
 
     extended = _extended_session(snap)
     if extended is not None:
@@ -513,14 +535,15 @@ def _snapshot_price_lines(snap: Dict[str, Any], cur: DisplaySpec) -> List[str]:
                 f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({sign}{diff:.{cur.decimals}f} / {sign}{diff_pct:.2f}% from close)"
             )
 
-    total_change = snap.get("change")
-    total_change_pct = snap.get("change_percent")
-    if total_change is not None and total_change_pct is not None:
-        sign = _plus(total_change)
-        out.append(
-            f"**Day Change (from prev close):** {sign}{total_change:.{cur.decimals}f} / {sign}{total_change_pct:.3f}%"
-        )
-    return out + [""]
+    return out + _day_change_line(snap.get("change"), snap.get("change_percent"), cur) + [""]
+
+
+def _day_change_line(change: Any, change_pct: Any, cur: DisplaySpec) -> List[str]:
+    """The move from the previous close, as one line; none without both figures."""
+    if change is None or change_pct is None:
+        return []
+    sign = _plus(change)
+    return [f"**Day Change (from prev close):** {sign}{change:.{cur.decimals}f} / {sign}{change_pct:.3f}%"]
 
 
 def _quote_heading(freshness: Dict[str, Any]) -> str:
@@ -528,16 +551,10 @@ def _quote_heading(freshness: Dict[str, Any]) -> str:
 
     Only a row measured or declared current is called real-time. A delayed one
     says so, and a provider quote that carries neither a tier nor a print time
-    reads as unknown rather than borrowing the title. On a closed venue a
-    current row is the session's final price, and so is a delayed one nothing
-    measured. A measured delayed row is still inside its delay, before the
-    closing auction's print, so it keeps naming the delay.
+    reads as unknown rather than borrowing the title. A row that holds the
+    session's final price (:func:`holds_close`) is the last close.
     """
-    label = freshness.get("label")
-    if freshness.get("closed") and (
-        label == FreshnessLabel.LIVE
-        or (label == FreshnessLabel.DELAYED and not freshness.get("measured"))
-    ):
+    if holds_close(freshness):
         return "### Quote (last close)"
     words = FRESHNESS_WORDS.get(freshness.get("label"))
     return f"### Quote ({words})" if words else "### Real-Time Quote"
@@ -565,7 +582,11 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
     fmp = inp.quote
     if snap is None and fmp is None:
         return []
-    cur = _quote_precision(inp.cur, inp.symbol)
+    price = current_price(snap) if snap is not None else finite_or_none(fmp.get("price"))
+    # The detail rows judge each figure's precision by its own size; the price
+    # lines and their moves take the shown price's.
+    base = _quote_precision(inp.cur, inp.symbol)
+    cur = quote_spec(base, price)
     session_name, current_time_et = get_market_session()
     status = snap.get("market_status", "") if snap is not None else ""
     label = _STATUS_LABELS.get(status, session_name.replace("_", " ").title())
@@ -573,21 +594,29 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
         stamp_quote(snap, ref=inp.ref) if snap is not None
         else stamp_provider_quote(fmp, inp.symbol, inp.ref)
     )
-    out = [_quote_heading(stamp["freshness"])]
+    freshness = stamp["freshness"]
+    out = [_quote_heading(freshness)]
     # US: snapshot/session label + ET clock. Non-US: phase from the exchange
     # calendar + exchange-local clock (the US-Eastern phase is meaningless for a
     # foreign listing; snapshot.market_status is US-centric).
-    status_line = _market_status_line(inp.ref, _is_us_clock(inp.ref), label, current_time_et)
+    is_us = _is_us_clock(inp.ref)
+    status_line = _market_status_line(
+        inp.ref, is_us, label, current_time_et,
+        price_clock(snap, inp.ref, freshness) if is_us and snap is not None
+        else stamp.get("as_of_local") if stamp.get("printed") else None,
+    )
     if status_line:
         out.append(status_line)
     out.append("")
 
     if snap is not None:
-        out += _snapshot_price_lines(snap, cur)
+        reg_close = finite_or_none(snap.get("price"))
+        settled = reg_close is not None and close_settled(venue_phase(inp.ref), freshness)
+        out += _settled_price_lines(snap, reg_close, cur) if settled else _running_price_lines(snap, cur)
         # The snapshot has no 52-week range or average volume; the provider quote does.
         fmp = fmp or {}
         rows = _quote_detail_rows(
-            cur, snap.get("open"), snap.get("previous_close"), snap.get("low"), snap.get("high"),
+            base, snap.get("open"), snap.get("previous_close"), snap.get("low"), snap.get("high"),
             fmp.get("yearLow"), fmp.get("yearHigh"), snap.get("volume"), fmp.get("avgVolume"),
         )
     else:
@@ -595,7 +624,7 @@ def _quote_lines(inp: CompanyInputs) -> List[str]:
         if price_line:
             out += [price_line, ""]
         rows = _quote_detail_rows(
-            cur, fmp.get("open"), fmp.get("previousClose"), fmp.get("dayLow"), fmp.get("dayHigh"),
+            base, fmp.get("open"), fmp.get("previousClose"), fmp.get("dayLow"), fmp.get("dayHigh"),
             fmp.get("yearLow"), fmp.get("yearHigh"), fmp.get("volume"), fmp.get("avgVolume"),
         )
     if rows:
@@ -820,7 +849,7 @@ def _company_text(inp: CompanyInputs) -> str:
         "",
         f"Company: {inp.name} ({inp.symbol})",
         f"Sector: {profile.get('sector') or 'N/A'} | Industry: {profile.get('industry') or 'N/A'}",
-        f"Market Cap: {market_cap} | Current Price: {fmt_price(price, _quote_precision(cur, inp.symbol))}{price_note}"
+        f"Market Cap: {market_cap} | Current Price: {fmt_quote(price, _quote_precision(cur, inp.symbol))}{price_note}"
         if price
         else f"Market Cap: {market_cap}",
         "",

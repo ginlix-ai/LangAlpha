@@ -23,7 +23,7 @@ from market_protocol import (
 from src.data_client.instrument_clock import clock_for_ref
 from src.data_client.normalize import listing_currency
 
-from .currency import DisplaySpec, fmt_price
+from .currency import DisplaySpec, fmt_quote
 
 
 def resolve_ref(
@@ -81,9 +81,10 @@ def _symbol_currency(ref: Optional[InstrumentRef]) -> DisplaySpec:
 
 
 def price_text(value: Optional[float], ref: Optional[InstrumentRef]) -> str:
-    """``$198.00`` or ``HK$318.20``: a price in its listing's currency, grouped."""
+    """``$198.00`` or ``HK$318.20``: a price in its listing's currency, grouped,
+    at the precision it quotes in (``$0.3734``)."""
     try:
-        return fmt_price(value, _symbol_currency(ref), group=True)
+        return fmt_quote(value, _symbol_currency(ref), group=True)
     except Exception:
         return f"{value:,.2f}" if value is not None else "N/A"
 
@@ -184,6 +185,22 @@ def venue_local_time(
         return None
 
 
+# Abbreviations that name more than one venue's zone: CST is China, Taiwan and
+# US Central, IST India and Israel, BST British Summer and Bangladesh.
+_AMBIGUOUS_ZONES = frozenset({"CST", "IST", "BST"})
+
+
+def zone_label(local: datetime) -> str:
+    """The zone of an aware time as tool text prints it: ``HKT``, or ``UTC+8``
+    where the abbreviation is ambiguous, numeric (``+08``) or missing."""
+    abbrev = local.strftime("%Z")
+    if abbrev and abbrev[0] not in "+-" and abbrev not in _AMBIGUOUS_ZONES:
+        return abbrev
+    minutes = int(local.utcoffset().total_seconds() // 60)
+    hours, rest = divmod(abs(minutes), 60)
+    return f"UTC{'-' if minutes < 0 else '+'}{hours}{f':{rest:02d}' if rest else ''}"
+
+
 # MarketPhase -> display label for the "Market Status:" quote line.
 _PHASE_LABELS: Dict[MarketPhase, str] = {
     MarketPhase.PRE: "Pre-Market",
@@ -200,24 +217,29 @@ def _market_status_line(
     is_us: bool,
     us_label: str,
     us_clock_et: datetime,
+    printed_at: Optional[str] = None,
 ) -> Optional[str]:
     """The ``**Market Status:** <phase> | **As of:** <clock>`` quote line.
 
-    US listings keep the snapshot/session-driven ``us_label`` and the ET clock
-    (byte-identical to legacy output). Non-US listings derive the phase from the
-    exchange calendar and stamp the exchange-local clock (e.g. HKT), since the
-    US-Eastern phase is meaningless for them. Returns ``None`` when a non-US ref
-    is missing or its calendar can't be read, so the caller omits the line rather
+    US listings keep the snapshot/session-driven ``us_label`` and the ET clock.
+    Non-US listings derive the phase from the exchange calendar and stamp the
+    exchange-local clock (e.g. HKT), since the US-Eastern phase is meaningless
+    for them. Either then gives *printed_at*, the venue-local time the shown
+    price printed: the clock is when it was read, and a closed or delayed
+    venue's price, or a thin name's old trade, is older. Returns ``None`` when a non-US ref is
+    missing or its calendar can't be read, so the caller omits the line rather
     than asserting a wrong phase.
     """
     if is_us:
-        return f"**Market Status:** {us_label} | **As of:** {us_clock_et.strftime('%H:%M ET')}"
-    if ref is None:
-        return None
-    now = datetime.now(timezone.utc)
-    phase = venue_phase(ref, now)
-    local = venue_local_time(ref, now)
-    if phase is None or local is None:
-        return None
-    label = _PHASE_LABELS.get(phase, phase.value.replace("_", " ").title())
-    return f"**Market Status:** {label} | **As of:** {local.strftime('%H:%M %Z')}"
+        line = f"**Market Status:** {us_label} | **As of:** {us_clock_et.strftime('%H:%M ET')}"
+    else:
+        if ref is None:
+            return None
+        now = datetime.now(timezone.utc)
+        phase = venue_phase(ref, now)
+        local = venue_local_time(ref, now)
+        if phase is None or local is None:
+            return None
+        label = _PHASE_LABELS.get(phase, phase.value.replace("_", " ").title())
+        line = f"**Market Status:** {label} | **As of:** {local:%H:%M} {zone_label(local)}"
+    return f"{line} | **Price as of:** {printed_at}" if printed_at else line

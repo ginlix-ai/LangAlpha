@@ -7,11 +7,20 @@ from typing import Any, Dict, Optional
 from market_protocol import AssetClass, InstrumentRef
 
 from src.data_client import get_market_data_provider
+from src.data_client.freshness import FreshnessLabel
 
 from ._shared import _safe_result
 from .currency import DisplaySpec, fmt_price
 from .prices import _calculate_price_statistics
-from .quote_format import current_price, stamp_quote
+from .quote_format import (
+    FRESHNESS_WORDS,
+    current_price,
+    holds_close,
+    inside_delay,
+    print_clock,
+    print_time,
+    stamp_quote,
+)
 from .utils import finite_or_none
 
 
@@ -63,7 +72,30 @@ async def fetch_index_overview(
     }
     if any(v is not None for v in quote.values()):
         artifact["quote"] = {**quote, **(stamp_quote(snap, ref=ref) if snap else {})}
+        printed_at = print_clock(ref, print_time(snap))
+        if printed_at is not None:
+            artifact["quote"]["levelPrintedAt"] = printed_at
     return artifact
+
+
+def _level_as_of(q: Dict[str, Any]) -> Optional[str]:
+    """When the level printed and what it is: the session's close, or a level
+    still moving or behind. A delayed level on a closed venue has not reached
+    the close yet."""
+    clock = q.get("levelPrintedAt")
+    if not clock:
+        return None
+    freshness = q.get("freshness") or {}
+    label = freshness.get("label")
+    if holds_close(freshness):
+        state = "session close"
+    elif freshness.get("closed") and inside_delay(freshness):
+        state = f"{FRESHNESS_WORDS[FreshnessLabel.DELAYED]}, before the session close"
+    elif label == FreshnessLabel.LIVE:
+        state = "live"
+    else:
+        state = FRESHNESS_WORDS.get(label, "freshness unknown")
+    return f"{clock}, {state}"
 
 
 def index_overview_text(artifact: Dict[str, Any], spec: DisplaySpec) -> str:
@@ -86,6 +118,9 @@ def index_overview_text(artifact: Dict[str, Any], spec: DisplaySpec) -> str:
         return "\n".join(lines + ["No level data available."])
     change, pct = finite_or_none(q.get("change")), finite_or_none(q.get("changePct"))
     lines += ["| Metric | Value |", "|--------|-------|", f"| Level | {level(q.get('price'))} |"]
+    as_of = _level_as_of(q)
+    if as_of:
+        lines.append(f"| As of | {as_of} |")
     if change is not None and pct is not None:
         lines.append(f"| Day Change | {'+' if change > 0 else ''}{level(change)} ({pct:+.2f}%) |")
     if q.get("dayLow") is not None and q.get("dayHigh") is not None:

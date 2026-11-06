@@ -77,3 +77,10 @@ async def test_fmp_is_delayed_on_a_venue_the_protocol_does_not_know():
 def test_ginlix_data_indexes_are_delayed_and_its_equities_realtime():
     assert publisher_lineage("ginlix-data", AssetClass.INDEX, "XNYS")[1] is Tier.DELAYED_15M
     assert publisher_lineage("ginlix-data", AssetClass.EQUITY, "XNYS")[1] is Tier.REALTIME
+
+
+def test_a_ginlix_data_index_quote_reads_delayed_like_its_bars():
+    from src.data_client.normalize import snapshot_tier
+
+    assert snapshot_tier("ginlix-data", "XNYS", AssetClass.INDEX) is Tier.DELAYED_15M
+    assert snapshot_tier("ginlix-data", "XNYS", AssetClass.EQUITY) is Tier.REALTIME

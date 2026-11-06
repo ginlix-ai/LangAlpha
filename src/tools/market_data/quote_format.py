@@ -13,14 +13,16 @@ from typing import Any, NamedTuple, Optional
 
 from src.data_client.freshness import Freshness, FreshnessLabel, is_live, measure_quote
 from market_protocol import AssetClass, InstrumentRef, MarketPhase, display_spelling
+from market_protocol.freshness import QUOTE_LIVE_S
 
-from .currency import fmt_money, fmt_price
+from .currency import fmt_money
 from .display import (
     _is_us_clock,
-    _symbol_currency,
+    price_text,
     resolve_ref,
     venue_local_time,
     venue_phase,
+    zone_label,
 )
 from .utils import finite_or_none, get_market_session
 from src.utils.market_hours import ET
@@ -42,6 +44,29 @@ FRESHNESS_WORDS: dict[FreshnessLabel, str] = {
     FreshnessLabel.INCOMPLETE: "incomplete",
     FreshnessLabel.UNKNOWN: "freshness unknown",
 }
+
+
+def inside_delay(freshness: dict[str, Any]) -> bool:
+    """A delayed row measured behind is still inside its delay, so after the
+    close it predates the session's final print."""
+    return freshness.get("label") == FreshnessLabel.DELAYED and bool(freshness.get("measured"))
+
+
+def close_settled(phase: Optional[MarketPhase], freshness: dict[str, Any]) -> bool:
+    """Whether a listing's regular close is final in venue *phase*: the regular
+    session is over (an after-hours venue is not closed, but its close is set)
+    and the row is not still inside a delay that predates it."""
+    return phase not in (None, MarketPhase.REGULAR, MarketPhase.LUNCH) and not inside_delay(freshness)
+
+
+def holds_close(freshness: dict[str, Any]) -> bool:
+    """Whether a row on a closed venue holds the session's final price: a current
+    or delayed one does, unless it is still inside its delay."""
+    return (
+        bool(freshness.get("closed"))
+        and freshness.get("label") in (FreshnessLabel.LIVE, FreshnessLabel.DELAYED)
+        and not inside_delay(freshness)
+    )
 
 
 def current_price(snap: dict[str, Any]) -> Optional[float]:
@@ -138,30 +163,24 @@ def _symbol_label(snap: dict[str, Any]) -> str:
         return str(symbol)
 
 
-def _fmt_price(price: float, ref: Optional[InstrumentRef]) -> str:
-    """Currency-aware, thousands-grouped price for quote output; '$' on any failure.
-
-    Grouping is the get_quote house style, the only delta from the canonical
-    :func:`fmt_price`. Never raises: the formatter sits in tool-output and
-    market-watch middleware paths.
-    """
+def print_clock(ref: Optional[InstrumentRef], at: Optional[datetime]) -> Optional[str]:
+    """``2026-11-03 16:04:18 ET``: *at* on the listing's own clock, ET for a US
+    listing; None with no time, no listing or on any failure."""
+    if at is None:
+        return None
     try:
-        return fmt_price(price, _symbol_currency(ref), group=True)
-    except Exception:
-        return f"${price:,.2f}"
-
-
-def _venue_clock(ref: Optional[InstrumentRef], at: Optional[datetime]) -> Optional[str]:
-    try:
-        if ref is None or _is_us_clock(ref):
-            return None
         local = venue_local_time(ref, at)
         if local is None:
             return None
-        abbrev = local.strftime("%Z") or ref.tz
-        return f"{local.strftime('%Y-%m-%d %H:%M:%S')} {abbrev}"
+        return f"{local:%Y-%m-%d %H:%M:%S} {'ET' if _is_us_clock(ref) else zone_label(local)}"
     except Exception:
         return None
+
+
+def _venue_clock(ref: Optional[InstrumentRef], at: Optional[datetime]) -> Optional[str]:
+    """:func:`print_clock` for a foreign listing; None for a US one, whose clock
+    the block's ET header already carries."""
+    return None if _is_us_clock(ref) else print_clock(ref, at)
 
 
 def quote_freshness(
@@ -178,8 +197,14 @@ def quote_freshness(
 
 
 def print_time(snap: dict[str, Any]) -> Optional[datetime]:
-    """The provider's print time (``as_of``, Unix ms) as an aware datetime."""
-    as_of = snap.get("as_of")
+    """When the row's shown price printed, as an aware datetime.
+
+    That is the last trade's own stamp (``last_trade_at``, Unix ms) when the
+    last trade is the price, else the row's ``as_of``. A thin name's newest
+    stamp can be a quote update twenty minutes after its last trade.
+    """
+    traded = finite_or_none(snap.get("last_trade_price")) is not None
+    as_of = (snap.get("last_trade_at") if traded else None) or snap.get("as_of")
     if not isinstance(as_of, (int, float)) or as_of <= 0:
         return None
     try:
@@ -188,9 +213,26 @@ def print_time(snap: dict[str, Any]) -> Optional[datetime]:
         return None
 
 
-def _row_clock(row: _Row, at: Optional[datetime]) -> Optional[str]:
-    """Venue-local stamp for a row, at its print time when the provider gave one."""
-    return _venue_clock(row.ref, print_time(row.snap) or at)
+def price_clock(
+    snap: dict[str, Any],
+    ref: Optional[InstrumentRef],
+    freshness: Freshness | dict[str, Any],
+    at: Optional[datetime] = None,
+) -> Optional[str]:
+    """Venue-local stamp for a row, at its print time when the provider gave one.
+
+    A US row is stamped only when its price printed before the ET header's
+    moment: it is closed or delayed, or its feed is live but a thin name's last
+    trade is older than the live window while its quote keeps moving.
+    """
+    printed = print_time(snap)
+    now = at or datetime.now(timezone.utc)
+    if _is_us_clock(ref) and (
+        printed is None
+        or (is_live(freshness) and (now - printed).total_seconds() <= QUOTE_LIVE_S)
+    ):
+        return None
+    return print_clock(ref, printed or now)
 
 
 def block_clock(
@@ -279,7 +321,7 @@ def _venue_suffix(row: _Row, at: Optional[datetime] = None) -> str:
         words = FRESHNESS_WORDS.get(row.freshness.label)
         if words:
             parts.append(words)
-        clock = _row_clock(row, at)
+        clock = price_clock(*row, at)
         if clock:
             parts.append(clock)
         return f" ({', '.join(parts)})" if parts else ""
@@ -302,13 +344,22 @@ def _line(row: _Row, prev_price: Optional[float], at: Optional[datetime]) -> str
     parts = [_symbol_label(snap)]
     price = current_price(snap)
     if price is not None:
-        parts.append(_fmt_price(price, row.ref))
+        parts.append(price_text(price, row.ref))
     # A coin's vendors close its day at 00:00 UTC and report its volume as
     # money in the quote currency, not as a count of coins.
     coin = row.ref is not None and row.ref.asset_class is AssetClass.CRYPTO
     pct = finite_or_none(snap.get("change_percent"))
     if pct is not None:
-        parts.append(f"{'+' if pct >= 0 else ''}{pct:.2f}% {'since 00:00 UTC' if coin else 'today'}")
+        # A print from an earlier venue day carries that session's move.
+        printed = venue_local_time(row.ref, print_time(snap) or at)
+        today = venue_local_time(row.ref, at)
+        if coin:
+            day = "since 00:00 UTC"
+        elif printed and today and printed.date() != today.date():
+            day = f"on {printed:%Y-%m-%d}"
+        else:
+            day = "today"
+        parts.append(f"{'+' if pct >= 0 else ''}{pct:.2f}% {day}")
     vol = finite_or_none(snap.get("volume"))
     if vol:
         parts.append(f"vol {fmt_money(vol, row.ref.price_currency) if coin else _fmt_volume(int(vol))}")
@@ -380,11 +431,11 @@ def _venue_is_live(ref: Optional[InstrumentRef], session_name: str,
 def _stamp_entry(row: _Row, at: Optional[datetime] = None) -> str:
     """'NVDA $233.45 (+2.31%) @ 2026-07-01 10:30:00 CST' for one stamped row."""
     snap = row.snap
-    text = f"{_symbol_label(snap)} {_fmt_price(current_price(snap), row.ref)}"
+    text = f"{_symbol_label(snap)} {price_text(current_price(snap), row.ref)}"
     pct = finite_or_none(snap.get("change_percent"))
     if pct is not None:
         text += f" ({'+' if pct >= 0 else ''}{pct:.2f}%)"
-    clock = _row_clock(row, at)
+    clock = price_clock(*row, at)
     if clock:
         text += f" @ {clock}"
     return text

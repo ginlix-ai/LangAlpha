@@ -3516,6 +3516,8 @@
     "marketIndices": "Market Indices",
     "marketOverview": "Market Overview",
     "sectorPerformance": "Sector Performance",
+    "overviewFallbackDay": "{{day}}, latest before {{requested}}",
+    "sessionInProgress": "{{day}} (in progress)",
     "stockScreener": "Stock Screener",
     "pricePerformance": "Price Performance",
     "analystRatings": "Analyst Ratings",

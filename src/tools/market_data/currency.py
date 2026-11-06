@@ -42,6 +42,16 @@ class DisplaySpec(NamedTuple):
 CurrencyArg = Union[DisplaySpec, str, None]
 
 
+def quote_spec(spec: DisplaySpec, price: Optional[float]) -> DisplaySpec:
+    """*spec* for quoting *price*: under one unit it keeps four places, since a US
+    stock under a dollar quotes in hundredths of a cent and a Hong Kong penny
+    stock in tenths of a cent. An A-share under a yuan still ticks in fen, so a
+    yuan price keeps its own places."""
+    if price is None or abs(price) >= 1 or spec.currency == "CNY":
+        return spec
+    return spec._replace(decimals=max(spec.decimals, 4))
+
+
 def _spec(currency: CurrencyArg) -> DisplaySpec:
     """Coerce a bare code / ``None`` to a 2-decimal spec; pass specs through."""
     if isinstance(currency, DisplaySpec):
@@ -95,6 +105,15 @@ def fmt_price(
         whole, _, places = text.partition(".")
         text = f"{whole}.{places.rstrip('0').ljust(2, '0')}"
     return f"{sign}{prefix}{text}"
+
+
+def fmt_quote(value: Optional[float], currency: CurrencyArg = None, group: bool = False) -> str:
+    """:func:`fmt_price` for a traded price, at the precision it quotes in
+    (:func:`quote_spec`): each figure is judged by its own size, so a 52-week
+    high above a dollar keeps two places beside a sub-dollar last trade."""
+    if value is None:
+        return "N/A"
+    return fmt_price(value, quote_spec(_spec(currency), value), group=group)
 
 
 def _scaled(value: float, prefix: str, places: int = 2) -> str:

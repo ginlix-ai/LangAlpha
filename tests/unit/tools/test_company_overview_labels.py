@@ -6,11 +6,12 @@ label read N/A), its actual EPS is on the consensus basis, and the last
 after-hours trade headlined a closed market unlabeled.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.tools.market_data import earnings
+from market_protocol import MarketPhase
+from src.tools.market_data import company, earnings
 from src.tools.market_data.company import CompanyInputs, _company_text, _extended_session, _quote_lines
 from src.tools.market_data.display import _symbol_currency, resolve_listing
 from src.tools.market_data.earnings import join_earnings
@@ -247,7 +248,8 @@ def test_a_pence_listing_provider_quote_keeps_the_places_a_pence_move_needs():
     assert "£0.8524 - £1.3207" in text
 
 
-def test_a_pence_listing_snapshot_keeps_the_places_a_pence_move_needs():
+def test_a_pence_listing_snapshot_keeps_the_places_a_pence_move_needs(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.CLOSED)
     text = _quote_text("VOD.L", snapshot={
         "price": 1.172, "change": 0.0035, "change_percent": 0.3,
         "regular_trading_change": 0.0035, "regular_trading_change_percent": 0.3,
@@ -262,6 +264,116 @@ def test_a_pence_listing_headline_price_matches_its_quote_block():
     text = _company_text(_inputs("VOD.L", quote=quote, profile={"price": 1.172}))
     assert "Current Price: £1.1720" in text
     assert "**Price:** £1.1720" in text
+
+
+@pytest.mark.parametrize("phase, freshness, label", [
+    (MarketPhase.REGULAR, {"label": "live", "measured": True}, "Last Price"),
+    (MarketPhase.LUNCH, {"label": "live", "measured": True}, "Last Price"),
+    (MarketPhase.CLOSED, {"label": "delayed", "measured": True, "closed": True}, "Last Price"),
+    (MarketPhase.CLOSED, {"label": "live", "measured": True, "closed": True}, "Regular Close"),
+    (MarketPhase.POST, {"label": "live", "measured": True}, "Regular Close"),
+])
+def test_the_snapshot_price_is_a_regular_close_only_once_it_settles(monkeypatch, phase, freshness, label):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: phase)
+    monkeypatch.setattr(company, "stamp_quote", lambda snap, ref=None: {"freshness": freshness})
+    text = _quote_text("0700.HK", snapshot={"price": 401.6, "tier": "delayed_15m"})
+    assert f"**{label}:** HK$401.60" in text
+
+
+def test_a_sub_dollar_close_keeps_four_places_beside_a_trade_above_a_dollar(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.POST)
+    monkeypatch.setattr(company, "stamp_quote", lambda snap, ref=None: {
+        "freshness": {"label": "live", "measured": True}})
+    snapshot = {"price": 0.9834, "last_trade_price": 1.02, "previous_close": 0.95, "market_status": "late_trading",
+                "late_trading_change": 0.0366, "late_trading_change_percent": 3.72, "tier": "realtime"}
+    assert "**Regular Close:** $0.9834\n" in _quote_text("SUBD", snapshot=snapshot)
+    moved = {**snapshot, "regular_trading_change": 0.0334, "regular_trading_change_percent": 3.516}
+    assert "**Regular Close:** $0.9834 (+0.03 / +3.516%)" in _quote_text("SUBD", snapshot=moved)
+
+
+def test_an_unsettled_session_shows_the_last_trade_and_one_move(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.REGULAR)
+    text = _quote_text("TSM", snapshot={
+        "price": 405.30, "last_trade_price": 405.60, "previous_close": 400.0, "market_status": "open",
+        "change": 5.30, "change_percent": 1.325, "regular_trading_change": 5.30,
+        "regular_trading_change_percent": 1.325, "tier": "realtime",
+    })
+    assert "**Last Price:** $405.60\n**Day Change (from prev close):** +5.60 / +1.400%" in text
+    assert "405.30" not in text
+
+
+def test_a_pre_market_snapshot_shows_its_trade_not_the_prior_session(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.PRE)
+    snapshot = {
+        "last_trade_price": 332.21, "previous_close": 331.9, "market_status": "early_trading",
+        "change": 0.31, "change_percent": 0.0934, "early_trading_change": 0.31,
+        "early_trading_change_percent": 0.0934, "volume": 149_088, "tier": "realtime",
+    }
+    prior = {"price": 331.9, "change": -6.42, "changePercentage": -1.9, "open": 325.58, "previousClose": 338.32}
+    text = _company_text(_inputs("AAPL", quote=prior, snapshot=snapshot, profile={"price": 331.9}))
+    assert "Current Price: $332.21 (extended-hours trade; see Quote)" in text
+    assert "**Pre-Market Price:** $332.21\n**Day Change (from prev close):** +0.31 / +0.093%" in text
+    assert "| Previous Close | $331.90 |" in text
+    assert "**Price:**" not in text and "325.58" not in text and "338.32" not in text
+
+
+def test_a_pre_market_status_with_no_pre_market_trade_yet_is_no_pre_market_price(monkeypatch):
+    # Right after the pre-market opens, the last trade can still be the day before's.
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.PRE)
+    # Two days back is an earlier ET date even across a 25-hour fall-back day.
+    earlier = int((datetime.now(timezone.utc) - timedelta(days=2)).timestamp() * 1000)
+    snapshot = {
+        "last_trade_price": 332.21, "last_trade_at": earlier, "previous_close": 331.9,
+        "market_status": "early_trading", "change": 0.31, "change_percent": 0.0934, "tier": "realtime",
+    }
+    prior = {"price": 331.9, "change": -6.42, "changePercentage": -1.9, "open": 325.58, "previousClose": 338.32}
+    text = _company_text(_inputs("AAPL", quote=prior, snapshot=snapshot, profile={"price": 331.9}))
+    assert "**Last Price:** $332.21" in text
+    assert "Pre-Market Price" not in text
+
+
+def test_a_closed_market_still_settling_names_only_an_extended_trade(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.CLOSED)
+    monkeypatch.setattr(company, "stamp_quote", lambda snap, ref=None: {
+        "freshness": {"label": "delayed", "measured": True, "closed": True}})
+    snapshot = {"price": 338.32, "last_trade_price": 338.32, "previous_close": 331.9,
+                "market_status": "closed", "tier": "delayed_15m"}
+    assert "**Last Price:** $338.32" in _quote_text("AAPL", snapshot=snapshot)
+    late = {**snapshot, "last_trade_price": 329.03, "late_trading_change": -9.29}
+    assert "**Last Extended-Hours Price:** $329.03" in _quote_text("AAPL", snapshot=late)
+    odd_lot = {**snapshot, "last_trade_price": 338.31, "late_trading_change": 0.0, "market_status": "late_trading"}
+    assert "**Last Price:** $338.31" in _quote_text("AAPL", snapshot=odd_lot)
+
+
+def test_a_us_quote_whose_trade_is_older_than_the_live_window_says_when_it_printed(monkeypatch):
+    monkeypatch.setattr(company, "venue_phase", lambda ref: MarketPhase.PRE)
+    monkeypatch.setattr(company, "stamp_quote", lambda snap, ref=None: {
+        "freshness": {"label": "live", "measured": True}})
+    thin = int(datetime(2026, 11, 6, 9, 4, 20, tzinfo=timezone.utc).timestamp() * 1000)
+    snapshot = {"last_trade_price": 1939.86, "last_trade_at": thin, "previous_close": 1950.0,
+                "market_status": "early_trading", "early_trading_change": -10.14, "tier": "realtime"}
+    assert "| **Price as of:** 2026-11-06 04:04:20 ET" in _quote_text("MKL", snapshot=snapshot)
+    fresh = {**snapshot, "last_trade_at": int(datetime.now(timezone.utc).timestamp() * 1000)}
+    assert "Price as of" not in _quote_text("MKL", snapshot=fresh)
+
+
+def test_a_foreign_quote_says_when_its_price_printed():
+    close = int(datetime(2026, 7, 1, 7, tzinfo=timezone.utc).timestamp() * 1000)
+    text = _quote_text("600519.SH", snapshot={"price": 1446.44, "as_of": close, "tier": "realtime"})
+    assert "| **Price as of:** 2026-07-01 15:00:00 UTC+8" in text
+
+
+def test_a_sub_dollar_quote_keeps_four_places():
+    quote = {"price": 0.3734, "change": 0.0123, "changePercentage": 3.4}
+    text = _company_text(_inputs("SUBD", quote=quote, profile={"price": 0.3734}))
+    assert "Current Price: $0.3734" in text
+    assert "**Price:** $0.3734 (+0.0123 / +3.40%)" in text
+
+
+def test_each_detail_figure_takes_its_own_precision():
+    quote = {"price": 0.3734, "change": 0.0123, "changePercentage": 3.4, "yearLow": 0.21, "yearHigh": 12.0}
+    text = _quote_text("SUBD", quote=quote)
+    assert "| 52-Week Range | $0.2100 - $12.00 |" in text
 
 
 def test_a_us_quote_keeps_two_places():

@@ -160,7 +160,7 @@ class TestIndexReadsRegularSessionOnly:
         assert measure_bars("^GSPC", "1min", bars, is_index=True, now=now).label == "live"
         snap = {"symbol": "GSPC", "price": 7722.72, "change_percent": 0.73,
                 "as_of": as_of, "tier": "realtime"}
-        assert format_quote_line(snap, at=now) == "GSPC  7,722.72  +0.73% today (closed)"
+        assert format_quote_line(snap, at=now) == "GSPC  7,722.72  +0.73% today (closed, 2026-10-01 16:00:00 ET)"
 
 
 class TestXhkgClock:

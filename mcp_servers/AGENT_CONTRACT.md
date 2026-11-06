@@ -42,6 +42,9 @@ Rules:
 - **Prices are major units** of `currency` (pence/GBX converted to pounds, etc.).
 - **Symbols** go through `market_protocol.symbology` at the boundary; the echoed
   `symbol` is the canonical display spelling, regardless of what the caller passed.
+  `price_data` echoes the spelling that asks for the instrument again
+  (`to_request_spelling`: `AAPL`, `0700.HK`, `^GSPC`): its `symbol` is sent back to
+  fetch more bars, and a bare `SPX` there names the stock listing.
 - **Interval vocab**: `1min|5min|15min|30min|1hour|4hour|1day|1week|1month`.
   Provider-native spellings (`1m`, `1wk`, `daily`, ...) are accepted as input aliases
   and normalized; native-only granularities a provider supports may pass through but

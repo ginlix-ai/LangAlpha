@@ -236,7 +236,6 @@ class RoutedFinancialSource(_RoutedSource):
     get_revenue_by_segment = _BySymbol(list)
 
     get_realtime_quote = _DefaultOnly(list)
-    get_sector_performance = _DefaultOnly(list)
 
     async def screen_stocks(self, **filters: Any) -> list[dict[str, Any]]:
         for route in self._by_market.values():

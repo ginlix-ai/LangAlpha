@@ -169,7 +169,7 @@ class TestGetStockData:
         assert [c.args[0] for c in client.get_stock_price.await_args_list] == [
             "^GSPC", "COMP", "^KS11",
         ]
-        assert (index["symbol"], listing["symbol"]) == ("SPX", "COMP")
+        assert (index["symbol"], listing["symbol"]) == ("^GSPC", "COMP")
 
     @pytest.mark.asyncio
     async def test_intraday_fmp(self):
@@ -677,6 +677,19 @@ class TestGetShortData:
         assert "currency" not in result  # short data carries no price fields
         assert result["data"]["short_interest"][0]["short_interest"] == 133_000_000
         assert result["data"]["short_volume"][0]["short_volume_ratio"] == 31.57
+
+    @pytest.mark.asyncio
+    async def test_short_data_reads_a_bare_alias_as_the_stock(self):
+        # COMP is Compass Inc. here, never the Nasdaq Composite: short data is a stock's.
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        fetch = AsyncMock(return_value={"symbol": "COMP", "source": "ginlix-data", "short_interest": []})
+        with patch.object(mod._ginlix, "ensure", new=AsyncMock(return_value=True)), \
+             patch.object(mod._ginlix, "fetch_short_data", new=fetch):
+            result = await mod.get_short_data("COMP", data_type="short_interest")
+
+        assert fetch.await_args.args[0] == "COMP"
+        assert result["symbol"] == "COMP"
 
     @pytest.mark.asyncio
     async def test_short_interest_only_forwarded(self):
