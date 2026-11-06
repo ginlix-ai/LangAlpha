@@ -732,11 +732,7 @@ class BaselineContextMiddleware(AgentMiddleware):
         boundary or captured at agent build. A read on this path is what made
         the old middlewares re-write the whole history at the write rate.
         """
-        try:
-            _, block = self.frozen_block(getattr(request, "state", None))
-        except Exception:  # noqa: BLE001 - context is never worth failing a turn for
-            logger.warning("[Baseline] render failed; sending the call without it", exc_info=True)
-            return await handler(request)
+        block = self.sent_block(getattr(request, "state", None))
         if not block:
             return await handler(request)
 
@@ -747,6 +743,16 @@ class BaselineContextMiddleware(AgentMiddleware):
             if tagged is not None:
                 system_message = SystemMessage(content=tagged)
         return await handler(request.override(system_message=system_message))
+
+    def sent_block(self, state: Any) -> str:
+        """The block a call is sent for the epoch frozen in ``state``, or ""
+        when it fails to render, so the call goes without it: context is never
+        worth failing a turn for."""
+        try:
+            return self.frozen_block(state)[1]
+        except Exception:  # noqa: BLE001
+            logger.warning("[Baseline] render failed; sending the call without it", exc_info=True)
+            return ""
 
     def frozen_block(self, state: Any) -> tuple[str, str]:
         """The epoch frozen in ``state`` as one block, and a key naming that

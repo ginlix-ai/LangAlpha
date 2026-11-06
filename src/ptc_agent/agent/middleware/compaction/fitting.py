@@ -78,7 +78,8 @@ class Fitted(NamedTuple):
 @dataclass(frozen=True)
 class Fit:
     """How a call's messages are fitted under ``threshold``, counted by
-    ``estimate`` with ``system`` before them.
+    ``estimate`` with the ``ahead`` tokens the call sends before them, its
+    system message and tool schemas (``sent_ahead``).
 
     ``lossless`` is for Claude through its own compaction, whose kept turns
     keep their thinking valid only while they are sent as they were: an
@@ -88,9 +89,13 @@ class Fit:
     """
 
     threshold: int
-    system: list[Any]
+    ahead: int
     estimate: Estimate
     lossless: bool = False
+
+    def _sent(self, messages: list[AnyMessage]) -> int:
+        """What a call sending ``messages`` costs, by estimate."""
+        return self.ahead + self.estimate(messages)
 
     def cut(self, view: list[AnyMessage], cutoff: int, tokens: int, *, refused: bool) -> int:
         """Where a summary of ``view`` ends on Claude: at the latest point at
@@ -109,7 +114,7 @@ class Fit:
         ratio = (
             math.inf
             if refused
-            else max(1.0, tokens / max(self.estimate([*self.system, *view]), 1))
+            else max(1.0, tokens / max(self._sent(view), 1))
         )
         if cutoff <= 0 and self._fits(view, ratio):
             return cutoff
@@ -130,7 +135,7 @@ class Fit:
         safe = checked_thinking_end(messages)
         if not attachment_tokens(messages[:safe], self.estimate.cost):
             return True
-        kept = self.estimate([*self.system, *messages]) - attachment_tokens(
+        kept = self._sent(messages) - attachment_tokens(
             messages[safe:], self.estimate.cost
         )
         return ratio * kept < self.threshold
@@ -198,7 +203,7 @@ class Fit:
         the tokens they took.
 
         The estimate can fall short of the provider's count, which includes
-        the tool schemas and a PDF's real pages. Left over the threshold, the
+        a PDF's real pages. Left over the threshold, the
         next call would summarize again and remove nothing, and so would each
         one after. The measurement corrects the estimate: each attachment
         counts at its estimate times measured over estimated for the view
@@ -211,7 +216,7 @@ class Fit:
         over = input_tokens + output_tokens - self.threshold
         if over < 0:
             return set(), 0
-        estimated = self.estimate([*self.system, *_without(messages, removed)])
+        estimated = self._sent(_without(messages, removed))
         if estimated <= 0:
             return set(), 0
         more: set[str] = set()
@@ -243,7 +248,7 @@ class Fit:
         costs = [(msg_id, tokens) for msg_id, tokens in costs if tokens and msg_id]
         if everything:
             return {msg_id for msg_id, _ in costs}
-        over = self.estimate([*self.system, *messages]) - self.threshold
+        over = self._sent(messages) - self.threshold
         removed: set[str] = set()
         for msg_id, tokens in costs:
             if over < 0:

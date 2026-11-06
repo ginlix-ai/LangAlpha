@@ -1019,6 +1019,8 @@ class PTCAgent:
             user_data_counts=user_data_counts,
             role=role,
         )
+        if main_compaction is not None:
+            main_compaction = main_compaction.with_baseline(context.baseline.sent_block)
 
         # Compiled subagent graphs live on this middleware; the RunWorkflow
         # dispatcher below shares the same instances so direct dispatches get

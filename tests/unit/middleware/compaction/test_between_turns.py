@@ -16,6 +16,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
+from langchain_core.tools import StructuredTool
 
 from ptc_agent.agent.middleware import model_resilience
 from ptc_agent.agent.middleware.compaction import (
@@ -317,10 +318,12 @@ class TestMeasure:
             },
         }
 
-    async def _offloaded(self, state: dict) -> dict:
+    async def _offloaded(self, state: dict, *, tools=(), baseline: str = "") -> dict:
         summarizer = Summarizer(_model(), limit=100_000, counter=_chars)
         compaction = CompactionMiddleware(summarizer, token_threshold=10**9, keep_tokens=2)
-        agent = create_agent(model=_model(), tools=[], middleware=[compaction])
+        if baseline:
+            compaction = compaction.with_baseline(lambda state: baseline)
+        agent = create_agent(model=_model(), tools=list(tools), middleware=[compaction])
         after = {**state, **record_offloads(state, set(), {"r1"})}
         tokens = await ask_between_turns(agent, after, Measure(), thread_id="t-1")
         return {**after, LAST_ANSWER_KEY: offloaded_reading(after, tokens)}
@@ -340,6 +343,21 @@ class TestMeasure:
         assert after["_cached_input_tokens"] == 0
         assert after[LAST_ANSWER_KEY]["offloaded"]["tokens"] < 5_000
         assert next_summary(after, settled_at=None) == told
+
+    @pytest.mark.parametrize("ahead", ["tools", "baseline"])
+    async def test_the_hint_counts_what_the_next_call_sends_ahead_of_the_messages(self, ahead):
+        # The messages alone are under the 2,000 threshold (the ``under``
+        # case above); the next call is sent the tool schemas and the
+        # baseline block as input too, each enough to put it over.
+        lookup = StructuredTool.from_function(lambda query: query, name="lookup", description="d" * 2_500)
+        after = await self._offloaded(
+            self._thread("q1"),
+            tools=[lookup] if ahead == "tools" else (),
+            baseline="b" * 2_500 if ahead == "baseline" else "",
+        )
+
+        assert after[LAST_ANSWER_KEY]["offloaded"]["tokens"] > 2_500
+        assert next_summary(after, settled_at=None) == {"reason": "threshold"}
 
     async def test_a_summary_since_the_offload_drops_what_it_left(self):
         after = await self._offloaded(self._thread("y" * 3_000))
