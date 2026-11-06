@@ -456,21 +456,27 @@ class RunCoordinator:
         """
         if handle.finalized:
             return None
+        outcome = RunOutcome(
+            status=status,
+            metadata=metadata or {},
+            errors=[error_message],
+            execution_time=(datetime.now(timezone.utc) - handle.started_at).total_seconds(),
+        )
+
+        async def _finalize() -> Optional[FinalizeResult]:
+            try:
+                return await self.finalize_run(handle, outcome)
+            except tl_db.RunNotFoundError:
+                # The row is gone (its thread or turn was deleted), so nothing
+                # holds the thread's slot.
+                logger.info(
+                    f"[RunCoordinator] fail_open_run: run={handle.run_id} has "
+                    f"no row; nothing to settle"
+                )
+                return None
+
         try:
-            return await protected_finalize(
-                self.finalize_run(
-                    handle,
-                    RunOutcome(
-                        status=status,
-                        metadata=metadata or {},
-                        errors=[error_message],
-                        execution_time=(
-                            datetime.now(timezone.utc) - handle.started_at
-                        ).total_seconds(),
-                    ),
-                ),
-                label=handle.run_id,
-            )
+            return await protected_finalize(_finalize(), label=handle.run_id)
         except Exception:
             logger.error(
                 f"[RunCoordinator] fail_open_run could not finalize "

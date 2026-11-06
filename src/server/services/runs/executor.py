@@ -37,7 +37,7 @@ from src.config.settings import (
     get_shutdown_timeout,
     get_wait_for_persistence_timeout,
 )
-from src.server.contracts.status import COLLECTED_ENDINGS
+from src.server.contracts.status import COLLECTED_ENDINGS, is_user_stop
 from src.server.services.runs import (
     admission,
     finalization,
@@ -101,6 +101,14 @@ class LocalRunExecution:
     completion_callback: Optional[Callable[["LocalRunExecution"], Coroutine[Any, Any, None]]] = None
 
     persistence_complete: asyncio.Event = field(default_factory=asyncio.Event)
+
+    # Set when this run's finalize raised, leaving the row in_progress as far
+    # as this process knows; it runs the owner's terminal effects the raise
+    # skipped, and the coordinator tail when ``tail`` is set. Cleanup calls it
+    # on the first sweep after the row is settled (settling it itself when no
+    # recovery scanner runs) and drops the entry, instead of holding it
+    # RUNNING (workspace busy, slot taken) until the abandoned timeout.
+    finish_failed_finalize: Optional[Callable[..., Coroutine[Any, Any, None]]] = None
 
     graph: Optional[Any] = None
 
@@ -390,6 +398,7 @@ class LocalRunExecutor:
         to_remove: list[TaskKey] = []
         dead_handles: list = []
         cold_running: list[TaskKey] = []
+        unfinalized: list[tuple[TaskKey, Callable]] = []
 
         async with self.task_lock:
             for key, info in self.executions.items():
@@ -402,6 +411,9 @@ class LocalRunExecutor:
                         )
 
                 elif info.status == LocalRunStatus.RUNNING:
+                    finish = info.finish_failed_finalize
+                    if finish is not None and (info.task is None or info.task.done()):
+                        unfinalized.append((key, finish))
                     if info.active_connections == 0 and info.last_access_at < abandoned_threshold:
                         # Locally cold — candidate only. The cross-worker
                         # consumer signal is consulted outside the lock
@@ -419,6 +431,70 @@ class LocalRunExecutor:
             # different lock objects, defeating admission. The dict is
             # tiny (one entry per thread that has ever seen traffic);
             # leave it.
+
+        # With the writer fence on, the recovery scanner settles a run whose
+        # finalize failed, with its salvage and terminal frame, so the entry
+        # only waits for the row to leave in_progress. Without it recovery
+        # runs only at startup, and this process settles the run itself. An
+        # unreadable row keeps the entry for the next sweep.
+        settled: list[TaskKey] = []
+        if unfinalized:
+            from src.server.database.runs import lifecycle as tl_db
+            from src.server.services import writer_guard as wg
+            from src.server.services.runs.coordinator import RunCoordinator
+
+            async def read_row(run_id: str) -> Optional[Dict[str, Any]]:
+                async with asyncio.timeout(10):
+                    return await tl_db.get_run(run_id)
+
+            for key, finish in unfinalized:
+                thread_id, run_id = key
+                try:
+                    row = await read_row(run_id)
+                    if (
+                        row is not None
+                        and row["status"] == "in_progress"
+                        and not wg.guard_enabled()
+                        and await RunCoordinator.get_instance().reconcile_orphaned_dispatch(
+                            thread_id,
+                            run_id,
+                            error_text="the turn could not be saved",
+                            label="LocalRunExecutor",
+                        )
+                    ):
+                        row = await read_row(run_id)
+                except Exception:
+                    logger.warning(
+                        f"[LocalRunExecutor] Cleanup: row read failed for {key}",
+                        exc_info=True,
+                    )
+                    continue
+                if row is not None and row["status"] == "in_progress":
+                    continue
+                if row is not None:
+                    # The owner's effects run whoever settled the row. Every
+                    # settle by another owner stamps ``recovery`` and runs the
+                    # coordinator tail itself; a row without the stamp is this
+                    # finalize's own commit, whose acknowledgement was lost.
+                    try:
+                        await finish(
+                            row, tail=not (row.get("metadata") or {}).get("recovery")
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"[LocalRunExecutor] Cleanup: terminal effects "
+                            f"failed for {key}",
+                            exc_info=True,
+                        )
+                settled.append(key)
+            async with self.task_lock:
+                for key in settled:
+                    if self.executions.pop(key, None) is not None:
+                        to_remove.append(key)
+                        logger.info(
+                            f"[LocalRunExecutor] Cleanup: removing task {key} "
+                            f"whose failed finalize is settled"
+                        )
 
         # Redis probe outside the lock: a locally-cold run may be watched
         # entirely through a sibling worker. None (Redis unreachable) means
@@ -1143,9 +1219,10 @@ class LocalRunExecutor:
 
         # ---- local terminal mark (after the CAS: a losing finalize adopts
         # the survivor's status instead of relabeling the winner's). A THROWN
-        # finalize (applied=False, no survivor) marks nothing: the row is
-        # still in_progress, so the entry must stay RUNNING, with its
-        # run_handle, for cleanup's dead-handle fail_open path. ----
+        # finalize (applied=False, no survivor) marks no status: the row is
+        # still in_progress, so the entry stays RUNNING, with its run_handle,
+        # until cleanup sees the row settled or the abandoned timeout fails it
+        # open. ----
         if verdict.concluded:
             local_status = verdict.survivor_status or verdict.status
             async with self.task_lock:
@@ -1157,6 +1234,35 @@ class LocalRunExecutor:
                 task_info.completed_at = datetime.now()
                 if error:
                     task_info.error = error
+        else:
+            async def finish(row: Dict[str, Any], *, tail: bool) -> None:
+                if tail:
+                    from src.server.services.runs.coordinator import RunCoordinator
+
+                    RunCoordinator.get_instance().post_finalize_tail(thread_id, row)
+                await self._apply_post_terminal_effects(
+                    thread_id,
+                    run_id,
+                    FinalizeVerdict(
+                        applied=True,
+                        status=row["status"],
+                        stopped_by_user=is_user_stop(row),
+                    ),
+                    kind=kind,
+                    stop=stop,
+                    carried_events=carried_events,
+                    task_info=task_info,
+                    completion_callback=completion_callback,
+                    execution_time=outcome.execution_time,
+                    interrupt_reason=interrupt_reason,
+                    error=error,
+                    metadata=metadata,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+                task_info.persistence_complete.set()
+
+            task_info.finish_failed_finalize = finish
 
         if verdict.applied:
             await self._apply_post_terminal_effects(
