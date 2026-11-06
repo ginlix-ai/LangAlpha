@@ -5,7 +5,7 @@ import { scrollMemory } from '@/lib/scrollMemory';
 import { ANCHORED_TOGGLE_EVENT } from '../../utils/anchoredToggle';
 import { useLatestRef } from '@/hooks/useLatestRef';
 import { TRANSCRIPT_STATUS_SELECTOR } from './TranscriptStatus';
-import { INTENT_EVENTS, type StreamFollowControls, type TurnStart } from './streamFollow';
+import { INTENT_EVENTS, towardStart, type StreamFollowControls, type TurnStart } from './streamFollow';
 import { blockSize, createTranscriptFollow, type PinTarget, type TabPlace, type TranscriptFollow } from './transcriptFollow';
 import { createTurnPin, type TurnPin } from './turnPin';
 
@@ -59,6 +59,32 @@ function rowAtTop(c: HTMLElement): HTMLElement | null {
     el = next;
   }
   return el instanceof HTMLElement ? el : null;
+}
+
+/** Whether a face's unicode-range reaches basic Latin, as the body font's
+ *  does. A subset that does not (a CJK slice Google serves on first use of a
+ *  character) loads mid-stream and rewraps only the text that needed it. */
+function coversLatin(face: FontFace): boolean {
+  return face.unicodeRange.split(',').some((part) => {
+    const range = part.trim().replace(/^u\+/i, '');
+    const [lo, hi = lo] = range.includes('?')
+      ? [range.replace(/\?/g, '0'), range.replace(/\?/g, 'F')]
+      : range.split('-');
+    return parseInt(lo, 16) <= 0x41 && 0x41 <= parseInt(hi, 16);
+  });
+}
+
+/** How many body-font faces have loaded. One more than at the last resize is
+ *  the body font swapping in, which rewraps every line as a width change does.
+ *  It can land long after a thread's entry has settled: text first draws in a
+ *  fallback, and the font comes over the network. Counted on each face, since
+ *  the set as a whole may still be loading others when the swap lays out. */
+function loadedFonts(): number {
+  let n = 0;
+  document.fonts?.forEach((face) => {
+    if (face.status === 'loaded' && coversLatin(face)) n += 1;
+  });
+  return n;
 }
 
 /** Where the reader was, for a thread: on a bubble, or at the end. */
@@ -373,15 +399,29 @@ export function useChatScroll({
     if (saved != null) follow.restore(saved);
 
     // Whether the view sat at the very end when it last moved or the
-    // transcript last resized. A width change is judged by this, not by where
-    // its own layout left the view: that layout has already rewrapped the
-    // whole transcript, and the browser's scroll anchoring has moved the view
-    // with it.
+    // transcript last resized. A rewrap is judged by this, not by where its
+    // own layout left the view: that layout has already rewrapped the whole
+    // transcript, and the browser's scroll anchoring has moved the view with
+    // it. Nor by a scroll at a size the observer has yet to report: a layout
+    // forced ahead of the frame sends anchoring's scroll event before the
+    // observer runs, and judged there the reader at the end had already left
+    // it by the growth below them. The observer judges once it has run. The
+    // size compared is the observed box's, not the scroller's: the turn pin's
+    // floor sits outside that box and moves the scroll height with no
+    // observer callback, and a scroll after it must still be judged.
+    const content = resolveScrollContent(c);
+    const padded = content.parentElement ?? content;
+    const observedHeight = () => padded.getBoundingClientRect().height;
     const endNow = () => isNearBottom({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: c.clientHeight }, AT_BOTTOM_PX);
     let atEnd = endNow();
+    let judgedHeight = observedHeight();
+    const judgeEnd = () => {
+      atEnd = endNow();
+      judgedHeight = observedHeight();
+    };
 
     const handleScroll = () => {
-      atEnd = endNow();
+      if (observedHeight() === judgedHeight) judgeEnd();
       const byReader = follow.scrolled();
       // Record every settle (user scrolls AND pins/follows) so the cross-unmount
       // store always reflects where the transcript actually is: a bottom pin
@@ -428,6 +468,10 @@ export function useChatScroll({
     // arrives.
     const handleUserIntent = (e: Event) => {
       follow.intent(e);
+      // A reader heading up has left the end, though the scroll this makes may
+      // come at a size the observer has yet to judge: a rewrap reported after
+      // it must not carry them back down.
+      if (towardStart(e)) atEnd = false;
       toggleHoldRef.current = null;
       if (entryRestoreRafRef.current != null) {
         cancelAnimationFrame(entryRestoreRafRef.current);
@@ -454,13 +498,12 @@ export function useChatScroll({
     // followed: the observer also fires once on attach and on every shrink,
     // and a follow there would move a reader whose position a tab return has
     // just restored, or whom a fold just left exactly where they were.
-    const content = resolveScrollContent(c);
-    const padded = content.parentElement ?? content;
     const status = content.querySelector<HTMLElement>(TRANSCRIPT_STATUS_SELECTOR);
     let lastHeight = -1;
     let lastPad = -1;
     let lastWidth = -1;
     let lastStatusHeight = -1;
+    let lastFonts = loadedFonts();
     const onResize = (entries: ResizeObserverEntry[]) => {
       // A cached view is display:none and measures 0. Coming back from that
       // is not growth: the composer and the status lines would read as grown
@@ -495,10 +538,12 @@ export function useChatScroll({
       lastPad = pad;
       // The wrapper is as wide as the scroller, so a change in its width is
       // the file panel opening or closing beside the chat, or the window
-      // resizing: every line rewraps at once.
+      // resizing: every line rewraps at once. So does a font swapping in.
       const width = entry.borderBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
-      const relaid = lastWidth >= 0 && Math.abs(width - lastWidth) >= 1;
+      const fonts = loadedFonts();
+      const relaid = (lastWidth >= 0 && Math.abs(width - lastWidth) >= 1) || fonts !== lastFonts;
       lastWidth = width;
+      lastFonts = fonts;
       const atEndBefore = () => isNearBottom(
         { scrollTop: c.scrollTop, scrollHeight: c.scrollHeight - growth, clientHeight: c.clientHeight },
         AT_BOTTOM_PX,
@@ -529,7 +574,7 @@ export function useChatScroll({
         // that growth short of it.
         isNearBottomRef.current = atEndBefore();
       }
-      // A width change is a relayout, not news. A reader at the very end, or
+      // A rewrap is a relayout, not news. A reader at the very end, or
       // one the follow is carrying, stays at the end through every frame of
       // it, by a jump: a glide would trail the rewrap and leave the last lines
       // under the composer. A reader mid-thread is held on the row at the top
@@ -555,7 +600,7 @@ export function useChatScroll({
     const ro = new ResizeObserver((entries) => {
       onResize(entries);
       // A hidden view measures nothing, and keeps what it last showed.
-      if (c.clientHeight > 0) atEnd = endNow();
+      if (c.clientHeight > 0) judgeEnd();
     });
     // The padded wrapper's border box, not the content's: its bottom padding
     // is the floating composer's height, and a taller composer (the tray
