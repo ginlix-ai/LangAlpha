@@ -15,6 +15,7 @@ import {
   type NewsArticleDetail,
 } from '../widgets/framework/snapshotSerializers';
 import { getNewsArticle } from './api';
+import type { NewsSentiment } from './tickerImpact';
 
 interface RawArticle {
   title?: string;
@@ -24,7 +25,7 @@ interface RawArticle {
   published_at?: string;
   keywords?: string[];
   tickers?: string[];
-  sentiments?: Array<{ ticker: string; sentiment?: string; reasoning?: string }>;
+  sentiments?: NewsSentiment[];
   source?: { name?: string } | string;
   [key: string]: unknown;
 }

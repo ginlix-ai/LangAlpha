@@ -6,6 +6,7 @@
  * the per-widget render components compose them inline.
  */
 
+import { tickerImpactRows, type NewsSentiment } from '../../utils/tickerImpact';
 
 /** Wrap a body in a <widget-context> envelope with type and arbitrary key/value attributes. */
 export function wrapWidgetContext(
@@ -113,13 +114,14 @@ export interface NewsArticleDetail {
   source?: string;
   tickers?: string[];
   keywords?: string[];
-  sentiments?: Array<{ ticker: string; sentiment?: string; reasoning?: string }>;
+  sentiments?: NewsSentiment[];
 }
 
 /**
  * Render a fully-fetched news article to markdown. Includes summary,
- * keywords, and per-ticker sentiment so the agent gets the same context
- * the user sees in the news detail modal.
+ * keywords, and per-ticker sentiment (attributed to the vendor's AI, with
+ * unscored tickers marked) so the agent gets the same context the user sees
+ * in the news detail modal.
  */
 export function serializeNewsArticleToMarkdown(article: NewsArticleDetail): string {
   const lines: string[] = [`**${article.title}**`];
@@ -135,11 +137,16 @@ export function serializeNewsArticleToMarkdown(article: NewsArticleDetail): stri
     lines.push('', `**Topics:** ${article.keywords.map((k) => `#${k}`).join(' ')}`);
   }
   if (article.sentiments?.length) {
-    lines.push('', '**Ticker Sentiment**');
-    article.sentiments.forEach((s) => {
-      const tag = s.sentiment ? ` (${s.sentiment})` : '';
-      const why = s.reasoning ? ` — ${s.reasoning}` : '';
-      lines.push(`- ${s.ticker}${tag}${why}`);
+    const { rows, scored } = tickerImpactRows(article.sentiments, article.tickers);
+    lines.push(
+      '',
+      scored
+        ? "**Ticker Sentiment** (inferred by the news vendor's AI model, not necessarily the article's own view)"
+        : '**Ticker Sentiment**',
+    );
+    rows.forEach((row) => {
+      const why = row.note ? ` — ${row.note}` : '';
+      lines.push(`- ${row.ticker} (${row.sentiment ?? 'unscored'})${why}`);
     });
   }
   return lines.join('\n');

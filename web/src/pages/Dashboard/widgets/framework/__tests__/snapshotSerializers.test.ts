@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   serializeInsightDayToMarkdown,
   serializeInsightToMarkdown,
+  serializeNewsArticleToMarkdown,
   serializeNewsItemToMarkdown,
   serializeNewsItemsToMarkdown,
   serializeOhlcvToMarkdown,
@@ -100,6 +101,36 @@ describe('news serializers', () => {
     expect(out).toContain('Reuters · 2026-04-26 · NVDA, AMD');
     expect(out).toContain('URL: https://x.test');
     expect(out).toContain('Earnings up.');
+  });
+
+  it('attributes ticker sentiment to the vendor AI and marks unscored tickers', () => {
+    const out = serializeNewsArticleToMarkdown({
+      title: 'Sector roundup',
+      tickers: ['AAPL', 'MSFT', 'NVDA'],
+      sentiments: [
+        { ticker: 'AAPL', sentiment: 'negative', reasoning: 'Named as a holding.' },
+        { ticker: 'MSFT', sentiment: undefined },
+      ],
+    });
+    expect(out).toContain("**Ticker Sentiment** (inferred by the news vendor's AI model, not necessarily the article's own view)");
+    expect(out).toContain('- AAPL (negative) — Named as a holding.');
+    expect(out).toContain('- MSFT (unscored)');
+    expect(out).toContain('- NVDA (unscored)');
+  });
+
+  it('keeps the heading free of the AI claim when no ticker is scored', () => {
+    const out = serializeNewsArticleToMarkdown({
+      title: 'Unscored roundup',
+      tickers: ['AAPL', 'MSFT'],
+      sentiments: [{ ticker: 'AAPL', sentiment: undefined }],
+    });
+    expect(out).toContain('**Ticker Sentiment**\n- AAPL (unscored)\n- MSFT (unscored)');
+    expect(out).not.toContain('vendor');
+  });
+
+  it('omits the sentiment section when the feed scored nothing', () => {
+    const out = serializeNewsArticleToMarkdown({ title: 'Plain story', tickers: ['AAPL'], sentiments: [] });
+    expect(out).not.toContain('Ticker Sentiment');
   });
 
   it('renders a list as markdown table', () => {
