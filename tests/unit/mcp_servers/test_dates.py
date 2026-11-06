@@ -19,6 +19,7 @@ from mcp_servers._dates import (
     intraday_window,
     rates_days,
     upcoming_days,
+    whole_daily_days,
 )
 from mcp_servers._envelope import error_from_exception
 
@@ -31,10 +32,10 @@ def _refusal(fn, *args) -> str:
 
 def _future_start() -> tuple[str, str]:
     """A start after today, and the refusal it gets."""
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(timezone(timedelta(hours=14))).date()
     return (
         (today + timedelta(days=30)).isoformat(),
-        f"from_date is in the future (today is {today.isoformat()} UTC)",
+        f"from_date is in the future (the latest date anywhere is {today.isoformat()})",
     )
 
 
@@ -254,3 +255,30 @@ class TestIntradayWindow:
     )
     def test_refused(self, lo, hi, detail):
         assert _refusal(intraday_window, lo, hi, "Asia/Hong_Kong") == detail
+
+
+class TestWholeDailyDays:
+    def test_absent_bounds_get_the_fmp_clients_window(self):
+        # FMP's 500 days back from today (UTC), to today where the date begins
+        # first, so no venue's session is cut.
+        utc_today = datetime.now(timezone.utc).date()
+        today = datetime.now(timezone(timedelta(hours=14))).date()
+        assert whole_daily_days(None, "") == (
+            (utc_today - timedelta(days=500)).isoformat(),
+            today.isoformat(),
+        )
+        assert whole_daily_days("2026-01-02", None) == ("2026-01-02", today.isoformat())
+        assert whole_daily_days(None, "2020-01-31") == ("2018-09-18", "2020-01-31")
+
+    def test_refusals_quote_the_names_given(self):
+        names = ("start_date", "end_date")
+        start, _ = _future_start()
+        assert _refusal(whole_daily_days, "x", None, names) == "start_date must be YYYY-MM-DD, not 'x'"
+        assert _refusal(whole_daily_days, None, "x", names) == "end_date must be YYYY-MM-DD, not 'x'"
+        assert _refusal(whole_daily_days, start, None, names).startswith("start_date is in the future")
+
+
+def test_a_lone_end_too_early_for_the_lookback_is_refused_not_raised():
+    for read in (daily_days, whole_daily_days):
+        with pytest.raises(DateBoundError, match="date is out of range"):
+            read(None, "0001-01-01")

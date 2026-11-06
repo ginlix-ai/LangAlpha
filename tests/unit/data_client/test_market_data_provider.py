@@ -195,14 +195,14 @@ class TestMarketDataProvider:
         assert bars == [] and source == "e1" and truncated is False
 
     @pytest.mark.asyncio
-    async def test_all_providers_fail_raises_last_exception(self):
+    async def test_all_providers_fail_raises_the_covering_sources_exception(self):
         src1 = FakeSource("a", fail=True)
         src2 = FakeSource("b", fail=True)
         provider = MarketDataProvider([
             ProviderEntry("a", src1, {"all"}),
             ProviderEntry("b", src2, {"all"}),
         ])
-        with pytest.raises(RuntimeError, match="b daily error"):
+        with pytest.raises(RuntimeError, match="a daily error"):
             await provider.get_daily(symbol="AAPL")
 
     @pytest.mark.asyncio
@@ -624,7 +624,7 @@ class TestMarketDataProvider:
         assert us_src.calls[0][1]["symbols"] == ["AAPL"]
 
     @pytest.mark.asyncio
-    async def test_get_snapshots_all_provider_errors_raise_last_exception(self):
+    async def test_get_snapshots_all_provider_errors_raise_the_covering_sources_exception(self):
         src1 = SnapshotSource("a", fail=True)
         src2 = SnapshotSource("b", fail=True)
         provider = MarketDataProvider(
@@ -634,7 +634,7 @@ class TestMarketDataProvider:
             ]
         )
 
-        with pytest.raises(RuntimeError, match="b snapshots error"):
+        with pytest.raises(RuntimeError, match="a snapshots error"):
             await provider.get_snapshots(["AAPL"])
 
     @pytest.mark.asyncio

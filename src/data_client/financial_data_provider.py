@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .base import FinancialDataSource, MarketIntelSource
+from .fallbacks import Fallback, error_label, record, surfaced
 from .market_data_provider import NameRows, symbol_market
 from .normalize import populated
 
@@ -41,6 +42,7 @@ class MarketRoute:
     screens: Callable[[dict[str, Any]], bool] = _never
     claims_query: Callable[[str], bool] | None = None
     claims_option: Callable[[str], bool] = _never
+    name: str | None = None
 
 
 class _BySymbol:
@@ -115,25 +117,20 @@ class PartialSearch(Exception):
 
 
 class _RoutedSource:
-    """Shared dispatch: pick the per-market source, fall back to default."""
+    """Shared dispatch: pick the per-market source, fall back to default.
 
-    def __init__(self, default: Any | None, by_market: dict[str, MarketRoute]) -> None:
+    The names are what a recorded :class:`Fallback` calls the two sources.
+    """
+
+    def __init__(
+        self,
+        default: Any | None,
+        by_market: dict[str, MarketRoute],
+        default_name: str | None = None,
+    ) -> None:
         self._default = default
         self._by_market = by_market
-
-    @staticmethod
-    async def _try_routed(source: Any, method: str, *args: Any, **kwargs: Any) -> Any:
-        """The routed answer, or ``None`` for an error or an empty result.
-
-        A dict whose every value is empty (``{"results": []}``) is empty too,
-        so the default still gets its turn.
-        """
-        try:
-            result = await getattr(source, method)(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001 (a routed miss must never break the call)
-            _log_fallback(method, exc)
-            return None
-        return result if populated(result) else None
+        self._default_name = default_name
 
     async def _on_default(
         self, method: str, empty: Callable[[], Any], /, *args: Any, **kwargs: Any
@@ -146,12 +143,60 @@ class _RoutedSource:
     async def _dispatch(
         self, method: str, empty: Callable[[], Any], symbol: str, /, *args: Any, **kwargs: Any
     ) -> Any:
-        route = self._by_market.get(symbol_market(str(symbol).upper()))
-        if route is not None:
-            hit = await self._try_routed(route.source, method, symbol, *args, **kwargs)
-            if hit is not None:
-                return hit
-        return await self._on_default(method, empty, symbol, *args, **kwargs)
+        """The market's own answer, else the default's, named as a fallback."""
+        market = symbol_market(str(symbol).upper())
+        route = self._by_market.get(market)
+        if route is None:
+            return await self._on_default(method, empty, symbol, *args, **kwargs)
+        return await self._routed(
+            route, str(symbol), method, empty, symbol, *args, **kwargs
+        )
+
+    async def _routed(
+        self,
+        route: MarketRoute,
+        subject: str,
+        method: str,
+        empty: Callable[[], Any],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """*route*'s answer, else the default's, recorded as a fallback for *subject*.
+
+        A routed source that failed keeps its failure when the default has
+        nothing or fails too, so an outage never reads as an empty answer. A
+        dict whose every value is empty (``{"results": []}``) is empty too.
+        """
+        failure: Exception | None = None
+        try:
+            result = await getattr(route.source, method)(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 (the default may still answer)
+            _log_fallback(method, exc)
+            failure = exc
+        else:
+            if populated(result):
+                return result
+        try:
+            answer = await self._on_default(method, empty, *args, **kwargs)
+        except Exception as exc:
+            if failure is None:
+                raise
+            _log_fallback(method, exc)
+            answer = None
+        served = populated(answer)
+        source = route.name or "market source"
+        if served or failure is not None:
+            record(Fallback(
+                symbol=subject,
+                what=method.removeprefix("get_").replace("_", " "),
+                source=source,
+                error=error_label(failure) if failure is not None else None,
+                served_by=(self._default_name or "default source") if served else None,
+            ))
+        if failure is not None and not served:
+            raise surfaced(source, failure)
+        return answer
 
     async def close(self) -> None:
         await _close_all([
@@ -174,8 +219,9 @@ class RoutedFinancialSource(_RoutedSource):
         default: Any | None,
         by_market: dict[str, MarketRoute],
         name_rows: NameRows | None = None,
+        default_name: str | None = None,
     ) -> None:
-        super().__init__(default, by_market)
+        super().__init__(default, by_market, default_name)
         self._name_rows = name_rows
 
     get_company_profile = _BySymbol(list)
@@ -195,9 +241,7 @@ class RoutedFinancialSource(_RoutedSource):
     async def screen_stocks(self, **filters: Any) -> list[dict[str, Any]]:
         for route in self._by_market.values():
             if route.screens(filters):
-                hit = await self._try_routed(route.source, "screen_stocks", **filters)
-                if hit is not None:
-                    return hit
+                return await self._routed(route, "screen", "screen_stocks", list, **filters)
         return await self._on_default("screen_stocks", list, **filters)
 
     async def search_stocks(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -267,11 +311,9 @@ class RoutedMarketIntelSource(_RoutedSource):
     ) -> list[dict[str, Any]]:
         for route in self._by_market.values():
             if route.claims_option(str(options_ticker).upper()):
-                hit = await self._try_routed(
-                    route.source, "get_options_ohlcv", options_ticker, *args, **kwargs
+                return await self._routed(
+                    route, options_ticker, "get_options_ohlcv", list, options_ticker, *args, **kwargs
                 )
-                if hit is not None:
-                    return hit
         return await self._on_default("get_options_ohlcv", list, options_ticker, *args, **kwargs)
 
 

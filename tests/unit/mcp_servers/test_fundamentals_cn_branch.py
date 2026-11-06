@@ -1,8 +1,11 @@
 """Tests for the fundamentals server's CN branch (ginlix-data, vendor Tushare).
 
 Locks the routing contract: `_tushare_for` gates on the cn market, a populated
-result is served with source="tushare", and any empty/error result falls
-through to the unchanged FMP path.
+result is served with source="tushare", an empty one falls through to the
+unchanged FMP path, and a failed one falls through too but is named: FMP's rows
+carry `fallback_from`, an FMP error keeps its code and names the tushare
+failure, and an empty FMP answer is `upstream_error`. With ginlix-data not
+configured there is no tushare source, so FMP answers as the only one.
 """
 
 from __future__ import annotations
@@ -16,6 +19,20 @@ from .conftest import assert_error, assert_ok_envelope
 _MOD = "plugins.langalpha_market_data.fundamentals_mcp_server"
 
 _INCOME = [{"date": "2025-03-31", "revenue": 500.0, "netIncome": 50.0}]
+
+
+class _Ginlix:
+    def __init__(self, configured: bool):
+        self.configured = configured
+
+    async def ensure(self) -> bool:
+        return self.configured
+
+
+@pytest.fixture(autouse=True)
+def _ginlix_configured():
+    with patch(f"{_MOD}.get_ginlix_mcp_client", return_value=_Ginlix(True)):
+        yield
 _BALANCE = [{"date": "2025-03-31", "totalAssets": 3000.0}]
 _CASH = [{"date": "2025-03-31", "operatingCashFlow": 80.0}]
 
@@ -115,6 +132,7 @@ class TestStatementsCnBranch:
             result = await get_financial_statements("600519.SS", statement_type="all")
 
         assert_ok_envelope(result, source="fmp")
+        assert "fallback_from" not in result
         client.get_income_statement.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -129,6 +147,22 @@ class TestStatementsCnBranch:
             result = await get_financial_statements("600519.SS", statement_type="income")
 
         assert_ok_envelope(result, source="fmp")
+        assert result["fallback_from"] == "tushare"
+
+    @pytest.mark.asyncio
+    async def test_tushare_error_then_empty_fmp_is_an_error(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
+
+        ts = _ts_source()
+        ts.get_income_statements = AsyncMock(side_effect=RuntimeError("boom"))
+        client = _fmp_client()
+        client.get_income_statement = AsyncMock(return_value=[])
+        with patch(f"{_MOD}._tushare_for", return_value=ts), \
+                patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_financial_statements("600519.SS", statement_type="income")
+
+        assert_error(result, "upstream_error", detail_excludes=("boom",))
+        assert result["symbol"] == "600519.SH"
 
     @pytest.mark.asyncio
     async def test_tushare_error_then_fmp_error_is_clean(self):
@@ -141,6 +175,23 @@ class TestStatementsCnBranch:
             result = await get_financial_statements("600519.SS", statement_type="income")
 
         assert_error(result, "client_unavailable", detail_excludes=("boom", "no key"))
+        assert result["detail"].startswith("tushare failed (RuntimeError) and FMP did too")
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_ginlix_data_is_no_tushare_source_not_a_failed_one(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_key_executives
+
+        ts = _ts_source()
+        client = _fmp_client()
+        client.get_key_executives = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_ginlix_mcp_client", return_value=_Ginlix(False)), \
+                patch(f"{_MOD}._tushare_for", return_value=ts), \
+                patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_key_executives("830799.BJ")
+
+        assert_ok_envelope(result, source="fmp", count=0)
+        assert "fallback_from" not in result
+        ts.get_key_executives.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_canonical_cn_key_is_served_from_tushare(self, monkeypatch):
@@ -185,6 +236,7 @@ class TestStatementsCnBranch:
             result = await get_financial_statements("600519.SS", statement_type="income")
 
         assert_ok_envelope(result, source="fmp")
+        assert result["fallback_from"] == "tushare"
         [record] = [r for r in caplog.records if r.name == _MOD]
         assert record.getMessage() == (
             "ginlix-data financial_statements unavailable for 600519.SH: HTTPStatusError 429"
@@ -237,34 +289,39 @@ class TestStatementsCnBranch:
 
 class TestOtherToolsCnBranch:
     @pytest.mark.asyncio
-    async def test_cn_ratios_come_from_fmp_which_prices_the_valuation_fields(self):
-        # The docstring promises marketCap, enterpriseValue and P/E; ginlix-data's
-        # CN period rows carry none of them, so FMP answers first.
+    async def test_cn_ratios_come_from_tushare_first(self):
+        # FMP's CN statements disagree with the filings, so its ratios are not
+        # asked first; nor are its priced fields mixed into the CN rows.
         from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_ratios
 
         ts = _ts_source()
         client = _fmp_client()
         with patch(f"{_MOD}._tushare_for", return_value=ts), \
                 patch(f"{_MOD}.get_fmp_client", return_value=client):
-            result = await get_financial_ratios("600519.SS")
+            result = await get_financial_ratios("600519.SS", period="annual", limit=5)
 
-        assert_ok_envelope(result, symbol="600519.SH", source="fmp")
-        assert result["data"]["key_metrics"][0]["marketCap"] == 4.0
-        ts.get_key_metrics_periods.assert_not_awaited()
+        assert_ok_envelope(result, symbol="600519.SH", source="tushare")
+        assert result["data"] == {
+            "key_metrics": [{"date": "2025-03-31", "returnOnEquity": 0.26}],
+            "ratios": [{"date": "2025-03-31", "netProfitMargin": 0.5}],
+        }
+        ts.get_key_metrics_periods.assert_awaited_once_with("600519.SH", period="annual", limit=5)
+        client.get_key_metrics.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_ratios_fall_back_to_tushare_when_fmp_cannot_answer(self):
+    async def test_failed_cn_ratios_name_the_fmp_fallback(self):
         from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_ratios
 
         ts = _ts_source()
+        ts.get_ratios_periods = AsyncMock(side_effect=RuntimeError("boom"))
+        client = _fmp_client()
         with patch(f"{_MOD}._tushare_for", return_value=ts), \
-                patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
-            result = await get_financial_ratios("600519.SS", period="annual", limit=5)
+                patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_financial_ratios("600519.SS")
 
-        assert_ok_envelope(result, source="tushare")
-        assert result["data"]["key_metrics"][0]["returnOnEquity"] == 0.26
-        assert result["data"]["ratios"][0]["netProfitMargin"] == 0.5
-        ts.get_key_metrics_periods.assert_awaited_once_with("600519.SH", period="annual", limit=5)
+        assert_ok_envelope(result, source="fmp", extra_keys=("fallback_from",))
+        assert result["fallback_from"] == "tushare"
+        assert result["data"]["key_metrics"][0]["marketCap"] == 4.0
 
     @pytest.mark.asyncio
     async def test_growth_derives_income_statement_growth(self):
@@ -322,3 +379,17 @@ class TestOtherToolsCnBranch:
         assert_ok_envelope(float_result, source="tushare", count=1)
         assert_ok_envelope(exec_result, source="tushare", count=1)
         assert exec_result["data"][0]["title"] == "Chairman"
+
+
+class TestFmpRead:
+    @pytest.mark.asyncio
+    async def test_no_fmp_rows_is_an_empty_list_with_the_echo(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
+
+        client = _fmp_client()
+        client.get_income_statement = AsyncMock(return_value=None)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_financial_statements("AAPL", statement_type="income", period="quarter")
+
+        assert_ok_envelope(result, symbol="AAPL", source="fmp", count=0)
+        assert (result["data"], result["statement_type"], result["period"]) == ([], "income", "quarter")

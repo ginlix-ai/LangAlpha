@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
+from ._shared import names_fallbacks
 from .implementations import (
     fetch_company_overview,
     fetch_daily_prices,
@@ -28,6 +29,7 @@ from .implementations import (
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_daily_prices(
     symbol: str,
     config: RunnableConfig,
@@ -52,6 +54,7 @@ async def get_daily_prices(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_company_overview(
     symbol: str,
     config: RunnableConfig,
@@ -68,6 +71,7 @@ async def get_company_overview(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_quote(
     symbols: List[str],
     config: RunnableConfig,
@@ -86,6 +90,7 @@ async def get_quote(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_market_overview(
     config: RunnableConfig,
     region: str = "us",
@@ -111,6 +116,7 @@ async def get_market_overview(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def screen_stocks(
     market_cap_more_than: Optional[float] = None,
     market_cap_lower_than: Optional[float] = None,
@@ -180,6 +186,7 @@ async def screen_stocks(
 
 
 @tool(response_format="content_and_artifact")
+@names_fallbacks
 async def get_options_chain(
     underlying: str,
     config: RunnableConfig,

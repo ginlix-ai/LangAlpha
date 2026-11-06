@@ -6,7 +6,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
-from src.data_client.base import FetchResult
+from src.data_client.base import FetchResult, IntervalNotSupported
 from src.data_client.normalize import build_series
 from market_protocol import InstrumentRef, Series
 from market_protocol import display_spelling, index_families, to_legacy_api
@@ -118,7 +118,7 @@ class GinlixDataSource:
         market = "index" if is_index else "stock"
         api_symbol = index_ticker(symbol) if is_index else symbol
         if interval not in INTERVAL_MAP:
-            raise ValueError(f"Unsupported interval: {interval}")
+            raise IntervalNotSupported(f"Unsupported interval: {interval}")
         timespan, multiplier = INTERVAL_MAP[interval]
         lookback = self._LOOKBACK_BY_INTERVAL.get(interval, 7)
         from_date, to_date = self._default_dates(from_date, to_date, lookback)

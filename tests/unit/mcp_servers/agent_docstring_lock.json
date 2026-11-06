@@ -169,13 +169,14 @@
       "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type}. data is",
+      "    dict: {symbol, count, data, source, data_type, fallback_from?}. data is",
       "    {dividends, splits}, each a list, newest first; count is the total",
       "    across both. dividends fields: date, recordDate, paymentDate,",
       "    declarationDate, adjDividend (split-adjusted), dividend (as paid), yield",
       "    (percent, 0.34 = 0.34%), frequency. splits fields: date, numerator,",
       "    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\".",
-      "    On error: {error: <code>, detail, symbol}."
+      "    fallback_from: source that failed before FMP answered. On error:",
+      "    {error: <code>, detail, symbol}."
     ],
     "params": [
       "symbol"
@@ -194,15 +195,16 @@
       "    limit: Number of periods (default 10).",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type, period}. data is",
-      "    {key_metrics, ratios}, each a list of period records, newest first; count",
-      "    is the total. key_metrics fields: date, marketCap, enterpriseValue,",
-      "    evToEBITDA, freeCashFlowYield. ratios fields: date, netProfitMargin,",
-      "    returnOnEquity, currentRatio, debtToEquityRatio, priceToEarningsRatio.",
-      "    Field names are FMP-native camelCase; date is \"YYYY-MM-DD\". A quarter",
-      "    row's flow-based fields (P/S, EV/EBITDA, yields, returns) cover that",
-      "    quarter alone, but its P/E fields annualize the quarter's EPS (x4). On",
-      "    error: {error: <code>, detail, symbol}."
+      "    dict: {symbol, count, data, source, data_type, period, fallback_from?}.",
+      "    data is {key_metrics, ratios}: period records, newest first.",
+      "    key_metrics fields: marketCap, enterpriseValue, evToEBITDA,",
+      "    freeCashFlowYield. ratios fields: netProfitMargin, returnOnEquity,",
+      "    currentRatio, debtToEquityRatio, priceToEarningsRatio. source \"tushare\"",
+      "    rows lack both lists' price-based fields; market cap and EV are in",
+      "    get_historical_valuation. date is \"YYYY-MM-DD\". A quarter row's",
+      "    flow-based fields cover that quarter alone; its P/E fields annualize",
+      "    the quarter's EPS (x4). fallback_from: source that failed before FMP",
+      "    answered. On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -225,12 +227,13 @@
       "    limit: Number of periods (default 10).",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type, statement_type, period}.",
-      "    One statement_type → a list of period records; \"all\" → {income_statement,",
-      "    balance_sheet, cash_flow} lists with count the total. Common camelCase",
-      "    fields: date, revenue, netIncome, eps, totalAssets, operatingCashFlow.",
-      "    date is \"YYYY-MM-DD\"; records are newest-first as returned by FMP. On",
-      "    error: {error: <code>, detail, symbol}."
+      "    dict: {symbol, count, data, source, data_type, statement_type, period,",
+      "    fallback_from?}. One statement_type → a list of period records; \"all\" →",
+      "    {income_statement, balance_sheet, cash_flow} lists with count the total.",
+      "    Common camelCase fields: date, revenue, netIncome, eps, totalAssets,",
+      "    operatingCashFlow. date is \"YYYY-MM-DD\"; records are newest-first.",
+      "    fallback_from: source that failed before FMP answered. On error:",
+      "    {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -252,14 +255,15 @@
       "    limit: Number of periods (default 10).",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type, period}. data is",
-      "    {financial_growth, income_statement_growth}, each a list, newest first;",
-      "    count is the total. financial_growth fields: date, revenueGrowth,",
+      "    dict: {symbol, count, data, source, data_type, period, fallback_from?}.",
+      "    data is {financial_growth, income_statement_growth}, each a list, newest",
+      "    first; count is the total. financial_growth fields: date, revenueGrowth,",
       "    netIncomeGrowth, epsgrowth; income_statement_growth fields: date,",
       "    growthRevenue, growthNetIncome, growthEPS. Growth values are decimal",
       "    fractions (0.1 = 10%); a quarter row grows on the prior quarter, not the",
       "    year-ago one. Field names are FMP-native camelCase; date is",
-      "    \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}."
+      "    \"YYYY-MM-DD\". fallback_from: source that failed before FMP answered.",
+      "    On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -337,11 +341,12 @@
       "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type}. data is a list of",
-      "    executive records; count is the record total. Fields: name, title, pay,",
-      "    currencyPay, gender, yearBorn, titleSince. Field names are FMP-native",
-      "    camelCase; pay is an integer in currencyPay units; order is as returned",
-      "    by FMP (not time-ordered). On error: {error: <code>, detail, symbol}."
+      "    dict: {symbol, count, data, source, data_type, fallback_from?}. data is",
+      "    a list of executive records; count is the record total. Fields: name,",
+      "    title, pay, currencyPay, gender, yearBorn, titleSince. Field names are",
+      "    FMP-native camelCase; pay is an integer in currencyPay units; not",
+      "    time-ordered. fallback_from: source that failed before FMP answered.",
+      "    On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "symbol"
@@ -358,14 +363,14 @@
       "    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".",
       "",
       "Returns:",
-      "    dict: {symbol, count, data, source, data_type}. data is a list of",
-      "    records; count is the record total. Fields: symbol, date, freeFloat",
+      "    dict: {symbol, count, data, source, data_type, fallback_from?}. data is",
+      "    a list of records; count is the record total. Fields: symbol, date, freeFloat",
       "    (percent, 99.8 = 99.8%), floatShares, outstandingShares; an ADR counts",
       "    ADS units, not ordinary shares. date is \"YYYY-MM-DD\": the day FMP",
       "    refreshed the record, not the as-of date of the counts, which can be",
       "    months older; an A-share row's date is the trading day of its counts.",
-      "    Field names are FMP-native camelCase. On error: {error: <code>, detail,",
-      "    symbol}."
+      "    Field names are FMP-native camelCase. fallback_from: source that failed",
+      "    before FMP answered. On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "symbol"
@@ -530,6 +535,8 @@
   "mcp:options:get_options_chain": {
     "doc_lines": [
       "List an underlying's options contracts; use to find contract tickers.",
+      "",
+      "US-listed underlyings only; a listing on a known non-US venue is refused.",
       "",
       "Args:",
       "    underlying_ticker: Underlying stock ticker, e.g. \"AAPL\".",

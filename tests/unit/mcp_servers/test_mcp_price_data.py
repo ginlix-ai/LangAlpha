@@ -7,7 +7,7 @@ errors, and GBX→major-unit price conversion. Upstream fetches are mocked.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -471,7 +471,7 @@ class TestDateBounds:
     @pytest.mark.parametrize(
         "start, end, detail",
         [
-            ("not-a-date", None, "from_date must be YYYY-MM-DD, not 'not-a-date'"),
+            ("not-a-date", None, "start_date must be YYYY-MM-DD, not 'not-a-date'"),
             ("2026-09-30", "2026-09-01", "start is after end"),
         ],
     )
@@ -486,6 +486,45 @@ class TestDateBounds:
         assert result["detail"] == detail
         assert result["interval"] == "1day"
         client.get_stock_price.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("interval", ["1day", "5min"])
+    async def test_refusals_quote_the_callers_parameter(self, interval):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
+            stock = await mod.get_stock_data(
+                "AAPL", interval=interval, start_date="2026-10-01", end_date="11/03/2026"
+            )
+            asset = await mod.get_asset_data(
+                "AAPL", asset_type="stock", interval=interval,
+                from_date="2026-10-01", to_date="11/03/2026",
+            )
+
+        assert_error(stock, "invalid_argument")
+        assert_error(asset, "invalid_argument")
+        assert stock["detail"].startswith("end_date must be YYYY-MM-DD")
+        assert asset["detail"].startswith("to_date must be YYYY-MM-DD")
+
+    @pytest.mark.asyncio
+    async def test_undated_daily_read_asks_the_us_tier_for_fmps_window(self):
+        # An undated read reaches the source a dated one does, over the span
+        # FMP's own undated answer covers.
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        utc_today = datetime.now(timezone.utc).date()
+        today = datetime.now(timezone(timedelta(hours=14))).date()
+        fetch = AsyncMock(return_value=FetchResult(
+            [{"date": "2026-10-16", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
+        ))
+        with patch.object(mod._ginlix, "fetch_stock_data", new=fetch):
+            result = await mod.get_stock_data("AAPL")
+
+        assert_ok_envelope(result, source="ginlix-data", count=1)
+        fetch.assert_awaited_once_with(
+            "AAPL", "1day", (utc_today - timedelta(days=500)).isoformat(), today.isoformat()
+        )
 
     @pytest.mark.asyncio
     async def test_intraday_time_of_day_honoured(self):
@@ -596,6 +635,18 @@ class TestDateBounds:
 # ---------------------------------------------------------------------------
 
 class TestGetShortData:
+    @pytest.mark.asyncio
+    async def test_a_listing_outside_the_us_is_refused(self):
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        fetch = AsyncMock()
+        with patch.object(mod._ginlix, "ensure", new=AsyncMock(return_value=True)), \
+             patch.object(mod._ginlix, "fetch_short_data", new=fetch):
+            result = await mod.get_short_data("0700.HK")
+
+        assert_error(result, "invalid_argument", symbol="0700.HK")
+        fetch.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_no_ginlix_client(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod

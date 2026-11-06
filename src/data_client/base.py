@@ -12,6 +12,14 @@ from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 
 
+class IntervalNotSupported(ValueError):
+    """The source has no bars of the asked width, whatever the symbol.
+
+    A provider chain skips such a source instead of reading its refusal as the
+    covering source failing.
+    """
+
+
 @dataclass
 class FetchResult:
     """Return type for data sources that can signal truncation.
