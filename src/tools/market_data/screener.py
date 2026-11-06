@@ -9,7 +9,7 @@ from market_protocol import AssetClass, display_decimals_for
 from market_protocol.symbology import MINOR_UNIT_PLACES
 
 from ._shared import _mark_failure
-from .currency import DisplaySpec, fmt_count, fmt_money, fmt_price
+from .currency import DisplaySpec, fmt_count, fmt_money, fmt_price, fmt_quote
 from src.data_client import get_financial_data_provider
 from src.data_client.normalize import screen_row_units
 
@@ -192,8 +192,8 @@ async def fetch_stock_screener(
         bars = [
             ("Mkt Cap >", market_cap_more_than, lambda v: fmt_money(v, money_unit), True),
             ("Mkt Cap <", market_cap_lower_than, lambda v: fmt_money(v, money_unit), True),
-            ("Price >", price_more_than, lambda v: fmt_price(v, quote_unit), True),
-            ("Price <", price_lower_than, lambda v: fmt_price(v, quote_unit), True),
+            ("Price >", price_more_than, lambda v: fmt_quote(v, quote_unit), True),
+            ("Price <", price_lower_than, lambda v: fmt_quote(v, quote_unit), True),
             ("Vol >", volume_more_than, lambda v: fmt_count(v, places=0), False),
             ("Vol <", volume_lower_than, lambda v: fmt_count(v, places=0), False),
             ("Beta >", beta_more_than, lambda v: f"{v:.2f}", False),
@@ -225,7 +225,7 @@ async def fetch_stock_screener(
             table.append({
                 "Symbol": stock.get("symbol") or "N/A",
                 "Name": name if len(name) <= 25 else name[:22] + "...",
-                "Price": fmt_price(stock.get("price"), price_spec),
+                "Price": fmt_quote(stock.get("price"), price_spec),
                 "Mkt Cap": fmt_money(stock.get("marketCap"), price_spec),
                 "Sector": stock.get("sector") or "N/A",
                 "Beta": f"{beta:.2f}" if beta is not None else "N/A",

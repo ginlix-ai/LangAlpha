@@ -12,8 +12,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping, Optional
 
+from market_protocol import AssetClass as ProtocolClass
+from market_protocol import display_decimals_for
+
 from src.server.services.brokerage_orders.models import BrokerOrder
-from src.tools.market_data.currency import fmt_price
+from src.tools.market_data.currency import DisplaySpec, fmt_price, fmt_quote
 from src.tools.market_data.display import resolve_ref
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,32 @@ def plain(value: Any) -> str:
     except Exception:
         return str(value)
     return f"{d:f}".rstrip("0").rstrip(".") if "." in f"{d:f}" else f"{d:f}"
+
+
+# Option and futures prices tick in their contract's increments, cents at the
+# finest; anything else, an order the broker files as "other" included, is
+# quoted at the places it trades in.
+_CENT_CLASSES = {"option", "option_combo", "future"}
+
+
+def order_price(order: Optional[BrokerOrder], value: Any) -> str:
+    """*value*, a price on *order*, in the order's currency: a share under a
+    unit at four places (``$0.1234``), a coin at its own (``$0.00000464``),
+    an option premium in cents."""
+    if value is None:
+        return "N/A"
+    currency = (order.currency if order else None) or "USD"
+    asset_class = order.asset_class if order else "equity"
+    if asset_class in _CENT_CLASSES:
+        return fmt_price(float(value), currency, group=True)
+    # Two places at least, since a limit can sit on a sub-yen tick.
+    spec = DisplaySpec(currency, 2)
+    if asset_class == "crypto":
+        try:
+            spec = DisplaySpec(currency, display_decimals_for(currency, ProtocolClass.CRYPTO), trim=True)
+        except Exception:
+            pass
+    return fmt_quote(float(value), spec, group=True)
 
 
 def _instrument_text(ref: Any) -> str:
@@ -77,12 +106,11 @@ def _summary(attempt: Mapping[str, Any], order: BrokerOrder, *, with_mode: bool)
     )
     if order.order_type:
         words = order.order_type.replace("_", " ")
-        money = lambda v: fmt_price(float(v), order.currency or "USD", group=True)  # noqa: E731
         level = order.limit_price if order.limit_price is not None else order.stop_price
         if level is not None:
-            words += f" {money(level)}"
+            words += f" {order_price(order, level)}"
         if order.limit_price is not None and order.stop_price is not None:
-            words += f" (stop {money(order.stop_price)})"
+            words += f" (stop {order_price(order, order.stop_price)})"
         parts.append(words)
     vendor = attempt.get("vendor") or order.vendor
     mode = attempt.get("mode") or order.mode

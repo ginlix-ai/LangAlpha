@@ -125,7 +125,9 @@ async def fetch_options_chain(
             None,
         )
         if underlying_quote:
-            header += f" | Underlying: {fmt_price(underlying_quote['price'], cur)}"
+            # A share is quoted at its own places; an index level keeps two.
+            index = ref is not None and ref.asset_class is AssetClass.INDEX
+            header += f" | Underlying: {(fmt_price if index else fmt_quote)(underlying_quote['price'], cur)}"
             if underlying_quote.get("timeframe"):
                 header += f" ({underlying_quote['timeframe'].lower()})"
         lines.append(header)

@@ -52,6 +52,31 @@ def test_an_equity_reads_on_its_exchange_clock():
     assert order_view(attempt(equity_limit())).timezone == "America/New_York"
 
 
+def test_a_sub_dollar_share_keeps_the_places_it_quotes_in_and_a_premium_its_cents():
+    order = equity_limit(order_type="stop_limit", limit_price=0.1859, stop_price=0.1795)
+    assert order_view(attempt(order)).summary == (
+        "buy 100 NVDA, stop limit $0.1859 (stop $0.1795), at moomoo"
+    )
+    option = equity_limit(
+        asset_class="option",
+        instrument={"kind": "option", "underlying": "NVDA", "expiration": "2026-11-20", "strike": 210, "right": "C"},
+        limit_price=0.05,
+    )
+    assert ", limit $0.05, " in order_view(attempt(option)).summary
+
+
+@pytest.mark.parametrize(
+    "asset_class, instrument, price, shown",
+    [
+        ("crypto", {"kind": "crypto", "pair": "SHIB-USD"}, 0.0000046, "$0.0000046"),
+        ("other", {"kind": "opaque", "raw_code": "STK:SUBD"}, 0.1859, "$0.1859"),
+    ],
+)
+def test_a_coin_or_an_unnamed_class_keeps_the_places_it_trades_in(asset_class, instrument, price, shown):
+    order = equity_limit(asset_class=asset_class, instrument=instrument, limit_price=price)
+    assert f", limit {shown}, " in order_view(attempt(order)).summary
+
+
 def test_a_market_order_has_no_price_in_its_summary():
     order = equity_limit(order_type="market", limit_price=None, side="sell", qty=50)
     assert order_view(attempt(order)).summary == "sell 50 NVDA, market, at moomoo"
