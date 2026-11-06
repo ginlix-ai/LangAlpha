@@ -29,12 +29,13 @@ from src.server.services.market_targets.listing import (
 from src.server.services.market_targets.window import target_window
 from src.server.services.price_monitor import (
     Listing,
-    _positive,
+    fire_price,
     listing_snapshots,
+    reference_close,
     target_hit,
+    traded_since_close,
     watched_listing,
 )
-from src.tools.market_data.quote_format import current_price
 from src.tools.wakeups.schedule import PCT_KINDS, PriceAsk, Refused
 from src.tools.wakeups.wording import (
     BUILD_TOOL_RESULTS,
@@ -110,10 +111,14 @@ async def snapshots(
         return {}
 
 
-def last_and_close(snap: Mapping[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+def last_and_base(
+    listing: Listing, snap: Mapping[str, Any], now: datetime
+) -> Tuple[Optional[float], Optional[float]]:
+    """``(last, base)``: the price and the previous close the monitor reads
+    off the row, so a level shown is the level it fires at."""
     if not snap:
         return None, None
-    return _positive(current_price(snap)), _positive(snap.get("previous_close"))
+    return fire_price(snap), reference_close(listing, snap, now)
 
 
 def trigger_level(
@@ -151,9 +156,16 @@ def _base_is_live(plan: PricePlan, now: datetime) -> bool:
 
 
 def already_met(
-    plan: PricePlan, last: Optional[float], prev_close: Optional[float], now: datetime
+    plan: PricePlan,
+    last: Optional[float],
+    prev_close: Optional[float],
+    now: datetime,
+    *,
+    closed_base: bool = False,
 ) -> Optional[str]:
-    """Why a wakeup would fire on the first price the monitor sees, or None."""
+    """Why a wakeup would fire on the first price the monitor sees, or None.
+    *closed_base* says *prev_close* is the close a closed venue's next
+    session measures from, so a move already made counts while it is closed."""
     if last is None:
         return None
     if plan.kind in ("above", "below"):
@@ -165,7 +177,9 @@ def already_met(
             value=plan.value,
             last=_num(last),
         )
-    if plan.pct_from != "previous_close" or not prev_close or not _base_is_live(plan, now):
+    if plan.pct_from != "previous_close" or not prev_close:
+        return None
+    if not closed_base and not _base_is_live(plan, now):
         return None
     if not target_hit(plan.kind, plan.value, prev_close, last):
         return None
@@ -179,8 +193,10 @@ def price_spec(
     plan: PricePlan, label: Optional[str], snap: Mapping[str, Any], now: datetime
 ) -> Tuple[WakeupSpec, Optional[float], Optional[float]]:
     """``(spec, last, level)`` for a planned price entry. Raises `Refused`."""
-    last, prev_close = last_and_close(snap)
-    reason = already_met(plan, last, prev_close, now)
+    listing = (plan.listing.key, plan.listing.market)
+    last, prev_close = last_and_base(listing, snap, now)
+    closed_base = traded_since_close(listing, snap, now)
+    reason = already_met(plan, last, prev_close, now, closed_base=closed_base)
     if reason is not None:
         raise Refused(PRICE_REFUSALS["reason"].format(desc=plan.desc, reason=reason))
     if plan.pct_from == "now" and last is None:
@@ -211,7 +227,7 @@ def row_listing(row: Mapping[str, Any]) -> Optional[Listing]:
 
 
 async def readback(
-    rows: List[Mapping[str, Any]], user_id: Any
+    rows: List[Mapping[str, Any]], user_id: Any, now: datetime
 ) -> Dict[str, Tuple[Optional[float], Optional[float]]]:
     """``{wakeup_id: (last, level)}`` for the % rows among ``rows``, which
     read back as a distance from the latest price. A level row needs no
@@ -222,7 +238,9 @@ async def readback(
     out: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
     for row in pct_rows:
         listing = row_listing(row)
-        last, prev_close = last_and_close(snaps.get(listing) or {}) if listing else (None, None)
+        last, prev_close = (
+            last_and_base(listing, snaps.get(listing) or {}, now) if listing else (None, None)
+        )
         level = trigger_level(
             str(row.get("price_kind")),
             float(row.get("price_value") or 0),

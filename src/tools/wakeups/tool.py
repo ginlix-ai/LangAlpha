@@ -378,7 +378,7 @@ async def _pending_block(
     if not rows and not armed:
         return TOOL_RESULTS["none"]
     prices = await price_wakeups.readback(
-        [r for r in rows if r["wakeup_id"] not in new], user_id
+        [r for r in rows if r["wakeup_id"] not in new], user_id, now
     )
     lines: List[str] = []
     for row in rows:

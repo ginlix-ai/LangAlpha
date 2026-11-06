@@ -58,7 +58,7 @@
               }
             ],
             "default": null,
-            "description": "Only with pct_up or pct_down: measure from \"now\", the price when you set it, instead of the previous close.",
+            "description": "Only with pct_up or pct_down: measure from \"now\", the price when you set it, instead of the previous close. For US stocks, the previous close during after-hours trading is still the one before that day's session, and once trading ends it is that day's close.",
             "title": "Pct From"
           },
           "pct_up": {
@@ -153,7 +153,7 @@
               }
             ],
             "default": null,
-            "description": "Fire when a price level or % move hits. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go."
+            "description": "Fire when a price level or % move hits; US stocks can also hit on pre-market and after-hours trades. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go."
           },
           "timezone": {
             "anyOf": [
@@ -390,7 +390,7 @@
                                 }
                               ],
                               "default": null,
-                              "description": "Only with pct_up or pct_down: measure from \"now\", the price when you set it, instead of the previous close.",
+                              "description": "Only with pct_up or pct_down: measure from \"now\", the price when you set it, instead of the previous close. For US stocks, the previous close during after-hours trading is still the one before that day's session, and once trading ends it is that day's close.",
                               "title": "Pct From"
                             },
                             "pct_up": {
@@ -423,7 +423,7 @@
                         }
                       ],
                       "default": null,
-                      "description": "Fire when a price level or % move hits. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go."
+                      "description": "Fire when a price level or % move hits; US stocks can also hit on pre-market and after-hours trades. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go."
                     },
                     "timezone": {
                       "anyOf": [

@@ -649,6 +649,33 @@ class TestPollSnapshots:
         ) is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "row, base",
+        [
+            # Not rolled yet at 04:05: the base is the close the row still holds.
+            ({"regular_close": 353.1, "previous_close": 395.75}, 353.1),
+            # Rolled: its previous close is already that close.
+            ({"regular_close": None, "previous_close": 353.1}, 353.1),
+        ],
+    )
+    async def test_a_pre_market_reference_is_the_close_the_row_holds(self, row, base):
+        """Rows roll listing by listing, some after the pre-market opens, and
+        a row that has not rolled still names the session before as its
+        previous close."""
+        evaluator = ConditionEvaluator()
+        provider = AsyncMock(get_snapshots=AsyncMock(return_value=[
+            {"symbol": "TSM", "open": None, **row},
+        ]))
+        pre_market = datetime(2026, 11, 6, 4, 5, tzinfo=ZoneInfo("America/New_York"))
+        with (
+            patch("src.data_client.get_market_data_provider", AsyncMock(return_value=provider)),
+            patch("src.server.services.price_monitor._now_utc", return_value=pre_market),
+        ):
+            await evaluator.refresh_references({("TSM", MarketType.STOCK)})
+
+        assert evaluator._reference_prices[("TSM", MarketType.STOCK)]["previous_close"] == base
+
+    @pytest.mark.asyncio
     async def test_a_failed_stock_fetch_keeps_the_index_references(self):
         """The stock and index calls are independent, so one failing must not
         cost the other its reference prices."""
