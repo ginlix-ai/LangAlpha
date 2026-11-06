@@ -11,7 +11,7 @@ Design goals:
 Tools:
 - get_options_chain: list options contracts with filters
 - get_options_prices: historical OHLCV bars for an options contract
-- get_options_snapshot: real-time bid/ask, last trade, session data
+- get_options_snapshot: session prices, greeks, IV and open interest
 
 Currency and timezone are derived from the UNDERLYING instrument via
 market_protocol (US options: USD / America/New_York).
@@ -29,9 +29,13 @@ try:
 except ModuleNotFoundError:  # imported as a package module (tests)
     from mcp_servers._bootstrap import MCPServer
 
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone as _tz
 from typing import Any, Optional
 
+from data_client.ginlix_data.option_snapshots import snapshot_row
+from market_protocol.calendars import get_calendar, prebuild_calendars
 
 from data_client.ginlix_data import (
     close_ginlix_mcp_client,
@@ -83,9 +87,13 @@ _OPTION_INTERVALS = {
 
 @asynccontextmanager
 async def _lifespan(app):
+    # Snapshot rows are dated on the XNYS calendar, whose first build takes
+    # seconds; build it off the event loop before a snapshot needs it.
+    warm = asyncio.create_task(asyncio.to_thread(prebuild_calendars, ("XNYS",)))
     try:
         yield
     finally:
+        warm.cancel()
         await close_ginlix_mcp_client()
 
 
@@ -353,8 +361,11 @@ async def get_options_snapshot(
     if "error" in result:
         return _ginlix_error(result, tickers=options_tickers)
 
+    # A call during the startup warm-up must not build the calendar on the loop.
+    await asyncio.to_thread(get_calendar, "XNYS")
+    now = datetime.now(_tz.utc)
     return make_response(
-        result.get("data", []),
+        [snapshot_row(row, now) for row in result.get("data", [])],
         source="ginlix-data",
         currency=currency,
         timezone=timezone,

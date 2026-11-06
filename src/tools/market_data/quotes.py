@@ -1,7 +1,7 @@
 # pyright: ignore
 """Market intel snapshots: options chains, market movers, and live quotes."""
 
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, Callable, List, Tuple
 from datetime import date, datetime, timedelta, timezone
 import logging
 
@@ -24,6 +24,7 @@ from src.data_client import fallbacks, get_financial_data_provider
 from src.data_client.base import MoverRow
 from src.data_client.freshness import is_live
 from src.data_client.ginlix_data.directory import fill_quote_names
+from src.data_client.ginlix_data.option_snapshots import feed_lag, snapshot_row
 from src.data_client.ginlix_data.pagination import follow_cursor
 from src.data_client.market_data_provider import snapshot_key
 from src.observability import stamp_tool_provider
@@ -93,6 +94,7 @@ async def fetch_options_chain(
         results, truncated = await follow_cursor(_fetch_page, filters, limit=limit)
 
         # Batch-fetch snapshots for pricing data
+        retrieved_at = datetime.now(timezone.utc)
         snapshot_map: Dict[str, Dict] = {}
         market_status = None
         if results:
@@ -101,21 +103,30 @@ async def fetch_options_chain(
                 snapshots = await provider.intel.get_options_snapshot(
                     tickers, user_id=user_id,
                 )
+                retrieved_at = datetime.now(timezone.utc)
                 for snap in snapshots:
                     snap_ticker = snap.get("ticker")
                     if snap_ticker:
-                        snapshot_map[snap_ticker] = snap
+                        snapshot_map[snap_ticker] = snapshot_row(snap, retrieved_at)
                         if market_status is None:
                             market_status = snap.get("market_status")
             except Exception:
                 logger.debug("Failed to fetch options snapshots", exc_info=True)
 
-        retrieved_at = datetime.now(timezone.utc)
         timestamp = retrieved_at.strftime("%Y-%m-%d %H:%M UTC")
         lines: List[str] = []
         header = f"## Options Chain: {underlying} ({len(results)} contracts)"
         if market_status:
             header += f" | Market: {market_status}"
+        underlying_quote = next(
+            (u for s in snapshot_map.values()
+             if (u := s.get("underlying_asset") or {}).get("price") is not None),
+            None,
+        )
+        if underlying_quote:
+            header += f" | Underlying: {fmt_price(underlying_quote['price'], cur)}"
+            if underlying_quote.get("timeframe"):
+                header += f" ({underlying_quote['timeframe'].lower()})"
         lines.append(header)
         lines.append(f"**Retrieved:** {timestamp}")
         if contract_type:
@@ -124,6 +135,17 @@ async def fetch_options_chain(
             lines.append(
                 f"**More contracts match than the {len(results)} shown.** "
                 "Raise limit or narrow the expiry or strike filters to see the rest."
+            )
+        timeframes = [(s.get("session") or {}).get("timeframe") for s in snapshot_map.values()]
+        if any(timeframes):
+            minutes = int(max(map(feed_lag, timeframes)).total_seconds() // 60)
+            delay = f"{minutes} minutes delayed" if minutes else "real-time"
+            after = f", about {minutes} minutes after the trade" if minutes else ""
+            lines.append(
+                f"**Prices:** {delay}. Updated is when the feed showed the last print "
+                f"(New York time){after}; a stale contract has not traded this session, "
+                "so its Close, Chg% and Volume are from the Updated day. Without an "
+                "Updated, the day is unknown."
             )
         lines.append("")
 
@@ -136,27 +158,16 @@ async def fetch_options_chain(
         if not contracts and not truncated:
             lines.append("No contracts found matching the given criteria.")
         elif contracts:
-            lines.append("| Ticker | Type | Strike | Expiry | Close | Chg% | Volume |")
-            lines.append("|--------|------|--------|--------|-------|------|--------|")
+            lines.append(
+                "| Ticker | Type | Strike | Expiry | Close | Chg% | Volume | Updated"
+                " | IV | Delta | OI |"
+            )
+            lines.append(
+                "|--------|------|--------|--------|-------|------|--------|---------"
+                "|----|-------|----|"
+            )
             for c in contracts:
-                ticker = c.get("ticker", "N/A")
-                ctype = c.get("contract_type", "N/A")
-                strike = c.get("strike_price")
-                strike_str = fmt_price(strike, cur)
-                expiry = c.get("expiration_date", "N/A")
-
-                session = c["session"] or {}
-                close_val = session.get("close")
-                close_str = fmt_price(close_val, cur) if close_val is not None else "—"
-                chg_pct = session.get("change_percent")
-                chg_str = f"{chg_pct:+.2f}%" if chg_pct is not None else "—"
-                vol = session.get("volume")
-                vol_str = f"{int(vol):,}" if vol is not None else "—"
-
-                lines.append(
-                    f"| {ticker} | {ctype} | {strike_str} | {expiry}"
-                    f" | {close_str} | {chg_str} | {vol_str} |"
-                )
+                lines.append(_chain_row(c, snapshot_map.get(c.get("ticker"), {}), cur))
 
         content = "\n".join(lines)
         artifact = {
@@ -185,6 +196,32 @@ async def fetch_options_chain(
             "error": str(e),
         }
 
+
+
+def _cell(value: Any, fmt: Callable[[Any], str]) -> str:
+    return fmt(value) if value is not None else "—"
+
+
+def _chain_row(contract: Dict[str, Any], snap: Dict[str, Any], cur: Any) -> str:
+    """One options-chain table row: the contract's terms, then its snapshot."""
+    session = snap.get("session") or {}
+    updated = _cell(session.get("last_updated"), lambda t: t[:16])
+    if session.get("stale"):
+        updated += " (stale)"
+    cells = [
+        contract.get("ticker", "N/A"),
+        contract.get("contract_type", "N/A"),
+        fmt_price(contract.get("strike_price"), cur),
+        contract.get("expiration_date", "N/A"),
+        _cell(session.get("close"), lambda v: fmt_price(v, cur)),
+        _cell(session.get("change_percent"), lambda v: f"{v:+.2f}%"),
+        _cell(session.get("volume"), lambda v: f"{int(v):,}"),
+        updated,
+        _cell(snap.get("implied_volatility"), lambda v: f"{v:.1%}"),
+        _cell((snap.get("greeks") or {}).get("delta"), lambda v: f"{v:.2f}"),
+        _cell(snap.get("open_interest"), lambda v: f"{int(v):,}"),
+    ]
+    return "| " + " | ".join(cells) + " |"
 
 
 def _movers_error(message: str) -> Tuple[str, Dict[str, Any]]:

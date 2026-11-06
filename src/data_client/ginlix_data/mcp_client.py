@@ -471,7 +471,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
         self,
         options_tickers: str | list[str],
     ) -> dict:
-        """Fetch real-time snapshots for options contracts.
+        """Fetch options contract snapshots from ginlix-data.
 
         Accepts a single ticker string or a list of tickers.
         Returns a dict with ``data`` list of snapshot results, or an error dict.
