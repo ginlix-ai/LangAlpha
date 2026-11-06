@@ -540,7 +540,7 @@ def _drop_contention(computer_id: str) -> None:
 
 
 @asynccontextmanager
-async def workspace_folders_lock(computer_id: str, *, wait_s: float = _LOCK_WAIT_S):
+async def workspace_folders_lock(computer_id: str, *, wait_s: float | None = None):
     """One settle or folder removal per computer, across workers.
 
     Held on a connection of its own, closed on exit with every folder hold
@@ -557,6 +557,8 @@ async def workspace_folders_lock(computer_id: str, *, wait_s: float = _LOCK_WAIT
     """
     key = f"{_LOCK_NS}:{computer_id}"
     loop = asyncio.get_running_loop()
+    if wait_s is None:
+        wait_s = _LOCK_WAIT_S
     deadline = loop.time() + wait_s
     conn = None
     claimed = False
