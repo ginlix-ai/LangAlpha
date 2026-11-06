@@ -116,6 +116,24 @@ class TestSafeCrawlerCrawl:
         assert wrapper._infra_breaker.state == CircuitState.CLOSED
 
     @pytest.mark.asyncio
+    async def test_a_cancel_of_the_caller_reaches_the_caller(self):
+        wrapper = _make_wrapper(circuit_failure_threshold=1)
+        mock_crawler = _inject_mock_crawler(wrapper)
+
+        async def never_loads(url):
+            await asyncio.Event().wait()
+
+        mock_crawler.crawl_with_metadata = never_loads
+        crawl = asyncio.create_task(wrapper.crawl("https://example.com"))
+        await asyncio.sleep(0.05)
+        crawl.cancel()
+        await asyncio.wait({crawl}, timeout=5)
+
+        assert crawl.cancelled()
+        assert wrapper._queue_count == 0
+        assert wrapper._infra_breaker.state == CircuitState.CLOSED
+
+    @pytest.mark.asyncio
     async def test_dns_error_classifies_correctly(self):
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)

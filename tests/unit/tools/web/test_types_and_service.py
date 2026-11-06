@@ -1,5 +1,7 @@
 """Tests for src/tools/web/types.py and fetch service plumbing."""
 
+import asyncio
+
 import pytest
 from langsmith.run_helpers import tracing_context
 from langsmith.run_trees import RunTree
@@ -241,3 +243,70 @@ class TestWebFetchOutcome:
         assert run.metadata["tool_outcome"] == outcome
         assert run.metadata["error_class"] == error_class
         assert run.metadata.get("tool_provider") == provider
+
+
+class TestWebFetchDeadline:
+    """web_fetch answers within WEB_FETCH_DEADLINE whatever its awaits do."""
+
+    @pytest.mark.asyncio
+    async def test_provider_that_never_answers_returns_timeout(self, monkeypatch):
+        import src.tools.web.fetch as fetch_module
+
+        class NeverAnswers:
+            provider_names = ["stub"]
+
+            async def fetch(self, req):
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(fetch_module, "get_fetch_service", lambda: NeverAnswers())
+        monkeypatch.setattr(fetch_module, "WEB_FETCH_DEADLINE", 0.2)
+
+        content, artifact = await asyncio.wait_for(
+            fetch_module.web_fetch(
+                "https://site.example/page", "anything", model="unused", include_sitemap=False
+            ),
+            timeout=5,
+        )
+
+        assert content.startswith("[timeout] Failed to fetch https://site.example/page")
+        assert artifact["error"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_extraction_that_times_out_says_so(self, monkeypatch):
+        import src.tools.web.fetch as fetch_module
+
+        class AnswersWithMarkdown:
+            provider_names = ["stub"]
+
+            async def fetch(self, req):
+                return FetchResponse(
+                    results=[
+                        FetchResult(url=req.urls[0], markdown="# Page\n\n" + "text " * 40)
+                    ],
+                    provider="stub",
+                )
+
+        async def slow_extraction(*args, **kwargs):
+            raise TimeoutError
+
+        monkeypatch.setattr(
+            fetch_module, "get_fetch_service", lambda: AnswersWithMarkdown()
+        )
+        monkeypatch.setattr(fetch_module, "_extract_with_llm", slow_extraction)
+        marked = []
+        monkeypatch.setattr(
+            fetch_module,
+            "mark_web_outcome",
+            lambda error, provider=None, *, provider_side=False: marked.append(provider_side),
+        )
+
+        content, artifact = await fetch_module.web_fetch(
+            "https://site.example/page", "anything", model="unused", include_sitemap=False
+        )
+
+        assert content.startswith("[timeout] Failed to fetch https://site.example/page")
+        assert "extraction" in content
+        assert artifact["error"] == "timeout"
+        # The page answered, so the failure is the tool's, not the target's.
+        assert marked == [True]
+

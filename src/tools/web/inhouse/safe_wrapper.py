@@ -385,7 +385,12 @@ class SafeCrawlerWrapper:
                     error_type="timeout",
                 )
             except asyncio.CancelledError:
-                # Don't count cancellation as failure.
+                # A stop or deadline aimed at the caller must reach it; only
+                # the crawl's own cancellation becomes a result. Neither counts
+                # as a failure.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
                 return CrawlResult(
                     success=False,
                     error="Crawl was cancelled",

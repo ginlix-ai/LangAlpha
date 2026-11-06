@@ -43,6 +43,7 @@ _DEFAULT_CHAIN = ["inhouse"]
 
 # Extraction model configuration
 EXTRACTION_TIMEOUT = 60.0  # seconds per model attempt
+WEB_FETCH_DEADLINE = 300.0  # seconds for the whole call: fetch, sitemap and extraction
 
 # Per-request overrides for extraction model (set by chat handler from user preferences)
 fetch_model_override: ContextVar[str | None] = ContextVar("fetch_model_override", default=None)
@@ -294,6 +295,26 @@ async def _extract_with_llm(
     return formatted["text"]
 
 
+def _fetch_failed(
+    artifact: dict,
+    error: WebError,
+    provider: str | None = None,
+    *,
+    provider_side: bool = False,
+) -> str:
+    artifact["error"] = error.type.value
+    mark_web_outcome(error, provider, provider_side=provider_side)
+    return f"[{error.type.value}] Failed to fetch {artifact['url']}: {error.message}"
+
+
+def _timeout_result(
+    artifact: dict, message: str, *, provider_side: bool = False
+) -> tuple[str, dict]:
+    logger.warning(f"WebFetch timed out on {artifact['url']}: {message}")
+    error = WebError(type=WebErrorType.TIMEOUT, message=message)
+    return _fetch_failed(artifact, error, provider_side=provider_side), artifact
+
+
 async def web_fetch(
     url: str,
     prompt: str,
@@ -324,6 +345,25 @@ async def web_fetch(
         model = _get_extraction_model()
 
     artifact: dict = {"type": "web_fetch", "url": url}
+    try:
+        async with asyncio.timeout(WEB_FETCH_DEADLINE):
+            return await _fetch_and_extract(
+                url, prompt, model, use_cache, include_sitemap, artifact
+            )
+    except TimeoutError:
+        return _timeout_result(artifact, f"No answer within {WEB_FETCH_DEADLINE:.0f}s")
+
+
+async def _fetch_and_extract(
+    url: str,
+    prompt: str,
+    model: str,
+    use_cache: bool,
+    include_sitemap: bool,
+    artifact: dict,
+) -> tuple[str, dict]:
+    """web_fetch's work, under its deadline. Every exception ends in a result
+    here, so a TimeoutError that reaches web_fetch is the deadline's own."""
     try:
         service = get_fetch_service()
         request = FetchRequest(
@@ -366,18 +406,14 @@ async def web_fetch(
             artifact["source"] = result.source
 
             if result.error is not None:
-                kind = result.error.type.value
-                artifact["error"] = kind
                 # A failed URL's error came from the last provider to try it;
                 # the response names a provider only when one succeeded.
-                mark_web_outcome(
+                failed = _fetch_failed(
+                    artifact,
                     result.error,
                     response.attempts[-1].provider if response.attempts else None,
                 )
-                return _with_sitemap_suggestions(
-                    f"[{kind}] Failed to fetch {url}: {result.error.message}",
-                    await _sitemap(),
-                ), artifact
+                return _with_sitemap_suggestions(failed, await _sitemap()), artifact
 
             artifact["title"] = result.title
 
@@ -401,8 +437,19 @@ async def web_fetch(
                     artifact,
                 )
 
-            # Extract with LLM (with sitemap context)
-            extracted = await _extract_with_llm(markdown, prompt, model, await _sitemap())
+            # Extract with LLM (with sitemap context). Under the deadline its
+            # expiry arrives as a cancel, so a TimeoutError here is the
+            # extraction's own.
+            try:
+                extracted = await _extract_with_llm(markdown, prompt, model, await _sitemap())
+            except TimeoutError:
+                # The page answered, so the timeout is our extraction's.
+                return _timeout_result(
+                    artifact,
+                    f"The page loaded, but extraction got no answer within "
+                    f"{EXTRACTION_TIMEOUT:.0f}s",
+                    provider_side=True,
+                )
             return extracted, artifact
         finally:
             if sitemap_task is not None and not sitemap_task.done():
