@@ -11,9 +11,10 @@ real sandbox provider (Daytona in CI, memory locally).  Verifies that:
   call within 60 seconds is a no-op.
 - **`has_ready_session` accuracy**: reflects actual session/sandbox state.
 
-Provider selection:
-  SANDBOX_TEST_PROVIDER=daytona  (CI — requires DAYTONA_API_KEY)
-  SANDBOX_TEST_PROVIDER=memory   (local default — no external deps)
+Provider selection (SANDBOX_TEST_PROVIDERS, else SANDBOX_TEST_PROVIDER):
+  daytona  (sandbox-integration.yml, requires DAYTONA_API_KEY; marked
+            ``provider_daytona``, which routes the file to that job)
+  memory   (default, and the per-PR integration job, no external deps)
 """
 
 from __future__ import annotations
@@ -37,18 +38,31 @@ from ptc_agent.config.core import (
 )
 from ptc_agent.core.session import SessionManager
 from tests.computer_manager_patch import cm_patch
-
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+from tests.integration.conftest import requested_sandbox_providers
 
 # ---------------------------------------------------------------------------
 # Provider detection
 # ---------------------------------------------------------------------------
 
-_PROVIDER = os.getenv("SANDBOX_TEST_PROVIDER", "memory").strip().lower()
+_PROVIDER = "daytona" if "daytona" in requested_sandbox_providers() else "memory"
 
 
 def _is_daytona() -> bool:
     return _PROVIDER == "daytona"
+
+
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+def _reaches_daytona(test):
+    """Mark a test that creates a session on Daytona when Daytona is in use.
+
+    The mark routes it to the Daytona job and makes its pass count as proof
+    that Daytona worked (tests/integration/conftest.py). The tests here that
+    never create a session, the mocked and database-only ones, stay unmarked:
+    a pass of theirs proves nothing about Daytona.
+    """
+    return pytest.mark.provider_daytona(test) if _is_daytona() else test
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +223,7 @@ class TestColdWarmSessionPath:
 
         assert result is False
 
+    @_reaches_daytona
     async def test_cold_path_creates_initialized_session(
         self, workspace_manager, running_workspace, metrics_collector
     ):
@@ -229,6 +244,7 @@ class TestColdWarmSessionPath:
         assert session.sandbox is not None
         assert session.sandbox.is_ready()
 
+    @_reaches_daytona
     async def test_warm_path_has_ready_session_returns_true(
         self, workspace_manager, running_workspace, metrics_collector
     ):
@@ -246,6 +262,7 @@ class TestColdWarmSessionPath:
 
         assert result is True
 
+    @_reaches_daytona
     async def test_warm_path_returns_same_session_object(
         self, workspace_manager, running_workspace, metrics_collector
     ):
@@ -267,6 +284,7 @@ class TestColdWarmSessionPath:
 
         assert session1 is session2
 
+    @_reaches_daytona
     async def test_warm_path_makes_only_the_narrow_identity_query(
         self, workspace_manager, running_workspace, metrics_collector
     ):
@@ -322,6 +340,7 @@ class TestColdWarmSessionPath:
             )
             assert session is not None
 
+    @_reaches_daytona
     async def test_sync_cooldown_respected(
         self, workspace_manager, running_workspace, metrics_collector
     ):
@@ -378,6 +397,7 @@ class TestColdWarmSessionPath:
             workspace_id=ws_id, dir_name=binding.dir_name
         )
 
+    @_reaches_daytona
     async def test_cooldown_expired_triggers_sync(
         self, workspace_manager, running_workspace, metrics_collector
     ):
@@ -407,6 +427,7 @@ class TestColdWarmSessionPath:
             # re-sync just records the new sync timestamp, no user_data sync.
             assert session is not None
 
+    @_reaches_daytona
     async def test_multiple_workspaces_independent_sessions(
         self, workspace_manager, seed_user, patched_get_db_connection,
         metrics_collector,
@@ -485,6 +506,7 @@ class TestHasReadySession:
         workspace_manager._machine("ws-test").session = mock_session
         assert workspace_manager.has_ready_session("ws-test") is False
 
+    @_reaches_daytona
     async def test_full_ready_state(self, workspace_manager, running_workspace):
         """Returns True only when all conditions pass (real sandbox)."""
         ws_id = str(running_workspace["workspace_id"])

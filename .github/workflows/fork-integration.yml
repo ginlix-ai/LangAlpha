@@ -1,6 +1,9 @@
 name: Fork Integration Tests
 
-# Integration tests for FORK PRs only. Same-repo PRs and pushes run in test.yml.
+# The Daytona tier for FORK PRs only: the tests sandbox-integration.yml's
+# sandbox-daytona job runs for same-repo PRs, which a fork's `pull_request`
+# run cannot, having no secrets. The Postgres/Redis tier needs no secrets, so
+# fork PRs get it from test.yml's backend-integration like any other PR.
 #
 # SECURITY: pull_request_target runs in the base-repo context (so DAYTONA_API_KEY
 # is available) and this job checks out and executes the fork's UNTRUSTED code.
@@ -15,9 +18,47 @@ name: Fork Integration Tests
 #      buys sandbox churn (no data, snapshots, registries, or volumes);
 #   3. GITHUB_TOKEN is pinned to contents:read with persist-credentials:false,
 #      so fork code cannot escalate to repo write via the checkout token.
+#
+# Paths: the list in sandbox-integration.yml, with this file for its own.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
+    paths:
+      - src/ptc_agent/core/**
+      - src/ptc_agent/config/**
+      - src/ptc_agent/agent/backends/**
+      - src/ptc_agent/agent/filesystem_routes.py
+      - src/ptc_agent/agent/middleware/skills/**
+      - src/server/app/computers*.py
+      - src/server/app/workspace_files/**
+      - src/server/app/workspace_sandbox.py
+      - src/server/database/computer.py
+      - src/server/database/computer_names.py
+      - src/server/database/computer_root.py
+      - src/server/database/computer_spec_change.py
+      - src/server/database/workspace*.py
+      - src/server/handlers/chat/attachments.py
+      - src/server/services/computer_manager/**
+      - src/server/services/persistence/**
+      - src/server/services/platform_secret_rollout.py
+      - src/server/services/warm_files.py
+      - src/server/services/workspace_file_containment.py
+      - src/server/services/workspace_files.py
+      - src/server/services/workspace_layout.py
+      - src/server/services/workspace_manager.py
+      - src/server/utils/multimodal_context.py
+      - src/server/utils/secret_redactor.py
+      - Dockerfile.sandbox
+      - docker-compose.yml
+      - libs/market-protocol/**
+      - pyproject.toml
+      - uv.lock
+      - tests/conftest.py
+      - tests/computer_manager_patch.py
+      - tests/integration/conftest.py
+      - tests/integration/sandbox/**
+      - tests/integration/test_message_hot_path.py
+      - .github/workflows/fork-integration.yml
 
 concurrency:
   group: fork-integration-${{ github.event.pull_request.number }}
@@ -29,10 +70,11 @@ env:
   UV_PYTHON: "3.13"
 
 jobs:
-  backend-integration-fork:
-    # Forks only — same-repo PRs are handled by test.yml's ungated job.
+  sandbox-daytona-fork:
+    # Forks only: same-repo PRs run sandbox-integration.yml's sandbox-daytona.
     if: github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # Required reviewers on this environment are the maintainer-approval gate.
     environment: fork-ci
     # Least privilege: this job only needs to read the repo to check out + test.
@@ -70,7 +112,7 @@ jobs:
       DB_USER: postgres
       DB_PASSWORD: postgres
       REDIS_URL: redis://localhost:6379
-      SANDBOX_TEST_PROVIDER: daytona
+      SANDBOX_TEST_PROVIDERS: daytona
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
       DAYTONA_BASE_URL: ${{ secrets.DAYTONA_BASE_URL }}
     steps:
@@ -91,12 +133,11 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --group dev --extra test
-      - run: sudo apt-get install -y ripgrep
-      # Skip docker-provider sandbox tests; they need GHCR auth + buildx
-      # and are owned by the sandbox-integration workflow's docker tier.
-      - run: uv run pytest tests/integration/ -v --tb=short -m "integration and not yahoo" --ignore=tests/integration/sandbox/providers --junitxml=test-results/backend-integration.xml --sandbox-metrics --sandbox-metrics-file test-results/session_metrics.json
+      # The selection sandbox-integration.yml's sandbox-daytona runs. The fork
+      # gets no FMP key, so the Daytona platform-secret test skips.
+      - run: uv run pytest tests/integration/ -v --tb=short -m "integration and provider_daytona and not slow" --junitxml=test-results/sandbox-daytona-fork.xml --sandbox-metrics --sandbox-metrics-file test-results/sandbox_metrics_daytona.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: backend-integration-fork-results
+          name: sandbox-daytona-fork-results
           path: test-results/

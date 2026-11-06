@@ -56,6 +56,7 @@ from ptc_agent.config.core import (
     SecurityConfig,
 )
 from ptc_agent.core.sandbox.runtime import SandboxProvider, SandboxRuntime
+from tests.integration.conftest import requested_sandbox_providers
 
 from .memory_provider import MemoryProvider, MemoryRuntime
 
@@ -68,16 +69,7 @@ collect_ignore = [os.path.join(os.path.dirname(__file__), "metrics")]
 # ---------------------------------------------------------------------------
 
 
-def _requested_providers() -> list[str]:
-    """Parse SANDBOX_TEST_PROVIDERS (comma-separated) or fall back to SANDBOX_TEST_PROVIDER."""
-    plural = os.getenv("SANDBOX_TEST_PROVIDERS")
-    if plural:
-        return [p.strip().lower() for p in plural.split(",") if p.strip()]
-    singular = os.getenv("SANDBOX_TEST_PROVIDER", "memory")
-    return [singular.strip().lower()]
-
-
-REQUESTED_PROVIDERS = _requested_providers()
+REQUESTED_PROVIDERS = requested_sandbox_providers()
 
 
 def _can_run_provider(name: str) -> bool:
