@@ -18,11 +18,14 @@ from langchain_core.language_models.fake_chat_models import (
     GenericFakeChatModel,
 )
 from langchain_core.load import dumpd
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware, configure_trace_policy
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool
 from langchain_core.tracers.langchain import LangChainTracer
 from langsmith.run_helpers import tracing_context
+from langgraph.graph import START, MessagesState, StateGraph
 from langsmith.run_trees import RunTree
 
 from src.observability import (
@@ -32,13 +35,19 @@ from src.observability import (
     stamp_resource_tier,
 )
 from src.observability.langsmith_run import build_sha
-from src.observability.langsmith_tracer import NonRetainingTracer, with_run_tracer
+from src.observability.langsmith_tracer import (
+    NonRetainingTracer,
+    configure_trace_payloads,
+    with_run_tracer,
+)
 from src.utils.tracking.core import calculate_cost_from_per_call_records
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 
 class _RecordingClient:
     """Stands in for the LangSmith client: records what would be sent."""
+
+    otel_exporter = None
 
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
@@ -357,7 +366,21 @@ def test_cost_never_lands_on_the_callers_message(price_cards, monkeypatch):
     assert message.usage_metadata == _usage()
 
 
-def test_llm_and_tool_runs_close_without_resending_their_inputs():
+@pytest.fixture
+def full_payloads(monkeypatch):
+    """Set ``langsmith_full_payloads`` for tracers built after the call."""
+
+    def _set(on: bool) -> None:
+        monkeypatch.setattr(
+            "src.observability.langsmith_tracer._full_payloads", lambda: on
+        )
+
+    _set(False)
+    yield _set
+    configure_trace_policy(None)
+
+
+def test_llm_and_tool_runs_close_without_resending_their_inputs(full_payloads):
     client = _RecordingClient()
     model = FakeListChatModel(responses=["ok"])
 
@@ -378,8 +401,107 @@ def test_llm_and_tool_runs_close_without_resending_their_inputs():
     for run_type in ("llm", "tool"):
         assert created[run_type]["inputs"]
         assert updated[run_type]["inputs"] is None
-    # A chain can receive inputs only at its end, so it keeps the stock patch.
-    assert updated["chain"]["inputs"] == {"input": "hi"}
+    # A chain whose inputs are as posted does not send them again either.
+    assert created["chain"]["inputs"] == {"input": "hi"}
+    assert updated["chain"]["inputs"] is None
+
+
+def test_full_payloads_resend_a_chains_inputs_as_before(full_payloads):
+    full_payloads(True)
+    client = _RecordingClient()
+
+    RunnableLambda(lambda x: x, name="outer").invoke(
+        "hi", {"callbacks": [NonRetainingTracer(client=client)]}
+    )
+
+    assert client.updated[0]["inputs"] == {"input": "hi"}
+
+
+def test_a_chain_given_its_inputs_at_its_end_still_sends_them(full_payloads):
+    client = _RecordingClient()
+    upper = RunnableLambda(lambda x: x.upper(), name="upper")
+
+    list(upper.transform(iter(["a", "b"]), {"callbacks": [NonRetainingTracer(client=client)]}))
+
+    assert client.created[0]["inputs"] == {"input": ""}
+    assert client.updated[0]["inputs"] == {"input": "ab"}
+
+
+def _one_node_graph():
+    graph = StateGraph(MessagesState)
+    graph.add_node("model", lambda state: {"messages": [AIMessage("ok", id="a1")]})
+    graph.add_edge(START, "model")
+    return graph.compile()
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_a_graph_node_records_its_message_count_and_the_root_its_messages(
+    full_payloads, full
+):
+    """A node's input is its graph's whole state; the root's is the turn's new
+    message, which LangSmith's thread view reads."""
+    full_payloads(full)
+    client = _RecordingClient()
+    sent = {"messages": [HumanMessage("hi", id="h1")]}
+
+    _one_node_graph().invoke(sent, {"callbacks": [NonRetainingTracer(client=client)]})
+
+    created = {c["name"]: c for c in client.created}
+    updated = {u["name"]: u for u in client.updated}
+    assert created["LangGraph"]["inputs"] == sent
+    assert updated["model"]["outputs"]["messages"][0].content == "ok"
+    if full:
+        assert created["model"]["inputs"] == sent
+        assert updated["model"]["inputs"] == sent
+    else:
+        assert created["model"]["inputs"] == {"messages": "<1 messages, last id h1>"}
+        assert updated["model"]["inputs"] is None
+        assert updated["LangGraph"]["inputs"] is None
+
+
+class _Probe(AgentMiddleware):
+    def before_model(self, state, runtime):
+        # A message the state already holds: the stream has seen it, so it
+        # must not stream again. Before langgraph 1.2.19 the policy emptied
+        # the stream's view of the hook's input too, and it did.
+        return {"messages": [state["messages"][-1]]}
+
+    def wrap_model_call(self, request, handler):
+        return handler(request)
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_middleware_hooks_trace_no_inputs_and_streaming_is_unchanged(
+    full_payloads, full
+):
+    """The policy empties what tracers see, never what the graph streams."""
+    full_payloads(full)
+    configure_trace_payloads()
+    client = _RecordingClient()
+    agent = create_agent(
+        GenericFakeChatModel(messages=iter([AIMessage("hello there")])),
+        tools=[],
+        middleware=[_Probe()],
+    )
+
+    streamed = [
+        message
+        for message, _ in agent.stream(
+            {"messages": [HumanMessage("hi", id="h1")]},
+            {"callbacks": [NonRetainingTracer(client=client)]},
+            stream_mode="messages",
+        )
+    ]
+
+    assert [type(m).__name__ for m in streamed] == ["AIMessageChunk"] * 3
+    assert "".join(m.content for m in streamed) == "hello there"
+    created = {c["name"]: c for c in client.created}
+    updated = {u["name"]: u for u in client.updated}
+    for hook in ("_Probe.before_model", "_Probe.wrap_model_call"):
+        assert bool(created[hook]["inputs"]) is full
+        assert hook in updated
+    assert updated["_Probe.wrap_model_call"]["outputs"]
+    assert created["GenericFakeChatModel"]["inputs"]
 
 
 def _tool_update(func: Any, *, as_tool_call: bool = False) -> dict[str, Any]:

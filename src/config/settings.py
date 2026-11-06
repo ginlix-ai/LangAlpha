@@ -115,6 +115,10 @@ def is_langsmith_tracing_enabled() -> bool:
     return get_infrastructure_config().langsmith_tracing
 
 
+def is_langsmith_full_payloads_enabled() -> bool:
+    return get_infrastructure_config().langsmith_full_payloads
+
+
 # =============================================================================
 # SSE Event Logging
 # =============================================================================

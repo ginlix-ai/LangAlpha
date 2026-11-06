@@ -32,7 +32,7 @@ MESSAGES = "messages"
 # blob seeds the ``true`` marker), and the writes in between replay in
 # ``writes_sort_key`` order.
 SUPPORTED_RELEASES = {
-    "langgraph": "1.2.16",
+    "langgraph": "1.2.19",
     "langgraph-checkpoint": "4.3.0",
     "langgraph-checkpoint-postgres": "3.2.0",
 }
