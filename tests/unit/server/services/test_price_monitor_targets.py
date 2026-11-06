@@ -17,6 +17,7 @@ from src.server.services.price_monitor import ConditionEvaluator, PriceMonitorSe
 _DB = "src.server.database.market_targets"
 _NUDGE = "src.server.services.price_monitor._nudge_hook_drainer"
 _AAPL = ("AAPL", MarketType.STOCK)
+_SPX = ("SPX", MarketType.INDEX)
 
 
 def _target(
@@ -370,8 +371,9 @@ class TestTargetFire:
     @pytest.mark.asyncio
     async def test_the_poll_fires_a_target_only_on_a_row_printed_since_it_was_set(self):
         """A closed US venue's row still carries the last session's move, and
-        a row with no print time cannot show it is newer; automations on the
-        symbol are evaluated on both as before."""
+        a row with no print time cannot show it is newer. Automations on the
+        symbol skip the last session's print, which a row that has rolled
+        still holds, and are evaluated on the row with no print time."""
         svc = PriceMonitorService()
         target = _target(kind="pct_up", value=2.0, pct_from="previous_close")
         await _load(svc, [target])
@@ -399,10 +401,213 @@ class TestTargetFire:
                 if stamp is not rows[-1]:
                     fire.assert_not_awaited()
 
-        assert automation_eval.await_count == 3
+        assert automation_eval.await_count == 2
         fire.assert_awaited_once_with(
             [target["target_id"]], 110.0, printed_at=_ms_datetime(created_ms + 1000)
         )
+
+    @pytest.mark.asyncio
+    async def test_the_poll_fires_on_a_pre_market_trade(self):
+        """Before the open a US row has no session price, and after the close
+        its session price is the close; the poll reads the trades the feed
+        fires on, so a hit does not depend on the feed being up."""
+        svc = PriceMonitorService()
+        target = _target(kind="below", value=330.0)
+        await _load(svc, [target])
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(return_value=[{
+            "symbol": "AAPL", "price": None, "last_trade_price": 329.5,
+            "previous_close": 344.17, "as_of": _now_ms(),
+        }])
+        with (
+            patch("src.data_client.get_market_data_provider", AsyncMock(return_value=provider)),
+            patch(f"{_DB}.fire_targets", AsyncMock(return_value=[{**target}])) as fire,
+            patch(_NUDGE),
+        ):
+            await svc._poll_snapshots(poll_stock=True, poll_index=False)
+        fire.assert_awaited_once_with([target["target_id"]], 329.5, printed_at=ANY)
+
+    @pytest.mark.asyncio
+    async def test_a_row_with_an_unreadable_print_time_is_skipped_alone(self):
+        """A hit on it would be claimed before its print time is read, which
+        fails; the rest of the pass still fires."""
+        svc = PriceMonitorService()
+        aapl = _target(kind="below", value=330.0)
+        msft = _target(symbol="MSFT", kind="below", value=400.0)
+        await _load(svc, [aapl, msft])
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(return_value=[
+            {"symbol": "AAPL", "price": None, "last_trade_price": 329.5,
+             "previous_close": 344.17, "as_of": 1e30},
+            {"symbol": "MSFT", "price": None, "last_trade_price": 390.0,
+             "previous_close": 410.0, "as_of": _now_ms()},
+        ])
+        with (
+            patch("src.data_client.get_market_data_provider", AsyncMock(return_value=provider)),
+            patch(f"{_DB}.fire_targets", AsyncMock(return_value=[{**msft}])) as fire,
+            patch(_NUDGE),
+        ):
+            await svc._poll_snapshots(poll_stock=True, poll_index=False)
+        fire.assert_awaited_once_with([msft["target_id"]], 390.0, printed_at=ANY)
+        assert [t["target_id"] for t in svc._symbol_targets[_AAPL]] == [aapl["target_id"]]
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_quote_is_not_a_new_trade(self):
+        """At the pre-market open a quote can move before a thin name trades;
+        the row's price is still the last session's."""
+        svc = PriceMonitorService()
+        target = _target(kind="below", value=330.0)
+        await _load(svc, [target])
+        yesterday = _now_ms() - 86_400_000
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(return_value=[{
+            "symbol": "AAPL", "price": None, "last_trade_price": 329.5,
+            "last_trade_at": yesterday, "previous_close": 344.17, "as_of": _now_ms(),
+        }])
+        with (
+            patch("src.data_client.get_market_data_provider", AsyncMock(return_value=provider)),
+            patch(f"{_DB}.fire_targets", AsyncMock(return_value=[])) as fire,
+            patch(_NUDGE),
+        ):
+            await svc._poll_snapshots(poll_stock=True, poll_index=False)
+        fire.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_closed_venue_row_is_not_measured_from_the_next_session_base(self):
+        """After the close the base is the session's own close, which the
+        next session measures from; the row's after-hours print was measured
+        from the session's base when it printed."""
+        svc = PriceMonitorService()
+        target = _target(kind="pct_down", value=2.0, pct_from="previous_close",
+                         created_at=datetime(2026, 11, 5, 20, 0, tzinfo=timezone.utc))
+        await _load(svc, [target])
+        print_ms = int(datetime(2026, 11, 6, 0, 59, tzinfo=timezone.utc).timestamp() * 1000)
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(return_value=[{
+            "symbol": "AAPL", "price": 100.0, "regular_close": 100.0, "last_trade_price": 97.5,
+            "last_trade_at": print_ms, "previous_close": 95.0, "as_of": print_ms,
+        }])
+        night = datetime(2026, 11, 6, 2, 0, tzinfo=timezone.utc)  # 21:00 ET
+        with (
+            patch("src.data_client.get_market_data_provider", AsyncMock(return_value=provider)),
+            patch("src.server.services.price_monitor._now_utc", return_value=night),
+            patch(f"{_DB}.fire_targets", AsyncMock(return_value=[])) as fire,
+            patch(_NUDGE),
+        ):
+            await svc._poll_snapshots(poll_stock=True, poll_index=False)
+        fire.assert_not_awaited()
+        assert svc._evaluator._reference_prices[_AAPL]["previous_close"] == 100.0
+
+    @pytest.mark.asyncio
+    async def test_a_delayed_closing_value_is_measured_from_its_own_session(self):
+        """The index settles its close just after 16:00 and the feed shows it
+        about 15 minutes later, with the venue already closed. Within the
+        grace it is measured from the session's base, for watchers set before
+        it printed; after the grace the closed row is skipped."""
+        svc = PriceMonitorService()
+        before = datetime(2026, 11, 5, 14, 0, tzinfo=timezone.utc)
+        target = _target(symbol="SPX", market="index", kind="pct_down", value=2.0,
+                         pct_from="previous_close", created_at=before)
+        await _load(svc, [target])
+        down_2 = {"symbol": "SPX", "market": "index", "conditions": [
+            {"type": "pct_change_below", "value": 2.0, "reference": "previous_close"}]}
+        after = datetime(2026, 11, 5, 21, 10, tzinfo=timezone.utc)
+        early = {"automation_id": "early", "trigger_config": down_2, "created_at": before}
+        late = {"automation_id": "late", "trigger_config": down_2, "created_at": after}
+        edited = {"automation_id": "edited", "trigger_config": down_2,
+                  "created_at": before, "updated_at": after}
+        svc._symbol_automations = {_SPX: [early, late, edited]}
+        provider = AsyncMock()
+
+        def _row(price, stamp):
+            return [{"symbol": "GSPC", "price": price, "regular_close": price,
+                     "previous_close": 5000.0, "as_of": int(stamp.timestamp() * 1000)}]
+
+        closing = _row(4890.0, datetime(2026, 11, 5, 21, 2, 20, tzinfo=timezone.utc))
+        passes = (
+            # 16:14:50 ET: the delayed row is at 15:59, down 1.8%.
+            (datetime(2026, 11, 5, 21, 14, 50, tzinfo=timezone.utc),
+             _row(4910.0, datetime(2026, 11, 5, 20, 59, tzinfo=timezone.utc))),
+            # 16:17:20 ET: the closing value, stamped 16:02:20, down 2.2%.
+            (datetime(2026, 11, 5, 21, 17, 20, tzinfo=timezone.utc), closing),
+            # 16:31 ET: past the grace, the closed row is skipped.
+            (datetime(2026, 11, 5, 21, 31, tzinfo=timezone.utc), closing),
+        )
+        with (
+            patch("src.data_client.get_market_data_provider", AsyncMock(return_value=provider)),
+            patch.object(svc, "_try_trigger", AsyncMock()) as trigger,
+            patch(f"{_DB}.fire_targets", AsyncMock(return_value=[{**target}])) as fire,
+            patch(_NUDGE),
+        ):
+            for now, rows in passes:
+                provider.get_snapshots = AsyncMock(return_value=rows)
+                with patch("src.server.services.price_monitor._now_utc", return_value=now):
+                    await svc._poll_snapshots(poll_stock=False, poll_index=True)
+
+        fire.assert_awaited_once_with([target["target_id"]], 4890.0, printed_at=ANY)
+        assert trigger.await_args_list == [call(early, ANY, 4890.0)]
+        assert svc._evaluator._reference_prices[_SPX]["previous_close"] == 4890.0
+
+    @pytest.mark.asyncio
+    async def test_the_reference_refresh_keeps_the_ended_session_base_for_the_closing_value(self):
+        """The delayed feed can deliver the closing bar after a refresh has read
+        the closing row, so the refresh holds the session's base through the
+        grace and the close after it."""
+        evaluator = ConditionEvaluator()
+        provider = AsyncMock()
+        stamp = datetime(2026, 11, 5, 21, 2, 20, tzinfo=timezone.utc)
+        provider.get_snapshots = AsyncMock(return_value=[{
+            "symbol": "GSPC", "price": 4890.0, "regular_close": 4890.0,
+            "previous_close": 5000.0, "as_of": int(stamp.timestamp() * 1000),
+        }])
+        expected = (
+            (datetime(2026, 11, 5, 21, 17, 20, tzinfo=timezone.utc), 5000.0),
+            (datetime(2026, 11, 5, 21, 31, tzinfo=timezone.utc), 4890.0),
+        )
+        with patch("src.data_client.get_market_data_provider", AsyncMock(return_value=provider)):
+            for now, base in expected:
+                with patch("src.server.services.price_monitor._now_utc", return_value=now):
+                    await evaluator.refresh_references([_SPX])
+                assert evaluator._reference_prices[_SPX]["previous_close"] == base
+
+    @pytest.mark.asyncio
+    async def test_a_closing_tick_reaches_only_a_watcher_set_before_it(self):
+        """On the feed too, a delayed closing value is not news to an
+        automation set or edited since it printed."""
+        svc = PriceMonitorService()
+        before = datetime(2026, 11, 5, 14, 0, tzinfo=timezone.utc)
+        after = datetime(2026, 11, 5, 21, 20, tzinfo=timezone.utc)
+        early = {"automation_id": "early", "created_at": before}
+        late = {"automation_id": "late", "created_at": after}
+        edited = {"automation_id": "edited", "created_at": before, "updated_at": after}
+        svc._symbol_automations = {_SPX: [early, late, edited]}
+        stamp = int(datetime(2026, 11, 5, 21, 2, 20, tzinfo=timezone.utc).timestamp() * 1000)
+        closed = datetime(2026, 11, 5, 21, 21, tzinfo=timezone.utc)
+        with (
+            patch.object(svc, "_evaluate_and_trigger", AsyncMock()) as automation_eval,
+            patch("src.server.services.price_monitor._now_utc", return_value=closed),
+        ):
+            await svc._on_message("{}", _bar("I:SPX", 4890.0, stamp))
+        assert automation_eval.await_args_list == [call(early, 4890.0)]
+
+    @pytest.mark.asyncio
+    async def test_a_row_with_an_unreadable_stamp_keeps_its_previous_close(self):
+        """One bad row does not stop the refresh for the rest."""
+        evaluator = ConditionEvaluator()
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(return_value=[
+            {"symbol": "AAPL", "price": 100.0, "regular_close": 100.0,
+             "previous_close": 95.0, "as_of": 1e30},
+            {"symbol": "MSFT", "price": 400.0, "previous_close": 390.0},
+        ])
+        night = datetime(2026, 11, 6, 2, 0, tzinfo=timezone.utc)
+        with (
+            patch("src.data_client.get_market_data_provider", AsyncMock(return_value=provider)),
+            patch("src.server.services.price_monitor._now_utc", return_value=night),
+        ):
+            await evaluator.refresh_references([_AAPL, ("MSFT", MarketType.STOCK)])
+        assert evaluator._reference_prices[_AAPL]["previous_close"] == 95.0
+        assert evaluator._reference_prices[("MSFT", MarketType.STOCK)]["previous_close"] == 390.0
 
     @pytest.mark.asyncio
     async def test_a_caret_index_meets_its_tick_and_its_snapshot_row(self):

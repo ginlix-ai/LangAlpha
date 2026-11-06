@@ -31,6 +31,7 @@ from market_protocol import (
     market_of,
     to_canonical,
 )
+from market_protocol.calendars import get_calendar
 
 from src.data_client.ginlix_data.data_source import INDEX_TICKERS, index_ticker
 from src.server.models.automation import (
@@ -49,6 +50,9 @@ _POLL_INTERVAL = 30  # seconds — REST fallback polling
 _REFERENCE_REFRESH_INTERVAL = 300  # seconds — refresh reference prices
 _ONE_SHOT_DEDUP_TTL = 300  # seconds — must exceed _REFRESH_INTERVAL to avoid re-trigger races
 _MIN_TRADING_DAY_TTL = 300  # 5 min floor for trading-day TTL
+# The delayed index feed settles its closing value a few minutes after the
+# close and shows it about 15 minutes late.
+_CLOSING_VALUE_GRACE_MS = 30 * 60_000
 _TARGET_SWEEP_INTERVAL = 30  # seconds: claim due warnings, close lapsed targets
 _TARGET_WARNING_BATCH = 100
 _TARGET_RELOAD_DEBOUNCE = 1.0  # seconds: coalesce a burst of change nudges
@@ -217,6 +221,143 @@ def _positive(value: Any) -> Optional[float]:
     return value if math.isfinite(value) and value > 0 else None
 
 
+def fire_price(snap: dict) -> Optional[float]:
+    """The price a snapshot row is evaluated at: its last trade, which moves
+    through extended hours as the live feed does, else the session price a
+    vendor without trades reports. A US row's session price is null before
+    the open and the regular close after it."""
+    return _positive(snap.get("last_trade_price")) or _positive(snap.get("price"))
+
+
+def printed_at(snap: dict) -> Optional[float]:
+    """When a row's ``fire_price`` traded, in epoch ms: its last trade's time,
+    else the row's newest stamp. That stamp also moves with the quote, which
+    resumes at the pre-market open before a thin name's first trade."""
+    return _positive(snap.get("last_trade_at")) or _positive(snap.get("as_of"))
+
+
+def _phase_and_closed_session(
+    listing: Listing, stamp: Optional[float], now: datetime
+) -> Tuple[Optional[MarketPhase], Optional[int]]:
+    """The listing's phase at *now*, and its latest session's close in epoch ms
+    when the venue is closed and *stamp* (epoch ms) is at or after that close,
+    on that day; None otherwise.
+
+    A stamp before the close (a delayed index's last minutes) has no final
+    close yet, and one on a later day (an opening auction) is the next session's.
+    """
+    ref = watched_listing(*listing)
+    if ref is None:
+        return None, None
+    try:
+        phase = clock_for_ref(ref).phase(now)
+        if phase is not MarketPhase.CLOSED:
+            return phase, None
+        cal = get_calendar(ref.calendar_id)
+        day = cal.expected_latest_daily_date(now)
+        close_ms = cal.session_close_ms(day)
+        stamped_day = (
+            datetime.fromtimestamp(stamp / 1000, tz=cal.tz).date() if stamp is not None else None
+        )
+    except Exception:
+        logger.warning(
+            "[PriceMonitor] No session close for %s, keeping the row's previous close",
+            listing[0],
+            exc_info=True,
+        )
+        return None, None
+    if close_ms is None or stamp is None or stamp < close_ms or stamped_day != day:
+        return phase, None
+    return phase, close_ms
+
+
+def unrolled_close(listing: Listing, snap: dict, now: datetime) -> Optional[float]:
+    """The regular close a row still holds because it has not rolled, or None.
+
+    A row rolls to the next trading day some time after its venue's close,
+    listing by listing, some before the pre-market opens and some after, and
+    until it rolls its previous close is the session before the one that just
+    ended. Before the open, a row that still carries a regular close has not
+    rolled; while the venue is closed, the row's newest stamp must also be
+    the latest session's. That stamp moves with quotes as well as trades, so
+    a thin name that did not trade after the close still shows it has seen it.
+    """
+    close = _positive(snap.get("regular_close"))
+    if close is None:
+        return None
+    phase, closed_at = _phase_and_closed_session(listing, _positive(snap.get("as_of")), now)
+    return close if phase is MarketPhase.PRE or closed_at is not None else None
+
+
+def awaits_next_session(listing: Listing, snap: dict, now: datetime) -> bool:
+    """Whether the venue is closed and the row's base is already the close its
+    next session measures from, so no print the row holds is measured from it.
+
+    That holds for a row that still carries the latest session's regular
+    close and for one that has rolled to it, which keeps the field empty. A
+    vendor without the field keeps the session before as its previous close.
+    """
+    if "regular_close" not in snap:
+        return False
+    return _phase_and_closed_session(listing, _positive(snap.get("as_of")), now)[1] is not None
+
+
+def traded_since_close(listing: Listing, snap: dict, now: datetime) -> bool:
+    """Whether the venue is closed and the row's price printed at or after its
+    latest session's close, so its move counts from the close the next session
+    measures from. A thin name quoted after the close may not have traded since.
+    """
+    if "regular_close" not in snap:
+        return False
+    return _phase_and_closed_session(listing, printed_at(snap), now)[1] is not None
+
+
+def closing_value_base(listing: Listing, snap: dict, now: datetime) -> Optional[float]:
+    """The base a closed row's print is still measured from, or None.
+
+    A delayed index settles its closing value just after the close and shows
+    it after the venue reads closed. Within the grace after the close, a row
+    that has not rolled and printed since the close is the ended session's,
+    so it is measured from that session's own previous close. A venue whose
+    extended hours outlast the grace is never closed inside it, so no
+    after-hours print is measured this way.
+    """
+    if _positive(snap.get("regular_close")) is None:
+        return None
+    _, close_ms = _phase_and_closed_session(listing, printed_at(snap), now)
+    if close_ms is None or now.timestamp() * 1000 > close_ms + _CLOSING_VALUE_GRACE_MS:
+        return None
+    return _positive(snap.get("previous_close"))
+
+
+def reference_close(listing: Listing, snap: dict, now: datetime) -> Optional[float]:
+    """The previous close a % alert on *listing* measures its next print from."""
+    return unrolled_close(listing, snap, now) or _positive(snap.get("previous_close"))
+
+
+def _readable_ms(ms: float) -> bool:
+    try:
+        datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return False
+    return True
+
+
+def _set_after(automation: Dict[str, Any], printed_ms: float) -> bool:
+    """Whether *automation* was set, or last edited, after a print at
+    *printed_ms*: an edited one may now watch something else."""
+    set_at = automation.get("updated_at") or automation.get("created_at")
+    return set_at is not None and set_at.timestamp() * 1000 > printed_ms
+
+
+def measured_base(listing: Listing, snap: dict, now: datetime) -> Optional[float]:
+    """The previous close the monitor holds for *listing*: the ended session's
+    while a delayed closing value can still arrive on the feed or the poll,
+    else ``reference_close``. A watcher set since that value printed is never
+    measured on it, so its level is the one ``reference_close`` shows."""
+    return closing_value_base(listing, snap, now) or reference_close(listing, snap, now)
+
+
 @lru_cache(maxsize=4096)
 def watched_listing(symbol: str, market: MarketType) -> Optional[InstrumentRef]:
     """The listing a price alert watches, or None for a spelling the protocol cannot read.
@@ -254,19 +395,21 @@ def _is_us_symbol(symbol: str, market: MarketType) -> bool:
 
 
 def _session_day_start_ms(symbol: str, market: MarketType, now: datetime) -> Optional[int]:
-    """Start of the venue's trading day while its regular session runs at *now*, else None.
+    """Start of the venue's trading day at *now*, or None while it cannot print.
 
-    Only the regular session counts: a non-US quote is frozen outside it and
-    through a lunch break, so a poll then spends an upstream call on a price
-    that cannot cross anything. The day starts at local midnight rather than at
-    the open because the opening auction prints before the open.
+    A non-US quote is frozen outside the regular session and through a lunch
+    break, so a poll then spends an upstream call on a price that cannot cross
+    anything. A US listing is polled in place of the live feed, which carries
+    extended hours, so every phase counts. The day starts at local midnight
+    rather than at the open because auctions and pre-market trades print
+    before it.
     """
     ref = watched_listing(symbol, market)
     if ref is None:
         return None
     try:
         clock = clock_for_ref(ref)
-        if clock.phase(now) is not MarketPhase.REGULAR:
+        if not _is_us_symbol(symbol, market) and clock.phase(now) is not MarketPhase.REGULAR:
             return None
         day = now.astimezone(clock.tz).date()
     except Exception:
@@ -456,10 +599,11 @@ class ConditionEvaluator:
             from src.data_client import get_market_data_provider
 
             provider = await get_market_data_provider()
+            now = _now_utc()
             for listing, snap in (await listing_snapshots(provider, listings)).items():
                 self.set_reference(
                     listing,
-                    previous_close=snap.get("previous_close"),
+                    previous_close=measured_base(listing, snap, now),
                     day_open=snap.get("open"),
                 )
         except Exception:
@@ -624,9 +768,19 @@ class PriceMonitorService:
         market = MarketType.INDEX if bar["symbol"].startswith("I:") else MarketType.STOCK
         listing = (_from_ws_symbol(bar["symbol"]), market)
         current_price = bar["close"]
+        printed = _positive(bar.get("time"))
 
         automations = self._symbol_automations.get(listing, [])
+        # A closed venue's tick is a delayed closing value, which a watcher
+        # set since it printed is not measured on, as in the poll.
+        closed = (
+            bool(automations)
+            and printed is not None
+            and _phase_and_closed_session(listing, None, _now_utc())[0] is MarketPhase.CLOSED
+        )
         for automation in automations:
+            if closed and _set_after(automation, printed):
+                continue
             try:
                 await self._evaluate_and_trigger(automation, current_price)
             except Exception:
@@ -637,7 +791,7 @@ class PriceMonitorService:
                 )
 
         if listing in self._symbol_targets:
-            await self._evaluate_targets(listing, current_price, _positive(bar.get("time")))
+            await self._evaluate_targets(listing, current_price, printed)
 
     async def _evaluate_and_trigger(
         self, automation: Dict[str, Any], current_price: float
@@ -1220,14 +1374,14 @@ class PriceMonitorService:
         index_syms: List[str] = []
         for listing in sorted(self._listings):
             bare, market = listing
-            if _is_us_symbol(bare, market):
-                if not (poll_index if market == MarketType.INDEX else poll_stock):
-                    continue
-            else:
-                day_start = _session_day_start_ms(bare, market, now)
-                if day_start is None:
-                    continue
-                day_starts[listing] = day_start
+            if _is_us_symbol(bare, market) and not (
+                poll_index if market == MarketType.INDEX else poll_stock
+            ):
+                continue
+            day_start = _session_day_start_ms(bare, market, now)
+            if day_start is None:
+                continue
+            day_starts[listing] = day_start
             (index_syms if market == MarketType.INDEX else stock_syms).append(bare)
         if not stock_syms and not index_syms:
             return
@@ -1236,28 +1390,40 @@ class PriceMonitorService:
 
         provider = await get_market_data_provider()
         for listing, snapshot in await _fetch_snapshots(provider, stock_syms, index_syms):
-            current_price = _positive(snapshot.get("price"))
+            current_price = fire_price(snapshot)
             if current_price is None:
                 continue
-            # A row printed before the session's day began has not rolled yet:
-            # its change is the previous session's move, which a recurring
-            # alert unlocked at the open would fire on. A row with no print
-            # time cannot show it rolled, so it is skipped too. US rows have
-            # no bound.
-            as_of = _positive(snapshot.get("as_of"))
-            day_start = day_starts.get(listing)
-            if day_start is not None and (as_of is None or as_of < day_start):
+            # A row printed before the day began is the previous session's:
+            # either it has not rolled, or it has and still holds that
+            # session's last trade, and a recurring alert unlocked at the open
+            # would fire on that move. A non-US row with no print time cannot
+            # show it is today's, so it is skipped too.
+            as_of = printed_at(snapshot)
+            if as_of is None:
+                if not _is_us_symbol(*listing):
+                    continue
+            elif not _readable_ms(as_of):
+                logger.warning("[PriceMonitor] Unreadable print time on %s's row, skipped", listing[0])
+                continue
+            elif as_of < day_starts[listing]:
                 continue
 
-            # Update reference prices
-            if _positive(snapshot.get("previous_close")) is not None:
+            closing_value = closing_value_base(listing, snapshot, now) is not None
+            base = measured_base(listing, snapshot, now)
+            if base is not None:
                 self._evaluator.set_reference(
-                    listing,
-                    previous_close=snapshot.get("previous_close"),
-                    day_open=snapshot.get("open"),
+                    listing, previous_close=base, day_open=snapshot.get("open")
                 )
+            # Once closed, the base is the next session's, and the row's
+            # print was already measured from the session's own base, except
+            # a delayed closing value, still measured from it, by a watcher set
+            # before that value printed.
+            if not closing_value and awaits_next_session(listing, snapshot, now):
+                continue
 
             for automation in self._symbol_automations.get(listing, []):
+                if closing_value and _set_after(automation, as_of):
+                    continue
                 try:
                     await self._evaluate_and_trigger(automation, current_price)
                 except Exception:
@@ -1267,10 +1433,9 @@ class PriceMonitorService:
                         exc_info=True,
                     )
 
-            # The day bound above leaves US rows alone, as an automation
-            # wants. A target needs the print time instead, to tell a move
-            # made since it was set from the last session's, which a closed
-            # venue's row still carries; a row without one cannot show that.
+            # A target also needs the print to be newer than the target: a row
+            # from earlier in the day carries a move made before it was set,
+            # and a row without a print time cannot show it is newer.
             if as_of is not None:
                 await self._evaluate_targets(listing, current_price, as_of)
 
