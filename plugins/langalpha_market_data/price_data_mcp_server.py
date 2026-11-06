@@ -498,7 +498,7 @@ async def get_stock_data(
         end_date: Same format.
 
     Returns:
-        dict: {symbol, interval, currency, timezone, count, data, source,
+        dict: {symbol, interval, currency?, timezone, count, data, source,
         price_treatment, name?, in_progress?, truncated?, incomplete?}. data:
         list of {date, open, high, low, close, volume} ascending (oldest first);
         date exchange-local "YYYY-MM-DD[ HH:MM:SS]"; prices in `currency` major
@@ -546,7 +546,7 @@ async def get_asset_data(
         to_date: Same format.
 
     Returns:
-        dict: {symbol, asset_type, interval, currency, timezone, count, data,
+        dict: {symbol, asset_type, interval, currency?, timezone, count, data,
         source, price_treatment, name?, in_progress?, truncated?, incomplete?}.
         data: list of {date, open, high, low, close, volume} ascending; date
         exchange-local "YYYY-MM-DD[ HH:MM:SS]"; prices in `currency` major

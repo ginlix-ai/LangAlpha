@@ -190,9 +190,9 @@ async def get_options_chain(
     limit: int = 20,
 ) -> Tuple[str, Dict[str, Any]]:
     """
-    Options contracts for an underlying with current session pricing, filterable by
-    type, expiration range, and strike. US-listed options only — not for non-US
-    underlyings.
+    Options contracts for an underlying with each one's latest session price, IV,
+    delta and open interest, filterable by type, expiration range, and strike.
+    US-listed options only; not for non-US underlyings.
 
     Args:
         underlying: Underlying ticker (e.g. "AAPL", "TSLA").

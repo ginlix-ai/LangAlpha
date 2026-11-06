@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Options Data MCP Server.
 
-Provides options contracts, OHLCV price data, and real-time snapshots via MCP.
+Provides options contracts, OHLCV price data, and delayed snapshots via MCP.
 
 Design goals:
 - Standard agent-facing envelope (see mcp_servers/AGENT_CONTRACT.md)
@@ -178,7 +178,7 @@ async def get_options_chain(
         limit: Max contracts (default 50, max 1000).
 
     Returns:
-        dict: {symbol, underlying_ticker, currency, timezone, count, data,
+        dict: {symbol, underlying_ticker, currency?, timezone, count, data,
         source, truncated?}. data: list of {ticker, contract_type,
         expiration_date, strike_price, shares_per_contract, primary_exchange};
         strike_price in `currency` major units. truncated: true if more
@@ -322,22 +322,23 @@ _OUT_GET_OPTIONS_SNAPSHOT = output_model(
 async def get_options_snapshot(
     options_tickers: str,
 ) -> _OUT_GET_OPTIONS_SNAPSHOT:
-    """Fetch real-time snapshots for options contracts; use for live quotes.
-
-    Session OHLCV is always present; bid/ask and last trade populate during
-    market hours. ginlix-data only.
+    """Options snapshots: session prices, greeks, IV and open interest.
 
     Args:
-        options_tickers: One or more OCC tickers, comma-separated
-            (e.g. "O:AAPL260618C00220000,O:AAPL260618C00230000").
+        options_tickers: OCC tickers, comma-separated, e.g. "O:AAPL260618C00220000".
 
     Returns:
-        dict: {currency, timezone, count, data, source}. currency/timezone are
-        the underlying's, set only when all contracts share one (else omitted).
-        data: list of snapshot dicts, each with ticker, name, market_status,
-        session (OHLCV + change), last_quote (bid/ask/midpoint), last_trade
-        (price/size); prices in `currency` major units. On error:
-        {error: <code>, detail}.
+        dict: {currency?, timezone?, count, data, source}. data: list of
+        {ticker, name, market_status, session, greeks, implied_volatility,
+        open_interest, break_even_price, underlying_asset, last_quote,
+        last_trade}, keys if known.
+        session: OHLCV, change, timeframe ("DELAYED": 15 min), last_updated
+        (when the feed showed it), stale (true: not traded this session;
+        close, change, volume are the last_updated day's); an undated session
+        may be from any past day. greeks {delta, gamma, theta, vega};
+        implied_volatility decimal; underlying_asset {ticker, price,
+        last_updated, timeframe}. Times exchange-local "YYYY-MM-DD HH:MM:SS";
+        prices in `currency` major units. On error: {error: <code>, detail}.
     """
     tickers = [t.strip() for t in options_tickers.split(",") if t.strip()]
     if not tickers:
