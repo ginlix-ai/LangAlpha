@@ -4054,6 +4054,7 @@
     "change": "涨跌额",
     "nMoreContracts": "还有 {{count}} 张",
     "noOptionsData": "暂无期权数据",
+    "staleOption": "本交易时段未成交，最近一笔成交于纽约时间 {{time}} 公布",
     "topGainers": "涨幅榜",
     "topLosers": "跌幅榜",
     "marketMovers": "市场异动",

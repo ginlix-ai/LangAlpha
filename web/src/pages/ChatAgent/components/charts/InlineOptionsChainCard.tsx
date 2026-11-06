@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { formatMoney } from '@/lib/bars';
 import { useLocale } from '@/hooks/useLocale';
 import { readOptionsChain, type InlineCardProps } from './cardReaders';
-import { expiryLabeler, formatVolume, moneyPlaces, optionsEdge, retrievedTitle } from './cardWords';
+import { expiryLabeler, formatVolume, moneyPlaces, optionsEdge, retrievedTitle, staleOptionTitle } from './cardWords';
 import { TermCard, TermChange, TermStatus, TermTag } from './TermCard';
 import { useCardNarrow } from './termContext';
 import { TermTable } from './TermTable';
@@ -60,8 +60,24 @@ export function InlineOptionsChainCard({ artifact, onClick, toolArgs }: InlineCa
             show: showType,
             cell: (r) => (r.type ? t(`toolArtifact.optionType.${r.type}`) : ''),
           },
-          { key: 'last', label: t('toolArtifact.termHead.last'), num: true, show: rows.some((r) => r.last != null), cell: (r) => (r.last != null ? money(r.last) : '') },
-          { key: 'change', label: t('toolArtifact.termHead.change'), num: true, show: rows.some((r) => r.changePct != null), cell: (r) => <TermChange value={r.changePct} /> },
+          // A contract that has not traded this session keeps an older day's
+          // close and move: dimmed, with that day in the tooltip.
+          {
+            key: 'last',
+            label: t('toolArtifact.termHead.last'),
+            num: true,
+            show: rows.some((r) => r.last != null),
+            title: (r) => staleOptionTitle(t, r),
+            cell: (r) => (r.last != null ? <span className={r.stale ? 'term-stale' : undefined}>{money(r.last)}</span> : ''),
+          },
+          {
+            key: 'change',
+            label: t('toolArtifact.termHead.change'),
+            num: true,
+            show: rows.some((r) => r.changePct != null),
+            title: (r) => staleOptionTitle(t, r),
+            cell: (r) => <span className={r.stale ? 'term-stale' : undefined}><TermChange value={r.changePct} /></span>,
+          },
           {
             key: 'vol',
             label: t('toolArtifact.termHead.vol'),
@@ -70,7 +86,8 @@ export function InlineOptionsChainCard({ artifact, onClick, toolArgs }: InlineCa
             // A phone keeps the contract's terms and its price; volume needs
             // the width only when both terms take a column.
             show: rows.some((r) => r.volume != null) && !(narrow && showExp && showType),
-            cell: (r) => (r.volume != null ? formatVolume(r.volume, locale) : ''),
+            title: (r) => staleOptionTitle(t, r),
+            cell: (r) => (r.volume != null ? <span className={r.stale ? 'term-stale' : undefined}>{formatVolume(r.volume, locale)}</span> : ''),
           },
         ]}
       />

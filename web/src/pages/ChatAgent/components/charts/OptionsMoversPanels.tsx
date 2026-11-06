@@ -4,7 +4,7 @@ import { formatMoney } from '@/lib/bars';
 import { useLocale } from '@/hooks/useLocale';
 import { compactNumberFixed2, integer } from '@/lib/format';
 import { readMarketMovers, readOptionsChain, type MoverRow, type OptionRow, type PanelProps } from './cardReaders';
-import { expiryLabeler, moneyPlaces, moversTitle, optionsEdge, retrievedTitle } from './cardWords';
+import { expiryLabeler, moneyPlaces, moversTitle, optionsEdge, retrievedTitle, staleOptionTitle } from './cardWords';
 import { TermCard, TermChange, TermRange, TermTag } from './TermCard';
 import { MarketLink } from './marketLinks';
 import { SortTable, type SortColumn } from './TermTable';
@@ -21,6 +21,10 @@ export function OptionsChainPanel({ data, toolArgs }: PanelProps): React.ReactEl
   const edge = optionsEdge(chain, t, locale, narrow);
   const expiryOf = expiryLabeler(chain.expiries, locale);
   const money = (n: number): string => formatMoney(n, chain.currency, locale, { decimals: moneyPlaces(n) });
+  // A contract that has not traded this session keeps an older day's close
+  // and move: dimmed, with that day in the tooltip.
+  const stale = (r: OptionRow, cell: React.ReactNode): React.ReactNode => (r.stale ? <span className="term-stale">{cell}</span> : cell);
+  const staleTitle = (r: OptionRow): string | undefined => staleOptionTitle(t, r);
 
   // A phone keeps the contract's terms, its price and its move; the money
   // move, the range and the OCC ticker need the width.
@@ -37,18 +41,19 @@ export function OptionsChainPanel({ data, toolArgs }: PanelProps): React.ReactEl
     // out: it sits where a screen puts a company's name, quiet, and the first
     // to give way.
     { key: 'ticker', label: t('toolArtifact.contract'), value: (r) => r.ticker, className: 'term-t3 term-code', fill: 'clip', wide: true },
-    { key: 'last', label: t('toolArtifact.price'), num: true, value: (r) => r.last, cell: (r) => money(r.last!) },
+    { key: 'last', label: t('toolArtifact.price'), num: true, value: (r) => r.last, title: staleTitle, cell: (r) => stale(r, money(r.last!)) },
     {
-      key: 'change', label: t('toolArtifact.change'), num: true, className: 'term-t2', value: (r) => r.change, wide: true,
-      cell: (r) => formatMoney(r.change!, chain.currency, locale, { signed: true, decimals: moneyPlaces(r.change) }),
+      key: 'change', label: t('toolArtifact.change'), num: true, className: 'term-t2', value: (r) => r.change, wide: true, title: staleTitle,
+      cell: (r) => stale(r, formatMoney(r.change!, chain.currency, locale, { signed: true, decimals: moneyPlaces(r.change) })),
     },
-    { key: 'changePct', label: t('toolArtifact.changePct'), num: true, value: (r) => r.changePct, cell: (r) => <TermChange value={r.changePct} /> },
-    { key: 'volume', label: t('toolArtifact.volume'), num: true, className: 'term-t2', value: (r) => r.volume, cell: (r) => integer(r.volume!, locale) },
+    { key: 'changePct', label: t('toolArtifact.changePct'), num: true, value: (r) => r.changePct, title: staleTitle, cell: (r) => stale(r, <TermChange value={r.changePct} />) },
+    { key: 'volume', label: t('toolArtifact.volume'), num: true, className: 'term-t2', value: (r) => r.volume, title: staleTitle, cell: (r) => stale(r, integer(r.volume!, locale)) },
     // Where the price sits in the day's range, when the day has one.
     {
       key: 'range', label: t('toolArtifact.termHead.dayRange'), num: true, wide: true,
       value: (r) => (r.low != null && r.high != null && r.high > r.low ? r.high - r.low : undefined),
-      cell: (r) => <TermRange low={r.low} high={r.high} value={r.last} />,
+      title: staleTitle,
+      cell: (r) => stale(r, <TermRange low={r.low} high={r.high} value={r.last} />),
     },
   ];
 

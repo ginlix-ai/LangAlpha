@@ -4070,6 +4070,7 @@
     "nMoreContracts": "+{{count}} more contract",
     "nMoreContracts_other": "+{{count}} more contracts",
     "noOptionsData": "No options data available",
+    "staleOption": "Not traded this session. Last print {{time}} New York time",
     "topGainers": "Top Gainers",
     "topLosers": "Top Losers",
     "marketMovers": "Market Movers",
