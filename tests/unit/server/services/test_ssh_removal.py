@@ -862,6 +862,10 @@ def test_a_root_that_is_a_disk_of_its_own_empties_on_that_disk(tmp_path, name):
         f"echo '/dev/disk9 100 1 99 1% {root}'\n"
     )
     (bin_dir / "df").chmod(0o755)
+    # Lists after a pause, so the detached delete has taken the trash in the
+    # root first: the order that once let the root, and its mark, go.
+    (bin_dir / "ls").write_text('#!/bin/sh\nsleep 0.5\nexec /bin/ls "$@"\n')
+    (bin_dir / "ls").chmod(0o755)
 
     files = _uninstall(home, str(root), path=f"{bin_dir}:/usr/bin:/bin")
 
