@@ -91,7 +91,9 @@ class SeriesHeader(BaseModel):
     publisher: str | None = None
     tier: Tier
     feed_scope: FeedScope = FeedScope.COMPOSITE
-    price_currency: str
+    # Null for a listing on a venue the registry does not know, whose
+    # currency is unknown rather than the default home's.
+    price_currency: str | None
     display_decimals: int
     display_unit: str | None = None
     ts_unit: str = "ms"

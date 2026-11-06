@@ -11,6 +11,7 @@ import datetime
 import pandas as pd
 
 from mcp_servers._yf_common import (
+    boundary,
     clean_value,
     format_datetime,
     minor_unit,
@@ -78,6 +79,13 @@ class TestSerializeRecords:
 
     def test_empty_dataframe_is_empty_list(self):
         assert serialize_records(pd.DataFrame()) == []
+
+
+class TestBoundary:
+    def test_an_unknown_venue_has_no_currency_but_a_us_class_share_keeps_usd(self):
+        assert boundary("PETR4.SA") == ("PETR4.SA", "PETR4.SA", None)
+        assert boundary("BRK.B")[2] == "USD"
+        assert boundary("VOD.L")[2] == "GBP"
 
 
 class TestMinorUnit:

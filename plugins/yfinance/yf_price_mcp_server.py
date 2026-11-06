@@ -137,12 +137,15 @@ def _price_scale(stock: Any, ref_currency: Optional[str]) -> tuple[Optional[str]
 
     When yfinance declares a minor-unit quote currency (e.g. GBp), report the
     major code (GBP) and a divisor to convert price fields; otherwise keep the
-    boundary ``ref_currency`` and a no-op divisor of 1.
+    boundary ``ref_currency`` and a no-op divisor of 1. A listing on a venue
+    the protocol does not know has no boundary currency, so the one yfinance
+    declares for what it served stands in.
     """
-    minor = minor_unit(_declared_currency(stock))
+    declared = _declared_currency(stock)
+    minor = minor_unit(declared)
     if minor is not None:
         return minor[0], float(minor[1])
-    return ref_currency, 1.0
+    return ref_currency or declared, 1.0
 
 
 _OHLC_COLUMNS = ("Open", "High", "Low", "Close")

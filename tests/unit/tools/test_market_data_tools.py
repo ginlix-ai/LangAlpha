@@ -2680,6 +2680,14 @@ class TestMarketHeaderLabel:
         assert "**Market:** A-Share" in content
 
     @pytest.mark.asyncio
+    async def test_an_unknown_venue_names_no_market_or_currency(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_daily_prices("PETR4.SA", limit=5)
+        assert "**Market:** Stock" in content
+        assert "price_currency" not in artifact
+
+    @pytest.mark.asyncio
     async def test_beijing_listing_is_an_ashare_too(self):
         provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
         with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
@@ -2899,6 +2907,17 @@ class TestFetchQuote:
             _, artifact = await fetch_quote(["NVDA"])
         assert artifact["all_realtime"] is (not closed)
         assert artifact["quotes"][0]["currency"] == "USD"
+
+    @pytest.mark.asyncio
+    async def test_a_quote_on_an_unknown_venue_names_no_currency(self):
+        snaps = [{"symbol": "PETR4.SA", "price": 45.78, "change_percent": -0.37, "volume": 1,
+                  "market_status": "open", "tier": "delayed_15m"},
+                 {"symbol": "BRK-B", "price": 571.48, "change_percent": -0.15, "volume": 1,
+                  "market_status": "open", "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
+            _, artifact = await fetch_quote(["PETR4.SA", "BRK.B"])
+        assert [q["currency"] for q in artifact["quotes"]] == [None, "USD"]
 
     @pytest.mark.asyncio
     async def test_a_closed_listing_no_provider_quotes_reads_its_daily_close(self):

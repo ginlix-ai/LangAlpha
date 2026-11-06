@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from src.data_client.normalize import series_lineage
+from src.data_client.normalize import listing_currency, series_lineage
 from market_protocol import (
     OHLCV_SCHEMAS,
     AssetClass,
@@ -149,7 +149,7 @@ def _series_header(ref, schema: str, env_header: dict[str, Any], result) -> Seri
         publisher=env_header.get("publisher"),
         tier=env_header.get("tier") or tier,
         feed_scope=env_header.get("feed_scope", "composite"),
-        price_currency=ref.price_currency,
+        price_currency=listing_currency(ref),
         display_decimals=served_display_decimals(ref),
         display_unit=served_display_unit(ref.display_unit),
         latest_trading_date=env_header.get("latest_trading_date"),

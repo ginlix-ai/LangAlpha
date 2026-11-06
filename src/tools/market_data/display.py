@@ -128,8 +128,8 @@ def _market_label(ref: Optional[InstrumentRef]) -> str:
     """Human 'Market:' header label for a resolved listing.
 
     US / unresolved-USD listings read "US Stock" (byte-compatible with the legacy
-    header); other venues name their market. Non-equity asset classes get a
-    generic label.
+    header); other venues name their market, and a venue the protocol does not
+    know names none. Non-equity asset classes get a generic label.
     """
     if ref is None:
         return "US Stock"
@@ -142,7 +142,10 @@ def _market_label(ref: Optional[InstrumentRef]) -> str:
     label = _MIC_MARKET_LABELS.get(ref.mic)
     if label:
         return label
-    return "US Stock" if (ref.price_currency or "USD") == "USD" else f"{ref.price_currency} Stock"
+    currency = listing_currency(ref)
+    if currency is None:
+        return "Stock"
+    return "US Stock" if currency == "USD" else f"{currency} Stock"
 
 
 def _is_us_clock(ref: Optional[InstrumentRef]) -> bool:

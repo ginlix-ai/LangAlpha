@@ -427,18 +427,25 @@ def diff_portfolio(
 
     diff = PortfolioDiff()
     seen_ids: set[str] = set()
-    for normalized in holdings:
+    for idx, normalized in enumerate(holdings):
         existing = by_unique_key.get(
             (normalized["symbol"], normalized["instrument_type"], normalized["account_name"])
         )
 
         # A row without a currency keeps the one it is held in, else takes its
-        # listing's, as the holding upsert does.
+        # listing's, as the holding upsert does. A new row with neither is
+        # refused; a held one with neither stays as it is, so an old row never
+        # blocks a save that changes another.
         if normalized["currency"] is None:
             held_in = existing.get("currency") if existing else None
             normalized = {**normalized, "currency": held_in or portfolio_db.default_holding_currency(
                 normalized["symbol"], normalized["instrument_type"]
             )}
+            if normalized["currency"] is None and existing is None:
+                raise UserDataValidationError(
+                    "constraint_error", "portfolio.json", f"holdings[{idx}].currency",
+                    portfolio_db.unknown_currency_message(normalized["symbol"]),
+                )
         if existing is None:
             diff.inserts.append(normalized)
             continue

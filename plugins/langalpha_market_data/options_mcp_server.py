@@ -36,7 +36,7 @@ from typing import Any, Optional
 
 from data_client.ginlix_data.option_snapshots import snapshot_row
 from market_protocol.calendars import get_calendar, prebuild_calendars
-
+from data_client.normalize import listing_currency
 from data_client.ginlix_data import (
     close_ginlix_mcp_client,
     get_ginlix_mcp_client,
@@ -122,7 +122,7 @@ def _underlying_context(
         return None, None, None
     try:
         ref = to_canonical(root)
-        return to_display(ref), ref.price_currency, ref.tz
+        return to_display(ref), listing_currency(ref), ref.tz
     except Exception:  # noqa: BLE001
         return root, None, None
 
@@ -186,7 +186,7 @@ async def get_options_chain(
     """
     try:
         ref = to_canonical(underlying_ticker)
-        display, currency, timezone = to_display(ref), ref.price_currency, ref.tz
+        display, currency, timezone = to_display(ref), listing_currency(ref), ref.tz
     except Exception:  # noqa: BLE001
         ref, display, currency, timezone = None, underlying_ticker, None, None
 

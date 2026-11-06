@@ -379,3 +379,28 @@ def test_each_detail_figure_takes_its_own_precision():
 def test_a_us_quote_keeps_two_places():
     text = _quote_text("AAPL", quote={"price": 331.9, "change": 1.25, "changePercentage": 0.38})
     assert "**Price:** $331.90 (+1.25 / +0.38%)" in text
+
+
+def test_an_unknown_venue_prints_earnings_and_statements_with_no_currency():
+    report = earnings.EarningsReport(
+        date="2026-08-07", eps_actual=4.12, eps_estimate=3.64, revenue_actual=171.09e9,
+        revenue_estimate=160.72e9, period="Q2 FY2026", diluted_eps=None,
+    )
+    inp = _inputs("PETR4.SA")
+    inp.earnings = [report, report]
+    inp.cash_flow = [{"date": "2026-06-30", "operatingCashFlow": 59.7e9}]
+    text = _company_text(inp)
+    assert "**EPS (consensus basis):** 4.12 actual vs 3.64 estimate" in text
+    assert "**Revenue:** 171.09B actual vs 160.72B estimate" in text
+    assert "| 59.70B |" in text
+    assert "$" not in text
+
+
+def test_a_us_class_share_keeps_its_dollars_in_earnings():
+    report = earnings.EarningsReport(
+        date="2026-08-07", eps_actual=4.12, eps_estimate=3.64, revenue_actual=None,
+        revenue_estimate=None, period="Q2 FY2026", diluted_eps=None,
+    )
+    inp = _inputs("BRK.B")
+    inp.earnings = [report]
+    assert "**EPS (consensus basis):** $4.12 actual vs $3.64 estimate" in _company_text(inp)

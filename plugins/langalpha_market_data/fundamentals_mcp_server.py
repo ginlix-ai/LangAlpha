@@ -44,7 +44,7 @@ from data_client.fmp import close_fmp_client, get_fmp_client
 from data_client.lifespan import closing_lifespan
 from data_client.market_data_provider import symbol_market
 from data_client.normalize import (
-    declared_venue,
+    listing_currency,
     minor_unit_places,
     populated,
     scale_price,
@@ -67,7 +67,6 @@ from mcp_servers._schemas import (
 )
 from market_protocol.enums import AssetClass
 from market_protocol.symbology import (
-    UNKNOWN_MIC,
     is_family_index,
     to_canonical,
     to_display,
@@ -469,7 +468,7 @@ async def get_historical_valuation(
     except Exception:  # noqa: BLE001
         ref = None
     # A venue the protocol does not know resolves to a USD default, not its currency.
-    currency = ref.price_currency if ref and declared_venue(ref) != UNKNOWN_MIC else None
+    currency = listing_currency(ref) if ref else None
     places = minor_unit_places(symbol)
     reported = {row.get("date"): row.get("reportedCurrency") for row in key_metrics or []}
     return make_response(

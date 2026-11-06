@@ -300,6 +300,20 @@ class TestTruncatedOptionsPrices:
         assert result["truncated"] is True
 
 
+class TestUnknownVenueCurrency:
+    @pytest.mark.asyncio
+    async def test_an_unknown_venue_gets_no_currency_and_a_us_class_share_keeps_usd(self):
+        import plugins.langalpha_market_data.options_mcp_server as mod
+
+        fetch = AsyncMock(return_value={"results": [], "truncated": False})
+        with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_chain", new=fetch):
+            unknown = await mod.get_options_chain("ZZZZ4.SA")
+            class_share = await mod.get_options_chain("BRK.B")
+
+        assert "currency" not in unknown
+        assert class_share["currency"] == "USD"
+
+
 class TestTruncatedOptionsChain:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("more", [True, False])

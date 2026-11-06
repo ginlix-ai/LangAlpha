@@ -20,6 +20,7 @@ from market_protocol import (
     to_display,
     vendor_symbol,
 )
+from market_protocol.symbology import UNKNOWN_MIC
 
 
 class _CookieCacheWithA3:
@@ -102,11 +103,14 @@ def boundary(ticker: str) -> tuple[str, str, Optional[str]]:
     """Resolve an agent-supplied ticker at the protocol boundary.
 
     Returns ``(display_symbol, yfinance_symbol, price_currency)``. Falls back to
-    the upper-cased raw ticker when the symbol cannot be canonicalized.
+    the upper-cased raw ticker when the symbol cannot be canonicalized. A venue
+    the protocol does not know resolves to the US default home, so its listing
+    has no currency here rather than USD.
     """
     try:
         ref = to_canonical(ticker)
-        return to_display(ref), yfinance_symbol(ref), ref.price_currency
+        currency = None if ref.mic == UNKNOWN_MIC else ref.price_currency
+        return to_display(ref), yfinance_symbol(ref), currency
     except Exception:  # noqa: BLE001
         cleaned = (ticker or "").strip().upper()
         return cleaned, cleaned, None

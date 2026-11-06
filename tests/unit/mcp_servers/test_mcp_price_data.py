@@ -87,6 +87,21 @@ class TestGetStockData:
         client.get_stock_price.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_an_unknown_venue_gets_no_currency_and_a_us_class_share_keeps_usd(self):
+        # A venue the protocol does not know resolves to the US default home,
+        # whose USD is not the listing's currency.
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        client = _fmp_client()
+        with _force_fmp_path(mod), patch(f"{_MOD}.get_fmp_client", return_value=client):
+            unknown = await mod.get_stock_data("ZZZZ4.SA", interval="1day")
+            class_share = await mod.get_stock_data("BRK.B", interval="1day")
+
+        assert_ok_envelope(unknown, symbol="ZZZZ4.SA", count=2)
+        assert "currency" not in unknown
+        assert class_share["currency"] == "USD"
+
+    @pytest.mark.asyncio
     async def test_ginlix_source_flipped_to_ascending(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 

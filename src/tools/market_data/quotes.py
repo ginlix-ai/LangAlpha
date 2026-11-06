@@ -25,6 +25,7 @@ from src.data_client.base import MoverRow
 from src.data_client.freshness import is_live
 from src.data_client.ginlix_data.directory import fill_quote_names
 from src.data_client.ginlix_data.option_snapshots import feed_lag, snapshot_row
+from src.data_client.normalize import listing_currency
 from src.data_client.ginlix_data.pagination import follow_cursor
 from src.data_client.market_data_provider import snapshot_key
 from src.observability import stamp_tool_provider
@@ -321,7 +322,7 @@ async def fetch_market_movers(
         excluded_day = shared_day(excluded)
         refs = [resolve_ref(m["symbol"]) for m in movers]
         rows: List[MoverCardRow] = [
-            {**m, "name": None, "currency": ref.price_currency if ref is not None else None}
+            {**m, "name": None, "currency": listing_currency(ref)}
             for m, ref in zip(movers, refs)
         ]
         await fill_quote_names(rows)
@@ -445,9 +446,10 @@ async def fetch_quote(
             # before the open is all a snapshot has.
             snap["price"] = current_price(snap)
             # The card prints each row in its listing currency; an index level
-            # is a bare number, so index rows carry none.
+            # is a bare number, so index rows carry none, and neither does a
+            # listing on a venue the protocol does not know.
             if ref.asset_class is not AssetClass.INDEX and not snap.get("currency"):
-                snap["currency"] = ref.price_currency
+                snap["currency"] = listing_currency(ref)
             all_realtime = all_realtime and is_live(snap["freshness"])
             snaps.append(snap)
         content = format_quote_block(snaps, at=retrieved_at)
