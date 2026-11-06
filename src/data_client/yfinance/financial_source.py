@@ -19,6 +19,7 @@ from market_protocol import display_spelling, to_major_units
 
 from src.data_client.normalize import scale_quote_prices
 
+from .data_source import _fetch_single_snapshot
 from .yahoo import yahoo_ticker
 
 logger = logging.getLogger(__name__)
@@ -181,29 +182,33 @@ def _get_profile(symbol: str) -> list[dict[str, Any]]:
 
 
 def _get_realtime_quote(symbol: str) -> list[dict[str, Any]]:
+    snap = _fetch_single_snapshot(symbol)
+    if snap is None:
+        return []
     ticker = yahoo_ticker(symbol)
-    fi = ticker.fast_info
     info = ticker.info or {}
-    price = float(fi.get("lastPrice", 0) or 0)
-    prev = float(fi.get("previousClose", 0) or 0)
-    change = price - prev if prev else 0.0
-    change_pct = (change / prev * 100) if prev else 0.0
     row = {
         "symbol": symbol,
         "name": info.get("longName") or info.get("shortName"),
-        "price": round(price, 4),
-        "change": round(change, 4),
-        "changePercentage": round(change_pct, 4),
-        "previousClose": round(prev, 4),
-        "open": round(float(fi.get("open", 0) or 0), 4),
-        "dayHigh": round(float(fi.get("dayHigh", 0) or 0), 4),
-        "dayLow": round(float(fi.get("dayLow", 0) or 0), 4),
-        "volume": int(fi.get("lastVolume", 0) or 0),
-        "marketCap": fi.get("marketCap"),
+        "price": snap["price"],
+        "change": snap["change"],
+        "changePercentage": snap["change_percent"],
+        "previousClose": snap["previous_close"],
+        "open": snap["open"],
+        "dayHigh": snap["high"],
+        "dayLow": snap["low"],
+        "volume": snap["volume"],
+        "marketCap": info.get("marketCap"),
         "pe": info.get("trailingPE"),
         "eps": info.get("trailingEps"),
     }
-    return scale_quote_prices([row], symbol)
+    row = scale_quote_prices([row], symbol)[0]
+    if row["marketCap"] is None:
+        # Yahoo's info omits it for some listings (A-shares); price it here on
+        # the scaled price, since fast_info's own multiplies a pence quote.
+        shares = _clean_value(ticker.fast_info.get("shares"))
+        row["marketCap"] = shares * row["price"] if shares else None
+    return [row]
 
 
 def _get_income_statements(
@@ -445,12 +450,10 @@ def _get_earnings_history(symbol: str, limit: int) -> list[dict[str, Any]]:
 def _get_single_sector_perf(sector_name: str, etf_symbol: str) -> dict[str, Any] | None:
     """Fetch daily change for one sector via its representative ETF."""
     try:
-        fi = yahoo_ticker(etf_symbol).fast_info
-        price = float(fi.get("lastPrice", 0) or 0)
-        prev = float(fi.get("previousClose", 0) or 0)
-        if not prev:
+        snap = _fetch_single_snapshot(etf_symbol)
+        pct = snap["change_percent"] if snap else None
+        if pct is None:
             return None
-        pct = (price - prev) / prev * 100
         sign = "+" if pct >= 0 else ""
         return {
             "sector": sector_name,

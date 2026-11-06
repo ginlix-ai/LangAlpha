@@ -288,20 +288,40 @@ def test_yfinance_profile_lse_price_scaled_to_major_units():
     assert row["marketCap"] == 27152024882
 
 
-def test_yfinance_realtime_quote_lse_scaled_to_major_units():
+def _lse_quote_ticker(info: dict):
+    import pandas as pd
+
     ticker = MagicMock()
-    ticker.fast_info = {
-        "lastPrice": 117.2, "previousClose": 116.85, "open": 116.9, "dayHigh": 118.0,
-        "dayLow": 116.0, "lastVolume": 1000, "marketCap": 27152024882,
+    ticker.history.return_value = pd.DataFrame(
+        [{"Open": 116.9, "High": 118.0, "Low": 116.0, "Close": 117.2, "Volume": 1000}],
+        index=[pd.Timestamp("2026-07-01", tz="Europe/London")],
+    )
+    ticker.history_metadata = {
+        "regularMarketPrice": 117.2, "chartPreviousClose": 116.85,
+        "exchangeTimezoneName": "Europe/London",
+        "regularMarketTime": pd.Timestamp("2026-07-01 16:30", tz="Europe/London"),
     }
-    ticker.info = {"trailingPE": 20.5, "trailingEps": 5.7}
-    with patch("src.data_client.yfinance.financial_source.yahoo_ticker", return_value=ticker):
+    ticker.info = info
+    return ticker
+
+
+def test_yfinance_realtime_quote_lse_scaled_to_major_units():
+    ticker = _lse_quote_ticker({"marketCap": 27152024882, "trailingPE": 20.5, "trailingEps": 5.7})
+    with patch("src.data_client.yfinance.yahoo.yf.Ticker", return_value=ticker):
         row = yf_realtime_quote(LSE)[0]
     assert row["price"] == pytest.approx(1.172)
     assert row["change"] == pytest.approx(0.0035)
     assert row["dayHigh"] == pytest.approx(1.18)
     assert (row["volume"], row["marketCap"], row["eps"]) == (1000, 27152024882, 5.7)
 
+
+def test_yfinance_realtime_quote_prices_a_missing_market_cap_in_pounds():
+    """Without info's market cap, shares times the pound price, never the pence one."""
+    ticker = _lse_quote_ticker({})
+    ticker.fast_info = {"shares": 1000, "marketCap": 117200.0}
+    with patch("src.data_client.yfinance.yahoo.yf.Ticker", return_value=ticker):
+        row = yf_realtime_quote(LSE)[0]
+    assert row["marketCap"] == pytest.approx(1172.0)
 
 # --- scale resolution + no double-conversion --------------------------------
 
