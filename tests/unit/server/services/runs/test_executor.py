@@ -716,6 +716,32 @@ class TestThrownFinalizeLeavesEntryRunning:
         # Waiters are NOT released on a thrown CAS: the row is unfinalized,
         # so they must hit their timeout instead of reading it as done.
         assert not task_info.persistence_complete.is_set()
+        assert task_info.finish_failed_finalize is not None
+
+    @pytest.mark.asyncio
+    async def test_thrown_cas_keeps_the_terminal_effects_for_its_own_commit(self):
+        btm = _make_btm()
+        task_info = _make_task_info(thread_id="thread-cas", run_id="run-cas")
+        _, coordinator = self._wire(
+            btm, task_info, finalize_side_effect=RuntimeError("commit answer lost")
+        )
+        await self._run_finalize(btm, task_info, coordinator)
+
+        btm._apply_post_terminal_effects = AsyncMock()
+        with patch("src.server.services.runs.coordinator.RunCoordinator") as coord_cls:
+            await task_info.finish_failed_finalize(
+                {"status": "error", "metadata": {"recovery": "scanner"}}, tail=False
+            )
+            coord_cls.get_instance.return_value.post_finalize_tail.assert_not_called()
+            await task_info.finish_failed_finalize(
+                {"status": "completed", "metadata": {}}, tail=True
+            )
+
+        coord_cls.get_instance.return_value.post_finalize_tail.assert_called_once()
+        verdict = btm._apply_post_terminal_effects.await_args.args[2]
+        assert (verdict.applied, verdict.status) == (True, "completed")
+        assert btm._apply_post_terminal_effects.await_args.kwargs["kind"] == "stream_end"
+        assert task_info.persistence_complete.is_set()
 
     @pytest.mark.asyncio
     async def test_applied_cas_still_marks_terminal(self):
@@ -733,6 +759,126 @@ class TestThrownFinalizeLeavesEntryRunning:
 
         assert task_info.status == LocalRunStatus.COMPLETED
         assert task_info.metadata.get("run_handle") is None
+
+
+class TestFailedFinalizeCleanup:
+    """An entry left RUNNING by a thrown finalize leaves on the first sweep
+    after its row is settled, instead of keeping its workspace busy and its
+    slot taken until the abandoned timeout. With the writer fence on, the
+    recovery scanner owns the settle; without it, nothing else would settle
+    the row before a restart, so the sweep does. Whoever settled the row, the
+    owner's terminal effects the raise skipped run then; a row with no
+    recovery stamp is the finalize's own commit, whose answer was lost, so the
+    coordinator tail runs too."""
+
+    def _entry(self, btm, *, failed=True):
+        info = _make_task_info(thread_id="thread-ff", run_id="run-ff")
+        info.finish_failed_finalize = AsyncMock() if failed else None
+        info.metadata = {"run_handle": MagicMock()}
+        btm.executions[("thread-ff", "run-ff")] = info
+        return info
+
+    async def _sweep(self, btm, row, *, fenced=True, reconciled="error"):
+        get_run = AsyncMock(side_effect=row if isinstance(row, list) else [row, row])
+        coordinator = MagicMock()
+        coordinator.fail_open_run = AsyncMock()
+        coordinator.reconcile_orphaned_dispatch = AsyncMock(return_value=reconciled)
+        with patch("src.server.database.runs.lifecycle.get_run", get_run), \
+             patch("src.server.services.writer_guard.guard_enabled", return_value=fenced), \
+             patch("src.server.services.runs.coordinator.RunCoordinator") as coord_cls:
+            coord_cls.get_instance.return_value = coordinator
+            await btm._cleanup_abandoned_tasks()
+        return get_run, coordinator
+
+    @pytest.mark.asyncio
+    async def test_a_row_recovery_settled_gets_the_owner_effects_only(self):
+        btm = _make_btm()
+        info = self._entry(btm)
+        row = {"status": "error", "metadata": {"recovery": "scanner"}}
+
+        _, coordinator = await self._sweep(btm, row)
+
+        assert ("thread-ff", "run-ff") not in btm.executions
+        info.finish_failed_finalize.assert_awaited_once_with(row, tail=False)
+        coordinator.fail_open_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_row_its_own_finalize_settled_gets_its_terminal_effects(self):
+        btm = _make_btm()
+        info = self._entry(btm)
+        row = {"status": "completed", "metadata": {"msg_type": "ptc"}}
+
+        await self._sweep(btm, row)
+
+        info.finish_failed_finalize.assert_awaited_once_with(row, tail=True)
+        assert ("thread-ff", "run-ff") not in btm.executions
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_row_drops_the_entry(self):
+        btm = _make_btm()
+        info = self._entry(btm)
+
+        await self._sweep(btm, None)
+
+        assert ("thread-ff", "run-ff") not in btm.executions
+        info.finish_failed_finalize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_row_keeps_the_entry(self):
+        btm = _make_btm()
+        self._entry(btm)
+
+        with patch(
+            "src.server.database.runs.lifecycle.get_run",
+            AsyncMock(side_effect=TimeoutError()),
+        ):
+            await btm._cleanup_abandoned_tasks()
+
+        assert ("thread-ff", "run-ff") in btm.executions
+
+    @pytest.mark.asyncio
+    async def test_a_fenced_row_still_in_progress_waits_for_recovery(self):
+        btm = _make_btm()
+        self._entry(btm)
+
+        _, coordinator = await self._sweep(btm, {"status": "in_progress"})
+
+        assert ("thread-ff", "run-ff") in btm.executions
+        coordinator.reconcile_orphaned_dispatch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unfenced_row_still_in_progress_is_settled_here(self):
+        btm = _make_btm()
+        info = self._entry(btm)
+        settled = {"status": "error", "metadata": {"recovery": "dispatch_consumer_crash"}}
+
+        _, coordinator = await self._sweep(
+            btm, [{"status": "in_progress"}, settled], fenced=False
+        )
+
+        coordinator.reconcile_orphaned_dispatch.assert_awaited_once()
+        info.finish_failed_finalize.assert_awaited_once_with(settled, tail=False)
+        assert ("thread-ff", "run-ff") not in btm.executions
+
+    @pytest.mark.asyncio
+    async def test_an_unfenced_settle_that_fails_keeps_the_entry(self):
+        btm = _make_btm()
+        info = self._entry(btm)
+
+        await self._sweep(btm, {"status": "in_progress"}, fenced=False, reconciled=None)
+
+        info.finish_failed_finalize.assert_not_awaited()
+        assert ("thread-ff", "run-ff") in btm.executions
+
+    @pytest.mark.asyncio
+    async def test_a_running_entry_with_no_failed_finalize_is_left_alone(self):
+        btm = _make_btm()
+        self._entry(btm, failed=False)
+
+        get_run, _ = await self._sweep(btm, None)
+
+        get_run.assert_not_awaited()
+        assert ("thread-ff", "run-ff") in btm.executions
 
 
 # ---------------------------------------------------------------------------
