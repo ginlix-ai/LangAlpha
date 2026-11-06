@@ -44,4 +44,38 @@ describe('AddPortfolioHoldingDialog', () => {
 
     expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ symbol: 'CSPX.L', currency: 'USD' }));
   });
+
+  it('asks for the currency of a listing on an unknown venue that search names none for', async () => {
+    hits = [{ symbol: 'PETR4.SA', name: 'Petrobras' }];
+    const onAdd = vi.fn();
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    renderWithProviders(<AddPortfolioHoldingDialog open onAdd={onAdd} onClose={() => {}} />);
+    fireEvent.click(await screen.findByText('PETR4.SA'));
+
+    const [quantity, cost] = document.querySelectorAll('input[type="number"]');
+    fireEvent.change(quantity, { target: { value: '100' } });
+    fireEvent.change(cost, { target: { value: '45.78' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Portfolio' }));
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. BRL'), { target: { value: 'ABC' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Portfolio' }));
+    expect(onAdd).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. BRL'), { target: { value: 'brl' } });
+    expect(screen.getByText(/Avg Cost \(BRL\)/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Portfolio' }));
+    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ symbol: 'PETR4.SA', currency: 'BRL' }));
+    alert.mockRestore();
+  });
+
+  it('takes the currency search names for a listing on an unknown venue', async () => {
+    hits = [{ symbol: 'PETR4.SA', name: 'Petrobras', currency: 'BRL' }];
+    renderWithProviders(<AddPortfolioHoldingDialog open onAdd={vi.fn()} onClose={() => {}} />);
+    fireEvent.click(await screen.findByText('PETR4.SA'));
+
+    expect(screen.getByText(/Avg Cost \(BRL\)/)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('e.g. BRL')).not.toBeInTheDocument();
+  });
 });

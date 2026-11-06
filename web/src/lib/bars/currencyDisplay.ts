@@ -91,7 +91,7 @@ export function quotePlaces(
   { currency, assetClass, price }: { currency?: string | null; assetClass?: string | null; price?: number | null },
 ): number {
   if (isIndexListing(symbol, assetClass)) return 2;
-  const code = resolveCurrency(currency, symbol).toUpperCase();
+  const code = resolveCurrency(currency, symbol)?.toUpperCase();
   const base = assetClass === 'fund' && code === 'CNY' ? 3 : 2;
   const places = base + (code === 'GBP' ? minorUnitPlacesForSymbol(symbol) : 0);
   return price != null && Math.abs(price) < 1 ? Math.max(places, 4) : places;

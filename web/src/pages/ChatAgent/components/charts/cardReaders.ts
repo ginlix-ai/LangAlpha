@@ -420,7 +420,7 @@ export interface OptionRow {
 export interface OptionsChain {
   underlying?: string;
   rows: OptionRow[];
-  currency: string;
+  currency: string | null;
   status?: string;
   asOfTs?: number;
   /** Each type present, calls first. */
@@ -472,7 +472,7 @@ export interface MoverRow {
   change?: number;
   changePct?: number;
   volume?: number;
-  currency: string;
+  currency: string | null;
 }
 
 export interface MarketMovers {

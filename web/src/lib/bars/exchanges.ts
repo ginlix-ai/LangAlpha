@@ -157,10 +157,19 @@ export function isIndexListing(symbol: string | null | undefined, assetClass?: s
   return !!venue && !!prefix && /^\d+$/.test(venue.stem) && venue.stem.startsWith(prefix);
 }
 
-/** Infer listing currency from a ticker's exchange suffix; defaults to USD. */
-export function currencyForSymbol(symbol?: string | null): string {
+/**
+ * Infer listing currency from a ticker's exchange suffix: USD for a US
+ * listing (`.US` names the US venue, as the backend reads it), null for a
+ * suffix no venue here names (`PETR4.SA`). That listing is
+ * on the backend's unknown venue, whose currency is unknown, so its figures
+ * print with none rather than as dollars.
+ */
+export function currencyForSymbol(symbol?: string | null): string | null {
   if (!symbol) return 'USD';
-  return exchangeInfoForSymbol(symbol)?.currency ?? 'USD';
+  const info = exchangeInfoForSymbol(symbol);
+  if (info) return info.currency;
+  const s = symbol.trim().toUpperCase().replace(/\.US$/, '');
+  return s.includes('.') && !isIndexFamilySpelling(s) && !usClassShare(s) ? null : 'USD';
 }
 
 /** Places a GBP price from a pence-quoted venue carries past the penny. */
@@ -190,7 +199,7 @@ export function timezoneForSymbol(symbol?: string | null): string {
 
 /** The currency a row is quoted in: its own code when the wire carried one,
  *  else the listing currency its symbol's venue implies. */
-export function resolveCurrency(code: string | null | undefined, symbol: string | null | undefined): string {
+export function resolveCurrency(code: string | null | undefined, symbol: string | null | undefined): string | null {
   return code || currencyForSymbol(symbol);
 }
 
