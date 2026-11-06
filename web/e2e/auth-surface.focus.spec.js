@@ -19,7 +19,7 @@
  * platform mode. Only the send that opens the inbox screen is answered, by a
  * route handler rather than a server, so nothing here reaches a network.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 import { outlineOn, tabTo, unpainted } from './helpers/focusPaint.js';
 
@@ -120,6 +120,9 @@ async function darkAfterTabWalk(page) {
       };
     });
     if (hit && hit.paint !== resting[hit.i].paint) lit.add(hit.i);
+    // Three laps leave room for the browser's own stops in the cycle; once
+    // every control has lit there is nothing left for them to find.
+    if (lit.size === resting.length) break;
   }
 
   return {
@@ -222,16 +225,21 @@ test.describe('every view of the auth surface', () => {
 
     // One second at a time, not one jump: the countdown re-arms its timer from
     // an effect, so the next tick does not exist yet when the current one
-    // fires. A single fastForward finds one timer and lands on 59.
+    // fires. A single fastForward finds one timer and lands on 59. Each jump
+    // fires only the timers already due, where runFor plays every timer and
+    // frame of the second through, which measured ~300ms a second and took
+    // the minute out to 18s. A jump the effect has not re-armed for yet
+    // fires nothing and the next one picks the tick up, so the bound is
+    // only there to end a countdown that never would.
     //
     // `install()` makes the clock steerable, it does not stop it -- `pauseAt`
     // is what freezes time. Measured: a 300ms setTimeout inside the page still
     // resolves in 300ms after installing. So the waits further down this file
     // are unaffected, and real time alone is still far too slow to walk out a
-    // 60s cooldown inside a 30s test, which is what runFor is for.
+    // 60s cooldown inside a 30s test.
     const resend = page.locator('.login-page__resend-btn');
-    for (let tick = 0; tick < 90 && await resend.isDisabled(); tick += 1) {
-      await page.clock.runFor(1000);
+    for (let tick = 0; tick < 300 && await resend.isDisabled(); tick += 1) {
+      await page.clock.fastForward(1000);
     }
     await expect(resend).toBeEnabled();
 

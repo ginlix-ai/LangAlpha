@@ -11,6 +11,7 @@ pnpm dev          # dev server on 127.0.0.1:5173 (proxies /api/v1 + /ws/v1 → V
 pnpm build        # tsc -b && vite build && check-critical-path — typecheck and first-load budget both gate the build
 pnpm typecheck    # tsc -b over the app, test and node projects (gated in CI)
 pnpm test         # vitest run;  test:e2e = Playwright
+E2E_BUILD=1 pnpm test:e2e   # e2e on production builds + vite preview, as CI runs it (locally the default is dev servers)
 pnpm lint         # ESLint 10 flat config, cached in node_modules/.cache; errors gate CI, warnings are advisory
 ```
 

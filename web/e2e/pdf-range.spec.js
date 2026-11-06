@@ -104,7 +104,7 @@ async function openPdf(page, bytes, overrides = {}) {
     ...chatViewOverrides(),
     [`GET /workspaces/${WS}/files`]: { files: [FILE] },
   });
-  await page.route((url) => url.pathname.endsWith(`/workspaces/${WS}/files/download`), rangeRoute(bytes, state));
+  await page.route(new RegExp(`/workspaces/${WS}/files/download(?:\\?|$)`), rangeRoute(bytes, state));
   await configureSSE({
     method: 'GET',
     path: `/api/v1/threads/${TH}/messages/replay`,
@@ -154,6 +154,20 @@ async function goToPage(page, n) {
 
 const fetched = (log) => log.reduce((sum, r) => sum + r.bytes, 0);
 
+/**
+ * Polls `done` while jumping the page's clock half a second at a time. A read
+ * that fails waits out its retries' backoff on timers, 2.5s a read, which the
+ * jumps pass without the test sitting through them. Needs
+ * `page.clock.install()` before the page loads; until a jump the clock runs
+ * in real time.
+ */
+async function jumpUntil(page, done) {
+  await expect.poll(async () => {
+    await page.clock.fastForward(500);
+    return done();
+  }, { timeout: 15000, intervals: [50] }).toBe(true);
+}
+
 test.describe('pdf range loading', () => {
   test.beforeEach(async () => {
     await resetMockServer();
@@ -171,7 +185,9 @@ test.describe('pdf range loading', () => {
     await goToPage(page, 30);
     await drawn(page, 29);
     await expect(page.getByLabel('Page number')).toHaveValue('30');
-    expect(fetched(state.log)).toBeGreaterThan(before);
+    // Polled: the canvas is sized before the slice it draws from has landed
+    // (see windowPainted), so `drawn` can pass with that read still in flight.
+    await expect.poll(() => fetched(state.log)).toBeGreaterThan(before);
     expect(fetched(state.log)).toBeLessThan(LARGE.length);
   });
 
@@ -226,6 +242,7 @@ test.describe('pdf range loading', () => {
   });
 
   test('a slice lost to an outage longer than its retries reloads the file in place', async ({ page }) => {
+    await page.clock.install();
     const state = await openPdf(page, LARGE);
     await drawn(page, 0);
     state.outage = true;
@@ -234,7 +251,7 @@ test.describe('pdf range loading', () => {
     // The reload finds the same version, and still replaces the file: the
     // document over the old one waits on the lost slice for good.
     const reopened = () => state.log.slice(before).filter((r) => r.range === OPENING_RANGE).length;
-    await expect.poll(reopened, { timeout: 15000 }).toBeGreaterThan(0);
+    await jumpUntil(page, () => reopened() > 0);
     await drawn(page, 34);
     await windowPainted(page);
     await expect(page.getByLabel('Page number')).toHaveValue('35');
@@ -244,6 +261,7 @@ test.describe('pdf range loading', () => {
   });
 
   test('a slice that keeps failing reloads the file once, then offers a retry', async ({ page }) => {
+    await page.clock.install();
     const state = await openPdf(page, LARGE);
     await drawn(page, 0);
     state.fail = true;
@@ -252,7 +270,7 @@ test.describe('pdf range loading', () => {
     // pdf.js never asks again for a slice that failed, so the file reloads
     // from its first slice; that failing too lands on the panel's error, which
     // has the Retry the viewer's own fallback lacks.
-    await expect(page.getByText('Failed to load file')).toBeVisible({ timeout: 15000 });
+    await jumpUntil(page, () => page.getByText('Failed to load file').isVisible());
     await expect(page.getByText('Unable to preview this file')).toHaveCount(0);
     // The open, then the one reload, asked three times: the first try and two retries.
     expect(state.log.filter((r) => r.range === OPENING_RANGE).map((r) => r.status)).toEqual([206, 500, 500, 500]);

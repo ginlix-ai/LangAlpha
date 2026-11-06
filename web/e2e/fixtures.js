@@ -46,20 +46,21 @@ export async function mockAPI(page, overrides = {}) {
 
   for (const [key, response] of Object.entries(routes)) {
     const [method, pathPattern] = key.split(' ', 2);
-    // Convert glob-style * in path to regex [^/]+ for segment matching.
-    // Use a URL predicate so query params are ignored (glob patterns
-    // match the full URL string, which breaks on ?key=val).
+    // A glob-style * matches one path segment, and any query string is
+    // ignored. A RegExp, not a URL predicate: Playwright has to pause every
+    // request a page makes while any of its routes is a predicate, and a page
+    // on the dev server makes about a thousand, each then waiting on a round
+    // trip to this process. A RegExp is matched where the request is, so
+    // only API calls stop.
     const pathRegex = new RegExp(
-      '^' + pathPattern.replace(/\*/g, '[^/]+') + '$',
+      `^https?://[^/]+/api/v1${pathPattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/?#]+')}(?:[?#].*)?$`,
     );
 
     await page.route(
-      (url) => pathRegex.test(url.pathname.replace('/api/v1', '')),
+      pathRegex,
       async (route) => {
-        // A page navigation is never one of these calls. Some API paths are also
-        // app routes -- `/news/:id` is both -- and the predicate above sees only
-        // a pathname, so without this the document request for /news/1 is
-        // answered with the article JSON and the SPA never loads at all.
+        // A page navigation is never one of these calls, even one to an API
+        // address.
         if (route.request().resourceType() === 'document') return route.fallback();
         const reqMethod = route.request().method();
         if (method !== '*' && reqMethod !== method) {
@@ -91,14 +92,23 @@ export const test = base.extend({
   // Context-level so it runs after every page.route() handler has had its turn
   // (mockAPI falls back to it) and covers every page the test opens.
   context: async ({ context }, provide) => {
+    // A glob, so only the API origin's requests are paused (see mockAPI).
     await context.route(
-      (url) => url.hostname === '127.0.0.1' && url.port === String(APP_API_PORT),
+      `http://127.0.0.1:${APP_API_PORT}/**`,
       (route) => {
         const url = new URL(route.request().url());
         url.port = String(WORKER_MOCK_PORT);
         return route.fallback({ url: url.href });
       },
     );
+    // The app asks Google Fonts for its faces. They are answered with none, so
+    // every page draws in the system fallback from its first frame: a face that
+    // arrives over the network mid-test rewraps the text under whatever the
+    // test is measuring, and no spec may depend on reaching the internet.
+    await context.route(/^https:\/\/fonts\.(?:googleapis|gstatic)\.com\//, (route) =>
+      route.request().url().startsWith('https://fonts.googleapis.com/')
+        ? route.fulfill({ status: 200, contentType: 'text/css', body: '' })
+        : route.fulfill({ status: 404, body: '' }));
     await provide(context);
   },
 });

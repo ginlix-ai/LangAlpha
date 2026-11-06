@@ -13,9 +13,10 @@ async function openOnStaleBuild(page) {
     localStorage.setItem('langalpha-onboarding-ignored-at', String(Date.now()));
   });
   await mockAPI(page);
-  // The dev server's entry is /src/main.tsx, so any other build id is a newer one.
+  // The tab's own build id is its entry's file name (/src/main.tsx on a dev
+  // server, index-<hash>.js in a build), so this one is always newer.
   await page.route(
-    (url) => url.pathname.endsWith('/version.json'),
+    /\/version\.json(?:\?|$)/,
     (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
