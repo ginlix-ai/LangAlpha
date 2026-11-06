@@ -38,3 +38,6 @@ dist-ssr
 # streaming smoothness benchmark output (e2e/perf)
 /perf-results/
 /dist-perf/
+
+# production builds the e2e suite serves on CI (E2E_BUILD)
+/dist-e2e/

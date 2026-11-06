@@ -10,8 +10,9 @@
  * round-trip — matching the `patchWorkspace` pattern in useNavigationData.
  */
 import type { QueryClient } from '@tanstack/react-query';
+import { registerAuthReset } from '@/lib/authResets';
 import { queryKeys } from '@/lib/queryKeys';
-import { isArchivedThreadsKey, patchThreadRows } from '@/lib/threadRowActions';
+import { isArchivedThreadsKey, mapThreadCacheEntry, patchThreadRows } from '@/lib/threadRowActions';
 import type { Thread } from '@/types/api';
 
 /**
@@ -93,6 +94,103 @@ export function patchThreadTitle(
 }
 
 type LivenessRow = { thread_id: string; title?: string | null };
+
+const titleHolds = new Map<string, () => void>();
+// A hold outlives the cache it watches: the next session's reads must not
+// take a title a signed-out session was saving.
+registerAuthReset(() => {
+  for (const release of [...titleHolds.values()]) release();
+});
+
+/**
+ * Keep a title being saved on the thread's cached rows until its write
+ * answers. A list or detail read that went out before the rename answers with
+ * the title the server held then, and landing it would put the old title back
+ * for as long as the write is out (the gallery's first page, still loading
+ * when the sidebar renames, did exactly that). So while held, a read that
+ * lands is rewritten to the held title before anything renders it. Only
+ * fetched results are rewritten: a patch (a generated title, a refusal's
+ * restore) is someone else's word and stands. A later hold on the thread
+ * replaces this one. The rename ends it once its write settles, before it reads
+ * the lists again: `saved()` after a write that saved, `release()` after one
+ * that failed.
+ */
+export function holdThreadTitle(
+  queryClient: QueryClient,
+  threadId: string,
+  title: string,
+): { saved: () => void; release: () => void } {
+  titleHolds.get(threadId)?.();
+  const retitle = (rows: Thread[]): Thread[] =>
+    rows.some((t) => t.thread_id === threadId && t.title !== title)
+      ? rows.map((t) => (t.thread_id === threadId ? { ...t, title } : t))
+      : rows;
+  // The hand-off cards' and the roster's liveness reads hold a cleared title
+  // as null, as patchThreadTitle writes it. Undefined when nothing differs,
+  // since writing the same rows would restart the cards' poll timers.
+  const held = title || null;
+  const reliven = (data: { liveness?: LivenessRow[] }) => {
+    const rows = data.liveness ?? [];
+    if (!rows.some((r) => r.thread_id === threadId && (r.title ?? null) !== held)) return undefined;
+    return { ...data, liveness: rows.map((r) => (r.thread_id === threadId ? { ...r, title: held } : r)) };
+  };
+  // Set once the write has saved: the reads still out then, each by the
+  // promise of its fetch, and only they.
+  let draining: Map<string, Promise<unknown> | undefined> | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+    if (event.type !== 'updated') return;
+    const { queryKey, queryHash, state } = event.query;
+    if (queryKey[0] !== queryKeys.threads.all[0]) return;
+    if (draining) {
+      if (!draining.has(queryHash)) return;
+      // An invalidation silently cancels an active query's read and fetches
+      // again under the same hash. That read is after the write, so it is the
+      // server's word, and the one this hold was for is gone.
+      if (event.query.promise !== draining.get(queryHash)) {
+        draining.delete(queryHash);
+        if (draining.size === 0) release();
+        return;
+      }
+    }
+    if (event.action.type === 'success' && !event.action.manual) {
+      const data = state.data as (Thread & { liveness?: LivenessRow[] }) | undefined;
+      const next = data?.thread_id === threadId
+        ? (data.title !== title ? { ...data, title } : undefined)
+        : Array.isArray(data?.liveness)
+          ? reliven(data)
+          : mapThreadCacheEntry(data, retitle);
+      if (next !== undefined) queryClient.setQueryData(queryKey, next);
+    }
+    if (draining && state.fetchStatus === 'idle') {
+      draining.delete(queryHash);
+      if (draining.size === 0) release();
+    }
+  });
+  function release(saved = false) {
+    if (saved && !draining) {
+      // An invalidation cancels an active query's read and fetches again, but
+      // a read with no observer (a prefetch, a list whose view has gone) keeps
+      // going and would land the title from before the rename. Once the write
+      // has saved, the hold lasts until the reads out at that moment settle.
+      // A write that failed lets go at once: a read from before it is right.
+      draining = new Map(
+        queryClient.getQueryCache()
+          .findAll({ queryKey: queryKeys.threads.all, fetchStatus: 'fetching' })
+          .map((q) => [q.queryHash, q.promise]),
+      );
+      if (draining.size > 0) {
+        timer = setTimeout(() => release(), 60_000);
+        return;
+      }
+    }
+    clearTimeout(timer);
+    unsubscribe();
+    if (titleHolds.get(threadId) === release) titleHolds.delete(threadId);
+  }
+  titleHolds.set(threadId, release);
+  return { saved: () => release(true), release: () => release() };
+}
 
 /**
  * Apply a thread's share status to every cached thread list holding the row,

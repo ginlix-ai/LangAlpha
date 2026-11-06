@@ -251,7 +251,14 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "healthy", lambda path: True)
     monkeypatch.setattr(daemon, "_probe", lambda paths: None)
     monkeypatch.setattr(daemon, "start", lambda args, state, paths, gate=None: (False, None))
-    return SimpleNamespace(tmp=tmp_path, private=private, mount=mount, root=root, paths=paths)
+    yield SimpleNamespace(tmp=tmp_path, private=private, mount=mount, root=root, paths=paths)
+    # A folder a test shut to its owner is one pytest's cleanup cannot list,
+    # so it would warn about it on every later run.
+    for top, dirs, _files in os.walk(tmp_path):
+        for name in dirs:
+            path = os.path.join(top, name)
+            if not os.path.islink(path):
+                os.chmod(path, 0o700)
 
 
 _NEW_CONFIG = json.dumps({"base_url": "http://server", "token": "lfs1.new"})

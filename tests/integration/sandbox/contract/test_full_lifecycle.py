@@ -87,13 +87,16 @@ class TestFullLifecycle:
                     import asyncio
                     await asyncio.sleep(5)
                     await runtime.stop(timeout=180)
-            assert await runtime.get_state() == RuntimeState.STOPPED
+            # refresh_state, as production reads it: get_state is the SDK's
+            # cached state, which a late "stopping" event can overwrite after
+            # the stop has already finished.
+            assert await runtime.refresh_state() == RuntimeState.STOPPED
 
             # 9. Reconnect via provider.get
             async with timed("full_lifecycle", "reconnect"):
                 reconnected = await sandbox_provider.get(runtime.id)
                 await reconnected.start()
-            assert await reconnected.get_state() == RuntimeState.RUNNING
+            assert await reconnected.refresh_state() == RuntimeState.RUNNING
 
             # 10. Verify data survived
             async with timed("full_lifecycle", "verify_persistence"):

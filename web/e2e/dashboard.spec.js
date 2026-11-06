@@ -102,6 +102,38 @@ function holdingsWidget(page) {
   return widget(page, 'personal.portfolioWatchlist');
 }
 
+/**
+ * Waits for the grid to stop moving. Each cell fits its content, so a widget
+ * whose data lands after first paint resizes its cell and the cells below it
+ * slide to their new places. A click is a press and a release: a row that
+ * slides out from under the pointer between the two takes the release to the
+ * page behind it, the click goes to an ancestor of both, and Playwright, which
+ * checks only the press, reports the click done while nothing opened.
+ *
+ * Settled is every placeholder gone (a skeleton bar, or a cell holding its
+ * height for one with `data-fit-hold`), so every widget's data is in, and then
+ * no cell moving across a window longer than the shrink debounce in
+ * WidgetFrame, after which a cell reports a smaller height and starts to slide.
+ */
+async function gridSettled(page) {
+  await expect(page.locator('.react-grid-layout').locator('[data-fit-hold], .animate-pulse')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => new Promise((resolve) => {
+    const cells = () => Array.from(document.querySelectorAll('.react-grid-item'), (cell) => {
+      const r = cell.getBoundingClientRect();
+      return `${r.x},${r.y},${r.width},${r.height}`;
+    }).join(' ');
+    const sliding = () => document.getAnimations().some((a) => a.effect?.target?.classList?.contains('react-grid-item'));
+    const start = performance.now();
+    const before = cells();
+    const frame = () => {
+      if (sliding() || cells() !== before) return resolve(false);
+      if (performance.now() - start > 300) return resolve(true);
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }))).toBe(true);
+}
+
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
@@ -209,8 +241,12 @@ test.describe('Market Indices & News', () => {
 
     await page.goto('/dashboard');
 
-    // Click the headline
-    await widget(page, 'news.feed').getByTitle('Earnings Beat Expectations').click();
+    // Click the headline once it stays put: the widgets above it are still
+    // loading and resizing their cells when it first shows.
+    const headline = widget(page, 'news.feed').getByTitle('Earnings Beat Expectations');
+    await expect(headline).toBeVisible({ timeout: 15000 });
+    await gridSettled(page);
+    await headline.click();
 
     // Modal opens with article content
     await expect(

@@ -6,12 +6,69 @@ on:
   pull_request:
     branches: [main]
 
+# A new push to a PR makes its running checks moot; a push to main keeps each
+# run, so every merged commit is tested.
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # The backend image's Python (deploy/Dockerfile.backend). Left unset, uv
 # downloads the newest release, which a dependency may not ship wheels for yet.
 env:
   UV_PYTHON: "3.13"
 
 jobs:
+  # Which path-scoped jobs a PR needs. A push to main runs every job, and so
+  # does a PR whose filter step fails: each job's `if` reads a missing output
+  # as "run".
+  changes:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+      bridge: ${{ steps.filter.outputs.bridge }}
+      cli: ${{ steps.filter.outputs.cli }}
+      market_protocol: ${{ steps.filter.outputs.market_protocol }}
+      claude_code_scripts: ${{ steps.filter.outputs.claude_code_scripts }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            workflow: &workflow
+              - .github/workflows/test.yml
+            web:
+              - *workflow
+              - web/**
+            bridge:
+              - *workflow
+              - web/**
+              - src/server/preview_proxy/bridge/**
+              - src/server/preview_proxy/page_bridge.py
+              - Makefile
+            cli:
+              - *workflow
+              - cli/**
+            market_protocol:
+              - *workflow
+              - libs/market-protocol/**
+            claude_code_scripts:
+              - *workflow
+              - src/ptc_agent/agent/claude_code/**
+              - src/ptc_agent/core/claude_code_managed*
+              - src/ptc_agent/core/paths.py
+              # The scripts the Mac runs come from these, _ssh_shell and
+              # _ssh_bootstrap included.
+              - src/ptc_agent/core/sandbox/providers/_ssh_*.py
+              - src/ptc_agent/core/sandbox/providers/ssh.py
+              - src/llms/claude_code*
+              - tests/unit/ptc_agent/agent/claude_code/**
+              - pyproject.toml
+              - uv.lock
+
   backend-unit:
     runs-on: ubuntu-latest
     steps:
@@ -21,7 +78,11 @@ jobs:
           version: "latest"
       # claude-code: the Claude Code runtime's tests drive its bundled CLI.
       - run: uv sync --group dev --extra test --extra claude-code
-      - run: uv run pytest tests/unit/ -v --tb=short --junitxml=test-results/backend-unit.xml
+      # The Grep tool's tests run rg on the host; without it they skip.
+      - run: sudo apt-get install -y ripgrep
+      # No -v: under xdist it interleaves four workers' lines. -rfE lists
+      # failures and errors at the end, and the JUnit file has every result.
+      - run: uv run pytest tests/unit/ -n 4 --dist load -rfE --tb=short --junitxml=test-results/backend-unit.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -32,6 +93,8 @@ jobs:
   # BSD tools, bash 3.2, no flock, no sha256sum, no /proc. The Linux job
   # emulates that userland; this one is the real thing.
   claude-code-scripts-macos:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.claude_code_scripts != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +110,8 @@ jobs:
   # the backend's version, against an installed copy rather than the checkout,
   # so a file the wheel leaves out fails here instead of in a consumer.
   market-protocol:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.market_protocol != 'false' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -74,17 +139,16 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/floors" --resolution lowest-direct . "pytest>=8"
           "$RUNNER_TEMP/floors/bin/pytest" -v --tb=short -p no:cacheprovider
 
+  # Everything in tests/integration/ that needs only Postgres and Redis, with
+  # the sandbox tests on the in-process memory provider. No secrets, so it
+  # runs on fork PRs as well, and in parallel with backend-unit. The same
+  # tests on Daytona run in sandbox-integration.yml, only when a change can
+  # reach them, and nightly.
   backend-integration:
     runs-on: ubuntu-latest
-    needs: backend-unit
-    # Same-repo PRs + pushes only. Fork PRs can't read secrets on the
-    # `pull_request` event, so they run through fork-integration.yml
-    # (pull_request_target, gated by the fork-ci environment reviewers) instead.
-    if: >-
-      github.event_name == 'push' ||
-      (github.event.pull_request.base.ref == 'main' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
-    environment: integration
+    timeout-minutes: 30
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:18
@@ -115,49 +179,31 @@ jobs:
       DB_USER: postgres
       DB_PASSWORD: postgres
       REDIS_URL: redis://localhost:6379
-      SANDBOX_TEST_PROVIDER: daytona
-      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-      DAYTONA_BASE_URL: ${{ secrets.DAYTONA_BASE_URL }}
+      SANDBOX_TEST_PROVIDERS: memory
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           version: "latest"
-      - run: uv sync --group dev --extra test
+      # claude-code: tests/integration/claude_code drives the bundled CLI on a
+      # Docker sshd against a fake Messages API; without the extra they are
+      # not collected.
+      - run: uv sync --group dev --extra test --extra claude-code
       - run: sudo apt-get install -y ripgrep
-      # Skip docker-provider sandbox tests; they need GHCR auth + buildx
-      # and are owned by the sandbox-integration workflow's docker tier.
-      - run: uv run pytest tests/integration/ -v --tb=short -m "integration and not yahoo" --ignore=tests/integration/sandbox/providers --junitxml=test-results/backend-integration.xml --sandbox-metrics --sandbox-metrics-file test-results/session_metrics.json
+      # sandbox/providers holds the Docker and Daytona provider tests, which
+      # sandbox-integration.yml owns.
+      - run: uv run pytest tests/integration/ -v --tb=short -m "integration and not yahoo" --ignore=tests/integration/sandbox/providers --junitxml=test-results/backend-integration.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: backend-integration-results
           path: test-results/
 
-  hotpath-comment:
-    runs-on: ubuntu-latest
-    needs: backend-integration
-    if: always() && github.event_name == 'pull_request' && needs.backend-integration.result != 'skipped'
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: backend-integration-results
-          path: test-results/
-      - name: Generate hot path comment
-        run: python3 scripts/ci/hotpath_comment.py test-results/backend-integration.xml --metrics test-results/session_metrics.json > comment_body.md
-      - name: Post sticky PR comment
-        if: hashFiles('comment_body.md') != ''
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: hotpath-metrics
-          path: comment_body.md
-
   # langalpha, the CLI: the same bundle every computer runs and npm ships, on
   # the Node floor the package declares and on the image's Node.
   cli:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.cli != 'false' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -184,6 +230,8 @@ jobs:
   # rest of the repo out of reach: a config, source or test that resolves a
   # path outside web/ fails here rather than in a build that copies only web/.
   frontend-unit:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.web != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -229,6 +277,8 @@ jobs:
   # against the viewer's message protocol in web/, and tested on web's Vitest.
   # It borrows web's install from outside; web never reads the bridge.
   preview-bridge:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.bridge != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -274,6 +324,8 @@ jobs:
       - run: pnpm test
 
   frontend-e2e:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.web != 'false' }}
     runs-on: ubuntu-latest
     # Bound a hung run instead of riding GitHub's 6h default timeout.
     timeout-minutes: 20

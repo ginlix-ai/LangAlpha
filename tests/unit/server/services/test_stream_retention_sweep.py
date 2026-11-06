@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fnmatch
-import uuid
 from unittest.mock import patch
 
 import pytest
@@ -136,7 +135,7 @@ async def run_sweep(client, *, root=_root_oracle, task=_task_oracle, enabled=Tru
 @pytest.mark.parametrize(
     "value,expected",
     [
-        (str(uuid.uuid4()), True),
+        ("3e7b9c1d-5a2f-4c8e-b6d0-9f1a2b3c4d5e", True),
         (TID, True),
         (V1_TASK, False),
         ("", False),

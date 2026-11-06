@@ -17,7 +17,7 @@ import {
   type ThreadsData,
 } from '@/lib/navThreadsStore';
 import type { ResourceTier, ThreadsResponse, Workspace, WorkspacesResponse } from '@/types/api';
-import { patchThreadTitle } from '@/lib/threadListCache';
+import { holdThreadTitle, patchThreadTitle } from '@/lib/threadListCache';
 import { getThread, getWorkspaces, getWorkspaceThreads, reorderWorkspaces, updateThread, updateThreadTitle } from '../utils/api';
 import { workspaceThreadsQuery } from '../utils/threadQueries';
 import { pinWorkspaceRow, rankCachedWorkspaces, renameWorkspaceRow, unrankCachedWorkspaces } from './workspaceRowActions';
@@ -526,8 +526,12 @@ export function useNavigationData(currentWorkspaceId: string) {
     const isLatest = () => _renameSeq.get(threadId) === seq;
     const sameSession = authSessionCheck();
     patchThreadTitle(queryClient, threadId, title);
+    const hold = holdThreadTitle(queryClient, threadId, title);
     try {
-      const updated = await updateThreadTitle(threadId, title);
+      const updated = await updateThreadTitle(threadId, title).then(
+        (saved) => { hold.saved(); return saved; },
+        (e: unknown) => { hold.release(); throw e; },
+      );
       if (!sameSession()) return;
       if (isLatest()) patchThreadTitle(queryClient, threadId, updated.title ?? title, updated.updated_at);
     } catch (e) {
@@ -540,9 +544,10 @@ export function useNavigationData(currentWorkspaceId: string) {
       patchThreadTitle(queryClient, threadId, held?.title ?? previousTitle, undefined, { from: title });
     }
     if (!isLatest()) return;
-    // A list read already in flight when the field closed would land the old
-    // title, and a refused rename may have put back one that never saved:
-    // read the server's title again now that it has answered.
+    // A read already out when the field closed lands the title being saved
+    // (holdThreadTitle), not the server's, and a refused rename may have put
+    // back one that never saved: read the server's title again now that it
+    // has answered.
     queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(wsId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.threads.detail(threadId) });
   }, [queryClient, t]);

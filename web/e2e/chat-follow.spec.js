@@ -73,6 +73,10 @@ test.describe('pin on send', () => {
     await page.goto(`/chat/t/${TH}`);
     await page.waitForSelector('textarea', { timeout: 10000 });
     await page.waitForSelector('[data-message-role="assistant"]', { timeout: 10000 });
+    // The history draws in a fallback until its web font arrives over the
+    // network, and the swap rewraps it: under a pinned message that moves the
+    // view's offset for a reason that is not the turn's.
+    await page.evaluate(() => document.fonts.ready.then(() => true));
   });
 
   test("pins the reader's message under the top, and a short reply streams in under it without scrolling", async ({ page }) => {

@@ -184,7 +184,7 @@ async def test_an_expired_entry_still_in_the_mirror_is_refused(
     assert len(row_reads) == 1
 
     await asyncio.sleep(
-        (short_until - datetime.now(UTC)).total_seconds() + 1.0
+        (short_until - datetime.now(UTC)).total_seconds() + 0.5
     )
     auth_key, _, _ = tokens.KIND.keys(computer.computer_id)
     assert await redis.hexists(auth_key, core.field(core.digest(short)))

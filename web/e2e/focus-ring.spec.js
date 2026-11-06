@@ -38,7 +38,7 @@ const FIRST_PAINT = { timeout: 15_000 };
 // The Workspaces search box shows only once there is a workspace to search,
 // and the default account holds Home alone. So the gallery opens on one.
 async function openGallery(page) {
-  await page.route((url) => url.pathname.replace('/api/v1', '') === '/workspaces', (route) => {
+  await page.route(/\/api\/v1\/workspaces(?:\?|$)/, (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
     const includeHome = new URL(route.request().url()).searchParams.get('include_home') === 'true';
     const home = { workspace_id: 'ws-home', name: 'Home', status: 'unbound', is_home: true, config: {} };

@@ -40,6 +40,9 @@ class TestResult:
     duration_s: float
     passed: bool
     failure_message: str = ""
+    # A skipped test (Daytona down, or no key) has no timing to show, and is
+    # neither a pass nor a failure.
+    skipped: bool = False
 
 
 @dataclass
@@ -57,8 +60,12 @@ class CategorySummary:
         return sum(1 for t in self.tests if t.passed)
 
     @property
+    def skipped(self) -> int:
+        return sum(1 for t in self.tests if t.skipped)
+
+    @property
     def failed(self) -> int:
-        return self.total - self.passed
+        return self.total - self.passed - self.skipped
 
     @property
     def total_duration_s(self) -> float:
@@ -133,9 +140,13 @@ def parse_junit_xml(path: str) -> list[TestResult]:
 
             failure = tc.find("failure")
             error = tc.find("error")
-            passed = failure is None and error is None
+            skipped_el = tc.find("skipped")
+            skipped = skipped_el is not None and failure is None and error is None
+            passed = failure is None and error is None and not skipped
             msg = ""
-            if failure is not None:
+            if skipped:
+                msg = skipped_el.get("message", "")
+            elif failure is not None:
                 msg = failure.get("message", "")
             elif error is not None:
                 msg = error.get("message", "")
@@ -151,6 +162,7 @@ def parse_junit_xml(path: str) -> list[TestResult]:
                 duration_s=duration,
                 passed=passed,
                 failure_message=msg,
+                skipped=skipped,
             ))
 
     return results
@@ -191,6 +203,10 @@ def generate_comment(
     categories = group_by_category(results)
     total_tests = sum(c.total for c in categories)
     total_passed = sum(c.passed for c in categories)
+    total_skipped = sum(c.skipped for c in categories)
+    outages = sum(
+        1 for r in results if r.skipped and r.failure_message.startswith("Daytona unavailable")
+    )
     total_duration = sum(c.total_duration_s for c in categories)
 
     test_durations: dict[str, float] = {}
@@ -228,7 +244,7 @@ def generate_comment(
         lines.append("|------|----------|--------|")
 
         for test in cat.tests:
-            icon = ":white_check_mark:" if test.passed else ":x:"
+            icon = ":white_check_mark:" if test.passed else ":fast_forward:" if test.skipped else ":x:"
             name = _humanize_test_name(test.name)
             dur = _fmt_duration(test.duration_s)
             lines.append(f"| {name} | {dur} | {icon} |")
@@ -237,6 +253,10 @@ def generate_comment(
 
     all_pass = total_passed == total_tests
     status_text = "100% pass" if all_pass else f"{total_passed}/{total_tests} passed"
+    if total_skipped:
+        status_text += f", {total_skipped} skipped"
+        if outages:
+            status_text += f" ({outages} with Daytona unavailable)"
     lines.append(
         f"**Total:** {total_tests} tests, {_fmt_duration(total_duration)}, {status_text}"
     )

@@ -10,7 +10,13 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 class TestRuntimeStateMachine:
-    """Full state machine: running -> stopped -> running -> deleted."""
+    """Full state machine: running -> stopped -> running -> deleted.
+
+    States after a transition are read with ``refresh_state``, as production
+    reads them: Daytona's ``get_state`` is the SDK's cached state, which a
+    late event from its subscription can set back to ``stopping`` after the
+    stop has finished.
+    """
 
     async def test_initial_state_is_running(self, sandbox_runtime, timed):
         async with timed("lifecycle", "get_state"):
@@ -20,35 +26,35 @@ class TestRuntimeStateMachine:
     async def test_stop_transitions_to_stopped(self, sandbox_runtime, timed):
         async with timed("lifecycle", "stop"):
             await sandbox_runtime.stop()
-        assert await sandbox_runtime.get_state() == RuntimeState.STOPPED
+        assert await sandbox_runtime.refresh_state() == RuntimeState.STOPPED
 
     async def test_start_from_stopped(self, sandbox_runtime, timed):
         await sandbox_runtime.stop()
         async with timed("lifecycle", "start_from_stopped"):
             await sandbox_runtime.start()
-        assert await sandbox_runtime.get_state() == RuntimeState.RUNNING
+        assert await sandbox_runtime.refresh_state() == RuntimeState.RUNNING
 
     async def test_start_when_already_running_is_noop(self, sandbox_runtime, timed):
         async with timed("lifecycle", "start_when_running"):
             await sandbox_runtime.start()
-        assert await sandbox_runtime.get_state() == RuntimeState.RUNNING
+        assert await sandbox_runtime.refresh_state() == RuntimeState.RUNNING
 
     async def test_full_stop_start_cycle(self, sandbox_runtime, timed):
         """running -> stop -> start -> stop -> start"""
-        assert await sandbox_runtime.get_state() == RuntimeState.RUNNING
+        assert await sandbox_runtime.refresh_state() == RuntimeState.RUNNING
 
         async with timed("lifecycle", "stop_start_cycle"):
             await sandbox_runtime.stop()
-            assert await sandbox_runtime.get_state() == RuntimeState.STOPPED
+            assert await sandbox_runtime.refresh_state() == RuntimeState.STOPPED
 
             await sandbox_runtime.start()
-            assert await sandbox_runtime.get_state() == RuntimeState.RUNNING
+            assert await sandbox_runtime.refresh_state() == RuntimeState.RUNNING
 
             await sandbox_runtime.stop()
-            assert await sandbox_runtime.get_state() == RuntimeState.STOPPED
+            assert await sandbox_runtime.refresh_state() == RuntimeState.STOPPED
 
             await sandbox_runtime.start()
-            assert await sandbox_runtime.get_state() == RuntimeState.RUNNING
+            assert await sandbox_runtime.refresh_state() == RuntimeState.RUNNING
 
 
 class TestStoppedRuntimeErrors:

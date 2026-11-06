@@ -2,8 +2,10 @@
  * The file panel opening beside the chat narrows the transcript, and every
  * line rewraps taller each frame it narrows; closing it does the reverse. That
  * is a relayout, not news: a reader at the end stays at the end, and one
- * mid-thread stays on the row at the top of the view. Growth with no change of
- * width is still news, followed only while a turn runs.
+ * mid-thread stays on the row at the top of the view. A web font swapping in
+ * rewraps the same way at the same width, and can land long after the thread
+ * has settled. Other growth with no change of width is still news, followed
+ * only while a turn runs.
  *
  * jsdom has no layout, so the transcript is a model: one bubble of five rows
  * whose height `rowH` stands in for the column's width, and a tail below it.
@@ -11,6 +13,7 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, act } from '@testing-library/react';
+import { runAuthResets } from '@/lib/authResets';
 import { useChatScroll } from '../useChatScroll';
 
 const VIEW_H = 500;
@@ -18,6 +21,9 @@ const ROWS = 5;
 const TAIL = 300;
 let rowH = 400;
 let width = 1180;
+// The turn pin's floor: a min-height outside the box the observer watches, so
+// it moves the scroll height with no observer callback.
+let floor = 0;
 const contentH = () => ROWS * rowH + TAIL;
 
 const rect = (top: number, height: number) =>
@@ -29,8 +35,11 @@ const scrolled = () => viewport().scrollTop;
 const measureViewport = (el: HTMLElement | null) => {
   if (!el) return;
   Object.defineProperty(el, 'clientHeight', { value: VIEW_H, configurable: true });
-  Object.defineProperty(el, 'scrollHeight', { get: contentH, configurable: true });
+  Object.defineProperty(el, 'scrollHeight', { get: () => contentH() + floor, configurable: true });
   el.getBoundingClientRect = () => rect(0, VIEW_H);
+};
+const measurePadded = (el: HTMLElement | null) => {
+  if (el) el.getBoundingClientRect = () => rect(-scrolled(), contentH());
 };
 const measureBubble = (el: HTMLElement | null) => {
   if (el) el.getBoundingClientRect = () => rect(-scrolled(), ROWS * rowH);
@@ -62,8 +71,12 @@ function Harness({ isStreaming = false }: { isStreaming?: boolean }) {
   return (
     <div ref={scrollAreaRef}>
       <div data-radix-scroll-area-viewport ref={measureViewport}>
-        <div data-message-id="a0" ref={measureBubble}>
-          {Array.from({ length: ROWS }, (_, i) => <p key={i} data-row={i} ref={measureRow(i)} />)}
+        <div ref={measurePadded}>
+          <div className="max-w-3xl">
+            <div data-message-id="a0" ref={measureBubble}>
+              {Array.from({ length: ROWS }, (_, i) => <p key={i} data-row={i} ref={measureRow(i)} />)}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -72,7 +85,7 @@ function Harness({ isStreaming = false }: { isStreaming?: boolean }) {
 
 /** Clamped the way a browser clamps, so a request past the end lands on it. */
 function scrollTo(top: number) {
-  const clamped = Math.max(0, Math.min(top, contentH() - VIEW_H));
+  const clamped = Math.max(0, Math.min(top, contentH() + floor - VIEW_H));
   Object.defineProperty(viewport(), 'scrollTop', { value: clamped, writable: true, configurable: true });
   viewport().dispatchEvent(new Event('scroll'));
 }
@@ -89,6 +102,9 @@ function frame(w: number, h: number) {
 
 const atEnd = () => contentH() - VIEW_H - scrolled();
 
+// The document's web fonts, by load status: jsdom has no FontFaceSet.
+let faces: { status: string; unicodeRange: string }[] = [];
+
 /** Past the settle window that holds a thread's opening at its end. */
 async function settle() {
   await act(async () => { vi.advanceTimersByTime(2000); });
@@ -100,6 +116,14 @@ describe('the transcript as the file panel opens and closes', () => {
   beforeEach(() => {
     rowH = 400;
     width = 1180;
+    // Where a view was is kept per thread across mounts; each test opens t1 afresh.
+    runAuthResets();
+    floor = 0;
+    faces = [{ status: 'loaded', unicodeRange: 'U+0-10FFFF' }, { status: 'loading', unicodeRange: 'U+0000-00FF, U+0131' }];
+    Object.defineProperty(document, 'fonts', {
+      value: { forEach: (cb: (face: (typeof faces)[number]) => void) => faces.forEach(cb) },
+      configurable: true,
+    });
     vi.useFakeTimers({ shouldAdvanceTime: true });
     HTMLElement.prototype.scrollTo = function (this: HTMLElement, opts?: unknown) {
       const top = (opts as { top?: number } | undefined)?.top;
@@ -115,6 +139,7 @@ describe('the transcript as the file panel opens and closes', () => {
     } as unknown as typeof ResizeObserver;
   });
   afterEach(() => {
+    delete (document as { fonts?: unknown }).fonts;
     window.ResizeObserver = OriginalRO;
     vi.useRealTimers();
   });
@@ -146,6 +171,43 @@ describe('the transcript as the file panel opens and closes', () => {
 
     expect(scrolled()).toBe(before);
     expect(atEnd()).toBe(ROWS * 60);
+  });
+
+  it('keeps a reader at the end there as a font swaps in after the thread has settled', async () => {
+    render(<Harness />);
+    act(() => { resize(); });
+    await settle();
+    expect(atEnd()).toBe(0);
+
+    // The text drew in a fallback, and the font arrives over the network. A
+    // layout forced ahead of the frame has the browser's scroll anchoring
+    // nudge the view, and its scroll event lands before the observer runs.
+    faces[1].status = 'loaded';
+    rowH = 410;
+    act(() => { scrollTo(scrolled() + 1); });
+    frame(width, 410);
+
+    expect(atEnd()).toBe(0);
+    expect(scroll.jumpPill.visible).toBe(false);
+  });
+
+  it('leaves a reader where they scrolled up to as a font swaps in under them', async () => {
+    render(<Harness />);
+    act(() => { resize(); });
+    await settle();
+    expect(atEnd()).toBe(0);
+
+    // The font arrives, and before the observer runs the reader wheels up into
+    // the third row: their scroll lands at a size not yet judged.
+    faces[1].status = 'loaded';
+    rowH = 410;
+    act(() => {
+      viewport().dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+      scrollTo(1000);
+    });
+    frame(width, 410);
+
+    expect(scrolled()).toBe(1000);
   });
 
   it('keeps a reader the follow is carrying at the end, though the glide had not reached it', async () => {
@@ -184,6 +246,47 @@ describe('the transcript as the file panel opens and closes', () => {
     }
     // Closing: the rows above shrink back.
     for (const [w, h] of [[700, 480], [1180, 400]]) {
+      frame(w, h);
+      expect(rowTop(2)).toBe(held);
+    }
+  });
+
+  it('leaves growth unfollowed when only a subset for other scripts loads with it', async () => {
+    render(<Harness />);
+    act(() => { resize(); });
+    await settle();
+    const before = scrolled();
+
+    // A CJK slice arrives the first time a reply uses one of its characters.
+    // It rewraps only the text that needed it, which is ordinary growth.
+    faces.push({ status: 'loaded', unicodeRange: 'U+4E00-4E3F, U+4E41' });
+    frame(width, 460);
+
+    expect(scrolled()).toBe(before);
+  });
+
+  it("judges a reader's scroll after the turn pin's floor moved the scroll height", async () => {
+    render(<Harness />);
+    act(() => { resize(); });
+    await settle();
+    expect(atEnd()).toBe(0);
+
+    // The floor moves the end with no observer callback. The reader then
+    // scrolls, a hair and then up into the third row, which the view's top cuts.
+    floor = 200;
+    act(() => {
+      viewport().dispatchEvent(new Event('wheel'));
+      scrollTo(scrolled() + 3);
+    });
+    act(() => {
+      viewport().dispatchEvent(new Event('wheel'));
+      scrollTo(1000);
+    });
+    const held = rowTop(2);
+    expect(held).toBeLessThan(0);
+
+    // The panel opens: the reader is held on their row, not taken to the end.
+    for (const [w, h] of [[1000, 400], [800, 450]]) {
       frame(w, h);
       expect(rowTop(2)).toBe(held);
     }

@@ -157,7 +157,8 @@ def test_a_group_that_only_took_a_records_id_is_left_alone(tmp_path):
 
         _stop(cdir)
 
-        assert not _gone(member, timeout=1.5)
+        # Any signal the stop sent has landed by the time it returns.
+        assert not _gone(member, timeout=0.5)
     finally:
         _kill(member)
 

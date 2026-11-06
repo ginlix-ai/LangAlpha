@@ -720,10 +720,16 @@ test.describe('Chat View -- SSE Streaming', () => {
       'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: ['report.pdf'] },
     });
     await configureEmptyReplay();
-    // Holds the panel's code back until the test lets it through.
+    // Holds the panel's code back until the test lets it through: the module
+    // on a dev server, its chunk in a build.
     let release;
     const held = new Promise((resolve) => { release = resolve; });
-    await page.route(/\/components\/FilePanel\.tsx(\?|$)/, async (route) => { await held; await route.continue(); });
+    let heldRequests = 0;
+    await page.route(/\/components\/FilePanel\.tsx(\?|$)|\/assets\/FilePanel-[\w-]+\.js$/, async (route) => {
+      heldRequests += 1;
+      await held;
+      await route.continue();
+    });
 
     await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
     await page.waitForSelector('textarea', { timeout: 10000 });
@@ -732,6 +738,9 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.locator('[data-panel-toggle-stand-in]')).toBeFocused();
     // Longer than the hand-off waits for a toggle that is not drawn at all.
     await page.waitForTimeout(2500);
+    // Without a hold the panel draws at once and the wait proves nothing, so
+    // a pattern that stops matching the panel's code must fail here.
+    expect(heldRequests).toBeGreaterThan(0);
     release();
 
     await expect(page.getByText('report.pdf')).toBeVisible({ timeout: 10000 });

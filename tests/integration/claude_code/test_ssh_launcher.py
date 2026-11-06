@@ -353,7 +353,9 @@ async def test_a_refused_token_fails_the_turn_and_is_reported_by_where_it_came_f
     revoked = Relay("sk-ant-oat01-revoked")
     with pytest.raises(ClaudeTurnFailed) as relayed:
         await _turn(machine, api, "t-revoked-relay", "ECHO hi", revoked)
-    assert from_file.value.kind == relayed.value.kind == "auth_failed"
+    # The computer's own token, refused, reads as Settings says it; a relayed
+    # one ends the turn as any refused sign-in does.
+    assert (from_file.value.kind, relayed.value.kind) == ("token_refused", "auth_failed")
     assert (relay.reads, relay.refusals, revoked.refusals) == (0, ["file"], ["relay"])
     _after_turn(machine)
 

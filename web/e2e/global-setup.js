@@ -13,11 +13,15 @@ const ROUTE_CAP_MS = 60_000;
  * server the first test to open a route pays for compiling its whole chunk, and
  * with several workers doing that at once the page can miss a 5-10s assertion
  * before it has rendered at all. One serial pass here compiles each module once.
+ * The config lists only the origins a dev server answers: a production build
+ * has nothing left to compile.
  *
  * @param {import('@playwright/test').FullConfig} config
  */
 export default async function warmDevServers(config) {
-  const origins = [...new Set(config.projects.map((p) => p.use.baseURL).filter(Boolean))];
+  /** @type {string[]} */
+  const origins = config.metadata.devServerOrigins ?? [];
+  if (origins.length === 0) return;
   const browser = await chromium.launch();
   try {
     for (const origin of origins) {

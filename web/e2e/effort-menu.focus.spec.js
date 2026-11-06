@@ -98,7 +98,9 @@ async function openMenuByKeyboard(page) {
 test.beforeEach(async ({ page }) => {
   await mockAPI(page, { ...preferenceRoutes(), ...overrides });
   await page.goto('/dashboard');
-  // The pill waits on the models request, which a cold dev server can take 7s to send.
+  // The pill is the dashboard's first render: on the dev server its route is
+  // some 650 modules fetched one import level at a time after the load event,
+  // and on a busy two-worker runner that alone takes 5-8s.
   await expect(page.locator(TRIGGER)).toBeVisible({ timeout: 15000 });
 });
 

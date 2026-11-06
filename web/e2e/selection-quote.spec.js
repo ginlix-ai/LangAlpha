@@ -81,13 +81,40 @@ async function serveMonacoLocally(page) {
   });
 }
 
-/** A real drag across the line, ending past it. */
+/**
+ * Where the line is once it has stopped moving: its first character's box and
+ * its own. The file panel slides open on a spring, so the line can show while
+ * the panel is still a few pixels from rest, and a press aimed from a box read
+ * then lands that much further into the line than meant, past its first letter.
+ */
+async function restingLine(locator) {
+  return locator.evaluate((el) => new Promise((resolve) => {
+    const text = document.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode();
+    const first = document.createRange();
+    first.setStart(text, 0);
+    first.setEnd(text, 1);
+    let last = '';
+    let still = 0;
+    const frame = () => {
+      const char = first.getBoundingClientRect();
+      const line = el.getBoundingClientRect();
+      const at = `${char.left},${char.top},${line.width}`;
+      still = at === last ? still + 1 : 0;
+      last = at;
+      if (still < 2) return requestAnimationFrame(frame);
+      resolve({ x: char.left, y: line.top + line.height / 2, right: line.right });
+    };
+    requestAnimationFrame(frame);
+  }));
+}
+
+/** A real drag across the line, from before its first character to past its end. */
 async function drag(page, locator) {
-  const box = await locator.boundingBox();
-  await page.mouse.move(box.x + 1, box.y + box.height / 2);
+  const line = await restingLine(locator);
+  await page.mouse.move(line.x + 1, line.y);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
-  await page.mouse.move(box.x + box.width + 40, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.move((line.x + line.right) / 2, line.y, { steps: 4 });
+  await page.mouse.move(line.right + 40, line.y, { steps: 4 });
   await page.mouse.up();
 }
 

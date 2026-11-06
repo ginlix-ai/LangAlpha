@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from typing import Any
@@ -138,6 +139,27 @@ async def test_cpu_spin_maps_to_timeout() -> None:
     )
     assert outcome.status == "cpu_timeout"
     assert "0.1s CPU budget" in (outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_a_host_call_parked_past_the_cpu_budget_still_completes() -> None:
+    """The budget bounds JavaScript, not the children it awaits, which run for
+    minutes: time parked in a host call must not count against it."""
+
+    class SlowHost(FakeHost):
+        async def agent(self, prompt: str, opts: dict[str, Any]) -> Any:
+            await asyncio.sleep(1.0)
+            return "child"
+
+    outcome = await run_workflow_script(
+        _script("const r = await agent('slow'); return r + '!';"),
+        None,
+        SlowHost(),
+        WorkflowLimits(cpu_budget_s=0.5),
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.result == "child!"
 
 
 @pytest.mark.asyncio
@@ -281,28 +303,61 @@ async def test_a_script_cannot_swallow_a_stop_with_try_catch() -> None:
         await task
 
 
-@pytest.mark.asyncio
-async def test_cancelling_cpu_spin_does_not_block_on_worker_join() -> None:
-    task = asyncio.create_task(
-        run_workflow_script(
-            _script("while (true) {}"),
-            None,
-            FakeHost(),
-            WorkflowLimits(cpu_budget_s=1),
-        )
-    )
-    await asyncio.sleep(0.05)
-    started = time.monotonic()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    # Guards against blocking on the worker join (~1s of remaining CPU
-    # budget); generous headroom keeps loaded CI from flaking the proof.
-    assert time.monotonic() - started < 0.8
-
-
 def _worker_threads() -> set[threading.Thread]:
     return {t for t in threading.enumerate() if t.name == "workflow-quickjs"}
+
+
+@pytest.mark.asyncio
+async def test_cancelling_cpu_spin_does_not_block_on_worker_join(monkeypatch) -> None:
+    # The join is held shut for 10s, so a cancel that waits on it, on the
+    # server loop or awaited from another thread, returns no sooner than that.
+    release = threading.Event()
+    closers: list[threading.Thread] = []
+
+    class HeldWorker(engine.ThreadWorker):
+        def close(self) -> None:
+            closers.append(threading.current_thread())
+            release.wait(10)
+            super().close()
+
+    spinning = asyncio.Event()
+
+    class SpinHost(FakeHost):
+        async def agent(self, prompt: str, opts: dict[str, Any]) -> Any:
+            spinning.set()
+            return None
+
+    monkeypatch.setattr(engine, "ThreadWorker", HeldWorker)
+    before = _worker_threads()
+    task = asyncio.create_task(
+        run_workflow_script(
+            _script("await agent('go'); while (true) {}"),
+            None,
+            SpinHost(),
+            WorkflowLimits(cpu_budget_s=30),
+        )
+    )
+    try:
+        # Cancelled once the script has reached its spin, not on a guess at when.
+        await asyncio.wait_for(spinning.wait(), timeout=5)
+        await asyncio.sleep(0.05)
+        task.cancel()
+        started = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert time.monotonic() - started < 5
+        assert threading.current_thread() not in closers
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    # And the spin did stop: the worker thread ends once its join is let go.
+    deadline = time.monotonic() + 5
+    while _worker_threads() - before and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    assert not _worker_threads() - before
 
 
 @pytest.mark.asyncio

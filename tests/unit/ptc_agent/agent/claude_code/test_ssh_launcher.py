@@ -314,7 +314,7 @@ async def test_clis_at_their_cap_still_leave_commands_a_slot_and_keep_the_link_u
     link, launcher = _local(tmp_path, monkeypatch, str(cli))
     running = [await _started(launcher()) for _ in range(_CLI_SLOTS)]
     with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.CLI_SLOTS_FULL)}$"):
-        await _started(launcher(slot_wait_s=1))
+        await _started(launcher(slot_wait_s=0.2))
     done = await link.run("echo free", timeout=10, slot=link.slots)
     assert done.stdout == b"free\n"
     link.drain()
@@ -330,10 +330,10 @@ async def test_a_turn_waits_for_a_cli_slot_past_its_start_time_and_starts_once_o
     cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
     cli.chmod(0o755)
     link, launcher = _local(tmp_path, monkeypatch, str(cli))
-    monkeypatch.setattr(ssh_launcher, "START_TIMEOUT_S", 1)
+    monkeypatch.setattr(ssh_launcher, "START_TIMEOUT_S", 0.5)
     running = [await _started(launcher()) for _ in range(_CLI_SLOTS)]
     waiting = asyncio.ensure_future(_started(launcher()))
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
     assert not waiting.done(), "still waiting for a slot, past the start's own time"
     await running.pop().close()
     running.append(await asyncio.wait_for(waiting, 10))
@@ -350,17 +350,17 @@ async def test_a_turn_waits_out_commands_holding_every_command_slot_past_its_sta
     cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
     cli.chmod(0o755)
     link, launcher = _local(tmp_path, monkeypatch, str(cli))
-    monkeypatch.setattr(ssh_launcher, "START_TIMEOUT_S", 1)
+    monkeypatch.setattr(ssh_launcher, "START_TIMEOUT_S", 0.5)
     first = await _started(launcher(slot_wait_s=1))
     for _ in range(_COMMAND_SLOTS - 1):
         await link.slots.acquire()
 
     with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.COMMAND_SLOTS_FULL)}$"):
-        await _started(launcher(slot_wait_s=1))
+        await _started(launcher(slot_wait_s=0.2))
     assert link.cli_slots._value == _CLI_SLOTS - 1
 
     waiting = asyncio.ensure_future(_started(launcher(slot_wait_s=10)))
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
     assert not waiting.done(), "still waiting for a command slot, past the start's own time"
     link.slots.release()
     transport = await asyncio.wait_for(waiting, 10)

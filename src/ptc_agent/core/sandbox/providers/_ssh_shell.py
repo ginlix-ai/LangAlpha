@@ -221,10 +221,11 @@ def uninstall_script(root: str, sandbox_id: str) -> str:
         'if [ -d "$r" ] && [ ! -L "$r" ] && [ -n "$o" ] && [ "$o" = "$me" ]; then\n'
         # A root that is a disk of its own empties into a trash on that disk,
         # since one beside it would make every move a copy; such a root can
-        # never go itself, so it is kept. Its mount point ends df's line,
-        # spaces and all.
-        '  case "$(df -P -- "$r" 2>/dev/null | sed -n 2p)" in\n'
-        '    *" $r") trash "$r" ;;\n'
+        # never go itself, so it is kept. A flag says so, since the detached
+        # delete may have taken its trash before the root is read. Its mount
+        # point ends df's line, spaces and all.
+        '  d=; case "$(df -P -- "$r" 2>/dev/null | sed -n 2p)" in\n'
+        '    *" $r") d=1; trash "$r" ;;\n'
         '    *) trash "$(dirname -- "$r")" ;;\n'
         "  esac\n"
         "  k=0\n"
@@ -249,7 +250,7 @@ def uninstall_script(root: str, sandbox_id: str) -> str:
         "  gone\n"
         # Finder's view settings, left in any folder a Mac has shown, are
         # no file of the owner's.
-        f'  if [ -n "$(ls -A -- "$r" | grep -vxF -e {q(ROOT_MARKER)} -e .DS_Store | head -n 1)" ]; then echo root kept\n'
+        f'  if [ -n "$d" ] || [ -n "$(ls -A -- "$r" | grep -vxF -e {q(ROOT_MARKER)} -e .DS_Store | head -n 1)" ]; then echo root kept\n'
         '  else rm -f -- "$m" "$r"/.DS_Store; rmdir -- "$r" 2>/dev/null || echo root kept; fi\n'
         # Not this computer's (its mark gone, or another's): left as it is.
         'elif [ -e "$r" ] || [ -L "$r" ]; then echo root kept\n'

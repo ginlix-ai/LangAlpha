@@ -25,8 +25,10 @@ from tests.unit.server.dependencies.reach_world import THREAD, USER, WORKSPACE
 NOW = datetime.now(timezone.utc)
 # A one-time run's time, a month out.
 LATER = NOW + timedelta(days=30)
-AUTO_ID = str(uuid.uuid4())
-EXEC_ID = str(uuid.uuid4())
+# Fixed, not uuid4(): EXEC_ID feeds parametrize ids, which must match across
+# xdist workers.
+AUTO_ID = "6f1c2a9e-3b4d-4e8f-9a1b-2c3d4e5f6a7b"
+EXEC_ID = "0d9e8f7a-6b5c-4d3e-8f2a-1b0c9d8e7f6a"
 
 
 def _automation(automation_id=None, user_id="test-user-123", **overrides):

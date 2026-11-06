@@ -574,7 +574,12 @@ async def test_a_wrapper_killed_in_the_wait_reads_137_and_vanished(shell, comput
 @pytest.mark.asyncio
 async def test_hand_off_then_wait_across_chunks(shell, computer, monkeypatch):
     monkeypatch.setattr(jobs, "WAIT_CHUNK_S", 1)
-    spec = computer.spec("echo start; sleep 2.2; echo end")
+    # The job ends only once a second chunk has begun, so a wait that gave up
+    # after one chunk would hang here, however slow the machine.
+    gate = os.path.join(computer.root, "gate")
+    spec = computer.spec(
+        f"echo start; while [ ! -e {shlex.quote(gate)} ]; do sleep 0.05; done; echo end"
+    )
     outcome = await jobs.run_job(shell, spec, 0)
     assert isinstance(outcome, jobs.Running)
     assert shell.calls == 1
@@ -583,10 +588,16 @@ async def test_hand_off_then_wait_across_chunks(shell, computer, monkeypatch):
     assert state.running and not state.stopped
 
     shell.calls = 0
-    outcome = await jobs.continue_job(shell, outcome, None)
+
+    async def open_gate_in_second_chunk() -> None:
+        await _until(lambda: shell.calls >= 2, timeout=30)
+        Path(gate).touch()
+
+    opener = asyncio.create_task(open_gate_in_second_chunk())
+    outcome = await asyncio.wait_for(jobs.continue_job(shell, outcome, None), 60)
+    await opener
     assert isinstance(outcome, jobs.Ended) and outcome.exit_code == 0
     assert outcome.output == "start\nend\n"
-    assert shell.calls >= 2
 
 
 @pytest.mark.asyncio

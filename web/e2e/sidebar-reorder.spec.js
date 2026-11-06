@@ -51,7 +51,9 @@ async function holdKit(page) {
   const held = new Promise((resolve) => { release = resolve; });
   let markRequested;
   const requested = new Promise((resolve) => { markRequested = resolve; });
-  await page.route((url) => url.pathname.includes('navTreeKitInteractive'), async (route) => {
+  // A pattern, not a URL predicate, so the page's other requests are not
+  // paused for this one: the module on a dev server, its chunk in a build.
+  await page.route(/\/navTreeKitInteractive[.-][^/]*$/, async (route) => {
     markRequested();
     await held;
     await route.continue();

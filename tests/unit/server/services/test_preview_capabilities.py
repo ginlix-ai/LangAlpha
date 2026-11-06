@@ -294,7 +294,9 @@ class TestProcessLocal:
         assert record["headers"] == {}
         # Not a 2, which an older reader would take and dial as "None".
         assert record["v"] == 3
-        assert "41234" not in json.dumps(record)
+        # Not by substring: the random generation can hold those digits.
+        assert "127.0.0.1" not in json.dumps(record)
+        assert 41234 not in record.values()
         capability = await caps.resolve(_token(url))
         assert capability is not None
         assert capability.upstream is None

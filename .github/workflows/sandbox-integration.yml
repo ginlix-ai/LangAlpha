@@ -1,30 +1,62 @@
 name: Sandbox Integration Tests
 
+# The tests that run on a real sandbox provider: Daytona (tests marked
+# provider_daytona: the sandbox suite's [daytona] cases, the Daytona provider
+# tests and the message hot path) and Docker. Every PR already runs the same
+# sandbox suite on the in-process memory provider in test.yml, so these run
+# only when a change can reach the provider: the sandbox runtime and the
+# server code driving it, the dependency lock (a Daytona SDK bump), and the
+# tests and fixtures themselves. Nightly runs the full Daytona tier, slow tests
+# included, to catch provider drift no change triggers.
+#
+# fork-integration.yml keeps the same list for forks;
+# tests/unit/ci/test_workflow_paths.py fails when the two drift.
 on:
   pull_request:
     branches: [main]
-    paths:
-      - src/ptc_agent/core/sandbox/**
+    paths: &daytona_paths
+      - src/ptc_agent/core/**
+      - src/ptc_agent/config/**
       - src/ptc_agent/agent/backends/**
-      - src/ptc_agent/config/core.py
-      - src/ptc_agent/config/loaders.py
+      - src/ptc_agent/agent/filesystem_routes.py
+      - src/ptc_agent/agent/middleware/skills/**
+      - src/server/app/computers*.py
       - src/server/app/workspace_files/**
       - src/server/app/workspace_sandbox.py
-      - src/server/services/workspace_manager.py
+      - src/server/database/computer.py
+      - src/server/database/computer_names.py
+      - src/server/database/computer_root.py
+      - src/server/database/computer_spec_change.py
+      - src/server/database/workspace*.py
+      - src/server/handlers/chat/attachments.py
+      - src/server/services/computer_manager/**
+      - src/server/services/persistence/**
       - src/server/services/platform_secret_rollout.py
+      - src/server/services/warm_files.py
+      - src/server/services/workspace_file_containment.py
+      - src/server/services/workspace_files.py
+      - src/server/services/workspace_layout.py
+      - src/server/services/workspace_manager.py
+      - src/server/utils/multimodal_context.py
+      - src/server/utils/secret_redactor.py
       - Dockerfile.sandbox
-      - libs/market-protocol/**
       - docker-compose.yml
+      - libs/market-protocol/**
+      - pyproject.toml
+      - uv.lock
+      - tests/conftest.py
+      - tests/computer_manager_patch.py
+      - tests/integration/conftest.py
       - tests/integration/sandbox/**
+      - tests/integration/test_message_hot_path.py
+      - scripts/ci/hotpath_comment.py
+      - scripts/ci/metrics_comment.py
+      - .github/workflows/sandbox-integration.yml
   push:
     branches: [main]
-    paths:
-      - src/ptc_agent/core/sandbox/**
-      - src/ptc_agent/agent/backends/**
-      - src/server/services/platform_secret_rollout.py
-      - Dockerfile.sandbox
-      - libs/market-protocol/**
-      - tests/integration/sandbox/**
+    paths: *daytona_paths
+  schedule:
+    - cron: "23 7 * * *"
   workflow_dispatch:
     inputs:
       providers:
@@ -41,8 +73,10 @@ on:
         type: boolean
         default: false
 
+# The event is in the key so a push to main and the nightly run, which share
+# the ref, do not cancel each other.
 concurrency:
-  group: sandbox-${{ github.ref }}
+  group: sandbox-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 # The backend image's Python (deploy/Dockerfile.backend). Left unset, uv
@@ -73,56 +107,70 @@ jobs:
               - tests/integration/sandbox/providers/**
 
   # -----------------------------------------------------------------------
-  # Tier 1: Memory-only — always runs (~10s)
-  # -----------------------------------------------------------------------
-  sandbox-memory:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: "latest"
-      - run: uv sync --group dev --extra test
-      - name: Install ripgrep (needed by memory provider grep tests)
-        run: sudo apt-get install -y ripgrep
-      - name: Run sandbox tests (memory)
-        run: >-
-          uv run pytest tests/integration/sandbox/
-          -m "integration and not slow"
-          -v --tb=short
-          --junitxml=test-results/sandbox-memory.xml
-        env:
-          SANDBOX_TEST_PROVIDERS: memory
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: sandbox-memory-results
-          path: test-results/
-
-  # -----------------------------------------------------------------------
-  # Tier 2: Daytona — production provider (~4 min)
-  # Runs whenever the workflow triggers (sandbox paths changed).
+  # Daytona: the production provider (~5 min)
+  # Same-repo PRs, pushes to main and nightly; fork PRs run it through
+  # fork-integration.yml, which can read the key. Postgres and Redis are for
+  # the message hot path. A Daytona outage that outlasts the re-runs is
+  # reported as skipped with a warning, not failed (tests/integration/conftest.py).
   # -----------------------------------------------------------------------
   sandbox-daytona:
     runs-on: ubuntu-latest
-    needs: sandbox-memory
+    if: >-
+      github.event_name == 'push' || github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    timeout-minutes: 45
     environment: integration
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: langalpha_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: langalpha_test
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           version: "latest"
       - run: uv sync --group dev --extra test
-      - name: Run sandbox tests (daytona)
+      - name: Run Daytona tests
         run: >-
-          uv run pytest tests/integration/sandbox/
-          -m "integration and not slow"
+          uv run pytest tests/integration/
+          -m "$MARKS"
           -v --tb=short
           --sandbox-metrics
           --sandbox-metrics-file sandbox_metrics_daytona.json
           --junitxml=test-results/sandbox-daytona.xml
         env:
+          # Nightly adds the slow tests (stress, concurrency).
+          MARKS: integration and provider_daytona${{ github.event_name != 'schedule' && ' and not slow' || '' }}
           SANDBOX_TEST_PROVIDERS: daytona
+          # Nightly, an outage that outlasts the re-runs fails the run.
+          DAYTONA_OUTAGES_FAIL: ${{ github.event_name == 'schedule' && '1' || '' }}
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           DAYTONA_BASE_URL: ${{ secrets.DAYTONA_BASE_URL }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
@@ -135,16 +183,16 @@ jobs:
             sandbox_metrics_daytona.json
 
   # -----------------------------------------------------------------------
-  # Tier 3: Docker (~3 min with pre-built image, ~22 min if Dockerfile changed)
+  # Docker (~3 min with pre-built image, ~22 min if Dockerfile changed)
   # On PR: only when Docker-specific files change.
-  # On push to main: always runs, pulls pre-built image from GHCR.
+  # On push to main and nightly: always, pulling the pre-built image from GHCR.
   # -----------------------------------------------------------------------
   sandbox-docker:
     runs-on: ubuntu-latest
-    needs: [sandbox-memory, changes]
-    # !failure() && !cancelled() allows running when 'changes' was skipped (non-PR).
+    needs: changes
+    # !cancelled() lets it run when 'changes' was skipped (not a PR).
     if: >-
-      !failure() && !cancelled() && (
+      !cancelled() && github.event_name != 'workflow_dispatch' && (
         github.event_name != 'pull_request'
         || needs.changes.outputs.docker == 'true'
       )
@@ -213,7 +261,7 @@ jobs:
   # -----------------------------------------------------------------------
   metrics-comment:
     runs-on: ubuntu-latest
-    needs: [sandbox-memory, sandbox-daytona, sandbox-docker]
+    needs: [sandbox-daytona, sandbox-docker]
     if: >-
       always() && github.event_name == 'pull_request' && (
         needs.sandbox-daytona.result == 'success'
@@ -260,6 +308,36 @@ jobs:
           path: comment_body.md
 
   # -----------------------------------------------------------------------
+  # Message hot path timings, from the Daytona job's run of
+  # test_message_hot_path. Skipped with that job; a failed run still
+  # comments, as long as it got far enough to upload its results.
+  # -----------------------------------------------------------------------
+  hotpath-comment:
+    runs-on: ubuntu-latest
+    needs: sandbox-daytona
+    if: >-
+      always() && github.event_name == 'pull_request' &&
+      (needs.sandbox-daytona.result == 'success' || needs.sandbox-daytona.result == 'failure')
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: sandbox-daytona-results
+          path: results/
+      - name: Generate hot path comment
+        if: hashFiles('results/test-results/sandbox-daytona.xml') != ''
+        run: python3 scripts/ci/hotpath_comment.py results/test-results/sandbox-daytona.xml --metrics results/sandbox_metrics_daytona.json > comment_body.md
+      - name: Post sticky PR comment
+        if: hashFiles('comment_body.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: hotpath-metrics
+          path: comment_body.md
+
+  # -----------------------------------------------------------------------
   # Manual: Run with custom provider/slow selection via workflow_dispatch
   # -----------------------------------------------------------------------
   sandbox-manual:
@@ -272,6 +350,9 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --group dev --extra test
+      - name: Install ripgrep (needed by memory provider grep tests)
+        if: contains(inputs.providers, 'memory')
+        run: sudo apt-get install -y ripgrep
 
       - name: Log in to GHCR
         if: contains(inputs.providers, 'docker')
