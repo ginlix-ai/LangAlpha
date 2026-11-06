@@ -73,7 +73,9 @@ DEFAULT_DEPENDENCIES = [
     "scikit-learn",
     "statsmodels",
     # Financial data
-    "yfinance",
+    # Pinned to the version uv.lock gives the server, so a rebuilt image
+    # cannot move the sandbox's Yahoo client ahead of it.
+    "yfinance==1.8.0",
     # market_protocol's session calendars, which tell the market-data servers
     # whether a bar has settled.
     "exchange-calendars==4.13.2",

@@ -588,9 +588,9 @@ class TestEstimatePeriods:
     @staticmethod
     def _stock(ends, reported="2026-09-30"):
         stock = MagicMock()
-        stock._analysis._earnings_trend = [
-            {"period": p, "endDate": e} for p, e in ends.items()
-        ]
+        stock._analysis._earnings_trend = {
+            None: {"trend": [{"period": p, "endDate": e} for p, e in ends.items()]}
+        }
         stock.earnings_history = _df(
             [[2.1]], columns=["epsActual"], index=pd.DatetimeIndex([reported])
         )
@@ -600,6 +600,16 @@ class TestEstimatePeriods:
             index=pd.Index(["0q", "+1q", "0y", "+1y"], name="period"),
         )
         return stock
+
+    def test_trend_cached_as_a_list_by_older_yfinance(self, mock_ticker):
+        stock = self._stock({"0q": "2026-09-30", "+1q": "2027-03-31", "0y": "2027-09-30", "+1y": "2027-09-30"})
+        ends = stock._analysis._earnings_trend[None]["trend"]
+        stock._analysis._earnings_trend = ends
+        mock_ticker.configure_mock(**{k: getattr(stock, k) for k in ("_analysis", "earnings_history", "earnings_estimate")})
+        rows = {r["period"]: r for r in get_earnings_estimates("AAPL")["data"]}
+
+        assert rows["0q"]["year_ago_stale"] is True
+        assert "year_ago_stale" not in rows["+1q"]
 
     def test_rolled_periods_lose_their_year_ago_figures(self, mock_ticker):
         stock = self._stock(

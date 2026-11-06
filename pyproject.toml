@@ -76,7 +76,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2.9",
     "alembic>=1.15.0",
     "sqlalchemy>=2.0.0",
-    "yfinance>=1.2.0",
+    "yfinance>=1.8.0",
     "matplotlib",
     "mplfinance==0.12.10b0",
     "tabulate",
@@ -180,10 +180,6 @@ packages = ["src/ptc_agent"]
 
 [tool.uv]
 required-version = ">=0.6.15"
-
-# yfinance caps curl_cffi<0.14 but works fine with 0.14+ (tested).
-# scrapling[fetchers] requires curl_cffi>=0.14. Override to resolve the conflict.
-override-dependencies = ["curl_cffi>=0.14"]
 
 [tool.ruff]
 extend-exclude = ["src/llms/vendor", "src/ptc_agent/core/sandbox/livefs_runtime/mfusepy.py"]

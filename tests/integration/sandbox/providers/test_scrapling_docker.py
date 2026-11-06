@@ -141,15 +141,15 @@ class TestSandboxPackages:
         assert "OK" in r.stdout
 
     def test_curl_cffi_version(self, docker_image):
-        """curl_cffi >= 0.14 is required for scrapling[fetchers]."""
+        """yfinance 1.8.0 requires curl_cffi >= 0.17."""
         r = _run_in_container(
             "python -c 'import curl_cffi; print(curl_cffi.__version__)'"
         )
         assert r.returncode == 0, f"curl_cffi import failed: {r.stderr}"
         version = r.stdout.strip()
         major, minor = version.split(".")[:2]
-        assert (int(major), int(minor)) >= (0, 14), (
-            f"curl_cffi version {version} < 0.14"
+        assert (int(major), int(minor)) >= (0, 17), (
+            f"curl_cffi version {version} < 0.17"
         )
 
     def test_yfinance_import(self, docker_image):
@@ -157,7 +157,7 @@ class TestSandboxPackages:
         assert r.returncode == 0, f"yfinance import failed: {r.stderr}"
 
     def test_yfinance_with_curl_cffi(self, docker_image):
-        """Verify yfinance works with the overridden curl_cffi version."""
+        """Verify yfinance works with the curl_cffi the image resolves."""
         r = _run_in_container(
             "python -c '"
             "import yfinance as yf; "
