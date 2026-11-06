@@ -26,6 +26,7 @@ import structlog
 
 from ptc_agent.config.core import DockerConfig, PlatformSecretDefinition
 from ptc_agent.core.sandbox._defaults import sandbox_thread_env
+from ptc_agent.core.sandbox.providers._docker_stream import open_docker_stream
 from ptc_agent.core.sandbox.providers._exec_sessions import ExecSessionRuntime
 from ptc_agent.core.sandbox.providers._tiers import (
     TierSizing,
@@ -41,6 +42,7 @@ from ptc_agent.core.sandbox.runtime import (
     SandboxGoneError,
     SandboxFailureKind,
     SandboxTransientError,
+    StreamProcess,
     STREAM_CHUNK_BYTES,
 )
 
@@ -152,6 +154,12 @@ class DockerRuntime(ExecSessionRuntime):
     async def fetch_working_dir(self) -> str:
         return self._working_dir
 
+    @property
+    def raw(self) -> Any:
+        """The aiodocker container, for code that needs what the runtime
+        interface does not surface."""
+        return self._container
+
     # -- Lifecycle --
 
     async def start(self, timeout: int = 120) -> None:
@@ -188,17 +196,21 @@ class DockerRuntime(ExecSessionRuntime):
     ) -> ExecResult:
         return await self._exec(command, timeout, user="root", env=env)
 
+    async def open_stream(self, command: str) -> StreamProcess:
+        return await open_docker_stream(self, command)
+
     async def _exec(
         self,
         command: str,
         timeout: int,
         user: str = "",
         env: dict[str, str] | None = None,
+        workdir: str | None = None,
     ) -> ExecResult:
         try:
             exec_obj = await self._container.exec(
                 cmd=["bash", "-c", command],
-                workdir=self._working_dir,
+                workdir=workdir or self._working_dir,
                 user=user,
                 environment=env,
             )

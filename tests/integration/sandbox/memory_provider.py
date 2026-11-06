@@ -17,7 +17,10 @@ Design principles:
 from __future__ import annotations
 
 import asyncio
+import codecs
+import contextlib
 import os
+import signal
 import tempfile
 import uuid
 from typing import Any
@@ -30,7 +33,81 @@ from ptc_agent.core.sandbox.runtime import (
     SandboxTransientError,
     SessionCommandResult,
     SessionState,
+    StreamProcess,
 )
+
+
+async def _decoded(source: asyncio.StreamReader, sink: asyncio.StreamReader) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    try:
+        while chunk := await source.read(65536):
+            sink.feed_data(decoder.decode(chunk).encode())
+        sink.feed_data(decoder.decode(b"", final=True).encode())
+    finally:
+        sink.feed_eof()
+
+
+class _LocalStream(StreamProcess):
+    """A local subprocess behind the stream contract, a session of its own so
+    a signal reaches its whole process group, its output read as UTF-8 as
+    every provider's is."""
+
+    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+        self._proc = proc
+        assert proc.stdout is not None and proc.stderr is not None
+        self.stdout = asyncio.StreamReader()
+        self.stderr = asyncio.StreamReader()
+        self._pumps = [
+            asyncio.ensure_future(_decoded(proc.stdout, self.stdout)),
+            asyncio.ensure_future(_decoded(proc.stderr, self.stderr)),
+        ]
+
+    @property
+    def failure(self) -> str | None:
+        return None
+
+    @property
+    def returncode(self) -> int | None:
+        code = self._proc.returncode
+        # asyncio reports signal N as -N; the contract follows the shell.
+        return None if code is None else (128 - code if code < 0 else code)
+
+    async def write(self, data: bytes) -> None:
+        if self._proc.returncode is not None:
+            raise ConnectionError("The process has ended")
+        assert self._proc.stdin is not None
+        self._proc.stdin.write(data)
+        await self._proc.stdin.drain()
+
+    async def write_eof(self) -> bool:
+        assert self._proc.stdin is not None
+        self._proc.stdin.close()
+        return True
+
+    async def wait(self) -> int:
+        await self._proc.wait()
+        await asyncio.wait(self._pumps)
+        return self.returncode  # type: ignore[return-value]
+
+    async def terminate(self) -> None:
+        self._signal(signal.SIGTERM)
+
+    async def kill(self) -> None:
+        self._signal(signal.SIGKILL)
+
+    def _signal(self, number: int) -> None:
+        if self._proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self._proc.pid, number)
+
+    async def close(self) -> None:
+        try:
+            await self.kill()
+            await self._proc.wait()
+        finally:
+            for pump in self._pumps:
+                pump.cancel()
+            await asyncio.gather(*self._pumps, return_exceptions=True)
 
 
 class MemoryRuntime(SandboxRuntime):
@@ -118,6 +195,21 @@ class MemoryRuntime(SandboxRuntime):
             return ExecResult(stdout="", stderr="timeout", exit_code=-1)
         except Exception as e:
             return ExecResult(stdout="", stderr=str(e), exit_code=-1)
+
+    async def open_stream(self, command: str) -> StreamProcess:
+        self._check_running()
+        proc = await asyncio.create_subprocess_exec(
+            "bash",
+            "-c",
+            command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self._work_dir,
+            env={**os.environ, **self._env_vars},
+            start_new_session=True,
+        )
+        return _LocalStream(proc)
 
     # -- File I/O --
 
