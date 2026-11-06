@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/news", tags=["News"])
 
+_DATE_FILTER_DESCRIPTION = (
+    "ISO 8601 date filter. Providers that cannot filter by time scan a bounded "
+    "range; an empty page with a next_cursor means keep paging."
+)
+
 _cache = NewsCacheService()
 
 # Cache-stampede protection has two layers so it holds up under many workers:
@@ -185,8 +190,8 @@ async def get_news(
     tickers: str | None = Query(None, description="Comma-separated ticker symbols"),
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(None, description="Pagination cursor"),
-    published_after: str | None = Query(None, description="ISO 8601 date filter"),
-    published_before: str | None = Query(None, description="ISO 8601 date filter"),
+    published_after: str | None = Query(None, description=_DATE_FILTER_DESCRIPTION),
+    published_before: str | None = Query(None, description=_DATE_FILTER_DESCRIPTION),
     order: str | None = Query(None, description="Sort order: asc or desc"),
     sort: str | None = Query(None, description="Sort field, e.g. published_utc"),
     provider: str | None = Query(
