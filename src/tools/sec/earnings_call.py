@@ -28,38 +28,42 @@ class EarningsCall(NamedTuple):
     call_date: date
 
 
-def format_earnings_call_section(
-    transcript: str,
-    fiscal_year: int,
-    quarter: int,
-    call_date: date,
-    filing_date: date,
-) -> str:
+def format_earnings_call_section(call: Optional[EarningsCall], period_end: str) -> str:
     """
-    Format earnings call transcript as markdown section.
+    Format the matched call's transcript as a markdown section, or the notice
+    that no call matched the filing's period or that its transcript is not
+    published.
 
     Args:
-        transcript: Raw transcript content
-        fiscal_year: Fiscal year (e.g., 2026)
-        quarter: Fiscal quarter (1-4)
-        call_date: Date of the earnings call
-        filing_date: Date of the SEC filing
+        call: The matched earnings call, or None
+        period_end: The filing's period of report, "YYYY-MM-DD"
 
     Returns:
         Formatted markdown section
     """
-    days_diff = abs((filing_date - call_date).days)
+    if call and call.transcript:
+        return f"""
 
+---
+
+## Earnings Call Transcript
+
+**Matched Call:** Q{call.quarter} FY{call.fiscal_year}, held {call.call_date}, the call reporting the period ending {period_end}
+**Alignment:** SEC filing and earnings call cover the same fiscal period
+
+{call.transcript}
+"""
+    if call is None:
+        notice = f"no earnings call transcript could be matched to the period ending {period_end}."
+    else:
+        notice = f"the earnings call held {call.call_date} for the period ending {period_end} has no published transcript yet."
     return f"""
 
 ---
 
 ## Earnings Call Transcript
 
-**Matched Call:** Q{quarter} FY{fiscal_year} (call date: {call_date}, {days_diff} days from filing)
-**Alignment:** SEC filing and earnings call cover the same fiscal period
-
-{transcript}
+**Not included:** {notice}
 """
 
 
@@ -95,7 +99,8 @@ async def fetch_matching_earnings_call(
     Async fetch the transcript of the earnings call for the SEC filing's period.
 
     FMP errors propagate. None means FMP lists no call for the period (see
-    _select_call) or has no transcript for it.
+    _select_call); an empty transcript means FMP has not published one for
+    the selected call.
 
     Args:
         symbol: Stock ticker symbol
@@ -109,7 +114,7 @@ async def fetch_matching_earnings_call(
             return None
         transcript_data = await client.get_earnings_call_transcript(symbol, call.fiscal_year, call.quarter)
 
-    content = transcript_data[0].get("content", "") if transcript_data else ""
-    if not content or "No data available" in content:
-        return None
+    content = (transcript_data[0].get("content") if transcript_data else None) or ""
+    if not content.strip() or content.strip().startswith("No data available"):
+        content = ""
     return EarningsCall(content, call.fiscal_year, call.quarter, call.date)

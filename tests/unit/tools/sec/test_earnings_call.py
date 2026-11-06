@@ -124,10 +124,24 @@ async def test_fetches_the_selected_calls_transcript():
 
 
 @pytest.mark.asyncio
-async def test_selected_call_without_transcript_returns_none():
-    patcher, _ = _fmp([{"content": ""}])
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        [],
+        [{"content": ""}],
+        [{"content": None}],
+        [{"content": " \n\t "}],
+        [{"content": "No data available"}],
+        [{"content": " No data available for this quarter."}],
+    ],
+    ids=["no-rows", "empty", "null", "whitespace-only", "no-data-available", "no-data-available-with-trailing-text"],
+)
+async def test_selected_call_without_transcript_has_an_empty_transcript(transcript):
+    patcher, _ = _fmp(transcript)
     with patcher:
-        assert await fetch_matching_earnings_call("ACME", TEN_K, "2024-06-30") is None
+        result = await fetch_matching_earnings_call("ACME", TEN_K, "2024-06-30")
+
+    assert result == EarningsCall("", 2024, 4, date(2024, 8, 6))
 
 
 @pytest.mark.asyncio
@@ -150,16 +164,83 @@ async def test_fmp_error_body_propagates(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sec_filing_matches_call_on_period_end_not_filing_date():
+async def test_transcript_mentioning_no_data_available_is_kept():
+    transcript = "Operator: welcome. Analyst: segment detail? CFO: No data available yet, we report it next quarter."
+    patcher, _ = _fmp([{"content": transcript}])
+    with patcher:
+        result = await fetch_matching_earnings_call("ACME", TEN_K, "2024-06-30")
+
+    assert result == EarningsCall(transcript, 2024, 4, date(2024, 8, 6))
+
+
+async def _late_10k(earnings_patch):
     metadata = {"symbol": "ACME", "filing_type": "10-K", "filing_date": "2025-02-25", "period_end": "2024-06-30"}
-    fetch = AsyncMock(return_value=("Operator: welcome.", 2024, 4, date(2024, 8, 6)))
     with (
-        patch("src.tools.sec.tool._fetch_sec_filing", AsyncMock(return_value=("# 10-K", "2025-02-25", metadata))),
+        patch("src.tools.sec.tool._fetch_sec_filing", AsyncMock(return_value=("# 10-K", metadata))),
         patch("src.tools.sec.tool.find_recent_8k_filings", AsyncMock(return_value=[])),
+        earnings_patch,
+    ):
+        return await get_sec_filing_async("ACME", "10-K")
+
+
+async def _late_10k_matching(match):
+    fetch = AsyncMock(return_value=match)
+    content, artifact = await _late_10k(patch("src.tools.sec.tool.fetch_matching_earnings_call", fetch))
+    fetch.assert_awaited_once_with("ACME", TEN_K, "2024-06-30")
+    return content, artifact
+
+
+@pytest.mark.asyncio
+async def test_sec_filing_matches_call_on_period_end_not_filing_date():
+    content, artifact = await _late_10k_matching(EarningsCall("Operator: welcome.", 2024, 4, date(2024, 8, 6)))
+
+    assert "**Matched Call:** Q4 FY2024, held 2024-08-06, the call reporting the period ending 2024-06-30" in content
+    assert artifact["has_earnings_call"] is True
+
+
+@pytest.mark.asyncio
+async def test_sec_filing_says_when_the_matched_call_has_no_transcript():
+    content, artifact = await _late_10k_matching(EarningsCall("", 2024, 4, date(2024, 8, 6)))
+
+    assert (
+        "**Not included:** the earnings call held 2024-08-06 for the period ending 2024-06-30"
+        " has no published transcript yet." in content
+    )
+    assert "Alignment" not in content
+    assert "has_earnings_call" not in artifact
+
+
+@pytest.mark.asyncio
+async def test_sec_filing_says_when_no_call_matches():
+    content, artifact = await _late_10k_matching(None)
+
+    assert "**Not included:** no earnings call transcript could be matched to the period ending 2024-06-30." in content
+    assert "Alignment" not in content
+    assert "has_earnings_call" not in artifact
+
+
+@pytest.mark.asyncio
+async def test_non_markdown_output_gets_no_earnings_call_or_8k_reminder():
+    metadata = {"symbol": "ACME", "filing_type": "10-K", "filing_date": "2025-02-25", "period_end": "2024-06-30"}
+    fetch = AsyncMock(return_value=EarningsCall("Operator: welcome.", 2024, 4, date(2024, 8, 6)))
+    recent_8k = AsyncMock(return_value=[{"filing_date": "2025-02-20", "items": ["Item 2.02"]}])
+    with (
+        patch("src.tools.sec.tool._fetch_sec_filing", AsyncMock(return_value=("{'symbol': 'ACME'}", metadata))),
+        patch("src.tools.sec.tool.find_recent_8k_filings", recent_8k),
         patch("src.tools.sec.tool.fetch_matching_earnings_call", fetch),
     ):
-        content, artifact = await get_sec_filing_async("ACME", "10-K")
+        content, _ = await get_sec_filing_async("ACME", "10-K", output_format="dict")
 
-    fetch.assert_awaited_once_with("ACME", "10-K", "2024-06-30")
-    assert "**Matched Call:** Q4 FY2024" in content
-    assert artifact["has_earnings_call"] is True
+    assert content == "{'symbol': 'ACME'}"
+    fetch.assert_not_awaited()
+    recent_8k.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sec_filing_says_nothing_about_the_call_when_fmp_fails():
+    content, artifact = await _late_10k(
+        patch("src.tools.sec.earnings_call.FMPClient", side_effect=ValueError("FMP API key required"))
+    )
+
+    assert content == "# 10-K"
+    assert "has_earnings_call" not in artifact
