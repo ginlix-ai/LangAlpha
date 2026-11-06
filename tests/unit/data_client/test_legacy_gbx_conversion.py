@@ -21,6 +21,7 @@ from src.data_client.fmp.financial_source import FMPFinancialSource
 from src.data_client.normalize import minor_unit_places, scale_quote_prices
 from src.data_client.yfinance.data_source import YFinanceDataSource, _normalize_bar
 from src.data_client.yfinance.data_source import normalize_series as yf_normalize_series
+from src.data_client.yfinance.financial_source import _get_key_metrics as yf_key_metrics
 from src.data_client.yfinance.financial_source import _get_profile as yf_profile
 from src.data_client.yfinance.financial_source import _get_realtime_quote as yf_realtime_quote
 from market_protocol import to_canonical
@@ -278,14 +279,41 @@ async def test_fmp_profile_lse_price_scaled_to_major_units():
     assert row["marketCap"] == 27152024882
 
 
-def test_yfinance_profile_lse_price_scaled_to_major_units():
+def _lse_fast_info_ticker(info: dict):
+    """Yahoo's fast_info multiplies shares by the pence quote: a cap 100x high."""
     ticker = MagicMock()
-    ticker.fast_info = {"lastPrice": 117.2, "marketCap": 27152024882, "currency": "GBp"}
-    ticker.info = {"longName": "Vodafone Group Plc"}
+    ticker.fast_info = {"lastPrice": 117.2, "shares": 1000, "marketCap": 117200.0, "currency": "GBp"}
+    ticker.info = info
+    return ticker
+
+
+def test_yfinance_profile_lse_price_scaled_to_major_units():
+    ticker = _lse_fast_info_ticker({"longName": "Vodafone Group Plc", "marketCap": 1172})
     with patch("src.data_client.yfinance.financial_source.yahoo_ticker", return_value=ticker):
         row = yf_profile(LSE)[0]
     assert row["price"] == pytest.approx(1.172)
-    assert row["marketCap"] == 27152024882
+    assert row["marketCap"] == 1172
+
+
+@pytest.mark.parametrize("info", [{"marketCap": 1172}, {"marketCap": 0}, {"currentRatio": 0.9}])
+def test_yfinance_key_metrics_lse_market_cap_in_pounds(info):
+    """Info's cap, else shares times the pound price, never fast_info's pence cap."""
+    with patch("src.data_client.yfinance.financial_source.yahoo_ticker",
+               return_value=_lse_fast_info_ticker(info)):
+        row = yf_key_metrics(LSE)[0]
+    assert row["marketCap"] == pytest.approx(1172)
+
+
+def test_yfinance_key_metrics_without_shares_take_yahoos_cap_and_skip_the_price():
+    """Without a share count fast_info's cap is Yahoo's own, in pounds, and the
+    price lookup that could fail and cost the other metrics is never made."""
+    values = {"shares": None, "marketCap": 1172}
+    fast_info = MagicMock()
+    fast_info.get.side_effect = lambda key: values[key]
+    ticker = MagicMock(fast_info=fast_info, info={"returnOnEquity": 0.2})
+    with patch("src.data_client.yfinance.financial_source.yahoo_ticker", return_value=ticker):
+        row = yf_key_metrics(LSE)[0]
+    assert row["marketCap"] == 1172 and row["returnOnEquityTTM"] == 0.2
 
 
 def _lse_quote_ticker(info: dict):

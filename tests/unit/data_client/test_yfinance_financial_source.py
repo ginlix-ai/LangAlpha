@@ -137,6 +137,7 @@ class TestKeyMetricsAndRatiosShape:
     """
 
     _INFO = {
+        "marketCap": 3_500_000_000_000,
         "trailingPE": 38.44,
         "trailingPegRatio": 2.71,
         "priceToBook": 57.97,
