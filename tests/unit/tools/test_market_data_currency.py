@@ -138,6 +138,12 @@ class TestFmtMoney:
             assert fmt_count(v) == fmt_money(v, "USD").replace("$", "")
         assert fmt_count(None) == "N/A"
 
+    def test_a_share_count_prints_whole_below_a_million(self):
+        # A screen's volume has no cents: 19,752 shares, not 19,752.00.
+        assert fmt_count(19_752.0, places=0) == "19,752"
+        assert fmt_count(-0.001, places=0) == "0"
+        assert fmt_count(2.5e6, places=0) == "2.50M"
+
 
 # ---------------------------------------------------------------------------
 # Golden output — _format_price_summary (single symbol, self-resolves)
@@ -270,6 +276,15 @@ def _screener_provider(results):
     return provider
 
 
+class TestUnknownVenue:
+    def test_a_venue_the_protocol_does_not_know_prints_no_currency(self):
+        # An unknown suffix resolves to a USD default; its pesos are not dollars.
+        spec = _symbol_currency(to_canonical("ACME.BA"))
+        assert fmt_price(39240.0, spec) == "39240.00"
+        assert fmt_money(1.29e15, spec) == "1290.00T"
+        assert fmt_price(1.5, _symbol_currency(to_canonical("AAPL"))) == "$1.50"
+
+
 class TestScreenerPerRowCurrency:
     @pytest.mark.asyncio
     async def test_mixed_market_rows_resolve_per_symbol(self):
@@ -329,7 +344,9 @@ class TestScreenerPerRowCurrency:
         assert artifact["filters"]["Price >"] == "CN¥100.00"
 
     @pytest.mark.asyncio
-    async def test_mixed_screen_keeps_dollar_thresholds(self):
+    async def test_mixed_screen_names_no_threshold_currency(self):
+        # FMP compares each row in its own currency, so a mixed screen's
+        # threshold was never applied in dollars.
         results = [
             {"symbol": "AAPL", "price": 235.50, "marketCap": 3.5e12},
             {"symbol": "0700.HK", "price": 318.20, "marketCap": 3.0e12},
@@ -339,4 +356,88 @@ class TestScreenerPerRowCurrency:
         with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
             content, _ = await fetch_stock_screener(price_more_than=10.0)
 
-        assert "Price >: $10.00" in content
+        assert "**Filters:** Price >: 10.00 (each listing's own currency)" in content
+
+    @pytest.mark.asyncio
+    async def test_london_screen_echoes_price_thresholds_in_pence(self):
+        # FMP applies a London price or dividend bar in pence, its cap in pounds.
+        # The source sends a London row in pence, its cap in pounds.
+        results = [{"symbol": "SHEL.L", "price": 3784, "marketCap": 2.15e11, "lastAnnualDividend": 3.17}]
+        provider = _screener_provider(results)
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_stock_screener(
+                country="GB", market_cap_more_than=1e11, price_more_than=2000.0, dividend_more_than=100.0,
+            )
+
+        assert "Mkt Cap >: £100.00B | Price >: GBX 2000.00 | Dividend/Share >: GBX 100.00" in content
+        # A pence quote keeps its places in pounds: 3.17p is £0.0317, not £0.03.
+        assert "| SHEL.L | £37.84 | £215.00B | £0.0317 |" in content
+
+    @pytest.mark.asyncio
+    async def test_unknown_venue_prints_no_currency(self):
+        # A suffix the protocol does not know resolves to a USD default, which
+        # would print Buenos Aires pesos as dollars.
+        results = [{"symbol": "ACME.BA", "price": 39240.0, "marketCap": 1.29e15, "volume": 19_752.0,
+                    "lastAnnualDividend": 193.05}]
+        provider = _screener_provider(results)
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, artifact = await fetch_stock_screener(exchange="BUE", market_cap_more_than=5e14)
+
+        assert "Mkt Cap >: 500.00T (each listing's own currency)" in content
+        assert "| ACME.BA | 39240.00 | 1290.00T | 19,752 | 193.05 |" in content
+        assert "$" not in content
+        assert artifact["results"][0]["currency"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_screen_of_every_venue_names_no_unit_for_its_bars(self):
+        # Every listing was compared in its own currency, whatever the one row
+        # that came back is in.
+        provider = _screener_provider([{"symbol": "AAPL", "price": 344.17}])
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_stock_screener(price_more_than=10, limit=1)
+
+        assert "Price >: 10.00 (each listing's own currency)" in content
+
+    @pytest.mark.asyncio
+    async def test_a_country_spelled_another_way_reaches_the_screen_as_its_iso_code(self):
+        provider = _screener_provider([{"symbol": "SHEL.L", "price": 3784}])
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_stock_screener(country="uk")
+
+        assert provider.financial.screen_stocks.await_args.kwargs["country"] == "GB"
+        assert "Country: GB" in content
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_names_its_unit_is_printed_in_it(self):
+        # A source that knows a London line's unit names it; null means unknown.
+        results = [
+            {"symbol": "ACME.L", "price": 3533.0, "marketCap": 4.18e13, "currency": None},
+            {"symbol": "BETA.L", "price": 37.84, "marketCap": 2.15e11, "currency": "USD"},
+        ]
+        provider = _screener_provider(results)
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, artifact = await fetch_stock_screener(exchange="LSE", price_more_than=1.0)
+
+        assert "Price >: 1.00 (each listing's own currency)" in content
+        assert "| ACME.L | 3533.00 | 41.80T |" in content
+        assert "| BETA.L | $37.84 | $215.00B |" in content
+        assert [r["currency"] for r in artifact["results"]] == [None, "USD"]
+
+    @pytest.mark.asyncio
+    async def test_columns_no_row_fills_are_left_out(self):
+        # FMP's screen sends no change; the CN one no sector, beta or volume.
+        results = [{"symbol": "600519.SH", "companyName": "Alpha Co.", "price": 1712.40, "marketCap": 2.1e12,
+                    "sector": None, "beta": None, "volume": None, "change": None}]
+        provider = _screener_provider(results)
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, artifact = await fetch_stock_screener(country="CN")
+
+        assert "| Symbol | Name | Price | Mkt Cap |\n" in content
+        assert "N/A" not in content
+        assert artifact["results"][0]["currency"] == "CNY"
