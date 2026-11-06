@@ -20,6 +20,34 @@ class IntervalNotSupported(ValueError):
     """
 
 
+# A country's own exchanges, in the screen filters' exchange names (FMP's, which
+# every screen source takes). FMP's `country` is the issuer's domicile, so a US
+# screen also ranked Visa's Buenos Aires line in pesos, and Yahoo's is where a
+# line lists, so a GB screen also returned Cboe Europe copies of UK lines. A
+# country screen names these exchanges instead, the ones the symbology knows,
+# so each row's currency is known from its suffix. India keeps to NSE: its
+# companies list on BSE as well, which would show each one twice.
+SCREEN_HOME_EXCHANGES: dict[str, tuple[str, ...]] = {
+    "US": ("NYSE", "NASDAQ", "AMEX", "CBOE"),
+    "CN": ("SHH", "SHZ"),
+    "HK": ("HKSE",),
+    "GB": ("LSE",),
+    "JP": ("JPX",),
+    "CA": ("TSX",),
+    "AU": ("ASX",),
+    "DE": ("XETRA",),
+    "FR": ("PAR",),
+    "NL": ("AMS",),
+    "IT": ("MIL",),
+    "ES": ("BME",),
+    "CH": ("SIX",),
+    "KR": ("KSC", "KOE"),
+    "TW": ("TAI",),
+    "SG": ("SES",),
+    "IN": ("NSE",),
+}
+
+
 @dataclass
 class FetchResult:
     """Return type for data sources that can signal truncation.

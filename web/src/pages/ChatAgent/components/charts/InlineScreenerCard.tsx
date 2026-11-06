@@ -1,7 +1,7 @@
 import React from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { formatMoney } from '@/lib/bars';
+import { formatMoney, quotePlaces } from '@/lib/bars';
 import { useLocale } from '@/hooks/useLocale';
 import { readScreener, type InlineCardProps } from './cardReaders';
 import { TermCard, TermChange } from './TermCard';
@@ -69,7 +69,7 @@ export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps):
           // Without the name column, the symbol takes the spare width.
           { key: 'sym', label: t('toolArtifact.termHead.sym'), fill: 'clip', className: 'term-code term-strong', cell: (r) => r.symbol },
           { key: 'name', label: t('toolArtifact.termHead.name'), fill: 'clip', className: 'term-t3', show: !narrow, cell: (r) => r.name },
-          { key: 'last', label: t('toolArtifact.termHead.last'), num: true, cell: (r) => (r.price != null ? formatMoney(r.price, r.currency, locale) : '') },
+          { key: 'last', label: t('toolArtifact.termHead.last'), num: true, cell: (r) => (r.price != null ? formatMoney(r.price, r.currency, locale, { upTo: quotePlaces(r.symbol, { currency: r.currency, price: r.price }) }) : '') },
           {
             key: 'mktCap',
             label: t('toolArtifact.termHead.mktCap'),

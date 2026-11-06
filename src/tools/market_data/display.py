@@ -21,6 +21,7 @@ from market_protocol import (
 )
 
 from src.data_client.instrument_clock import clock_for_ref
+from src.data_client.normalize import listing_currency
 
 from .currency import DisplaySpec, fmt_price
 
@@ -61,10 +62,13 @@ def _symbol_currency(ref: Optional[InstrumentRef]) -> DisplaySpec:
     Decimals come from ``display_decimals_for(price_currency, asset_class)`` so
     the protocol table is the sole authority. Falls back to USD / 2 decimals for a
     missing ref or anything the registry cannot price, so display never fails.
+    A listing with no known currency prints with none at all.
     """
     # TODO: display_unit (e.g. GBX quotes on XLON) is not yet consulted here.
     if ref is None:
         return DisplaySpec(None, 2)
+    if listing_currency(ref) is None:
+        return DisplaySpec(None, 2, bare=True)
     try:
         return DisplaySpec(
             ref.price_currency,

@@ -516,7 +516,9 @@ export interface ScreenerRow {
   industry?: string;
   exchange?: string;
   country?: string;
-  currency: string;
+  /** Null for a listing on a venue the producer does not know: its figures
+   *  print with no currency rather than as dollars. */
+  currency: string | null;
 }
 
 export interface Screen {
@@ -544,8 +546,10 @@ export function readScreener(artifact: Record<string, unknown>): Screen {
         industry: text(s.industry),
         exchange: text(s.exchangeShortName),
         country: text(s.country),
-        // A screen can mix venues, so money resolves per row.
-        currency: resolveCurrency(null, symbol),
+        // A screen can mix venues, so money resolves per row. The producer names
+        // each row's currency, null for an unknown venue; a row saved before it
+        // did reads its symbol's suffix.
+        currency: 'currency' in s ? (text(s.currency) ?? null) : resolveCurrency(null, symbol),
       };
     }),
     filters: Object.entries(record(artifact.filters) ?? {}),

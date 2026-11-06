@@ -29,7 +29,8 @@ class DisplaySpec(NamedTuple):
 
     currency: Optional[str]
     decimals: int
-    # An index level is points, not money: it prints with no currency prefix.
+    # No currency prefix: an index level is points, and a listing on a venue
+    # the protocol does not know has no known currency.
     bare: bool = False
     # Zeros past the second decimal are dropped: a coin carries eight places
     # for SHIB's $0.00000464, which would pad BTC to $76,810.32810000.
@@ -96,17 +97,18 @@ def fmt_price(
     return f"{sign}{prefix}{text}"
 
 
-def _scaled(value: float, prefix: str) -> str:
+def _scaled(value: float, prefix: str, places: int = 2) -> str:
     """The one magnitude ladder (T/B/M, grouped below a million), sign first.
 
-    Money and counts differ only in ``prefix``, so they cannot drift apart on
-    where a suffix starts or which side of the symbol a minus sits.
+    Money and counts differ only in ``prefix`` and in the ``places`` shown below
+    a million, so they cannot drift apart on where a suffix starts or which
+    side of the symbol a minus sits.
     """
-    sign, value = _sign(value, 2)
+    sign, value = _sign(value, places)
     for scale, unit in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
         if value >= scale:
             return f"{sign}{prefix}{value / scale:.2f}{unit}"
-    return f"{sign}{prefix}{value:,.2f}"
+    return f"{sign}{prefix}{value:,.{places}f}"
 
 
 def fmt_money(value: Optional[float], currency: CurrencyArg = None) -> str:
@@ -118,11 +120,16 @@ def fmt_money(value: Optional[float], currency: CurrencyArg = None) -> str:
     """
     if value is None:
         return "N/A"
-    return _scaled(value, currency_symbol(_spec(currency).currency))
+    spec = _spec(currency)
+    return _scaled(value, "" if spec.bare else currency_symbol(spec.currency))
 
 
-def fmt_count(value: Optional[float]) -> str:
-    """Share counts and volumes: the money ladder without a currency prefix."""
+def fmt_count(value: Optional[float], places: int = 2) -> str:
+    """Share counts and volumes: the money ladder without a currency prefix.
+
+    ``places=0`` prints a share count whole below a million; the default keeps
+    two, since a crypto bar's volume can be fractional.
+    """
     if value is None:
         return "N/A"
-    return _scaled(value, "")
+    return _scaled(value, "", places)

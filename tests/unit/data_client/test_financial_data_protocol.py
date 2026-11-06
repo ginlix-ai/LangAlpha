@@ -200,8 +200,48 @@ class TestFMPFinancialSource:
         src, client = source
         client.get_company_screener.return_value = [{"symbol": "AAPL"}]
         result = await src.screen_stocks(sector="Technology", limit=10)
-        client.get_company_screener.assert_awaited_once_with(sector="Technology", limit=10)
+        # FMP's screen includes funds and ETFs unless told; a stock screen does not.
+        client.get_company_screener.assert_awaited_once_with(
+            isEtf=False, isFund=False, sector="Technology", limit=10
+        )
         assert result == [{"symbol": "AAPL"}]
+
+    @pytest.mark.asyncio
+    async def test_screen_stocks_asks_for_funds_when_told(self, source):
+        src, client = source
+        client.get_company_screener.return_value = []
+        await src.screen_stocks(isEtf=True)
+        client.get_company_screener.assert_awaited_once_with(isEtf=True, isFund=False)
+
+    @pytest.mark.asyncio
+    async def test_screen_stocks_keeps_a_country_to_its_own_exchanges(self, source):
+        # FMP's country is the issuer's domicile, so a US screen otherwise
+        # ranks Buenos Aires lines in pesos.
+        src, client = source
+        client.get_company_screener.return_value = []
+        await src.screen_stocks(country="us")
+        assert client.get_company_screener.await_args.kwargs["exchange"] == "NYSE,NASDAQ,AMEX,CBOE"
+
+        client.get_company_screener.reset_mock()
+        await src.screen_stocks(country="CN", exchange="NYSE")
+        assert client.get_company_screener.await_args.kwargs["exchange"] == "NYSE"
+
+        client.get_company_screener.reset_mock()
+        await src.screen_stocks(country="IL")
+        assert "exchange" not in client.get_company_screener.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_foreign_issuers_london_line_names_no_unit(self, source):
+        # London trades many lines in their own currency (a Japanese issuer's in
+        # yen, an order-book 0-prefixed code in dollars even for a UK issuer),
+        # which the row does not name.
+        src, client = source
+        row = {"symbol": "ACME.L", "price": 3533, "lastAnnualDividend": 95, "exchangeShortName": "LSE", "country": "JP"}
+        book = {"symbol": "0ABC.L", "price": 335.62, "exchangeShortName": "LSE", "country": "GB"}
+        home = {"symbol": "BETA.L", "price": 3784, "exchangeShortName": "LSE", "country": "GB"}
+        client.get_company_screener.return_value = [row, book, home]
+        result = await src.screen_stocks(exchange="LSE")
+        assert result == [{**row, "currency": None}, {**book, "currency": None}, home]
 
     @pytest.mark.asyncio
     async def test_search_stocks(self, source):
@@ -520,3 +560,210 @@ class TestYFinanceFinancialSource:
 
         source = YFinanceFinancialSource()
         await source.close()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# yfinance screen
+# ---------------------------------------------------------------------------
+
+class TestYFinanceScreen:
+    def test_dividend_filters_compare_per_share_and_london_rows_arrive_in_pounds(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        # Yahoo quotes a pence line's price in pence and its dividend rate in pounds.
+        quotes = [
+            {"symbol": "SHEL.L", "currency": "GBp", "regularMarketPrice": 3784.0, "dividendRate": 1.16,
+             "marketCap": 2.15e11, "regularMarketChangePercent": 1.25},
+            {"symbol": "ACME.L", "currency": "JPY", "regularMarketPrice": 3533.0, "dividendRate": 100.0},
+            {"symbol": "AAPL", "currency": "USD", "regularMarketPrice": 344.17, "dividendRate": 1.06},
+        ]
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": []}) as screen:
+            _screen_stocks_sync(country="us", dividendMoreThan=3, limit=5)
+        # A yield bar would read "3" as 3%; FMP and the CN screen read $3 a share.
+        operands = [n["operands"] for n in screen.call_args.args[0].to_dict()["operands"]]
+        assert ["forward_dividend_per_share", 3.0] in operands
+
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": quotes}):
+            rows = _screen_stocks_sync(dividendMoreThan=1, limit=5)
+        # Each row stays in its quote unit, which it names; screen_row_units scales it.
+        got = [(r["symbol"], r["currency"], r.get("quoteUnit"), r["price"], r["lastAnnualDividend"]) for r in rows]
+        assert got == [
+            ("SHEL.L", "GBP", "GBX", 3784.0, pytest.approx(116.0)),
+            ("ACME.L", "JPY", None, 3533.0, 100.0),
+            ("AAPL", "USD", None, 344.17, 1.06),
+        ]
+        assert rows[0]["change"] == 1.25
+
+    def test_a_london_bar_holds_each_row_to_its_own_unit(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        # Yahoo compares a pence line's cap in pence and its dividend in pounds,
+        # a yen line's both in yen; the bars arrive in pence and the major unit.
+        quotes = [
+            {"symbol": "BIG.L", "currency": "GBp", "regularMarketPrice": 5000.0, "marketCap": 1e11, "dividendRate": 1.6},
+            {"symbol": "SMALL.L", "currency": "GBp", "regularMarketPrice": 2500.0, "marketCap": 1e9, "dividendRate": 2.0},
+            {"symbol": "NOCAP.L", "currency": "GBp", "regularMarketPrice": 2500.0, "dividendRate": 2.0},
+            {"symbol": "LOWDIV.L", "currency": "JPY", "regularMarketPrice": 3533.0, "marketCap": 4e13, "dividendRate": 100.0},
+            {"symbol": "HIDIV.L", "currency": "JPY", "regularMarketPrice": 28660.0, "marketCap": 4e12, "dividendRate": 250.0},
+            {"symbol": "MORE.L", "currency": "GBp", "regularMarketPrice": 3000.0, "marketCap": 6e10, "dividendRate": 1.7},
+        ]
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": quotes}) as screen:
+            rows = _screen_stocks_sync(
+                country="gb", dividendMoreThan=150, priceMoreThan=2000, marketCapMoreThan=5e10, limit=2,
+            )
+
+        # Yahoo gets the bound loose enough for either unit, over a full page.
+        operands = [n["operands"] for n in screen.call_args.args[0].to_dict()["operands"]]
+        assert ["forward_dividend_per_share", 1.5] in operands
+        assert ["intradaymarketcap", 5e10] in operands
+        assert ["intradayprice", 2000.0] in operands
+        assert screen.call_args.kwargs["size"] == 250
+        assert [r["symbol"] for r in rows] == ["BIG.L", "HIDIV.L"]
+
+    def test_a_screen_of_every_venue_holds_each_unit_to_its_own_bar_and_ranks_by_cap(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        # Yahoo compares a pence line's cap in pence, so across every venue the
+        # other lines and the minor-unit lines are read as two screens.
+        everywhere = [
+            {"symbol": "BIG", "currency": "USD", "marketCap": 9.99e8},
+            {"symbol": "TINY.L", "currency": "GBp", "marketCap": 5e6},
+            {"symbol": "MID.T", "currency": "JPY", "marketCap": 9.9e8},
+        ]
+        minor_venues = [
+            {"symbol": "PENCE.L", "currency": "GBp", "marketCap": 9.95e8},
+            {"symbol": "0ABC.L", "currency": "USD", "marketCap": 5e10},
+        ]
+        with patch(
+            "yfinance.screener.screener.screen", side_effect=[{"quotes": everywhere}, {"quotes": minor_venues}],
+        ) as screen:
+            rows = _screen_stocks_sync(sector="Technology", marketCapLowerThan=1e9, limit=5)
+
+        assert [r["symbol"] for r in rows] == ["BIG", "PENCE.L", "MID.T"]
+        first, second = (str(c.args[0].to_dict()) for c in screen.call_args_list)
+        assert "'intradaymarketcap', 1000000000.0" in first and "LSE" not in first
+        assert "'intradaymarketcap', 100000000000.0" in second and "'exchange', 'LSE'" in second
+
+    def test_a_held_bar_pages_on_past_the_rows_it_drops(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        # The loose bound lets a full page of yen lines under the real bar in.
+        miss = {"currency": "JPY", "regularMarketPrice": 3533.0, "marketCap": 4e13, "dividendRate": 100.0}
+        page = [{**miss, "symbol": f"J{i}.L"} for i in range(250)]
+        hit = {"symbol": "BIG.L", "currency": "GBp", "regularMarketPrice": 5000.0, "dividendRate": 1.6}
+        with patch("yfinance.screener.screener.screen", side_effect=[{"quotes": page}, {"quotes": [hit]}]) as screen:
+            rows = _screen_stocks_sync(country="gb", dividendMoreThan=150, limit=5)
+
+        assert [r["symbol"] for r in rows] == ["BIG.L"]
+        assert [c.kwargs["offset"] for c in screen.call_args_list] == [0, 250]
+
+    def test_a_screen_without_minor_unit_lines_sends_its_bars_as_given(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": []}) as screen:
+            _screen_stocks_sync(country="jp", dividendLowerThan=150, marketCapLowerThan=5e10, limit=5)
+
+        operands = [n["operands"] for n in screen.call_args.args[0].to_dict()["operands"]]
+        assert ["forward_dividend_per_share", 150.0] in operands
+        assert ["intradaymarketcap", 5e10] in operands
+        assert screen.call_args.kwargs["size"] == 5
+
+    def test_a_country_screen_keeps_to_the_regions_home_exchanges(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        # Yahoo's GB region also holds Cboe Europe copies of UK lines.
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": []}) as screen:
+            _screen_stocks_sync(country="gb", limit=5)
+        query = str(screen.call_args.args[0].to_dict())
+        assert "'exchange', 'LSE'" in query and "CXE" not in query
+
+        with pytest.raises(ValueError, match="another country's exchange"):
+            _screen_stocks_sync(country="gb", exchange="NYSE", limit=5)
+
+        with pytest.raises(ValueError, match="another country's exchange"):
+            _screen_stocks_sync(country="gb", exchange="BSE", limit=5)
+
+        # A country's own exchange outside its default list is still its own.
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": []}) as screen:
+            _screen_stocks_sync(country="in", exchange="BSE", limit=5)
+        assert "'exchange', 'BSE'" in str(screen.call_args.args[0].to_dict())
+
+    def test_a_failed_page_fails_the_screen_rather_than_cutting_it_short(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        page = [{"symbol": f"J{i}.L", "currency": "JPY", "marketCap": 4e13, "dividendRate": 100.0} for i in range(250)]
+        with patch("yfinance.screener.screener.screen", side_effect=[{"quotes": page}, RuntimeError("429")]):
+            with pytest.raises(RuntimeError):
+                _screen_stocks_sync(country="gb", dividendMoreThan=150, limit=5)
+
+    def test_an_exchange_named_as_fmp_names_it_reaches_yahoo_by_its_code(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": []}) as screen:
+            _screen_stocks_sync(country="de", exchange="XETRA", limit=5)
+        query = str(screen.call_args.args[0].to_dict())
+        assert "'exchange', 'GER'" in query
+        # The largest caps first, as FMP ranks them.
+        assert screen.call_args.kwargs["sortField"] == "intradaymarketcap"
+        assert screen.call_args.kwargs["sortAsc"] is False
+
+    def test_a_minor_unit_the_protocol_does_not_scale_names_no_currency(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        quotes = [
+            {"symbol": "ACME.JO", "currency": "ZAc", "regularMarketPrice": 5120.0, "dividendRate": 2.0},
+            {"symbol": "ACME.KW", "currency": "KWF", "regularMarketPrice": 735.0},
+        ]
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": quotes}):
+            rows = _screen_stocks_sync(sector="Technology", limit=5)
+        assert [r["currency"] for r in rows] == [None, None]
+        # A cents line's rand dividend moves to cents beside its price.
+        assert rows[0]["lastAnnualDividend"] == 200.0
+
+    def test_a_cboe_europe_screen_holds_its_pence_lines_to_the_bar(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": []}) as screen:
+            _screen_stocks_sync(exchange="CXE", dividendMoreThan=150, limit=5)
+        assert "'forward_dividend_per_share', 1.5" in str(screen.call_args.args[0].to_dict())
+
+    def test_a_screen_with_no_filter_ranks_every_listing_by_cap(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        with patch("yfinance.screener.screener.screen", return_value={"quotes": []}) as screen:
+            _screen_stocks_sync(limit=5)
+        assert screen.call_args.args[0].to_dict() == {"operator": "GT", "operands": ["intradaymarketcap", 0]}
+        assert screen.call_args.kwargs["sortField"] == "intradaymarketcap"
+
+    def test_a_fund_screen_is_refused_rather_than_answered_with_stocks(self):
+        from src.data_client.yfinance.financial_source import _screen_stocks_sync
+
+        with pytest.raises(ValueError, match="stocks only"):
+            _screen_stocks_sync(isEtf=True)
+
+
+# ---------------------------------------------------------------------------
+# screen_row_units
+# ---------------------------------------------------------------------------
+
+class TestScreenRowUnits:
+    def test_rows_name_their_unit_and_a_pence_row_moves_to_pounds(self):
+        from src.data_client.normalize import screen_row_units
+
+        rows = screen_row_units([
+            {"symbol": "SHEL.L", "price": 3784, "lastAnnualDividend": 112.82, "marketCap": 2.15e11},
+            {"symbol": "AAPL", "price": 344.17, "marketCap": 5.0e12},
+            {"symbol": "ACME.BA", "price": 39240, "lastAnnualDividend": 193.05},
+            {"symbol": "BETA.L", "price": 3533, "currency": None},
+            {"symbol": "GAMA.L", "price": 3784, "lastAnnualDividend": 116.0, "currency": "GBP", "quoteUnit": "GBX"},
+        ])
+        assert rows == [
+            # The cap is already in pounds; a field a row lacks stays absent.
+            {"symbol": "SHEL.L", "price": 37.84, "lastAnnualDividend": 1.1282, "marketCap": 2.15e11,
+             "currency": "GBP", "quoteUnit": "GBX"},
+            {"symbol": "AAPL", "price": 344.17, "marketCap": 5.0e12, "currency": "USD", "quoteUnit": "USD"},
+            # An unknown venue resolves to a USD default, not its currency.
+            {"symbol": "ACME.BA", "price": 39240, "lastAnnualDividend": 193.05, "currency": None, "quoteUnit": None},
+            {"symbol": "BETA.L", "price": 3533, "currency": None, "quoteUnit": None},
+            {"symbol": "GAMA.L", "price": 37.84, "lastAnnualDividend": 1.16, "currency": "GBP", "quoteUnit": "GBX"},
+        ]
