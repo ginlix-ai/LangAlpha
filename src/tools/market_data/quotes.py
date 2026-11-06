@@ -18,14 +18,15 @@ from .quote_format import (
     format_quote_block,
     stamp_quote,
 )
-from src.data_client import fallbacks, get_financial_data_provider, get_market_data_provider
+from src.data_client import fallbacks, get_financial_data_provider
 from src.data_client.base import MoverRow
 from src.data_client.freshness import is_live
 from src.data_client.ginlix_data.directory import fill_quote_names
-from src.data_client.market_data_provider import snapshot_key
 from src.data_client.ginlix_data.pagination import follow_cursor
+from src.data_client.market_data_provider import snapshot_key
 from src.observability import stamp_tool_provider
-from market_protocol import AssetClass, display_spelling
+from src.server.services.cache.quote_cache_service import QuoteCacheService
+from market_protocol import AssetClass, display_spelling, to_legacy_api
 
 from ._shared import _get_user_id, _mark_failure, _mark_no_data
 
@@ -285,7 +286,7 @@ async def fetch_quote(
     asset_type: str = "stocks",
     config: Optional[RunnableConfig] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """Fetch real-time quotes for up to 20 symbols via the snapshot provider chain."""
+    """Fetch real-time quotes for up to 20 symbols through the shared quote cache."""
     empty = {"type": "quote", "quotes": []}
     # LLM-supplied value that reaches the provider request path — restrict to
     # the two documented values so it can't smuggle path segments.
@@ -297,30 +298,28 @@ async def fetch_quote(
     if not syms:
         return "No symbols provided.", empty
     try:
-        provider = await get_market_data_provider()
-        user_id = _get_user_id(config)
-        # Canonicalize each symbol to the legacy REST spelling the snapshot
-        # provider chain expects (e.g. "0700.HK", index "^GSPC" -> "GSPC").
         # The class decides a bare alias: on the stocks path COMP is Compass,
-        # not the Nasdaq Composite.
-        listings = [resolve_listing(s, asset_class) for s in syms]
-        resolved = [spelling for _, spelling in listings]
-        asked = {snapshot_key(spelling): ref for ref, spelling in listings if ref is not None}
-        snaps = await provider.get_snapshots(resolved, asset_type=asset_type, user_id=user_id)
-        if asset_type == "stocks":
+        # not the Nasdaq Composite. A spelling only an index has (^GSPC, I:SPX,
+        # SPX.INDEX) resolves as the index on either path, and the cache asks
+        # each instrument on the endpoint of the class it resolved to.
+        refs = {s: resolve_ref(s, asset_class) for s in syms}
+        quotes, failure = await QuoteCacheService.get_instance().fetch_quotes(
+            [ref for ref in refs.values() if ref is not None],
+            _get_user_id(config),
             # A listing no provider quotes (Beijing has no realtime one) reads
             # its last daily close while its venue is closed, as the REST
             # quote routes do; empty, the agent goes to the web for it.
-            from src.server.services.cache.quote_daily_fallback import fill_from_daily
-
-            served = [(asked[k], s) for s in snaps if (k := snapshot_key(s.get("symbol"))) in asked]
-            filled = await fill_from_daily(served, list(asked.values()), user_id)
-            for _, row in filled[len(served):]:
-                fallbacks.answered(snapshot_key(row.get("symbol")), "quote", "daily close")
-            snaps = [*snaps, *(row for _, row in filled[len(served):])]
-        # The card names each row as the REST routes do; a daily row has none.
-        await fill_quote_names(snaps)
-        if not snaps:
+            daily_fallback=True,
+            # Read from the chain, not a row another request cached, so the
+            # Source fallbacks note names what this read's chain took.
+            fresh=True,
+        )
+        for ref, row in quotes:
+            if row.get("source") == "daily":
+                fallbacks.answered(snapshot_key(to_legacy_api(ref)), "quote", "daily close")
+        if not quotes:
+            if failure is not None:
+                raise failure.error
             _mark_no_data()
             return f"No quote data available for {', '.join(syms)}.", empty
         # Stamp each row with what it actually is: the declared tier, the
@@ -330,40 +329,42 @@ async def fetch_quote(
         # not located by the retrieval clock at all.
         retrieved_at = datetime.now(timezone.utc)
         all_realtime = True
-        for snap in snaps:
-            # Each row is the listing it was asked as and is measured on that
-            # listing's clock; the vendor's caret-free echo (GSPC) cannot tell
-            # an index from a stock, and a stock read as an index has its
-            # after-hours print called closed.
-            ref = asked.get(snapshot_key(snap.get("symbol"))) or resolve_ref(
-                snap.get("symbol"), asset_class
-            )
-            if ref is not None:
-                snap["asset_class"] = ref.asset_class.value
+        snaps: List[Dict[str, Any]] = []
+        for ref, row in quotes:
+            # A copy, since requests that shared one fetch share its rows. Each
+            # row is measured on the clock of the listing it was asked as; a
+            # stock read as an index has its after-hours print called closed.
+            snap = {**row, "asset_class": ref.asset_class.value}
             snap.update(stamp_quote(snap, retrieved_at, ref=ref))
             # The card prints each row in its listing currency; an index level
             # is a bare number, so index rows carry none.
-            if asset_type == "stocks" and ref is not None and not snap.get("currency"):
+            if ref.asset_class is not AssetClass.INDEX and not snap.get("currency"):
                 snap["currency"] = ref.price_currency
             all_realtime = all_realtime and is_live(snap["freshness"])
+            snaps.append(snap)
         content = format_quote_block(snaps, at=retrieved_at)
         # A batch can be split across the chain: one stable name for the set.
         sources = {snap.get("source") for snap in snaps}
         stamp_tool_provider(
             ",".join(sorted(s for s in sources if isinstance(s, str) and s)) or None
         )
-        # Diff on the RESOLVED spelling the provider actually saw (an alias like
-        # "SPX" is requested as "GSPC"), but report under the caller's input
-        # label, matched as the provider chain matches its rows.
-        returned = {snapshot_key(s.get("symbol")) for s in snaps}
-        # A listing whose sources failed is named in the fallback note, not here.
-        failed = {f.symbol for f in fallbacks.taken() if f.what == "quote" and f.served_by is None}
+        # Report under the caller's input label. A failed request is not an
+        # absent listing: the agent may retry it, and a listing whose sources
+        # failed is named in the Source fallbacks note.
+        key = QuoteCacheService.quote_key
+        unreached = {key(ref) for ref in failure.refs} if failure else set()
+        seen = unreached | {key(ref) for ref, _ in quotes}
+        unsourced = {f.symbol for f in fallbacks.taken() if f.what == "quote" and f.served_by is None}
         missing = sorted(
-            syms[i] for i, r in enumerate(resolved)
-            if snapshot_key(r) not in returned and snapshot_key(r) not in failed
+            s for s, ref in refs.items()
+            if ref is None or (key(ref) not in seen and snapshot_key(to_legacy_api(ref)) not in unsourced)
         )
         if missing:
             content += f"\n(no data: {', '.join(missing)})"
+        if failure is not None:
+            _mark_failure(failure.error)
+            failed = sorted(s for s, ref in refs.items() if ref is not None and key(ref) in unreached)
+            content += f"\n(request failed: {', '.join(failed)})"
         return content, {
             "type": "quote",
             "quotes": snaps,

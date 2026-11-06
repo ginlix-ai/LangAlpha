@@ -193,6 +193,19 @@ async def test_provider_error_propagates_and_clears_inflight(service):
 
 
 @pytest.mark.asyncio
+async def test_a_fill_that_fails_outright_raises_when_nothing_answers(service, monkeypatch):
+    svc, _, _ = service
+
+    async def _unavailable():
+        raise RuntimeError("no provider")
+
+    monkeypatch.setattr(qcs, "get_market_data_provider", _unavailable)
+    with pytest.raises(RuntimeError):
+        await svc.get_quotes(_refs("AAPL"))
+    assert svc._inflight == {}
+
+
+@pytest.mark.asyncio
 async def test_leader_cancellation_clears_inflight_and_recovers(service):
     """Cancelling the batch leader must clear _inflight — a stranded future
     would make every later request a follower awaiting a dead fetch forever."""
@@ -264,6 +277,35 @@ async def test_follower_survives_leader_provider_error(service):
     with pytest.raises(RuntimeError):
         await leader
     assert await follower == []
+
+
+@pytest.mark.asyncio
+async def test_a_follower_names_the_instrument_its_shared_fill_failed(service):
+    """A follower of a failed fill reports the instrument as unreached, not as
+    one no provider quotes, and leaves the raise to the leader."""
+    svc, cache, install = service
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _IndexesDown:
+        async def get_snapshots(self, symbols, asset_type="stocks", user_id=None):
+            started.set()
+            await gate.wait()
+            raise RuntimeError("503 Service Unavailable")
+
+    install(_IndexesDown())
+    leader = asyncio.create_task(svc.get_quotes(_refs("AAPL")))
+    await started.wait()
+    follower = asyncio.create_task(svc.fetch_quotes(_refs("AAPL")))
+    await asyncio.sleep(0.01)
+    gate.set()
+
+    with pytest.raises(RuntimeError):
+        await leader
+    quotes, failure = await follower
+    assert quotes == []
+    assert failure.shared
+    assert [ref.instrument_key for ref in failure.refs] == [_refs("AAPL")[0].instrument_key]
 
 
 @pytest.mark.asyncio

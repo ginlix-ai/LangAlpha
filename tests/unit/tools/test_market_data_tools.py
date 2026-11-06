@@ -37,6 +37,7 @@ _MKT_MOD = "src.tools.market_data.market_overview"
 _SCREEN_MOD = "src.tools.market_data.screener"
 _QUOTES_MOD = "src.tools.market_data.quotes"
 _DAILY_MOD = "src.server.services.cache.quote_daily_fallback"
+_QCS_MOD = "src.server.services.cache.quote_cache_service"
 _ET = pytz.timezone("US/Eastern")
 _FIXED_ET = _ET.localize(datetime(2026, 7, 1, 14, 32, 5))
 
@@ -2419,6 +2420,22 @@ def _make_fake_snapshot_provider(snaps):
 
 
 class TestFetchQuote:
+    @pytest.fixture(autouse=True)
+    def _empty_quote_cache(self):
+        # Every quote is a miss the provider fills, and names stay off the network.
+        store = {}
+
+        async def mget(keys):
+            return [store.get(k) for k in keys]
+
+        async def set_many(items):
+            store.update((key, value) for key, value, _ in items)
+
+        cache = MagicMock(mget=mget, set_many=set_many)
+        with patch(f"{_QCS_MOD}.get_cache_client", return_value=cache), \
+                patch(f"{_QCS_MOD}.fill_quote_names", new=AsyncMock()):
+            yield
+
     @pytest.mark.asyncio
     async def test_multi_symbol_quotes(self):
         snaps = [
@@ -2428,7 +2445,7 @@ class TestFetchQuote:
              "volume": 95_000_000, "last_trade_price": 412.10, "market_status": "open"},
         ]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             content, artifact = await fetch_quote(["nvda", "TSLA"])
         provider.get_snapshots.assert_awaited_once()
         # Canonical entry: US tickers resolve to themselves and reach the provider.
@@ -2437,6 +2454,30 @@ class TestFetchQuote:
         assert "TSLA" in content
         assert artifact["type"] == "quote"
         assert len(artifact["quotes"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_quote_is_read_from_the_chain_not_a_cached_row(self):
+        # The Source fallbacks note names what this read's chain took; a row
+        # another request cached carries none.
+        snaps = [{"symbol": "NVDA", "last_trade_price": 233.45, "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        cached = {"symbol": "NVDA", "last_trade_price": 1.0, "tier": "realtime"}
+        cache = MagicMock(mget=AsyncMock(return_value=[cached]), set_many=AsyncMock())
+        with patch(f"{_QCS_MOD}.get_cache_client", return_value=cache), \
+                patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_quote(["NVDA"])
+        provider.get_snapshots.assert_awaited_once()
+        assert "$233.45" in content
+
+    @pytest.mark.asyncio
+    async def test_stamping_a_row_leaves_the_fetched_row_alone(self):
+        # Requests that share one fetch share its rows, so the tool stamps a copy.
+        snaps = [{"symbol": "NVDA", "last_trade_price": 233.45, "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
+            _, artifact = await fetch_quote(["NVDA"])
+        assert "freshness" in artifact["quotes"][0]
+        assert "freshness" not in snaps[0]
 
     @pytest.mark.asyncio
     async def test_quote_rows_carry_tier_and_measured_freshness(self):
@@ -2452,7 +2493,7 @@ class TestFetchQuote:
              "as_of": int(datetime.now(timezone.utc).timestamp() * 1000)},
         ]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             _, artifact = await fetch_quote(["0700.HK", "600519.SS"])
 
         hk, cn = artifact["quotes"]
@@ -2476,7 +2517,7 @@ class TestFetchQuote:
                   "volume": 1, "last_trade_price": 233.45,
                   "market_status": "open", "tier": "realtime"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
                 patch("src.data_client.freshness._venue_closed", return_value=closed):
             _, artifact = await fetch_quote(["NVDA"])
         assert artifact["all_realtime"] is (not closed)
@@ -2495,10 +2536,10 @@ class TestFetchQuote:
                  "regular_only": True}
         provider = _make_fake_snapshot_provider(snaps)
         names = AsyncMock()
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
                 patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=AsyncMock(return_value=daily)), \
                 patch(f"{_DAILY_MOD}.clock_for_ref") as clock, \
-                patch(f"{_QUOTES_MOD}.fill_quote_names", new=names):
+                patch(f"{_QCS_MOD}.fill_quote_names", new=names):
             clock.return_value.is_closed.return_value = True
             content, artifact = await fetch_quote(["600519.SH", "920395.BJ"])
 
@@ -2517,7 +2558,7 @@ class TestFetchQuote:
 
         provider = _make_fake_snapshot_provider([])
         client = _RecordingClient()
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
                 patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=AsyncMock(return_value=None)):
             msg = await get_quote.ainvoke(
                 {"type": "tool_call", "name": "get_quote", "args": {"symbols": ["ZZZQ"]}, "id": "tc-1"},
@@ -2537,7 +2578,7 @@ class TestFetchQuote:
                   "volume": 2_500_000, "last_trade_price": 1255.79, "tier": "realtime"}]
         provider = _make_fake_snapshot_provider(snaps)
         daily = AsyncMock()
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
                 patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=daily), \
                 patch(f"{_DAILY_MOD}.clock_for_ref") as clock:
             clock.return_value.is_closed.return_value = False
@@ -2551,7 +2592,7 @@ class TestFetchQuote:
         snaps = [{"symbol": "BRK-B", "price": 557.07, "change_percent": 0.2,
                   "volume": 1, "last_trade_price": 557.07, "market_status": "open"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             content, artifact = await fetch_quote(["BRK.B", "BRK-B"])
         assert provider.get_snapshots.await_args.args[0] == ["BRK-B"]
         assert len(artifact["quotes"]) == 1 and content.count("BRK-B") == 1
@@ -2573,7 +2614,7 @@ class TestFetchQuote:
         provider = MarketDataProvider([
             ProviderEntry("tushare", _Tushare(), {"cn"}), ProviderEntry("fmp", _Fmp(), {"all"}),
         ])
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
                 patch(f"{_QUOTES_MOD}.fill_quote_names", new=AsyncMock()), \
                 patch(f"{_DAILY_MOD}.clock_for_ref") as clock:
             clock.return_value.is_closed.return_value = False
@@ -2587,11 +2628,37 @@ class TestFetchQuote:
         assert "- 920799.BJ: tushare failed (ConnectionError); no source answered quote" in msg.content
 
     @pytest.mark.asyncio
+    async def test_a_closed_listing_whose_sources_failed_names_the_daily_close(self):
+        from src.data_client.market_data_provider import MarketDataProvider, ProviderEntry
+        from src.tools.market_data.tool import get_quote
+
+        class _Tushare:
+            async def get_snapshots(self, **_):
+                raise ConnectionError("down")
+
+        daily = {"symbol": "920799.BJ", "price": 6.68, "change": 0.06, "change_percent": 0.91,
+                 "previous_close": 6.62, "market_status": "closed", "source": "daily", "tier": "eod",
+                 "as_of": int(datetime(2026, 9, 30, 7, tzinfo=timezone.utc).timestamp() * 1000),
+                 "regular_only": True}
+        provider = MarketDataProvider([ProviderEntry("tushare", _Tushare(), {"cn"})])
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
+                patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=AsyncMock(return_value=daily)), \
+                patch(f"{_DAILY_MOD}.clock_for_ref") as clock:
+            clock.return_value.is_closed.return_value = True
+            msg = await get_quote.ainvoke({
+                "type": "tool_call", "name": "get_quote", "id": "tc-1",
+                "args": {"symbols": ["920799.BJ"]},
+            })
+
+        assert "920799.BJ  CN¥6.68" in msg.content
+        assert "- 920799.BJ: tushare failed (ConnectionError); daily close answered quote" in msg.content
+
+    @pytest.mark.asyncio
     async def test_reports_missing_symbols(self):
         snaps = [{"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
                   "volume": 1, "last_trade_price": 233.45, "market_status": "open"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             content, _ = await fetch_quote(["NVDA", "ZZZZ"])
         assert "no data: ZZZZ" in content
 
@@ -2608,7 +2675,7 @@ class TestFetchQuote:
         snaps = [{"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
                   "volume": 1, "last_trade_price": 233.45, "market_status": "open"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             await fetch_quote(["NVDA"], asset_type="../../admin")
         assert provider.get_snapshots.await_args.kwargs["asset_type"] == "stocks"
 
@@ -2616,7 +2683,7 @@ class TestFetchQuote:
     async def test_provider_error_returns_message(self):
         provider = AsyncMock()
         provider.get_snapshots = AsyncMock(side_effect=RuntimeError("boom"))
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             content, artifact = await fetch_quote(["NVDA"])
         assert "Error" in content
         assert artifact["quotes"] == []
@@ -2628,12 +2695,68 @@ class TestFetchQuote:
         snaps = [{"symbol": "GSPC", "price": 5000.0, "change_percent": 0.5,
                   "volume": 0, "last_trade_price": 5000.0, "market_status": "open"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             content, _ = await fetch_quote(["^GSPC"], asset_type="indices")
         # Resolved (caret-stripped) spelling reached the provider.
         assert provider.get_snapshots.await_args.args[0] == ["GSPC"]
         assert "GSPC" in content
         assert "no data" not in content
+
+    @pytest.mark.asyncio
+    async def test_one_endpoint_failing_keeps_the_other_endpoints_rows(self):
+        def answer(symbols, asset_type, user_id):
+            if asset_type == "stocks":
+                raise RuntimeError("stocks endpoint down")
+            return [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42}]
+
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(side_effect=answer)
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
+             patch(f"{_QCS_MOD}.fill_from_daily",
+                   AsyncMock(side_effect=lambda served, refs, user_id: served)):
+            content, artifact = await fetch_quote(["AAPL", "^GSPC"])
+        assert "GSPC  6,120.50" in content
+        # The failed request is not reported as a listing with no data.
+        assert "(request failed: AAPL)" in content
+        assert "no data" not in content
+        assert [q["asset_class"] for q in artifact["quotes"]] == ["index"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_endpoint_leaves_the_daily_fill_to_the_rest(self):
+        # The indices call failing must not cost the stock its daily close.
+        def answer(symbols, asset_type, user_id):
+            if asset_type == "indices":
+                raise RuntimeError("indices endpoint down")
+            return []
+
+        daily = {"symbol": "AAPL", "price": 230.0, "change_percent": 1.0}
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(side_effect=answer)
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
+             patch(f"{_QCS_MOD}.fill_from_daily",
+                   AsyncMock(side_effect=lambda served, refs, user_id: [*served, (refs[0], daily)])):
+            content, artifact = await fetch_quote(["AAPL", "^GSPC"])
+        assert "AAPL" in content
+        assert "(request failed: ^GSPC)" in content
+        assert [q["symbol"] for q in artifact["quotes"]] == ["AAPL"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_endpoint_whose_rows_the_daily_fill_answered_is_not_reported(self):
+        def answer(symbols, asset_type, user_id):
+            if asset_type == "stocks":
+                raise RuntimeError("stocks endpoint down")
+            return [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42}]
+
+        daily = {"symbol": "AAPL", "price": 230.0, "change_percent": 1.0}
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(side_effect=answer)
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider), \
+             patch(f"{_QCS_MOD}.fill_from_daily",
+                   AsyncMock(side_effect=lambda served, refs, user_id: [*served, (refs[0], daily)])), \
+             patch(f"{_QUOTES_MOD}._mark_failure") as marked:
+            content, _ = await fetch_quote(["AAPL", "^GSPC"])
+        assert "request failed" not in content
+        marked.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_alias_with_differing_canonical_not_flagged_missing(self):
@@ -2642,7 +2765,7 @@ class TestFetchQuote:
         snaps = [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42,
                   "volume": 0, "last_trade_price": 6120.5, "market_status": "open"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             content, _ = await fetch_quote(["SPX"], asset_type="indices")
         assert provider.get_snapshots.await_args.args[0] == ["GSPC"]
         assert "no data" not in content
@@ -2654,7 +2777,7 @@ class TestFetchQuote:
         snaps = [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42,
                   "volume": 0, "last_trade_price": 6120.5, "market_status": "open"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             content, _ = await fetch_quote(["SPX", "ZZZZ"], asset_type="indices")
         assert "no data: ZZZZ" in content
         assert "no data: SPX" not in content
@@ -2665,9 +2788,30 @@ class TestFetchQuote:
         # that "SPX" was asked as, so it is measured on the index clock.
         snaps = [{"symbol": "GSPC", "last_trade_price": 6120.5, "tier": "realtime"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             _, artifact = await fetch_quote(["SPX"], asset_type="indices")
         assert [q["asset_class"] for q in artifact["quotes"]] == ["index"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spelling", ["^GSPC", "I:SPX", "SPX.INDEX"])
+    async def test_a_caret_index_is_asked_as_an_index_on_the_stocks_path(self, spelling):
+        # The legacy spelling of any index-only spelling is GSPC, which only
+        # the indices endpoint reads as the S&P 500; the stock stays on stocks.
+        rows = {
+            "stocks": [{"symbol": "AAPL", "last_trade_price": 230.0, "change_percent": 1.0}],
+            "indices": [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42}],
+        }
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(
+            side_effect=lambda symbols, asset_type, user_id: rows[asset_type]
+        )
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_quote(["AAPL", spelling])
+        asked = {c.kwargs["asset_type"]: c.args[0] for c in provider.get_snapshots.await_args_list}
+        assert asked == {"stocks": ["AAPL"], "indices": ["GSPC"]}
+        assert "GSPC  6,120.50" in content
+        assert "no data" not in content
+        assert [q["asset_class"] for q in artifact["quotes"]] == ["equity", "index"]
 
     @pytest.mark.asyncio
     async def test_a_bare_alias_asked_as_a_stock_is_the_stock(self):
@@ -2675,7 +2819,7 @@ class TestFetchQuote:
         # it is requested and stamped as the stock.
         snaps = [{"symbol": "COMP", "last_trade_price": 9.22, "tier": "realtime"}]
         provider = _make_fake_snapshot_provider(snaps)
-        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
             _, artifact = await fetch_quote(["COMP"])
         assert provider.get_snapshots.await_args.args[0] == ["COMP"]
         assert [q["asset_class"] for q in artifact["quotes"]] == ["equity"]
