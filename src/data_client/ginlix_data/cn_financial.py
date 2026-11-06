@@ -14,8 +14,11 @@ default on either.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import re
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -402,14 +405,91 @@ def _instant(text: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=_CN_TZ)
 
 
+# Tags, with the scripts and styles they enclose, whole or cut off at the end:
+# publishers' stock links carry codes and names in their attributes.
+_MARKUP = re.compile(r"<(script|style)\b.*?(?:</\1\s*>|$)|<[A-Za-z/!?][^>]*(?:>|$)", re.S | re.I)
+# A listed name followed by one of these is part of a longer term: 中国银行业,
+# 上海银行间, 中国石油化工, 中国银行保险, 中国船舶集团, 创新医疗器械; 业绩 and
+# 业务, 保持 and 集中 are not (某某银行业绩增长, 某某酒业集中竞价).
+_LONGER_TERM = re.compile(r"业(?![绩务])|保(?!持)|集(?!中)|[间化器]")
+# What follows a broker's name when the broker is the source of a view.
+_CITED = re.compile(r"\s*(?:[：:]|认为|表示|指出|称|.{0,4}研报|研究|分析师|首席|策略|预计|预测|看好|证券)")
+_CN_SYMBOL = re.compile(r"(\d{6})\.(SH|SZ|BJ)")
+
+
+def _mention_rule(symbol: str, entry: dict[str, Any] | None) -> Callable[[str, str], bool]:
+    """Whether a title and visible text name *symbol*, given its directory entry.
+
+    A code counts in a listed form, tagged with its own exchange (600000.SH,
+    SH600000) or bracketed right after the name; a bare number is as often a
+    share count or an index code (上证指数 000001). A name of four or more
+    characters counts anywhere unless it runs on into a longer term; a shorter
+    one (机器人) is as often an ordinary word, so it counts in the title only. So
+    does a broker's, since its research and data are cited everywhere, and not
+    as the source of a view (中信证券：…, 中信证券认为).
+    """
+    name = (entry or {}).get("name_local") or ""
+    broker = (entry or {}).get("industry") == "证券"
+    forms = []
+    if listed := _CN_SYMBOL.fullmatch(symbol):
+        code, exchange = listed.groups()
+        forms.append(rf"(?<![0-9A-Za-z]){exchange}{code}(?!\d)|(?<!\d){code}\.{exchange}(?![A-Za-z])")
+        if name:
+            forms.append(rf"{re.escape(name)}\s*[(（]{code}[)）]")
+    code_form = re.compile("|".join(forms), re.I) if forms else None
+
+    def named(title: str, text: str) -> bool:
+        if code_form and code_form.search(text):
+            return True
+        where = title if broker or len(name) < 4 else text
+        for hit in re.finditer(re.escape(name), where) if name else ():
+            after = where[hit.end():]
+            if _LONGER_TERM.match(after):
+                continue
+            if broker and _CITED.match(after):
+                continue
+            return True
+        return False
+
+    return named
+
+
+async def _naming(
+    client: GinlixDataV2Routes, tickers: list[str], articles: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The articles tagged with one of *tickers* or naming it (see ``_mention_rule``).
+
+    A failed directory lookup raises: answered by code alone, the feed would be
+    thin or empty and still look complete.
+    """
+    wanted = {display_spelling(t) for t in tickers}
+    keys: dict[str, str] = {}
+    for symbol in wanted:
+        try:
+            keys[symbol] = to_canonical(symbol).instrument_key
+        except ValueError:
+            continue
+    entries = await client.get_instruments_v2(list(keys.values())) if keys else {}
+    rules = [_mention_rule(s, entries.get(keys.get(s, ""))) for s in wanted]
+
+    def named(article: dict[str, Any]) -> bool:
+        if wanted.intersection(display_spelling(str(t)) for t in article.get("tickers") or ()):
+            return True
+        title = str(article.get("title") or "")
+        text = f"{title}\n{html.unescape(_MARKUP.sub(' ', article.get('description') or ''))}"
+        return any(rule(title, text) for rule in rules)
+
+    return [a for a in articles if named(a)]
+
+
 class GinlixDataCnNewsSource:
     """CN market news (Chinese-language, market-wide) over ginlix-data v2.
 
     The feed is market-wide: a ticker-filtered request gets only articles
-    tagged with one of its tickers, never the general pulse under a ticker's
-    name. Paging and time filters run here over the window ginlix-data keeps
-    warm; article ids are content hashes, stable across fetches, so cursors
-    survive a refresh.
+    that name one of its tickers (see ``_naming``), never the general pulse
+    under a ticker's name. Paging and time filters run here over the window
+    ginlix-data keeps warm; article ids are content hashes, stable across
+    fetches, so cursors survive a refresh.
     """
 
     def __init__(self, client: GinlixDataV2Routes) -> None:
@@ -442,11 +522,7 @@ class GinlixDataCnNewsSource:
     ) -> dict[str, Any]:
         articles = await self._window()
         if tickers:
-            wanted = {display_spelling(t) for t in tickers}
-            articles = [
-                a for a in articles
-                if wanted.intersection(display_spelling(str(t)) for t in a.get("tickers") or ())
-            ]
+            articles = await _naming(self.client, tickers, articles)
         lo, hi = _instant(published_after), _instant(published_before)
         if lo or hi:
             def _within(article: dict[str, Any]) -> bool:
