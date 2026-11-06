@@ -8,7 +8,7 @@
  * bookkeeping lives: announcing spec-change and preparation outcomes and
  * forgetting disk warning dismissals once a disk recovers.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -41,7 +41,7 @@ function ComputersDialogHost({ currentWorkspaceId = null }: { currentWorkspaceId
   const { panel, opening, specComputerId } = useComputersPanel();
   // Always on: the fan-out at the same root reads this list anyway, and the
   // outcome watch below needs every refetch, whoever triggered it.
-  const { data } = useComputers();
+  const { data, isFetching, isError, refetch } = useComputers();
   const computers = data?.computers;
   const specTarget = specComputerId
     ? computers?.find((c) => c.computer_id === specComputerId) ?? null
@@ -57,6 +57,23 @@ function ComputersDialogHost({ currentWorkspaceId = null }: { currentWorkspaceId
   useEffect(() => {
     setSpecError(null);
   }, [specComputerId]);
+
+  // A request can name a machine the list no longer holds (Settings read it
+  // before it was removed), or come while the list cannot be read: read the
+  // list once more, then let the request go, which also releases the
+  // stale-build reload it holds.
+  const recheckedSpec = useRef<string | null>(null);
+  useEffect(() => {
+    if (recheckedSpec.current !== specComputerId || specTarget) recheckedSpec.current = null;
+    if (!specComputerId || specTarget || recheckedSpec.current) return;
+    if (isFetching || (!computers && !isError)) return;
+    recheckedSpec.current = specComputerId;
+    void refetch().then((result) => {
+      if (recheckedSpec.current !== specComputerId) return;
+      recheckedSpec.current = null;
+      if (!result.data?.computers.some((c) => c.computer_id === specComputerId)) closeComputerSpec();
+    });
+  }, [specComputerId, specTarget, computers, isFetching, isError, refetch]);
 
   // Any list read can be the one that sees an outcome land, so outcomes are
   // read off every new list rather than off a poll of our own. The watch is

@@ -1,7 +1,7 @@
 import { useEffect, useId, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
-import { ExternalLink, KeyRound, Laptop, SquareTerminal } from 'lucide-react';
+import { Cloud, ExternalLink, KeyRound, Laptop, SquareTerminal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { buttonClass } from '@/components/ui/button-class';
@@ -22,9 +22,9 @@ import { SAVED_TOKEN, computerTokenTarget, type SheetAction, type TokenTarget } 
 import type { KeyOption, ProviderGroup } from '@/components/modelAccess/providerOptions';
 import { canRemoteControl } from '@/lib/desktop';
 import { cn } from '@/lib/utils';
-import { CLAUDE_CODE_DOCS_URL, CLAUDE_CODE_FEATURE, CLAUDE_CODE_REQUIREMENTS_URL } from '@/lib/claudeCode';
+import { CLAUDE_CODE_DOCS_URL, CLAUDE_CODE_FEATURE, CLAUDE_CODE_REQUIREMENTS_URL, biggerComputer } from '@/lib/claudeCode';
 import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
-import { openComputersPanel } from '@/pages/ChatAgent/hooks/computerPanelStore';
+import { openComputerSpec, openComputersPanel } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import { useSaveFailedToast } from '../usePreferenceWrite';
 import { Group } from './AccessRows';
 import { ClaudeCodeHostedChoice } from './ClaudeCodeHostedChoice';
@@ -58,7 +58,7 @@ function SetupRow({ icon, name, detail, status, action }: {
       <IdentityTile name={name} size="sm">{icon}</IdentityTile>
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-sm font-medium wrap-break-word" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
-        {detail && <span className="text-xs wrap-break-word" style={{ color: 'var(--color-text-tertiary)' }}>{detail}</span>}
+        {detail && <span className="text-xs text-pretty wrap-break-word" style={{ color: 'var(--color-text-tertiary)' }}>{detail}</span>}
       </div>
       {status ? <StatusLabel status={status} className="whitespace-nowrap" /> : <span />}
       <div className="flex">{action}</div>
@@ -81,7 +81,9 @@ const ROWS = 'grid grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-3 gap-y-5';
  * shows with its own buttons, the saved token beside them where this server
  * runs turns on it, and the choice of how it runs on cloud computers where
  * the server offers one. Where nothing the user has can run it, it says why
- * and offers the ways to connect a computer.
+ * and offers the ways to connect a computer. Each cloud computer too small
+ * for it is named, with where to get a larger one (`biggerComputer`): the
+ * plan page where the build names one, else Change spec on the computer.
  *
  * Where the server no longer offers Claude Code at all (`setup` null), only
  * tokens left behind show, each offered for removal.
@@ -214,6 +216,34 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
     || (!offeredSaved && !setup.computers.some((c) => c.state === 'off' && c.source !== 'machine'))
   );
   const remoteControl = canRemoteControl();
+  const bigger = biggerComputer();
+  const tooSmall = setup?.too_small ?? [];
+  const savedOnCloud = isPlatformMode ? setup?.cloud : setup?.cli_in_sandbox;
+  const savedDetail = savedOnCloud ? t(S + '.savedDetailCloud') : !isPlatformMode ? t(S + '.savedDetailServer') : null;
+  const resize = (computerId: string) => (bigger.link ? (
+    <a
+      href={bigger.link.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={buttonClass({ variant: 'outline', size: 'sm', className: cn('gap-1.5', ROW_BUTTON) })}
+    >
+      {bigger.link.labelKey ? t(bigger.link.labelKey) : bigger.link.label}
+      <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
+    </a>
+  ) : (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={ROW_BUTTON}
+      onClick={() => {
+        navigate('/chat');
+        openComputerSpec(computerId);
+      }}
+    >
+      {t('workspace.changeSpec')}
+    </Button>
+  ));
 
   return (
     <div className="flex flex-col gap-5">
@@ -249,7 +279,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
                   key="saved"
                   icon={glyph(KeyRound)}
                   name={t(S + '.savedName')}
-                  detail={savedRow ? savedRow.line.detail : t('modelAccess.claudeCode.detail')}
+                  detail={savedRow?.line.detail ?? savedDetail}
                   status={savedRow ? savedRow.line.status : 'not_connected'}
                   action={actions(savedRow ? savedRow.line.actions : ['add'], SAVED_TOKEN)}
                 />
@@ -265,6 +295,16 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
           onAddToken={() => setToken({ target: SAVED_TOKEN, action: 'add' })}
           onAsking={setAsking}
         />
+      )}
+
+      {tooSmall.length > 0 && (
+        <div className={ROWS}>
+          <Group subgrid title={t(S + '.tooSmallTitle')} empty="">
+            {tooSmall.map((c) => (
+              <SetupRow key={c.computer_id} icon={glyph(Cloud)} name={c.name} detail={t(bigger.rowKey)} action={resize(c.computer_id)} />
+            ))}
+          </Group>
+        </div>
       )}
 
       {(setup?.state === 'no_computer' || setup?.state === 'unsupported') && (

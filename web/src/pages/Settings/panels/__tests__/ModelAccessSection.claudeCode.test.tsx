@@ -18,6 +18,7 @@ const setupOf = (s: Status): ClaudeCodeSetup => ({
   computers: [],
   saved_token_runs: true,
   cloud: false,
+  too_small: [],
 });
 vi.mock('@/hooks/useClaudeCode', () => ({
   useClaudeCodeSetup: () => ({ setup: setupOf(status.current), isLoading: false }),
@@ -31,6 +32,12 @@ vi.mock('@/hooks/useConfiguredProviders', () => ({
   useConfiguredProviders: () => ({ providers: [], withdrawn: [], configuredSet: new Set(), statusLoading: false, statusError: false }),
 }));
 vi.mock('@/api/model', () => ({ saveClaudeCodeToken: vi.fn(), removeClaudeCodeToken: vi.fn() }));
+// Pinned, since the no-token detail differs by mode and VITE_HOST_MODE can come from web/.env or another file's stub.
+vi.mock('@/config/hostMode', async (original) => ({
+  ...(await original<typeof import('@/config/hostMode')>()),
+  HOST_MODE: 'oss',
+  isPlatformMode: false,
+}));
 
 import { ModelAccessSection } from '../ModelAccessSection';
 
@@ -40,9 +47,9 @@ const SIGNED_IN: Status = { ...base, state: 'signed_in', email: 'user@example.co
 const openView = () => {
   fireEvent.click(within(screen.getByText('Claude Code').closest('li') as HTMLElement).getByRole('button', { name: 'Manage' }));
 };
-/** The saved token's row, in the view's Saved token group. */
+/** The saved token's row, in the view's Setup token group. */
 const row = () => {
-  const group = within(screen.getByRole('dialog', { name: 'Claude Code' })).getByText('Saved token').parentElement as HTMLElement;
+  const group = within(screen.getByRole('dialog', { name: 'Claude Code' })).getByText('Setup token').parentElement as HTMLElement;
   return within(group).getByRole('listitem');
 };
 
@@ -131,7 +138,7 @@ describe('ModelAccessSection: Claude Code', () => {
   it('wraps the no-token detail rather than cutting it off', () => {
     renderWithProviders(<ModelAccessSection />);
     openView();
-    expect(within(row()).getByText('Its own setup token, not your Claude Code sign-in')).not.toHaveClass('truncate');
+    expect(within(row()).getByText('Runs Claude Code on this server')).not.toHaveClass('truncate');
   });
 
   it('says why a refused token stopped working, and offers a new one or its removal', () => {

@@ -70,7 +70,7 @@ function described(locale: string, parts: (string | null | undefined)[], expires
  */
 function savedTokenLine(t: TFunction, locale: string, status: ReturnType<typeof useClaudeCodeStatus>, now: number): TokenLine | null {
   if (!status.runsHere) return status.saved ? { status: 'off', detail: t('modelAccess.claudeCode.optOut.saved'), actions: ['remove'] } : null;
-  const detail = t('modelAccess.claudeCode.detail');
+  const detail = null;
   switch (status.state) {
     case 'no_token':
       return { status: 'not_connected', detail, actions: ['add'] };

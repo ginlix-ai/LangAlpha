@@ -63,7 +63,7 @@ function render({ flag = true, computers = [MAC, BOX], account = status({}), rou
   flag?: boolean; computers?: ClaudeCodeComputer[]; account?: ClaudeCodeStatus; route?: string; workspaces?: Record<string, string>;
 } = {}) {
   const setup: ClaudeCodeSetup = {
-    state: flag ? 'connected' : 'not_connected', on: flag, computers, saved_token_runs: !flag || account.state !== 'off', cloud: false,
+    state: flag ? 'connected' : 'not_connected', on: flag, computers, saved_token_runs: !flag || account.state !== 'off', cloud: false, too_small: [],
   };
   (getClaudeCodeSetup as Mock).mockResolvedValue(setup);
   (getClaudeCodeStatus as Mock).mockResolvedValue(account);
@@ -83,8 +83,8 @@ const view = async () => {
 };
 /** A computer's row in the view, found by the computer's name. */
 const rowOf = async (name: string) => (await within(await view()).findByText(name)).closest('li') as HTMLElement;
-/** The saved token's row, in the view's Saved token group. */
-const savedRowOf = async () => within((await within(await view()).findByText('Saved token')).parentElement as HTMLElement).getByRole('listitem');
+/** The saved token's row, in the view's Setup token group. */
+const savedRowOf = async () => within((await within(await view()).findByText('Setup token')).parentElement as HTMLElement).getByRole('listitem');
 /** The list is read once Claude Code's row is there, before any view is opened. */
 const listRead = async () => {
   await screen.findByText('Claude Code');
@@ -344,11 +344,11 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
   it("names the saved token in a group of its own beside the computers' rows, and only there", async () => {
     render({ account: status({ state: 'signed_in', saved: true }) });
     const saved = await savedRowOf();
-    expect(within(saved).getByText('For computers without a token')).toBeInTheDocument();
+    expect(within(saved).getByText('Your setup token')).toBeInTheDocument();
     expect(buttonsOf(saved)).toEqual(['Replace', 'More actions']);
     const computers = (await within(await view()).findByText('Your computers')).parentElement as HTMLElement;
-    expect(within(computers).queryByText('For computers without a token')).toBeNull();
-    expect(within(computers).queryByText('Saved token')).toBeNull();
+    expect(within(computers).queryByText('Your setup token')).toBeNull();
+    expect(within(computers).queryByText('Setup token')).toBeNull();
   });
 
   // A hosted deployment runs Claude Code only on the user's own computers.
@@ -357,8 +357,8 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     await listRead();
     expect(screen.queryByRole('dialog')).toBeNull();
     await rowOf('Studio Mac');
-    expect(screen.queryByText('Saved token')).toBeNull();
-    expect(screen.queryByText('Its own setup token, not your Claude Code sign-in')).toBeNull();
+    expect(screen.queryByText('Setup token')).toBeNull();
+    expect(screen.queryByText('Runs Claude Code on this server')).toBeNull();
   });
 
   describe('with Claude Code off', () => {

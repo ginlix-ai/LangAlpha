@@ -10,6 +10,7 @@ import userEvent from '@testing-library/user-event';
 
 import { renderWithProviders } from '@/test/utils';
 import { runAuthResets } from '@/lib/authResets';
+import { reloadHeld } from '@/lib/reloadHolds';
 import { queryKeys } from '@/lib/queryKeys';
 import type { Computer, ComputerSpecChange, ComputersResponse } from '@/types/api';
 
@@ -373,6 +374,53 @@ describe('ComputersDialogHost, preparation outcomes', () => {
     const { queryClient } = await mount();
     await refetchReturning(queryClient, machine(null, 'running'));
     expect(mockToast).not.toHaveBeenCalled();
+  });
+});
+
+describe('ComputersDialogHost, a request for a machine the list does not hold', () => {
+  it('reads the list once more, then lets the request and its reload hold go', async () => {
+    mockGetComputers.mockResolvedValue(list(machine(null)));
+    await mount();
+    const reads = mockGetComputers.mock.calls.length;
+    act(() => openComputerSpec('removed-computer'));
+    expect(reloadHeld()).toBe(true);
+    await waitFor(() => expect(reloadHeld()).toBe(false));
+    expect(mockGetComputers).toHaveBeenCalledTimes(reads + 1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('opens Change spec on a machine the fresh read finds', async () => {
+    const other: Computer = { ...machine(null), computer_id: 'new-computer', name: 'Beta Lab' };
+    mockGetComputers.mockResolvedValue(list(machine(null)));
+    await mount();
+    mockGetComputers.mockResolvedValue({ computers: [machine(null), other], total: 2 });
+    act(() => openComputerSpec('new-computer'));
+    expect(await screen.findByRole('dialog', { name: /Beta Lab/ })).toBeInTheDocument();
+    expect(reloadHeld()).toBe(true);
+  });
+
+  it('lets the request go when the list cannot be read', async () => {
+    mockGetComputers.mockRejectedValue(new Error('unreachable'));
+    renderWithProviders(<ComputersDialogHost />);
+    act(() => openComputerSpec(ID));
+    await waitFor(() => expect(reloadHeld()).toBe(false));
+    expect(mockGetComputers).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('reads the list again for a request that follows one closed mid-read', async () => {
+    mockGetComputers.mockResolvedValue(list(machine(null)));
+    await mount();
+    const reads = mockGetComputers.mock.calls.length;
+    let land!: () => void;
+    mockGetComputers.mockReturnValueOnce(new Promise((resolve) => { land = () => resolve(list(machine(null))); }));
+    act(() => openComputerSpec('removed-computer'));
+    await waitFor(() => expect(mockGetComputers).toHaveBeenCalledTimes(reads + 1));
+    act(() => closeComputerSpec());
+    await act(async () => land());
+    act(() => openComputerSpec('removed-computer'));
+    await waitFor(() => expect(reloadHeld()).toBe(false));
+    expect(mockGetComputers).toHaveBeenCalledTimes(reads + 2);
   });
 });
 

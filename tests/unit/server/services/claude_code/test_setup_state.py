@@ -63,6 +63,9 @@ async def _setup(world, **switches):  # noqa: F811
         patch(f"{SETUP}.local_managed", new_callable=AsyncMock, return_value=switches.get("managed", False)),
         patch(f"{SETUP}.hosted.custody", new_callable=AsyncMock, return_value=switches.get("custody")),
         patch(f"{SETUP}.hosted.choice_offered", return_value=switches.get("offered", False)),
+        patch(f"{SETUP}.hosted.cloud_refusals", new_callable=AsyncMock, return_value=switches.get("refusals", {})),
+        patch(f"{SETUP}.hosted.in_sandbox", return_value=switches.get("sandbox", False)),
+        patch(f"{SETUP}.get_computers_for_user", switches.get("listed", AsyncMock(return_value=[]))),
         patch("src.server.services.claude_code.saved.get_oauth_connection", new_callable=AsyncMock, return_value=None),
     ):
         answer = await setup_state(USER)
@@ -143,6 +146,40 @@ async def test_a_server_that_offers_a_choice_for_cloud_computers_says_they_run_i
     with patch("src.server.services.claude_code.machine.get_computer_roster", new_callable=AsyncMock, return_value=[]):
         answer = await _setup(world, offered=True, custody=_custody())
     assert (answer.state, answer.cloud, answer.saved_token_runs) == ("not_connected", True, False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sandbox", [True, False])
+async def test_it_says_whether_cloud_computers_run_claude_code_in_their_own_sandbox(world, sandbox):  # noqa: F811
+    with patch("src.server.services.claude_code.machine.get_computer_roster", new_callable=AsyncMock, return_value=[]):
+        answer = await _setup(world, backend=True, sandbox=sandbox)
+    assert answer.cli_in_sandbox is sandbox
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opted_in", [True, False])
+async def test_it_names_each_cloud_computer_too_small_for_claude_code_in_the_users_order(world, opted_in):  # noqa: F811
+    world.opted_in = opted_in
+    listed = AsyncMock(return_value=[
+        {"computer_id": "c-4", "name": "Backtests", "kind": "e2b"},
+        {"computer_id": "c-2", "name": "Research", "kind": "daytona"},
+        {"computer_id": "c-3", "name": "Scratch", "kind": "daytona"},
+    ])
+    refusals = {"c-3": "needs_bigger_computer", "c-4": "needs_bigger_computer"}
+    with patch("src.server.services.claude_code.machine.get_computer_roster", new_callable=AsyncMock, return_value=[]):
+        answer = await _setup(world, custody=_custody(), refusals=refusals, listed=listed)
+    assert [c.model_dump() for c in answer.too_small] == [
+        {"computer_id": "c-4", "name": "Backtests"}, {"computer_id": "c-3", "name": "Scratch"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_with_no_cloud_computer_too_small_it_names_none_and_reads_no_list(world):  # noqa: F811
+    listed = AsyncMock(return_value=[{"computer_id": "c-3", "name": "Scratch", "kind": "daytona"}])
+    with patch("src.server.services.claude_code.machine.get_computer_roster", new_callable=AsyncMock, return_value=[]):
+        answer = await _setup(world, custody=_custody(), listed=listed)
+    assert answer.too_small == []
+    listed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
