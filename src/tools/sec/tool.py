@@ -207,10 +207,11 @@ async def get_sec_filing_async(
     # Step 2: Fetch earnings call and nearby 8-Ks IN PARALLEL
     tasks = []
 
-    if include_earnings_call:
+    period_end = metadata.get("period_end")
+    if include_earnings_call and period_end:
         tasks.append(
             asyncio.create_task(
-                fetch_matching_earnings_call(symbol, filing_date_obj),
+                fetch_matching_earnings_call(symbol, ftype, period_end),
                 name="earnings_call"
             )
         )
