@@ -8,10 +8,12 @@ aggregate. Deriving it separately per writer is how a credit stop came to read
 and each writer projects the value rather than recomputing it.
 """
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
 from ptc_agent.agent.middleware.background_subagent.registry import (
+    TIME_LIMIT_CANCEL,
     TransportLostError,
 )
 from ptc_agent.agent.middleware.credit_gate import CreditStopError
@@ -36,6 +38,12 @@ class SubagentTimeLimitError(Exception):
     is the backstop for a run that kept going anyway, as the turn's own stop is
     for the main agent.
     """
+
+
+def is_time_limit_cancel(cancel: asyncio.CancelledError) -> bool:
+    """A cancel from the stop for running past every clock
+    (``time_out_writers_where``), which ends a run as its own clock would."""
+    return cancel.args == (TIME_LIMIT_CANCEL,)
 
 
 @dataclass(frozen=True)

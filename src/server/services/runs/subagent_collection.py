@@ -861,9 +861,9 @@ def _archive_after_unwind(
     )
 
 
-# How long a run's subagent writers may outlive it. Legit tail subagents (deep
-# research) run 15+ min, so a writer alive past this is hung: the guard drain
-# discards the run's session under it, and the stop bill stops waiting for it.
+# How long a killed run's archive and bill wait for its subagent writers to
+# unwind. They are cancelled, so a writer alive past this is hung and the bill
+# stops waiting for it.
 SUBAGENT_TAIL_TIMEOUT = 1800.0
 
 
