@@ -378,8 +378,9 @@ def test_llm_and_tool_runs_close_without_resending_their_inputs():
     for run_type in ("llm", "tool"):
         assert created[run_type]["inputs"]
         assert updated[run_type]["inputs"] is None
-    # A chain can receive inputs only at its end, so it keeps the stock patch.
-    assert updated["chain"]["inputs"] == {"input": "hi"}
+    # A chain whose inputs are as posted does not send them again either.
+    assert created["chain"]["inputs"] == {"input": "hi"}
+    assert updated["chain"]["inputs"] is None
 
 
 def _tool_update(func: Any, *, as_tool_call: bool = False) -> dict[str, Any]:

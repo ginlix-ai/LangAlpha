@@ -521,6 +521,10 @@ class InfrastructureConfig(BaseModel):
         default=False, description="Fetch the built-in brokerages' logos on startup"
     )
     langsmith_tracing: bool = Field(default=False, description="Enable LangSmith tracing")
+    langsmith_full_payloads: bool = Field(
+        default=False,
+        description="Trace middleware inputs and graph nodes' messages to LangSmith",
+    )
     market_watch: MarketWatchConfig = Field(default_factory=MarketWatchConfig)
     claude_code: ClaudeCodeConfig = Field(default_factory=ClaudeCodeConfig)
 
