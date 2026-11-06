@@ -39,4 +39,25 @@ describe('InlineStockScreenerCard', () => {
     const chips = [...container.querySelectorAll('.term-chip')].map((c) => c.textContent);
     expect(chips).toEqual(['Sector = Technology', 'Mkt Cap > $10.00B']);
   });
+
+  it('prints each row in the currency the producer names, and none for an unknown venue', () => {
+    const named = {
+      ...artifact,
+      results: [
+        // A venue the producer does not know: its pesos are not dollars.
+        { symbol: 'ACME.BA', companyName: 'Acme Corp', price: 39240, marketCap: 1.29e15, currency: null },
+        // A pence quote served in pounds keeps its places: 1307.4p is £13.074.
+        { symbol: 'BETA.L', companyName: 'Beta plc', price: 13.074, marketCap: 215e9, currency: 'GBP' },
+        // Saved before the producer named it: the suffix decides.
+        { symbol: 'GAMA.HK', companyName: 'Gamma Ltd', price: 7.95, marketCap: 3.72e12 },
+      ],
+    };
+    render(<InlineStockScreenerCard artifact={named} />);
+
+    expect(screen.getByText('39,240.00')).toBeInTheDocument();
+    expect(screen.queryByText('$39,240.00')).not.toBeInTheDocument();
+    expect(screen.getByText('£13.074')).toBeInTheDocument();
+    expect(screen.getByText('HK$7.95')).toBeInTheDocument();
+  });
 });
+
