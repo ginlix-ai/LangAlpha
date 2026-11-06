@@ -31,7 +31,7 @@ SCHEDULE_WAKEUP_DOC = (
 
 TRIGGER_MODEL_DOC = "Set exactly one of at, cron, price, order."
 
-PRICE_PCT_FROM = 'Only with pct_up or pct_down: measure from "now", the price when you set it, instead of the previous close.'
+PRICE_PCT_FROM = 'Only with pct_up or pct_down: measure from "now", the price when you set it, instead of the previous close. For US stocks, the previous close during after-hours trading is still the one before that day\'s session, and once trading ends it is that day\'s close.'
 
 TRIGGER_FIELDS = {
     "label": 'A few words naming what this wakeup is for, shown to the user ("NVDA pullback entry"). Optional.',
@@ -39,7 +39,7 @@ TRIGGER_FIELDS = {
     "cron": 'Fire repeatedly on this 5-field cron, read in timezone: "*/5 * * * *" every 5 minutes, "0 9 * * 1-5" weekdays at 9:00. Fires are at least 5 minutes apart, and market holidays still fire. A series fires at most 24 times and lasts at most 7 days, so every 5 minutes ends after 2 hours; set until to stop it sooner.',
     "until": 'With cron: stop the series after this time, ISO 8601 ("2026-10-20T16:00" for today only), read like at.',
     "timezone": "The IANA timezone at, cron and until are read in (\"America/New_York\"); the user's by default. For a market's hours, use its exchange's timezone and write the hours on that clock, so they hold for a user elsewhere and across daylight-saving changes.",
-    "price": "Fire when a price level or % move hits. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go.",
+    "price": "Fire when a price level or % move hits; US stocks can also hit on pre-market and after-hours trades. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go.",
     "order": "Fire when this order first fills, even partly, or ends unfilled: the order id from the brokerage's reply to an order you placed in this conversation. It lasts until the order ends, at most 7 days.",
 }
 
