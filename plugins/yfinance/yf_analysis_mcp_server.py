@@ -453,7 +453,10 @@ def _flag_stale_periods(
 def _annotate_periods(
     stock: yf.Ticker, records: list[dict], stale_keys: tuple[str, ...]
 ) -> list[dict]:
-    trend = getattr(getattr(stock, "_analysis", None), "_earnings_trend", None) or []
+    cached = getattr(getattr(stock, "_analysis", None), "_earnings_trend", None) or {}
+    # yfinance < 1.8 caches the trend list itself; 1.8 keys it by EPS methodology
+    # and a computer keeps the yfinance it was built with, so both can run this file.
+    trend = cached if isinstance(cached, list) else (cached.get(None) or {}).get("trend", [])
     ends = {item["period"]: item["endDate"] for item in trend if item.get("endDate")}
     try:
         history = stock.earnings_history
