@@ -23,14 +23,20 @@
   flex-direction: column;
   padding: 14px 10px 16px;
   overflow-y: auto;
-  border-right: 1px solid var(--color-border-subtle);
+  /* The open card styles set it beside the page on their edge, as the sidebar. */
+  border-right: 1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-subtle));
   scrollbar-width: thin;
 }
 
+/* The rail's labels are the page's kickers, in the label voice
+   (styles/cardStyle.css) in every style. */
 .plugins-rail-label {
   margin: 18px 8px 4px;
-  font-size: 0.71875rem;
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.71875rem);
   font-weight: 500;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
   color: var(--color-text-quaternary);
 }
 .plugins-rail > .plugins-rail-label:first-child { margin-top: 6px; }
@@ -46,14 +52,26 @@
   border-radius: 6px;
   background: transparent;
   color: var(--color-text-tertiary);
-  font-size: 0.8125rem;
+  font-size: var(--cs-text-row, 0.8125rem);
   text-align: left;
   text-decoration: none;
   cursor: pointer;
   transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
 }
 .plugins-rail-link:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
-.plugins-rail-link.is-active { background: var(--color-bg-hover); color: var(--color-text-primary); }
+/* The open card styles mark the open section as the sidebar marks its row:
+   no wash, hovered too, full ink, and an edge on a desktop rail. */
+.plugins-rail-link.is-active {
+  background: var(--color-shell-fill, var(--color-bg-hover));
+  color: var(--color-text-primary);
+  font-weight: var(--cs-weight-selected);
+}
+@media (min-width: 768px) {
+  .plugins-rail-link.is-active {
+    border-radius: var(--cs-radius-small, 6px);
+    box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
+  }
+}
 .plugins-rail-link:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
 
 .plugins-rail-icon { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.85; }
@@ -254,11 +272,13 @@
   width: 240px;
   height: 30px;
   padding: 0 28px 0 30px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-input);
+  /* An open field in the open card styles, the shape of their buttons. */
+  border-radius: var(--cs-radius-control, 8px);
+  border: 1px solid var(--color-shell-edge, var(--color-border-default));
+  background: var(--color-shell-fill, var(--color-bg-input));
   color: var(--color-text-primary);
   font: inherit;
+  font-family: var(--cs-face);
   font-size: 0.78125rem;
   outline: none;
 }
@@ -300,7 +320,7 @@
     overflow-x: auto;
     overflow-y: hidden;
     border-right: 0;
-    border-bottom: 1px solid var(--color-border-subtle);
+    border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-subtle));
     scrollbar-width: none;
     /* The current pill, scrolled into view, keeps the gutter beside it
        rather than landing flush on the screen's edge. */
@@ -314,12 +334,13 @@
     flex-shrink: 0;
     gap: 6px;
     padding: 0 12px;
-    border: 1px solid var(--color-border-muted);
-    border-radius: 15px;
+    border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+    border-radius: var(--cs-radius-small, 15px);
   }
+  /* The open one outlined in ink in the open card styles. */
   .plugins-rail-link.is-active {
-    background: var(--color-bg-elevated);
-    border-color: var(--color-border-default);
+    background: var(--color-shell-fill, var(--color-bg-elevated));
+    border-color: var(--color-shell-ink, var(--color-border-default));
   }
   .plugins-rail-name { overflow: visible; }
   .plugins-rail-count,

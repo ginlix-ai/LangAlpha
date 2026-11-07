@@ -312,7 +312,7 @@ export function SendStopButton({
       disabled={stopMode ? isStopping : !canSend}
       data-mode={stopMode ? 'stop' : 'send'}
       className={cn(
-        'send-button press grid place-items-center h-8 w-8 flex-none rounded-xl',
+        'send-button press grid place-items-center h-8 w-8 flex-none rounded-[var(--cs-composer-send-radius,0.75rem)]',
         stopMode ? 'disabled:cursor-not-allowed' : 'disabled:cursor-default',
       )}
       title={stopMode ? stopLabel : undefined}
@@ -342,7 +342,7 @@ export function DropOverlay({ active }: { active: boolean }) {
   return (
     <div
       className={cn(
-        'absolute inset-0 z-50 flex flex-col items-center justify-center rounded-[22px] border-2 border-dashed border-(--color-border-strong) bg-(--color-bg-card) pointer-events-none transition-[opacity,visibility]',
+        'absolute inset-0 z-50 flex flex-col items-center justify-center rounded-[var(--cs-composer-radius,22px)] border-2 border-dashed border-(--color-border-strong) bg-(--color-bg-card) pointer-events-none transition-[opacity,visibility]',
         active ? 'opacity-100' : 'invisible opacity-0 duration-exit',
       )}
     >

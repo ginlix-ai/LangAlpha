@@ -19,9 +19,11 @@ html[data-keyboard-open] :is(.bottom-tab-bar, .langalpha-fab) {
   align-items: center;
   justify-content: space-around;
   height: 56px;
-  border-radius: 1.5rem;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-muted);
+  /* It floats over the page, so it keeps a fill: in the open card styles
+     the page's own, inside their edge. */
+  border-radius: var(--cs-radius-overlay, 1.5rem);
+  background: var(--color-shell-float, var(--color-bg-elevated));
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
   padding: 0 4px;
 }
 
@@ -37,7 +39,7 @@ html[data-keyboard-open] :is(.bottom-tab-bar, .langalpha-fab) {
   border: none;
   background: transparent;
   cursor: pointer;
-  border-radius: 16px;
+  border-radius: var(--cs-radius-small, 16px);
   transition: color var(--motion-quick) var(--ease-out), scale var(--motion-press) var(--ease-out);
   color: var(--color-text-tertiary);
   -webkit-tap-highlight-color: transparent;

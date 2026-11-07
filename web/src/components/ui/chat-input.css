@@ -302,7 +302,7 @@
   background: linear-gradient(to right, rgba(239, 68, 68, 0.05), transparent 20%, transparent 80%, rgba(239, 68, 68, 0.05));
   pointer-events: none;
   z-index: 5;
-  border-radius: 22px;
+  border-radius: var(--cs-composer-radius, 22px);
   /* motion-exempt: a live listening state; the overlay breathes on its own period */
   animation: overlay-pulse 2s ease-in-out infinite;
 }

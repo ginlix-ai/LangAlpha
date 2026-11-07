@@ -927,10 +927,12 @@ function ChatInput({
     >
       {/* Main Container. 22px is concentric with the 12px send button 10px in
           from the bottom edge (DESIGN.md, Radius); the drag and recording
-          overlays repeat it. */}
+          overlays repeat it. Each card style states its own corners
+          (--cs-composer-*, styles/cardStyle.css), and the open ones draw
+          the edge in theirs. */}
       <div
         ref={attachChatContainer}
-        className={cn('chat-input-container owns-its-edge scroll-mb-2 flex flex-col items-stretch relative z-10 rounded-[22px] cursor-text border border-(--color-border-input) bg-(--color-bg-card)', isListening && 'recording')}
+        className={cn('chat-input-container owns-its-edge scroll-mb-2 flex flex-col items-stretch relative z-10 rounded-[var(--cs-composer-radius,22px)] cursor-text border border-[color:var(--color-shell-edge,var(--color-border-input))] bg-(--color-bg-card)', isListening && 'recording')}
         onClick={(event) => {
           // A press on a control in the box is that control's, and the deck
           // above the text is its own surface: focusing the text there would

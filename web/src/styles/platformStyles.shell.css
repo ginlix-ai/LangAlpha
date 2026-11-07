@@ -113,30 +113,3 @@
   content: '> ';
   color: var(--color-term-text-tertiary);
 }
-
-/* ════════════════════════════════════════════════════════════════════
-   Phone widths
-   ════════════════════════════════════════════════════════════════════ */
-
-@media (max-width: 767px) {
-  /* The section rails become a row of tabs above the page. They take the
-     open styles' edge, the open one outlined in ink; Terminal squares them,
-     where the open one alone had lost its pill. */
-  :root:not([data-card-style='quiet']) :is(.settings-rail, .plugins-rail) { border-bottom-color: var(--color-shell-edge); }
-  :root:not([data-card-style]) :is(.settings-rail, .plugins-rail) { border-bottom-style: dashed; }
-  :root:not([data-card-style='quiet']) :is(.settings-rail-link, .plugins-rail-link) { border-color: var(--color-shell-edge); }
-  :root:not([data-card-style='quiet']) :is(.settings-rail-link, .plugins-rail-link).is-active {
-    border-color: var(--color-term-text);
-    box-shadow: none;
-  }
-  :root:not([data-card-style]) :is(.settings-rail-link, .plugins-rail-link) { border-radius: 3px; }
-
-  /* The tab bar floats over the page, so it keeps a fill: the page's own,
-     with the open styles' edge. Terminal squares it. */
-  :root:not([data-card-style='quiet']) .bottom-tab-bar-pill {
-    background: var(--color-bg-page);
-    border-color: var(--color-shell-edge);
-  }
-  :root:not([data-card-style]) .bottom-tab-bar-pill { border-radius: 6px; }
-  :root:not([data-card-style]) .bottom-tab-item { border-radius: 3px; }
-}

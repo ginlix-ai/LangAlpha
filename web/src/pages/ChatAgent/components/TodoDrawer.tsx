@@ -108,7 +108,7 @@ function TodoDrawer({ todoData, historyLoading }: { todoData: TodoData | null; h
   return (
     <motion.div
       ref={drawerRef}
-      className="mx-4 rounded-t-2xl border border-b-0 border-(--color-border-input) bg-(--color-bg-card) px-3 pb-4 -mb-4"
+      className="mx-4 rounded-t-[var(--cs-composer-stack-radius,1rem)] border border-b-0 border-(--color-border-input) bg-(--color-bg-card) px-3 pb-4 -mb-4"
       // A tab of the composer, in its fill and hairline: inset from its edges,
       // only the top corners rounded, and the bottom pb-4 tucked under its top
       // edge (the composer is the later sibling, so it paints over the tuck),

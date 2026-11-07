@@ -121,12 +121,13 @@ export function ChiefOfStaffCard({
       onMouseEnter={!isMobile && homeId ? () => prefetchThreads?.(homeId) : undefined}
     >
       <div
-        className="pf-card pf-card--feature grid grid-cols-1 gap-5 rounded-xl px-5 py-5 md:grid-cols-[1fr_1.15fr] md:gap-8 md:px-[22px]"
+        className="pf-card pf-card--feature grid grid-cols-1 gap-5 rounded-[var(--cs-radius-card,0.75rem)] px-5 py-5 md:grid-cols-[1fr_1.15fr] md:gap-8 md:px-[22px]"
         style={{
           // Solid, as every card is: the agent stands out by what it holds,
-          // not by a tint or a glow.
-          backgroundColor: 'var(--color-bg-card)',
-          border: '1px solid var(--color-border-default)',
+          // not by a tint or a glow. The card styles draw it as the
+          // workspace cards (WorkspaceCard.tsx).
+          backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))',
+          border: '1px solid var(--color-shell-edge, var(--color-term-edge))',
         }}
       >
         {/* Who it is, then the actions, held to the bottom so they sit level
