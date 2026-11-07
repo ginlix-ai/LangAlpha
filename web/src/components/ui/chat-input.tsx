@@ -33,7 +33,7 @@ import {
 } from './chat-input.composerParts';
 import { ChatInputModelMenu, ModelTriggerMeasure, type EffortMenuProps } from './chat-input.modelMenu';
 import type { ModelRowStatus } from './chat-input.modelPicker';
-import { ANTHROPIC_KEY_URL, CLAUDE_CODE_CHOICE_URL, claudeCodeTokenUrl, isClaudeCodeModel } from '@/lib/claudeCode';
+import { ANTHROPIC_KEY_URL, CLAUDE_CODE_CHOICE_URL, biggerComputer, claudeCodeTokenUrl, isClaudeCodeModel } from '@/lib/claudeCode';
 import type { Payer } from '@/lib/modelPayer';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { deriveRecentModels } from './chat-input.models';
@@ -892,6 +892,10 @@ function ChatInput({
         case 'hosted_off': return { unavailable: t('chat.modelSelector.claudeCodeHostedOff'), fix: () => navigate(CLAUDE_CODE_CHOICE_URL) };
         case 'needs_api_key': return { unavailable: t('chat.modelSelector.claudeCodeNeedsApiKey'), fix: () => navigate(ANTHROPIC_KEY_URL) };
         case 'api_key_endpoint': return { unavailable: t('chat.modelSelector.claudeCodeApiKeyEndpoint'), fix: () => navigate(ANTHROPIC_KEY_URL) };
+        case 'needs_bigger_computer': {
+          const { rowKey, link } = biggerComputer();
+          return { unavailable: t(rowKey), fix: link ? () => window.open(link.url, '_blank', 'noopener,noreferrer') : undefined };
+        }
         case 'policy_blocked': return { unavailable: t('chat.modelSelector.claudeCodePolicyBlocked') };
         case 'needs_perl': return { unavailable: t('modelAccess.claudeCode.fail.needs_perl') };
         case 'computer_unsupported': return { unavailable: t('modelAccess.claudeCode.fail.computer_unsupported') };

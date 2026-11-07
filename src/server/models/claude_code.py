@@ -56,8 +56,17 @@ class ClaudeCodeComputer(BaseModel):
     expires_at: datetime | None = None
 
 
+#: Why a cloud computer refuses a turn whatever its credential
+#: (``hosted.tier_refusal``): it is smaller than Medium.
+ComputerRefusal = Literal["needs_bigger_computer"]
+
+
 class ClaudeCodeComputers(BaseModel):
     computers: list[ClaudeCodeComputer]
+    #: Each of the user's cloud computers that refuses a turn whatever the
+    #: credential, by computer id (``hosted.cloud_refusals``). A turn there is
+    #: told it only once its credential would run.
+    cloud_refusals: dict[str, ComputerRefusal] = Field(default_factory=dict)
 
 
 #: Where the user's Claude Code stands as a whole, the first that holds: a

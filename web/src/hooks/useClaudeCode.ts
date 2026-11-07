@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getClaudeCodeComputers, getClaudeCodeSetup, getClaudeCodeStatus, type ClaudeCodeState } from '@/api/model';
+import { TOKEN_WORKS } from '@/lib/claudeCode';
 import { queryKeys } from '@/lib/queryKeys';
 import { isFeatureEnabled, useFeatures } from './useFeatures';
 
@@ -16,7 +17,7 @@ const PAST_EXPIRY_POLL_MS = 30_000;
  *  server reads it as refused, so every reader changes then without a clock
  *  of its own. False for one with no expiry, or no token that works. */
 function untilExpiry(state: string | undefined, expiresAt: string | null | undefined): number | false {
-  const at = expiresAt && (state === 'signed_in' || state === 'unverified') ? Date.parse(expiresAt) : NaN;
+  const at = expiresAt && state && TOKEN_WORKS.has(state) ? Date.parse(expiresAt) : NaN;
   if (Number.isNaN(at)) return false;
   const left = at - Date.now();
   return left >= 0 ? Math.min(left + 1_000, MAX_DELAY_MS) : PAST_EXPIRY_POLL_MS;
@@ -96,12 +97,15 @@ export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
   });
   const queryClient = useQueryClient();
   const behindSaved = saved.state === 'rejected'
-    && (data?.computers ?? []).some((c) => c.source === 'saved' && (c.state === 'signed_in' || c.state === 'unverified'));
+    && (data?.computers ?? []).some((c) => c.source === 'saved' && TOKEN_WORKS.has(c.state));
   useEffect(() => {
     if (behindSaved) void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
   }, [behindSaved, queryClient]);
   // A failed read again keeps the list it had, which still says whose they are.
-  return { computers: data?.computers ?? [], isLoading: featuresLoading || isLoading, unread: isError && !data };
+  return {
+    computers: data?.computers ?? [], cloudRefusals: data?.cloud_refusals ?? {}, isLoading: featuresLoading || isLoading,
+    unread: isError && !data,
+  };
 }
 
 /**

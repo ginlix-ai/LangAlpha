@@ -1,5 +1,6 @@
 import { apiErrorStatus } from '@/api/errors';
 import type { ClaudeCodeComputerState } from '@/api/model';
+import { TOKEN_WORKS } from '@/lib/claudeCode';
 import { useClaudeCodeComputers, useClaudeCodeStatus } from './useClaudeCode';
 import { useClaudeCodeCustody } from './useClaudeCodeCustody';
 import { useWorkspace } from './useWorkspace';
@@ -17,8 +18,9 @@ export interface WorkspaceClaudeCode {
    *  nowhere for it; else as the server's verdict for the user's choice for
    *  cloud computers says: on their Anthropic API key (`api_key`), or the
    *  reason it is refused for, a choice whose switch the server turned off
-   *  (`hosted_paused`) included. */
-  state: ClaudeCodeComputerState | 'needs_own_computer' | CloudRefusal | 'api_key';
+   *  (`hosted_paused`) included. `needs_bigger_computer`: the credential
+   *  would run, but the server names the computer as too small for it. */
+  state: ClaudeCodeComputerState | 'needs_own_computer' | CloudRefusal | 'api_key' | 'needs_bigger_computer';
   computerId: string | null;
   /** Whether the workspace's computer, and which computers are the user's
    *  own, are read; until they are, `computerId` says nothing. */
@@ -40,27 +42,47 @@ export interface WorkspaceClaudeCode {
  * read says which computer it is on when the server gave a row, or a 403 or
  * 404, since a workspace gone or not the user's is on no computer of theirs;
  * a placeholder (Home as of its first read, maybe before a start gave it a
- * computer) or any other failure does not.
+ * computer) or any other failure does not. A cloud computer the server
+ * names as too small is told only once the credential would run, the order
+ * admission refuses in.
  */
 export function useWorkspaceClaudeCode(workspaceId: string | null | undefined): WorkspaceClaudeCode {
   const status = useClaudeCodeStatus();
   const workspace = useWorkspace(workspaceId);
   const own = useClaudeCodeComputers();
-  const cloud = useClaudeCodeCustody();
+  const choice = useClaudeCodeCustody();
   const workspaceKnown = !workspaceId
     || (workspace.data !== undefined && !workspace.isPlaceholderData)
     || [403, 404].includes(apiErrorStatus(workspace.error) ?? 0);
   const known = workspaceKnown && !own.isLoading && !own.unread;
   if (!status.enabled) return { state: 'off', computerId: null, known };
   if (!known) return { state: 'checking', computerId: null, known };
-  const entry = own.computers.find((c) => c.computer_id === workspace.data?.computer_id);
+  const computerId = workspace.data?.computer_id;
+  const entry = own.computers.find((c) => c.computer_id === computerId);
   if (entry) return { state: entry.state, computerId: entry.computer_id, known };
-  if (status.runsHere) return { state: status.state, computerId: null, known };
-  if (cloud.isLoading || cloud.unread) return { state: 'checking', computerId: null, known };
-  if (!cloud.custody) return { state: 'needs_own_computer', computerId: null, known };
-  const { runs_on: runsOn, refusal } = cloud.custody;
-  if (runsOn === 'api_key') return { state: 'api_key', computerId: null, known };
-  if (runsOn === 'stored_token') return { state: 'checking', computerId: null, known };
-  if (refusal === 'stored_blocked') return { state: 'needs_own_computer', computerId: null, known };
-  return { state: refusal && CLOUD_REFUSALS.has(refusal) ? refusal as CloudRefusal : 'hosted_off', computerId: null, known };
+  const credential = cloudCredentialState(status, choice);
+  const tooSmall = computerId != null && own.cloudRefusals[computerId] === 'needs_bigger_computer';
+  return { state: CREDENTIAL_RUNS.has(credential) && tooSmall ? 'needs_bigger_computer' : credential, computerId: null, known };
+}
+
+/** The states in which a turn on a cloud computer has a credential that runs. */
+const CREDENTIAL_RUNS: ReadonlySet<string> = new Set([...TOKEN_WORKS, 'api_key']);
+
+/** Where a turn on a cloud computer stands by its credential alone: the
+ *  token saved in Settings where this server runs turns on one, else the
+ *  server's verdict for the user's choice for cloud computers. A verdict that
+ *  no cloud computer runs it comes first: a stored token still runs on the
+ *  user's own computers, so the status alone would call it runnable. */
+function cloudCredentialState(
+  status: ReturnType<typeof useClaudeCodeStatus>, choice: ReturnType<typeof useClaudeCodeCustody>,
+): WorkspaceClaudeCode['state'] {
+  if (choice.custody?.refusal === 'needs_own_computer') return 'needs_own_computer';
+  if (status.runsHere) return status.state;
+  if (choice.isLoading || choice.unread) return 'checking';
+  if (!choice.custody) return 'needs_own_computer';
+  const { runs_on: runsOn, refusal } = choice.custody;
+  if (runsOn === 'api_key') return 'api_key';
+  if (runsOn === 'stored_token') return 'checking';
+  if (refusal === 'stored_blocked' || refusal === 'needs_own_computer') return 'needs_own_computer';
+  return refusal && CLOUD_REFUSALS.has(refusal) ? refusal as CloudRefusal : 'hosted_off';
 }

@@ -42,7 +42,11 @@ from src.server.models.automation import (
 from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_settlement import Outcome, settle
 from src.server.services.llm import user_models
-from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, relayed_token, require_claude_code_continues
+from src.server.services.llm.claude_code import (
+    claude_code_off_message,
+    relayed_token,
+    require_claude_code_continues,
+)
 from src.server.utils.api import (
     raise_not_found,
     require_thread_owner,
@@ -198,20 +202,22 @@ async def _check_claude_code_continues(name: str | None, pin: str | None) -> Non
 async def _check_claude_code_hosted(
     user_id: str, name: str | None, workspace_id: str | None, conn=None, pref: dict[str, Any] | None = None,
 ) -> None:
-    """Refuse a Claude Code row in a workspace on a cloud computer where the
-    user's choice for cloud computers refuses its turns, placed as admission
-    places them (``placement``), or runs them on the setup token they stored,
-    which runs no automation (``require_attended``), so every firing would fail;
-    on an own computer, where admission would relay that token to it by its
-    last answer. A row naming no model is judged on the default its firing
-    runs (``select_model``): the user's saved one in ``pref``, else the
-    deployment's; Home's Chief of Staff runs no Claude Code default. Nothing
-    is read where no choice is offered. Read on ``conn``, the caller's."""
-    from src.server.services.claude_code.hosted import choice_offered, placement
+    """Refuse a Claude Code row in a workspace on a cloud computer whose turns
+    admission refuses (``Placement.refusal``, in its order), or that run on
+    the setup token the user stored, which runs no automation
+    (``require_attended``) and is told ahead of the computer's size, as a
+    credential is, so every firing would fail; on an own computer, where
+    admission would relay that token to it by its last answer. A row naming
+    no model is judged on the default its firing runs (``select_model``):
+    the user's saved one in ``pref``, else the deployment's; Home's Chief of
+    Staff runs no Claude Code default. Nothing is read where no such rule
+    applies (``checks_automations``).
+    Read on ``conn``, the caller's."""
+    from src.server.services.claude_code.hosted import checks_automations, placement
     from src.server.services.claude_code.machine import read_answer
     from src.server.services.llm.config import deployment_llm, saved_default_model
 
-    if not (workspace_id and choice_offered()):
+    if not (workspace_id and checks_automations()):
         return
     if not name and not is_home_id(user_id, workspace_id):
         if pref is None:
@@ -223,18 +229,19 @@ async def _check_claude_code_hosted(
     if where.own_computer is not None:
         answer = await read_answer(str(where.own_computer["computer_id"]))
         if await relayed_token(user_id, answer, conn=conn) == "stored_token":
-            raise AutomationRefusal(CLAUDE_CODE_OFF["stored_unattended"], field="llm_model")
+            raise AutomationRefusal(claude_code_off_message("stored_unattended"), field="llm_model")
         return
-    state = where.hosted
-    if state is not None and (state.refusal or state.runs_on == "stored_token"):
-        raise AutomationRefusal(CLAUDE_CODE_OFF[state.refusal or "stored_unattended"], field="llm_model")
+    if where.hosted is not None and where.hosted.runs_on == "stored_token":
+        raise AutomationRefusal(claude_code_off_message("stored_unattended"), field="llm_model")
+    if where.refusal is not None:
+        raise AutomationRefusal(claude_code_off_message(where.refusal), field="llm_model")
 
 
 def _check_home_model(user_id: str, name: str | None, workspace_id: str | None) -> None:
     """Refuse a Claude Code row in Home, whose Chief of Staff does not run on
     it, so every firing would fail until the automation is disabled."""
     if name and workspace_id and is_claude_code_model(name) and is_home_id(user_id, workspace_id):
-        raise AutomationRefusal(CLAUDE_CODE_OFF["chief_of_staff"], field="llm_model")
+        raise AutomationRefusal(claude_code_off_message("chief_of_staff"), field="llm_model")
 
 
 async def _check_model(user_id: str, name: str, pref: dict[str, Any] | None) -> None:

@@ -4,10 +4,21 @@
  * On a cloud computer, the choice of how it runs there or the Anthropic API
  * key it runs on fixes it.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ANTHROPIC_KEY_URL, CLAUDE_CODE_CHOICE_URL, claudeCodeRefusal, claudeCodeTokenUrl } from '../claudeCode';
 
+const build = vi.hoisted(() => ({ planUrl: null as string | null }));
+
+vi.mock('@/config/supportLinks', async (original) => ({
+  ...(await original<typeof import('@/config/supportLinks')>()),
+  get PLAN_URL() { return build.planUrl; },
+}));
+
 describe('claudeCodeRefusal', () => {
+  beforeEach(() => {
+    build.planUrl = null;
+  });
+
   it('links a refused token to its sheet, reads the tokens again, and words it in the app', () => {
     expect(claudeCodeRefusal('token_refused', 'ws-1')).toEqual({
       reread: true,
@@ -50,12 +61,22 @@ describe('claudeCodeRefusal', () => {
     });
   });
 
-  it.each(['hosted_paused', 'stored_blocked', 'choice_changed'])('words %s in the app with nothing to fix, and reads the choice again', (reason) => {
+  it.each(['hosted_paused', 'stored_blocked', 'choice_changed', 'needs_bigger_computer'])('words %s in the app with nothing to fix, and reads the choice again', (reason) => {
     expect(claudeCodeRefusal(reason, 'ws-1')).toEqual({ reread: true, link: null, messageKey: `chat.claudeCode.off.${reason}` });
   });
 
-  it.each(['api_key_refused', 'busy'])('words %s mid-turn in the app, with nothing to link', (reason) => {
-    expect(claudeCodeRefusal(reason, 'ws-1')).toEqual({ reread: false, link: null, messageKey: `chat.claudeCode.off.${reason}` });
+  it('where the build names a plan page, words a cloud computer too small for Claude Code as a plan and links that page', () => {
+    build.planUrl = '/account/plans';
+    expect(claudeCodeRefusal('needs_bigger_computer', 'ws-1')).toEqual({
+      reread: true,
+      link: { url: '/account/plans', label: 'Upgrade plan', labelKey: 'computer.spec.upgradePlan', external: true },
+      messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan',
+    });
+    expect(claudeCodeRefusal('hosted_paused', 'ws-1')).toEqual({ reread: true, link: null, messageKey: 'chat.claudeCode.off.hosted_paused' });
+  });
+
+  it('words a refused API key mid-turn in the app, with nothing to link', () => {
+    expect(claudeCodeRefusal('api_key_refused', 'ws-1')).toEqual({ reread: false, link: null, messageKey: 'chat.claudeCode.off.api_key_refused' });
   });
 
   it("names the user's cap on turns at once, and keeps the server words without one", () => {

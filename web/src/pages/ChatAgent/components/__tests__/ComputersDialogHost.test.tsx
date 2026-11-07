@@ -282,6 +282,23 @@ describe("ComputersDialogHost, the computer's sizes", () => {
 
     await waitFor(() => expect(queryClient.getQueryState(queryKeys.workspaces.quota())?.isInvalidated).toBe(true));
   });
+
+  it('re-reads where Claude Code stands once a change is accepted, which it refuses below its minimum at once', async () => {
+    mockGetComputers.mockResolvedValue(list(machine(null)));
+    (setComputerSpec as Mock).mockResolvedValue(machine(change()));
+    const { queryClient } = await mount();
+    for (const key of [queryKeys.features.claudeCodeComputers(), queryKeys.features.claudeCodeSetup()]) {
+      queryClient.setQueryDefaults(key, { gcTime: Infinity });
+      queryClient.setQueryData(key, {});
+    }
+    act(() => openComputerSpec(ID));
+
+    await userEvent.click(await screen.findByRole('radio', { name: /^Medium/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Back up and change spec' }));
+
+    await waitFor(() => expect(queryClient.getQueryState(queryKeys.features.claudeCodeComputers())?.isInvalidated).toBe(true));
+    expect(queryClient.getQueryState(queryKeys.features.claudeCodeSetup())?.isInvalidated).toBe(true);
+  });
 });
 
 describe('ComputersDialogHost, preparation outcomes', () => {

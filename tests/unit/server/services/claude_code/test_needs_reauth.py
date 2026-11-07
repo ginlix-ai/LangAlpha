@@ -20,11 +20,12 @@ from ptc_agent.agent.claude_code.launcher import Credential
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.services.claude_code.launchers import HostedCredential
 from src.server.services.claude_code.saved import token_check_key, token_hash
+from src.server.services.claude_code.hosted import cloud_placement
 from src.server.services.llm.claude_code import (
     CLAUDE_CODE_OFF,
+    _refusal,
     claude_code_refusal,
     require_computer_signed_in,
-    require_signed_in,
 )
 from tests.unit.server.services.claude_code.fakes import Cache, serving
 
@@ -56,12 +57,10 @@ def _flag_writer(applied=True):
 
 
 async def _admission_reason(row, cache):
-    with serving(cache), _store(row):
-        try:
-            await require_signed_in(CODE, "user-1")
-        except HTTPException as e:
-            return e.detail
-    return None
+    """What admission refuses a self-hosted turn on a cloud computer for, as it reads the saved token."""
+    with serving(cache), _store(row), patch("src.server.services.claude_code.hosted.backend_available", lambda: True):
+        where = await cloud_placement("user-1", None, token=True)
+    return _refusal(CODE, where.refusal) if where.refusal else None
 
 
 async def _refused_turn(cache, row=None):
@@ -71,7 +70,7 @@ async def _refused_turn(cache, row=None):
         patch("src.server.services.claude_code.launchers.stored_row", AsyncMock(return_value=row or _row())),
         patch("src.server.services.claude_code.hosted.backend_available", lambda: True),
     ):
-        token = HostedCredential("user-1", "saved_token")
+        token = HostedCredential("user-1", "saved_token", None)
         assert await token.read() == Credential(TOKEN)
         with pytest.raises(ClaudeTurnFailed) as failed:
             await token.refused()

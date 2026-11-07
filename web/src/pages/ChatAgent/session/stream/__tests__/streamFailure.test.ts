@@ -12,7 +12,7 @@ const SERVER = 'Server words.';
 const refusal = (fields: Record<string, unknown>) => ({ event: 'error', error: SERVER, type: 'claude_code_off', ...fields });
 
 describe('readStreamFailure: a Claude Code refusal', () => {
-  it.each(['api_key_refused', 'busy'])('words %s in the app', (reason) => {
+  it.each(['api_key_refused', 'needs_bigger_computer'])('words %s in the app', (reason) => {
     expect(readStreamFailure(refusal({ reason }), SERVER, 'ws-1', t)).toEqual({ message: `chat.claudeCode.off.${reason}` });
   });
 

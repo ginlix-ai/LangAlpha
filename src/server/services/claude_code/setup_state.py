@@ -86,5 +86,5 @@ async def setup_state(user_id: str) -> ClaudeCodeSetup | None:
     saved_token_runs = status.state != "off" if on else backend_runs
     return ClaudeCodeSetup(
         state=state, on=on, computers=computers.computers, saved_token_runs=saved_token_runs,
-        cloud=custody is not None and bool(custody.offered),
+        cloud=custody is not None and bool(custody.offered) and custody.refusal != "needs_own_computer",
     )

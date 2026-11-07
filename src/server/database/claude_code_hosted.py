@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 Mode = Literal["local", "api_key", "stored"]
 #: What a turn's run row carries in its metadata while its Claude Code CLI
-#: runs in a worker for a cloud computer, which ``live_worker_turns`` counts.
-WORKER_TURN = {"claude_code_worker": True}
+#: runs for a cloud computer, which ``live_cloud_turns`` counts. The key
+#: keeps its name from when that CLI ran in a worker, so runs stamped then
+#: still count.
+CLOUD_TURN = {"claude_code_worker": True}
 #: What it carries while its CLI runs on the setup token the user stored,
 #: whose turns ``live_stored_turns`` finds when the token goes.
 STORED_TURN = {"claude_code_stored": True}
@@ -119,8 +121,8 @@ async def stored_users() -> list[str]:
         return [row["user_id"] for row in await cur.fetchall()]
 
 
-async def live_worker_turns(user_id: str, *, besides: str | None = None) -> int:
-    """The user's runs in progress whose CLI runs in a worker (``WORKER_TURN``),
+async def live_cloud_turns(user_id: str, *, besides: str | None = None) -> int:
+    """The user's runs in progress whose CLI runs for a cloud computer (``CLOUD_TURN``),
     leaving out thread ``besides``'s, whose next message steers its own run."""
     async with get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
@@ -129,7 +131,7 @@ async def live_worker_turns(user_id: str, *, besides: str | None = None) -> int:
             WHERE status = 'in_progress' AND user_id = %s AND metadata @> %s
               AND conversation_thread_id IS DISTINCT FROM %s
             """,
-            (user_id, Jsonb(WORKER_TURN), besides),
+            (user_id, Jsonb(CLOUD_TURN), besides),
         )
         return (await cur.fetchone())["live"]
 

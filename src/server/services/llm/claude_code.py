@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn
 
-from ptc_agent.core.claude_code_managed import local_managed
 from ptc_agent.core.sandbox.providers.ssh import MUSL_UNSUPPORTED
 from src.llms.claude_code import (
     FEATURE,
@@ -23,7 +22,7 @@ from src.llms.claude_code import (
 )
 from src.llms.error_classification import iter_exception_chain
 from src.config.settings import get_claude_code_config
-from src.server.database.claude_code_hosted import STORED_TURN, WORKER_TURN, live_worker_turns
+from src.server.database.claude_code_hosted import CLOUD_TURN, STORED_TURN, live_cloud_turns
 from src.server.services.claude_code.flow import POLICY_BLOCKED
 from src.server.services.claude_code.hosted import hosted, placement, relay_offered
 from src.server.services.claude_code.machine import NEEDS_PERL, MachineAnswer, computer_state, read_answer
@@ -58,9 +57,8 @@ CLAUDE_CODE_OFF = {
         "workspace to one of your computers."
     ),
     "needs_api_key": (
-        "For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your Anthropic API "
-        "key, and you haven't saved one. Add one in Settings under Model access, or move this workspace to one of "
-        "your computers."
+        "On cloud computers, Claude Code runs on the computer itself with your Anthropic API key, and you haven't "
+        "saved one. Add one in Settings under Model access, or move this workspace to one of your computers."
     ),
     "api_key_refused": (
         "Anthropic refused your API key, or its account has no credit left. Check the key in Settings under "
@@ -71,7 +69,6 @@ CLAUDE_CODE_OFF = {
         "custom Base URL. Clear the Base URL in Settings under Model access, or move this workspace to one of "
         "your computers."
     ),
-    "busy": "Claude Code is busy on this server right now. Try again in a minute.",
     "too_many_turns": (
         "You've reached the limit on Claude Code threads running at once on cloud computers ({limit}). Try again "
         "when one finishes."
@@ -92,7 +89,27 @@ CLAUDE_CODE_OFF = {
     "choice_changed": (
         "How Claude Code runs on cloud computers changed as this turn started. Send your message again."
     ),
+    "needs_bigger_computer": (
+        "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. "
+        "Change its spec, or move this workspace to a computer of your own."
+    ),
 }
+
+#: The reasons the platform words otherwise, where a larger computer comes
+#: with the user's LangAlpha plan.
+_PLATFORM_OFF = {
+    "needs_bigger_computer": (
+        "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. Change "
+        "its spec or upgrade your LangAlpha plan, or move this workspace to a computer of your own."
+    ),
+}
+
+
+def claude_code_off_message(reason: str) -> str:
+    """The words of the ``CLAUDE_CODE_OFF`` reason ``reason`` on this server."""
+    from src.config.settings import HOST_MODE
+
+    return (_PLATFORM_OFF.get(reason) if HOST_MODE == "platform" else None) or CLAUDE_CODE_OFF[reason]
 
 
 def raise_claude_code_off(model_name: str, reason: str, **fields: Any) -> NoReturn:
@@ -110,7 +127,8 @@ def raise_claude_code_off(model_name: str, reason: str, **fields: Any) -> NoRetu
 
 
 def _refusal(model_name: str | None, reason: str, **fields: Any) -> dict[str, Any]:
-    message = CLAUDE_CODE_OFF[reason].format(**fields) if fields else CLAUDE_CODE_OFF[reason]
+    words = claude_code_off_message(reason)
+    message = words.format(**fields) if fields else words
     return {"message": message, "type": "claude_code_off", "model": model_name, "reason": reason, **fields}
 
 
@@ -120,14 +138,15 @@ def _refusal(model_name: str | None, reason: str, **fields: Any) -> dict[str, An
 #: an organization's policy installed where the CLI would run, or a computer
 #: with no perl or on musl, or the turn's workspace is not on an own computer
 #: where the backend runs none, or the user's choice for cloud computers
-#: changed since admission. Two only a run meets say so the same way:
-#: Anthropic refused the user's API key, and the worker had no slot free.
+#: changed since admission, or the computer is now below the tier Claude Code
+#: runs on. One only a run meets says so the same way: Anthropic refused the
+#: user's API key.
 _ADMISSION_REASON = {
     "auth_failed": "signed_out", "token_refused": "token_refused", "policy_blocked": "policy_blocked",
     "needs_own_computer": "needs_own_computer", "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
     "hosted_off": "hosted_off", "needs_api_key": "needs_api_key", "api_key_endpoint": "api_key_endpoint",
-    "api_key_refused": "api_key_refused", "busy": "busy", "hosted_paused": "hosted_paused",
-    "stored_blocked": "stored_blocked", "choice_changed": "choice_changed",
+    "api_key_refused": "api_key_refused", "hosted_paused": "hosted_paused", "stored_blocked": "stored_blocked",
+    "choice_changed": "choice_changed", "needs_bigger_computer": "needs_bigger_computer",
 }
 
 
@@ -159,14 +178,14 @@ async def require_runnable(
     where it would run.
 
     A workspace on the user's own computer runs the CLI on that machine, on
-    any server. Anywhere else the CLI runs on the backend, on the credential
-    the user's turns on a cloud computer run on (``hosted``), and only where
-    no organization's policy is installed; a setup token only while it is
-    usable, and on the platform each also waits for a turn of the user's
-    there to finish once they run ``claude_code.hosted_turns_per_user`` at
-    once, the thread's own aside, since a message to a running thread steers
-    it. The cap is soft: two turns admitted at once may both pass. Neither
-    waits on Anthropic or dials a machine.
+    any server. Anywhere else the turn is refused for the first reason
+    ``cloud_placement`` gives, the saved token known not to work among
+    them. Each turn there also waits for one of the user's to finish once
+    they run ``claude_code.hosted_turns_per_user`` at once, the thread's own
+    aside, since a message to a running thread steers it. That count is the
+    one bound on the CLIs a cloud computer's sandbox or a worker runs.
+    The cap is soft: two turns admitted at once may both pass. Neither waits
+    on Anthropic or dials a machine.
 
     Returns what the turn was admitted on, which the run's row is stamped
     from (``run_stamp``) and the run signs in with.
@@ -177,37 +196,31 @@ async def require_runnable(
         raise_claude_code_off(model, "account")
     if role == "chief_of_staff":
         raise_claude_code_off(model, "chief_of_staff")
-    where = await placement(user_id, workspace_id)
+    where = await placement(user_id, workspace_id, token=True)
     if where.own_computer is not None:
         return Admitted(saved=await require_computer_signed_in(model, user_id, str(where.own_computer["computer_id"])))
+    if where.refusal is not None:
+        raise_claude_code_off(model, where.refusal)
     state = where.hosted
-    if state is None:
-        raise_claude_code_off(model, "needs_own_computer")
-    if state.refusal is not None:
-        raise_claude_code_off(model, state.refusal)
-    if await local_managed():
-        raise_claude_code_off(model, "policy_blocked")
-    if state.token_signs_in:
-        await require_signed_in(model, user_id)
-    if state.runs_on != "saved_token":
-        limit = get_claude_code_config().hosted_turns_per_user
-        if await live_worker_turns(user_id, besides=thread_id) >= limit:
-            raise_claude_code_off(model, "too_many_turns", limit=limit)
+    limit = get_claude_code_config().hosted_turns_per_user
+    if await live_cloud_turns(user_id, besides=thread_id) >= limit:
+        raise_claude_code_off(model, "too_many_turns", limit=limit)
     return Admitted(state.runs_on, state.runs_on if state.token_signs_in else None)
 
 
 def run_stamp(config) -> dict[str, Any]:
-    """What a Claude Code run's row carries on the platform, from what
-    admission let it run on (``require_runnable``): counted as a turn of its
-    user's on a cloud computer (``WORKER_TURN``), where the count caps them,
-    and found as one that may hold the setup token they stored
+    """What a Claude Code run's row carries, from what admission let it run
+    on (``require_runnable``): counted as a turn of its user's on a cloud
+    computer (``CLOUD_TURN``) on any server, where the count caps them, and
+    on the platform found as one that may hold the setup token they stored
     (``STORED_TURN``) when it goes."""
     from src.config.settings import HOST_MODE
 
-    if HOST_MODE != "platform" or config is None:
+    if config is None:
         return {}
     return {
-        **(WORKER_TURN if config.claude_code_hosted else {}), **(STORED_TURN if config.claude_code_saved else {}),
+        **(CLOUD_TURN if config.claude_code_hosted else {}),
+        **(STORED_TURN if HOST_MODE == "platform" and config.claude_code_saved else {}),
     }
 
 
@@ -229,17 +242,6 @@ def require_attended(config, request) -> None:
     start. Their API key and a computer's own token run such turns."""
     if "stored_token" in (config.claude_code_hosted, config.claude_code_saved) and unattended(request):
         raise_claude_code_off(config.llm.name, "stored_unattended")
-
-
-async def require_signed_in(model: str, user_id: str) -> None:
-    """Refuse a turn on the backend whose token is known not to work: none
-    saved, or one that needs replacing (Claude refused it on a turn or a
-    check, or it expired) or that the status check found refused.
-
-    A token not checked yet runs, so admission never waits on Anthropic.
-    """
-    if reason := await saved_refusal(user_id):
-        raise_claude_code_off(model, reason)
 
 
 async def relayed_token(user_id: str, answer: MachineAnswer | None, *, conn=None) -> str | None:

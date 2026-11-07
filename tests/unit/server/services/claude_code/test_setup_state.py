@@ -116,6 +116,7 @@ def _custody(mode="local", refusal="hosted_off", runs_on=None, offered=("api_key
         (False, _custody(mode="stored", refusal="stored_blocked", offered=()), "no_computer"),
         (False, _custody(mode="api_key", refusal="hosted_paused", offered=()), "no_computer"),
         (False, _custody(mode="stored", refusal="hosted_paused", offered=("api_key",)), "not_connected"),
+        (False, _custody(mode="api_key", refusal="needs_own_computer", offered=("api_key",)), "no_computer"),
     ],
 )
 async def test_with_no_own_computer_and_not_on_it_is_ready_only_where_something_else_would_run_it(
@@ -125,7 +126,7 @@ async def test_with_no_own_computer_and_not_on_it_is_ready_only_where_something_
     with patch("src.server.services.claude_code.machine.get_computer_roster", new_callable=AsyncMock, return_value=[]):
         answer = await _setup(world, backend=backend, custody=custody)
     assert (answer.state, answer.computers, answer.saved_token_runs) == (state, [], backend)
-    assert answer.cloud is (custody is not None and bool(custody.offered))
+    assert answer.cloud is (custody is not None and bool(custody.offered) and custody.refusal != "needs_own_computer")
 
 
 @pytest.mark.asyncio

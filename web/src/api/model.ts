@@ -81,12 +81,23 @@ export interface ClaudeCodeComputer {
   expires_at: string | null;
 }
 
+/** The user's own computers, and each cloud computer of theirs that refuses
+ *  a Claude Code turn whatever the credential, by computer id, with the
+ *  reason (`needs_bigger_computer`: below the size Claude Code runs at). */
+export type ClaudeCodeComputerRefusal = 'needs_bigger_computer';
+
+export interface ClaudeCodeComputers {
+  computers: ClaudeCodeComputer[];
+  /** Absent from a server that predates it. */
+  cloud_refusals?: Record<string, ClaudeCodeComputerRefusal>;
+}
+
 /** A server from before per-computer tokens has no such route, and runs
  *  Claude Code on none of the user's computers. */
-export async function getClaudeCodeComputers(): Promise<{ computers: ClaudeCodeComputer[] }> {
+export async function getClaudeCodeComputers(): Promise<ClaudeCodeComputers> {
   try {
     const { data } = await api.get('/api/v1/claude-code/computers');
-    return data as { computers: ClaudeCodeComputer[] };
+    return data as ClaudeCodeComputers;
   } catch (err) {
     if (apiErrorStatus(err) === 404) return { computers: [] };
     throw err;

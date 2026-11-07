@@ -22,7 +22,14 @@ vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getHomeWorkspace: vi.fn().mockResolvedValue({ workspace_id: 'home-1', name: 'Home', status: 'running', is_home: true }),
 }));
 
-const mocks = vi.hoisted(() => ({ where: { state: 'signed_in', computerId: null, known: true } as WorkspaceClaudeCode, asked: [] as unknown[] }));
+const mocks = vi.hoisted(() => ({
+  where: { state: 'signed_in', computerId: null, known: true } as WorkspaceClaudeCode, asked: [] as unknown[], planUrl: null as string | null,
+}));
+
+vi.mock('@/config/supportLinks', async (original) => ({
+  ...(await original<typeof import('@/config/supportLinks')>()),
+  get PLAN_URL() { return mocks.planUrl; },
+}));
 
 vi.mock('@/hooks/useWorkspaceClaudeCode', () => ({
   useWorkspaceClaudeCode: (...args: unknown[]) => {
@@ -116,6 +123,7 @@ const codeRow = () => screen.getByText(/^claude-x-code:/).textContent;
 
 describe("ChatInput: Claude Code rows by the workspace's computer", () => {
   beforeEach(() => {
+    mocks.planUrl = null;
     ContextBus.__resetForTests();
     ChatInputRegistry.__resetForTests();
     Element.prototype.scrollIntoView = vi.fn();
@@ -167,6 +175,24 @@ describe("ChatInput: Claude Code rows by the workspace's computer", () => {
     expect(codeRow()).toBe(`claude-x-code:held:${words}:fix`);
     fireEvent.click(screen.getByRole('button', { name: 'fix' }));
     expect(screen.getByText(/^at:/).textContent).toBe(`at:${url}`);
+  });
+
+  it('holds them on a cloud computer too small for Claude Code, with nothing to fix here', () => {
+    mocks.where = { state: 'needs_bigger_computer', computerId: null, known: true };
+    renderInput();
+    expect(codeRow()).toBe('claude-x-code:held:Needs a Medium or larger cloud computer, or a computer of your own');
+    expect(screen.queryByRole('button', { name: 'fix' })).toBeNull();
+  });
+
+  it('where the build names a plan page, leads a cloud computer too small for Claude Code to it', () => {
+    mocks.planUrl = '/account/plans';
+    const opened = vi.spyOn(window, 'open').mockReturnValue(null);
+    mocks.where = { state: 'needs_bigger_computer', computerId: null, known: true };
+    renderInput();
+    expect(codeRow()).toBe('claude-x-code:held:Needs a Medium or larger cloud computer: change its spec or upgrade your LangAlpha plan, or use a computer of your own:fix');
+    fireEvent.click(screen.getByRole('button', { name: 'fix' }));
+    expect(opened).toHaveBeenCalledWith('/account/plans', '_blank', 'noopener,noreferrer');
+    opened.mockRestore();
   });
 
   it('holds them where the user\'s choice for cloud computers is paused, with nothing to fix', () => {

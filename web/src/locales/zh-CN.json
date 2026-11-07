@@ -216,7 +216,7 @@
       },
       "claude_code_runtime": {
         "label": "Claude Code 运行时（预览版）",
-        "description": "通过 Claude Code 运行你的 Claude 对话，用量计入你自己的 Claude 套餐。它用 setup token 登录，这是专为 LangAlpha 生成的独立凭据，不会影响你自己的 Claude Code 登录。Claude Code 在你自己的电脑上运行；如果此服务器提供该选项，也可以在服务器上为云端计算机上的工作区运行，使用你的 setup token 或 Anthropic API 密钥。请在设置的“模型接入”中选择运行位置。"
+        "description": "通过 Claude Code 运行你的 Claude 对话，用量计入你自己的 Claude 套餐。它用 setup token 登录，这是专为 LangAlpha 生成的独立凭据，不会影响你自己的 Claude Code 登录。Claude Code 在你自己的电脑上运行；如果此服务器提供该选项，也可以在云端计算机上运行，使用你的 setup token 或 Anthropic API 密钥。请在设置的“模型接入”中选择运行位置。"
       },
       "a_share_pack": {
         "label": "A 股市场包",
@@ -2586,7 +2586,9 @@
       "claudeCodeHostedOff": "请在设置中选择它在云端计算机上的运行方式",
       "claudeCodeNeedsApiKey": "在设置中添加你的 Anthropic API 密钥后，即可在云端计算机上使用",
       "claudeCodeApiKeyEndpoint": "请在设置中清空 Anthropic API 密钥的 Base URL，才能在云端计算机上使用",
-      "claudeCodePaused": "此服务器已暂停在云端计算机上运行"
+      "claudeCodePaused": "此服务器已暂停在云端计算机上运行",
+      "claudeCodeNeedsBiggerComputer": "需要中型及以上规格的云端计算机，或你自己的电脑",
+      "claudeCodeNeedsBiggerComputerPlan": "需要中型及以上规格的云端计算机：可更改规格或升级 LangAlpha 套餐，或使用你自己的电脑"
     },
     "voice": {
       "start": "开启语音输入",
@@ -2728,15 +2730,16 @@
         "account": "你的账户未开启 Claude Code。请在设置的“模型接入”中开启，或选择其他模型。",
         "token_refused": "Claude 拒绝了你的 setup token，它可能已过期或被撤销。请在设置的“模型接入”中添加新的 token 后使用此模型。",
         "hosted_off": "你的账户设置为只在你自己的电脑上运行 Claude Code，所以云端计算机上的工作区无法使用 Claude Code 模型。请在设置的“模型接入”中选择运行位置，或把此工作区移到你自己的电脑上。",
-        "needs_api_key": "云端计算机上的工作区由 LangAlpha 在自己的服务器上用你的 Anthropic API 密钥运行 Claude Code，但你还没有保存密钥。请在设置的“模型接入”中添加，或把此工作区移到你自己的电脑上。",
+        "needs_api_key": "在云端计算机上，Claude Code 直接在这台计算机上用你的 Anthropic API 密钥运行，但你还没有保存密钥。请在设置的“模型接入”中添加，或把此工作区移到你自己的电脑上。",
         "api_key_endpoint": "云端计算机上的 Claude Code 只会把你的 Anthropic API 密钥发送给 Anthropic，而你的密钥设置了自定义 Base URL。请在设置的“模型接入”中清空 Base URL，或把此工作区移到你自己的电脑上。",
         "api_key_refused": "Anthropic 拒绝了你的 API 密钥，或该账户已无余额。请在设置的“模型接入”中检查此密钥。",
-        "busy": "此服务器上的 Claude Code 当前繁忙，请稍后再试。",
         "too_many_turns": "你在云端计算机上同时运行的 Claude Code 对话已达上限（{{n}} 个），请等其中一个结束后再试。",
         "hosted_paused": "此服务器已暂停在云端计算机上运行 Claude Code，在你自己的电脑上仍可运行。请选择其他模型，或把此工作区移到你自己的电脑上。",
         "stored_blocked": "你的账户无法保存 setup token，因此 Claude Code 只能在你自己的电脑上运行。请选择其他模型，或把此工作区移到你自己的电脑上。",
         "stored_unattended": "自动化、唤醒以及其他 Agent 发来的对话不会使用 LangAlpha 为你保存的 setup token 运行。请在设置的“模型接入”中改用你的 Anthropic API 密钥，或在你自己的、有独立 token 的电脑上运行此工作区。",
-        "choice_changed": "本轮开始时，云端计算机上 Claude Code 的运行方式发生了变化。请重新发送你的消息。"
+        "choice_changed": "本轮开始时，云端计算机上 Claude Code 的运行方式发生了变化。请重新发送你的消息。",
+        "needs_bigger_computer": "Claude Code 可在中型及以上规格的云端计算机上运行，而此工作区所在的计算机规格较小。你可以更改这台计算机的规格，或把此工作区移到你自己的电脑上。",
+        "needs_bigger_computer_plan": "Claude Code 可在中型及以上规格的云端计算机上运行，而此工作区所在的计算机规格较小。你可以更改这台计算机的规格或升级 LangAlpha 套餐，或把此工作区移到你自己的电脑上。"
       }
     }
   },
@@ -6684,17 +6687,17 @@
         "local": "仅在你自己的电脑上",
         "localDetail": "Claude Code 在你自己的电脑上运行，每台电脑各用自己的 setup token，LangAlpha 不保留副本。云端计算机上的工作区无法使用 Claude Code 模型。",
         "apiKey": "也用于云端计算机，使用你的 Anthropic API 密钥",
-        "apiKeyDetail": "云端计算机上的工作区，由 LangAlpha 在自己的服务器上用你的 API 密钥运行 Claude Code，在云端计算机上完成工作。用量计入你的 Anthropic Console 账户，Max、Ultra 和 Team 套餐每月含 API 额度，不占用你 Claude 套餐的用量限额。",
+        "apiKeyDetail": "在中型及以上规格的云端计算机上，工作区的 Claude Code 直接在这台计算机上运行，每轮对话由 LangAlpha 把你的 API 密钥发给它。用量计入你的 Anthropic Console 账户，Max、Ultra 和 Team 套餐每月含 API 额度，不占用你 Claude 套餐的用量限额。",
         "apiKeyEndpoint": "你的 Anthropic API 密钥设置了自定义 Base URL，云端计算机上的 Claude Code 无法使用它。清空该密钥的 Base URL 后即可使用。",
         "needsApiKey": "云端计算机上的 Claude Code 没有可用的 Anthropic API 密钥。请在“模型接入”中添加，或重新保存已有的密钥。",
         "stored": "也用于云端计算机，使用由 LangAlpha 保存的 setup token",
-        "storedDetail": "云端计算机上的工作区，由 LangAlpha 在自己的服务器上用你加密保存的 setup token 运行 Claude Code，在云端计算机上完成工作。没有独立 token 的你自己的电脑在本机运行 Claude Code，每轮对话由 LangAlpha 把 token 发给它。用量计入你的 Claude 套餐。",
+        "storedDetail": "在中型及以上规格的云端计算机上，工作区的 Claude Code 直接在这台计算机上运行；没有独立 token 的你自己的电脑也在本机运行 Claude Code。每轮对话由 LangAlpha 把加密保存的 setup token 发给运行它的计算机。用量计入你的 Claude 套餐。",
         "paused": "此服务器已暂停在云端计算机上运行 Claude Code。你的选择会保留，Claude Code 在你自己的电脑上照常运行。",
         "blocked": "你的账户无法保存 setup token。Claude Code 在你自己的电脑上照常运行。"
       },
       "consent": {
         "title": "让 LangAlpha 保存你的 setup token？",
-        "encrypted": "LangAlpha 会加密保存此 token，只用于为你的对话运行 Claude Code：云端计算机上的工作区在 LangAlpha 的服务器上运行；没有独立 token 的你自己的电脑在本机运行，每轮对话由 LangAlpha 把 token 发给它。",
+        "encrypted": "LangAlpha 会加密保存你的 token，只用于为你的对话运行 Claude Code。每轮对话，LangAlpha 会把 token 发给运行这轮对话的计算机。LangAlpha 的服务器也会用它检查 token 是否仍然可用。",
         "unattended": "用量计入你的 Claude 套餐。自动化、唤醒以及其他 Agent 发来的对话不会使用此 token。",
         "terms": "这种使用方式适用 Anthropic 为你的 Claude 套餐制定的条款，你需要自行确保遵守。Anthropic 可能会限制或停用它认定违反条款的账户。",
         "undo": "你可以随时切换回来，LangAlpha 会立即删除此 token。",

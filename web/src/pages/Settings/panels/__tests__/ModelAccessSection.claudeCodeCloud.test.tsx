@@ -113,7 +113,7 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     expect(ownComputers()).toBeChecked();
     expect(ownComputers()).toHaveAccessibleDescription(/^Claude Code runs on your own computers, each with its own setup token.*Workspaces on cloud computers can't use Claude Code models\.$/);
     expect(apiKey()).not.toBeChecked();
-    expect(apiKey()).toHaveAccessibleDescription(/^For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your API key.*Usage is billed to your Anthropic Console account/);
+    expect(apiKey()).toHaveAccessibleDescription(/^For workspaces on Medium or larger cloud computers, Claude Code runs on the cloud computer itself.*Usage is billed to your Anthropic Console account/);
   });
 
   it('switches to the API key at once where one is saved', async () => {
@@ -196,7 +196,7 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     await openClaudeCode();
     await screen.findByRole('radiogroup', { name: 'Where Claude Code runs' });
     expect(stored()).not.toBeChecked();
-    expect(stored()).toHaveAccessibleDescription(/^For workspaces on cloud computers, LangAlpha runs Claude Code on its servers with your setup token/);
+    expect(stored()).toHaveAccessibleDescription(/^For workspaces on Medium or larger cloud computers, Claude Code runs on the cloud computer itself\. .*LangAlpha sends your setup token/);
     unmount();
     render({ mode: 'stored', offered: ['stored'] });
     await openClaudeCode();
@@ -213,6 +213,12 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     expect(stored()).toBeChecked();
     fireEvent.click(screen.getByText('Only on your own computers'));
     expect(leaveDialog()).toBeInTheDocument();
+  });
+
+  it('says the choice is paused where this server runs no Claude Code on cloud computers', async () => {
+    render({ mode: 'api_key', api_key_saved: true, ...STORING, refusal: 'needs_own_computer' });
+    await openClaudeCode();
+    expect(await screen.findByText(/^Claude Code on cloud computers is paused on this server\./)).toBeInTheDocument();
   });
 
   it('says nothing is paused while the chosen mode is offered', async () => {
@@ -235,7 +241,7 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     fireEvent.click(await screen.findByText('Also for cloud computers, with your setup token stored by LangAlpha'));
     const dialog = consentDialog()!;
     expect(dialog.closest('[inert]')).toBeNull();
-    expect(dialog).toHaveTextContent(/LangAlpha keeps the token encrypted.*Usage counts against your Claude plan.*Anthropic may limit or suspend accounts.*switch back at any time/);
+    expect(dialog).toHaveTextContent(/LangAlpha keeps your token encrypted.*servers also use the token to check.*Usage counts against your Claude plan.*Anthropic may limit or suspend accounts.*switch back at any time/);
     const terms = within(dialog).getByRole('link', { name: "Read Anthropic's terms" });
     expect(terms).toHaveAttribute('href', 'https://www.anthropic.com/legal/consumer-terms');
     expect(terms).toHaveAttribute('target', '_blank');

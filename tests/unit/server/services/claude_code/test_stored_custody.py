@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from ptc_agent.agent.claude_code.launcher import Credential
-from src.server.database.claude_code_hosted import STORED_TURN, WORKER_TURN
+from src.server.database.claude_code_hosted import STORED_TURN, CLOUD_TURN
 from src.server.services.claude_code import hosted as hosted_module
 from src.server.services.claude_code.flow import backend_on
 from src.server.services.claude_code.hosted import DISCLOSURE, Hosted, drop_stored, opted_out
@@ -47,6 +47,8 @@ client = _client
 
 TOKEN = "sk-ant-oat01-" + "t" * 40
 ROWS_ON = "src.server.services.claude_code.flow.rows_on"
+#: The token store's verdict as a cloud computer's placement reads it.
+SAVED_REFUSAL = "src.server.services.claude_code.saved.saved_refusal"
 
 
 # -- The choice --
@@ -112,11 +114,11 @@ async def test_where_a_turn_on_a_cloud_computer_runs_by_the_choice_and_its_switc
 
 @pytest.mark.asyncio
 async def test_a_turn_on_the_stored_token_runs_while_it_is_usable_up_to_the_users_cap():
-    with platform(stored=True, mode="stored"), patch(f"{SERVICE}.saved_refusal", AsyncMock(return_value=None)):
+    with platform(stored=True, mode="stored"), patch(SAVED_REFUSAL, AsyncMock(return_value=None)):
         assert await _admit() is None
-    with platform(stored=True, mode="stored"), patch(f"{SERVICE}.saved_refusal", AsyncMock(return_value="token_refused")):
+    with platform(stored=True, mode="stored"), patch(SAVED_REFUSAL, AsyncMock(return_value="token_refused")):
         assert (await _admit())["reason"] == "token_refused"
-    with platform(stored=True, mode="stored", live=3), patch(f"{SERVICE}.saved_refusal", AsyncMock(return_value=None)):
+    with platform(stored=True, mode="stored", live=3), patch(SAVED_REFUSAL, AsyncMock(return_value=None)):
         assert (await _admit())["reason"] == "too_many_turns"
 
 
@@ -137,7 +139,7 @@ async def test_a_paused_or_blocked_choice_refuses_the_turn_in_its_own_words(reas
 )
 async def test_a_run_paused_or_blocked_since_admission_never_starts_and_says_why(given, reason):
     with platform(**given), pytest.raises(ClaudeTurnFailed) as refused:
-        await HostedCredential("user-1", "stored_token").read()
+        await HostedCredential("user-1", "stored_token", "c-2").read()
     assert claude_code_refusal(refused.value, CODE)["reason"] == reason
 
 
@@ -145,13 +147,13 @@ async def test_a_run_paused_or_blocked_since_admission_never_starts_and_says_why
 async def test_the_run_reads_the_stored_token_as_it_starts_for_the_token_descriptor():
     row = {"access_token": TOKEN, "updated_at": "saved-at"}
     with platform(stored=True, mode="stored"), patch(f"{LAUNCHERS}.stored_row", AsyncMock(return_value=row)):
-        assert await HostedCredential("user-1", "stored_token").read() == Credential(TOKEN)
+        assert await HostedCredential("user-1", "stored_token", "c-2").read() == Credential(TOKEN)
 
 
 @pytest.mark.asyncio
 async def test_a_run_admitted_on_one_credential_never_starts_on_another_its_row_was_not_stamped_for():
     with platform(stored=True, mode="stored"), pytest.raises(ClaudeTurnFailed) as refused:
-        await HostedCredential("user-1", "api_key").read()
+        await HostedCredential("user-1", "api_key", "c-2").read()
     assert claude_code_refusal(refused.value, CODE) == {
         "message": "How Claude Code runs on cloud computers changed as this turn started. Send your message again.",
         "type": "claude_code_off", "model": CODE, "reason": "choice_changed",
@@ -162,8 +164,8 @@ async def test_a_run_admitted_on_one_credential_never_starts_on_another_its_row_
 @pytest.mark.parametrize(
     ("given", "computer", "answer", "stamp"),
     [
-        ({"stored": True, "mode": "stored"}, CLOUD, None, {**WORKER_TURN, **STORED_TURN}),
-        ({"stored": True, "mode": "api_key"}, CLOUD, None, WORKER_TURN),
+        ({"stored": True, "mode": "stored"}, CLOUD, None, {**CLOUD_TURN, **STORED_TURN}),
+        ({"stored": True, "mode": "api_key"}, CLOUD, None, CLOUD_TURN),
         ({"stored": True, "mode": "stored"}, OWN, None, STORED_TURN),
         ({"stored": True, "mode": "stored"}, OWN, SimpleNamespace(relays=True, fresh=False), STORED_TURN),
         ({"stored": True, "mode": "stored"}, OWN, SimpleNamespace(relays=False, fresh=False), {}),
@@ -174,7 +176,7 @@ async def test_a_run_admitted_on_one_credential_never_starts_on_another_its_row_
 async def test_a_run_that_may_hold_the_stored_token_is_marked_so_it_can_be_stopped(given, computer, answer, stamp):
     with (
         platform(computer=computer, **given), patch(f"{SERVICE}.read_answer", AsyncMock(return_value=answer)),
-        patch(f"{SERVICE}.saved_refusal", AsyncMock(return_value=None)),
+        patch(f"{SERVICE}.saved_refusal", AsyncMock(return_value=None)), patch(SAVED_REFUSAL, AsyncMock(return_value=None)),
     ):
         assert await _stamp() == stamp
 

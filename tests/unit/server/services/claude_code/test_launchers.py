@@ -286,8 +286,7 @@ async def test_claude_refusing_a_computers_own_token_ends_the_turn_saying_so():
 async def test_a_cloud_computers_cli_runs_in_its_sandbox_only_where_the_switch_is_on(on, monkeypatch):
     from src.server.services.claude_code import launchers
 
-    config = SimpleNamespace(sandbox_placement=on, worker_cli_slots=8)
-    monkeypatch.setattr(launchers, "get_claude_code_config", lambda: config)
+    monkeypatch.setattr(launchers, "cloud_runs_in", lambda: "sandbox" if on else "worker")
     sandbox = MagicMock()
     sandbox.working_dir = "/home/workspace"
     sandbox.wait_ready = AsyncMock()

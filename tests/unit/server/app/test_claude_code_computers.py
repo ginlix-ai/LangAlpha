@@ -237,7 +237,7 @@ async def test_with_claude_code_off_a_computer_asleep_or_out_of_reach_reads_off_
 ):
     world.rows, world.opted_in = rows, opted_in
     world.computer, world.tunnel_live = _computer(status), live
-    assert await _read(client, "/api/v1/claude-code/computers") == {"computers": [_entry("off")]}
+    assert await _read(client, "/api/v1/claude-code/computers") == {"computers": [_entry("off")], "cloud_refusals": {}}
     assert world.dialed == [] and world.machine.calls == [] and not world.cache.locks
 
 

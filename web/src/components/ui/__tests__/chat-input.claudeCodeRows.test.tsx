@@ -48,7 +48,7 @@ vi.mock('@/hooks/useAllModels', () => ({
 // hosted computer, none of the user's own.
 vi.mock('@/hooks/useClaudeCode', () => ({
   useClaudeCodeStatus: () => ({ enabled: mocks.state !== 'off', runsHere: mocks.state !== 'off', state: mocks.state }),
-  useClaudeCodeComputers: () => ({ computers: mocks.computers, isLoading: false }),
+  useClaudeCodeComputers: () => ({ computers: mocks.computers, cloudRefusals: {}, isLoading: false }),
 }));
 vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { computer_id: 'cmp-hosted' }, isPending: false }) }));
 

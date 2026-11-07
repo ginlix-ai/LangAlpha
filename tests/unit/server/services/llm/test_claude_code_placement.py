@@ -43,6 +43,7 @@ async def _admit(computer, *, backend=False, cache=None, saved=None):
     with (
         serving(cache or _Cache()),
         patch(f"{SERVICE}.rows_available", return_value=True),
+        patch(f"{SERVICE}.live_cloud_turns", new_callable=AsyncMock, return_value=0),
         patch("src.server.services.claude_code.hosted.backend_available", return_value=backend),
         patch("src.server.database.computer.get_computer_for_workspace", new_callable=AsyncMock, return_value=computer),
         patch(f"{SAVED}.stored_row", new_callable=AsyncMock, return_value={"access_token": saved} if saved else None),

@@ -467,7 +467,7 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
         </span>
         {/* Under the name itself, past the mark and its gap, and clear of the star's column. */}
         {reason && (
-          <span className={cn('pe-7 text-xs text-(--color-text-tertiary)', provider && llmProviderArt(provider) && 'ps-[1.375rem]')}>
+          <span className={cn('pe-7 text-xs text-pretty text-(--color-text-tertiary)', provider && llmProviderArt(provider) && 'ps-[1.375rem]')}>
             {reason}
           </span>
         )}

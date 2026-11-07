@@ -214,8 +214,11 @@ export function useComputerActions() {
       await queryClient.cancelQueries({ queryKey: queryKeys.computers.lists() });
       patchComputerRow(queryClient, computerId, row);
       if (row.spec_change?.state === 'in_progress') {
-        // The accepted change already holds a slot of the tier it is going to.
+        // The accepted change already holds a slot of the tier it is going to,
+        // and Claude Code refuses a computer moving below its minimum from now.
         void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.quota() });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeSetup() });
         return;
       }
       // Already at that tier: nothing was scheduled.

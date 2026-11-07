@@ -350,8 +350,9 @@ class MarketWatchConfig(BaseModel):
 
 class ClaudeCodeConfig(BaseModel):
     """Claude Code on cloud computers (the runtime's own switch is the
-    ``claude_code_runtime`` feature). The CLI of a turn on a cloud computer
-    runs in the backend worker that owns the turn."""
+    ``claude_code_runtime`` feature). With ``sandbox_placement`` the CLI of a
+    turn on a cloud computer runs inside that computer's own sandbox, and only
+    on Medium computers or larger (``hosted.SANDBOX_MIN_TIER``)."""
 
     hosted_api_key: bool = Field(
         default=False,
@@ -364,9 +365,6 @@ class ClaudeCodeConfig(BaseModel):
     sandbox_placement: bool = Field(
         default=False,
         description="Run a cloud computer's Claude Code CLI inside the computer's own sandbox, not in the worker",
-    )
-    worker_cli_slots: int = Field(
-        default=8, ge=1, description="Claude Code CLIs one worker runs at once for cloud computers"
     )
     hosted_turns_per_user: int = Field(
         default=3, ge=1, description="Claude Code turns one user runs at once on cloud computers"
