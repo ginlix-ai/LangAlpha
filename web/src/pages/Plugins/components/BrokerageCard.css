@@ -209,22 +209,7 @@
   flex: 1;
   justify-content: center;
   height: 36px;
-  /* Connect, drawn as the page's doors are. Its edge is painted inline
-     (OauthRowParts' ConnectButton, shared with rows that keep theirs), so the
-     card hands it one: none at rest in Terminal, where the brackets are the
-     door, and the shell's edge in Balanced. */
-  --connect-button-edge: var(--cs-door-edge, var(--color-border-muted));
-  border-radius: var(--cs-radius-control, var(--radius));
-  font-size: var(--cs-text-control, 0.78125rem);
-  font-weight: var(--cs-weight-control);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
 }
-.broker-card-action > button:hover { --connect-button-edge: var(--color-shell-edge, var(--color-border-muted)); }
-.broker-card-action > button:enabled:not([aria-disabled='true']):hover { background-color: var(--color-shell-fill, var(--color-bg-hover)); }
-.broker-card-action > button::before { content: var(--term-open); margin-right: 0.5ch; font-weight: 400; opacity: 0.55; }
-.broker-card-action > button::after { content: var(--term-close); margin-left: 0.5ch; font-weight: 400; opacity: 0.55; }
-:root:not([data-card-style]) .broker-card-action > button { font-family: var(--cs-face); }
 @media (max-width: 767px) {
   .broker-cards { grid-template-columns: minmax(0, 1fr); }
   .broker-card { padding: 16px; }

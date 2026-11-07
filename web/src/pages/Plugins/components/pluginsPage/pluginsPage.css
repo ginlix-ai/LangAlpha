@@ -132,6 +132,8 @@
 .pp-verbs { display: flex; flex-direction: column; gap: 8px; }
 .pp-verbs-row { display: flex; gap: 8px; }
 .pp-verbs-row > * { flex: 1; justify-content: center; }
+/* PageButton (parts.tsx) carries the button hooks, which draw it in the open
+   card styles (styles/cardStyle.css); these are its size and its Quiet look. */
 .pp-btn {
   height: 32px;
   padding: 0 12px;
@@ -139,22 +141,15 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border-radius: var(--cs-radius-control, 8px);
-  border: 1px solid var(--cs-door-edge, var(--color-border-default));
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
   background: transparent;
   color: var(--color-text-primary);
-  font-family: var(--cs-face);
-  font-size: var(--cs-text-control, 0.78125rem);
-  font-weight: var(--cs-weight-control);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
+  font-size: 0.78125rem;
   white-space: nowrap;
   cursor: pointer;
 }
-.pp-btn:hover {
-  background: var(--color-shell-fill, var(--color-bg-elevated));
-  border-color: var(--color-shell-edge, var(--color-border-default));
-}
+.pp-btn:hover { background: var(--color-bg-elevated); }
 .pp-btn:disabled { opacity: 0.5; cursor: default; }
 .pp-btn.is-primary {
   border-color: transparent;
@@ -162,14 +157,7 @@
   color: var(--color-btn-primary-text);
 }
 .pp-btn.is-primary:hover { opacity: 0.9; }
-/* A destructive door keeps a box, in the loss color, and no brackets: the
-   brackets alone made Logout read as one more neutral door. */
-.pp-btn.is-danger {
-  color: var(--color-loss);
-  border-color: var(--cs-danger-edge, var(--color-border-default));
-}
-.pp-btn:not(.is-danger)::before { content: var(--term-open); margin-right: 0.5ch; font-weight: 400; opacity: 0.55; }
-.pp-btn:not(.is-danger)::after { content: var(--term-close); margin-left: 0.5ch; font-weight: 400; opacity: 0.55; }
+.pp-btn[data-tone='danger'] { color: var(--color-loss); }
 .pp-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
 .pp-callout-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .pp-empty-line { font-size: 0.8125rem; color: var(--color-text-tertiary); }

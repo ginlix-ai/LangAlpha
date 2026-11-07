@@ -9,6 +9,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type Ref, type RefObject } from 'react';
 import { Check } from 'lucide-react';
 import { LanguageToggle } from '@/components/LanguageToggle';
+import { buttonSlot } from '@/components/ui/button-class';
 import { Loader } from '@/components/ui/loader';
 import { AnimatePresence, motion, useIsPresent, useReducedMotion, type Variants } from '@/lib/framer';
 import { DURATION, EASE_REVEAL, SPRING_INDICATOR, TWEEN } from '@/lib/motion';
@@ -356,7 +357,7 @@ export function WizardExit({ label, onClick, testId }: { label: string; onClick:
       type="button"
       onClick={onClick}
       data-testid={testId}
-      className="wizard-exit inline-flex h-8 items-center rounded-md px-2.5 text-sm text-(--color-text-secondary) [text-transform:var(--term-case)] tracking-[calc(0.06em*var(--term-track))] press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+      className="wizard-exit control-voice inline-flex h-8 items-center rounded-md px-2.5 text-sm text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       style={{ fontSize: 'var(--cs-text-control, 0.875rem)' }}
     >
       {label}
@@ -389,8 +390,7 @@ export function WizardStepHeader({ title, titleId, helper }: WizardStepHeaderPro
         ref={heading}
         id={titleId}
         tabIndex={-1}
-        className="wizard-title title-font text-balance text-2xl font-semibold leading-tight text-(--color-text-primary) outline-none sm:text-[1.875rem]"
-        style={{ fontFamily: 'var(--cs-face, var(--font-ui))', letterSpacing: 'var(--cs-title-track, -0.01em)' }}
+        className="wizard-title title-font text-balance text-2xl font-semibold leading-tight tracking-[var(--cs-title-track,-0.01em)] text-(--color-text-primary) outline-none sm:text-[1.875rem]"
       >
         {title}
       </h1>
@@ -418,12 +418,7 @@ export function WizardSection({
     <section className={cn('mt-8', className)}>
       <h2
         id={titleId}
-        className="label-voice mb-3 text-sm font-medium text-(--color-text-primary)"
-        style={{
-          color: 'var(--color-shell-label, var(--color-text-primary))',
-          fontSize: 'var(--cs-text-label, 0.875rem)',
-          fontWeight: 'var(--cs-weight-label, 500)',
-        }}
+        className="label-voice mb-3 text-[length:var(--cs-text-label,0.875rem)] font-[var(--cs-weight-label,500)] text-(--color-shell-label,var(--color-text-primary))"
       >
         {title}
         {hint && <span className="ml-2 font-normal text-(--color-text-tertiary)">{hint}</span>}
@@ -448,15 +443,10 @@ export interface WizardFooterProps {
 
 // Every footer button gives a little under a press, so a tap that lands is
 // felt before the next screen arrives; never when it is disabled, since that
-// press does nothing. Terminal sets them as bracketed words (wizard.css).
+// press does nothing. They carry the button hooks, which set them as
+// bracketed words in Terminal and pills in Balanced (styles/cardStyle.css).
 const ghost =
-  'wizard-btn is-ghost inline-flex h-10 items-center justify-center rounded-[var(--cs-radius-small,var(--radius-md))] px-3 text-sm font-medium text-(--color-text-secondary) [text-transform:var(--term-case)] tracking-[calc(0.06em*var(--term-track))] press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)';
-
-const DOOR_TYPE = {
-  fontFamily: 'var(--cs-face)',
-  fontSize: 'var(--cs-text-control, 0.875rem)',
-  fontWeight: 'var(--cs-weight-control, 500)',
-} as const;
+  'inline-flex h-10 items-center justify-center rounded-md px-3 text-sm font-medium text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)';
 
 /**
  * Back on the left, the way forward on the right, in the same place on every
@@ -473,14 +463,14 @@ export function WizardFooter({ back, skip, primary }: WizardFooterProps) {
           step has no Back), so the primary button over it does not drop. */}
       <div className="flex min-h-10 items-center justify-between sm:contents">
         {back ? (
-          <button type="button" onClick={back.onClick} className={cn(ghost, '-ml-3 sm:mr-auto')} style={DOOR_TYPE}>
+          <button type="button" onClick={back.onClick} {...buttonSlot('ghost')} className={cn(ghost, '-ml-3 sm:mr-auto')}>
             {back.label}
           </button>
         ) : (
           <span className="sm:mr-auto" />
         )}
         {skip && (
-          <button type="button" onClick={skip.onClick} className={cn(ghost, '-mr-3 sm:mr-0')} style={DOOR_TYPE}>
+          <button type="button" onClick={skip.onClick} {...buttonSlot('ghost')} className={cn(ghost, '-mr-3 sm:mr-0')}>
             {skip.label}
           </button>
         )}
@@ -491,8 +481,8 @@ export function WizardFooter({ back, skip, primary }: WizardFooterProps) {
           onClick={primary.onClick}
           disabled={disabled}
           aria-busy={primary.busy || undefined}
-          className="wizard-btn is-primary inline-flex h-11 w-full items-center justify-center rounded-[var(--cs-radius-control,var(--radius-md))] bg-(--color-btn-primary-bg) px-5 text-sm font-medium text-(--color-btn-primary-text) [text-transform:var(--term-case)] tracking-[calc(0.06em*var(--term-track))] press hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:h-10 sm:w-auto sm:min-w-[7.5rem]"
-          style={DOOR_TYPE}
+          {...buttonSlot()}
+          className="inline-flex h-11 w-full items-center justify-center rounded-md bg-(--color-btn-primary-bg) px-5 text-sm font-medium text-(--color-btn-primary-text) press hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:h-10 sm:w-auto sm:min-w-[7.5rem]"
         >
           {/* Live work: the shared glyph beside the label, never in its place. */}
           {primary.busy && (

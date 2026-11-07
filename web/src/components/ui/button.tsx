@@ -1,16 +1,16 @@
 import * as React from "react"
-import { buttonClass, type ButtonSize, type ButtonVariant } from "./button-class"
+import { buttonClass, buttonSlot, type ButtonSize, type ButtonTone, type ButtonVariant } from "./button-class"
 
 export interface ButtonProps extends React.ComponentProps<"button"> {
   variant?: ButtonVariant
   size?: ButtonSize
+  tone?: ButtonTone
 }
 
-function Button({ className, variant, size, ...props }: ButtonProps) {
+function Button({ className, variant, size, tone, ...props }: ButtonProps) {
   return (
     <button
-      data-slot="button"
-      data-variant={variant ?? "default"}
+      {...buttonSlot(variant, tone)}
       className={buttonClass({ variant, size, className })}
       {...props}
     />

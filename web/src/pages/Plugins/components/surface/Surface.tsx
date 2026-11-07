@@ -12,6 +12,7 @@ import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Check, ChevronDown, ChevronRight, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { buttonSlot } from '@/components/ui/button-class';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -339,7 +340,7 @@ export function CellAction({
 }) {
   if (to) {
     return (
-      <Link to={to} className="surface-cell-action" data-testid={testId}>
+      <Link to={to} {...buttonSlot('outline')} className="surface-cell-action" data-testid={testId}>
         {icon}
         {children}
       </Link>
@@ -348,6 +349,7 @@ export function CellAction({
   return (
     <button
       type="button"
+      {...buttonSlot('outline')}
       className="surface-cell-action"
       onClick={onClick}
       disabled={disabled}

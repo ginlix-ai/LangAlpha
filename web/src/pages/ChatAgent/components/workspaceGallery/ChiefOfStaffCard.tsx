@@ -35,6 +35,7 @@ import { threadGalleryQuery } from '../../utils/threadGalleryQuery';
 import { Kicker } from './Kicker';
 import { MachineSummary } from './MachineSummary';
 import type { WorkspaceRecord } from './types';
+import { buttonSlot, doorSlot } from '@/components/ui/button-class';
 
 const RECENT_COUNT = 3;
 const STARTERS = ['workspace.cosStarter1', 'workspace.cosStarter2', 'workspace.cosStarter3'] as const;
@@ -155,8 +156,7 @@ export function ChiefOfStaffCard({
               data-testid="chief-of-staff-new-thread"
               disabled={!homeId}
               onClick={() => newThread()}
-              data-slot="button"
-              data-variant="default"
+              {...buttonSlot()}
               className="flex h-8 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium press hover:opacity-90 disabled:cursor-progress"
               style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
             >
@@ -170,7 +170,7 @@ export function ChiefOfStaffCard({
                 type="button"
                 data-testid="chief-of-staff-threads"
                 onClick={openThreads}
-                data-slot="door"
+                {...doorSlot()}
                 className="group flex items-center gap-1 text-sm text-(--color-text-secondary) transition-colors hover:text-(--color-text-primary)"
               >
                 {t('workspace.cosAllThreads')}

@@ -122,6 +122,8 @@
 }
 .connector-mono { font-family: var(--font-mono); font-size: 0.71875rem; }
 
+/* Carries the button hooks, which draw it in the open card styles
+   (styles/cardStyle.css); these are its size and its Quiet look. */
 .connector-btn {
   height: 30px;
   padding: 0 12px;
@@ -129,23 +131,16 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border-radius: var(--cs-radius-control, 8px);
-  border: 1px solid var(--cs-door-edge, var(--color-border-default));
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
   background: transparent;
   color: var(--color-text-primary);
-  font-family: var(--cs-face);
-  font-size: var(--cs-text-control, 0.78125rem);
-  font-weight: var(--cs-weight-control);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
+  font-size: 0.78125rem;
   white-space: nowrap;
   cursor: pointer;
   transition: background-color var(--motion-quick) var(--ease-out);
 }
-.connector-btn:hover {
-  background: var(--color-shell-fill, var(--color-bg-hover));
-  border-color: var(--color-shell-edge, var(--color-border-default));
-}
+.connector-btn:hover { background: var(--color-bg-hover); }
 .connector-btn:disabled { opacity: 0.5; cursor: default; }
 .connector-btn.is-primary {
   border-color: transparent;
@@ -153,13 +148,7 @@
   color: var(--color-btn-primary-text);
 }
 .connector-btn.is-primary:hover { opacity: 0.9; }
-/* A destructive door keeps a box in the loss color, and no brackets. */
-.connector-btn.is-danger {
-  color: var(--color-loss);
-  border-color: var(--cs-danger-edge, var(--color-border-default));
-}
-.connector-btn:not(.is-danger)::before { content: var(--term-open); margin-right: 0.5ch; font-weight: 400; opacity: 0.55; }
-.connector-btn:not(.is-danger)::after { content: var(--term-close); margin-left: 0.5ch; font-weight: 400; opacity: 0.55; }
+.connector-btn[data-tone='danger'] { color: var(--color-loss); }
 .connector-btn.is-full { width: 100%; }
 .connector-verbs-row { display: flex; gap: 8px; }
 .connector-verbs-row > .connector-btn { flex: 1; }

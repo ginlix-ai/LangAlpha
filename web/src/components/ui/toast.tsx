@@ -4,6 +4,7 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { aboveDialogs } from "@/hooks/useDialogA11y"
+import { buttonSlot } from "./button-class"
 
 const ToastProvider = ToastPrimitives.Provider
 
@@ -63,8 +64,7 @@ function ToastAction({
 }: React.ComponentProps<typeof ToastPrimitives.Action>) {
   return (
     <ToastPrimitives.Action
-      data-slot="button"
-      data-variant="default"
+      {...buttonSlot()}
       className={cn(
         "press inline-flex h-7 shrink-0 items-center justify-center rounded-md bg-(--color-btn-primary-bg) px-2.5 text-[13px] font-medium text-(--color-btn-primary-text) hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-(--color-bg-elevated) disabled:pointer-events-none disabled:opacity-50",
         className

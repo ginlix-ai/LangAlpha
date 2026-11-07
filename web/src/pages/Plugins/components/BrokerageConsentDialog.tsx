@@ -5,6 +5,7 @@ import { EnabledToggle } from '@/components/mcp/McpPrimitives';
 import { defaultGrant, grantInForce, toggleGrant, type Brokerage } from '../brokerages';
 import { PluginDialog } from './PluginDialog';
 import { RowNote } from './RowNote';
+import { buttonSlot } from '@/components/ui/button-class';
 
 /**
  * What a brokerage connection may do, answered before the vendor is reached.
@@ -70,8 +71,7 @@ export function BrokerageConsentDialog({
           dialog open with no way out but the escape key. */}
       <button
         type="button"
-        data-slot="button"
-        data-variant="ghost"
+        {...buttonSlot('ghost')}
         onClick={onCancel}
         className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
         style={{ color: 'var(--color-text-tertiary)' }}
@@ -81,8 +81,7 @@ export function BrokerageConsentDialog({
       <button
         type="button"
         onClick={() => onConfirm(granted)}
-        data-slot="button"
-        data-variant="default"
+        {...buttonSlot()}
         disabled={pending}
         className="px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"
         style={{

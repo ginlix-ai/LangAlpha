@@ -6,6 +6,7 @@ import { PresenceFold } from '@/components/ui/Disclosure';
 import { Loader } from '@/components/ui/loader';
 import { SPRING_INDICATOR, TWEEN } from '@/lib/motion';
 import { cn } from '@/lib/utils';
+import { buttonSlot } from '@/components/ui/button-class';
 
 /**
  * Shared building blocks for the list surfaces: the Plugins page, the
@@ -343,8 +344,7 @@ export function HeaderButton({
   return (
     <button
       type="button"
-      data-slot="button"
-      data-variant={variant === 'primary' ? 'default' : variant === 'secondary' ? 'outline' : 'ghost'}
+      {...buttonSlot(variant === 'primary' ? 'default' : variant === 'secondary' ? 'outline' : 'ghost')}
       className={cn(
         // Every variant takes the secondary's 1px edge, unpainted where it
         // draws none, so mixed variants in one row stand the same height.

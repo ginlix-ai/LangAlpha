@@ -1,4 +1,5 @@
 import { Fragment, useId, type ReactNode } from 'react';
+import { buttonSlot } from '@/components/ui/button-class';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Pencil } from 'lucide-react';
 import { EnabledToggle } from '@/components/mcp/McpPrimitives';
@@ -195,6 +196,7 @@ export function ServerDetail({
     onEdit && (
       <button
         type="button"
+        {...buttonSlot(primary ? 'default' : 'outline')}
         className={primary ? 'connector-btn is-primary' : 'connector-btn'}
         onClick={onEdit}
       >

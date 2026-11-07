@@ -159,7 +159,7 @@ export function InvestingProfilePanel() {
             variant="outline"
             size="sm"
             className="h-8 gap-1.5"
-            data-tone="danger"
+            tone="danger"
             style={{ color: 'var(--color-loss)' }}
             onClick={() => setShowResetConfirm(true)}
           >

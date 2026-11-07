@@ -68,7 +68,7 @@ export function ManageSheet({
         <SubscriptionFlow provider={subscription} onConnected={done} onCancel={needsReauth ? undefined : done} />
         {needsReauth && (
           <div className="border-t pt-4" style={{ borderColor: 'var(--color-border-muted)' }}>
-            <Button type="button" variant="ghost" size="sm" data-tone="danger" onClick={onRemove} style={{ color: 'var(--color-loss)' }}>
+            <Button type="button" variant="ghost" size="sm" tone="danger" onClick={onRemove} style={{ color: 'var(--color-loss)' }}>
               {t('modelAccess.remove.disconnect')}
             </Button>
           </div>
@@ -115,7 +115,7 @@ export function ManageSheet({
 
       <div className="flex flex-wrap items-center gap-2 border-t pt-4" style={{ borderColor: 'var(--color-border-muted)' }}>
         {removable && (
-          <Button type="button" variant="ghost" size="sm" data-tone="danger" onClick={onRemove} style={{ color: 'var(--color-loss)' }}>
+          <Button type="button" variant="ghost" size="sm" tone="danger" onClick={onRemove} style={{ color: 'var(--color-loss)' }}>
             {subscription ? t('modelAccess.remove.disconnect') : t('modelAccess.remove.remove')}
           </Button>
         )}

@@ -1,31 +1,7 @@
 /* The news page. The story keeps the reply's face in every style; the frame
    around it reads the card styles (styles/cardStyle.css): open boxes, a
-   card's dividers, and in Terminal bracketed doors and tags. */
-
-/* Doors: Back, and the link to the story. */
-.news-page-back {
-  border: 1px solid var(--cs-door-edge, var(--color-border-default));
-  border-radius: var(--cs-radius-control, calc(var(--radius) - 2px));
-  background-color: var(--color-shell-fill, var(--color-bg-card));
-  font-family: var(--cs-face);
-}
-.news-page-back:hover { border-color: var(--color-shell-edge, var(--color-border-default)); }
-.news-page-read {
-  border-radius: var(--cs-radius-control, calc(var(--radius) - 2px));
-  font-family: var(--cs-face);
-}
-:is(.news-page-back, .news-page-read) {
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
-}
-:is(.news-page-back, .news-page-read)::before { content: var(--term-open); margin-right: 0.5ch; font-weight: 400; opacity: 0.55; }
-:is(.news-page-back, .news-page-read)::after { content: var(--term-close); margin-left: 0.5ch; font-weight: 400; opacity: 0.55; }
-:root:not([data-card-style]) :is(.news-page-back, .news-page-read) {
-  font-size: var(--cs-text-control);
-  font-weight: var(--cs-weight-control);
-}
-/* Back's arrow gives way to the brackets. */
-:root:not([data-card-style]) .news-page-back > svg { display: none; }
+   card's dividers, and in Terminal bracketed tags. Back and the link to the
+   story carry the button hooks. */
 
 :root:not([data-card-style]) .news-page-title { font-size: 1.375rem; }
 .news-page-title {

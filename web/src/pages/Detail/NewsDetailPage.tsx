@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { buttonSlot, doorSlot } from '@/components/ui/button-class';
 import { useScrollMemory } from '@/lib/scrollMemory';
 import { getNewsArticle } from '../Dashboard/utils/api';
 import { useLocale } from '@/hooks/useLocale';
@@ -113,7 +114,8 @@ function NewsArticleView() {
       {/* Back button */}
       <button
         onClick={handleBack}
-        className="news-page-back flex items-center gap-2 self-start px-3 py-1.5 cursor-pointer transition-colors"
+        {...doorSlot('outline')}
+        className="news-page-back flex items-center gap-2 self-start rounded-md border border-(--color-border-default) bg-(--color-bg-card) px-3 py-1.5 cursor-pointer transition-colors"
         style={{ color: 'var(--color-text-primary)' }}
       >
         <ArrowLeft className="w-4 h-4" />
@@ -235,7 +237,8 @@ function NewsArticleView() {
             href={article.article_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="news-page-read inline-flex items-center gap-2 px-4 py-2 text-sm font-medium transition-opacity hover:opacity-90"
+            {...buttonSlot()}
+            className="news-page-read inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-opacity hover:opacity-90"
             style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
             Read Full Article

@@ -14,6 +14,7 @@ import { SceneStage } from './introScenes/SceneStage';
 import { useIntro } from './loadIntro';
 import type { PageIntroDef } from '../registry';
 import './pageIntro.css';
+import { buttonSlot } from '@/components/ui/button-class';
 
 // The intro is a story told a page at a time, so a page turns out and then in
 // rather than crossfading: what arrives waits for what leaves to be gone, and
@@ -152,8 +153,7 @@ export function PageIntroModal({
                   <button
                     type="button"
                     onClick={() => goTo(stepIdx - 1)}
-                    data-slot="button"
-                    data-variant="ghost"
+                    {...buttonSlot('ghost')}
                     className="rounded-lg px-3.5 py-2 text-sm font-medium transition-colors hover:bg-(--color-bg-subtle) focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     style={{ color: 'var(--color-text-secondary)' }}
                   >
@@ -163,8 +163,7 @@ export function PageIntroModal({
                 <button
                   ref={primaryRef}
                   type="button"
-                  data-slot="button"
-                  data-variant="default"
+                  {...buttonSlot()}
                   onClick={() => (isLast ? onClose() : goTo(stepIdx + 1))}
                   className="rounded-lg px-5 py-2 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   // The neutral primary pair, as every button takes: amber

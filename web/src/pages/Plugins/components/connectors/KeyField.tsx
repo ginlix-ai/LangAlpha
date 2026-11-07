@@ -1,6 +1,7 @@
 import { useId, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
+import { buttonSlot } from '@/components/ui/button-class';
 import { useCreateUserVaultSecret, useUpdateUserVaultSecret } from '@/hooks/useUserVault';
 import { MAX_SECRET_VALUE_LENGTH } from '@/lib/secretNames';
 import { formatApiErrorDetail } from '@/pages/ChatAgent/utils/api';
@@ -88,6 +89,7 @@ export function KeyField({
         />
         <button
           type="submit"
+          {...buttonSlot()}
           className="connector-btn is-primary"
           disabled={saving || !value.trim()}
         >

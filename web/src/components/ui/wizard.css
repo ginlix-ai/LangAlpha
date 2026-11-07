@@ -42,21 +42,3 @@ html.desktop-mac .wizard-topbar {
 :root:not([data-card-style]) .wizard-title {
   font-size: 1.5rem;
 }
-
-/* The footer's buttons as bracketed words (Terminal). The outlined ones shed
-   their wash there too: the brackets are the door. */
-.wizard-btn::before {
-  content: var(--term-open);
-  margin-right: 0.5ch;
-  font-weight: 400;
-  opacity: 0.55;
-}
-.wizard-btn::after {
-  content: var(--term-close);
-  margin-left: 0.5ch;
-  font-weight: 400;
-  opacity: 0.55;
-}
-:root:not([data-card-style]) .wizard-btn.is-ghost {
-  background: transparent;
-}

@@ -85,10 +85,6 @@
      card is. Frame shadows are the ones Balanced drops too. */
   --cs-float-shadow: none;
   --cs-frame-shadow: none;
-  /* A page's outlined door sheds its edge: the brackets are the door. A
-     destructive one keeps a box in the loss color. */
-  --cs-door-edge: transparent;
-  --cs-danger-edge: color-mix(in srgb, var(--color-loss) 45%, transparent);
   /* The composer squared, and the todo tab and the rows above it on its
      corner. */
   --cs-composer-radius: 6px;
@@ -108,8 +104,6 @@
   --cs-radius-choice: 12px;
   --cs-radius-float: 10px;
   --cs-rule-style: solid;
-  --cs-door-edge: var(--color-shell-edge, transparent);
-  --cs-danger-edge: color-mix(in srgb, var(--color-loss) 40%, transparent);
   /* The tooltip and the phone sheets lie flat; menus and dialogs keep
      their shadow. */
   --cs-frame-shadow: none;
@@ -122,12 +116,14 @@
   --cs-composer-row-pad: 14px;
 }
 
-/* Both open styles: a workspace card's corner, and the selected row of a
-   list (the sidebar, a rail) said by full ink rather than a wash. The send
-   button stays centred in its row, where the composer's own is set into its
-   corner (chat-input.composerParts). */
+/* Both open styles: a workspace card's corner, the selected row of a list
+   (the sidebar, a rail) said by full ink rather than a wash, and the box a
+   destructive button keeps among words and pills. The send button stays
+   centred in its row, where the composer's own is set into its corner
+   (chat-input.composerParts). */
 :root:not([data-card-style='quiet']) {
   --cs-radius-card: 8px;
+  --cs-danger-edge: color-mix(in srgb, var(--color-loss) 50%, transparent);
   --cs-weight-selected: 700;
   --cs-composer-send-align: auto;
   --cs-composer-send-shift: none;
@@ -145,6 +141,13 @@
   letter-spacing: calc(0.08em * var(--term-track));
 }
 
+/* A control's words in the voice, for a control the button hooks do not
+   draw (a text button, a toned action): its case and tracking, not its face. */
+@utility control-voice {
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+
 /* The shell's face on the app's roots, the setup wizard (drawn outside the
    app) and the portals they open. Scoped rather than read unconditionally:
    an `unset` face in Quiet would outrank a family a portal's consumer gives
@@ -155,12 +158,13 @@
 :root:not([data-card-style]) :is(.app-layout, .pf-shell, .wizard-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
   font-variant-numeric: tabular-nums;
 }
-/* Display titles inside the app take the shell's face; a portal's keep the
-   UI face. Terminal sets them untracked; Balanced keeps .title-font's own. */
-:root:not([data-card-style='quiet']) :is(.app-layout, .pf-shell) .title-font {
+/* Display titles inside the app and a wizard's steps take the shell's face;
+   a portal's, and the wizard's wordmark, keep the UI face. Terminal sets them
+   untracked; Balanced keeps the title's own tracking. */
+:root:not([data-card-style='quiet']) :is(.app-layout, .pf-shell, .wizard-step) .title-font {
   font-family: var(--cs-face);
 }
-:root:not([data-card-style]) :is(.app-layout, .pf-shell) .title-font {
+:root:not([data-card-style]) :is(.app-layout, .pf-shell, .wizard-step) .title-font {
   letter-spacing: 0;
 }
 
@@ -198,7 +202,7 @@
    What a component paints inline reads the roles in the component. */
 
 /* Buttons: bracketed words (Terminal), pills (Balanced). */
-:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'], .cwm-btn-create, .cwm-btn-cancel) {
+:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door']) {
   font-family: var(--cs-face);
   font-size: var(--cs-text-control);
   font-weight: var(--cs-weight-control);
@@ -206,16 +210,16 @@
   letter-spacing: calc(0.06em * var(--term-track));
   border-radius: var(--cs-radius-control);
 }
-:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'], .cwm-btn-create, .cwm-btn-cancel) > span {
+:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door']) > span {
   font-size: inherit;
 }
-:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'], .cwm-btn-create, .cwm-btn-cancel)::before {
+:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'])::before {
   content: var(--term-open);
   margin-right: 0.5ch;
   font-weight: 400;
   opacity: 0.55;
 }
-:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'], .cwm-btn-create, .cwm-btn-cancel)::after {
+:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'])::after {
   content: var(--term-close);
   margin-left: 0.5ch;
   font-weight: 400;
@@ -233,31 +237,32 @@
     transform: none;
   }
 }
-/* A door with its own trailing glyph keeps the bracket outside it. */
+/* A door's own arrow or chevron gives way to the brackets. */
 :root:not([data-card-style]) [data-slot='door'] > svg { display: none; }
-/* Outline and ghost buttons are words alone, on hover too. */
-:root:not([data-card-style]) :is([data-slot='button']:is([data-variant='outline'], [data-variant='ghost']), .cwm-btn-cancel) {
+/* Outline and ghost buttons are words alone, on hover too. A door with a
+   variant is drawn as that button; one without is words alone anyway. */
+:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door']):is([data-variant='outline'], [data-variant='ghost']) {
   background: var(--color-shell-fill, transparent);
   border-color: transparent;
   padding-inline: 0.25rem;
 }
-:root[data-card-style='balanced'] :is([data-slot='button'], .cwm-btn-create, .cwm-btn-cancel) {
+:root[data-card-style='balanced'] :is([data-slot='button'], [data-slot='door']:where([data-variant])) {
   border-radius: var(--cs-radius-control);
 }
-:root[data-card-style='balanced'] :is([data-slot='button'][data-variant='outline'], .cwm-btn-cancel) {
+:root[data-card-style='balanced'] :is([data-slot='button'], [data-slot='door'])[data-variant='outline'] {
   background: var(--color-shell-fill, transparent);
   border: 1px solid var(--color-shell-edge, var(--color-border-muted));
 }
-/* A destructive action (Log out) keeps a box in the loss color, so it is
-   still the one to stop at among words. After the two rules above, which it
-   ties on specificity. */
+/* A destructive action (Log out, Delete) keeps a box in the loss color, so
+   it is still the one to stop at among words. After the two rules above,
+   which it ties on specificity. */
 :root:not([data-card-style]) [data-slot='button'][data-tone='danger'] {
   color: var(--color-loss);
-  border: 1px solid color-mix(in srgb, var(--color-loss) 50%, transparent);
+  border: 1px solid var(--cs-danger-edge);
   padding-inline: 0.625rem;
 }
 :root[data-card-style='balanced'] [data-slot='button'][data-tone='danger'] {
-  border-color: color-mix(in srgb, var(--color-loss) 50%, transparent);
+  border-color: var(--cs-danger-edge);
 }
 :root:not([data-card-style='quiet']) [data-slot='button'][data-tone='danger']:hover {
   background: var(--color-loss-soft);
@@ -269,20 +274,20 @@
 
 /* Fields: open boxes. The edge is left to the focused-field rule
    (tokens.css) while the field has focus. */
-:root:not([data-card-style='quiet']) :is([data-slot='input'], .cwm-textarea) {
+:root:not([data-card-style='quiet']) [data-slot='input'] {
   background: var(--color-shell-fill, var(--color-bg-card));
   border: 1px solid var(--color-shell-edge, var(--color-border-muted));
   border-radius: var(--cs-radius-field);
   box-shadow: none;
 }
-:root:not([data-card-style]) :is([data-slot='input'], .cwm-textarea) {
+:root:not([data-card-style]) [data-slot='input'] {
   font-family: var(--cs-face);
   font-size: var(--cs-text-field);
 }
-:root:not([data-card-style]) :is([data-slot='input'], .cwm-textarea) :is(input, span) {
+:root:not([data-card-style]) [data-slot='input'] :is(input, span) {
   font-size: var(--cs-text-field);
 }
-:root:not([data-card-style]) :is([data-slot='input'], .cwm-textarea)::placeholder,
+:root:not([data-card-style]) [data-slot='input']::placeholder,
 :root:not([data-card-style]) [data-slot='input'] input::placeholder {
   text-transform: var(--term-case);
   letter-spacing: calc(0.04em * var(--term-track));

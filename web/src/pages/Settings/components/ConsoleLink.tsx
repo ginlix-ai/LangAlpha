@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { ArrowUpRight, ChevronRight } from 'lucide-react';
-import { buttonClass } from '@/components/ui/button-class';
+import { buttonClass, buttonSlot } from '@/components/ui/button-class';
 import { consoleUrl } from '@/config/supportLinks';
 import { isDesktopShell } from '@/lib/desktop';
 
@@ -19,8 +19,7 @@ export function ConsoleLink({ path, children }: { path: string; children: ReactN
     <a
       // A link drawn as a button takes the button's hooks, so the card styles
       // draw it as the buttons beside it.
-      data-slot="button"
-      data-variant="outline"
+      {...buttonSlot('outline')}
       href={href}
       {...(newTab && { target: '_blank', rel: 'noopener noreferrer' })}
       className={buttonClass({ variant: 'outline', size: 'sm', className: 'h-8 shrink-0 gap-1.5' })}

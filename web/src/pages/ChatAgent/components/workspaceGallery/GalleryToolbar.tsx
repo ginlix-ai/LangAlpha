@@ -35,6 +35,7 @@ import { prefetchComputerProviders } from '../../hooks/useComputers';
 import { prefetchTierQuota } from '../../hooks/useTierQuota';
 import { ComputerChip } from './ComputerChip';
 import { DiskPercent } from './DiskPercent';
+import { buttonSlot } from '@/components/ui/button-class';
 
 export type GallerySort = 'activity' | 'name' | 'custom';
 
@@ -113,8 +114,7 @@ export function GalleryToolbar({ search, onSearchChange, computerControl, sortBy
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            data-slot="button"
-            data-variant="outline"
+            {...buttonSlot('outline')}
             className={cn(CONTROL, 'shrink-0')}
             style={CONTROL_STYLE}
             aria-label={`${t('workspace.sortBy')}: ${sortLabels[sortBy]}`}

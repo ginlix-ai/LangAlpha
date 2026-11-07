@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { buttonSlot } from '@/components/ui/button-class';
 import type { TFunction } from 'i18next';
 import { Link } from 'react-router';
 import { Receipt, Trash2 } from 'lucide-react';
@@ -60,7 +61,7 @@ export function serverDetailVerbs(
   }
   if (owned && plugin) {
     verbs.push(
-      <button key="plugin" type="button" className="connector-btn is-full" onClick={() => onOpenPlugin(plugin)}>
+      <button key="plugin" type="button" {...buttonSlot('outline')} className="connector-btn is-full" onClick={() => onOpenPlugin(plugin)}>
         {t('plugins.connectorsPage.openPluginButton', { plugin })}
       </button>,
       <p key="owned" className="connector-aside-note" style={{ marginTop: 0 }}>
@@ -74,7 +75,7 @@ export function serverDetailVerbs(
       <div key="edit" className="connector-verbs-row">
         {edit}
         {remove && (
-          <button type="button" className="connector-btn is-danger" onClick={onRemove}>
+          <button type="button" {...buttonSlot('outline', 'danger')} className="connector-btn" onClick={onRemove}>
             <Trash2 className="h-3.5 w-3.5" />
             {t('plugins.connectorsPage.remove')}
           </button>

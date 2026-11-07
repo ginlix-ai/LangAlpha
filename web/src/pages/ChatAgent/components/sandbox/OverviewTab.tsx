@@ -19,11 +19,11 @@ const SBX_BOX = {
   backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))',
   border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
 } as const;
-// The actions are doors: Terminal's words, Balanced's pills. Stop and Start
-// keep their own edge.
+// The actions are boxed in every style, Stop and Start in their own tone, so
+// they keep their edge where the button hooks would shed it: Balanced's pills,
+// Terminal's type without the brackets.
 const ACTION_CLASS =
-  'text-xs rounded-[var(--cs-radius-control,var(--radius-md))] transition-colors hover:bg-foreground/10 ' +
-  '[text-transform:var(--term-case)] [letter-spacing:calc(0.06em*var(--term-track))]';
+  'control-voice text-xs rounded-[var(--cs-radius-control,var(--radius-md))] transition-colors hover:bg-foreground/10';
 const ACTION_TYPE = { fontSize: 'var(--cs-text-control, 0.75rem)', fontWeight: 'var(--cs-weight-control)' } as const;
 const ACTION_EDGE = '1px solid var(--color-shell-edge, var(--color-border-muted))';
 
@@ -184,7 +184,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
         </div>
         <div className="flex items-center gap-2">
           {stats.auto_stop_interval != null && (
-            <span className="pf-sbx-chip text-xs px-2 py-1 rounded [text-transform:var(--term-case)] [letter-spacing:calc(0.06em*var(--term-track))]" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))' }}>
+            <span className="pf-sbx-chip control-voice text-xs px-2 py-1 rounded" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))' }}>
               {/* 0 disables auto-stop entirely, so rendering "0m" states the opposite */}
               {stats.auto_stop_interval === 0
                 ? t('computer.alwaysOn')

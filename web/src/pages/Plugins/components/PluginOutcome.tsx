@@ -9,6 +9,7 @@ import {
 } from '@/pages/ChatAgent/utils/api';
 import { PluginDialog } from './PluginDialog';
 import { PluginReportStep } from './PluginReportStep';
+import { buttonSlot } from '@/components/ui/button-class';
 
 /**
  * The tail of every install-shaped response: the report. Install and update
@@ -161,8 +162,7 @@ export function usePluginOutcome(
       <div className="flex justify-end gap-2">
         <button
           type="button"
-          data-slot="button"
-          data-variant={onOpenPlugin ? 'ghost' : 'default'}
+          {...buttonSlot(onOpenPlugin ? 'ghost' : 'default')}
           onClick={onDone}
           disabled={upgrading}
           className={
@@ -178,8 +178,7 @@ export function usePluginOutcome(
           <button
             type="button"
             onClick={() => onOpenPlugin(result.plugin.name)}
-            data-slot="button"
-            data-variant="default"
+            {...buttonSlot()}
             disabled={upgrading}
             className="px-3 py-1.5 text-xs rounded-md disabled:opacity-50"
             style={primary}
