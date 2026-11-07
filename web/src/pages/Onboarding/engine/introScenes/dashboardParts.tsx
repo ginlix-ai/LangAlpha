@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import {
   GripVertical,
   HelpCircle,
@@ -8,7 +8,7 @@ import {
   Search,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getCardStyle, type CardStyle } from '@/lib/cardStyle';
+import { useCardStyle, type CardStyle } from '@/lib/cardStyle';
 import { cn } from '@/lib/utils';
 // The dashboard's own card stylesheets, so the drawing's widgets are its
 // cards (TermCard brings the chat's two with it).
@@ -371,11 +371,8 @@ export function Real({ className, children }: { className?: string; children: Re
     Pointer targets on a row add it. */
 const ROW_SHIFT: Record<CardStyle, number> = { balanced: 0, terminal: -2, quiet: 9.5 };
 
-/** The reader's card style, read once: it is set in Settings, never while
-    an intro plays. */
 export function useRowShift(): number {
-  const [style] = useState(getCardStyle);
-  return ROW_SHIFT[style];
+  return ROW_SHIFT[useCardStyle()];
 }
 
 /**

@@ -9,8 +9,8 @@
    (`term-code`) stay mono. It also turns
    tags into pills and every dashed or dotted rule into a solid hairline. Quiet
    is Balanced in the platform's own card: filled, the title inside, on the
-   warm grays the rest of the app uses (mapped in styles/tokens.css, since
-   the shell reads the card inks too). */
+   warm grays the rest of the app uses (mapped in styles/cardStyle.css,
+   since the shell reads the card inks too). */
 
 /* ── The text face's own sizes ── */
 
@@ -85,7 +85,7 @@
 
 /* ── Quiet: the platform's card ── */
 
-/* Quiet's inks and edges, the platform's grays, are tokens.css's. */
+/* Quiet's inks and edges, the platform's grays, are styles/cardStyle.css's. */
 /* The fill is the joint's too, so a run's later card covers the one above's
    foot in the card's own color. */
 :root[data-card-style='quiet'] .term-card {

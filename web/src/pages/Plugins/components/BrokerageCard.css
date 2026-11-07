@@ -162,7 +162,7 @@
 :root:not([data-card-style]) .broker-cap {
   padding-inline: 0;
   border-radius: 0;
-  font-family: var(--cs-face);
+  font-family: var(--font-mono);
 }
 .broker-cap-glyph { width: 12px; height: 12px; flex-shrink: 0; }
 .broker-cap.is-money { color: var(--color-text-primary); }

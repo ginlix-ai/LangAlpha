@@ -18,6 +18,7 @@ import type { FileSelection } from './useFileSelection';
 import type { FileBackup } from './useFileBackup';
 import type { PreviewEntry } from './usePreviews';
 import './TreeColumn.css';
+import './portChip.css';
 
 export interface TreeColumnProps {
   /** The three models the column is a view of. */

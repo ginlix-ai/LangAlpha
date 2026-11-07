@@ -34,15 +34,17 @@ export function ToggleSwitch({ checked, onChange, disabled, className, ariaLabel
       disabled={disabled}
       // Off, the open card styles draw it as an open box with an inked thumb,
       // as every other open control is: an elevated fill on a white page was
-      // a near-white track under a white thumb. On, they draw the fill alone
-      // (styles/cardStyle.css), so that edge is a class rather than inline.
+      // a near-white track under a white thumb. On, they draw the fill alone,
+      // its edge as clear as their fill is.
       className={cn(
-        'tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-[var(--cs-radius-small,9999px)] border-2 border-(--color-border-muted) transition-colors',
+        'tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-[var(--cs-radius-small,9999px)] border-2 transition-colors',
         className,
       )}
       style={{
         backgroundColor: checked ? 'var(--color-accent-primary)' : 'var(--color-shell-fill, var(--color-bg-elevated))',
-        borderColor: checked ? undefined : 'var(--color-shell-edge, var(--color-border-muted))',
+        borderColor: checked
+          ? 'var(--color-shell-fill, var(--color-border-muted))'
+          : 'var(--color-shell-edge, var(--color-border-muted))',
       }}
     >
       <span

@@ -537,7 +537,7 @@
 /* Terminal draws the mark as an outline, a picture's dark ground included. */
 :root:not([data-card-style]) .widget-deck-card-thumb {
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-shell-edge, var(--color-border-muted));
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 
 .widget-deck-card-thumb-img {

@@ -541,7 +541,7 @@
 :root:not([data-card-style]) .compact-menu-divider {
   height: 0;
   background: none;
-  border-top: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-default));
+  border-top: 1px dashed var(--color-shell-edge);
 }
 .compact-menu-view-grid { grid-template-columns: repeat(3, 1fr); }
 
@@ -630,7 +630,7 @@
 .range-btn-active::after { opacity: 0.6; }
 :root:not([data-card-style]) .range-btn {
   padding-inline: 0.25rem;
-  text-transform: var(--term-case);
+  text-transform: uppercase;
   color: var(--color-term-text-tertiary);
 }
 :root:not([data-card-style]) .range-btn-active { color: var(--color-term-text); }

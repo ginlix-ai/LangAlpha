@@ -6,55 +6,47 @@
      Balanced          :root[data-card-style='balanced']
      open styles (T+B) :root:not([data-card-style='quiet'])
 
-   A component reads a style variable with its own value as the fallback,
+   Every style's values are here, one block per style and a light block where
+   the theme changes them; tokens.css holds the themes alone. A component
+   reads a style variable with its own value as the fallback,
    `var(--cs-text-label, 0.75rem)`, and a style declares a variable only where
-   it changes that role. So Quiet declares nothing and draws each component
-   as the component itself says. Two facts make this work:
+   it changes that role. So Quiet declares almost nothing (the voice, and the
+   data cards' inks on the platform's grays) and draws each component as the
+   component itself says. Two facts make this work:
    - An undeclared custom property makes var() take its fallback.
    - A custom property that references an undeclared one is itself invalid,
      so a reader's fallback further down still applies.
-   Terminal's values must never go on bare :root, or the other two would
-   inherit them. Where a component has no value of its own for a role (the
-   Orders title's face), the read has no fallback either: Quiet's computes to
-   `unset`, which for an inherited property is "as the parent has it".
-
-   The color roles live in tokens.css (the shell block), declared for the
-   open styles only, beside Quiet's mapping of the cards' inks onto the
-   platform's grays. */
+   A read with no fallback where its variable is undeclared computes to
+   `unset`, and still wins the cascade over every lower rule, so a read
+   outside a rule scoped to the styles that declare it always names one
+   (styles/__tests__/styleVariables.test.ts). Inside such a rule a value that
+   cannot vary there is written as itself, not read. */
 
 /* ════════════════════════════════════════════════════════════════════
-   The voice
+   The styles
    ════════════════════════════════════════════════════════════════════ */
 
-/* The words' case and tracking (a multiplier on each rule's own), their face,
-   and the brackets around a tag, a state or a door. Terminal's by default,
-   which the data cards (charts/termCard.css) and the dashboard read too;
-   Balanced and Quiet move the words to the text face in sentence case,
-   untracked and out of brackets. */
-:root {
+/* The voice, in every style: the words' case and tracking (a multiplier on
+   each rule's own), their face, and the brackets around a tag, a state or a
+   door. The data cards (charts/termCard.css) and the dashboard read it as
+   well as the shell. Balanced and Quiet move the words to the text face in
+   sentence case, untracked and out of brackets, and outline their pills and
+   the range track in the muted ink (--term-mark), so they read on the page
+   and on Quiet's filled card alike.
+
+   The shell's color roles, --color-shell-*, are the open styles' alone: they
+   draw the shell as the data cards are drawn, unfilled and held by an edge.
+   Canvas painters must not read them. Dark draws the edges as the cards do;
+   light keeps the slate on the data cards alone, the shell's edge an
+   untinted gray, and wins over dark on specificity rather than on order. */
+
+/* Terminal: the shell in mono, on its own type scale. */
+:root:not([data-card-style]) {
   --term-case: uppercase;
   --term-track: 1;
   --term-words: var(--font-mono);
   --term-open: '[';
   --term-close: ']';
-}
-:root:is([data-card-style='balanced'], [data-card-style='quiet']) {
-  --term-case: none;
-  --term-track: 0;
-  --term-words: var(--font-content);
-  --term-open: none;
-  --term-close: none;
-  /* Pill outlines and the range track: drawn from the muted ink, so they read
-     on the page and on Quiet's filled card alike. */
-  --term-mark: color-mix(in srgb, var(--color-term-text-tertiary) 35%, transparent);
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   Face, type and lines, per style
-   ════════════════════════════════════════════════════════════════════ */
-
-/* Terminal: the shell in mono, on its own type scale. */
-:root:not([data-card-style]) {
   --cs-face: var(--font-mono);
   --cs-title-track: 0;
   --cs-text-title: 1.25rem;
@@ -66,16 +58,21 @@
   --cs-text-label: 0.6875rem;
   --cs-weight-control: 600;
   /* Kickers and group labels, heavier in mono, and the picked one of a row
-     of words (a filter, a tab, an interval) said by weight. */
+     of words (a filter, a tab, an interval) said by weight; the selected row
+     of a list (the sidebar, a rail) is said by full ink and weight rather
+     than a wash. */
   --cs-weight-label: 600;
   --cs-weight-picked: 700;
+  --cs-weight-selected: 700;
   /* Corners by what the element is: a mark inside a control, a control
-     Balanced leaves square, a button, a text field, a card-sized choice. */
+     Balanced leaves square, a button, a text field, a card-sized choice, a
+     workspace card. */
   --cs-radius-mark: 2px;
   --cs-radius-small: 3px;
   --cs-radius-control: 3px;
   --cs-radius-field: 3px;
   --cs-radius-choice: 4px;
+  --cs-radius-card: 8px;
   /* An inline box: a settings card, a table, a message. */
   --cs-radius-box: 4px;
   /* What floats over the page: a menu or popover, a dialog. */
@@ -88,25 +85,57 @@
   --cs-float-shadow: none;
   --cs-frame-shadow: none;
   /* The composer squared, and the todo tab and the rows above it on its
-     corner. */
+     corner. The send button stays centred in its row, where Quiet's is set
+     into its corner (chat-input.composerParts). */
   --cs-composer-radius: 6px;
   --cs-composer-send-radius: 3px;
   --cs-composer-stack-radius: 6px;
+  --cs-composer-send-align: auto;
+  --cs-composer-send-shift: none;
+  /* The edge that bounds a surface, and under the pointer; the hairline. */
+  --color-shell-edge: var(--color-term-edge);
+  --color-shell-edge-hover: var(--color-term-edge-hover);
+  --color-shell-rule: var(--color-term-rule);
+  /* A divider inside a surface, dashed in the edge's ink. */
+  --color-shell-divider: var(--color-shell-edge);
+  /* An open box, field or unwashed selection. */
+  --color-shell-fill: transparent;
+  /* What floats over the page: menus, popovers, tooltips, dialogs, sheets. */
+  --color-shell-float: var(--color-bg-page);
+  /* A chosen option's edge, a pressed choice; the edge of the tab in front. */
+  --color-shell-ink: var(--color-term-text);
+  --color-shell-front: var(--color-shell-edge);
+  /* The quieter inks, as the cards set theirs: a section's label, and the
+     words beside a value (a fact's key, a filter not picked). */
+  --color-shell-label: var(--color-term-text-secondary);
+  --color-shell-meta: var(--color-term-text-tertiary);
+}
+:root[data-theme='light']:not([data-card-style]) {
+  --color-shell-edge: #D6D6D6;
+  --color-shell-edge-hover: #A3A3A3;
+  --color-shell-rule: var(--color-border-default);
 }
 
 /* Balanced: words in the text face throughout, as the cards set theirs. */
 :root[data-card-style='balanced'] {
+  --term-case: none;
+  --term-track: 0;
+  --term-words: var(--font-content);
+  --term-open: none;
+  --term-close: none;
+  --term-mark: color-mix(in srgb, var(--color-term-text-tertiary) 35%, transparent);
   --cs-face: var(--font-content);
   --cs-title-track: -0.015em;
+  --cs-weight-selected: 700;
   /* Buttons and the choices that stand for one are pills, as a card's tag
      is; a field stays a box, so it does not read as a button. */
   --cs-radius-control: 999px;
   --cs-radius-pill: 999px;
-  /* A pill's outline, drawn from the muted ink (--term-mark): a tag, a
-     filter, a count. */
+  /* A pill's outline, drawn from the muted ink: a tag, a filter, a count. */
   --cs-pill-border: 1px solid var(--term-mark);
   --cs-radius-field: 8px;
   --cs-radius-choice: 12px;
+  --cs-radius-card: 8px;
   --cs-radius-float: 10px;
   --cs-rule-style: solid;
   /* The tooltip and the phone sheets lie flat; menus and dialogs keep
@@ -119,19 +148,42 @@
   --cs-composer-send-radius: 999px;
   --cs-composer-stack-radius: 22px;
   --cs-composer-row-pad: 14px;
-}
-
-/* Both open styles: a workspace card's corner, the selected row of a list
-   (the sidebar, a rail) said by full ink rather than a wash, and the box a
-   destructive button keeps among words and pills. The send button stays
-   centred in its row, where the composer's own is set into its corner
-   (chat-input.composerParts). */
-:root:not([data-card-style='quiet']) {
-  --cs-radius-card: 8px;
-  --cs-danger-edge: color-mix(in srgb, var(--color-loss) 50%, transparent);
-  --cs-weight-selected: 700;
   --cs-composer-send-align: auto;
   --cs-composer-send-shift: none;
+  --color-shell-edge: var(--color-term-edge);
+  --color-shell-edge-hover: var(--color-term-edge-hover);
+  --color-shell-rule: var(--color-term-rule);
+  /* A divider is the hairline; the tab in front is edged in ink. */
+  --color-shell-divider: var(--color-shell-rule);
+  --color-shell-fill: transparent;
+  --color-shell-float: var(--color-bg-page);
+  --color-shell-ink: var(--color-term-text);
+  --color-shell-front: var(--color-term-text);
+}
+:root[data-theme='light'][data-card-style='balanced'] {
+  --color-shell-edge: #D6D6D6;
+  --color-shell-edge-hover: #A3A3A3;
+  --color-shell-rule: var(--color-border-default);
+}
+
+/* Quiet: the voice, and the data cards drawn on the platform's own grays.
+   The inks are declared here rather than with the cards' sheets, because
+   the shell reads them too (the workspace cards' edge and its hover), on
+   routes that load no data card. */
+:root[data-card-style='quiet'] {
+  --term-case: none;
+  --term-track: 0;
+  --term-words: var(--font-content);
+  --term-open: none;
+  --term-close: none;
+  --term-mark: color-mix(in srgb, var(--color-term-text-tertiary) 35%, transparent);
+  --color-term-text: var(--color-text-primary);
+  --color-term-text-secondary: var(--color-text-secondary);
+  --color-term-text-tertiary: var(--color-text-tertiary);
+  --color-term-edge: var(--color-border-default);
+  --color-term-edge-hover: var(--color-border-strong);
+  /* The platform's subtle border vanishes on the dark card fill. */
+  --color-term-rule: color-mix(in srgb, var(--color-text-tertiary) 22%, transparent);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -238,15 +290,13 @@
 :root:not([data-card-style='quiet']) .pf-kicker::after {
   content: '';
   flex: 1;
-  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
+  border-top: 1px var(--cs-rule-style) var(--color-shell-divider);
 }
 
 /* A prompt: the open row of a rail (the sidebar's thread, a page's section)
-   before its name, which carries the class while its row is open, and the
-   reader's message before its first line (the welcome chat's bubble carries
-   the class; the chat's is the Markdown inside UserBubble.tsx). */
-:root:not([data-card-style]) .rail-prompt::before,
-:root:not([data-card-style]) .pf-bubble .font-content > p:first-child::before {
+   before its name, which carries the class while its row is open; the
+   reader's message draws the same before its first line (UserBubble.css). */
+:root:not([data-card-style]) .rail-prompt::before {
   content: '> ';
   color: var(--color-term-text-tertiary);
 }
@@ -268,32 +318,32 @@
 
 /* Buttons: bracketed words (Terminal), pills (Balanced). */
 :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door']) {
-  font-family: var(--cs-face);
+  font-family: var(--font-mono);
   font-size: var(--cs-text-control);
-  font-weight: var(--cs-weight-control);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
-  border-radius: var(--cs-radius-control);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: 3px;
 }
 :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door']) > span {
   font-size: inherit;
 }
+/* Scoped, unlike the other brackets: `.tap-target` (base.css) widens a
+   button's touch target with the same ::after, which a bracket rule in every
+   style would take away. In Terminal the closing bracket stays in the line
+   and the button keeps its own size as its target. */
 :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'])::before {
-  content: var(--term-open);
+  content: '[';
   margin-right: 0.5ch;
   font-weight: 400;
   opacity: 0.55;
 }
 :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'])::after {
-  content: var(--term-close);
+  content: ']';
   margin-left: 0.5ch;
   font-weight: 400;
   opacity: 0.55;
 }
-/* `.tap-target` (base.css) widens a touch target with the same ::after the
-   closing bracket is drawn in, which would lift the bracket out of the line
-   as an empty 44px box. Terminal keeps the bracket; the button keeps its own
-   size as its target. */
 @media (pointer: coarse) {
   :root:not([data-card-style]) [data-slot='button'].tap-target::after {
     position: static;
@@ -307,7 +357,7 @@
 /* Outline and ghost buttons are words alone. A door with a variant is drawn
    as that button; one without is words alone anyway. */
 :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door']):is([data-variant='outline'], [data-variant='ghost']) {
-  background: var(--color-shell-fill, transparent);
+  background: transparent;
   border-color: transparent;
   padding-inline: 0.25rem;
 }
@@ -321,25 +371,26 @@
   border-style: solid;
 }
 :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'])[data-variant='outline']:not([data-tone], :disabled, [aria-disabled='true']):hover {
-  border-color: var(--color-shell-edge, var(--color-border-default));
+  border-color: var(--color-shell-edge);
 }
 :root[data-card-style='balanced'] :is([data-slot='button'], [data-slot='door']:where([data-variant])) {
-  border-radius: var(--cs-radius-control);
+  border-radius: 999px;
 }
 :root[data-card-style='balanced'] :is([data-slot='button'], [data-slot='door'])[data-variant='outline'] {
-  background: var(--color-shell-fill, transparent);
-  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+  background: transparent;
+  border: 1px solid var(--color-shell-edge);
 }
 /* A destructive action (Log out, Delete) keeps a box in the loss color, so
-   it is still the one to stop at among words. After the two rules above,
-   which it ties on specificity. */
+   it is still the one to stop at among words and pills. After the rules
+   above, which it ties on specificity. */
+:root:not([data-card-style='quiet']) [data-slot='button'][data-tone='danger'] {
+  border-color: color-mix(in srgb, var(--color-loss) 50%, transparent);
+}
 :root:not([data-card-style]) [data-slot='button'][data-tone='danger'] {
   color: var(--color-loss);
-  border: 1px solid var(--cs-danger-edge);
+  border-width: 1px;
+  border-style: solid;
   padding-inline: 0.625rem;
-}
-:root[data-card-style='balanced'] [data-slot='button'][data-tone='danger'] {
-  border-color: var(--cs-danger-edge);
 }
 :root:not([data-card-style='quiet']) [data-slot='button'][data-tone='danger']:hover {
   background: var(--color-loss-soft);
@@ -352,13 +403,13 @@
 /* Fields: open boxes. The edge is left to the focused-field rule
    (tokens.css) while the field has focus. */
 :root:not([data-card-style='quiet']) [data-slot='input'] {
-  background: var(--color-shell-fill, var(--color-bg-card));
-  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+  background: transparent;
+  border: 1px solid var(--color-shell-edge);
   border-radius: var(--cs-radius-field);
   box-shadow: none;
 }
 :root:not([data-card-style]) [data-slot='input'] {
-  font-family: var(--cs-face);
+  font-family: var(--font-mono);
   font-size: var(--cs-text-field);
 }
 :root:not([data-card-style]) [data-slot='input'] :is(input, span) {
@@ -366,8 +417,8 @@
 }
 :root:not([data-card-style]) [data-slot='input']::placeholder,
 :root:not([data-card-style]) [data-slot='input'] input::placeholder {
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   font-size: var(--cs-text-menu);
 }
 
@@ -375,7 +426,7 @@
    gallery's, a box around its input); a form field stays a box, so it does
    not read as a search. */
 :root[data-card-style='balanced'] [data-slot='input']:has(input[type='search']) {
-  border-radius: var(--cs-radius-control);
+  border-radius: 999px;
 }
 
 /* Segmented controls lose their track: a row of bracketed words, the picked
@@ -393,75 +444,73 @@
 :root[data-card-style='balanced'] [data-slot='segmented'] { overflow: visible; }
 :root:not([data-card-style]) [data-slot='segmented'] > button {
   padding: 0.125rem 0.25rem;
-  font-family: var(--cs-face);
+  font-family: var(--font-mono);
   font-size: var(--cs-text-label);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--color-term-text-tertiary);
 }
 :root:not([data-card-style]) [data-slot='segmented'] > button > svg { display: none; }
-:root:not([data-card-style]) [data-slot='segmented'] > button::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) [data-slot='segmented'] > button::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
+[data-slot='segmented'] > button::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
+[data-slot='segmented'] > button::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
 :root:not([data-card-style]) [data-slot='segmented'] > button:is([aria-pressed='true'], [data-selected]) {
-  color: var(--color-shell-ink, var(--color-text-primary));
-  font-weight: var(--cs-weight-picked);
+  color: var(--color-term-text);
+  font-weight: 700;
 }
 :root[data-card-style='balanced'] [data-slot='segmented'] > button {
-  border: var(--cs-pill-border);
-  border-radius: var(--cs-radius-pill);
+  border: 1px solid var(--term-mark);
+  border-radius: 999px;
   color: var(--color-text-secondary);
 }
 :root[data-card-style='balanced'] [data-slot='segmented'] > button:is([aria-pressed='true'], [data-selected]) {
-  border-color: var(--color-shell-ink, var(--color-text-primary));
-  color: var(--color-shell-ink, var(--color-text-primary));
+  border-color: var(--color-term-text);
+  color: var(--color-term-text);
 }
 
 /* Tabs: bracketed words, the brackets shown on the open one, and no
    indicator (Terminal). Balanced's indicator is the component's. */
 :root:not([data-card-style]) [data-slot='tab'] {
-  font-family: var(--cs-face);
+  font-family: var(--font-mono);
   font-size: var(--cs-text-control);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   padding-inline: 0.5rem;
 }
-:root:not([data-card-style]) [data-slot='tab']::before { content: var(--term-open); margin-right: 0.5ch; opacity: 0; }
-:root:not([data-card-style]) [data-slot='tab']::after { content: var(--term-close); margin-left: 0.5ch; opacity: 0; }
-:root:not([data-card-style]) [data-slot='tab'][data-active]::before,
-:root:not([data-card-style]) [data-slot='tab'][data-active]::after { opacity: 0.6; }
-:root:not([data-card-style]) [data-slot='tab'][data-active] { font-weight: var(--cs-weight-picked); }
+[data-slot='tab']::before { content: var(--term-open); margin-right: 0.5ch; opacity: 0; }
+[data-slot='tab']::after { content: var(--term-close); margin-left: 0.5ch; opacity: 0; }
+[data-slot='tab'][data-active]::before,
+[data-slot='tab'][data-active]::after { opacity: 0.6; }
+:root:not([data-card-style]) [data-slot='tab'][data-active] { font-weight: 700; }
 :root:not([data-card-style]) [data-slot='tab-indicator'] { display: none; }
 
 /* Badges and chips: bracketed words with no box (Terminal; a badge brackets
    itself, data-bracket); pills as the components draw them in the other two. */
 :root:not([data-card-style]) [data-slot='badge'] {
   border: 0;
-  background: var(--color-shell-fill, transparent);
+  background: transparent;
   padding: 0;
   border-radius: 0;
-  font-family: var(--cs-face);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 :root:not([data-card-style]) [data-slot='chip-group'] > label {
-  border-radius: var(--cs-radius-small);
-  font-family: var(--cs-face);
+  border-radius: 3px;
+  font-family: var(--font-mono);
   font-size: var(--cs-text-menu);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 /* Form marks. A field's label in the label voice (Terminal). */
 :root:not([data-card-style]) [data-slot='label'] {
   font-size: var(--cs-text-label);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   color: var(--color-term-text-secondary);
 }
-/* Terminal's switch thumb lies flat; the open styles draw an on switch as
-   its fill alone. */
+/* Terminal's switch thumb lies flat. */
 :root:not([data-card-style]) [data-slot='switch-thumb'] { box-shadow: none; }
-:root:not([data-card-style='quiet']) [data-slot='switch'][aria-checked='true'] { border-color: transparent; }
 /* An option's title is set heavier in mono. */
 :root:not([data-card-style]) [data-slot='option-title'] { font-weight: 700; }
 
@@ -477,44 +526,44 @@
    always has. */
 :root:not([data-card-style='quiet']) :is([data-slot='menu'], [data-slot='popover'], [data-slot='listbox']) {
   border-radius: var(--cs-radius-float);
-  border-color: var(--color-shell-edge, var(--color-border-muted));
-  background: var(--color-shell-float, var(--color-bg-elevated));
+  border-color: var(--color-shell-edge);
+  background: var(--color-bg-page);
 }
 :root:not([data-card-style]) :is([data-slot='menu'], [data-slot='popover'], [data-slot='listbox']) {
-  box-shadow: var(--cs-float-shadow);
+  box-shadow: none;
 }
 /* A list in a popover is the popover's content, not a second box. */
 :root:not([data-card-style='quiet']) [data-slot='popover'] [data-slot='listbox'] {
   border: 0;
-  background: var(--color-shell-fill, transparent);
+  background: transparent;
 }
 /* Items and group heads in the menu's sizes (Terminal). */
 :root:not([data-card-style]) [data-slot='menu-item'] {
-  border-radius: var(--cs-radius-mark);
+  border-radius: 2px;
   font-size: var(--cs-text-menu);
 }
 :root:not([data-card-style]) [data-slot='menu-label'] {
   font-size: var(--cs-text-label);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 /* A list's group headings (This device, Common) take the words' face, as the
    kickers do: the text face in Balanced and Quiet, where they used to be
    mono. Terminal's inherit the shell's mono. */
 :root:is([data-card-style='balanced'], [data-card-style='quiet']) [data-slot='menu-label'] {
-  font-family: var(--term-words);
+  font-family: var(--font-content);
 }
 /* Terminal redraws the separator as a dashed rule. */
 :root:not([data-card-style]) [data-slot='menu-separator'] {
   height: 0;
   background: none;
-  border-top: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-muted));
+  border-top: 1px dashed var(--color-shell-edge);
 }
 
 /* Tooltips: the menu's surface (the component's), a size down and flat. */
 :root:not([data-card-style='quiet']) [data-slot='tooltip'] {
   border-radius: var(--cs-radius-field);
-  box-shadow: var(--cs-frame-shadow);
+  box-shadow: none;
 }
 :root:not([data-card-style]) [data-slot='tooltip'] {
   font-size: var(--cs-text-label);
@@ -526,139 +575,28 @@
    inline read the same roles. Terminal squares the panel, not the phone
    sheet, and lays it flat; the sheets lie flat in both. */
 :root:not([data-card-style='quiet']) [data-slot='dialog'] {
-  background-color: var(--color-shell-float, var(--color-bg-page));
-  border-color: var(--color-shell-edge, var(--color-border-muted));
+  background-color: var(--color-bg-page);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) [data-slot='dialog']:not(.rounded-t-3xl) {
-  border-radius: var(--cs-radius-overlay);
+  border-radius: 6px;
 }
-:root:not([data-card-style]) [data-slot='dialog'] {
-  box-shadow: var(--cs-float-shadow);
-}
+:root:not([data-card-style]) [data-slot='dialog'],
 :root:not([data-card-style='quiet']) [data-slot='dialog'][data-sheet] {
-  box-shadow: var(--cs-frame-shadow);
+  box-shadow: none;
 }
 /* A header that is only a title takes Terminal's dashed rule too; one with
    a rule of its own draws it with `rule-b` (ModalShell). */
 :root:not([data-card-style]) [data-slot='dialog-header'] {
-  border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-muted));
+  border-bottom: 1px dashed var(--color-shell-edge);
 }
 :root:not([data-card-style='quiet']) [data-slot='dialog-title'] {
   font-family: var(--cs-face);
 }
 :root:not([data-card-style]) [data-slot='dialog-title'] {
   font-size: var(--cs-text-heading);
-  letter-spacing: calc(0.02em * var(--term-track));
+  letter-spacing: 0.02em;
 }
 :root:not([data-card-style]) [data-slot='dialog-desc'] {
   font-size: var(--cs-text-label);
 }
-
-/* ════════════════════════════════════════════════════════════════════
-   Components with no stylesheet of their own
-   ════════════════════════════════════════════════════════════════════ */
-
-/* A component's rules live in its own CSS. These components keep none, so
-   theirs stay here rather than in a sheet made for them; the cards' type
-   could not go into their Tailwind classes either, since a size in a text-*
-   class drops the line height the class carries. */
-
-/* Workspace cards: an open box with its title cut into the top edge. The
-   cards paint their own fill, edge and corner (WorkspaceCard.tsx,
-   ChiefOfStaffCard.tsx); the cut title and its type are drawn here. */
-:root:not([data-card-style='quiet']) .pf-card {
-  --term-ground: var(--color-bg-page);
-  position: relative;
-  overflow: visible;
-  padding-top: 1.125rem;
-}
-:root:not([data-card-style='quiet']) .pf-card--feature { padding-top: 1.5rem; }
-:root:not([data-card-style='quiet']) .pf-card .pf-card-head {
-  position: absolute;
-  z-index: 1;
-  top: -0.75em;
-  left: 0.625rem;
-  right: 0.625rem;
-  align-items: baseline;
-  line-height: 1.45;
-}
-:root:not([data-card-style='quiet']) .pf-card .pf-card-head > * {
-  flex: 0 1 auto;
-  background: var(--term-ground);
-  padding: 0 0.375rem;
-}
-:root:not([data-card-style='quiet']) .pf-card .pf-card-meta {
-  margin-left: auto;
-  padding-top: 0;
-}
-:root:not([data-card-style='quiet']) .pf-card .pf-card-icon { display: none; }
-/* The cut titles stand above their boxes: the grid (WorkspaceGallery.tsx)
-   gives the first row room. */
-:root:not([data-card-style='quiet']) [data-testid='workspace-grid'] { padding-top: 0.875rem; }
-
-/* line-clamp sets the title as a box; its brackets (data-bracket) need it
-   inline. */
-:root:not([data-card-style]) .pf-card .pf-card-title {
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: var(--cs-text-field);
-  font-weight: 700;
-  letter-spacing: calc(0.02em * var(--term-track));
-}
-:root:not([data-card-style]) .pf-card .pf-card-meta {
-  font-size: var(--cs-text-label);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
-}
-:root:not([data-card-style]) .pf-card :is(.pf-card-body, p) {
-  font-size: var(--cs-text-row);
-  line-height: 1.55;
-}
-:root[data-card-style='balanced'] .pf-card .pf-card-title {
-  font-size: 0.9375rem;
-  font-weight: 600;
-}
-
-/* The reader's message (UserBubble.tsx): an open box, its first line a
-   prompt in Terminal (with .rail-prompt above). The bubble reads its own
-   fill; the edge stays a rule, since a border would take a pixel of room in
-   Quiet's borderless bubble. Its text is the shared Markdown root, so its
-   face is set from the bubble. */
-:root:not([data-card-style='quiet']) .pf-bubble {
-  border: 1px solid var(--color-shell-edge, transparent);
-}
-:root:not([data-card-style]) .pf-bubble .font-content {
-  font-family: var(--cs-face);
-  font-size: var(--cs-text-field);
-}
-
-/* The port and an app's version, a tag beside its name, Balanced's taking a
-   little more room. The chip's own rule is in filePanel/TreeColumn.css, but
-   the version picker also draws it on a share's artifact page
-   (ArtifactVersionPicker.tsx), which does not load that sheet. */
-:root[data-card-style='balanced'] .file-panel-port-chip { padding: 0 6px; }
-
-/* The computer's section tabs (SandboxSettingsPanel.tsx) take the tab hooks;
-   the accent underline gives way to the style's own mark: Terminal's
-   brackets over a dashed rule, Balanced's pills with no rule. */
-:root:not([data-card-style]) .pf-sbx-tabs {
-  border-bottom-style: var(--cs-rule-style);
-  gap: 0.125rem;
-}
-:root:not([data-card-style='quiet']) .pf-sbx-tabs > [data-slot='tab'] { border-bottom-color: transparent; }
-:root[data-card-style='balanced'] .pf-sbx-tabs {
-  border-bottom: 0;
-  padding-bottom: 0.5rem;
-}
-:root[data-card-style='balanced'] .pf-sbx-tabs > [data-slot='tab'] {
-  border: 1px solid transparent;
-  border-radius: var(--cs-radius-pill);
-  padding-block: 0.25rem;
-}
-:root[data-card-style='balanced'] .pf-sbx-tabs > [data-slot='tab'][data-active] {
-  border-color: var(--color-shell-front, var(--color-term-text));
-}
-/* Terminal's auto-stop chip (sandbox/OverviewTab.tsx) is a word, not a box. */
-:root:not([data-card-style]) .pf-sbx-chip { padding-inline: 0; }

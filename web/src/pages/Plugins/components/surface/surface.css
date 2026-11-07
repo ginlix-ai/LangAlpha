@@ -60,7 +60,7 @@
   border: var(--cs-pill-border, 0);
   background: transparent;
   color: var(--color-shell-meta, var(--color-text-tertiary));
-  font-family: var(--cs-face);
+  font-family: var(--cs-face, var(--font-ui));
   font-size: var(--cs-text-label, 0.78125rem);
   display: inline-flex;
   align-items: center;
@@ -75,7 +75,7 @@
 }
 .surface-chip .surface-count { font-size: 0.6875rem; }
 :root:not([data-card-style]) .surface-chip { padding-inline: 0.25rem; }
-:root[data-card-style='balanced'] .surface-chip.is-on { border-color: var(--color-shell-ink, var(--color-text-primary)); }
+:root[data-card-style='balanced'] .surface-chip.is-on { border-color: var(--color-term-text); }
 
 /* The grid: as many ~340px columns as fit. The negative margin lets a cell's
    hover fill reach past the column edge while its content lines up with the
@@ -359,7 +359,7 @@
   border: var(--cs-pill-border, 0);
   background: var(--color-shell-fill, var(--color-bg-tag));
   color: var(--color-text-secondary);
-  font-family: var(--cs-face);
+  font-family: var(--cs-face, var(--font-ui));
   font-size: var(--cs-text-label, 0.65625rem);
   white-space: nowrap;
 }
@@ -405,7 +405,7 @@
 .detail-head-title { flex: 1 1 16rem; min-width: 0; }
 .detail-head h1 {
   margin: 0;
-  font-family: var(--cs-face);
+  font-family: var(--cs-face, var(--font-ui));
   font-size: var(--cs-text-title, 1.625rem);
   font-weight: 600;
   line-height: 32px;
@@ -602,7 +602,7 @@
   font-size: 0.78125rem;
 }
 .detail-facts dt {
-  font-size: var(--cs-text-label);
+  font-size: var(--cs-text-label, 0.78125rem);
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
   color: var(--color-shell-meta, var(--color-text-tertiary));
@@ -815,7 +815,7 @@
   .surface-more::after { content: ''; position: absolute; inset: -9px 0; }
   /* Terminal's closing bracket is drawn in the same ::after: it keeps the
      bracket, in the line, and the chip keeps its own size as its target. */
-  :root:not([data-card-style]) .list-controls .surface-chip::after { content: var(--term-close); position: static; }
+  :root:not([data-card-style]) .list-controls .surface-chip::after { content: ']'; position: static; }
 
   /* Above the tab bar, edge to edge inside the gutters; the count and the
      exit share the first line and the actions wrap under them. */

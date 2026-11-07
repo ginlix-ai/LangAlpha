@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "@/lib/framer";
 import { SPRING_INDICATOR } from "@/lib/motion";
-import { useCardStyle } from "@/lib/cardStyle";
+import { useStyleLength } from "@/lib/cardStyle";
 
 interface Tab {
   id: string;
@@ -32,7 +32,7 @@ export function AnimatedTabs({
   // slides and leaves a string it cannot parse uncorrected. Balanced draws
   // it as a pill, as its other choices are; Terminal hides it
   // (styles/cardStyle.css).
-  const indicatorRadius = useCardStyle() === "balanced" ? 999 : 6;
+  const indicatorRadius = useStyleLength("--cs-radius-pill", 6);
 
   return (
     <div data-slot="tabs" className="flex space-x-1">

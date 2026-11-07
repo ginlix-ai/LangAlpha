@@ -60,7 +60,7 @@
 :root:not([data-card-style='quiet']) .automation-inspector-section > .automations-kicker::after {
   content: '';
   flex: 1;
-  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
+  border-top: 1px var(--cs-rule-style) var(--color-shell-divider);
 }
 
 .automation-report {
@@ -193,7 +193,7 @@
 }
 
 .automation-details dt {
-  font-size: var(--cs-text-label);
+  font-size: var(--cs-text-label, 0.8125rem);
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
   color: var(--color-shell-meta, var(--color-text-tertiary));

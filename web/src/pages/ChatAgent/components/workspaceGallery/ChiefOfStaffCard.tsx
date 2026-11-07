@@ -35,6 +35,7 @@ import { threadGalleryQuery } from '../../utils/threadGalleryQuery';
 import { Kicker } from './Kicker';
 import { MachineSummary } from './MachineSummary';
 import type { WorkspaceRecord } from './types';
+import './WorkspaceCard.css';
 import { buttonSlot, doorSlot } from '@/components/ui/button-class';
 
 const RECENT_COUNT = 3;

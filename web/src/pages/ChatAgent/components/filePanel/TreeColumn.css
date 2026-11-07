@@ -293,7 +293,7 @@
    the names say open and on screen by weight. */
 :root:not([data-card-style='quiet']) .file-panel-item-open:hover { background-color: var(--color-border-muted); }
 :root:not([data-card-style='quiet']) .file-panel-item-open .truncate { font-weight: 600; }
-:root:not([data-card-style='quiet']) .file-panel-item-active .truncate { font-weight: var(--cs-weight-selected); }
+:root:not([data-card-style='quiet']) .file-panel-item-active .truncate { font-weight: 700; }
 
 /* ====== Pinned stores ======
    Memory, memo and a chart, pinned above the listing as rows of it, with a
@@ -332,20 +332,6 @@
   background: none;
   text-align: left;
 }
-/* The port, and the version beside an app's name (PreviewCrumbs,
-   ArtifactVersionPicker), read as a card's tag in the open card styles. */
-.file-panel-port-chip {
-  flex-shrink: 0;
-  padding: 0 4px;
-  border-radius: var(--cs-radius-pill, 3px);
-  border: 1px solid var(--color-border-muted);
-  background-color: var(--color-shell-fill, var(--color-bg-elevated));
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  line-height: 1.4;
-  color: var(--color-text-tertiary);
-}
-
 /* The tree's search: Terminal's placeholder in the voice. */
 .file-panel-tree-search input::placeholder {
   text-transform: var(--term-case);

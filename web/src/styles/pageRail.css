@@ -55,7 +55,7 @@
 .page-rail-link.is-active {
   background: var(--color-shell-fill, var(--color-bg-hover));
   color: var(--color-text-primary);
-  font-weight: var(--cs-weight-selected);
+  font-weight: var(--cs-weight-selected, 400);
 }
 @media (min-width: 768px) {
   .page-rail-link.is-active {
@@ -98,7 +98,7 @@
   background: var(--color-shell-fill, var(--color-bg-input));
   color: var(--color-text-primary);
   font: inherit;
-  font-family: var(--cs-face);
+  font-family: var(--cs-face, var(--font-ui));
   outline: none;
 }
 .page-search-input::placeholder { color: var(--color-text-quaternary); }

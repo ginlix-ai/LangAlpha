@@ -3,10 +3,9 @@
  * draws itself), Balanced, or Terminal. Terminal is the data cards' own
  * stylesheets, and the other two take marks away from them
  * (charts/termCardStyles.css); the rest of the app reads the style as
- * variables (styles/cardStyle.css, and the shell's color roles in
- * styles/tokens.css). Saved to the account with the theme
- * (lib/appearancePreference) and kept in this browser too, so the first paint
- * is right before preferences load.
+ * variables (styles/cardStyle.css, which declares every style's values).
+ * Saved to the account with the theme (lib/appearancePreference) and kept in
+ * this browser too, so the first paint is right before preferences load.
  *
  * Stamped on <html> as `data-card-style`, so a change restyles everything
  * already drawn and nothing re-renders. main.tsx stamps it before the app
@@ -61,4 +60,21 @@ function subscribe(listener: () => void): () => void {
 
 export function useCardStyle(): CardStyle {
   return useSyncExternalStore(subscribe, getCardStyle);
+}
+
+/**
+ * A length the current style declares (`--cs-radius-pill`), in px, or the
+ * reader's own where the style declares none: for a value that has to be a
+ * number in script, as framer's radius correction needs. The style is stamped
+ * before the store tells its readers, so the value read follows a change.
+ */
+export function useStyleLength(name: string, own: number): number {
+  return readStyleLength(name, own, useCardStyle());
+}
+
+// The style is an argument, though unread, so the React Compiler keys the
+// read on it and reads again when it changes; the value is the stylesheet's.
+function readStyleLength(name: string, own: number, _style: CardStyle): number {
+  const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+  return Number.isFinite(value) ? value : own;
 }

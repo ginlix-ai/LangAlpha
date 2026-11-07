@@ -213,7 +213,7 @@ label.settings-row-label { cursor: pointer; }
 /* A profile's answers: the keys in the label voice, on the value's
    baseline in Terminal, as a card's facts are set. */
 .settings-facts dt {
-  font-size: var(--cs-text-label);
+  font-size: var(--cs-text-label, 0.8125rem);
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
 }

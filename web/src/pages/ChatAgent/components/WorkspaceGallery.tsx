@@ -43,6 +43,7 @@ import { GALLERY_COLUMN, GALLERY_FRAME, GALLERY_GRID, GALLERY_PAGE } from './wor
 import { useGalleryReorder } from './workspaceGallery/useGalleryReorder';
 import { WorkspaceCard, WorkspaceCardSkeleton } from './workspaceGallery/WorkspaceCard';
 import type { WorkspaceRecord } from './workspaceGallery/types';
+import './workspaceGallery/WorkspaceCard.css';
 
 /**
  * The order the user last picked, a per-browser convenience. Nothing stored,
@@ -415,7 +416,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
             toolbar's gap gives up, so the first row is not clipped. */}
         <div
           ref={scrollRef}
-          className={`pt-1 pb-8 md:flex-1 md:min-h-0 md:overflow-y-auto ${GALLERY_FRAME}`}
+          className={`workspace-grid pt-1 pb-8 md:flex-1 md:min-h-0 md:overflow-y-auto ${GALLERY_FRAME}`}
           data-testid="workspace-grid"
         >
           <div className={GALLERY_COLUMN}>

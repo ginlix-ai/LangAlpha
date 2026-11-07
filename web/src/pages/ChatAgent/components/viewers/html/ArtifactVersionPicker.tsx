@@ -14,6 +14,7 @@ import {
 import { useLocale } from '@/hooks/useLocale';
 import { shortMonthDay } from '@/lib/format';
 import type { ArtifactVersionView } from '../../filePanel/useArtifactVersionView';
+import '../../filePanel/portChip.css';
 import './ArtifactVersionPicker.css';
 
 /** The radio value of the live file, which no version number can be. */

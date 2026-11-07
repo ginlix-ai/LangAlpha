@@ -21,6 +21,7 @@ import { PackagesTab } from './sandbox/PackagesTab';
 import { StorageTab } from './sandbox/StorageTab';
 import { ToolsTab } from './sandbox/ToolsTab';
 import type { RefreshResult, SandboxStats } from './sandbox/sandboxTypes';
+import './SandboxSettingsPanel.css';
 
 interface SandboxSettingsPanelProps {
   onClose: () => void;
@@ -144,7 +145,7 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Tabs. The accent underline is Quiet's mark for the open one; the open
-          card styles give it their own (styles/cardStyle.css), since amber does
+          card styles give it their own (SandboxSettingsPanel.css), since amber does
           not select there. */}
       <div className="pf-sbx-tabs flex flex-wrap gap-1 mb-4 border-b" style={{ borderColor: 'var(--color-shell-divider, var(--color-border-muted))' }}>
         {tabs.map(t => (

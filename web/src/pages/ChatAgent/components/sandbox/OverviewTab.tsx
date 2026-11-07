@@ -18,7 +18,7 @@ const createdDate = createDateFormatter({ year: 'numeric', month: 'numeric', day
 // Terminal's type without the brackets.
 const ACTION_CLASS =
   'control-voice text-xs rounded-[var(--cs-radius-control,var(--radius-md))] transition-colors hover:bg-foreground/10';
-const ACTION_TYPE = { fontSize: 'var(--cs-text-control, 0.75rem)', fontWeight: 'var(--cs-weight-control)' } as const;
+const ACTION_TYPE = { fontSize: 'var(--cs-text-control, 0.75rem)', fontWeight: 'var(--cs-weight-control, 400)' } as const;
 const ACTION_EDGE = '1px solid var(--color-shell-edge, var(--color-border-muted))';
 
 // States where the sandbox has settled. Deliberately an allowlist of *terminal*

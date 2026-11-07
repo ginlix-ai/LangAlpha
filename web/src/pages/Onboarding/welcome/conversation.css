@@ -47,12 +47,12 @@
    rather than set in the shared bubble and option card, which the chat draws
    otherwise. */
 :root:not([data-card-style]) .welcome-chat :is([data-slot='option-card'], [data-slot='chip-group']) {
-  font-family: var(--cs-face);
+  font-family: var(--font-mono);
 }
 :root:not([data-card-style]) .welcome-chat [data-slot='option-title'] + span {
   font-size: var(--cs-text-menu);
 }
 :root:not([data-card-style]) .welcome-chat .pf-bubble p {
-  font-family: var(--cs-face);
+  font-family: var(--font-mono);
   font-size: var(--cs-text-field);
 }

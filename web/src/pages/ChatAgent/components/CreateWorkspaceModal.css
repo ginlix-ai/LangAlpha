@@ -47,7 +47,7 @@
 /* The open card styles rule it off as a card's divider. */
 :root:not([data-card-style='quiet']) .cwm-header {
   padding-bottom: 0.75rem;
-  border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-muted));
+  border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider);
 }
 
 .cwm-title {

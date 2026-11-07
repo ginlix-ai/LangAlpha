@@ -10,11 +10,13 @@ import { describe, expect, it } from 'vitest';
  */
 
 const SRC = resolve(__dirname, '../..');
-const TOKENS = join(SRC, 'styles/tokens.css');
+// The themes, and the card styles' own color roles (each declared only under
+// the styles that set it; styleVariables.test.ts holds their reads to that).
+const DECLARING = [join(SRC, 'styles/tokens.css'), join(SRC, 'styles/cardStyle.css')];
 
 /**
  * `--color-*` names stamped from JS or by a library rather than declared in
- * tokens.css. Empty today: the other JS-stamped custom properties in the app
+ * a stylesheet. Empty today: the other JS-stamped custom properties in the app
  * (`--app-font-scale` from index.html, `--sidebar-width`, Radix's
  * `--radix-*`) are not `--color-*` and so fall outside the scan already.
  */
@@ -22,25 +24,6 @@ const JS_STAMPED = new Set<string>();
 const JS_STAMPED_PREFIXES = ['--radix-'];
 
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.css'];
-
-/**
- * Roles tokens.css declares for the open card styles alone (Terminal and
- * Balanced), so they are undeclared in Quiet. A read without a fallback would
- * draw nothing there; each reader names its own Quiet value instead
- * (`var(--color-shell-edge, var(--color-border-muted))`, cardStyle.css).
- */
-const OPEN_STYLE_ONLY = new Set([
-  '--color-shell-edge',
-  '--color-shell-edge-hover',
-  '--color-shell-rule',
-  '--color-shell-divider',
-  '--color-shell-fill',
-  '--color-shell-float',
-  '--color-shell-ink',
-  '--color-shell-front',
-  '--color-shell-label',
-  '--color-shell-meta',
-]);
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -60,7 +43,7 @@ function isAllowlisted(name: string): boolean {
 
 describe('color token references', () => {
   const declared = new Set(
-    [...readFileSync(TOKENS, 'utf8').matchAll(/(--color-[\w-]+)\s*:/g)].map((m) => m[1]),
+    DECLARING.flatMap((file) => [...readFileSync(file, 'utf8').matchAll(/(--color-[\w-]+)\s*:/g)].map((m) => m[1])),
   );
 
   it('declares tokens in both themes', () => {
@@ -69,12 +52,13 @@ describe('color token references', () => {
     expect(declared.size).toBeGreaterThan(50);
     expect(declared.has('--color-bg-page')).toBe(true);
     expect(declared.has('--color-bg-popover')).toBe(true);
+    expect(declared.has('--color-shell-edge')).toBe(true);
   });
 
   it('has no reference to an undeclared --color-* token', () => {
     const orphans: string[] = [];
     for (const file of walk(SRC)) {
-      if (file === TOKENS) continue;
+      if (file === DECLARING[0]) continue;
       const lines = readFileSync(file, 'utf8').split('\n');
       lines.forEach((line, i) => {
         // A `var()` reference, or the bare parenthesised name a Tailwind
@@ -87,21 +71,5 @@ describe('color token references', () => {
       });
     }
     expect(orphans).toEqual([]);
-  });
-
-  it('reads every open-style-only role with a fallback', () => {
-    expect([...OPEN_STYLE_ONLY].filter((name) => !declared.has(name))).toEqual([]);
-    const bare: string[] = [];
-    for (const file of walk(SRC)) {
-      const rel = relative(SRC, file);
-      if (file === TOKENS) continue;
-      const lines = readFileSync(file, 'utf8').split('\n');
-      lines.forEach((line, i) => {
-        for (const match of line.matchAll(/(?:var)?\(\s*(--color-[\w-]+)\s*(,?)/g)) {
-          if (OPEN_STYLE_ONLY.has(match[1]) && !match[2]) bare.push(`${rel}:${i + 1} → ${match[1]}`);
-        }
-      });
-    }
-    expect(bare).toEqual([]);
   });
 });

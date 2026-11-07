@@ -9,6 +9,7 @@ import { Disclosure } from '@/components/ui/Disclosure';
 import { cn } from '@/lib/utils';
 import type { MessageProvenance } from '@/types/chat';
 import { CAPTION, MessageProvenanceLabel, SteeredMark } from './MessageProvenance';
+import './UserBubble.css';
 
 interface UserBubbleProps {
   provenance?: MessageProvenance;
@@ -37,7 +38,7 @@ export function UserBubble({ provenance, steered, readOnly, isMobile, className,
   // jumping, and what it holds stays mounted, so a pending comment list fades
   // to full rather than being drawn anew at full. Most bubbles never have a
   // caption, so the fold is mounted only once there is one. The open card
-  // styles draw the bubble unfilled inside their edge (styles/cardStyle.css).
+  // styles draw the bubble unfilled inside their edge (UserBubble.css).
   return (
     <div className={cn('flex min-w-0 max-w-full flex-col items-end', className)}>
       {captioned && (

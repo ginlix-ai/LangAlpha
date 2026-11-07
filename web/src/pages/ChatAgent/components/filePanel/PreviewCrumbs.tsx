@@ -7,6 +7,7 @@ import { useCopyShareLink } from '@/hooks/useCopyShareLink';
 import { useShareLink } from '@/hooks/useShareLink';
 import { shareLinkHref } from '../../utils/api/shareLinks';
 import type { PreviewEntry } from './usePreviews';
+import './portChip.css';
 
 interface PreviewCrumbsProps {
   entry: PreviewEntry;

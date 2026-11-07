@@ -74,7 +74,7 @@
   border-color: var(--color-shell-ink, var(--color-text-secondary));
   background-color: var(--color-shell-fill, var(--color-bg-hover));
   color: var(--color-shell-ink, var(--color-text-primary));
-  font-weight: var(--cs-weight-selected);
+  font-weight: var(--cs-weight-selected, 400);
 }
 
 /* The kinds of trigger, each drawn with its own cadence mark. */
