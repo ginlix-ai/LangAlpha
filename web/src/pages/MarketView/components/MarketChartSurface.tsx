@@ -54,8 +54,9 @@ interface MarketChartSurfaceProps {
   variant?: 'full' | 'compact';
 }
 
-/** The compact chart sits as a card inset on the plain canvas ground; the
- *  host draws the card edge, this is the gutter around it. */
+/** The compact chart sits as a card inset on the panel's own page ground,
+ *  not a gray well, so the panel reads as one surface; the host draws the
+ *  card edge, this is the gutter around it. */
 const COMPACT_PADDING = '8px 10px 10px';
 
 function MarketChartSurfaceInner({
@@ -175,7 +176,7 @@ function MarketChartSurfaceInner({
         height: '100%',
         minHeight: 0,
         overflow: 'hidden',
-        background: compact ? 'var(--color-bg-canvas)' : 'var(--color-bg-card)',
+        background: compact ? 'var(--color-bg-page)' : 'var(--color-bg-card)',
       }}
     >
       {!compact && <StockHeader
