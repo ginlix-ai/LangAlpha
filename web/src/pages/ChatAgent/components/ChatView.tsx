@@ -120,6 +120,7 @@ import { ClaudeCodePlanRow } from './chatView/ClaudeCodePlanRow';
 import { useNextSummary } from '../hooks/useNextSummaryHint';
 import { ChatDiskWarning } from './chatView/ChatDiskWarning';
 import { ChatRestoreOffer } from './chatView/ChatRestoreOffer';
+import { STACK_ROW_CLASS } from './chatView/composerStack';
 import { useToolCallAnnouncer } from './chatView/useToolCallAnnouncer';
 import { MobileNavDrawer } from './chatView/MobileNavDrawer';
 import { useChatScroll } from './chatView/useChatScroll';
@@ -1756,7 +1757,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     )}
                     {/* A notice is not about the running turn, so it need not wait for it to end. */}
                     {messageError && (!isLoading || (typeof messageError === 'object' && messageError.kind === 'notice')) && (
-                      <ErrorBanner error={messageError} />
+                      <ErrorBanner
+                        error={messageError}
+                        className={typeof messageError === 'object' && messageError.kind === 'notice' ? undefined : STACK_ROW_CLASS}
+                      />
                     )}
                     {workspaceRecord?.computer_id && (
                       <ChatRestoreOffer

@@ -14,13 +14,19 @@ be declared there (enforced by `web/src/styles/__tests__/tokenRefs.test.ts`).
   **annotation color, not a brand fill** (see Accent discipline).
 - **Radius**: soft, growing with the element. Pick from the scale, never a new value:
   4px inline code · 6px thumbnails · 8px (`--radius`) the default for rows, tables
-  and most surfaces, and the user's avatar up to 36px · 12px transcript file cards,
-  the composer's send button and the 48px settings avatar · pills (half the height)
-  for chips, tags and agent avatars.
-  - **One exception, the chat composer at 22px**: concentric with its 12px send
-    button, which sits 10px from the bottom edge (12 + 10). The todo tab tucked
-    behind it takes 16px, about 0.7× the composer. Change the composer's radius
-    and the send button's radius or inset together, or the corner pinches.
+  and most surfaces, and the user's avatar up to 36px · 12px transcript file cards
+  and the 48px settings avatar · 16px the chat composer and the rows stacked on it ·
+  pills (half the height) for chips, tags and agent avatars. A corner nested in
+  another is the outer one less the gap between them.
+  - **The composer stack follows the card style** (`--cs-composer-*` in
+    `web/src/styles/cardStyle.css`): the composer, the todo tab tucked behind it
+    and the rows with a surface above it (the error, the restore offer, the disk
+    warning) share one corner. Quiet: 16, with an 8px send button 8px in from the
+    right and bottom edges (16 - 8). Terminal: 6, with a 3px send button.
+    Balanced: 22, off the scale because its buttons are pills, so the send button
+    is round and the rows' text sits 14px in to clear the corner. Change the
+    composer's radius and the send button's radius or inset together, or the
+    corner pinches.
 - **Depth**: borders first, shadows second (`--shadow-card` is the only card
   shadow); never glows.
 

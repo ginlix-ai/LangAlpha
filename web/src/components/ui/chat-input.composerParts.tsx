@@ -312,7 +312,7 @@ export function SendStopButton({
       disabled={stopMode ? isStopping : !canSend}
       data-mode={stopMode ? 'stop' : 'send'}
       className={cn(
-        'send-button press grid place-items-center h-8 w-8 flex-none rounded-[var(--cs-composer-send-radius,0.75rem)]',
+        'send-button press grid place-items-center h-8 w-8 flex-none rounded-[var(--cs-composer-send-radius,0.75rem)] [align-self:var(--cs-composer-send-align,auto)] [translate:var(--cs-composer-send-shift,none)]',
         stopMode ? 'disabled:cursor-not-allowed' : 'disabled:cursor-default',
       )}
       title={stopMode ? stopLabel : undefined}

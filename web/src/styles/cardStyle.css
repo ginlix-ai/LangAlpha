@@ -90,10 +90,11 @@
      destructive one keeps a box in the loss color. */
   --cs-door-edge: transparent;
   --cs-danger-edge: color-mix(in srgb, var(--color-loss) 45%, transparent);
-  /* The composer squared, its send button concentric with it. */
+  /* The composer squared, and the todo tab and the rows above it on its
+     corner. */
   --cs-composer-radius: 6px;
   --cs-composer-send-radius: 3px;
-  --cs-composer-stack-radius: 16px;
+  --cs-composer-stack-radius: 6px;
 }
 
 /* Balanced: words in the text face throughout, as the cards set theirs. */
@@ -113,17 +114,28 @@
   /* The tooltip and the phone sheets lie flat; menus and dialogs keep
      their shadow. */
   --cs-frame-shadow: none;
+  /* A rounder composer, off the radius scale, since every Balanced button
+     is a pill and so is its send button. The todo tab and the rows above
+     share its corner, the rows' text set in to clear it. */
   --cs-composer-radius: 22px;
-  --cs-composer-send-radius: 12px;
-  --cs-composer-stack-radius: 16px;
+  --cs-composer-send-radius: 999px;
+  --cs-composer-stack-radius: 22px;
+  --cs-composer-row-pad: 14px;
 }
 
 /* Quiet declares the composer alone: the one surface whose values every
    style states for itself, so a later change to one style's composer is an
-   edit here rather than to the components. */
+   edit here rather than to the components. One corner for the whole stack,
+   and an 8px send button set 8px in from the right and bottom edges, so it
+   is concentric (16 - 8). The button drops to the foot of its row, 9px up
+   however tall the row's tallest control is, and `translate` takes it the
+   rest of the way, 5px right and 1px down. Both move the button alone, where
+   padding would move the text and the other controls too. */
 :root[data-card-style='quiet'] {
-  --cs-composer-radius: 22px;
-  --cs-composer-send-radius: 12px;
+  --cs-composer-radius: 16px;
+  --cs-composer-send-radius: 8px;
+  --cs-composer-send-align: end;
+  --cs-composer-send-shift: 5px 1px;
   --cs-composer-stack-radius: 16px;
 }
 

@@ -6,6 +6,8 @@ import { queryKeys } from '@/lib/queryKeys';
 import { useComputers } from '../../hooks/useComputers';
 import { RestoreOffer } from '../RestoreOffer';
 
+import { STACK_ROW_CLASS } from './composerStack';
+
 /**
  * The restore offer above the chat input, for a workspace on a machine the
  * user brought. A turn re-reads the workspace row once it has the machine, so
@@ -29,5 +31,5 @@ export function ChatRestoreOffer({ workspaceId, computerId, listed }: {
   }, [brought, listed, queryClient, workspaceId]);
 
   if (!brought) return null;
-  return <RestoreOffer workspaceId={workspaceId} variant="banner" />;
+  return <RestoreOffer workspaceId={workspaceId} variant="banner" className={STACK_ROW_CLASS} />;
 }
