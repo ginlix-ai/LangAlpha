@@ -242,6 +242,20 @@ async def test_no_steer_is_sent_on_once_the_plan_is_used_up_under_stop(plan):
 
 
 @pytest.mark.asyncio
+async def test_a_turn_however_it_ended_closes_once_what_its_responses_said_of_the_plan_is_kept():
+    log = _Log()
+    turn = _turn()
+    turn._plan = PlanWatch(_source(log), HAIKU, stop_at_limit=False)
+
+    async def close():
+        log.order.append("CLI ended")
+
+    turn._run = SimpleNamespace(close=close)
+    await turn.close()
+    assert log.order == ["CLI ended", "written"], "the run's closing frame reads the plan the turn left"
+
+
+@pytest.mark.asyncio
 async def test_a_turn_opens_one_watch_for_all_its_launches(monkeypatch):
     handed = []
 
