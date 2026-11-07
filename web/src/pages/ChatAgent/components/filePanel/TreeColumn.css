@@ -88,7 +88,7 @@
   font-weight: var(--cs-weight-picked, 500);
 }
 /* Terminal draws the chips as the dashboard's widget tabs, bracketed words;
-   Balanced as the cards' pills. Both mark the picked one in full ink rather
+   Soft as the cards' pills. Both mark the picked one in full ink rather
    than a wash. */
 :root:not([data-card-style]) .file-panel-chip {
   padding: 2px 1px;
@@ -101,8 +101,8 @@
   color: var(--color-term-text);
 }
 :root:not([data-card-style]) .file-panel-tree-chips { gap: 0.375rem; }
-:root[data-card-style='balanced'] .file-panel-chip { border-color: var(--term-mark); }
-:root[data-card-style='balanced'] .file-panel-chip.active {
+:root[data-card-style='soft'] .file-panel-chip { border-color: var(--term-mark); }
+:root[data-card-style='soft'] .file-panel-chip.active {
   background: transparent;
   border-color: var(--color-term-text);
   color: var(--color-term-text);
@@ -291,9 +291,9 @@
 /* With the tints gone, an open row takes the row's hover wash, the one on
    screen and a selected one too, where Quiet's tinted rows keep their tint;
    the names say open and on screen by weight. */
-:root:not([data-card-style='quiet']) .file-panel-item-open:hover { background-color: var(--color-border-muted); }
-:root:not([data-card-style='quiet']) .file-panel-item-open .truncate { font-weight: 600; }
-:root:not([data-card-style='quiet']) .file-panel-item-active .truncate { font-weight: 700; }
+:root:not([data-card-style='balanced']) .file-panel-item-open:hover { background-color: var(--color-border-muted); }
+:root:not([data-card-style='balanced']) .file-panel-item-open .truncate { font-weight: 600; }
+:root:not([data-card-style='balanced']) .file-panel-item-active .truncate { font-weight: 700; }
 
 /* ====== Pinned stores ======
    Memory, memo and a chart, pinned above the listing as rows of it, with a

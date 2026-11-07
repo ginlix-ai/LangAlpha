@@ -43,7 +43,7 @@
 }
 /* Resting unfilled, the open styles' control washes under the pointer;
    Quiet's rests filled and holds. */
-:root:not([data-card-style='quiet']) .pdf-btn:hover:not(:disabled) { background: var(--color-bg-hover); }
+:root:not([data-card-style='balanced']) .pdf-btn:hover:not(:disabled) { background: var(--color-bg-hover); }
 
 /* Fit is a mode, not an action: while it holds, the control reads as on. */
 .pdf-btn[aria-pressed='true'] {

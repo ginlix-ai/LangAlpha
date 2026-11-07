@@ -83,8 +83,8 @@ const RESTING: CardDrag = { state: 'resting', dragging: false, held: false };
 
 // The card's box, shared with its skeleton so a placeholder is the card's size.
 // The open card styles draw it unfilled inside their edge, with its title cut
-// into the top edge (WorkspaceCard.css); Quiet fills it and edges it as a
-// Quiet data card. The edge brightens under the pointer (`.hover-lift`) in
+// into the top edge (WorkspaceCard.css); Balanced fills it and edges it as a
+// Balanced data card. The edge brightens under the pointer (`.hover-lift`) in
 // the open styles only.
 const CARD_BODY = 'pf-card relative flex h-full w-full flex-col gap-1.5 overflow-hidden rounded-[var(--cs-radius-card,0.75rem)] py-3.5 pl-[18px] pr-4 md:px-5 md:py-4';
 const CARD_SURFACE = {

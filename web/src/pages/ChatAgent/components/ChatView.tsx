@@ -1734,7 +1734,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               {/* The rows here that draw a surface (the error, the restore
                   offer, the disk warning) take the composer's corner, 16 unless
                   the card style says otherwise (--cs-composer-*,
-                  styles/cardStyle.css), and set their text in where Balanced's
+                  styles/cardStyle.css), and set their text in where Soft's
                   rounder corner needs it. The same rows elsewhere keep their own. */}
               <DockableComposer home={composerDock.home} host={composerDock.host}>
               <div className="w-full max-w-3xl sibling-space-y-3 relative pointer-events-auto [--composer-h:initial] [--stack-row-radius:var(--cs-composer-stack-radius,16px)] [--stack-row-pad:var(--cs-composer-row-pad)]">

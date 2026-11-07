@@ -16,7 +16,7 @@
 .discover-chips .surface-chip {
   height: 28px;
   padding: 0 12px;
-  /* Outlined in every style, Balanced in a pill's ink. */
+  /* Outlined in every style, Soft in a pill's ink. */
   border: var(--cs-pill-border, 1px solid var(--color-border-muted));
   color: var(--color-shell-meta, var(--color-text-secondary));
 }

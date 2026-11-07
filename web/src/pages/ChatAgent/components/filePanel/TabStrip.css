@@ -63,8 +63,8 @@
   /* Terminal's open tab is heavier. */
   font-weight: var(--cs-weight-picked, inherit);
 }
-/* Balanced's pill is wider at its start. */
-:root[data-card-style='balanced'] .file-panel-tab { padding-left: 10px; }
+/* Soft's pill is wider at its start. */
+:root[data-card-style='soft'] .file-panel-tab { padding-left: 10px; }
 /* Arrow keys rove onto tabs with tabIndex -1, which the focus layer keeps
    quiet by default; this unlayered rule draws the ring anyway, inset because
    the strip scrolls and clips anything outside the pill. */

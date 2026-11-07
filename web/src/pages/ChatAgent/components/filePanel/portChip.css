@@ -1,6 +1,6 @@
 /* The port, and the version beside an app's name (TreeColumn, PreviewCrumbs,
    ArtifactVersionPicker): a tag, a card's tag in the open card styles, and
-   Balanced's taking a little more room. */
+   Soft's taking a little more room. */
 .file-panel-port-chip {
   flex-shrink: 0;
   padding: 0 4px;
@@ -12,4 +12,4 @@
   line-height: 1.4;
   color: var(--color-text-tertiary);
 }
-:root[data-card-style='balanced'] .file-panel-port-chip { padding: 0 6px; }
+:root[data-card-style='soft'] .file-panel-port-chip { padding: 0 6px; }

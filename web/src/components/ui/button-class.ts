@@ -44,7 +44,7 @@ export function buttonClass({
 /**
  * The hooks the card styles draw a button by (styles/cardStyle.css), for an
  * element that keeps its own classes but should look like the buttons beside
- * it: Terminal's bracketed words, Balanced's pills, a destructive one's box.
+ * it: Terminal's bracketed words, Soft's pills, a destructive one's box.
  */
 export function buttonSlot(variant: ButtonVariant = "default", tone?: ButtonTone) {
   return { "data-slot": "button", "data-variant": variant, "data-tone": tone } as const

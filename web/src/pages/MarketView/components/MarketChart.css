@@ -168,7 +168,7 @@
   font-family: 'SF Mono', 'Fira Code', monospace;
   color: var(--color-text-secondary);
   background: transparent;
-  /* Balanced's pills. */
+  /* Soft's pills. */
   border: var(--cs-pill-border, none);
   border-radius: var(--cs-radius-pill, 4px);
   cursor: pointer;
@@ -177,7 +177,7 @@
   align-items: center;
 }
 
-/* Quiet segmented control: the selected chip is a plain card surface lifted out
+/* Balanced segmented control: the selected chip is a plain card surface lifted out
    of the track, not an accent fill — the amber is reserved for annotations. */
 .interval-btn:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 .interval-btn-active { color: var(--color-text-primary); background: var(--color-bg-card); font-weight: var(--cs-weight-picked, 600); }
@@ -185,11 +185,11 @@
 .interval-btn-disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Intervals and Light / Advanced in the open card styles: Terminal's
-   bracketed words with the picked one in full ink, Balanced's pills; the
+   bracketed words with the picked one in full ink, Soft's pills; the
    filled track goes in both. Beside a legend (below), its hover wash
-   outranks their unwashed buttons and its padding Balanced's, while
+   outranks their unwashed buttons and its padding Soft's, while
    Terminal's words keep their own padding there. */
-:root:not([data-card-style='quiet']) .interval-selector {
+:root:not([data-card-style='balanced']) .interval-selector {
   background: transparent;
   padding: 0;
 }
@@ -206,10 +206,10 @@
 :root:not([data-card-style]) .interval-btn > svg { order: 1; }
 :root:not([data-card-style]) .interval-btn-active { color: var(--color-term-text); }
 :root:not([data-card-style]) .interval-btn:hover { color: var(--color-term-text); }
-:root[data-card-style='balanced'] .interval-selector { gap: 0.25rem; }
-:root[data-card-style='balanced'] :where(.interval-btn) { padding-block: 2px; }
-:root[data-card-style='balanced'] .interval-btn-active { background: transparent; }
-:root[data-card-style='balanced'] .interval-btn.interval-btn-active { border-color: var(--color-term-text); }
+:root[data-card-style='soft'] .interval-selector { gap: 0.25rem; }
+:root[data-card-style='soft'] :where(.interval-btn) { padding-block: 2px; }
+:root[data-card-style='soft'] .interval-btn-active { background: transparent; }
+:root[data-card-style='soft'] .interval-btn.interval-btn-active { border-color: var(--color-term-text); }
 
 /* Beside a ticker legend (`chart--with-lead`) the intervals are text, not a
    segmented control: the legend already reads at toolbar weight, and a filled
@@ -246,7 +246,7 @@
 
 /* Beside a legend the open styles keep their own mark in place of the
    underline. */
-:root:not([data-card-style='quiet']) .chart--with-lead .interval-selector--intervals .interval-btn-active { text-decoration: none; }
+:root:not([data-card-style='balanced']) .chart--with-lead .interval-selector--intervals .interval-btn-active { text-decoration: none; }
 
 .interval-disabled-tooltip {
   position: absolute;
@@ -312,9 +312,9 @@
   color: var(--color-text-primary);
   border-color: var(--color-accent-primary);
 }
-/* It keeps the hairline under the pointer in the open styles, where Quiet's
+/* It keeps the hairline under the pointer in the open styles, where Balanced's
    hover edge replaces it. */
-:root:not([data-card-style='quiet']) .chart-tool-btn-active { border-color: var(--color-accent-primary); }
+:root:not([data-card-style='balanced']) .chart-tool-btn-active { border-color: var(--color-accent-primary); }
 
 /* "Clear annotations" toolbar button — a chart-tool-btn that carries an icon
    plus a label, shown in the tools row only while agent annotations are drawn. */
@@ -623,7 +623,7 @@
 .range-btn-active { color: var(--color-text-primary); font-weight: 700; }
 .range-btn-active:hover { background: transparent; color: var(--color-text-primary); }
 /* The picked window bracketed in Terminal (the brackets are always there,
-   so nothing moves), outlined in Balanced. */
+   so nothing moves), outlined in Soft. */
 .range-btn::before { content: var(--term-open); margin-right: 0.3ch; opacity: 0; }
 .range-btn::after { content: var(--term-close); margin-left: 0.3ch; opacity: 0; }
 .range-btn-active::before,
@@ -634,8 +634,8 @@
   color: var(--color-term-text-tertiary);
 }
 :root:not([data-card-style]) .range-btn-active { color: var(--color-term-text); }
-:root[data-card-style='balanced'] .range-btn { border: 1px solid transparent; border-radius: 999px; }
-:root[data-card-style='balanced'] .range-btn-active { border-color: var(--color-term-text); }
+:root[data-card-style='soft'] .range-btn { border: 1px solid transparent; border-radius: 999px; }
+:root[data-card-style='soft'] .range-btn-active { border-color: var(--color-term-text); }
 
 .venue-clock {
   display: inline-flex;

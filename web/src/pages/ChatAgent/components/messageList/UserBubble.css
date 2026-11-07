@@ -3,7 +3,7 @@
    bubble reads its own fill; the edge stays a rule here, since a border would
    take a pixel of room in Quiet's borderless bubble. Its text is the shared
    Markdown root, so its face is set from the bubble. */
-:root:not([data-card-style='quiet']) .pf-bubble {
+:root:not([data-card-style='balanced']) .pf-bubble {
   border: 1px solid var(--color-shell-edge);
 }
 :root:not([data-card-style]) .pf-bubble .font-content {

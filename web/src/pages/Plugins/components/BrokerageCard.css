@@ -156,7 +156,7 @@
   color: var(--color-text-secondary);
 }
 /* A bracketed phrase with no box (Terminal, data-bracket="tag"), an outlined
-   pill (Balanced). The face is Terminal's alone: the card is drawn outside the
+   pill (Soft). The face is Terminal's alone: the card is drawn outside the
    app's shell too (the welcome flow), where the other styles keep the page's
    face. */
 :root:not([data-card-style]) .broker-cap {
@@ -172,7 +172,7 @@
   color: var(--color-text-quaternary);
 }
 /* Unboxed, a declined one stays the faint one by its ink. */
-:root:not([data-card-style='quiet']) .broker-cap.is-declined { opacity: 0.6; }
+:root:not([data-card-style='balanced']) .broker-cap.is-declined { opacity: 0.6; }
 .broker-cap.is-live { color: var(--color-warning); }
 .broker-caps-step { width: 12px; height: 12px; color: var(--color-text-quaternary); }
 .broker-caps-note {

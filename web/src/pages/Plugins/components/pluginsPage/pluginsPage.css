@@ -131,7 +131,7 @@
 .pp-verbs-row { display: flex; gap: 8px; }
 .pp-verbs-row > * { flex: 1; justify-content: center; }
 /* PageButton (parts.tsx) carries the button hooks, which draw it in the open
-   card styles (styles/cardStyle.css); these are its size and its Quiet look. */
+   card styles (styles/cardStyle.css); these are its size and its Balanced look. */
 .pp-btn {
   height: 32px;
   padding: 0 12px;
@@ -242,7 +242,7 @@
   gap: 8px;
   height: 42px;
   padding: 0 8px 0 16px;
-  /* A card's divider (rule-b) in Quiet's subtler ink. */
+  /* A card's divider (rule-b) in Balanced's subtler ink. */
   --rule-ink: var(--color-shell-divider, var(--color-border-subtle));
   font-size: 0.78125rem;
   color: var(--color-text-secondary);

@@ -52,12 +52,12 @@
 
 /* In the open styles a section's kicker runs out into a card's divider, as
    .pf-kicker does. */
-:root:not([data-card-style='quiet']) .automation-inspector-section > .automations-kicker {
+:root:not([data-card-style='balanced']) .automation-inspector-section > .automations-kicker {
   display: flex;
   align-items: center;
   gap: 0.625rem;
 }
-:root:not([data-card-style='quiet']) .automation-inspector-section > .automations-kicker::after {
+:root:not([data-card-style='balanced']) .automation-inspector-section > .automations-kicker::after {
   content: '';
   flex: 1;
   border-top: 1px var(--cs-rule-style) var(--color-shell-divider);

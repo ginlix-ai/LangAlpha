@@ -428,7 +428,7 @@
   font-weight: var(--cs-weight-picked, inherit);
 }
 /* The open styles' tabs rest without an edge. */
-:root:not([data-card-style='quiet']) .excel-sheet-tab:not(.active) { border-color: transparent; }
+:root:not([data-card-style='balanced']) .excel-sheet-tab:not(.active) { border-color: transparent; }
 
 /* Truncated notice, CsvViewer's footer too */
 .excel-truncated {

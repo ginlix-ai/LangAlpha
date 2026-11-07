@@ -926,7 +926,7 @@ function ChatInput({
       onDrop={onDrop}
     >
       {/* Main Container. 16px, concentric with the 8px send button set 8px
-          into the corner (DESIGN.md, Radius). Terminal and Balanced state
+          into the corner (DESIGN.md, Radius). Terminal and Soft state
           their own corners for the composer, its send button and the rows
           stacked on it (--cs-composer-*, styles/cardStyle.css); the drag and
           recording overlays repeat the corner, and the open styles draw the

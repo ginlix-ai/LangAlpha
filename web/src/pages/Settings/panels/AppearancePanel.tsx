@@ -11,23 +11,23 @@ import { useSettingCopy } from '../components/useSettingCopy';
 import { useSaveFailureToast } from './usePreferenceWrite';
 import { SETTINGS } from '../sections';
 
-/** A card as each style draws it, small enough for a choice: Quiet fills it,
- *  Balanced leaves it open with its title cut into the edge, Terminal dashes
+/** A card as each style draws it, small enough for a choice: Soft leaves it open
+ *  with its title cut into the edge, Balanced fills it, Terminal dashes
  *  the edge and brackets the title. Drawn in the card's ink, so the picked one
  *  darkens with it. */
 const STYLE_PREVIEW: Record<CardStyle, React.ReactNode> = {
-  quiet: (
-    <>
-      <rect x="8.5" y="8.5" width="39" height="23" rx="3" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeOpacity="0.35" />
-      <rect x="13" y="14" width="14" height="2.5" rx="1.25" fill="currentColor" />
-      <rect x="13" y="21" width="24" height="2" rx="1" fill="currentColor" fillOpacity="0.45" />
-    </>
-  ),
-  balanced: (
+  soft: (
     <>
       <path d="M12 9.5H11.5a3 3 0 0 0-3 3v16a3 3 0 0 0 3 3h33a3 3 0 0 0 3-3v-16a3 3 0 0 0-3-3H30" fill="none" stroke="currentColor" strokeOpacity="0.45" />
       <rect x="14" y="8.25" width="14" height="2.5" rx="1.25" fill="currentColor" />
       <rect x="13" y="20" width="24" height="2" rx="1" fill="currentColor" fillOpacity="0.45" />
+    </>
+  ),
+  balanced: (
+    <>
+      <rect x="8.5" y="8.5" width="39" height="23" rx="3" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeOpacity="0.35" />
+      <rect x="13" y="14" width="14" height="2.5" rx="1.25" fill="currentColor" />
+      <rect x="13" y="21" width="24" height="2" rx="1" fill="currentColor" fillOpacity="0.45" />
     </>
   ),
   terminal: (
@@ -41,7 +41,7 @@ const STYLE_PREVIEW: Record<CardStyle, React.ReactNode> = {
 };
 
 const STYLE_COPY: Record<CardStyle, { title: string; desc: string }> = {
-  quiet: { title: 'settings.cardStyleQuiet', desc: 'settings.cardStyleQuietDesc' },
+  soft: { title: 'settings.cardStyleSoft', desc: 'settings.cardStyleSoftDesc' },
   balanced: { title: 'settings.cardStyleBalanced', desc: 'settings.cardStyleBalancedDesc' },
   terminal: { title: 'settings.cardStyleTerminal', desc: 'settings.cardStyleTerminalDesc' },
 };

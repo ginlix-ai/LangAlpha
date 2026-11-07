@@ -26,7 +26,7 @@ import { ScenePreview } from './scenes';
  * `surface` (intro, whatsNew, guide; `rail` for the guide's rail) set the
  * starting toggles; `scene=<visual id>` shows that one scene alone, live,
  * or with `frames=0,800,1600` (or `frames=8` for that many evenly spaced) as
- * a contact sheet of frozen frames. `cardStyle` (quiet, balanced, terminal)
+ * a contact sheet of frozen frames. `cardStyle` (soft, balanced, terminal)
  * sets the data cards' style, which the dashboard scenes draw their widgets
  * in, and keeps it for the next load, as Settings does.
  */

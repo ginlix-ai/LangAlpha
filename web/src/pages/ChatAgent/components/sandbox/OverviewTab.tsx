@@ -14,7 +14,7 @@ import type { SandboxStats } from './sandboxTypes';
 const createdDate = createDateFormatter({ year: 'numeric', month: 'numeric', day: 'numeric' });
 
 // The actions are boxed in every style, Stop and Start in their own tone, so
-// they keep their edge where the button hooks would shed it: Balanced's pills,
+// they keep their edge where the button hooks would shed it: Soft's pills,
 // Terminal's type without the brackets.
 const ACTION_CLASS =
   'control-voice text-xs rounded-[var(--cs-radius-control,var(--radius-md))] transition-colors hover:bg-foreground/10';

@@ -45,7 +45,7 @@
   margin-bottom: 20px;
 }
 /* The open card styles rule it off as a card's divider. */
-:root:not([data-card-style='quiet']) .cwm-header {
+:root:not([data-card-style='balanced']) .cwm-header {
   padding-bottom: 0.75rem;
   border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider);
 }
@@ -164,15 +164,15 @@
   justify-content: center;
   gap: 8px;
   padding: 24px 16px;
-  /* The open card styles draw it a hairline in their edge, solid in Balanced. */
+  /* The open card styles draw it a hairline in their edge, solid in Soft. */
   border: 1.5px dashed var(--color-shell-edge, var(--color-border-muted));
   border-radius: var(--cs-radius-small, 8px);
   cursor: pointer;
   transition: border-color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
 }
 
-:root:not([data-card-style='quiet']) .cwm-dropzone { border-width: 1px; }
-:root[data-card-style='balanced'] .cwm-dropzone { border-style: solid; }
+:root:not([data-card-style='balanced']) .cwm-dropzone { border-width: 1px; }
+:root[data-card-style='soft'] .cwm-dropzone { border-style: solid; }
 
 .cwm-dropzone:hover {
   border-color: var(--color-shell-edge, var(--color-border-muted));

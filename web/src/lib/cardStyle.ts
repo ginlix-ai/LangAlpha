@@ -1,6 +1,6 @@
 /**
- * How the app is drawn: Quiet (the default, which leaves each component as it
- * draws itself), Balanced, or Terminal. Terminal is the data cards' own
+ * How the app is drawn: Balanced (the default, which leaves each component as it
+ * draws itself), Soft, or Terminal. Terminal is the data cards' own
  * stylesheets, and the other two take marks away from them
  * (charts/termCardStyles.css); the rest of the app reads the style as
  * variables (styles/cardStyle.css, which declares every style's values).
@@ -16,29 +16,56 @@
 import { useSyncExternalStore } from 'react';
 import { safeLocalStorage } from './utils';
 
-export const CARD_STYLES = ['quiet', 'balanced', 'terminal'] as const;
+export const CARD_STYLES = ['soft', 'balanced', 'terminal'] as const;
 export type CardStyle = (typeof CARD_STYLES)[number];
 
-const KEY = 'cardStyle';
+// The ids were renamed when the styles reached the whole app (main's Quiet,
+// the default, is now Balanced; its Balanced is now Soft), so they are kept
+// under a new key and a choice under the old one is carried over once.
+export const CARD_STYLE_STORAGE_KEY = 'cardStyle.v2';
+const KEY = CARD_STYLE_STORAGE_KEY;
+const LEGACY_KEY = 'cardStyle';
+const LEGACY: Readonly<Record<string, CardStyle>> = { quiet: 'balanced', balanced: 'soft', terminal: 'terminal' };
 
 export function isCardStyle(value: unknown): value is CardStyle {
   return CARD_STYLES.some((s) => s === value);
 }
 
-// Read before the app boots, so storage a browser refuses (blocked site data)
-// falls back to the default rather than stopping the boot.
-const stored = safeLocalStorage.getItem(KEY);
-let current: CardStyle = isCardStyle(stored) ? stored : 'quiet';
+function readStored(): CardStyle | null {
+  const stored = safeLocalStorage.getItem(KEY);
+  const legacy = safeLocalStorage.getItem(LEGACY_KEY);
+  // The old key goes whenever it is seen, even beside a new one (a tab still on
+  // the old build can write it again), or a later reset would bring it back.
+  if (legacy !== null) safeLocalStorage.removeItem(LEGACY_KEY);
+  if (isCardStyle(stored)) return stored;
+  const carried = legacy !== null && Object.hasOwn(LEGACY, legacy) ? LEGACY[legacy] : null;
+  if (carried) safeLocalStorage.setItem(KEY, carried);
+  return carried;
+}
+
+// Read on first use rather than at import, so a module that only imports this
+// one (the chart tokens) touches no storage; storage a browser refuses
+// (blocked site data) falls back to the default rather than stopping the boot.
+let picked: CardStyle | null | undefined;
+let current: CardStyle = 'balanced';
 const listeners = new Set<() => void>();
 
+function load(): void {
+  if (picked !== undefined) return;
+  picked = readStored();
+  current = picked ?? 'balanced';
+}
+
 export function getCardStyle(): CardStyle {
+  load();
   return current;
 }
 
 /** Whether this browser has a style of its own to offer an account that has
  *  none yet, rather than the default. */
 export function hasStoredCardStyle(): boolean {
-  return isCardStyle(stored);
+  load();
+  return picked !== null;
 }
 
 export function applyCardStyle(style: CardStyle): void {
@@ -47,6 +74,7 @@ export function applyCardStyle(style: CardStyle): void {
 }
 
 export function setCardStyle(style: CardStyle): void {
+  load();
   current = style;
   applyCardStyle(style);
   safeLocalStorage.setItem(KEY, style);

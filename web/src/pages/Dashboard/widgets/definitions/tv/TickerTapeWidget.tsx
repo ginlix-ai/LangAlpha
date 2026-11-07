@@ -172,7 +172,7 @@ registerWidget<TickerTapeConfig>({
   // fitToContent: cell height tracks the embed's natural 76px iframe plus
   // the card around it, ~6 rows. The card is the same in view and edit mode,
   // so maxSize.h only has to leave room for a style that sets the title
-  // inside the card (Quiet); a lower clamp would clip the iframe. Width stays
+  // inside the card (Balanced); a lower clamp would clip the iframe. Width stays
   // user-resizable.
   fitToContent: true,
   defaultSize: { w: 12, h: 6 },

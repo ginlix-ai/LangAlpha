@@ -12,7 +12,7 @@
   min-height: 30px;
   padding-bottom: 8px;
   margin-bottom: 8px;
-  /* A card's divider: dashed in Terminal, a hairline in Balanced. */
+  /* A card's divider: dashed in Terminal, a hairline in Soft. */
   border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-subtle));
 }
 /* The section's label, in the voice in every style (label-voice). */
@@ -52,7 +52,7 @@
 
 /* Filter chips in a section head ("All 29 / On / Off"): a bracketed word in
    Terminal (data-bracket="chip"), the picked one in full ink and weight; a
-   pill in Balanced, the picked one outlined in ink. */
+   pill in Soft, the picked one outlined in ink. */
 .surface-chip {
   height: 26px;
   padding: 0 10px;
@@ -75,7 +75,7 @@
 }
 .surface-chip .surface-count { font-size: 0.6875rem; }
 :root:not([data-card-style]) .surface-chip { padding-inline: 0.25rem; }
-:root[data-card-style='balanced'] .surface-chip.is-on { border-color: var(--color-term-text); }
+:root[data-card-style='soft'] .surface-chip.is-on { border-color: var(--color-term-text); }
 
 /* The grid: as many ~340px columns as fit. The negative margin lets a cell's
    hover fill reach past the column edge while its content lines up with the
@@ -269,7 +269,7 @@
 }
 .surface-state-warn { display: inline-flex; color: var(--color-warning); }
 /* A cell's trailing action carries the button hooks, which draw it in the
-   open card styles (styles/cardStyle.css); these are its size and its Quiet
+   open card styles (styles/cardStyle.css); these are its size and its Balanced
    look. */
 .surface-cell-action {
   height: 28px;
@@ -349,7 +349,7 @@
   color: var(--color-text-quaternary);
 }
 /* A bracketed word with no box (Terminal, data-bracket="tag"), an outlined
-   pill (Balanced). */
+   pill (Soft). */
 .surface-tag {
   display: inline-flex;
   align-items: center;

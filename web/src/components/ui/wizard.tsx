@@ -442,7 +442,7 @@ export interface WizardFooterProps {
 // Every footer button gives a little under a press, so a tap that lands is
 // felt before the next screen arrives; never when it is disabled, since that
 // press does nothing. They carry the button hooks, which set them as
-// bracketed words in Terminal and pills in Balanced (styles/cardStyle.css).
+// bracketed words in Terminal and pills in Soft (styles/cardStyle.css).
 const ghost =
   'inline-flex h-10 items-center justify-center rounded-md px-3 text-sm font-medium text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)';
 

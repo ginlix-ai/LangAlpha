@@ -121,7 +121,7 @@
 .connector-mono { font-family: var(--font-mono); font-size: 0.71875rem; }
 
 /* Carries the button hooks, which draw it in the open card styles
-   (styles/cardStyle.css); these are its size and its Quiet look. */
+   (styles/cardStyle.css); these are its size and its Balanced look. */
 .connector-btn {
   height: 30px;
   padding: 0 12px;

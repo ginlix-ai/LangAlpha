@@ -71,7 +71,7 @@ beforeEach(() => {
   mockUpdate.mockReset();
   mockUpdate.mockImplementation(async (patch: unknown) => patch);
   localStorage.clear();
-  setCardStyle('quiet');
+  setCardStyle('balanced');
   localStorage.clear();
 });
 
@@ -82,8 +82,8 @@ describe('seeding an account that has no look saved', () => {
   });
 
   it('never gives the account a theme of auto, which every browser stores unasked', async () => {
-    await mount({}, { theme: 'auto', cardStyle: 'balanced' });
-    expect(writes()).toEqual([{ other_preference: { card_style: 'balanced' } }]);
+    await mount({}, { theme: 'auto', cardStyle: 'soft' });
+    expect(writes()).toEqual([{ other_preference: { card_style: 'soft' } }]);
   });
 
   it("gives the account this browser's picks once", async () => {
@@ -99,18 +99,18 @@ describe('seeding an account that has no look saved', () => {
   });
 
   it('leaves alone a key the account already has', async () => {
-    await mount({ other_preference: { theme: 'light' } }, { theme: 'dark', cardStyle: 'balanced' });
-    expect(writes()).toEqual([{ other_preference: { card_style: 'balanced' } }]);
+    await mount({ other_preference: { theme: 'light' } }, { theme: 'dark', cardStyle: 'soft' });
+    expect(writes()).toEqual([{ other_preference: { card_style: 'soft' } }]);
   });
 });
 
 describe("following the account's look", () => {
   it('applies the account value here, and again when another device changes it', async () => {
     const { result, queryClient } = await mount(
-      { other_preference: { card_style: 'balanced', theme: 'dark' } },
+      { other_preference: { card_style: 'soft', theme: 'dark' } },
       { theme: 'light' },
     );
-    expect(getCardStyle()).toBe('balanced');
+    expect(getCardStyle()).toBe('soft');
     expect(document.documentElement.dataset.theme).toBe('dark');
     expect(mockUpdate).not.toHaveBeenCalled();
 
@@ -125,7 +125,7 @@ describe("following the account's look", () => {
   });
 
   it('a pick restyles at once and writes only its own key', async () => {
-    const { result } = await mount({ other_preference: { card_style: 'balanced', theme: 'dark' } });
+    const { result } = await mount({ other_preference: { card_style: 'soft', theme: 'dark' } });
     // What the server stores, for the refetch that follows the save.
     mockGet.mockResolvedValue({ other_preference: { card_style: 'terminal', theme: 'dark' } });
     await act(async () => {
@@ -138,7 +138,7 @@ describe("following the account's look", () => {
   });
 
   it('a failed save leaves the control, and the page, on the account value', async () => {
-    const { result } = await mount({ other_preference: { card_style: 'balanced', theme: 'dark' } });
+    const { result } = await mount({ other_preference: { card_style: 'soft', theme: 'dark' } });
     mockUpdate.mockRejectedValue(new Error('offline'));
 
     await act(async () => {
@@ -148,8 +148,8 @@ describe("following the account's look", () => {
       await result.current.pickTheme('light').catch(() => {});
     });
 
-    await waitFor(() => expect(result.current).toMatchObject({ cardStyle: 'balanced', theme: 'dark' }));
-    expect(getCardStyle()).toBe('balanced');
+    await waitFor(() => expect(result.current).toMatchObject({ cardStyle: 'soft', theme: 'dark' }));
+    expect(getCardStyle()).toBe('soft');
     expect(document.documentElement.dataset.theme).toBe('dark');
   });
 });

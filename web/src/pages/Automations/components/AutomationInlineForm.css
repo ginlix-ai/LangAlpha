@@ -21,7 +21,7 @@
    the column the starting points draw their cadence in, its field on the
    right. No card around it, so the form reads as the page it opened on. */
 /* Its rows parted by a card's divider (rule-t, rule-b on the stack): dashed
-   in Terminal, a hairline in Balanced. */
+   in Terminal, a hairline in Soft. */
 .automation-form-rows > * + * {
   border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
@@ -95,7 +95,7 @@
   min-width: max-content;
   max-width: 184px;
   padding: 10px 12px;
-  /* Terminal's small corner, Balanced's choice corner. */
+  /* Terminal's small corner, Soft's choice corner. */
   border-radius: var(--cs-radius-small, var(--cs-radius-choice, 8px));
   text-align: left;
   color: var(--color-text-secondary);
@@ -126,7 +126,7 @@
 .automation-day {
   width: 36px;
   height: 36px;
-  /* Terminal's small corner, Balanced's pill. */
+  /* Terminal's small corner, Soft's pill. */
   border-radius: var(--cs-radius-small, var(--cs-radius-pill, 6px));
   font-size: 0.75rem;
   color: var(--color-text-tertiary);

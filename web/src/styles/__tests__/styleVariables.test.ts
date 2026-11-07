@@ -14,16 +14,16 @@ import { describe, expect, it } from 'vitest';
  */
 
 const SRC = resolve(__dirname, '../..');
-type Style = 'terminal' | 'balanced' | 'quiet';
-const ALL: Style[] = ['terminal', 'balanced', 'quiet'];
+type Style = 'terminal' | 'soft' | 'balanced';
+const ALL: Style[] = ['terminal', 'soft', 'balanced'];
 
 /** The style scopes a rule can open with (cardStyle.css's shorthands). */
 const SCOPES: Record<string, Style[]> = {
   ':root:not([data-card-style])': ['terminal'],
+  ":root[data-card-style='soft']": ['soft'],
   ":root[data-card-style='balanced']": ['balanced'],
-  ":root[data-card-style='quiet']": ['quiet'],
-  ":root:not([data-card-style='quiet'])": ['terminal', 'balanced'],
-  ":root:is([data-card-style='balanced'], [data-card-style='quiet'])": ['balanced', 'quiet'],
+  ":root:not([data-card-style='balanced'])": ['terminal', 'soft'],
+  ":root:is([data-card-style='soft'], [data-card-style='balanced'])": ['soft', 'balanced'],
 };
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -149,9 +149,9 @@ describe('card style variables', () => {
   it('finds the styles each variable is declared in', () => {
     // Guards the parse itself: a broken scope table or block parse would
     // otherwise pass every read.
-    expect([...declared.get('--cs-face') ?? []].sort()).toEqual(['balanced', 'terminal']);
+    expect([...declared.get('--cs-face') ?? []].sort()).toEqual(['soft', 'terminal']);
     expect([...declared.get('--color-shell-label') ?? []]).toEqual(['terminal']);
-    expect([...declared.get('--term-mark') ?? []].sort()).toEqual(['balanced', 'quiet']);
+    expect([...declared.get('--term-mark') ?? []].sort()).toEqual(['balanced', 'soft']);
     expect(styleOnly.has('--term-case')).toBe(false);
   });
 

@@ -29,7 +29,7 @@ export function AnimatedTabs({
   const valueChanged = prevValue.current !== value;
   useEffect(() => { prevValue.current = value; });
   // A number, not a var(): framer corrects a px radius while the indicator
-  // slides and leaves a string it cannot parse uncorrected. Balanced draws
+  // slides and leaves a string it cannot parse uncorrected. Soft draws
   // it as a pill, as its other choices are; Terminal hides it
   // (styles/cardStyle.css).
   const indicatorRadius = useStyleLength("--cs-radius-pill", 6);

@@ -28,7 +28,7 @@ interface SearchFieldProps extends AriaSearchFieldProps {
  * `Autocomplete` turns off on its input, for a list filtered without one.
  *
  * The rule is the card styles' divider (`rule-b`, styles/cardStyle.css):
- * dashed in the edge's ink in Terminal, the hairline in Balanced.
+ * dashed in the edge's ink in Terminal, the hairline in Soft.
  */
 function SearchField({ className, placeholder, inputRef, ruled = true, ...props }: SearchFieldProps) {
   return (

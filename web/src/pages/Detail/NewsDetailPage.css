@@ -10,7 +10,7 @@
 }
 
 /* Source, tickers and sentiment: bracketed words with no box (Terminal,
-   data-bracket="tag"), outlined pills (Balanced). A tag's corner is its
+   data-bracket="tag"), outlined pills (Soft). A tag's corner is its
    rounded class, which reads the pill's where the tag is not one already. */
 .news-page-tag {
   border: var(--cs-pill-border, 0);
@@ -45,14 +45,14 @@
   border-radius: calc(var(--radius) - 2px);
   background-color: var(--color-shell-fill, var(--color-bg-card));
 }
-:root:not([data-card-style='quiet']) .news-page-section {
+:root:not([data-card-style='balanced']) .news-page-section {
   position: relative;
   margin-top: 0.75rem;
   padding: 1.125rem 0.875rem 0.5rem;
   border: 1px solid var(--color-shell-edge);
   border-radius: var(--cs-radius-box, 8px);
 }
-:root:not([data-card-style='quiet']) .news-page-section-title {
+:root:not([data-card-style='balanced']) .news-page-section-title {
   position: absolute;
   top: -0.75em;
   left: 0.625rem;
@@ -60,19 +60,19 @@
   background: var(--color-bg-page);
   line-height: 1.45;
 }
-:root:not([data-card-style='quiet']) .news-page-rows { gap: 0; }
-:root:not([data-card-style='quiet']) .news-page-row {
+:root:not([data-card-style='balanced']) .news-page-rows { gap: 0; }
+:root:not([data-card-style='balanced']) .news-page-row {
   border: 0;
   border-radius: 0;
   padding-inline: 0;
 }
-:root:not([data-card-style='quiet']) .news-page-row + .news-page-row {
+:root:not([data-card-style='balanced']) .news-page-row + .news-page-row {
   border-top: 1px var(--cs-rule-style) var(--color-shell-divider);
 }
 
 .news-page-foot {
   margin-top: 8px;
   padding-top: 16px;
-  /* A card's divider (rule-t) in Quiet's stronger ink. */
+  /* A card's divider (rule-t) in Balanced's stronger ink. */
   --rule-ink: var(--color-shell-divider, var(--color-border-default));
 }

@@ -121,10 +121,10 @@ beforeEach(() => {
 });
 
 describe('Settings: style', () => {
-  it('starts on Quiet', async () => {
+  it('starts on Balanced', async () => {
     renderAccountTab();
     const group = await screen.findByRole('radiogroup', { name: 'Style' });
-    expect(within(group).getByRole('radio', { name: /^Quiet/ })).toBeChecked();
+    expect(within(group).getByRole('radio', { name: /^Balanced/ })).toBeChecked();
   });
 
   it('restyles the page at once, keeps a copy here and saves it to the account', async () => {
@@ -133,7 +133,7 @@ describe('Settings: style', () => {
     fireEvent.click(within(group).getByRole('radio', { name: /^Terminal/ }));
 
     expect(document.documentElement).not.toHaveAttribute('data-card-style');
-    expect(localStorage.getItem('cardStyle')).toBe('terminal');
+    expect(localStorage.getItem('cardStyle.v2')).toBe('terminal');
     expect(within(group).getByRole('radio', { name: /^Terminal/ })).toBeChecked();
     expect(h.mutateAsync).toHaveBeenCalledWith({ other_preference: { card_style: 'terminal' } });
   });
