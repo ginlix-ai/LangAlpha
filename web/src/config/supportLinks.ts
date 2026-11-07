@@ -35,4 +35,7 @@ export const SUPPORT_EMAIL: string | null =
  *  and the one that connects to a self-hosted server, so one link serves every build. */
 export const DESKTOP_DOWNLOAD_URL = 'https://langalpha.ai/download';
 
+/** The documentation site: getting started, self-hosting, the CLI and the concepts behind the app. */
+export const DOCS_URL = 'https://docs.langalpha.ai';
+
 export const PRIVACY_URL: string | null = import.meta.env.VITE_PRIVACY_URL || null;

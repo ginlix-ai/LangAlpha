@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://langalpha.ai"><strong>LangAlpha を試す ↗</strong></a> ·
+  <a href="https://docs.langalpha.ai"><strong>ドキュメント ↗</strong></a> ·
   <a href="#使い始める"><strong>使い始める</strong></a> ·
   <a href="#agent-トレーディング"><strong>Agent トレーディング</strong></a> ·
   <a href="#harness-設計"><strong>Harness 設計</strong></a> ·
@@ -25,6 +26,7 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" alt="ライセンス：Apache 2.0" />
   <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square" alt="Python 3.13+" />
   <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?style=flat-square&logo=langchain&logoColor=white" alt="LangChain" /></a>
+  <a href="https://docs.langalpha.ai"><img src="https://img.shields.io/badge/docs-docs.langalpha.ai-1c3c3c?style=flat-square" alt="ドキュメント" /></a>
   <a href="https://github.com/ginlix-ai/langalpha/releases"><img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-555?style=flat-square" alt="デスクトップアプリ" /></a>
 </p>
 
@@ -180,7 +182,9 @@ make config   # wizard: model, data sources, sandbox, web search
 make up       # Postgres, Redis, backend and web app
 ```
 
-[http://localhost:5173](http://localhost:5173) を開いてください。API はポート 8000 で待ち受けており、インタラクティブなドキュメントは `/docs` にあります。
+[http://localhost:5173](http://localhost:5173) を開いてください。API はポート 8000 で待ち受けており、インタラクティブなドキュメントは `/docs` にあります。手順は[セルフホストのクイックスタート](https://docs.langalpha.ai/get-started/self-hosting-quickstart/)（英語）を参照してください。
+
+**ドキュメント**。[LangAlpha とは](https://docs.langalpha.ai/get-started/what-is-langalpha/)でプロダクトの全体像を、[CLI リファレンス](https://docs.langalpha.ai/cli/overview/)でターミナルとスクリプトから使う `langalpha`（短縮形 `la`）を紹介しています。ドキュメントは英語です。
 
 **セルフホストとの違い。** agent、workspace、automation、skill、統制された注文は同じように動きます。それ以外は次のように異なります。
 
