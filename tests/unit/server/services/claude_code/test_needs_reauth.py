@@ -74,7 +74,7 @@ async def _refused_turn(cache, row=None):
         token = HostedCredential("user-1", "saved_token")
         assert await token.read() == Credential(TOKEN)
         with pytest.raises(ClaudeTurnFailed) as failed:
-            await token.refused(Credential(TOKEN))
+            await token.refused()
     return failed.value
 
 
@@ -227,9 +227,9 @@ async def test_a_relayed_token_claude_refused_is_flagged_ends_the_turn_saying_so
         patch("src.server.services.claude_code.hosted.backend_available", lambda: True),
     ):
         machine = ComputerToken("user-1", "c-1")
-        assert await machine.relay() == TOKEN
+        assert await machine.read() == Credential(TOKEN)
         with pytest.raises(ClaudeTurnFailed) as failed:
-            await machine.refused("relay")
+            await machine.refused()
     assert claude_code_refusal(failed.value, CODE)["reason"] == "token_refused"
     flag.assert_awaited_once_with(
         "user-1", "claude-code", access_token_sha256=token_hash(TOKEN), saved_at=SAVED_AT, error_code="token_refused",
@@ -239,7 +239,7 @@ async def test_a_relayed_token_claude_refused_is_flagged_ends_the_turn_saying_so
         serving(Cache()), _relay_store(_row(flagged=True)),
         patch("src.server.services.claude_code.hosted.backend_available", lambda: True),
     ):
-        assert await ComputerToken("user-1", "c-1").relay() is None
+        assert await ComputerToken("user-1", "c-1").read() is None
 
 
 @pytest.mark.asyncio

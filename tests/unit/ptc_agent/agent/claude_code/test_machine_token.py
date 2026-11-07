@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ptc_agent.agent.claude_code import cli_install, machine_token, ssh_launcher
-from ptc_agent.agent.claude_code.launcher import TOKEN_FD_ENV
+from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.machine_token import (
     STREAM_BOOT,
     TOKEN_DIR_SH,

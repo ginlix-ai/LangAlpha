@@ -128,6 +128,13 @@ async def test_installs_once_then_reuses_without_downloading(env):
     assert sorted(os.listdir(Path(path).parent)) == ["claude", "claude.verified"]
 
 
+async def test_an_install_leaves_the_connections_short_scripts_their_slot(env):
+    """A download can take minutes, so it never holds the slot a state read or a token check waits on."""
+    link = env.link()
+    async with link.control_slot:
+        await asyncio.wait_for(env.ensure(env.publish("1.0.0", V1), link), timeout=30)
+
+
 async def test_only_looking_never_installs_and_finds_a_ready_copy(env):
     """A status check looks for the CLI and never downloads it under its hold."""
     pin = env.publish("1.0.0", V1)

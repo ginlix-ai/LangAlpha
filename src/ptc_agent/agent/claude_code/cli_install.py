@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import gzip
 import hashlib
 import json
 import logging
 import os
 import secrets
 import shlex
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -44,7 +47,7 @@ from ptc_agent.core.sandbox.providers._ssh_bootstrap import LOCK_SH
 from ptc_agent.core.sandbox.providers.ssh import IS_MUSL_SH, MUSL_UNSUPPORTED
 
 if TYPE_CHECKING:
-    from ptc_agent.core.sandbox.providers._ssh_transport import Link
+    from ptc_agent.agent.claude_code.shell_link import ShellLink
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +141,10 @@ class _Outcome:
     platform: str
 
 
-async def _run(link: Link, script: str) -> _Outcome:
+async def _run(link: ShellLink, script: str) -> _Outcome:
     """Run *script* in a command slot, since a download can take minutes."""
     try:
-        result = await link.run(script, timeout=_RUN_TIMEOUT_S, slot=link.slots)
+        result = await link.run(script, timeout=_RUN_TIMEOUT_S, long=True)
     except TimeoutError as e:
         raise CliInstallError("Installing Claude Code on this computer took too long.") from e
     if result.exit_code == _MUSL_EXIT:
@@ -203,8 +206,27 @@ async def backend_copy(pin: CliPin, platform: str, *, base_url: str = RELEASES_U
     return path
 
 
+def gzipped(path: Path) -> Path:
+    """``path``, a backend copy of the CLI, gzipped beside it and made once: a
+    fast level, since a sandbox's file API pays for bytes and the backend for
+    compression only the first time. Safe for uploads racing in one worker:
+    each compresses to a temp file of its own and renames it in."""
+    packed = path.with_name(path.name + ".gz")
+    if packed.is_file() and packed.stat().st_mtime >= path.stat().st_mtime:
+        return packed
+    fd, name = tempfile.mkstemp(prefix=f".{packed.name}.", dir=packed.parent)
+    tmp = Path(name)
+    try:
+        with open(fd, "wb") as raw, path.open("rb") as src, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=1) as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+        tmp.replace(packed)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return packed
+
+
 async def ensure_cli(
-    link: Link,
+    link: ShellLink,
     root: str,
     *,
     install: bool = True,

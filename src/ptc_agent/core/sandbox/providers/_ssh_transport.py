@@ -24,7 +24,7 @@ import uuid
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Generic, Literal, TypeVar
 
 import asyncssh
 import structlog
@@ -260,6 +260,14 @@ async def _exit_sftp(sftp: Any) -> None:
         sftp.exit()
 
 
+class SlotWaitTimeout(TimeoutError):
+    """No slot of the kind ``which`` freed in the time a wait was given."""
+
+    def __init__(self, which: Literal["cli", "command"]) -> None:
+        super().__init__(f"no {which} slot freed in time")
+        self.which = which
+
+
 class Link:
     """One connection and what rides on it, pooled or a one-off's."""
 
@@ -288,6 +296,10 @@ class Link:
     @property
     def usable(self) -> bool:
         return not self.retired and not self.conn.is_closed()
+
+    @property
+    def host(self) -> str:
+        return self.target.host
 
     @contextlib.asynccontextmanager
     async def in_use(self) -> AsyncIterator[None]:
@@ -397,20 +409,21 @@ class Link:
         timeout: float,
         root: bool = False,
         kill: bool = False,
+        long: bool = False,
         slot: asyncio.Semaphore | None = None,
     ) -> ScriptResult:
         """Run a script and wait for it.
 
         A short management script takes the control slot, or the kill slot
         with *kill*, never a command slot, so long commands cannot hold it up.
-        A long one passes *slot* (a command slot) so it never holds the
-        control slot.
+        A long one (*long*, or a *slot* of its own) takes a command slot so it
+        never holds the control slot.
 
         Raises:
             TimeoutError: It ran past *timeout*; its channel is closed.
         """
         if slot is None:
-            slot = self.kill_slot if kill else self.control_slot
+            slot = self.slots if long else self.kill_slot if kill else self.control_slot
         async with self.in_use(), asyncio.timeout(timeout):
             run = await self.start(script, root=root, slot=slot)
             try:
@@ -475,6 +488,57 @@ class Link:
                 self.spawn(
                     _end_upload(self.slots, sftp, partial=None if sent else remote)
                 )
+
+    async def write_files(self, files: list[tuple[str, bytes]]) -> None:
+        """Write each file whole and private (``write_atomic``) on the kept SFTP channel."""
+        async with self.in_use():
+            sftp = await self.sftp()
+            try:
+                for path, data in files:
+                    await write_atomic(sftp, path, data, mode=0o600)
+            except TRANSPORT_ERRORS:
+                self.drop_sftp(sftp)
+                raise
+
+    @contextlib.asynccontextmanager
+    async def cli_hold(self, wait_s: float) -> AsyncIterator[Callable[[str], Awaitable[Any]]]:
+        """Hold what a long-lived CLI needs here: the link kept in use, one of
+        its CLI slots, and the command slot its channel will take, all within
+        ``wait_s``, so commands filling every command slot are a wait like any
+        other. It yields what starts the CLI: its channel takes the command
+        slot over and gives it back as it closes; one never started gives it
+        back here.
+
+        Raises:
+            SlotWaitTimeout: A slot did not free in time, naming which.
+        """
+        async with self.in_use():
+            deadline = asyncio.get_running_loop().time() + wait_s
+            try:
+                async with asyncio.timeout_at(deadline):
+                    await self.cli_slots.acquire()
+            except TimeoutError:
+                raise SlotWaitTimeout("cli") from None
+            try:
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await self.slots.acquire()
+                except TimeoutError:
+                    raise SlotWaitTimeout("command") from None
+                started = False
+
+                async def start(command: str) -> Any:
+                    nonlocal started
+                    started = True
+                    return await self.open_process(command, held=True)
+
+                try:
+                    yield start
+                finally:
+                    if not started:
+                        self.slots.release()
+            finally:
+                self.cli_slots.release()
 
     async def sftp(self) -> asyncssh.SFTPClient:
         """The connection's SFTP channel, opened once in the session kept for
@@ -661,13 +725,17 @@ def pool() -> SSHPool:
     return found
 
 
-@dataclass(frozen=True)
-class Machine:
-    """A machine of the user's own, for work that runs its own channels on it
-    (a Claude Code turn, its token): ``link`` returns its pooled connection,
-    dialing again once one is lost, and ``root`` the computer root there."""
+L = TypeVar("L")
 
-    link: Callable[[], Awaitable[Link]]
+
+@dataclass(frozen=True)
+class Machine(Generic[L]):
+    """A machine work runs its own channels on (a Claude Code turn, its
+    token): ``link`` returns what reaches it, the pooled connection of a
+    computer of the user's own (``Link``), dialed again once one is lost, or
+    a cloud computer's sandbox; ``root`` is the computer root there."""
+
+    link: Callable[[], Awaitable[L]]
     root: Callable[[], str]
 
 

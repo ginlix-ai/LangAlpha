@@ -291,9 +291,9 @@ async def test_an_own_computer_without_a_token_is_relayed_the_stored_one_only_wh
     ):
         with platform(stored=True, mode="stored"):
             assert hosted_module.relay_offered()
-            assert await ComputerToken("user-1", "c-1").relay() == TOKEN
+            assert await ComputerToken("user-1", "c-1").read() == Credential(TOKEN)
         with platform(stored=True, mode="local"):
-            assert await ComputerToken("user-1", "c-1").relay() is None
+            assert await ComputerToken("user-1", "c-1").read() is None
     assert row.await_count == 1
     with platform(switch=True, stored=False):
         assert not hosted_module.relay_offered()

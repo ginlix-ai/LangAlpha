@@ -10,7 +10,6 @@ from fastapi import HTTPException
 from ptc_agent.config.agent import AgentConfig, CredentialSource, LLMConfig
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SandboxConfig, SecurityConfig
 from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed
-from ptc_agent.agent.claude_code.launcher import Credential
 from src.server.services.claude_code.launchers import HostedCredential
 from src.server.services.claude_code.saved import token_check_key
 from src.server.services.llm.claude_code import CLAUDE_CODE_OFF
@@ -103,7 +102,7 @@ async def test_a_token_a_turn_found_refused_is_refused_from_the_next_turn_on():
     ):
         token = HostedCredential("user-1", "saved_token")
         await token.read()
-        await token.refused(Credential("sk-ant-oat01-tok"))
+        await token.refused()
     assert cache.values == {token_check_key("sk-ant-oat01-tok"): False}
     with pytest.raises(HTTPException) as refused:
         await _resolve({"preferred_model": CODE}, checked=cache.values[token_check_key("sk-ant-oat01-tok")])

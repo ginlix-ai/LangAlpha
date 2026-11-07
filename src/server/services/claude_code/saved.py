@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .hosted import TurnsNotStopped, saved_token_runs, stop_stored_turns
 from ptc_agent.core.claude_code_managed import local_managed
@@ -45,6 +45,12 @@ logger = logging.getLogger(__name__)
 def token_hash(token: str) -> str:
     """What a token is known by wherever it is not kept: its sha256, in hex."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def refusal_stamp(row: Mapping[str, Any]) -> tuple[str, Any]:
+    """What a refusal of a stored token is recorded against (``refuse``): its
+    hash and when it was saved, never the token itself."""
+    return token_hash(row["access_token"]), row["updated_at"]
 
 
 def token_check_key(token: str) -> str:

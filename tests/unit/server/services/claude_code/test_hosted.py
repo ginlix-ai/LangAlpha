@@ -223,8 +223,15 @@ async def test_with_the_switch_turned_off_since_admission_the_run_is_refused_as_
 
 @pytest.mark.asyncio
 async def test_a_refused_api_key_ends_the_turn_saying_so_and_is_never_flagged():
-    with patch(f"{LAUNCHERS}.refuse", AsyncMock()) as flag, pytest.raises(ClaudeTurnFailed) as refused:
-        await HostedCredential("user-1", "api_key").refused(Credential(KEY, kind="api_key"))
+    credential = HostedCredential("user-1", "api_key")
+    with (
+        patch(f"{LAUNCHERS}.hosted", AsyncMock(return_value=SimpleNamespace(refusal=None, runs_on="api_key"))),
+        patch(f"{LAUNCHERS}.get_key_with_base_url", AsyncMock(return_value={"api_key": KEY, "base_url": None})),
+        patch(f"{LAUNCHERS}.refuse", AsyncMock()) as flag,
+        pytest.raises(ClaudeTurnFailed) as refused,
+    ):
+        assert await credential.read() == Credential(KEY, kind="api_key")
+        await credential.refused()
     flag.assert_not_awaited()
     assert claude_code_refusal(refused.value, CODE) == {
         "message": (
@@ -246,7 +253,8 @@ async def test_a_refused_setup_token_is_still_flagged_and_ends_the_turn_saying_s
         patch(f"{LAUNCHERS}.refuse", AsyncMock()) as flag,
         pytest.raises(ClaudeTurnFailed) as refused,
     ):
-        await credential.refused(await credential.read())
+        await credential.read()
+        await credential.refused()
     flag.assert_awaited_once_with("user-1", token_hash("sk-ant-oat01-tok"), "saved-at")
     assert claude_code_refusal(refused.value, CODE)["reason"] == "token_refused"
 

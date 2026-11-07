@@ -14,10 +14,9 @@ import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
+from ptc_agent.agent.claude_code.machine_token import API_KEY_FD_ENV, TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.launcher import (
-    API_KEY_FD_ENV,
     SDK_CONNECT_SHA256,
-    TOKEN_FD_ENV,
     CliSlots,
     Credential,
     LocalLauncher,

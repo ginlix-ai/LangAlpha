@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
+from ptc_agent.agent.claude_code.launcher import Credential
 from ptc_agent.core import claude_code_managed
 from ptc_agent.core.sandbox.providers.ssh import MUSL_UNSUPPORTED
 from src.server.services.claude_code import checks
@@ -208,7 +209,7 @@ async def test_resolve_names_the_turns_workspace_to_the_placement_check():
 async def test_a_turn_refused_on_the_machines_token_records_it_for_that_computer():
     cache = _Cache({answer_key("c-1"): _answer("works", email="user@example.com")})
     with serving(cache):
-        await ComputerToken("user-1", "c-1").refused("file")
+        await ComputerToken("user-1", "c-1").file_refused()
     kept = MachineAnswer(**cache.values[answer_key("c-1")])
     assert (kept.file, kept.email, kept.fresh) == ("refused", "user@example.com", True)
 
@@ -226,9 +227,9 @@ async def test_a_relayed_token_is_handed_over_once_asked_and_its_refusal_marks_i
         patch("src.server.services.claude_code.hosted.backend_available", lambda: True),
     ):
         machine = ComputerToken("user-1", "c-1")
-        assert await machine.relay() == "sk-ant-oat01-saved"
+        assert await machine.read() == Credential("sk-ant-oat01-saved")
         with pytest.raises(ClaudeTurnFailed):
-            await machine.refused("relay")
+            await machine.refused()
         assert cache.values == {token_check_key("sk-ant-oat01-saved"): False}
         assert "sk-ant-oat01-saved" not in repr(vars(machine))
-        assert await ComputerToken("user-1", "c-1").relay() is None, "a token Claude refused is not relayed again"
+        assert await ComputerToken("user-1", "c-1").read() is None, "a token Claude refused is not relayed again"
