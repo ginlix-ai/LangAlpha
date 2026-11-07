@@ -52,7 +52,7 @@ function setup({ banner: initialBanner = null, reply = {} }: { banner?: unknown;
     t: (k: string) => k,
   };
   const deps = {
-    clearModelStatus: vi.fn(), armReportBack: vi.fn(), refreshWorkspaces: vi.fn(),
+    clearModelStatus: vi.fn(), armReportBack: vi.fn(), refreshWorkspaces: vi.fn(), refreshClaudeCodePlan: vi.fn(),
     readMessage: (id: string) => messages.find((m) => m.id === id),
   };
   const processor = (bubbleId: string, isReconnect: boolean) => createStreamEventProcessor(

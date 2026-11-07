@@ -38,7 +38,7 @@ function setup() {
     nextSummaryOwedRef: { current: false },
     t: (k: string) => k,
   };
-  const deps = { clearModelStatus: () => {}, armReportBack: vi.fn(), refreshWorkspaces: vi.fn() };
+  const deps = { clearModelStatus: () => {}, armReportBack: vi.fn(), refreshWorkspaces: vi.fn(), refreshClaudeCodePlan: vi.fn() };
   const refs = {
     contentOrderCounterRef: { current: 0 },
     currentReasoningIdRef: { current: null },

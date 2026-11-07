@@ -43,6 +43,9 @@ export interface ThreadMuxSink {
    * and no other run of the task is open. Fires only from server-side
    * closure, never from detach or socket loss. */
   onTaskRunClosed: (taskId: string, outcome: string | null) => void;
+  /** A main run of the thread reached terminal (run_end or ledger-row
+   * truth), from server-side closure only, whoever is reading its stream. */
+  onMainRunClosed?: (outcome: string | null) => void;
   /** The client's knowledge horizon is beyond the server's catch-up window
    * (e.g. a tab asleep past the since_age cap): stream catch-up can't be
    * trusted — reload the projection from history. */
@@ -503,7 +506,15 @@ export class ThreadStreamMux {
         if (typeof data.outcome === 'string') chan.outcome = data.outcome;
         if (typeof data.finished === 'number') chan.finishedAt = data.finished;
         const taskId = taskIdFromLane(chan.lane);
-        if (!taskId) return;
+        if (!taskId) {
+          if (chan.lane !== 'main') return;
+          try {
+            this.sink?.onMainRunClosed?.(chan.outcome);
+          } catch (e) {
+            console.warn(`[mux:${this.threadId}] onMainRunClosed threw for ${runId}`, e);
+          }
+          return;
+        }
         // Every run's own finish, a predecessor's too: the close below
         // speaks for the task's latest run only.
         if (chan.finishedAt) this.reportRun(chan, { finishedAtMs: chan.finishedAt });

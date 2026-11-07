@@ -30,6 +30,8 @@ const WIDTH = {
   narrow: 'max-w-md',
   standard: 'max-w-lg',
   wide: 'max-w-2xl',
+  /** A table of a few columns beside each row's status and actions. */
+  table: 'max-w-3xl',
 } as const;
 
 /**

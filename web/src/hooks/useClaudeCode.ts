@@ -1,6 +1,9 @@
 import { useEffect } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getClaudeCodeComputers, getClaudeCodeSetup, getClaudeCodeStatus, type ClaudeCodeState } from '@/api/model';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import {
+  getClaudeCodeComputers, getClaudeCodeSetup, getClaudeCodeStatus, type ClaudeCodeComputer, type ClaudeCodeComputers, type ClaudeCodeState,
+  type ClaudeCodeStatus,
+} from '@/api/model';
 import { TOKEN_WORKS } from '@/lib/claudeCode';
 import { queryKeys } from '@/lib/queryKeys';
 import { isFeatureEnabled, useFeatures } from './useFeatures';
@@ -21,6 +24,46 @@ function untilExpiry(state: string | undefined, expiresAt: string | null | undef
   if (Number.isNaN(at)) return false;
   const left = at - Date.now();
   return left >= 0 ? Math.min(left + 1_000, MAX_DELAY_MS) : PAST_EXPIRY_POLL_MS;
+}
+
+/** When a credential Check now is hidden for is read again: as the first
+ *  limit its plan holds ends, when the server says again whether a check
+ *  would still be billed (`check_bills`). Its rule needs the model a check
+ *  asks for, which only the server knows, so it is read rather than worked
+ *  out here. False while Check now is not hidden for it. */
+function untilBillingEnds(entry: Pick<ClaudeCodeStatus, 'check_bills' | 'plan'> | undefined): number | false {
+  if (!entry?.check_bills) return false;
+  const ends = (entry.plan?.limits ?? []).map((limit) => Date.parse(limit.until) - Date.now()).filter((left) => left > 0);
+  return ends.length > 0 ? Math.min(Math.min(...ends) + 1_000, MAX_DELAY_MS) : false;
+}
+
+/** The earlier of two reads again, either of which may be none. */
+const sooner = (a: number | false, b: number | false) => (a === false ? b : b === false ? a : Math.min(a, b));
+
+/** When Check now may run again on a credential, by this browser's clock:
+ *  the server's `check_in` counted from when its answer arrived, so a
+ *  browser clock set apart from the server's leaves the hold as long as the
+ *  server meant. Null while a check may run. */
+const holdUntil = (checkIn: number | null | undefined, arrivedAt: number) => (checkIn ? arrivedAt + checkIn * 1_000 : null);
+
+/** Writes `update` over each entry of the cached computers list that `which`
+ *  picks, kept as of the list's own read, which every entry's `check_in`
+ *  counts from: the `check_in` an update gives counts from now, so it is
+ *  moved to that read. */
+export function updateComputers(
+  queryClient: QueryClient, which: (c: ClaudeCodeComputer) => boolean, update: (c: ClaudeCodeComputer) => ClaudeCodeComputer,
+) {
+  const key = queryKeys.features.claudeCodeComputers();
+  const listAt = queryClient.getQueryState(key)?.dataUpdatedAt;
+  const since = listAt ? (Date.now() - listAt) / 1_000 : 0;
+  queryClient.setQueryData<ClaudeCodeComputers>(key, (list) => list && ({
+    ...list,
+    computers: list.computers.map((c) => {
+      if (!which(c)) return c;
+      const next = update(c);
+      return next.check_in ? { ...next, check_in: next.check_in + since } : next;
+    }),
+  }), { updatedAt: listAt });
 }
 
 /** `whenOff`: read even while the user's flag is off, for a token left in
@@ -48,14 +91,14 @@ function useClaudeCodeFlag() {
  */
 export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
   const { flagged, featuresLoading } = useClaudeCodeFlag();
-  const { data, isLoading } = useQuery({
+  const { data, dataUpdatedAt, isLoading } = useQuery({
     queryKey: queryKeys.features.claudeCodeStatus(),
     queryFn: () => getClaudeCodeStatus(),
     enabled: flagged || whenOff,
     staleTime: 60_000,
     retry: false,
     refetchInterval: (query) => (query.state.data?.state === 'checking'
-      ? CHECKING_POLL_MS : untilExpiry(query.state.data?.state, query.state.data?.expires_at)),
+      ? CHECKING_POLL_MS : sooner(untilExpiry(query.state.data?.state, query.state.data?.expires_at), untilBillingEnds(query.state.data))),
   });
   const state: ClaudeCodeState = flagged ? data?.state ?? 'off' : 'off';
   // A server from before `enabled` ran Claude Code only on the saved token.
@@ -68,6 +111,8 @@ export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
     email: data?.email ?? null,
     expiresAt: data?.expires_at ?? null,
     plan: data?.plan,
+    checkAfter: holdUntil(data?.check_in, dataUpdatedAt),
+    checkBills: data?.check_bills === true,
     isLoading: featuresLoading || isLoading,
   };
 }
@@ -84,7 +129,7 @@ export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
 export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
   const { flagged, featuresLoading } = useClaudeCodeFlag();
   const saved = useClaudeCodeStatus({ whenOff });
-  const { data, isLoading, isError } = useQuery({
+  const { data, dataUpdatedAt, isLoading, isError } = useQuery({
     queryKey: queryKeys.features.claudeCodeComputers(),
     queryFn: () => getClaudeCodeComputers(),
     enabled: flagged || whenOff,
@@ -93,7 +138,8 @@ export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
     refetchInterval: (query) => {
       const computers = query.state.data?.computers ?? [];
       if (computers.some((c) => c.state === 'checking')) return CHECKING_POLL_MS;
-      return computers.some((c) => c.source === 'saved') ? untilExpiry(saved.state, saved.expiresAt) : false;
+      const expiry = computers.some((c) => c.source === 'saved') ? untilExpiry(saved.state, saved.expiresAt) : false;
+      return computers.map(untilBillingEnds).reduce(sooner, expiry);
     },
   });
   const queryClient = useQueryClient();
@@ -106,6 +152,7 @@ export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
   return {
     computers: data?.computers ?? [], cloudRefusals: data?.cloud_refusals ?? {}, isLoading: featuresLoading || isLoading,
     unread: isError && !data,
+    checkAfterOf: (entry: ClaudeCodeComputer) => holdUntil(entry.check_in, dataUpdatedAt),
   };
 }
 

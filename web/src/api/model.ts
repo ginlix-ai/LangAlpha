@@ -73,6 +73,9 @@ export interface ClaudeCodePlan {
   observed_at: string;
 }
 
+/** The Claude plan a Check now reads: the saved token's, or a computer's own token's. */
+export type PlanCredential = { kind: 'saved' } | { kind: 'computer'; computerId: string };
+
 /** A turn a Claude plan's limit ended: stopped partway (`plan_stopped`, with
  *  whether requests already under way were billed to usage credits), or
  *  refused before it started (`plan_limited`). */
@@ -102,6 +105,15 @@ export interface ClaudeCodeStatus {
   /** The saved token's plan, null until a request on it reported one.
    *  Absent from a server that predates it. */
   plan?: ClaudeCodePlan | null;
+  /** Whole seconds until Check now may run on the saved token again, null
+   *  while it may run now. Counted on the server's clock, so it is read
+   *  from when the answer arrived, never against a server time. Absent from
+   *  a server that predates it. */
+  check_in?: number | null;
+  /** Whether a check would be billed to usage credits: under Stop the plan
+   *  holds a limit on the model a check asks for, and usage credits are not
+   *  known to be off. Check now is not offered then. */
+  check_bills?: boolean;
 }
 
 /** Where Claude Code stands on one of the user's own computers. `off`: their
@@ -132,6 +144,11 @@ export interface ClaudeCodeComputer {
   /** The plan of the token its turns use: the saved token's on `saved`.
    *  Absent from a server that predates it. */
   plan?: ClaudeCodePlan | null;
+  /** Whole seconds until Check now may run on that token again, null while
+   *  it may run now, as `ClaudeCodeStatus.check_in` counts them. */
+  check_in?: number | null;
+  /** Whether a check of that token would be billed (`ClaudeCodeStatus.check_bills`). */
+  check_bills?: boolean;
 }
 
 /** The user's own computers, and each cloud computer of theirs that refuses
@@ -158,6 +175,15 @@ export async function getClaudeCodeComputers(): Promise<ClaudeCodeComputers> {
 }
 
 const computerPath = (computerId: string) => `/api/v1/claude-code/computers/${encodeURIComponent(computerId)}`;
+
+/** `POST /api/v1/claude-code/check` or `.../computers/{id}/check`: one
+ *  minimal request on the credential's plan, run where its own check runs,
+ *  so its windows are read now. Answers 204; refused with 429 `check_held`
+ *  (and `check_in`) within 5 minutes of the last. */
+export async function checkClaudeCodePlan(credential: PlanCredential): Promise<void> {
+  const path = credential.kind === 'saved' ? '/api/v1/claude-code/check' : `${computerPath(credential.computerId)}/check`;
+  await api.post(path);
+}
 
 /** Puts a setup token on the computer once Anthropic takes it; the refusals
  *  are `saveClaudeCodeToken`'s. */

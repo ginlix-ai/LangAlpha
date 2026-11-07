@@ -7074,6 +7074,39 @@
       "creditsDetail": "Claude Code keeps running on your usage credits, if they're on for your Claude account.",
       "note": "Usage credits are on for the Claude account on {{names}}. Claude bills the first request past your limit to them before LangAlpha can stop, so turn them off in claude.ai if you never want them used.",
       "noteLink": "Open claude.ai usage settings"
+    },
+    "short": {
+      "five_hour": "5h",
+      "seven_day": "7d",
+      "seven_day_opus": "7d Opus",
+      "seven_day_sonnet": "7d Sonnet",
+      "seven_day_overage_included": "7d Fable"
+    },
+    "near": "You've used {{percent}}% of your Claude plan's {{window}} limit. It resets at {{time}}.",
+    "limitDetail": "{{short}} limit used up, resets {{time}}",
+    "limitReached": "Limit reached",
+    "pending": "Plan usage shows after the next Claude Code turn",
+    "asOf": "As of {{ago}}, from the last Claude Code request on this token. Use on claude.ai and in your own Claude Code counts too.",
+    "table": {
+      "computer": "Computer",
+      "token": "Token",
+      "account": "Account",
+      "resets": "Resets"
+    },
+    "meter": {
+      "title": "Claude plan on {{name}}",
+      "tip": "As of {{ago}}. 5h resets {{time5}}, 7d resets {{time7}}.",
+      "empty": "Usage shows after the first turn",
+      "resets": "5h resets {{time5}}, 7d resets {{time7}}."
+    },
+    "check": {
+      "now": "Check now",
+      "running": "Checking…",
+      "tip": "Sends one small request on your Claude plan to read its usage.",
+      "held": "You can check again at {{time}}.",
+      "failed": "Couldn't reach Claude to check usage. Try again later.",
+      "computerUnreached": "Couldn't reach this computer to check usage. Try again later.",
+      "unsaved": "Claude answered, but the usage couldn't be updated. Try again later."
     }
   }
 }

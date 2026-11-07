@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useId, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 import { Cloud, ExternalLink, KeyRound, Laptop, SquareTerminal } from 'lucide-react';
@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { buttonClass } from '@/components/ui/button-class';
 import { ModalShell } from '@/components/ui/ModalShell';
-import type { ClaudeCodeComputer, ClaudeCodeSetup } from '@/api/model';
+import type { ClaudeCodeComputer, ClaudeCodePlan, ClaudeCodeSetup } from '@/api/model';
 import { DESKTOP_DOWNLOAD_URL } from '@/config/supportLinks';
 import { isPlatformMode } from '@/config/hostMode';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
@@ -15,6 +15,12 @@ import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useNow } from '@/hooks/useNow';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
 import { ClaudeCodeTokenModal, TokenActions } from '@/components/modelAccess/ClaudeCodeToken';
+import { CheckNowButton, CheckNowMenuItem } from '@/components/modelAccess/PlanCheck';
+import { UsageCells, UsageDetail, UsageHeaderRow } from '@/components/modelAccess/PlanUsage';
+import { UsageTableContext, VIEW_WIDTHS, useUsageSteps } from '@/components/modelAccess/usageSteps';
+import { usePlanCheck, type CheckTarget } from '@/components/modelAccess/usePlanCheck';
+import { usePlanClock } from '@/hooks/useClaudeCodePlan';
+import { credentialKey, planWindows } from '@/lib/claudeCodePlan';
 import { ProviderTitle } from '@/components/modelAccess/KeyProviderPicker';
 import { QuietNote, ROW_BUTTON, StatusLabel, type RowStatus } from '@/components/modelAccess/parts';
 import type { TokenAction, TokenRow } from '@/components/modelAccess/tokenLine';
@@ -46,14 +52,47 @@ const iconOf = (kind: ClaudeCodeComputer['kind'] | undefined) => glyph(kind === 
  * then its button. The rows of the cards stacked in one `ROWS` grid share
  * its columns, so every row's status and button start at the same x, and
  * only the detail wraps.
+ *
+ * In the token cards' usage table (`VIEW_WIDTHS`) a row whose token runs
+ * (`plan` given) keeps its detail on one line and lays its plan's use out
+ * on the table's columns, or, where its token reported no use yet, says
+ * so. A row with no use to show takes the usage columns for its text, so
+ * its detail has the room it has outside the table, and wraps only where it
+ * would there.
  */
-function SetupRow({ icon, name, detail, status, action }: {
+function SetupRow({ icon, name, detail, status, action, plan }: {
   icon: ReactNode;
   name: string;
   detail: ReactNode;
   status?: RowStatus;
   action: ReactNode;
+  plan?: ClaudeCodePlan | null;
 }) {
+  const steps = useContext(UsageTableContext);
+  const clock = usePlanClock();
+  if (steps) {
+    const runs = plan !== undefined;
+    const used = planWindows(plan, clock.now).length > 0;
+    const pending = runs && status === 'connected' && !used;
+    return (
+      <li className={cn('col-span-full flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3', steps.row)}>
+        <IdentityTile name={name} size="sm">{icon}</IdentityTile>
+        <div className={cn('flex min-w-0 flex-1 flex-col gap-0.5', !used && steps.spanUsage)}>
+          <span className="text-sm font-medium wrap-break-word" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
+          {(detail || pending) && (
+            <span data-row-detail className={cn('text-xs', !runs && 'text-pretty wrap-break-word')} style={{ color: 'var(--color-text-tertiary)' }}>
+              {runs ? <UsageDetail text={detail} plan={plan} tail={pending ? 'pending' : status === 'connected' ? 'bars' : null} whole={status === 'limit_reached'} /> : detail}
+            </span>
+          )}
+        </div>
+        {used && <UsageCells plan={plan} />}
+        <div className={cn('flex basis-full items-center justify-end gap-3', steps.tail)}>
+          {status ? <StatusLabel status={status} className="whitespace-nowrap" /> : <span />}
+          <div className="flex">{action}</div>
+        </div>
+      </li>
+    );
+  }
   return (
     <li className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-3 px-4 py-3 supports-[grid-template-columns:subgrid]:grid-cols-subgrid">
       <IdentityTile name={name} size="sm">{icon}</IdentityTile>
@@ -65,6 +104,37 @@ function SetupRow({ icon, name, detail, status, action }: {
       <div className="flex">{action}</div>
     </li>
   );
+}
+
+/** A token row's buttons, with Check now in its More actions menu where
+ *  the usage table is too narrow for its header row (`checkTarget`). */
+function RowActions({ actions, checkTarget, onOpen, onRemove }: {
+  actions: TokenAction[];
+  checkTarget: CheckTarget | null;
+  onOpen: (action: SheetAction) => void;
+  onRemove: () => void;
+}) {
+  const check = usePlanCheck(checkTarget ? [checkTarget] : []);
+  return (
+    <TokenActions actions={actions} onOpen={onOpen} onRemove={onRemove} menuItems={checkTarget && <CheckNowMenuItem check={check} />} />
+  );
+}
+
+/** Whether a row's token runs, so Check now can read its plan: it works or
+ *  is at a limit, on a computer that is not offline, and a check would not
+ *  be billed to usage credits. */
+const checkable = ({ line, checkBills }: TokenRow, offline: boolean) =>
+  !offline && !checkBills && (line.status === 'connected' || line.status === 'limit_reached');
+
+/** One target per credential: computers on the relayed saved token share its plan. */
+function checkTargets(rows: { row: TokenRow; offline: boolean }[]): CheckTarget[] {
+  const seen = new Set<string>();
+  return rows.flatMap(({ row, offline }) => {
+    const { credential, checkAfter } = row;
+    if (!credential || !checkable(row, offline) || seen.has(credentialKey(credential))) return [];
+    seen.add(credentialKey(credential));
+    return [{ credential, checkAfter }];
+  });
 }
 
 /** The grid the cards of `SetupRow`s stack in: tile, text, status, button.
@@ -152,8 +222,18 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
       {t(S + '.viewComputer')}
     </Button>
   );
-  const actions = (list: TokenAction[], target: TokenTarget) => list.length > 0 && (
-    <TokenActions actions={list} onOpen={(action) => void openToken(target, action)} onRemove={() => onRemoveToken(target)} />
+  // The token cards are a usage table once Claude Code is on, and Check
+  // now leaves its header for each row's menu where the table is too narrow
+  // for that header.
+  const [table, setTable] = useState<HTMLDivElement | null>(null);
+  const steps = useUsageSteps(table, on ? VIEW_WIDTHS : null);
+  const actions = (list: TokenAction[], target: TokenTarget, row?: { row: TokenRow; offline: boolean }) => list.length > 0 && (
+    <RowActions
+      actions={list}
+      checkTarget={steps && !steps.columns && row ? checkTargets([row])[0] ?? null : null}
+      onOpen={(action) => void openToken(target, action)}
+      onRemove={() => onRemoveToken(target)}
+    />
   );
 
   const headline = setup && claudeCodeHeadline(t, setup, now);
@@ -164,10 +244,22 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
   // found it out of reach; before, only whether it can be reached. With
   // Claude Code gone from the server, the lines of tokens left behind.
   const unreached = new Set((setup?.computers ?? []).filter((c) => c.state === 'offline').map((c) => c.computer_id));
+  const computerTokenRows = tokenRows
+    .filter((row) => row.target.kind === 'computer')
+    .map((row) => ({ row, offline: row.line.status === 'offline' || unreached.has(row.key) }));
+  // Each card's header offers Check now while a token in it runs.
+  const computerTargets = checkTargets(computerTokenRows);
+  const savedTargets = savedRow ? checkTargets([{ row: savedRow, offline: false }]) : [];
+  const computersCheck = usePlanCheck(computerTargets);
+  const savedCheck = usePlanCheck(savedTargets);
+  // A card names the windows only where one of its rows has use to show in them.
+  const clock = usePlanClock();
+  const used = (plan: ClaudeCodePlan | null | undefined) => planWindows(plan, clock.now).length > 0;
+  const computersUsed = computerTokenRows.some(({ row, offline }) => !offline && used(row.line.plan));
   const offlineDetail = (kind: ClaudeCodeComputer['kind'] | undefined) => t(kind === 'helper' ? S + '.offline.helper' : S + '.offline.ssh');
   const computerRows = on || !setup
-    ? tokenRows.filter((row) => row.target.kind === 'computer').map(({ key, target, tag, line }) => {
-      const offline = line.status === 'offline' || unreached.has(key);
+    ? computerTokenRows.map(({ row, offline }) => {
+      const { key, target, tag, line } = row;
       return (
         <SetupRow
           key={key}
@@ -175,7 +267,8 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
           name={tag ?? ''}
           detail={offline && line.status !== 'offline' ? offlineDetail(kindOf.get(key)) : line.detail}
           status={offline ? 'offline' : line.status}
-          action={offline ? viewComputer(key) : actions(line.actions, target)}
+          plan={offline ? undefined : line.plan}
+          action={offline ? viewComputer(key) : actions(line.actions, target, { row, offline })}
         />
       );
     })
@@ -271,22 +364,45 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
       {!setup && tokenRows.length === 0 && <QuietNote>{t('modelAccess.status.unknownLong')}</QuietNote>}
 
       {(computerRows.length > 0 || savedRow || offeredSaved) && (
-        <div className={ROWS}>
-          {computerRows.length > 0 && <Group subgrid title={t(S + '.yourComputers')} empty="">{computerRows}</Group>}
-          {(savedRow || offeredSaved) && (
-            <Group subgrid title={t('modelAccess.claudeCode.savedTag')} empty="">
-              {[(
-                <SetupRow
-                  key="saved"
-                  icon={glyph(KeyRound)}
-                  name={t(S + '.savedName')}
-                  detail={savedRow?.line.detail ?? savedDetail}
-                  status={savedRow ? savedRow.line.status : 'not_connected'}
-                  action={actions(savedRow ? savedRow.line.actions : ['add'], SAVED_TOKEN)}
-                />
-              )]}
-            </Group>
-          )}
+        <div ref={setTable}>
+          <UsageTableContext.Provider value={steps}>
+            <div className={steps ? cn('grid gap-x-3 gap-y-5', steps.grid) : ROWS}>
+              {computerRows.length > 0 && (
+                <Group subgrid title={t(S + '.yourComputers')} empty="">
+                  {[
+                    <UsageHeaderRow
+                      key="header"
+                      first={t('claudeCodePlan.table.computer')}
+                      windows={computersUsed}
+                      aside={computerTargets.length > 0 && <CheckNowButton check={computersCheck} />}
+                    />,
+                    ...computerRows,
+                  ]}
+                </Group>
+              )}
+              {(savedRow || offeredSaved) && (
+                <Group subgrid title={t('modelAccess.claudeCode.savedTag')} empty="">
+                  {[
+                    <UsageHeaderRow
+                      key="header"
+                      first={t('claudeCodePlan.table.token')}
+                      windows={!!savedRow && used(savedRow.line.plan)}
+                      aside={savedTargets.length > 0 && <CheckNowButton check={savedCheck} />}
+                    />,
+                    <SetupRow
+                      key="saved"
+                      icon={glyph(KeyRound)}
+                      name={t(S + '.savedName')}
+                      detail={savedRow?.line.detail ?? savedDetail}
+                      status={savedRow ? savedRow.line.status : 'not_connected'}
+                      plan={savedRow?.line.plan}
+                      action={actions(savedRow ? savedRow.line.actions : ['add'], SAVED_TOKEN, savedRow && { row: savedRow, offline: false })}
+                    />,
+                  ]}
+                </Group>
+              )}
+            </div>
+          </UsageTableContext.Provider>
         </div>
       )}
 

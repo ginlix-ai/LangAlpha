@@ -87,7 +87,10 @@ describe('ClaudeCodeSheet', () => {
     h.planUrl = null;
   });
 
-  const macRow = (line: TokenRow['line']): TokenRow => ({ key: 'mac', target: { kind: 'computer', computerId: 'mac', name: 'MacBook Pro' } as TokenRow['target'], tag: 'MacBook Pro', line });
+  const macRow = (line: TokenRow['line']): TokenRow => ({
+    key: 'mac', target: { kind: 'computer', computerId: 'mac', name: 'MacBook Pro' } as TokenRow['target'], tag: 'MacBook Pro', line,
+    credential: { kind: 'computer', computerId: 'mac' }, checkAfter: null, checkBills: false,
+  });
 
   it('once on, reads a computer the setup read found out of reach as offline, whatever its token last said', () => {
     show(setupOf({ state: 'offline', on: true, computers: [mac('offline')] }), [macRow({ status: 'connected', detail: 'Its own token', actions: ['replace', 'remove'] })]);
@@ -239,7 +242,7 @@ describe('ClaudeCodeSheet', () => {
     const line = { status: 'connected' as const, detail: 'Uses its own token', actions: ['replace' as const, 'remove' as const] };
     show(
       setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' })] }),
-      [{ key: 'mac', target: { kind: 'computer', computerId: 'mac', name: 'MacBook Pro' }, tag: 'MacBook Pro', line }],
+      [{ key: 'mac', target: { kind: 'computer', computerId: 'mac', name: 'MacBook Pro' }, tag: 'MacBook Pro', line, credential: { kind: 'computer', computerId: 'mac' }, checkAfter: null, checkBills: false }],
     );
     expect(screen.getByText('Claude Code is ready')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Turn off Claude Code' }));

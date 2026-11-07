@@ -58,7 +58,7 @@ vi.mock('@/hooks/useAllModels', () => ({
 // hosted computer, none of the user's own.
 vi.mock('@/hooks/useClaudeCode', () => ({
   useClaudeCodeStatus: () => ({ enabled: mocks.state !== 'off', runsHere: mocks.state !== 'off', state: mocks.state, plan: mocks.plan }),
-  useClaudeCodeComputers: () => ({ computers: mocks.computers, cloudRefusals: {}, isLoading: false }),
+  useClaudeCodeComputers: () => ({ computers: mocks.computers, cloudRefusals: {}, isLoading: false, checkAfterOf: () => null }),
 }));
 vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { computer_id: 'cmp-hosted' }, isPending: false }) }));
 
@@ -84,7 +84,7 @@ vi.mock('../chat-input.modelMenu', () => ({
   ChatInputModelMenu: ({ rowStatus }: { rowStatus: (m: string, now: number) => ModelRowStatus }) => {
     const read = (m: string) => {
       const s = rowStatus(m, Date.now());
-      return 'unavailable' in s ? `held:${s.unavailable}${s.fix ? ':fix' : ''}` : 'pick';
+      return 'unavailable' in s ? `held:${s.unavailable}${s.fix ? ':fix' : ''}${s.check ? `:check:${s.check.credential.kind}` : ''}` : 'pick';
     };
     const code = rowStatus('claude-x-code', Date.now());
     return (
@@ -129,23 +129,25 @@ describe('ChatInput: Claude Code rows by state', () => {
     ContextBus.__resetForTests();
     ChatInputRegistry.__resetForTests();
     Element.prototype.scrollIntoView = vi.fn();
+    mocks.plan = undefined;
+    mocks.planOut = undefined;
   });
 
   it.each([
-    ['holds them until the reset once the plan is used up', undefined, /^claude-x-code:held:Plan limit used up until \S/],
-    ['offers them on the usage credits the user chose', 'credits', /^claude-x-code:pick$/],
-  ])('%s', (_, planOut, row) => {
+    ['holds them until the reset once the plan is used up', undefined, 'on', /^claude-x-code:held:Plan limit used up until (?!.*:check)\S/],
+    ['holds them under Stop, with no check, where usage credits are off', undefined, 'off', /^claude-x-code:held:Plan limit used up until (?!.*:check)\S/],
+    ['offers them on the usage credits the user chose', 'credits', 'on', /^claude-x-code:pick$/],
+    ['holds them with Check now where the usage credits the user chose are off', 'credits', 'off', /^claude-x-code:held:Plan limit used up until .+:check:saved$/],
+  ] as const)('%s', (_, planOut, credits, row) => {
     mocks.state = 'signed_in';
     mocks.planOut = planOut;
     mocks.plan = {
-      five_hour: null, seven_day: null, credits: 'on', observed_at: new Date().toISOString(),
+      five_hour: null, seven_day: null, credits, observed_at: new Date().toISOString(),
       limits: [{ window: 'five_hour', family: null, until: new Date(Date.now() + 3_600_000).toISOString(), reset_known: true }],
     };
     renderInput();
     expect(codeRow()).toMatch(row);
     expect(mocks.useNow).not.toHaveBeenCalled();
-    mocks.plan = undefined;
-    mocks.planOut = undefined;
   });
 
   it.each(['signed_in', 'unverified'] as const)('offers the models as a pick while %s', (state) => {

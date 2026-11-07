@@ -167,6 +167,10 @@ export function useChatMessages(
     void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() });
     void queryClient.invalidateQueries({ queryKey: queryKeys.user.claudeCodeCustody() });
   };
+  const refreshClaudeCodePlan = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeStatus() });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
+  };
 
   // User locale/timezone — prefer saved preference, fall back to browser detection
   const { user } = useUser();
@@ -1743,6 +1747,7 @@ export function useChatMessages(
     muxOpenTaskIds,
     armReportBackWatch,
     hydrateTaskTranscript,
+    refreshClaudeCodePlan,
   });
 
   const cleanupAfterStreamEnd = (assistantMessageId: string) =>
@@ -1936,6 +1941,8 @@ export function useChatMessages(
         toast({ description: t('chat.stopFailed'), variant: 'destructive' });
       }
       giveBackStoppedSteers(outcome?.returned_steers ?? [], unsent);
+      // The aborted reader never hears the run_end that rereads the plan.
+      refreshClaudeCodePlan();
     } else {
       giveBackStoppedSteers([], unsent);
     }
@@ -3779,6 +3786,7 @@ export function useChatMessages(
     armReportBack: (owed) => armReportBackWatch(threadIdRef.current, null, null, undefined, owed),
     refreshWorkspaces: () => invalidateNewWorkspace(queryClient),
     refreshClaudeCode,
+    refreshClaudeCodePlan,
     // A turn other than the one this view counted for the run's bubble means
     // turns were added where the view never saw them. The stream stamps the
     // server's number, and only a reload shows those turns.

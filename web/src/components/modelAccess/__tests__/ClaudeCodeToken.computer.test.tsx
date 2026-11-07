@@ -80,6 +80,18 @@ describe('ClaudeCodeTokenSheet for a computer', () => {
     expect(queryClient.getQueryData(STATUS_KEY)).toEqual(STATUS);
   });
 
+  it("keeps the list as of its own read, so another computer's Check now hold counts from that read", async () => {
+    (saveClaudeCodeComputerToken as Mock).mockResolvedValue({ ...BOX, email: 'user@example.com' });
+    const queryClient = client();
+    queryClient.setQueryData(LIST_KEY, { computers: [MAC, { ...BOX, check_in: 120 }], cloud_refusals: CLOUD_REFUSALS }, { updatedAt: 1_000 });
+    const onSaved = vi.fn();
+    renderWithProviders(<ClaudeCodeTokenSheet target={BOX_TARGET} onSaved={onSaved} onCancel={() => {}} />, { queryClient });
+    fireEvent.change(screen.getByLabelText('Setup token'), { target: { value: TOKEN } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(queryClient.getQueryState(LIST_KEY)?.dataUpdatedAt).toBe(1_000);
+  });
+
   it('a change to the saved token rereads the computers, which can run on it, but not the status it answered with', async () => {
     (saveClaudeCodeToken as Mock).mockResolvedValue({ ...STATUS, state: 'signed_in', saved: true });
     const onSaved = vi.fn();

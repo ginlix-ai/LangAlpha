@@ -38,17 +38,38 @@ function setup(historyStatus?: string) {
     isStreamingRef: { current: true },
     threadIdRef: { current: 'thread-1' },
   } as unknown as SubagentRuntime;
-  createSubagentMuxController(rt, { muxOpenTaskIds: () => new Set(), armReportBackWatch: vi.fn(), hydrateTaskTranscript: vi.fn(async () => null) })
+  const refreshClaudeCodePlan = vi.fn();
+  createSubagentMuxController(rt, { muxOpenTaskIds: () => new Set(), armReportBackWatch: vi.fn(), hydrateTaskTranscript: vi.fn(async () => null), refreshClaudeCodePlan })
     .attachSubagentMux('thread-1', vi.fn());
   const close = () => attached.sink!.onTaskRunClosed('Qm3xLp', 'completed');
   const written = () => updateSubagentCard.mock.calls.map(([, data]) => data as Record<string, unknown>);
   const runs = () => Object.fromEntries(subagentHistory.get().runs);
-  return { close, written, runs };
+  return { close, written, runs, refreshClaudeCodePlan };
 }
 
 afterEach(() => {
   vi.useRealTimers();
   attached.sink = null;
+});
+
+describe('muxSink: a main run closing', () => {
+  it('reads the Claude plan again, which the run kept as it tore down', () => {
+    const refreshClaudeCodePlan = vi.fn();
+    const rt = { threadIdRef: { current: 'thread-1' }, subagentProcessEventRef: { current: null } } as unknown as SubagentRuntime;
+    createSubagentMuxController(rt, { muxOpenTaskIds: () => new Set(), armReportBackWatch: vi.fn(), hydrateTaskTranscript: vi.fn(async () => null), refreshClaudeCodePlan })
+      .attachSubagentMux('thread-1', vi.fn());
+    attached.sink!.onMainRunClosed?.('cancelled');
+    expect(refreshClaudeCodePlan).toHaveBeenCalledOnce();
+  });
+});
+
+describe('muxSink: a task run closing', () => {
+  it('reads the Claude plan again for a close that is news here, and not for the same close again', () => {
+    const { close, refreshClaudeCodePlan } = setup();
+    close();
+    close();
+    expect(refreshClaudeCodePlan).toHaveBeenCalledOnce();
+  });
 });
 
 describe('muxSink: when a closed task went quiet', () => {
@@ -118,7 +139,7 @@ describe('muxSink: drain of a task the history loaded as settled', () => {
       isStreamingRef: { current: true },
       threadIdRef: { current: 'thread-1' },
     } as unknown as SubagentRuntime;
-    createSubagentMuxController(rt, { muxOpenTaskIds: () => new Set(), armReportBackWatch: vi.fn(), hydrateTaskTranscript: vi.fn(async () => null) })
+    createSubagentMuxController(rt, { muxOpenTaskIds: () => new Set(), armReportBackWatch: vi.fn(), hydrateTaskTranscript: vi.fn(async () => null), refreshClaudeCodePlan: vi.fn() })
       .attachSubagentMux('thread-1', (ev) => { processed.push(ev); });
     const drain = (runStartedMs: number) =>
       attached.sink!.onTaskEvent({ agent: 'task:Qm3xLp', _drain: true, _runStartedMs: runStartedMs });

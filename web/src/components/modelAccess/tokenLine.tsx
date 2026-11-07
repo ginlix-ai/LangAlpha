@@ -2,10 +2,12 @@ import type { ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { Trans, useTranslation } from 'react-i18next';
 import { mediumDate } from '@/lib/format';
-import type { ClaudeCodeComputer } from '@/api/model';
+import type { ClaudeCodeComputer, ClaudeCodePlan, PlanCredential } from '@/api/model';
 import { useClaudeCodeComputers, useClaudeCodeStatus } from '@/hooks/useClaudeCode';
+import { usePlanClock } from '@/hooks/useClaudeCodePlan';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
+import { limitDetail, planCredentialOf, rowLimit, type PlanClock } from '@/lib/claudeCodePlan';
 import type { RowStatus } from './parts';
 import { SAVED_TOKEN, computerTokenTarget, type SheetAction, type TokenTarget } from './tokenTarget';
 
@@ -18,6 +20,10 @@ export interface TokenLine {
   status: RowStatus;
   detail: ReactNode;
   actions: TokenAction[];
+  /** The Claude plan behind a token that runs, which its row shows the use
+   *  of: null until a request on it reported one. Absent on a line whose
+   *  token does not run, and from a server that predates it. */
+  plan?: ClaudeCodePlan | null;
 }
 
 /** Each button's label and the sheet it opens (none for Remove, which asks first). */
@@ -98,12 +104,16 @@ function savedTokenLine(t: TFunction, locale: string, status: ReturnType<typeof 
  * keeps Replace and Remove whatever its check says; one on the saved token
  * keeps Remove for a file of its own there that it refuses. With Claude Code off, or
  * where it cannot run (an organization's policy is installed there, no perl,
- * musl), only a token left on the computer shows, to be removed.
+ * musl), only a token left on the computer shows, to be removed. With
+ * `sayOwn` false its own token, the usual case, goes unsaid where the
+ * account names it.
  */
-export function computerTokenLine(t: TFunction, locale: string, entry: ClaudeCodeComputer, now: number): TokenLine | null {
+export function computerTokenLine(
+  t: TFunction, locale: string, entry: ClaudeCodeComputer, now: number, { sayOwn = true }: { sayOwn?: boolean } = {},
+): TokenLine | null {
   const own = entry.source === 'machine';
   const lead = own
-    ? t('modelAccess.claudeCode.computer.ownToken')
+    ? (sayOwn || !entry.email ? t('modelAccess.claudeCode.computer.ownToken') : null)
     : entry.source === 'saved' ? t('modelAccess.claudeCode.computer.savedToken') : null;
   const actions: TokenAction[] = own ? ['replace', 'remove']
     : entry.source === 'saved' ? (entry.own_file ? ['addOwn', 'remove'] : ['addOwn']) : ['add'];
@@ -139,35 +149,58 @@ export function computerTokenLine(t: TFunction, locale: string, entry: ClaudeCod
   }
 }
 
+/** A line whose token runs, beside the plan behind it, which at one of its
+ *  limits reads Limit reached and says which, and when it resets. */
+function withPlan(t: TFunction, line: TokenLine, plan: ClaudeCodePlan | null | undefined, clock: PlanClock): TokenLine {
+  if (line.status !== 'connected') return line;
+  const limit = rowLimit(plan, clock.now);
+  return limit ? { ...line, status: 'limit_reached', detail: limitDetail(t, limit, clock), plan } : { ...line, plan };
+}
+
 /** A Claude Code token's row in Settings: whose token, what tags its name,
- *  its line. */
+ *  its line, the credential its turns sign in with, whose plan it shows (a
+ *  computer on the relayed saved token signs in with that; null with no
+ *  token), until when a check holds that credential (`CheckTarget`), and
+ *  whether a check would be billed, so Check now is not offered. */
 export interface TokenRow {
   key: string;
   target: TokenTarget;
   tag: string | null;
   line: TokenLine;
+  credential: PlanCredential | null;
+  checkAfter: number | null;
+  checkBills: boolean;
 }
 
 /**
  * Settings' Claude Code rows: the saved token's, then each own computer's,
  * read with Claude Code off too, since a token left behind is still removed
  * there. A line with nothing to say (no token left once Claude Code is off)
- * is no row.
+ * is no row. Each row whose token runs carries the plan behind it.
  */
 export function useClaudeCodeTokenRows(): TokenRow[] {
   const { t } = useTranslation();
   const locale = useLocale();
   const status = useClaudeCodeStatus({ whenOff: true });
   const now = useNow();
-  const { computers } = useClaudeCodeComputers({ whenOff: true });
+  const clock = usePlanClock();
+  const { computers, checkAfterOf } = useClaudeCodeComputers({ whenOff: true });
   const computerRows = computers.flatMap((c) => {
-    const line = computerTokenLine(t, locale, c, now);
-    return line ? [{ key: c.computer_id, target: computerTokenTarget(c), tag: c.name, line }] : [];
+    const line = computerTokenLine(t, locale, c, now, { sayOwn: false });
+    if (!line) return [];
+    return [{
+      key: c.computer_id, target: computerTokenTarget(c), tag: c.name, line: withPlan(t, line, c.plan, clock),
+      credential: planCredentialOf(c), checkAfter: checkAfterOf(c), checkBills: c.check_bills === true,
+    }];
   });
-  const savedLine = savedTokenLine(t, locale, status, now);
+  const saved = savedTokenLine(t, locale, status, now);
+  const savedLine = saved && withPlan(t, saved, status.plan, clock);
   return [
     // Beside a row per computer, which name the saved token as theirs.
-    ...(savedLine ? [{ key: 'saved', target: SAVED_TOKEN, tag: computerRows.length > 0 ? t('modelAccess.claudeCode.savedTag') : null, line: savedLine }] : []),
+    ...(savedLine ? [{
+      key: 'saved', target: SAVED_TOKEN, tag: computerRows.length > 0 ? t('modelAccess.claudeCode.savedTag') : null, line: savedLine,
+      credential: { kind: 'saved' } as const, checkAfter: status.checkAfter, checkBills: status.checkBills,
+    }] : []),
     ...computerRows,
   ];
 }
