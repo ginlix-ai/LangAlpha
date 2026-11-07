@@ -106,7 +106,7 @@ def _make_core_config(
             daytona=DaytonaConfig(
                 api_key=api_key,
                 base_url=base_url,
-                snapshot_enabled=False,  # skip snapshot for tests
+                snapshot_name="langalpha",
             ),
             docker=docker_config or DockerConfig(),
             e2b=e2b_config or E2BConfig(),
@@ -223,7 +223,7 @@ async def _make_provider(
             DaytonaConfig(
                 api_key=api_key,
                 base_url=base_url,
-                snapshot_enabled=False,
+                snapshot_name="langalpha",
             )
         )
         yield provider

@@ -96,7 +96,7 @@ def _provider() -> DaytonaProvider:
     api_key = _required_env("DAYTONA_API_KEY")
     base_url = os.getenv("DAYTONA_BASE_URL", "https://app.daytona.io/api")
     return DaytonaProvider(
-        DaytonaConfig(api_key=api_key, base_url=base_url, snapshot_enabled=False)
+        DaytonaConfig(api_key=api_key, base_url=base_url, snapshot_name="langalpha")
     )
 
 
