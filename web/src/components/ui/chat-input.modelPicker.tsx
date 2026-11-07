@@ -224,7 +224,10 @@ function ModelList({
 
   return (
     <>
-      <div className="pf-picker-search flex flex-none items-center border-b border-(--color-border-muted) pr-2">
+      <div
+        className="pf-picker-search flex flex-none items-center pr-2"
+        style={{ borderBottom: '1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted))' }}
+      >
         {/* A grid takes no virtual focus from a search field, so the field
             hands over itself: Down moves into the list, and Enter picks the
             top row. Any other key goes on, so Escape still closes. */}
@@ -265,7 +268,7 @@ function ModelList({
       <div className="flex h-[11.5rem] min-h-0">
         {/* Out of the flow, so a long rail scrolls rather than sets the
             height; a curated list keeps the picker short. */}
-        <div className="pf-picker-rail relative w-11 flex-none border-r border-(--color-border-muted)">
+        <div className="pf-picker-rail relative w-11 flex-none border-r border-[color:var(--color-shell-divider,var(--color-border-muted))]">
           {/* The toggle group takes no ref, so a box of its own scrolls it. */}
           <div
             ref={attachRail}
@@ -404,8 +407,10 @@ function RailTab({ id, label, dot = false, children }: {
       id={id}
       aria-label={label}
       className={cn(
-        'pf-picker-rail-tab relative flex h-8 w-8 flex-none items-center justify-center rounded-lg outline-hidden',
-        'data-hovered:bg-(--color-bg-hover) data-selected:bg-(--color-bg-tag)',
+        'pf-picker-rail-tab relative flex h-8 w-8 flex-none items-center justify-center rounded-[var(--cs-radius-control,var(--radius-lg))] outline-hidden',
+        // The open card styles pick a provider with the front tab's edge, not a fill.
+        'data-hovered:bg-(--color-bg-hover) data-selected:bg-[color:var(--color-shell-fill,var(--color-bg-tag))]',
+        'data-selected:shadow-[inset_0_0_0_1px_var(--color-shell-front,transparent)]',
         'data-focus-visible:outline-current',
       )}
     >

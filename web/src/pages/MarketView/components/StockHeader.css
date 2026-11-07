@@ -1,7 +1,7 @@
 .stock-header {
   padding: 12px 20px;
   background-color: var(--color-bg-card);
-  border-bottom: 1px solid var(--color-border-default);
+  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-default));
   flex-shrink: 0;
 }
 
@@ -100,6 +100,8 @@
 }
 
 .stock-price {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   font-size: 1.75rem;
   font-weight: 600;
   margin-bottom: 4px;
@@ -123,6 +125,8 @@
 }
 
 .stock-change {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   font-size: 0.875rem;
   font-weight: 500;
   white-space: nowrap;
@@ -243,7 +247,7 @@
   grid-template-columns: repeat(5, 1fr);
   gap: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--color-border-default);
+  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-default));
 }
 
 .metric-item {
@@ -252,13 +256,21 @@
   gap: 5px;
 }
 
+/* The stats: labels in the words' face, figures in mono. The labels keep
+   their capitals in every style: the copy under them is cased unevenly
+   ("Prev Close", "52 wk high"), which sentence case would show. */
 .metric-label {
-  font-size: 0.75rem;
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.71875rem);
+  font-weight: 500;
+  letter-spacing: 0.04em;
   color: var(--color-text-secondary);
   text-transform: uppercase;
 }
 
 .metric-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   font-size: 0.875rem;
   color: var(--color-text-primary);
   font-weight: 500;

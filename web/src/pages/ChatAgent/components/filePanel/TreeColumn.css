@@ -97,13 +97,14 @@
   right: 0;
   top: 100%;
   margin-top: 4px;
-  background-color: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-muted);
-  border-radius: 6px;
+  /* The menus' surface in the open card styles. */
+  background-color: var(--color-shell-float, var(--color-bg-elevated));
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+  border-radius: var(--cs-radius-float, 6px);
   overflow: hidden;
   z-index: 50;
   min-width: 110px;
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--cs-float-shadow, var(--shadow-card));
 }
 .file-panel-sort-item {
   display: block;
@@ -141,11 +142,9 @@
 }
 
 /* ====== Selected File Row ====== */
-.file-panel-item-selected {
-  background-color: var(--color-bg-elevated);
-}
+.file-panel-item-selected,
 .file-panel-item-selected:hover {
-  background-color: var(--color-bg-elevated);
+  background-color: var(--color-shell-fill, var(--color-bg-elevated));
 }
 
 /* ====== Delete Confirmation Button ====== */
@@ -210,7 +209,7 @@
   width: 260px;
   flex-shrink: 0;
   min-height: 0;
-  border-left: 1px solid var(--color-border-muted);
+  border-left: 1px solid var(--color-shell-edge, var(--color-border-muted));
   background-color: var(--color-bg-page);
 }
 /* Under a narrow panel the column would starve the viewer, so it floats over
@@ -257,13 +256,16 @@
 
 /* An open file reads as a first-class row; the one on screen carries the
    panel's focus tint. Neither gets an edge marker: a list entry is not a
-   status, and the tint already says which is which. */
+   status, and the tint already says which is which. The open card styles
+   drop the tints: the file on screen is an open box, drawn in the hover
+   edge since the resting one all but vanishes on the dark ground. */
 .file-panel-item-open {
-  background-color: var(--color-bg-hover);
+  background-color: var(--color-shell-fill, var(--color-bg-hover));
 }
 .file-panel-item-active,
 .file-panel-item-active:hover {
-  background-color: var(--color-bg-elevated);
+  background-color: var(--color-shell-fill, var(--color-bg-elevated));
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge-hover, transparent);
 }
 
 /* ====== Pinned stores ======
@@ -273,7 +275,7 @@
 .file-panel-store-group {
   flex-shrink: 0;
   padding: 2px 0 4px;
-  border-bottom: 1px solid var(--color-border-muted);
+  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
 .file-panel-store-row {
   width: 100%;
@@ -290,7 +292,7 @@
 .file-panel-preview-group {
   flex-shrink: 0;
   padding-bottom: 4px;
-  border-bottom: 1px solid var(--color-border-muted);
+  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
 .file-panel-preview-group-header {
   display: flex;
@@ -305,16 +307,31 @@
   background: none;
   text-align: left;
 }
+/* The port, and the version beside an app's name (PreviewCrumbs,
+   ArtifactVersionPicker), read as a card's tag in the open card styles. */
 .file-panel-port-chip {
   flex-shrink: 0;
   padding: 0 4px;
-  border-radius: 3px;
+  border-radius: var(--cs-radius-pill, 3px);
   border: 1px solid var(--color-border-muted);
-  background-color: var(--color-bg-elevated);
+  background-color: var(--color-shell-fill, var(--color-bg-elevated));
   font-family: var(--font-mono);
   font-size: 0.625rem;
   line-height: 1.4;
   color: var(--color-text-tertiary);
+}
+
+/* The tree's search: Terminal's placeholder in the voice. */
+.file-panel-tree-search input::placeholder {
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.04em * var(--term-track));
+}
+
+/* The listing's empty and error notes are the cards' empty note. */
+p.file-panel-empty-note {
+  font-size: var(--cs-text-label, 0.75rem);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
 }
 
 /* ====== Mobile responsive ====== */

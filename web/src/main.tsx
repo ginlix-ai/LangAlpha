@@ -12,7 +12,6 @@ import './index.css'
 import './pages/ChatAgent/components/charts/termCard.css'
 import './pages/ChatAgent/components/charts/termCardStyles.css'
 import './styles/platformStyles.css'
-import './styles/platformStyles.panels.css'
 import './styles/platformStyles.pages.css'
 import './styles/platformStyles.shell.css'
 // Side-effect import: the modality listeners have to be running before the

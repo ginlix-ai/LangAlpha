@@ -65,11 +65,12 @@ const GEOMETRY: DeckGeometry = {
 
 /** Shared card chrome (visuals only — positioning/height is set per use). Every
  *  card is filled with `--color-bg-card` so a leaf card and the front of a
- *  stack read alike. */
+ *  stack read alike; the open card styles lay it on the page's ground as an
+ *  open box that holds its fill under the pointer. */
 const CARD_CHROME =
-  'pf-sources-card flex items-center gap-2.5 rounded-lg border px-2.5 text-left outline-hidden cursor-pointer ' +
-  'border-(--color-border-muted) bg-(--color-bg-card) ' +
-  'hover:border-(--color-border-default) hover:bg-(--color-bg-elevated) ' +
+  'pf-sources-card flex items-center gap-2.5 rounded-[var(--cs-radius-box,var(--radius-lg))] border px-2.5 text-left outline-hidden cursor-pointer ' +
+  'border-[color:var(--color-shell-edge,var(--color-border-muted))] bg-[color:var(--color-shell-float,var(--color-bg-card))] ' +
+  'hover:border-[color:var(--color-shell-edge-hover,var(--color-border-default))] hover:bg-[color:var(--color-shell-float,var(--color-bg-elevated))] ' +
   'focus-visible:ring-2 focus-visible:ring-ring';
 
 const TERTIARY = { color: 'var(--color-text-tertiary)' as const };
@@ -109,8 +110,14 @@ function SourceThumb({
   const inner = size <= 28 ? 14 : Math.round(size * 0.5);
   return (
     <span
-      className="pf-sources-thumb flex shrink-0 items-center justify-center rounded-md"
-      style={{ width: size, height: size, background: 'var(--color-bg-subtle)' }}
+      className="pf-sources-thumb flex shrink-0 items-center justify-center rounded-[var(--cs-radius-mark,var(--radius-md))]"
+      style={{
+        width: size,
+        height: size,
+        // Unfilled with a hairline ring in the open card styles.
+        background: 'var(--color-shell-fill, var(--color-bg-subtle))',
+        boxShadow: 'inset 0 0 0 1px var(--color-shell-rule, transparent)',
+      }}
     >
       {isUrl ? (
         <Favicon domain={domainFromUrl(record.identifier)} size={inner} />
@@ -446,15 +453,15 @@ export default function SourcesPanel({
                   <ChevronDown className="h-3.5 w-3.5 shrink-0" style={TERTIARY} />
                 )}
                 <span
-                  className="pf-sources-group-label text-xs font-semibold uppercase tracking-wide"
-                  style={TERTIARY}
+                  className="pf-sources-group-label label-voice text-xs"
+                  style={{ ...TERTIARY, fontSize: 'var(--cs-text-label, 0.75rem)', fontWeight: 'var(--cs-weight-label, 500)' }}
                 >
                   {groupLabel}
                 </span>
                 <span
                   data-testid={`group-count-${group.type}`}
                   className="pf-sources-count inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
-                  style={{ backgroundColor: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
+                  style={{ backgroundColor: 'var(--color-shell-fill, var(--color-border-muted))', color: 'var(--color-text-tertiary)' }}
                 >
                   {group.rows.length}
                 </span>
@@ -587,7 +594,7 @@ function SourceRow({
         onClick={() => onOpenRecord(record)}
         aria-label={`${title} — ${t('chat.sources.viewDetails')}`}
         className={`group relative ${CARD_CHROME}`}
-        style={{ height: GEOMETRY.cardHeight, boxShadow: '0 1px 2px rgba(20, 20, 23, 0.05)' }}
+        style={{ height: GEOMETRY.cardHeight, boxShadow: 'var(--cs-frame-shadow, 0 1px 2px rgba(20, 20, 23, 0.05))' }}
       >
         <SourceCardBody
           record={record}
@@ -757,9 +764,9 @@ function SourceDeck({
               height: GEOMETRY.cardHeight,
               ...style,
               boxShadow: fanned
-                ? '0 4px 12px rgba(20, 20, 23, 0.06), 0 1px 2px rgba(20, 20, 23, 0.04)'
+                ? 'var(--cs-frame-shadow, 0 4px 12px rgba(20, 20, 23, 0.06), 0 1px 2px rgba(20, 20, 23, 0.04))'
                 : isTop
-                  ? '0 1px 2px rgba(20, 20, 23, 0.06)'
+                  ? 'var(--cs-frame-shadow, 0 1px 2px rgba(20, 20, 23, 0.06))'
                   : 'none',
             }}
           >

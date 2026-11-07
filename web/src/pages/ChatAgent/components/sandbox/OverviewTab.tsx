@@ -3,6 +3,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
+import { cn } from '@/lib/utils';
 import { useLocale } from '@/hooks/useLocale';
 import { createDateFormatter } from '@/lib/format';
 import type { ComputerStatus } from '@/types/api';
@@ -11,6 +12,20 @@ import type { SandboxStats } from './sandboxTypes';
 
 // The fields Date#toLocaleDateString() prints by default.
 const createdDate = createDateFormatter({ year: 'numeric', month: 'numeric', day: 'numeric' });
+
+// The resource tiles and the computer's card: open boxes in the open card
+// styles (styles/cardStyle.css).
+const SBX_BOX = {
+  backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))',
+  border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
+} as const;
+// The actions are doors: Terminal's words, Balanced's pills. Stop and Start
+// keep their own edge.
+const ACTION_CLASS =
+  'text-xs rounded-[var(--cs-radius-control,var(--radius-md))] transition-colors hover:bg-foreground/10 ' +
+  '[text-transform:var(--term-case)] [letter-spacing:calc(0.06em*var(--term-track))]';
+const ACTION_TYPE = { fontSize: 'var(--cs-text-control, 0.75rem)', fontWeight: 'var(--cs-weight-control)' } as const;
+const ACTION_EDGE = '1px solid var(--color-shell-edge, var(--color-border-muted))';
 
 // States where the sandbox has settled. Deliberately an allowlist of *terminal*
 // values rather than of in-progress ones: the provider has ~23 states and keeps
@@ -101,12 +116,12 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
         {resourceCards.map(({ icon: Icon, label, value }) => (
           <div
             key={label}
-            className="pf-sbx-box flex items-center gap-3 p-3 rounded-lg"
-            style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
+            className="pf-sbx-box flex items-center gap-3 p-3 rounded-[var(--cs-radius-box,var(--radius-lg))]"
+            style={SBX_BOX}
           >
             <Icon className="h-5 w-5 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
             <div>
-              <div className="pf-sbx-label text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{label}</div>
+              <div className="pf-sbx-label label-voice text-xs" style={{ color: 'var(--color-text-tertiary)', fontSize: 'var(--cs-text-label, 0.75rem)' }}>{label}</div>
               <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{value}</div>
             </div>
           </div>
@@ -117,8 +132,8 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
           this workspace lives and what a stop reaches sit in the same card as
           the button, read before it is pressed rather than found beneath it. */}
       <div
-        className="pf-sbx-box flex flex-col gap-3 p-3 rounded-lg"
-        style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
+        className="pf-sbx-box flex flex-col gap-3 p-3 rounded-[var(--cs-radius-box,var(--radius-lg))]"
+        style={SBX_BOX}
       >
       {(computerName || dirName) && (
         <div className="flex flex-col gap-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
@@ -169,7 +184,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
         </div>
         <div className="flex items-center gap-2">
           {stats.auto_stop_interval != null && (
-            <span className="pf-sbx-chip text-xs px-2 py-1 rounded" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-card)' }}>
+            <span className="pf-sbx-chip text-xs px-2 py-1 rounded [text-transform:var(--term-case)] [letter-spacing:calc(0.06em*var(--term-track))]" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))' }}>
               {/* 0 disables auto-stop entirely, so rendering "0m" states the opposite */}
               {stats.auto_stop_interval === 0
                 ? t('computer.alwaysOn')
@@ -182,8 +197,8 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
             onClick={onRefresh}
             aria-label={t('computer.overview.refreshAria')}
             title={t('computer.overview.refresh')}
-            className="pf-sbx-action flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
-            style={{ color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border-muted)' }}
+            className={cn('pf-sbx-action flex items-center gap-1.5 px-2 py-1.5', ACTION_CLASS)}
+            style={{ ...ACTION_TYPE, color: 'var(--color-text-tertiary)', border: ACTION_EDGE }}
           >
             {refreshing
               ? (
@@ -198,8 +213,8 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('archive')}
               disabled={isTransitioning}
               data-computer-power
-              className="pf-sbx-action flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
-              style={{ color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border-muted)' }}
+              className={cn('pf-sbx-action flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
+              style={{ ...ACTION_TYPE, color: 'var(--color-text-tertiary)', border: ACTION_EDGE }}
             >
               <Archive className="h-3 w-3" />
               {t('computer.overview.archive')}
@@ -210,9 +225,9 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('stop')}
               disabled={isTransitioning}
               data-computer-power
-              className="pf-sbx-action flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
+              className={cn('pf-sbx-action flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
               data-tone="danger"
-              style={{ color: 'var(--color-loss)', border: '1px solid var(--color-border-loss)' }}
+              style={{ ...ACTION_TYPE, color: 'var(--color-loss)', border: '1px solid var(--color-border-loss)' }}
             >
               <Square className="h-3 w-3" />
               {computerName ? t('computer.stopComputer', 'Stop computer') : t('computer.stop', 'Stop')}
@@ -222,9 +237,9 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('start')}
               disabled={isTransitioning}
               data-computer-power
-              className="pf-sbx-action flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
+              className={cn('pf-sbx-action flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
               data-tone="go"
-              style={{ color: 'var(--color-profit)', border: '1px solid var(--color-profit-border)' }}
+              style={{ ...ACTION_TYPE, color: 'var(--color-profit)', border: '1px solid var(--color-profit-border)' }}
             >
               <Play className="h-3 w-3" />
               {computerName ? t('computer.startComputer', 'Start computer') : t('computer.start', 'Start')}

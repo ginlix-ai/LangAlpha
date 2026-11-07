@@ -143,8 +143,10 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Tabs */}
-      <div className="pf-sbx-tabs flex flex-wrap gap-1 mb-4 border-b" style={{ borderColor: 'var(--color-border-muted)' }}>
+      {/* Tabs. The accent underline is Quiet's mark for the open one; the open
+          card styles give it their own (styles/cardStyle.css), since amber does
+          not select there. */}
+      <div className="pf-sbx-tabs flex flex-wrap gap-1 mb-4 border-b" style={{ borderColor: 'var(--color-shell-divider, var(--color-border-muted))' }}>
         {tabs.map(t => (
           <button
             key={t.key}
@@ -152,11 +154,8 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
             onClick={() => setActiveTab(t.key)}
             data-slot="tab"
             data-active={activeTab === t.key || undefined}
-            className="px-3 py-2 text-sm font-medium"
-            style={{
-              color: activeTab === t.key ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-              borderBottom: activeTab === t.key ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
-            }}
+            className="px-3 py-2 text-sm font-medium border-b-2 border-b-transparent data-active:border-b-(--color-accent-primary)"
+            style={{ color: activeTab === t.key ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
           >
             {t.label}
           </button>

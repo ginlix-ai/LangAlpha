@@ -268,8 +268,8 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
             live in tokens.css. */}
         <div className="file-panel-tree-filter">
           <div
-            className="file-panel-tree-search rings-within owns-its-edge flex items-center gap-1.5 h-8 px-2 rounded-md border"
-            style={{ backgroundColor: 'var(--color-bg-input)', borderColor: 'var(--color-border-muted)' }}
+            className="file-panel-tree-search rings-within owns-its-edge flex items-center gap-1.5 h-8 px-2 rounded-[var(--cs-radius-control,var(--radius-md))] border"
+            style={{ backgroundColor: 'var(--color-shell-fill, var(--color-bg-input))', borderColor: 'var(--color-shell-edge, var(--color-border-muted))' }}
           >
             <Search className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
             <input

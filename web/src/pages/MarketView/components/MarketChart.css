@@ -20,7 +20,7 @@
   gap: 4px 12px;
   min-height: 30px;
   padding: 3px 10px;
-  border-bottom: 1px solid var(--color-border-default);
+  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-default));
   flex-shrink: 0;
 }
 
@@ -58,7 +58,8 @@
   padding: 0 0 0 8px;
   margin-left: 4px;
   gap: 2px;
-  border-left: 1px solid var(--color-border-default);
+  /* The open card styles keep the hairline here, Terminal too. */
+  border-left: 1px solid var(--color-shell-rule, var(--color-border-default));
   border-radius: 0;
 }
 
@@ -137,7 +138,7 @@
   align-items: center;
   column-gap: 8px;
   row-gap: 4px;
-  border-bottom: 1px solid var(--color-border-default);
+  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-default));
   flex-shrink: 0;
   position: relative;
   z-index: 10;
@@ -156,13 +157,15 @@
   gap: 2px;
 }
 
+/* The labels in the cards' label voice. */
 .indicator-toggles-label {
+  font-family: var(--term-words);
   font-size: 0.6875rem;
-  font-weight: 600;
+  font-weight: var(--cs-weight-label, 500);
   color: var(--color-text-secondary);
   margin-right: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
 }
 
 .indicator-toggle-btn {
@@ -252,9 +255,10 @@
   min-width: 28px;
   height: 28px;
   padding: 0 6px;
-  background-color: var(--color-bg-surface);
-  border: 1px solid var(--color-border-elevated);
-  border-radius: 4px;
+  /* Open boxes in the open card styles, under the pointer too. */
+  background-color: var(--color-shell-fill, var(--color-bg-surface));
+  border: 1px solid var(--color-shell-edge, var(--color-border-elevated));
+  border-radius: var(--cs-radius-control, 4px);
   color: var(--color-text-secondary);
   cursor: pointer;
   display: flex;
@@ -268,14 +272,14 @@
 }
 
 .chart-tool-btn:hover {
-  background-color: var(--color-bg-hover);
+  background-color: var(--color-shell-fill, var(--color-bg-hover));
   color: var(--color-text-primary);
-  border-color: var(--color-border-input);
+  border-color: var(--color-shell-edge, var(--color-border-input));
 }
 
 /* An armed tool is marked by an accent hairline, never an accent wash. */
 .chart-tool-btn-active {
-  background-color: var(--color-bg-hover);
+  background-color: var(--color-shell-fill, var(--color-bg-hover));
   color: var(--color-text-primary);
   border-color: var(--color-accent-primary);
 }
@@ -371,17 +375,18 @@
   flex-shrink: 0;
 }
 
+/* The menus' surface in the open card styles. */
 .toolbar-dropdown-panel {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
   z-index: 50;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-elevated);
-  border-radius: 8px;
+  background: var(--color-shell-float, var(--color-bg-elevated));
+  border: 1px solid var(--color-shell-edge, var(--color-border-elevated));
+  border-radius: var(--cs-radius-float, 8px);
   padding: 12px;
   min-width: 220px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--cs-float-shadow, 0 8px 24px rgba(0, 0, 0, 0.25));
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -421,6 +426,7 @@
   font-size: 0.75rem;
   font-weight: 500;
   font-family: 'SF Mono', 'Fira Code', monospace;
+  text-transform: var(--term-case);
   color: var(--color-text-secondary);
   background: transparent;
   border: none;
@@ -436,14 +442,16 @@
   background: var(--color-bg-hover);
 }
 
+/* The picked one: an open box in the open card styles, under the pointer too. */
 .interval-dropdown-item-active {
   color: var(--color-text-primary);
-  background: var(--color-bg-surface);
+  background: var(--color-shell-fill, var(--color-bg-surface));
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
   font-weight: 600;
 }
 
 .interval-dropdown-item-active:hover {
-  background: var(--color-bg-surface);
+  background: var(--color-shell-fill, var(--color-bg-surface));
 }
 
 /* ===== Responsive toolbar: progressive collapse by toolbar width =====
@@ -482,10 +490,11 @@
 
 .compact-menu-panel { min-width: 240px; }
 .compact-menu-section-label {
+  font-family: var(--term-words);
   font-size: 0.625rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-weight: var(--cs-weight-label, 500);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
   color: var(--color-text-tertiary);
 }
 
@@ -515,7 +524,7 @@
     width: 100%;
     padding: 8px 12px;
     gap: 6px;
-    border-radius: 0 0 8px 8px;
+    border-radius: var(--cs-radius-float, 0 0 8px 8px);
   }
   .compact-menu-panel .dropdown-tool-grid {
     grid-template-columns: repeat(4, 1fr);
@@ -547,7 +556,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 2px 10px;
-  border-top: 1px solid var(--color-border-default);
+  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-default));
   background-color: var(--color-bg-card);
   flex-shrink: 0;
   user-select: none;
@@ -586,6 +595,7 @@
   font-size: 0.6875rem;
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-variant-numeric: tabular-nums;
+  letter-spacing: calc(0.02em * var(--term-track));
   color: var(--color-text-secondary);
   white-space: nowrap;
 }
