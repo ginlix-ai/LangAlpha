@@ -97,11 +97,15 @@ class SubagentRunCoordinator:
         parent_run_id: Optional[str] = None,
         launch_tool_call_id: Optional[str] = None,
         model: Optional[SubagentModel] = None,
+        claude_code: bool = False,
+        stored_token: bool = False,
     ) -> str:
         """Bear the run row (in_progress) and open its v2 stream; returns the
         new task_run_id. ``model`` is the model the run will use, given only
         when it is not its launcher's; the row and ``lane_open`` both carry
-        it, so a live card and a replayed one agree.
+        it, so a live card and a replayed one agree. A run on Claude Code
+        (``claude_code``) is refused once its computer runs as many CLIs
+        as it may (``hosted.cli_cap``).
 
         Called under the task's namespace guard, BEFORE the writer spawns.
         Any constraint conflict raises TaskRunRejected — the spawn/resume
@@ -124,6 +128,8 @@ class SubagentRunCoordinator:
             # pred is None for a pre-ledger task resumed after the ledger
             # shipped: the upsert adopts it with an unchained first run.
 
+        from src.config.settings import HOST_MODE
+
         try:
             run_row = await sr_db.start_task_run(
                 task_run_id=task_run_id,
@@ -137,7 +143,14 @@ class SubagentRunCoordinator:
                 predecessor_run_id=predecessor_run_id,
                 start_checkpoint_id=start_checkpoint_id,
                 model=model,
+                claude_code=claude_code,
+                stored_token=claude_code and stored_token and HOST_MODE == "platform",
+                cli_cap=await self._cli_cap() if claude_code else None,
             )
+        except sr_db.ClaudeCodeCapError as e:
+            from src.server.services.claude_code.hosted import CLI_CAP_REFUSAL
+
+            raise TaskRunRejected(CLI_CAP_REFUSAL.format(n=e.cap), busy=True) from e
         except sr_db.DuplicateLaunchError as e:
             raise TaskRunRejected(
                 f"this Task call already spawned run "
@@ -221,6 +234,16 @@ class SubagentRunCoordinator:
             parent_run_id=parent_run_id,
         )
         return str(run_row["task_run_id"])
+
+    async def _cli_cap(self) -> Optional[tuple[str, int]]:
+        """The thread's computer and how many Claude Code CLIs it runs at
+        once; None where it has none or its size is unknown."""
+        from src.server.database.computer import get_computer_for_thread
+        from src.server.services.claude_code.hosted import cli_cap
+
+        computer = await get_computer_for_thread(self.thread_id)
+        cap = cli_cap(computer) if computer is not None else None
+        return (str(computer["computer_id"]), cap) if cap is not None else None
 
     async def _mark_delivered_quietly(self, task_run_id: str) -> None:
         """Stamp the delivery, never failing the caller for it.

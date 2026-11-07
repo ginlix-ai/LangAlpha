@@ -581,6 +581,7 @@ async def resolve_llm_config(
                 config, selection.effective_model, role, user_id=user_id, workspace_id=workspace_id,
                 thread_id=thread_id,
             )
+            config.claude_code = True
             # A Claude Code turn stops when its plan runs out rather than move
             # to another model.
             config.llm.fallback = []
@@ -607,6 +608,7 @@ async def resolve_llm_config(
                 user_id, await reads, model_pref=model_pref, permits=permits,
                 is_byok=is_byok, search_api=config.search_api,
                 search_depth=config.search_depth, requested=enabled_subagents,
+                claude_code_turn=config.claude_code,
             )
     finally:
         # A stage above that raises must not leave the reads running, or let

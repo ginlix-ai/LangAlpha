@@ -63,11 +63,13 @@ async def resolve_user_subagents(
     search_api: str,
     search_depth: str,
     requested: list[str] | None = None,
+    claude_code_turn: bool = False,
 ) -> ResolvedSubagents:
     """The roster this user's turn compiles, before any client is built.
 
     ``search_api`` and ``search_depth`` are the user's own pair, already
     gated, which a subagent's search settings inherit and fall back to.
+    ``claude_code_turn`` keeps a Claude Code pin, which runs only on such a turn.
 
     A failed read of the rows raises rather than resolving without them: a
     user's off-switch is a restriction, and a turn that silently drops it
@@ -92,6 +94,7 @@ async def resolve_user_subagents(
         )
     resolved = await _demote_unservable(
         user_id, resolved, bases, model_pref=model_pref, permits=permits, is_byok=is_byok,
+        claude_code_turn=claude_code_turn,
     )
     return await _gate_search(
         user_id, resolved, search_api=search_api, search_depth=search_depth, permits=permits,
@@ -153,11 +156,13 @@ async def _demote_unservable(
     model_pref: dict,
     permits: TierPermits,
     is_byok: bool,
+    claude_code_turn: bool = False,
 ) -> ResolvedSubagents:
     """Pinned models this turn cannot run, as Inherit.
 
     By name for every pin, since a name the manifest lacks fails the build,
-    and so does a Claude Code row, which runs only as a thread's own model.
+    and so does a Claude Code row anywhere but a Claude Code turn
+    (``claude_code_turn``), whose subagents run on the runtime too.
     By plan only for a model the user chose, a plugin's pin included since
     the user installed it: a deployment's own pin is the operator's call, and
     gating it would change the turn of a user who never touched their
@@ -170,7 +175,7 @@ async def _demote_unservable(
         defn = definitions[name]
         if not defn.model:
             continue
-        if role_resolves(model_pref, defn.model) and (
+        if role_resolves(model_pref, defn.model, claude_code_turn=claude_code_turn) and (
             not plan_gated(defn, bases.get(name))
             or await model_on_plan(
                 user_id, defn.model, model_pref=model_pref, permits=permits,

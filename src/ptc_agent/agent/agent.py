@@ -97,6 +97,7 @@ from ptc_agent.agent.middleware.system_prompt_caching import SystemPromptCacheMi
 from ptc_agent.agent.middleware.tool_surface import ToolSurfaceMiddleware
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import SystemPinMiddleware
 from ptc_agent.agent.middleware.runtime_context import (
+    BaselineContextMiddleware,
     FrozenPromptMiddleware,
     RowCarrierMiddleware,
     TimeUpToolStopMiddleware,
@@ -294,7 +295,7 @@ class PTCAgent:
         window_coverage: WindowCoverage | None = None,
         cancel_notices: CancelNotices | None = None,
         computers: ComputerReach | None = None,
-        claude_code_launcher: "Callable[[PTCSandbox, str | None, str | None], Launcher] | None" = None,
+        claude_code_launcher: "Callable[..., Launcher] | None" = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -352,8 +353,8 @@ class PTCAgent:
         """
         turn = turn_model(self.config, llm, self.llm, background=False)
         claude_code = isinstance(turn.client, ClaudeCodeTarget)
-        # A subagent does not run on the Claude Code runtime yet.
-        disable_subagents = disable_subagents or claude_code
+        if claude_code and claude_code_launcher is None:
+            raise RuntimeError("a Claude Code turn needs a claude_code_launcher")
 
         # Freeze current time for this request (refreshes on each new query)
         request_time = datetime.now(tz=UTC)
@@ -674,15 +675,16 @@ class PTCAgent:
         # middleware, and its tool hook must wrap the Task interceptor so a
         # resume it calls settles on that call's result. Without subagents
         # there is no TaskOutput to read a task report's result with, nor a
-        # task to resume, so only steers are taken in. A Claude Code turn runs
-        # no subagents but takes the other reports in (a command's end, a
-        # wakeup, an alert), which its tool hook hands Claude mid-turn.
+        # task to resume, so only steers are taken in. A Claude Code turn
+        # takes the other reports in either way (a command's end, a wakeup,
+        # an alert), which its tool hook hands Claude mid-turn, and resumes
+        # only as it opens.
         steering = SteeringMiddleware(
             report_inbox=_bg_registry.report_inbox,
             kinds=(
-                ("report", "steer")
-                if claude_code
-                else ("steer",) if disable_subagents else ("report", "steer", "resume")
+                ("report", "steer") if claude_code and disable_subagents
+                else ("steer",) if disable_subagents
+                else ("report", "steer", "resume")
             ),
         )
         main_only_middleware.append(steering)
@@ -926,10 +928,15 @@ class PTCAgent:
         )
 
         # SubagentSteeringMiddleware must be first so follow-up messages are visible before other middleware.
+        subagent_steering = SubagentSteeringMiddleware(registry=background_middleware.registry)
+        subagent_turn_context = TurnContextMiddleware(
+            timezone=timezone_str or "UTC",
+            is_subagent=True,
+        )
         subagent_middleware = [
             m
             for m in [
-                SubagentSteeringMiddleware(registry=background_middleware.registry),
+                subagent_steering,
                 # Outermost of the tool wrappers, so each result streams as
                 # the checkpoint keeps it, the time-up refusal included, and
                 # live agrees with replay. It acts only on what comes back,
@@ -949,10 +956,7 @@ class PTCAgent:
                 # is injected: this stack is built once per parent turn and run
                 # for every subagent, so the row reads the clock when its own
                 # turn opens.
-                TurnContextMiddleware(
-                    timezone=timezone_str or "UTC",
-                    is_subagent=True,
-                ),
+                subagent_turn_context,
                 LargeResultEvictionMiddleware(
                     backend=backend, eviction_dir=eviction_dir
                 ),
@@ -1030,6 +1034,39 @@ class PTCAgent:
         # provider of the Task tool, so skipping it (plus the TaskOutput extend
         # above) makes a notification turn structurally unable to spawn
         # subagents, and RunWorkflow drops with it below.
+        # A subagent on a Claude Code row runs each of its runs in a Claude
+        # Code CLI of its own, where the thread's turn runs its CLI. As the
+        # thread's turn does, it takes its prompt, tools and stack from its
+        # compiled agent, opens with the hooks that write its rows, and takes
+        # in what is sent into its task between calls.
+        claude_code_launcher_for = (
+            partial(claude_code_launcher, sandbox, self.config.claude_code_hosted, self.config.claude_code_saved)
+            if claude_code and claude_code_launcher is not None
+            else None
+        )
+
+        def claude_code_subagent(compiled: Any, spec: Any, target: ClaudeCodeTarget) -> Any:
+            from ptc_agent.agent.claude_code.agent import claude_code_graph
+            from ptc_agent.agent.claude_code.compaction import CompactionRules
+            from ptc_agent.agent.claude_code.mid_turn import TaskSteering
+            from ptc_agent.agent.claude_code.ssh_launcher import SUBAGENT_CLI_SLOT_WAIT_S
+
+            background_middleware.claude_code_types |= {spec["name"]}
+            background_middleware.claude_code_stored = bool(self.config.claude_code_saved)
+            own = list(spec.get("middleware") or [])
+            baseline = next((m for m in own if isinstance(m, BaselineContextMiddleware)), None)
+            return claude_code_graph(
+                compiled, system_prompt=spec["system_prompt"], target=target,
+                user_id=user_id, checkpointer=checkpointer,
+                launcher=partial(claude_code_launcher_for, slot_wait_s=SUBAGENT_CLI_SLOT_WAIT_S),
+                entry=(subagent_skill_middleware, subagent_turn_context, *own),
+                middleware=[*subagent_middleware, *own],
+                baseline=baseline.frozen_block if baseline is not None else None,
+                steering=TaskSteering(subagent_steering),
+                compaction=CompactionRules.of_subagent(self.config.compaction, backend=backend,
+                                                      workspace_id=workspace_id_for_memory),
+            )
+
         subagent_task_middleware = (
             task_middleware(
                 subagents,
@@ -1038,6 +1075,7 @@ class PTCAgent:
                 middleware=subagent_middleware,
                 registry=background_middleware.registry,
                 checkpointer=checkpointer,
+                claude_code=claude_code_subagent if claude_code_launcher_for is not None else None,
             )
             if not disable_subagents
             else None
@@ -1226,13 +1264,10 @@ class PTCAgent:
             from ptc_agent.agent.claude_code.agent import claude_code_graph
             from ptc_agent.agent.claude_code.compaction import CompactionRules
 
-            if claude_code_launcher is None:
-                raise RuntimeError("a Claude Code turn needs a claude_code_launcher")
-
             return claude_code_graph(
                 agent, system_prompt=system_prompt, target=turn.client,
                 user_id=user_id, checkpointer=checkpointer,
-                launcher=partial(claude_code_launcher, sandbox, self.config.claude_code_hosted, self.config.claude_code_saved),
+                launcher=claude_code_launcher_for,
                 entry=(skill_loader_middleware, context.turn, context.baseline),
                 middleware=deepagent_middleware,
                 baseline=context.baseline.frozen_block,

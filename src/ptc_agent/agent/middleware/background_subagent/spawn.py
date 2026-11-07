@@ -45,9 +45,11 @@ class TaskRunRefused(Exception):
     # not answering; None when admission turned the run down on its merits.
     failure: str | None = None
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, busy: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
+        #: Refused only until the computer has room again (``TaskRunRejected.busy``).
+        self.busy = busy
 
 
 class NamespaceUnfenced(TaskRunRefused):

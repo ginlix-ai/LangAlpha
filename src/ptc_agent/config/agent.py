@@ -426,6 +426,9 @@ class AgentConfig(BaseModel):
     subagent_models: dict[str, SubagentModel] = Field(
         default_factory=dict, exclude=True
     )
+    # Whether admission let the turn run on Claude Code, which its run's row
+    # is stamped with, so its computer counts its CLI.
+    claude_code: bool = Field(default=False, exclude=True)
     # What a Claude Code turn on a cloud computer was admitted to sign in
     # with, None on any other turn; the run's row is stamped from it, so the
     # turn is counted as what admission let it run on.

@@ -26,12 +26,16 @@ _RETRY_BACKOFF_S = 2.0
 
 
 async def publish_cancel_nudge(
-    thread_id: str, run_id: Optional[str], task_id: Optional[str] = None
+    thread_id: str,
+    run_id: Optional[str],
+    task_id: Optional[str] = None,
+    task_run_id: Optional[str] = None,
 ) -> None:
     """Best-effort: never raises — the durable intent row is the truth.
 
     With ``task_id``, targets one background task instead of the run: the
-    owning worker cancels just that task via its local registry.
+    owning worker cancels just that task via its local registry, and with
+    ``task_run_id`` only while that is its run.
     """
     from src.utils.cache.redis_cache import get_cache_client
 
@@ -41,6 +45,8 @@ async def publish_cancel_nudge(
     payload: dict = {"thread_id": thread_id, "run_id": run_id}
     if task_id is not None:
         payload["task_id"] = task_id
+    if task_run_id is not None:
+        payload["task_run_id"] = task_run_id
     try:
         await cache.client.publish(CANCEL_CHANNEL, json.dumps(payload))
         logger.info(
@@ -135,8 +141,9 @@ class TurnCancelListener:
                         pass
 
     async def _reconcile(self) -> None:
-        """Signal each run this worker owns whose row carries cancel intent
-        that never reached it, the durable fallback for a missed nudge."""
+        """Signal each run, and stop each task run, this worker owns whose row
+        carries cancel intent that never reached it, the durable fallback for
+        a missed nudge."""
         try:
             from src.server.database.runs import lifecycle as tl_db
             from src.server.services.runs.executor import LocalRunExecutor
@@ -152,6 +159,27 @@ class TurnCancelListener:
                     )
         except Exception:
             logger.warning("[cancel-nudge] cancel intent re-read failed", exc_info=True)
+        try:
+            from src.server.database.runs import subagent_runs as sr_db
+            from src.server.services.background_registry_store import (
+                BackgroundRegistryStore,
+            )
+
+            store = BackgroundRegistryStore.get_instance()
+            live = await store.live_task_runs()
+            asked = await sr_db.cancel_requested_task_runs([run for *_, run in live])
+            for thread_id, task_id, task_run_id in live:
+                if task_run_id in asked and await store.cancel_task(
+                    thread_id, task_id, task_run_id=task_run_id
+                ):
+                    logger.info(
+                        f"[cancel-nudge] durable intent stopped "
+                        f"thread={thread_id} task={task_id} run={task_run_id}"
+                    )
+        except Exception:
+            logger.warning(
+                "[cancel-nudge] task cancel intent re-read failed", exc_info=True
+            )
 
     async def _handle(self, data) -> None:
         try:
@@ -161,13 +189,14 @@ class TurnCancelListener:
             thread_id = payload.get("thread_id")
             run_id = payload.get("run_id")
             task_id = payload.get("task_id")
+            task_run_id = payload.get("task_run_id")
         except Exception:
             logger.warning("[cancel-nudge] undecodable payload dropped")
             return
         # Task-targeted nudge: cancel that one background task if this
         # worker owns its live writer (idempotent — non-owners no-op).
         if thread_id and task_id:
-            await self._handle_task(thread_id, task_id)
+            await self._handle_task(thread_id, task_id, task_run_id)
             return
         # run_id is required: an untargeted local cancel could hit a
         # NEWER run than the one the intent was stamped on.
@@ -193,14 +222,16 @@ class TurnCancelListener:
                 exc_info=True,
             )
 
-    async def _handle_task(self, thread_id: str, task_id: str) -> None:
+    async def _handle_task(
+        self, thread_id: str, task_id: str, task_run_id: Optional[str] = None
+    ) -> None:
         try:
             from src.server.services.background_registry_store import (
                 BackgroundRegistryStore,
             )
 
             handled = await BackgroundRegistryStore.get_instance().cancel_task(
-                thread_id, task_id
+                thread_id, task_id, task_run_id=task_run_id
             )
             if handled:
                 logger.info(

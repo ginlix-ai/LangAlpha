@@ -127,7 +127,13 @@ class ReportInbox(Protocol):
     ) -> list[str]: ...
     async def confirm_resumes(self, run_id: str, job_ids: list[str]) -> None: ...
     async def release_resumes(
-        self, thread_id: str, run_id: str, task_id: str, job_ids: list[str]
+        self,
+        thread_id: str,
+        run_id: str,
+        task_id: str,
+        job_ids: list[str],
+        *,
+        counted: bool = True,
     ) -> None: ...
 
 
@@ -251,6 +257,16 @@ class SteeringMiddleware(AgentMiddleware):
         taken = await self._take(thread_id, run_id)
         return self._message(thread_id, run_id, taken)[0] if taken else None
 
+    async def resume_call(
+        self, thread_id: str, run_id: str | None
+    ) -> AIMessage | None:
+        """The call that resumes each task whose run ended with messages it
+        never read, holding them for this run, as the model call it is made
+        before would take it; None when none waits. For a runtime that makes
+        it in its own place."""
+        resumes = await self._take_resumes(thread_id, run_id)
+        return _resume_call(resumes, run_id) if resumes else None
+
     def _message(
         self, thread_id: str, run_id: str | None, taken: list[SteeredReport]
     ) -> tuple[HumanMessage, dict[str, Any]]:
@@ -313,13 +329,19 @@ class SteeringMiddleware(AgentMiddleware):
         finally:
             current_steer_resume.reset(token)
             if "held_jobs" not in resume:
-                await self._settle_resume(held, result)
+                await self._settle_resume(
+                    held, result, counted=not resume.get("busy")
+                )
         return result
 
-    async def _settle_resume(self, held: dict[str, Any], result: Any) -> None:
+    async def _settle_resume(
+        self, held: dict[str, Any], result: Any, *, counted: bool = True
+    ) -> None:
         """Give the rows back on a refused resume (one that raised too: the
-        run did not start). A resume that started without handing them to a
-        run of its own (no run ledger) confirms them here instead."""
+        run did not start), counting the refusal unless it lifts by itself
+        (``counted``: the computer was busy). A resume that started without
+        handing them to a run of its own (no run ledger) confirms them here
+        instead."""
         artifact = (
             (getattr(result, "additional_kwargs", None) or {}).get("task_artifact")
             if isinstance(result, ToolMessage)
@@ -341,6 +363,7 @@ class SteeringMiddleware(AgentMiddleware):
                     held["run_id"],
                     held["task_id"],
                     list(held["job_ids"]),
+                    counted=counted,
                 )
         except Exception as e:
             logger.warning(f"[Steering] Settling resume of {held['task_id']} failed: {e}")

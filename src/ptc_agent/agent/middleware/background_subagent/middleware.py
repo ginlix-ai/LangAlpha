@@ -91,6 +91,12 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         self.namespace_owner = namespace_owner
         self.subagent_types = frozenset(subagent_types)
         self.subagent_models = dict(subagent_models or {})
+        #: The subagent types whose runs each run a Claude Code CLI, which
+        #: their computer counts; set once their graphs are built.
+        self.claude_code_types: frozenset[str] = frozenset()
+        #: Whether those CLIs sign in with the setup token the user stored,
+        #: as the build that launches them was let to.
+        self.claude_code_stored = False
         # Task ids with a resume mid-flight: the liveness check and the
         # writer spawn are separated by awaits, so two parallel resume calls
         # in one model step could otherwise both pass and double-spawn (the
@@ -215,6 +221,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 parent_run_id=parent_run_id,
                 launch_tool_call_id=launch_tool_call_id,
                 model=self.subagent_models.get(task.subagent_type),
+                claude_code=task.subagent_type in self.claude_code_types,
+                stored_token=self.claude_code_stored,
             )
         except TaskRunRejected as e:
             logger.warning(
@@ -224,7 +232,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 reason=e.reason,
             )
             await self._release_task_ns(task.task_id)
-            raise TaskRunRefused(e.reason) from e
+            raise TaskRunRefused(e.reason, busy=e.busy) from e
         except Exception as e:
             logger.error(
                 "task-run ledger unavailable; refusing spawn",

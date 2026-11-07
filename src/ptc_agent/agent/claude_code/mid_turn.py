@@ -21,11 +21,12 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
+from ptc_agent.agent.middleware.background_subagent.steering import SubagentSteeringMiddleware
 from ptc_agent.agent.middleware.background_subagent.utils import build_message_checker, config_own_run_id
 from ptc_agent.agent.middleware.credit_gate import current_credit_gate
 from ptc_agent.agent.middleware.steering import SteeringMiddleware, announce, opened_with
@@ -64,6 +65,13 @@ class TurnSteering:
         )
         return await checker() if checker is not None else []
 
+    async def resume(self, config: RunnableConfig) -> AIMessage | None:
+        """The call that resumes the tasks whose runs ended with messages
+        they never read, held for this run; None when none waits."""
+        if self._steering is None:
+            return None
+        return await self._steering.resume_call(config["configurable"]["thread_id"], config_own_run_id(config))
+
     def delivered(self, config: RunnableConfig, message: HumanMessage) -> None:
         """Tell the stream a message the turn took in was delivered."""
         announce(get_stream_writer(), config["configurable"]["thread_id"], message.additional_kwargs["steering_delivered"])
@@ -84,6 +92,36 @@ class TurnSteering:
             await self._steering.confirm_read(messages)
 
 
+class TaskSteering:
+    """A subagent's ``SubagentSteeringMiddleware`` as a Claude Code run of
+    its task reads it, in the places ``TurnSteering`` is read: what is sent
+    into the run is taken in after each batch of calls, as it is before each
+    model call of a langalpha run, and its take records the delivery on the
+    task's stream itself. Nothing brings a query that ended back, as nothing
+    brings back a langalpha run that answered."""
+
+    def __init__(self, steering: SubagentSteeringMiddleware) -> None:
+        self._steering = steering
+
+    async def take(self, config: RunnableConfig) -> HumanMessage | None:
+        return await self._steering.take_message()
+
+    async def waiting(self, config: RunnableConfig) -> list[str]:
+        return []
+
+    async def resume(self, config: RunnableConfig) -> AIMessage | None:
+        return None
+
+    def delivered(self, config: RunnableConfig, message: HumanMessage) -> None:
+        pass
+
+    def opened(self, state: Mapping[str, Any], config: RunnableConfig) -> None:
+        pass
+
+    async def read(self, messages: Sequence[Any]) -> None:
+        await self._steering.confirm_read(messages)
+
+
 #: Whether a call, by name and arguments, may wait for the user.
 Waits = Callable[[str, Mapping[str, Any]], bool]
 
@@ -98,10 +136,12 @@ def _decision(decision: str, reason: str | None = None) -> dict[str, Any]:
 
 
 def credit_stops() -> bool:
-    """Whether the turn's credit gate says stop, as it does at a langalpha
-    model boundary; the CLI's next request is the one a call leads to."""
+    """Whether the run's credit gate says stop, as it does at a langalpha
+    model boundary; the CLI's next request is the one a call leads to. A
+    subagent's run is stopped too: its gate ends the run where a turn's
+    pauses."""
     gate = current_credit_gate.get()
-    return gate is not None and gate.kind == "run" and gate.lease.should_stop(gate.lease.spend())
+    return gate is not None and gate.lease.should_stop(gate.lease.spend())
 
 
 class BeforeTool:

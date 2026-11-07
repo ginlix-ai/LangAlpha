@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from ptc_agent.agent.context_stack import SubagentContext
 from ptc_agent.agent.middleware import SubAgentMiddleware
+from ptc_agent.agent.middleware.background_subagent.subagent import ClaudeCodeSubagent
 from ptc_agent.agent.subagents import SubagentCompiler, create_subagents
 from ptc_agent.agent.subagents.merge import turn_roster
 from ptc_agent.agent.tools import think_tool
@@ -103,8 +104,10 @@ def task_middleware(
     middleware: list[Any],
     registry: Any,
     checkpointer: Any | None,
+    claude_code: ClaudeCodeSubagent | None = None,
 ) -> SubAgentMiddleware:
-    """The Task tool's middleware, which compiles one graph per spec.
+    """The Task tool's middleware, which compiles one graph per spec, a
+    spec on a Claude Code row through ``claude_code``.
 
     ``tools`` is copied, so a tool the main agent binds afterwards never
     reaches a subagent.
@@ -119,4 +122,5 @@ def task_middleware(
         general_purpose_agent=False,
         registry=registry,
         checkpointer=checkpointer,
+        claude_code=claude_code,
     )

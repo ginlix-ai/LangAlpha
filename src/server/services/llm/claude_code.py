@@ -1,9 +1,10 @@
-"""Where a Claude Code row runs: only as an analyst turn's own model.
+"""Where a Claude Code row runs: as an analyst turn's own model, and as its
+subagents'.
 
-A role, a fallback, a subagent pin and a Background job each send their
-request through a chat client, which such a row does not build
-(``src.llms.claude_code``), and Chief of Staff does not run on the runtime
-yet. ``resolve_llm_config`` decides once whether the turn is a Claude Code
+A role, a fallback, a Background job and a subagent pin on any other turn
+each send their request through a chat client, which such a row does not
+build (``src.llms.claude_code``), and Chief of Staff does not run on the
+runtime yet. ``resolve_llm_config`` decides once whether the turn is a Claude Code
 turn; everything else asks this module.
 """
 
@@ -27,7 +28,7 @@ from src.llms.claude_code import (
 )
 from src.llms.error_classification import iter_exception_chain
 from src.config.settings import get_claude_code_config
-from src.server.database.claude_code_hosted import CLOUD_TURN, STORED_TURN, live_cloud_turns
+from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, CLOUD_TURN, STORED_TURN, live_cloud_turns
 from src.server.services.claude_code.flow import POLICY_BLOCKED
 from src.server.services.claude_code.hosted import hosted, placement, relay_offered
 from src.server.services.claude_code.machine import NEEDS_PERL, MachineAnswer, computer_state, read_answer
@@ -244,11 +245,12 @@ async def require_runnable(
     ``cloud_placement`` gives, the saved token known not to work among
     them. Each turn there also waits for one of the user's to finish once
     they run ``claude_code.hosted_turns_per_user`` at once, the thread's own
-    aside, since a message to a running thread steers it. That count is the
-    one bound on the CLIs a cloud computer's sandbox or a worker runs.
-    The cap is soft: two turns admitted at once may both pass. A turn whose
-    credential's Claude plan is used up is refused until it resets
-    (``require_plan``). None of it waits on Anthropic or dials a machine.
+    aside, since a message to a running thread steers it; each computer's
+    own count of its CLIs, subagents' included, bounds them there
+    (``hosted.cli_cap``). The cap is soft: two turns admitted at once may both
+    pass. A turn whose credential's Claude plan is used up is refused until
+    it resets (``require_plan``). None of it waits on Anthropic or dials a
+    machine.
 
     Returns what the turn was admitted on, which the run's row is stamped
     from (``run_stamp``) and the run signs in with.
@@ -323,7 +325,8 @@ def _model_id(model: str) -> str:
 
 def run_stamp(config) -> dict[str, Any]:
     """What a Claude Code run's row carries, from what admission let it run
-    on (``require_runnable``): counted as a turn of its user's on a cloud
+    on (``require_runnable``): counted as a CLI its computer runs
+    (``CLAUDE_CODE_TURN``), as a turn of its user's on a cloud
     computer (``CLOUD_TURN``) on any server, where the count caps them, and
     on the platform found as one that may hold the setup token they stored
     (``STORED_TURN``) when it goes."""
@@ -332,6 +335,7 @@ def run_stamp(config) -> dict[str, Any]:
     if config is None:
         return {}
     return {
+        **(CLAUDE_CODE_TURN if config.claude_code else {}),
         **(CLOUD_TURN if config.claude_code_hosted else {}),
         **(STORED_TURN if HOST_MODE == "platform" and config.claude_code_saved else {}),
     }
@@ -404,9 +408,11 @@ async def require_computer_signed_in(model: str, user_id: str, answer: MachineAn
     return relays
 
 
-def role_resolves(model_pref: dict, name: str) -> bool:
-    """Whether a role, a fallback or a subagent pin can run ``name``."""
-    return not is_claude_code_model(name) and model_resolves(model_pref, name)
+def role_resolves(model_pref: dict, name: str, *, claude_code_turn: bool = False) -> bool:
+    """Whether a role, a fallback or a subagent pin can run ``name``: a
+    Claude Code row only as a subagent of a Claude Code turn
+    (``claude_code_turn``), whose subagents run CLIs of their own."""
+    return (claude_code_turn or not is_claude_code_model(name)) and model_resolves(model_pref, name)
 
 
 def drop_claude_code_roles(
