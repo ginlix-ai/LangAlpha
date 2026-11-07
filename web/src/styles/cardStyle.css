@@ -246,12 +246,24 @@
 }
 /* A door's own arrow or chevron gives way to the brackets. */
 :root:not([data-card-style]) [data-slot='door'] > svg { display: none; }
-/* Outline and ghost buttons are words alone, on hover too. A door with a
-   variant is drawn as that button; one without is words alone anyway. */
+/* Outline and ghost buttons are words alone. A door with a variant is drawn
+   as that button; one without is words alone anyway. */
 :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door']):is([data-variant='outline'], [data-variant='ghost']) {
   background: var(--color-shell-fill, transparent);
   border-color: transparent;
   padding-inline: 0.25rem;
+}
+/* Under the pointer an outline one draws its edge, a thin box in the shell's
+   edge on the control's corner, so it reads as a button and not as a label.
+   Every one holds that edge unpainted at rest, so the box takes no room when
+   it shows. A ghost one changes only its ink, as the hand-built ghosts did.
+   The keyboard's focus ring is the outline drawn outside it, never this. */
+:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'])[data-variant='outline'] {
+  border-width: 1px;
+  border-style: solid;
+}
+:root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'])[data-variant='outline']:not([data-tone], :disabled, [aria-disabled='true']):hover {
+  border-color: var(--color-shell-edge, var(--color-border-default));
 }
 :root[data-card-style='balanced'] :is([data-slot='button'], [data-slot='door']:where([data-variant])) {
   border-radius: var(--cs-radius-control);
