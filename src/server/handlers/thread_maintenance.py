@@ -78,7 +78,8 @@ class ThreadAgent:
         from ptc_agent.core.project_context import project_bound
 
         with project_bound(self.project):
-            return await self.graph.turn.compact_between_turns(self.state.values)
+            turn = self.graph.turn({"configurable": {"thread_id": self.thread_id}})
+            return await turn.compact_between_turns(self.state.values)
 
     async def write(self, values: dict, verb: str, *, saver: Any = None) -> bool:
         """Write ``values`` where the state was read (``_update_graph_state``),

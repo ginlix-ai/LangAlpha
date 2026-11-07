@@ -236,16 +236,17 @@ class CompactionRules:
         settled = self.settled_at.replace(tzinfo=self.settled_at.tzinfo or UTC).timestamp() if self.settled_at else 0.0
         return max(_last_activity(entries), settled) + cache_ttl(entries)
 
-    async def transcript_note(self, thread_id: str, state: Mapping[str, Any]) -> str:
-        """What the compaction summaries in the thread's session records end
-        on: the pointer an API thread's summary ends on, once the transcript
-        of the thread's messages is saved where the file tools reach it, as
-        the compaction middleware saves it before it points; else nothing."""
+    async def transcript_note(self, thread_id: str, state: Mapping[str, Any], checkpoint_ns: str = "") -> str:
+        """What the compaction summaries in the session records of the run in
+        ``checkpoint_ns`` end on: the pointer an API thread's summary ends on,
+        once the transcript of its messages is saved where the file tools
+        reach it, as the compaction middleware saves it before it points;
+        else nothing."""
         entries = (state.get("claude_session") or {}).get("entries") or []
         if not any(e.get("isCompactSummary") for e in entries):
             return ""
         exported = await aexport_transcript(
-            self.backend, transcript_target(self.backend, thread_id), state["messages"],
+            self.backend, transcript_target(self.backend, thread_id, checkpoint_ns), state["messages"],
             workspace_id=self.workspace_id, window=Window.of(state),
         )
         return transcript_note(exported) if exported else ""

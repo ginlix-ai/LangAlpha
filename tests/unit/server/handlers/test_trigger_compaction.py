@@ -1421,7 +1421,7 @@ async def _compact_claude_code_thread(base_config, held_model, *, compaction=Non
                                                       response_metadata={"claude_message_id": "msg_1"} if claude_replied else {})]
     deferral = {"uuid": "d1", "type": "attachment", "attachment": {"type": "hook_deferred_tool", "toolUseID": "t1"}}
     stub.state.values["claude_session"] = {"session_id": "sess", "entries": [deferral]}
-    stub.graph.turn.compact_between_turns = (
+    stub.graph.turn.return_value.compact_between_turns = (
         AsyncMock(side_effect=compaction) if isinstance(compaction, BaseException) or callable(compaction)
         else AsyncMock(return_value=compaction)
     )
@@ -1452,6 +1452,7 @@ async def test_a_claude_code_thread_is_compacted_by_claude_code(base_config, hel
         base_config, held_model, compaction=_claude_code_compaction()
     )
     ask.assert_not_awaited()
+    stub.graph.turn.assert_called_once_with({"configurable": {"thread_id": "thread-1"}})
     assert resolve.await_args.kwargs["fall_back"] is (held_model is None)
     assert {k: outcome[k] for k in ("original_message_count", "new_message_count", "summary_text", "source")} == {
         "original_message_count": 4, "new_message_count": 3, "summary_text": "the summary", "source": "provider",
@@ -1505,7 +1506,7 @@ async def test_a_claude_code_thread_whose_model_does_not_resolve_is_not_compacte
     stub, ask, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", resolve=resolve)
     assert outcome.status_code == 500
     ask.assert_not_awaited()
-    stub.graph.turn.compact_between_turns.assert_not_awaited()
+    stub.graph.turn.return_value.compact_between_turns.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1563,7 +1564,7 @@ async def test_a_thread_another_model_last_replied_on_is_not_compacted_by_claude
     )
     assert outcome.detail["type"] == "claude_code_compacts_itself"
     ask.assert_not_awaited()
-    stub.graph.turn.compact_between_turns.assert_not_awaited()
+    stub.graph.turn.return_value.compact_between_turns.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1872,7 +1873,7 @@ async def test_a_claude_code_thread_waiting_on_the_user_is_refused_before_the_cl
     )
     assert outcome.status_code == 409
     assert {k: outcome.detail[k] for k in ("code", "verb")} == {"code": "awaiting_input", "verb": "compact"}
-    stub.graph.turn.compact_between_turns.assert_not_awaited()
+    stub.graph.turn.return_value.compact_between_turns.assert_not_awaited()
     stub.graph.aupdate_state.assert_not_awaited()
 
 

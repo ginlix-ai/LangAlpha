@@ -1231,8 +1231,8 @@ class PTCAgent:
 
             return claude_code_graph(
                 agent, system_prompt=system_prompt, target=turn.client,
-                user_id=user_id, thread_id=thread_id, checkpointer=checkpointer,
-                launcher=claude_code_launcher(sandbox, self.config.claude_code_hosted, self.config.claude_code_saved),
+                user_id=user_id, checkpointer=checkpointer,
+                launcher=partial(claude_code_launcher, sandbox, self.config.claude_code_hosted, self.config.claude_code_saved),
                 entry=(skill_loader_middleware, context.turn, context.baseline),
                 middleware=deepagent_middleware,
                 baseline=context.baseline.frozen_block,
