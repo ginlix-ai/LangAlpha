@@ -145,13 +145,14 @@
   letter-spacing: calc(0.08em * var(--term-track));
 }
 
-/* The shell's face on the app's roots and the portals it opens. Scoped rather
-   than read unconditionally: an `unset` face in Quiet would outrank a family
-   a portal's consumer gives it. */
-:root:not([data-card-style='quiet']) :is(.app-layout, .pf-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
+/* The shell's face on the app's roots, the setup wizard (drawn outside the
+   app) and the portals they open. Scoped rather than read unconditionally:
+   an `unset` face in Quiet would outrank a family a portal's consumer gives
+   it. */
+:root:not([data-card-style='quiet']) :is(.app-layout, .pf-shell, .wizard-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
   font-family: var(--cs-face);
 }
-:root:not([data-card-style]) :is(.app-layout, .pf-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
+:root:not([data-card-style]) :is(.app-layout, .pf-shell, .wizard-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
   font-variant-numeric: tabular-nums;
 }
 /* Display titles inside the app take the shell's face; a portal's keep the

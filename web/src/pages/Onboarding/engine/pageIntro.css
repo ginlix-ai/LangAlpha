@@ -13,6 +13,9 @@
   overflow: hidden;
   background: hsl(0 0% 7%);
   color: var(--color-text-primary);
+  /* A picture of the app (DESIGN.md), drawn in its own faces: the shell's
+     face of the open card styles would set the miniature's replies in mono. */
+  font-family: var(--font-ui);
 }
 
 /* The app's page ground, as the windows drawn on it have: the canvas is
@@ -34,4 +37,20 @@
 }
 [data-theme='light'] .intro-dialog > button:hover {
   color: rgba(18, 22, 30, 0.85);
+}
+
+/* The title is the intro's headline, a page title rather than a dialog's
+   bracketed name, and the body is read, so it stays at a reading size
+   (Terminal; its dialogs are otherwise set smaller, styles/cardStyle.css). */
+:root:not([data-card-style]) .intro-dialog [data-slot='dialog-title'] {
+  font-size: var(--cs-text-title);
+  letter-spacing: 0;
+}
+:root:not([data-card-style]) .intro-dialog [data-slot='dialog-title']::before,
+:root:not([data-card-style]) .intro-dialog [data-slot='dialog-title']::after {
+  content: none;
+}
+:root:not([data-card-style]) .intro-dialog [data-slot='dialog-desc'] {
+  font-size: var(--cs-text-field);
+  line-height: 1.65;
 }

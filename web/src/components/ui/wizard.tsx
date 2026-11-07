@@ -81,7 +81,10 @@ export function WizardShell({ progress, exit, footer, stepKey, stepIndex, childr
           </AnimatePresence>
         </div>
       </div>
-      <footer className="wizard-footer shrink-0 border-t border-(--color-border-muted) bg-(--color-bg-page)">
+      <footer
+        className="wizard-footer shrink-0 bg-(--color-bg-page)"
+        style={{ borderTop: '1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-muted))' }}
+      >
         <div className="mx-auto w-full max-w-[600px] px-4 py-3 sm:px-6">{footer}</div>
       </footer>
     </div>
@@ -287,10 +290,19 @@ export function WizardProgress({ steps, current, label }: WizardProgressProps) {
           const state = i === current ? 'current' : i > current ? 'upcoming' : 'done';
           return (
             <li key={name} aria-current={state === 'current' ? 'step' : undefined} className="flex items-center gap-2">
-              {i > 0 && <span aria-hidden="true" className="wizard-progress-rule h-px w-4 bg-(--color-border-default)" />}
+              {/* Drawn as a rule, so Terminal can dash it as a card's divider. */}
+              {i > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="h-0 w-4"
+                  style={{ borderTop: '1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-default))' }}
+                />
+              )}
+              {/* Step names in the voice of a card's labels. */}
               <span
+                style={{ fontSize: 'var(--cs-text-label, 0.75rem)' }}
                 className={cn(
-                  'wizard-progress-step flex items-center gap-1.5 whitespace-nowrap text-xs transition-colors',
+                  'label-voice flex items-center gap-1.5 whitespace-nowrap text-xs transition-colors',
                   state === 'current' && 'font-medium text-(--color-text-primary)',
                   state === 'done' && 'text-(--color-text-secondary)',
                   state === 'upcoming' && 'text-(--color-text-tertiary)',
@@ -344,7 +356,8 @@ export function WizardExit({ label, onClick, testId }: { label: string; onClick:
       type="button"
       onClick={onClick}
       data-testid={testId}
-      className="wizard-exit inline-flex h-8 items-center rounded-md px-2.5 text-sm text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+      className="wizard-exit inline-flex h-8 items-center rounded-md px-2.5 text-sm text-(--color-text-secondary) [text-transform:var(--term-case)] tracking-[calc(0.06em*var(--term-track))] press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+      style={{ fontSize: 'var(--cs-text-control, 0.875rem)' }}
     >
       {label}
     </button>
@@ -377,6 +390,7 @@ export function WizardStepHeader({ title, titleId, helper }: WizardStepHeaderPro
         id={titleId}
         tabIndex={-1}
         className="wizard-title title-font text-balance text-2xl font-semibold leading-tight text-(--color-text-primary) outline-none sm:text-[1.875rem]"
+        style={{ fontFamily: 'var(--cs-face, var(--font-ui))', letterSpacing: 'var(--cs-title-track, -0.01em)' }}
       >
         {title}
       </h1>
@@ -402,7 +416,15 @@ export function WizardSection({
 }) {
   return (
     <section className={cn('mt-8', className)}>
-      <h2 id={titleId} className="wizard-section-title mb-3 text-sm font-medium text-(--color-text-primary)">
+      <h2
+        id={titleId}
+        className="label-voice mb-3 text-sm font-medium text-(--color-text-primary)"
+        style={{
+          color: 'var(--color-shell-label, var(--color-text-primary))',
+          fontSize: 'var(--cs-text-label, 0.875rem)',
+          fontWeight: 'var(--cs-weight-label, 500)',
+        }}
+      >
         {title}
         {hint && <span className="ml-2 font-normal text-(--color-text-tertiary)">{hint}</span>}
       </h2>
@@ -426,9 +448,15 @@ export interface WizardFooterProps {
 
 // Every footer button gives a little under a press, so a tap that lands is
 // felt before the next screen arrives; never when it is disabled, since that
-// press does nothing.
+// press does nothing. Terminal sets them as bracketed words (wizard.css).
 const ghost =
-  'wizard-btn is-ghost inline-flex h-10 items-center justify-center rounded-md px-3 text-sm font-medium text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)';
+  'wizard-btn is-ghost inline-flex h-10 items-center justify-center rounded-[var(--cs-radius-small,var(--radius-md))] px-3 text-sm font-medium text-(--color-text-secondary) [text-transform:var(--term-case)] tracking-[calc(0.06em*var(--term-track))] press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)';
+
+const DOOR_TYPE = {
+  fontFamily: 'var(--cs-face)',
+  fontSize: 'var(--cs-text-control, 0.875rem)',
+  fontWeight: 'var(--cs-weight-control, 500)',
+} as const;
 
 /**
  * Back on the left, the way forward on the right, in the same place on every
@@ -445,14 +473,14 @@ export function WizardFooter({ back, skip, primary }: WizardFooterProps) {
           step has no Back), so the primary button over it does not drop. */}
       <div className="flex min-h-10 items-center justify-between sm:contents">
         {back ? (
-          <button type="button" onClick={back.onClick} className={cn(ghost, '-ml-3 sm:mr-auto')}>
+          <button type="button" onClick={back.onClick} className={cn(ghost, '-ml-3 sm:mr-auto')} style={DOOR_TYPE}>
             {back.label}
           </button>
         ) : (
           <span className="sm:mr-auto" />
         )}
         {skip && (
-          <button type="button" onClick={skip.onClick} className={cn(ghost, '-mr-3 sm:mr-0')}>
+          <button type="button" onClick={skip.onClick} className={cn(ghost, '-mr-3 sm:mr-0')} style={DOOR_TYPE}>
             {skip.label}
           </button>
         )}
@@ -463,7 +491,8 @@ export function WizardFooter({ back, skip, primary }: WizardFooterProps) {
           onClick={primary.onClick}
           disabled={disabled}
           aria-busy={primary.busy || undefined}
-          className="wizard-btn is-primary inline-flex h-11 w-full items-center justify-center rounded-md bg-(--color-btn-primary-bg) px-5 text-sm font-medium text-(--color-btn-primary-text) press hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:h-10 sm:w-auto sm:min-w-[7.5rem]"
+          className="wizard-btn is-primary inline-flex h-11 w-full items-center justify-center rounded-[var(--cs-radius-control,var(--radius-md))] bg-(--color-btn-primary-bg) px-5 text-sm font-medium text-(--color-btn-primary-text) [text-transform:var(--term-case)] tracking-[calc(0.06em*var(--term-track))] press hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:h-10 sm:w-auto sm:min-w-[7.5rem]"
+          style={DOOR_TYPE}
         >
           {/* Live work: the shared glyph beside the label, never in its place. */}
           {primary.busy && (
