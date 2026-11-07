@@ -2,32 +2,6 @@
    selector shorthands and voice tokens this file speaks in. */
 
 /* ════════════════════════════════════════════════════════════════════
-   Lists in popovers: group headings in the words' face
-   ════════════════════════════════════════════════════════════════════ */
-
-/* A select's group headings (This device, Common) were mono in every style;
-   in Balanced and Quiet a label takes the text face, as the kickers do. */
-:root:is([data-card-style='balanced'], [data-card-style='quiet']) [data-slot='menu-label'] {
-  font-family: var(--term-words);
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   Phone sheets (MobileBottomSheet and the dialog's phone sheet)
-   ════════════════════════════════════════════════════════════════════ */
-
-/* On the page's ground with the open styles' edge, as dialogs are; the
-   sheet keeps its rounded top, which says it slides. */
-:root:not([data-card-style='quiet']) :is([data-slot='sheet'], [data-slot='dialog'][data-sheet]) {
-  background-color: var(--color-bg-page) !important;
-  border-color: var(--color-shell-edge) !important;
-  box-shadow: none !important;
-}
-:root:not([data-card-style='quiet']) [data-slot='sheet-handle'] > * {
-  background-color: var(--color-shell-edge) !important;
-}
-:root:not([data-card-style]) [data-slot='sheet-handle'] > * { border-radius: 1px; }
-
-/* ════════════════════════════════════════════════════════════════════
    Dashboard search: an open field, its results a menu
    ════════════════════════════════════════════════════════════════════ */
 

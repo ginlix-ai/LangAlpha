@@ -213,8 +213,8 @@ function ConfirmDialog({
     >
       <DialogContent
         style={{
-          backgroundColor: 'var(--color-bg-page)',
-          borderColor: 'var(--color-border-muted)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-page))',
+          borderColor: 'var(--color-shell-edge, var(--color-border-muted))',
         }}
       >
         <div className="flex items-center gap-3">

@@ -289,7 +289,7 @@ function PublishDialog({ open, workspaceId, path, onClose }: PublishDialogProps)
     <Dialog open={open} onOpenChange={(o) => { if (!o && !busy.current) onClose(); }}>
       <DialogContent
         className="sm:max-w-lg"
-        style={{ backgroundColor: 'var(--color-bg-page)', borderColor: 'var(--color-border-muted)' }}
+        style={{ backgroundColor: 'var(--color-shell-float, var(--color-bg-page))', borderColor: 'var(--color-shell-edge, var(--color-border-muted))' }}
       >
         {/* Mounted only while the dialog shows, so every open starts a fresh
             review, and the exit animation plays over the last one. */}

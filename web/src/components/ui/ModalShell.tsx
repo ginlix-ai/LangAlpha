@@ -59,6 +59,10 @@ const DENSITY = {
 
 const NOOP = () => {};
 
+/** The rule under a header and over a footer: the card styles' divider,
+ *  dashed in the edge's ink in Terminal, the hairline in Balanced. */
+const DIVIDER = '1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted))';
+
 /**
  * Page scroll is held while any shell is mounted, and a nested pair releases
  * once. The capture is module-level and happens on the outermost lock only: a
@@ -227,10 +231,13 @@ export function ModalShell({
           WIDTH[width],
           isMobile ? 'rounded-t-3xl' : 'rounded-lg',
         )}
+        // The open card styles float it on the page's ground inside their
+        // edge, Terminal without the shadow. Neither is a value framer
+        // animates, so a var() is safe here.
         style={{
-          backgroundColor: 'var(--color-bg-elevated)',
-          border: '1px solid var(--color-border-muted)',
-          boxShadow: 'var(--shadow-card)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-elevated))',
+          border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
+          boxShadow: 'var(--cs-float-shadow, var(--shadow-card))',
           height,
         }}
         {...panelMotion}
@@ -270,7 +277,7 @@ export function ModalShell({
             </button>
           )}
           {header ? (
-            <div data-slot="dialog-header" className={cn('shrink-0 pt-5 pb-4', space.x)} style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
+            <div data-slot="dialog-header" className={cn('shrink-0 pt-5 pb-4', space.x)} style={{ borderBottom: DIVIDER }}>
               {header}
             </div>
           ) : (
@@ -298,7 +305,7 @@ export function ModalShell({
             <div
               data-slot="dialog-footer"
               className={cn('shrink-0', space.x, space.footer)}
-              style={{ borderTop: '1px solid var(--color-border-muted)' }}
+              style={{ borderTop: DIVIDER }}
             >
               {footer}
             </div>

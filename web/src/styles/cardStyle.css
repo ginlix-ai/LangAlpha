@@ -70,8 +70,15 @@
   --cs-radius-control: 3px;
   --cs-radius-field: 3px;
   --cs-radius-choice: 4px;
+  /* What floats over the page: a menu or popover, a dialog. */
+  --cs-radius-float: 4px;
+  --cs-radius-overlay: 6px;
   /* The dividers inside a surface; an edge that bounds one stays solid. */
   --cs-rule-style: dashed;
+  /* Nothing casts a shadow: a floating surface is held by its edge, as a
+     card is. Frame shadows are the ones Balanced drops too. */
+  --cs-float-shadow: none;
+  --cs-frame-shadow: none;
 }
 
 /* Balanced: words in the text face throughout, as the cards set theirs. */
@@ -84,7 +91,11 @@
   --cs-radius-pill: 999px;
   --cs-radius-field: 8px;
   --cs-radius-choice: 12px;
+  --cs-radius-float: 10px;
   --cs-rule-style: solid;
+  /* The tooltip and the phone sheets lie flat; menus and dialogs keep
+     their shadow. */
+  --cs-frame-shadow: none;
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -326,3 +337,120 @@
 :root:not([data-card-style='quiet']) [data-slot='switch'][aria-checked='true'] { border-color: transparent; }
 /* An option's title is set heavier in mono. */
 :root:not([data-card-style]) [data-slot='option-title'] { font-weight: 700; }
+
+/* ════════════════════════════════════════════════════════════════════
+   Floating surfaces
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Menus, popovers and lists float on the page's ground inside the open
+   styles' edge, Terminal's flat. The hooks are carried by the primitives
+   and by lists drawn by hand (the mention list, the dashboard's search
+   results), each with its own corner and fill in its classes, so this is
+   a rule on the hook. A fill a caller paints inline still wins, as it
+   always has. */
+:root:not([data-card-style='quiet']) :is([data-slot='menu'], [data-slot='popover'], [data-slot='listbox']) {
+  border-radius: var(--cs-radius-float);
+  border-color: var(--color-shell-edge, var(--color-border-muted));
+  background: var(--color-shell-float, var(--color-bg-elevated));
+}
+:root:not([data-card-style]) :is([data-slot='menu'], [data-slot='popover'], [data-slot='listbox']) {
+  box-shadow: var(--cs-float-shadow);
+}
+/* A list in a popover is the popover's content, not a second box. */
+:root:not([data-card-style='quiet']) [data-slot='popover'] [data-slot='listbox'] {
+  border: 0;
+  background: var(--color-shell-fill, transparent);
+}
+/* Items and group heads in the menu's sizes (Terminal). */
+:root:not([data-card-style]) [data-slot='menu-item'] {
+  border-radius: var(--cs-radius-mark);
+  font-size: var(--cs-text-menu);
+}
+:root:not([data-card-style]) [data-slot='menu-label'] {
+  font-size: var(--cs-text-label);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+}
+/* A list's group headings (This device, Common) take the words' face, as the
+   kickers do: the text face in Balanced and Quiet, where they used to be
+   mono. Terminal's inherit the shell's mono. */
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) [data-slot='menu-label'] {
+  font-family: var(--term-words);
+}
+/* Terminal redraws the separator as a dashed rule. */
+:root:not([data-card-style]) [data-slot='menu-separator'] {
+  height: 0;
+  background: none;
+  border-top: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-muted));
+}
+
+/* Tooltips: the menu's surface (the component's), a size down and flat. */
+:root:not([data-card-style='quiet']) [data-slot='tooltip'] {
+  border-radius: var(--cs-radius-field);
+  box-shadow: var(--cs-frame-shadow);
+}
+:root:not([data-card-style]) [data-slot='tooltip'] {
+  font-size: var(--cs-text-label);
+}
+
+/* Dialogs, the primitives': on the page's ground inside the open styles'
+   edge. Type and edges only: the panel keeps its shape over the backdrop,
+   where a cut title would hang over the dim. The callers that paint a fill
+   inline read the same roles. Terminal squares the panel, not the phone
+   sheet, and lays it flat; the sheets lie flat in both. */
+:root:not([data-card-style='quiet']) [data-slot='dialog'] {
+  background-color: var(--color-shell-float, var(--color-bg-page));
+  border-color: var(--color-shell-edge, var(--color-border-muted));
+}
+:root:not([data-card-style]) [data-slot='dialog']:not(.rounded-t-3xl) {
+  border-radius: var(--cs-radius-overlay);
+}
+:root:not([data-card-style]) [data-slot='dialog'] {
+  box-shadow: var(--cs-float-shadow);
+}
+:root:not([data-card-style='quiet']) [data-slot='dialog'][data-sheet] {
+  box-shadow: var(--cs-frame-shadow);
+}
+/* A header that is only a title takes Terminal's dashed rule too; one with
+   a rule of its own reads it inline (ModalShell). */
+:root:not([data-card-style]) [data-slot='dialog-header'] {
+  border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-muted));
+}
+:root:not([data-card-style='quiet']) [data-slot='dialog-title'] {
+  font-family: var(--cs-face);
+}
+:root:not([data-card-style]) [data-slot='dialog-title'] {
+  font-size: var(--cs-text-heading);
+  letter-spacing: calc(0.02em * var(--term-track));
+}
+:root:not([data-card-style]) [data-slot='dialog-desc'] {
+  font-size: var(--cs-text-label);
+}
+
+/* The CreateWorkspace modal: its header ruled off as a card's divider, its
+   title a bracketed name (Terminal). Its surface, type and dropzone read the
+   variables in CreateWorkspaceModal.css. */
+:root:not([data-card-style='quiet']) .cwm-header {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-muted));
+}
+:root:not([data-card-style]) :is(.cwm-label, .cwm-dropzone-label) {
+  color: var(--color-term-text-secondary);
+}
+/* A hairline where Quiet draws 1.5px, solid in Balanced. */
+:root:not([data-card-style='quiet']) .cwm-dropzone { border-width: 1px; }
+:root[data-card-style='balanced'] .cwm-dropzone { border-style: solid; }
+
+/* Titles as bracketed names (Terminal). */
+:root:not([data-card-style]) :is(.cwm-title, [data-slot='dialog-title'])::before {
+  content: var(--term-open);
+  margin-right: 0.5ch;
+  font-weight: 400;
+  color: var(--color-term-text-tertiary);
+}
+:root:not([data-card-style]) :is(.cwm-title, [data-slot='dialog-title'])::after {
+  content: var(--term-close);
+  margin-left: 0.5ch;
+  font-weight: 400;
+  color: var(--color-term-text-tertiary);
+}

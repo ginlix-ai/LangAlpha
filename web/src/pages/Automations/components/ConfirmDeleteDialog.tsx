@@ -24,7 +24,7 @@ export default function ConfirmDeleteDialog({ open, onOpenChange, onConfirm, aut
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="sm:max-w-md border"
-        style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}
+        style={{ backgroundColor: 'var(--color-shell-float, var(--color-bg-elevated))', borderColor: 'var(--color-shell-edge, var(--color-border-elevated))' }}
       >
         <DialogHeader>
           <DialogTitle style={{ color: 'var(--color-text-primary)' }}>{t('automation.deleteAutomation')}</DialogTitle>

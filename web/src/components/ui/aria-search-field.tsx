@@ -1,6 +1,6 @@
 "use client"
 
-import type { Ref } from "react"
+import type { CSSProperties, Ref } from "react"
 import { Search } from "lucide-react"
 import {
   Autocomplete,
@@ -24,6 +24,9 @@ interface SearchFieldProps extends AriaSearchFieldProps {
  *
  * It filters a list rather than taking free text, so it turns off what an
  * `Autocomplete` turns off on its input, for a list filtered without one.
+ *
+ * The rule is the card styles' divider (styles/cardStyle.css): dashed in the
+ * edge's ink in Terminal, the hairline in Balanced.
  */
 function SearchField({ className, placeholder, inputRef, ...props }: SearchFieldProps) {
   return (
@@ -31,10 +34,11 @@ function SearchField({ className, placeholder, inputRef, ...props }: SearchField
       data-slot="search"
       className={composeRenderProps(className, (className) =>
         cn(
-          "flex shrink-0 items-center gap-2 border-b border-(--color-border-muted) px-3",
+          "flex shrink-0 items-center gap-2 border-b border-[var(--color-shell-divider,var(--color-border-muted))] px-3",
           className
         )
       )}
+      style={{ borderBottomStyle: "var(--cs-rule-style, solid)" as CSSProperties["borderBottomStyle"] }}
       {...props}
     >
       <Search
@@ -49,7 +53,7 @@ function SearchField({ className, placeholder, inputRef, ...props }: SearchField
         spellCheck="false"
         enterKeyHint="go"
         className={cn(
-          "owns-its-edge h-10 min-w-0 flex-1 border-0 bg-transparent text-sm text-(--color-text-primary) outline-hidden",
+          "owns-its-edge h-10 min-w-0 flex-1 border-0 bg-transparent text-[length:var(--cs-text-field,0.875rem)] leading-5 text-(--color-text-primary) outline-hidden",
           "placeholder:text-(--color-text-tertiary) [&::-webkit-search-cancel-button]:hidden"
         )}
       />

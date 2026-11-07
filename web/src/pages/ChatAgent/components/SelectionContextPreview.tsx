@@ -107,8 +107,8 @@ export function SelectionContextPreview({
       <DialogContent
         className="max-w-2xl"
         style={{
-          backgroundColor: 'var(--color-bg-elevated)',
-          borderColor: 'var(--color-border-default)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-elevated))',
+          borderColor: 'var(--color-shell-edge, var(--color-border-default))',
         }}
       >
         <DialogHeader>

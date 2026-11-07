@@ -59,11 +59,12 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onCancel(); }}>
       <DialogContent
-        className="[&>button:last-child]:hidden"
+        // The shadow is a class, not inline, so the card styles can lay the
+        // dialog flat (styles/cardStyle.css).
+        className="shadow-[0_20px_60px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)] [&>button:last-child]:hidden"
         style={{
-          backgroundColor: 'var(--color-bg-elevated)',
-          borderColor: 'var(--color-border-default)',
-          boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-elevated))',
+          borderColor: 'var(--color-shell-edge, var(--color-border-default))',
         }}
       >
         <DialogHeader>

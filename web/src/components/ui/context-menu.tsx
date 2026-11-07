@@ -64,7 +64,7 @@ function ContextMenuSeparator({
   return (
     <ContextMenuPrimitive.Separator
       data-slot="menu-separator"
-      className={cn("-mx-1 my-1 h-px bg-border", className)}
+      className={cn("-mx-1 my-1 h-px bg-[var(--color-shell-divider,hsl(var(--border)))]", className)}
       {...props}
     />
   )

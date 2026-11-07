@@ -100,9 +100,10 @@ function DialogContent({
             className="flex justify-center pt-3 pb-1 shrink-0 cursor-grab active:cursor-grabbing"
             style={{ touchAction: 'none' }}
           >
+            {/* Drawn as MobileBottomSheet's bar is. */}
             <div
-              className="w-10 h-1 rounded-full"
-              style={{ backgroundColor: 'var(--color-border-default)' }}
+              className="w-10 h-1 rounded-[calc(var(--cs-radius-mark,9999px)/2)]"
+              style={{ backgroundColor: 'var(--color-shell-edge, var(--color-border-default))' }}
             />
           </div>
           {/* Scrollable content — mirrors MobileBottomSheet inner div */}
