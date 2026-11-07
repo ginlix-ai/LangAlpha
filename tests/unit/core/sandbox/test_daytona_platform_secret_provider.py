@@ -323,6 +323,7 @@ async def test_incomplete_secret_metadata_fails_with_its_own_reason():
 async def test_create_forwards_secret_bindings():
     client = MagicMock()
     sdk_sandbox = MagicMock(id="new-id")
+    sdk_sandbox.process.exec = AsyncMock(return_value=SimpleNamespace(result="", exit_code=0))
     client.create = AsyncMock(return_value=sdk_sandbox)
     provider = _provider(client)
 

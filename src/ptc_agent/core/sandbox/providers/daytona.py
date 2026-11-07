@@ -59,6 +59,19 @@ _SNAPSHOT_IN_PROGRESS = frozenset(
 )
 _SNAPSHOT_FAILED = frozenset({"build_failed", "error"})
 
+# Every command the agent runs goes through one of these. A runner can serve
+# the wrong image for a snapshot ref (a bare busybox rootfs under Daytona's
+# default snapshot on one runner), and placement is per create, so a second
+# sandbox almost always lands on a healthy runner.
+_REQUIRED_TOOLS = ("bash", "python3", "uv")
+_REQUIRED_TOOLS_CHECK = (
+    f"for t in {' '.join(_REQUIRED_TOOLS)}; do command -v $t >/dev/null 2>&1 || echo $t; done"
+)
+
+
+class SandboxImageBrokenError(RuntimeError):
+    """Daytona twice created a sandbox whose image lacks the tools every command needs."""
+
 
 def _state_value(state: Any) -> str:
     return state.value if hasattr(state, "value") else str(state)
@@ -174,12 +187,84 @@ class DaytonaProvider(SandboxProvider):
             auto_delete_interval=self._config.auto_delete_interval // 60,
         )
 
-        sdk_sandbox = await self._client.create(params)
-        return DaytonaRuntime(
-            sdk_sandbox,
-            snapshot_name=snapshot_name,
-            default_working_dir=self._working_dir,
+        missing: list[str] = []
+        for attempt in (1, 2):
+            sdk_sandbox = await self._client.create(params)
+            try:
+                missing = await self._missing_tools(sdk_sandbox)
+            except BaseException:
+                await self._delete_unusable(sdk_sandbox)
+                raise
+            if not missing:
+                return DaytonaRuntime(
+                    sdk_sandbox,
+                    snapshot_name=snapshot_name,
+                    default_working_dir=self._working_dir,
+                )
+            logger.warning(
+                "Daytona sandbox came up without required tools; replacing it",
+                sandbox_id=sdk_sandbox.id,
+                snapshot=snapshot_name or "Daytona default",
+                missing=missing,
+                attempt=attempt,
+            )
+            await self._delete_unusable(sdk_sandbox)
+        raise SandboxImageBrokenError(
+            f"Daytona created two sandboxes from "
+            f"{snapshot_name or 'its default snapshot'} without "
+            f"{', '.join(missing)}: the image it serves for that snapshot is broken"
         )
+
+    async def _missing_tools(self, sdk_sandbox: Any) -> list[str]:
+        """The required tools the sandbox lacks.
+
+        Create returns once the sandbox is started, which can be a beat before
+        its toolbox answers, so a transient failure is retried on the same
+        sandbox rather than costing it.
+        """
+        for delay in (1, 2, 4, None):
+            try:
+                check = await sdk_sandbox.process.exec(_REQUIRED_TOOLS_CHECK, timeout=30)
+            except Exception as e:
+                if delay is None or self.classify_error(e) is not SandboxFailureKind.TRANSIENT:
+                    raise
+                await asyncio.sleep(delay)
+                continue
+            # The result carries stderr too, so a shell's own noise is not a tool.
+            missing = [t for t in (check.result or "").split() if t in _REQUIRED_TOOLS]
+            if check.exit_code and not missing:
+                return [f"a shell that runs the check (it exited {check.exit_code})"]
+            return missing
+        raise AssertionError("unreachable")
+
+    async def _delete_unusable(self, sdk_sandbox: Any) -> None:
+        # Shielded, and waited on when cancelled, so a cancelled create still
+        # removes the sandbox it made before the caller closes the client.
+        delete = asyncio.ensure_future(self._delete_retrying(sdk_sandbox))
+        delete.add_done_callback(lambda task: task.cancelled() or task.exception())
+        try:
+            await asyncio.shield(delete)
+        except asyncio.CancelledError:
+            await asyncio.wait({delete})
+            raise
+        except Exception as e:
+            logger.warning(
+                "Could not delete an unusable Daytona sandbox",
+                sandbox_id=sdk_sandbox.id,
+                error=str(e),
+            )
+
+    async def _delete_retrying(self, sdk_sandbox: Any) -> None:
+        """Delete, retrying a transient refusal: a sandbox left behind here is
+        one nothing else holds, billed until Daytona's own auto-stop."""
+        for delay in (1, 2, None):
+            try:
+                await self._client.delete(sdk_sandbox)
+                return
+            except Exception as e:
+                if delay is None or self.classify_error(e) is not SandboxFailureKind.TRANSIENT:
+                    raise
+                await asyncio.sleep(delay)
 
     async def get(self, sandbox_id: str) -> DaytonaRuntime:
         sdk_sandbox = await self._client.get(sandbox_id)
@@ -472,6 +557,14 @@ class DaytonaProvider(SandboxProvider):
                     snapshot_exists = False
                 elif state == "active":
                     snapshot_exists = True
+                elif state == "inactive":
+                    # Daytona refuses to create a sandbox from an inactive
+                    # snapshot, and deactivates one left unused for a while.
+                    logger.info("Activating snapshot", snapshot_name=snapshot_name)
+                    state = await self.activate_snapshot(snapshot_name)
+                    if state != "active":
+                        state = await self._settled_snapshot_state(snapshot_name)
+                    snapshot_exists = state == "active"
                 elif state in _SNAPSHOT_IN_PROGRESS:
                     logger.info(
                         "Snapshot is still building, waiting...",
@@ -511,11 +604,7 @@ class DaytonaProvider(SandboxProvider):
                     # Another build holds the name, and a sandbox can start
                     # from it only once that build is done.
                     state = await self._settled_snapshot_state(snapshot_name)
-                    if (
-                        state is None
-                        or state in _SNAPSHOT_IN_PROGRESS
-                        or state in _SNAPSHOT_FAILED
-                    ):
+                    if state != "active":
                         logger.error(
                             "Snapshot another build holds is not usable",
                             snapshot_name=snapshot_name,
