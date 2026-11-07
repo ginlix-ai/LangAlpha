@@ -14,6 +14,8 @@ import base64
 import json
 import os
 import shlex
+import time
+from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 import pytest
@@ -25,6 +27,7 @@ from langgraph.prebuilt import ToolNode
 from ptc_agent.agent.claude_code.cli import COMPACT_INSTRUCTIONS
 from ptc_agent.agent.claude_code.compaction import CompactionRules
 from ptc_agent.agent.claude_code.launcher import Credential, LocalLauncher
+from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.runtime import (
     TURN_KEY,
     TURN_QUERIES,
@@ -36,10 +39,11 @@ from ptc_agent.agent.claude_code.runtime import (
 from ptc_agent.agent.middleware.steering import ALL_KINDS, SteeredReport, SteeringMiddleware, steers_ahead_message
 from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, render_update_row
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
+from src.llms.claude_code import PLAN_NOTICE_KEY, PlanLimit, PlanStopped
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 from .conftest import TEST_KEY
-from .fake_api import TOKEN, FakeMessagesAPI
+from .fake_api import TOKEN, FakeMessagesAPI, unified
 from .harness import bash, new_graph, run_turn, spec
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.asyncio]
@@ -571,7 +575,9 @@ async def test_a_compaction_whose_summary_is_refused_fails_in_its_own_words_and_
         api.refused = frozenset({TOKEN})
         saved = _SavedToken(TOKEN)
         with pytest.raises(ClaudeTurnFailed) as failed:
-            await compact(SPEC, session["pinned"], LocalLauncher(env=env, saved=saved), thread_key="t-compact-refused",
+            refusing = LocalLauncher(env=env, saved=saved)
+            await compact(SPEC, session["pinned"], refusing, plan=PlanWatch(refusing, SPEC.model, stop_at_limit=False),
+                          thread_key="t-compact-refused",
                           identity="test-user", records=session)
     assert failed.value.kind == "auth_failed" and "401" in str(failed.value)
     assert saved.refusals == [TOKEN]
@@ -637,6 +643,101 @@ async def test_a_refused_request_fails_the_turn_and_commits_no_reply():
     assert failed.value.kind == "auth_failed"
     values = (await graph.aget_state({"configurable": {"thread_id": "t-refused"}})).values
     assert not any(isinstance(m, AIMessage) for m in values.get("messages", []))
+
+
+def _billed_at_the_limit() -> dict[str, str]:
+    """A response the plan ran out on, billed to usage credits."""
+    resets = {"five_hour": int(time.time()) + 3600, "seven_day": int(time.time()) + 86400}
+    return unified("rejected", five_hour=1.0, seven_day=0.6, resets=resets, claim="five_hour", overage="allowed",
+                   overage_in_use=True)
+
+
+async def test_a_reply_billed_to_usage_credits_under_stop_is_committed_with_the_notice():
+    async with FakeMessagesAPI(first_party=True, limits=[_billed_at_the_limit()]) as api:
+        values = await turn(api, new_graph(), "t-billed", [HumanMessage("hello")])
+    notice = values["messages"][-1].response_metadata[PLAN_NOTICE_KEY]
+    assert (notice["reason"], notice["window"]) == ("billed_credits", "five_hour")
+
+
+async def test_under_stop_the_cli_is_stopped_at_the_batch_end_after_a_response_billed_to_usage_credits():
+    async with FakeMessagesAPI(first_party=True, limits=[_billed_at_the_limit()]) as api:
+        with pytest.raises(PlanStopped) as stopped:
+            await turn(api, new_graph(), "t-gate", [HumanMessage("RUN_TOOL please")])
+        assert len(api.model_requests) == 1, "nothing more is asked of Claude past the limit"
+    assert (stopped.value.window, stopped.value.credits_billed) == ("five_hour", True)
+
+
+async def test_under_stop_a_reply_cut_at_the_output_limit_is_stopped_at_its_continuation():
+    """The CLI asks for the continuation as the cut reply ends, before the
+    response's report reaches the run, so that one request can go out; the
+    CLI is interrupted then, and the turn ends at the limit."""
+    graph = new_graph()
+    async with FakeMessagesAPI(first_party=True, limits=[_billed_at_the_limit()]) as api:
+        with pytest.raises(PlanStopped) as stopped:
+            await turn(api, graph, "t-maxtok-billed", [HumanMessage("MAX_TOKENS please")])
+        asked = len(api.model_requests)
+    values = (await graph.aget_state({"configurable": {"thread_id": "t-maxtok-billed"}})).values
+    assert [m.text for m in values["messages"] if isinstance(m, AIMessage)][0] == "part one"
+    assert (stopped.value.window, stopped.value.credits_billed) == ("five_hour", True)
+    assert asked <= 2, "no continuation is asked for past the one under way"
+
+
+class _HeldRow:
+    """A credential's row another run kept the plan's limit on."""
+
+    def __init__(self, limit: PlanLimit, *, read_s: float = 0) -> None:
+        self.held, self.read_s = limit, read_s
+        self.reads: list[tuple[str, str]] = []
+
+    async def open(self):
+        pass
+
+    async def out(self):
+        return "stop"
+
+    def record(self, signed_in, reading):
+        pass
+
+    async def limit(self, signed_in, model):
+        self.reads.append((signed_in, model))
+        await asyncio.sleep(self.read_s)
+        return self.held
+
+    async def written(self):
+        pass
+
+
+async def test_under_stop_a_limit_the_row_holds_stops_the_turn_before_its_first_request():
+    row = _HeldRow(PlanLimit("seven_day", datetime.now(UTC) + timedelta(days=1)))
+    async with FakeMessagesAPI(first_party=True) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN, plan=row)
+        with pytest.raises(PlanStopped) as stopped:
+            await run_turn(SPEC, launcher, new_graph(), "t-held", [HumanMessage("hello")])
+        assert api.model_requests == [], "the CLI is asked nothing once the row says the plan is used up"
+    assert (stopped.value.window, stopped.value.credits_billed) == ("seven_day", False)
+    assert row.reads == [("saved", SPEC.model)]
+
+
+async def test_under_stop_a_turn_resumed_from_its_tool_results_asks_nothing_once_the_row_holds_a_limit():
+    """A resumed CLI carries on as soon as it is initialized, with no query
+    to hold back, so the gate is asked first, however slow its read."""
+    graph = new_graph()
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await run_turn(SPEC, LocalLauncher(env=env, token=TOKEN), graph, "t-resume-held", [HumanMessage("RUN_TOOL please")])
+        history = [s async for s in graph.aget_state_history({"configurable": {"thread_id": "t-resume-held"}})]
+        after_tools = next(s for s in history if s.next == ("model",) and isinstance(s.values["messages"][-1], ToolMessage))
+        asked = len(api.model_requests)
+        row = _HeldRow(PlanLimit("seven_day", datetime.now(UTC) + timedelta(days=1)), read_s=0.5)
+        turn = ClaudeTurn(SPEC, LocalLauncher(env=env, token=TOKEN, plan=row), identity="test-user", thread_key="t-resume-held")
+        config = {"configurable": {"thread_id": "t-resume-held", TURN_KEY: turn,
+                                   "checkpoint_id": after_tools.config["configurable"]["checkpoint_id"]}}
+        try:
+            with pytest.raises(PlanStopped):
+                await asyncio.wait_for(graph.ainvoke(None, config), 60)
+        finally:
+            await turn.close()
+        assert api.model_requests[asked:] == [], "the resumed CLI asks nothing before the gate answers"
 
 
 async def test_usage_is_recorded_under_the_stamp_the_spec_carries():

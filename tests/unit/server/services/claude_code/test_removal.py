@@ -1,6 +1,7 @@
 """A removed computer's token leaves its machine, after any check or save of it in flight."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -40,3 +41,34 @@ async def test_removal_waits_for_a_change_in_flight_then_removes_whether_or_not_
     assert held_by != "a-check-in-flight" if released_after else held_by == "a-check-in-flight"
     assert answer_key(CID) not in cache.values
     assert cache.locks.get(change_lock(CID)) in (None, "a-check-in-flight")
+
+
+@pytest.mark.asyncio
+async def test_a_removed_token_leaves_the_kept_answer_even_where_its_plan_row_cannot_be_dropped(monkeypatch):
+    cache = Cache()
+    cache.values[answer_key(CID)] = {"file": "works", "email": None, "expires_at": None, "checked_at": 1.0}
+
+    async def removed(link, computer_id):
+        return True
+
+    async def stands(link, computer_id):
+        return SimpleNamespace(file="none", present=False, folder=None)
+
+    async def no_pool(*args, **kwargs):
+        raise RuntimeError("no pool")
+
+    async def held():
+        return True
+
+    monkeypatch.setattr(machines.claude_code_plan, "forget_plan", no_pool)
+    with serving(cache), patch("ptc_agent.agent.claude_code.machine_token.remove_machine_token", new=removed), \
+            patch("ptc_agent.agent.claude_code.machine_token.machine_state", new=stands):
+        home = machines.MachineHome("u-1", {"computer_id": CID, "user_id": "u-1"})
+        home._machine = SimpleNamespace(link=lambda: _link())
+        with pytest.raises(RuntimeError):
+            await home.remove(held=held)
+    assert (cache.values.get(answer_key(CID)) or {}).get("file") != "works", "the answer says the token is gone"
+
+
+async def _link():
+    return "link"

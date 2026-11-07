@@ -8,6 +8,8 @@ import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import anyio
 import pytest
@@ -175,3 +177,13 @@ async def test_a_prepare_that_fails_midway_removes_its_config_dir(monkeypatch, t
     with pytest.raises(OSError, match="no space"):
         await LocalLauncher().prepare("t-full", "sid", [{"uuid": "a"}], identity="u", system_prompt="s")
     assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_a_run_on_the_saved_setup_token_names_it_to_the_plan_once_read(monkeypatch):
+    plan = SimpleNamespace(took=AsyncMock())
+    monkeypatch.setattr("ptc_agent.agent.claude_code.launcher.local_managed", AsyncMock(return_value=()))
+    await LocalLauncher(saved=_Store(Credential("sk-ant-oat01-saved")), plan=plan)._ready()
+    await LocalLauncher(saved=_Store(Credential("sk-ant-api03-key", kind="api_key")), plan=plan)._ready()
+    await LocalLauncher(token="sk-ant-oat01-checked", plan=plan)._ready()
+    plan.took.assert_awaited_once_with("sk-ant-oat01-saved")

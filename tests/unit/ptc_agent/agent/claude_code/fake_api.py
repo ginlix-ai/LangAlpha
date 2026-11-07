@@ -43,6 +43,36 @@ from aiohttp import web
 API_HOST = "api.anthropic.com"
 #: The dummy setup token a first-party test launches with.
 TOKEN = "sk-ant-oat01-" + "0" * 80
+#: A ``limits`` entry holding this key is answered with a 429.
+STATUS_429 = "x-fake-status-429"
+
+
+def unified(status: str = "allowed", *, five_hour: float | None = None, seven_day: float | None = None,
+            resets: dict[str, int] | None = None, claim: str | None = None, overage: str | None = None,
+            overage_in_use: bool = False, disabled: str | None = None, refused: bool = False) -> dict[str, str]:
+    """The ``anthropic-ratelimit-unified-*`` headers a plan login's response
+    carries: the overall ``status`` and the window it claims, each window's
+    use as a fraction with its reset (epoch seconds, ``resets``), and the
+    usage credits' status. ``refused`` answers the request with a 429."""
+    p = "anthropic-ratelimit-unified-"
+    resets = resets or {}
+    out = {p + "status": status}
+    for name, short, used in (("five_hour", "5h", five_hour), ("seven_day", "7d", seven_day)):
+        if used is not None:
+            out[p + short + "-utilization"] = str(used)
+            out[p + short + "-reset"] = str(resets[name])
+    if claim is not None:
+        out[p + "representative-claim"] = claim
+        out[p + "reset"] = str(resets[claim])
+    if overage is not None:
+        out[p + "overage-status"] = overage
+    if overage_in_use:
+        out[p + "overage-in-use"] = "true"
+    if disabled is not None:
+        out[p + "overage-disabled-reason"] = disabled
+    if refused:
+        out[STATUS_429] = "1"
+    return out
 
 
 def _sse(event: str, data: dict[str, Any]) -> bytes:
@@ -146,8 +176,11 @@ class FakeMessagesAPI:
     """The server and the request bodies it was sent."""
 
     def __init__(self, *, first_party: bool = False, refused: frozenset[str] = frozenset(),
-                 overloaded_after_compaction: int = 0) -> None:
+                 overloaded_after_compaction: int = 0, limits: list[dict[str, str]] | None = None) -> None:
         self.first_party = first_party
+        #: The plan's rate-limit headers each model request is answered with,
+        #: in order; one with ``STATUS_429`` is refused with them instead.
+        self.limits = list(limits or [])
         #: Credentials answered with a 401, as Anthropic answers a revoked token.
         self.refused = refused
         self.overloaded_after_compaction = overloaded_after_compaction
@@ -226,6 +259,10 @@ class FakeMessagesAPI:
         if self.overloaded_after_compaction and opening.startswith("This session is being continued"):
             self.overloaded_after_compaction -= 1
             return web.json_response({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}, status=529)
+        headers = self.limits.pop(0) if self.limits else {}
+        if headers.pop(STATUS_429, None):
+            error = {"type": "error", "error": {"type": "rate_limit_error", "message": "usage limit reached"}}
+            return web.json_response(error, status=429, headers=headers)
         for word, (status, kind) in {"FAIL_AUTH": (401, "authentication_error"), "FAIL_LIMIT": (429, "rate_limit_error")}.items():
             if word in prompt:
                 return web.json_response({"type": "error", "error": {"type": kind, "message": word}}, status=status)
@@ -235,7 +272,7 @@ class FakeMessagesAPI:
         if "MAX_TOKENS" in prompt:
             blocks, stop = [{"type": "text", "text": "part one"}], "max_tokens"
         usage = {"input_tokens": 120, "output_tokens": 0, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 40}
-        resp = web.StreamResponse(headers={"content-type": "text/event-stream"})
+        resp = web.StreamResponse(headers={"content-type": "text/event-stream", **headers})
         await resp.prepare(request)
         await resp.write(_sse("message_start", {"type": "message_start", "message": {
             "id": msg_id, "type": "message", "role": "assistant", "model": body.get("model"), "content": [],
