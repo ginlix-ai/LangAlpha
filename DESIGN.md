@@ -29,7 +29,7 @@ be declared there (enforced by `web/src/styles/__tests__/tokenRefs.test.ts`).
 | Role | Dark | Light |
 |---|---|---|
 | Page ground | `hsl(var(--background))` charcoal ~#191919 | white |
-| Canvas under filled cards (orders; the dashboard's frames sit on the page) | = page | `#F4F4F4` plain gray |
+| Canvas for recessed wells (the PDF viewer); every page sits on the page ground | = page | `#F4F4F4` plain gray |
 | Cards | `hsl(var(--card))` ~#202020 | white + `#E6E6E6` hairline |
 | Elevated (menus, tooltips) | `#2A2B2E` | `#F6F6F6` |
 | Primary text | `#E6E6E4` | `#1F1F1E` |

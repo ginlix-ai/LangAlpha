@@ -646,7 +646,6 @@
    Orders: the table drawn as a data card's, on the page's ground
    ════════════════════════════════════════════════════════════════════ */
 
-:root:not([data-card-style='quiet']) .orders-page { background-color: var(--color-bg-page); }
 :root:not([data-card-style='quiet']) .orders-table-scroll {
   background-color: transparent;
   border-color: var(--color-term-edge);

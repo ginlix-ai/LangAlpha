@@ -101,7 +101,7 @@ html {
      | token        | surface                                                |
      |--------------|--------------------------------------------------------|
      | bg-page      | the app ground: chat page, settings, auth               |
-     | bg-canvas    | ground behind filled cards (orders); = page in dark     |
+     | bg-canvas    | a recessed well: the PDF viewer; = page in dark        |
      | bg-card      | a card/panel sitting on page or canvas                  |
      | bg-card-hover| hover fill of a clickable card row (solid twin of card) |
      | bg-tool-card | agent tool/artifact cards inside the transcript         |
