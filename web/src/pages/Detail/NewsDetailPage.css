@@ -1,0 +1,107 @@
+/* The news page. The story keeps the reply's face in every style; the frame
+   around it reads the card styles (styles/cardStyle.css): open boxes, a
+   card's dividers, and in Terminal bracketed doors and tags. */
+
+/* Doors: Back, and the link to the story. */
+.news-page-back {
+  border: 1px solid var(--cs-door-edge, var(--color-border-default));
+  border-radius: var(--cs-radius-control, calc(var(--radius) - 2px));
+  background-color: var(--color-shell-fill, var(--color-bg-card));
+  font-family: var(--cs-face);
+}
+.news-page-back:hover { border-color: var(--color-shell-edge, var(--color-border-default)); }
+.news-page-read {
+  border-radius: var(--cs-radius-control, calc(var(--radius) - 2px));
+  font-family: var(--cs-face);
+}
+:is(.news-page-back, .news-page-read) {
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+:is(.news-page-back, .news-page-read)::before { content: var(--term-open); margin-right: 0.5ch; font-weight: 400; opacity: 0.55; }
+:is(.news-page-back, .news-page-read)::after { content: var(--term-close); margin-left: 0.5ch; font-weight: 400; opacity: 0.55; }
+:root:not([data-card-style]) :is(.news-page-back, .news-page-read) {
+  font-size: var(--cs-text-control);
+  font-weight: var(--cs-weight-control);
+}
+/* Back's arrow gives way to the brackets. */
+:root:not([data-card-style]) .news-page-back > svg { display: none; }
+
+:root:not([data-card-style]) .news-page-title { font-size: 1.375rem; }
+.news-page-title {
+  font-family: var(--cs-face);
+  letter-spacing: var(--cs-title-track);
+}
+
+/* Source, tickers and sentiment: bracketed words with no box (Terminal),
+   outlined pills (Balanced). */
+.news-page-tag {
+  background-color: var(--color-shell-fill, var(--color-bg-tag));
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+.news-page-tag::before { content: var(--term-open); margin-right: 0.5ch; color: var(--color-term-text-tertiary); }
+.news-page-tag::after { content: var(--term-close); margin-left: 0.5ch; color: var(--color-term-text-tertiary); }
+:root:not([data-card-style]) .news-page-tag {
+  padding-inline: 0;
+  border-radius: 0;
+  font-family: var(--cs-face);
+  font-size: var(--cs-text-label);
+}
+:root[data-card-style='balanced'] .news-page-tag {
+  border: 1px solid var(--term-mark);
+  border-radius: var(--cs-radius-pill);
+}
+
+.news-page-body {
+  border: 1px solid var(--color-shell-edge, var(--color-border-default));
+  border-radius: var(--cs-radius-box, calc(var(--radius) - 2px));
+  background-color: var(--color-shell-fill, var(--color-bg-card));
+}
+/* Prose: the reply's face, which Terminal's mono shell would take from it. */
+:root:not([data-card-style]) :is(.news-page-body p, .news-page-reason) { font-family: var(--font-content); }
+
+/* Sentiment: a section under a rule; in the open styles one open box with
+   its title cut into the edge and its rows parted by a card's divider, as a
+   data card's table is. */
+.news-page-section {
+  padding-top: 20px;
+  border-top: 1px solid var(--color-border-default);
+}
+.news-page-section-title { color: var(--color-shell-label, var(--color-text-primary)); }
+:root:not([data-card-style]) .news-page-section-title { font-size: var(--cs-text-label); }
+.news-page-row {
+  border: 1px solid var(--color-border-muted);
+  border-radius: calc(var(--radius) - 2px);
+  background-color: var(--color-shell-fill, var(--color-bg-card));
+}
+:root:not([data-card-style='quiet']) .news-page-section {
+  position: relative;
+  margin-top: 0.75rem;
+  padding: 1.125rem 0.875rem 0.5rem;
+  border: 1px solid var(--color-shell-edge, var(--color-border-default));
+  border-radius: var(--cs-radius-box, 8px);
+}
+:root:not([data-card-style='quiet']) .news-page-section-title {
+  position: absolute;
+  top: -0.75em;
+  left: 0.625rem;
+  padding: 0 0.375rem;
+  background: var(--color-bg-page);
+  line-height: 1.45;
+}
+:root:not([data-card-style='quiet']) .news-page-rows { gap: 0; }
+:root:not([data-card-style='quiet']) .news-page-row {
+  border: 0;
+  border-radius: 0;
+  padding-inline: 0;
+}
+:root:not([data-card-style='quiet']) .news-page-row + .news-page-row {
+  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
+}
+
+.news-page-foot {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-default));
+}

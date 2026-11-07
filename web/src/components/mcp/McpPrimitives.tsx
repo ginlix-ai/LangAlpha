@@ -144,7 +144,8 @@ export function TagBadge({
       }
       style={{
         color: warn ? 'var(--color-warning)' : 'var(--color-text-tertiary)',
-        backgroundColor: 'var(--color-bg-tag)',
+        // A host can unfill it (the Secrets page's plugin badge, vault.css).
+        backgroundColor: 'var(--tag-badge-fill, var(--color-bg-tag))',
         ...(soft
           ? {}
           : {

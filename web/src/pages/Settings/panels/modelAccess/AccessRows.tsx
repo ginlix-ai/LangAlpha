@@ -128,9 +128,27 @@ export function Group({ title, children, empty, subgrid = false }: {
 }) {
   return (
     <div className={subgrid ? 'col-span-full grid grid-cols-subgrid gap-y-1.5' : 'flex flex-col gap-1.5'}>
-      <h3 className={cn('pf-access-title text-xs font-medium', subgrid && 'col-span-full')} style={{ color: 'var(--color-text-tertiary)' }}>{title}</h3>
+      {/* A section label, in the voice in every style. */}
+      <h3
+        className={cn('label-voice text-xs font-medium', subgrid && 'col-span-full')}
+        style={{
+          color: 'var(--color-shell-label, var(--color-text-tertiary))',
+          fontSize: 'var(--cs-text-label, 0.75rem)',
+          fontWeight: 'var(--cs-weight-label, 500)',
+        }}
+      >
+        {title}
+      </h3>
       {children.length > 0 ? (
-        <ul className={cn('pf-access-list divide-y rounded-lg', subgrid && 'col-span-full grid grid-cols-subgrid')} style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)', borderColor: 'var(--color-border-muted)' }}>
+        // A card of rows: an open box in the open card styles, its rows parted
+        // by a card's divider.
+        <ul
+          className={cn(
+            'divide-y divide-[color:var(--color-shell-divider,hsl(var(--border)))] [&>*]:[border-style:var(--cs-rule-style,solid)] rounded-[var(--cs-radius-box,0.5rem)]',
+            subgrid && 'col-span-full grid grid-cols-subgrid',
+          )}
+          style={{ background: 'var(--color-shell-fill, var(--color-bg-card))', border: '1px solid var(--color-shell-edge, var(--color-border-muted))' }}
+        >
           {children}
         </ul>
       ) : (

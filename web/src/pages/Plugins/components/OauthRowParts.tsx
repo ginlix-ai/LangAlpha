@@ -205,7 +205,9 @@ export function ConnectButton({
               }
             : {
                 color: 'var(--color-text-primary)',
-                border: '1px solid var(--color-border-muted)',
+                // A host can redraw the edge (the brokerage card's Connect,
+                // BrokerageCard.css); every other row keeps this one.
+                border: '1px solid var(--connect-button-edge, var(--color-border-muted))',
               }
       }
     >

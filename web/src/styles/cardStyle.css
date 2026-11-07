@@ -85,6 +85,10 @@
      card is. Frame shadows are the ones Balanced drops too. */
   --cs-float-shadow: none;
   --cs-frame-shadow: none;
+  /* A page's outlined door sheds its edge: the brackets are the door. A
+     destructive one keeps a box in the loss color. */
+  --cs-door-edge: transparent;
+  --cs-danger-edge: color-mix(in srgb, var(--color-loss) 45%, transparent);
   /* The composer squared, its send button concentric with it. */
   --cs-composer-radius: 6px;
   --cs-composer-send-radius: 3px;
@@ -103,6 +107,8 @@
   --cs-radius-choice: 12px;
   --cs-radius-float: 10px;
   --cs-rule-style: solid;
+  --cs-door-edge: var(--color-shell-edge, transparent);
+  --cs-danger-edge: color-mix(in srgb, var(--color-loss) 40%, transparent);
   /* The tooltip and the phone sheets lie flat; menus and dialogs keep
      their shadow. */
   --cs-frame-shadow: none;

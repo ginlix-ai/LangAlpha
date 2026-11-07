@@ -38,6 +38,8 @@ const OPEN_STYLE_ONLY = new Set([
   '--color-shell-float',
   '--color-shell-ink',
   '--color-shell-front',
+  '--color-shell-label',
+  '--color-shell-meta',
 ]);
 
 /**

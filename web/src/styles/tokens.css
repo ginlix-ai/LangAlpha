@@ -573,6 +573,12 @@ html {
   --color-shell-divider: var(--color-shell-rule);
   --color-shell-front: var(--color-term-text);
 }
+/* Terminal's quieter inks, as the cards set theirs: a section's label, and
+   the words beside a value (a fact's key, a filter not picked). */
+:root:not([data-card-style]) {
+  --color-shell-label: var(--color-term-text-secondary);
+  --color-shell-meta: var(--color-term-text-tertiary);
+}
 
 /* Focus rings.
 

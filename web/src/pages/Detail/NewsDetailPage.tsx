@@ -7,6 +7,7 @@ import { getNewsArticle } from '../Dashboard/utils/api';
 import { useLocale } from '@/hooks/useLocale';
 import { formatTimestamp } from '@/lib/format';
 import { tickerImpactRows, type NewsSentiment } from '../Dashboard/utils/tickerImpact';
+import './NewsDetailPage.css';
 
 interface ArticleSource {
   name?: string;
@@ -108,12 +109,12 @@ function NewsArticleView() {
   const { rows, scored } = tickerImpactRows(article.sentiments, article.tickers);
 
   return (
-    <div className="pf-news flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)', paddingTop: 'calc(var(--page-top) - 3px)' }}>
+    <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)', paddingTop: 'calc(var(--page-top) - 3px)' }}>
       {/* Back button */}
       <button
         onClick={handleBack}
-        className="pf-news-back flex items-center gap-2 self-start px-3 py-1.5 rounded-md cursor-pointer transition-colors"
-        style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', color: 'var(--color-text-primary)' }}
+        className="news-page-back flex items-center gap-2 self-start px-3 py-1.5 cursor-pointer transition-colors"
+        style={{ color: 'var(--color-text-primary)' }}
       >
         <ArrowLeft className="w-4 h-4" />
         <span className="text-sm">Back</span>
@@ -121,7 +122,7 @@ function NewsArticleView() {
 
       {/* Title & metadata */}
       <div className="flex flex-col gap-3">
-        <h1 className="pf-news-title text-2xl font-bold" style={{ lineHeight: '1.3' }}>
+        <h1 className="news-page-title text-2xl font-bold" style={{ lineHeight: '1.3' }}>
           {article.title}
         </h1>
         <div className="flex items-center gap-3 flex-wrap">
@@ -137,8 +138,8 @@ function NewsArticleView() {
           )}
           {article.source?.name && (
             <span
-              className="pf-news-tag inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-md font-medium"
-              style={{ backgroundColor: 'var(--color-bg-tag)', color: 'var(--color-text-primary)' }}
+              className="news-page-tag inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-md font-medium"
+              style={{ color: 'var(--color-text-primary)' }}
             >
               {article.source.favicon_url && (
                 <img
@@ -159,8 +160,8 @@ function NewsArticleView() {
             {article.tickers.map((ticker) => (
               <span
                 key={ticker}
-                className="pf-news-tag pf-news-ticker text-xs px-2 py-0.5 rounded-full font-mono font-medium"
-                style={{ backgroundColor: 'var(--color-bg-tag)', color: 'var(--color-accent-primary)' }}
+                className="news-page-tag text-xs px-2 py-0.5 rounded-full font-mono font-medium"
+                style={{ color: 'var(--color-accent-primary)' }}
               >
                 {ticker}
               </span>
@@ -184,7 +185,7 @@ function NewsArticleView() {
 
       {/* Description */}
       {article.description && (
-        <div className="pf-news-body rounded-md p-4" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)' }}>
+        <div className="news-page-body p-4">
           <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)', lineHeight: '1.7' }}>
             {article.description}
           </p>
@@ -193,25 +194,24 @@ function NewsArticleView() {
 
       {/* Sentiments */}
       {article.sentiments && article.sentiments.length > 0 && (
-        <div className="pf-news-section flex flex-col gap-3" style={{ borderTop: '1px solid var(--color-border-default)', paddingTop: '20px' }}>
-          <h3 className="pf-news-section-title text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+        <div className="news-page-section flex flex-col gap-3">
+          <h3 className="news-page-section-title label-voice text-sm font-semibold">
             {scored ? 'AI Sentiment (news vendor estimate)' : 'Sentiment Analysis'}
           </h3>
-          <div className="pf-news-rows flex flex-col gap-2">
+          <div className="news-page-rows flex flex-col gap-2">
             {rows.map((s, i) => (
-              <div key={i} className="pf-news-row flex items-start gap-3 text-xs rounded-md p-2.5" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
+              <div key={i} className="news-page-row flex items-start gap-3 text-xs p-2.5">
                 <span
-                  className="pf-news-tag pf-news-ticker shrink-0 font-mono font-medium px-1.5 py-0.5 rounded"
-                  style={{ color: 'var(--color-accent-primary)', backgroundColor: 'var(--color-bg-tag)' }}
+                  className="news-page-tag shrink-0 font-mono font-medium px-1.5 py-0.5 rounded"
+                  style={{ color: 'var(--color-accent-primary)' }}
                 >
                   {s.ticker}
                 </span>
                 {s.sentiment ? (
                   <span
-                    className="pf-news-tag shrink-0 font-medium px-1.5 py-0.5 rounded"
+                    className="news-page-tag shrink-0 font-medium px-1.5 py-0.5 rounded"
                     style={{
                       color: s.sentiment === 'positive' ? 'var(--color-profit)' : s.sentiment === 'negative' ? 'var(--color-loss)' : 'var(--color-text-secondary)',
-                      backgroundColor: 'var(--color-bg-tag)',
                     }}
                   >
                     {s.sentiment}
@@ -220,7 +220,7 @@ function NewsArticleView() {
                   <span className="shrink-0 px-1.5 py-0.5" style={{ color: 'var(--color-text-secondary)' }}>Unscored</span>
                 )}
                 {s.note && (
-                  <span className="pf-news-reason" style={{ color: 'var(--color-text-secondary)' }}>{s.note}</span>
+                  <span className="news-page-reason" style={{ color: 'var(--color-text-secondary)' }}>{s.note}</span>
                 )}
               </div>
             ))}
@@ -230,12 +230,12 @@ function NewsArticleView() {
 
       {/* Read Full Article */}
       {article.article_url && (
-        <div className="pf-news-foot" style={{ borderTop: '1px solid var(--color-border-default)', paddingTop: '16px', marginTop: '8px' }}>
+        <div className="news-page-foot">
           <a
             href={article.article_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="pf-news-read inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
+            className="news-page-read inline-flex items-center gap-2 px-4 py-2 text-sm font-medium transition-opacity hover:opacity-90"
             style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
             Read Full Article
