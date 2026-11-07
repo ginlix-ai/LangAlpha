@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from ptc_agent.agent.claude_code.launcher import Credential
-from src.server.database.claude_code_hosted import STORED_TURN, CLOUD_TURN
+from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, STORED_TURN, CLOUD_TURN
 from src.server.services.claude_code import hosted as hosted_module
 from src.server.services.claude_code.flow import backend_on
 from src.server.services.claude_code.hosted import DISCLOSURE, Hosted, drop_stored, opted_out
@@ -52,6 +52,13 @@ SAVED_REFUSAL = "src.server.services.claude_code.saved.saved_refusal"
 
 
 # -- The choice --
+
+
+@pytest.fixture(autouse=True)
+def no_stored_task_runs():
+    """No subagent run on the stored token unless a test says otherwise."""
+    with patch(f"{HOSTED}.live_stored_task_runs", AsyncMock(return_value=[])) as runs:
+        yield runs
 
 
 @pytest.mark.asyncio
@@ -182,11 +189,13 @@ async def test_a_run_that_may_hold_the_stored_token_is_marked_so_it_can_be_stopp
 
 
 async def _stamp() -> dict:
-    """The stamp a turn's row gets from what admission let it run on."""
+    """The stamp a turn's row gets from what admission let it run on, past
+    the one every Claude Code turn gets."""
     admitted = await require_runnable(
         SimpleNamespace(feature_enabled=lambda _: True), CODE, "analyst", user_id="user-1", workspace_id="ws-1",
     )
-    return run_stamp(SimpleNamespace(claude_code_hosted=admitted.hosted, claude_code_saved=admitted.saved))
+    stamp = run_stamp(SimpleNamespace(claude_code=True, claude_code_hosted=admitted.hosted, claude_code_saved=admitted.saved))
+    return {k: v for k, v in stamp.items() if k not in CLAUDE_CODE_TURN}
 
 
 # -- Turns nobody starts --
@@ -375,20 +384,28 @@ async def test_any_choice_but_storing_takes_the_token_with_it():
 
 
 @pytest.mark.asyncio
-async def test_dropping_the_stored_token_forgets_its_check_and_stops_each_turn_that_may_hold_it():
+async def test_dropping_the_stored_token_forgets_its_check_and_stops_each_turn_and_subagent_run_that_may_hold_it(
+    no_stored_task_runs,
+):
+    """A subagent run on it can outlive the turn that launched it."""
     cache = SimpleNamespace(delete=AsyncMock())
+    no_stored_task_runs.return_value = [("t-3", "k1", "tr-3")]
     with (
         patch("src.config.settings.HOST_MODE", "platform"),
         patch(f"{HOSTED}.write_custody", AsyncMock(return_value=TOKEN)) as leave,
         patch(f"{HOSTED}.live_stored_turns", AsyncMock(return_value=[("t-1", "r-1"), ("t-2", "r-2")])),
         patch("src.server.services.cancel_dispatch.cancel_workflow", AsyncMock()) as cancel,
+        patch("src.server.services.cancel_dispatch.cancel_subagent_task", AsyncMock()) as cancel_task,
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
     ):
         stopped = await drop_stored("user-1", block_reason="terms")
     leave.assert_awaited_once_with("user-1", "local", block_reason="terms")
     cache.delete.assert_awaited_once_with(token_check_key(TOKEN))
     assert cancel.await_args_list == [call("t-1", "r-1", by_user=False), call("t-2", "r-2", by_user=False)]
-    assert stopped == 2
+    # By its run: a stop reaching the task after that run ended stops nothing.
+    cancel_task.assert_awaited_once_with("t-3", "k1", task_run_id="tr-3")
+    no_stored_task_runs.assert_awaited_once_with("user-1")
+    assert stopped == 3
 
 
 @pytest.mark.asyncio

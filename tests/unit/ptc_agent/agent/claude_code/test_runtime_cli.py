@@ -36,7 +36,7 @@ from ptc_agent.agent.claude_code.runtime import (
     build_claude_code_graph,
     token_works,
 )
-from ptc_agent.agent.middleware.steering import ALL_KINDS, SteeredReport, SteeringMiddleware, steers_ahead_message
+from ptc_agent.agent.middleware.steering import ALL_KINDS, SteeredReport, SteeringMiddleware, TaskResume, steers_ahead_message
 from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, render_update_row
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from src.llms.claude_code import PLAN_NOTICE_KEY, PlanLimit, PlanStopped
@@ -1157,7 +1157,7 @@ async def test_a_steer_sent_while_a_call_runs_reaches_claude_right_after_its_res
     assert isinstance(result, ToolMessage) and isinstance(reply, AIMessage)
     assert steering.content == STEERED
     assert steering.additional_kwargs["held_jobs"] == {"run_id": "run-1", "job_ids": ["job-0"]}
-    assert [e["type"] for e in events] == ["steering_delivered"]
+    assert [e["type"] for e in events if e["type"] != "stream_heartbeat"] == ["steering_delivered"]
     assert inbox.confirmed == ["job-0"]
     told = [m["content"] if isinstance(m["content"], str) else m["content"][0]["text"] for m in after if m["role"] == "system"]
     assert any(t.startswith("The user sent a new message while you were working:\nUse the other file.\n") for t in told)
@@ -1176,7 +1176,7 @@ async def test_steers_waiting_as_a_query_ends_are_the_turns_next_query_up_to_its
     assert trigger.content == "User sent additional instructions." and trigger.additional_kwargs["lc_source"] == "orchestrator"
     assert steering.content == STEERED and inbox.confirmed == ["job-0"]
     assert [b["text"] for b in again["content"] if b["type"] == "text"][-2:] == [trigger.content, STEERED]
-    assert [e["type"] for e in events] == ["steering_delivered"]
+    assert [e["type"] for e in events if e["type"] != "stream_heartbeat"] == ["steering_delivered"]
 
     async with FakeMessagesAPI() as api:
         await _steered_turn(api, _Inbox(endless=True), ToolNode([]), "t-endless", [HumanMessage("hello")])
@@ -1199,7 +1199,7 @@ async def test_the_steers_a_turn_opened_with_are_shown_and_closed_once_claude_ha
             events = [e async for e in graph.astream({"messages": [ahead, user]}, config, stream_mode="custom")]
         finally:
             await claude.close()
-    assert [e["type"] for e in events] == ["steering_delivered"]
+    assert [e["type"] for e in events if e["type"] != "stream_heartbeat"] == ["steering_delivered"]
     assert inbox.confirmed == ["job-0"]
 
 
@@ -1328,3 +1328,62 @@ async def test_a_turn_leaves_the_rules_it_ran_under_for_the_composers_reading_be
     told = await thread_status.read_next_summary("t-rules", latest={})
     assert told["reason"] == "cold" and told["at"] > told["now"]
 
+
+
+class _Resumes(_Inbox):
+    """And a task whose run ended before it read the message left for it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.released: list[tuple] = []
+        self.resumes = [TaskResume(task_id="k1", job_ids=["job-r"], entries=[{"input_id": "i-1", "content": "Also check Q3."}])]
+
+    async def take_resumes(self, thread_id, run_id):
+        taken, self.resumes = self.resumes, []
+        return taken
+
+    async def release_resumes(self, thread_id, run_id, task_id, job_ids, *, counted=True):
+        self.released.append((thread_id, run_id, task_id, job_ids))
+
+
+async def test_a_task_left_a_message_resumes_as_the_turn_opens_with_no_request_of_its_own():
+    """As a langalpha turn's steering does before its first model call: the
+    resume is the steering's call, run with no CLI through the agent's tool
+    stack, which settles the rows it holds by its result (here a resume that
+    started no run of its own gives them back), and Claude, which made no call
+    for it, reads its result after the notice it came with."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+    inbox, resumed = _Resumes(), []
+
+    @tool("Task")
+    async def task(action: str, task_id: str, prompt: str) -> str:
+        """Launch or resume a background task."""
+        resumed.append((action, task_id, prompt))
+        return "Resumed **Task-1** in background with new instructions."
+
+    steering = SteeringMiddleware(report_inbox=inbox, kinds=("steer", "resume"))
+    agent = create_agent(FakeListChatModel(responses=["x"]), tools=[task], middleware=[steering])
+    graph = build_claude_code_graph(agent.builder.nodes["tools"].runnable, checkpointer=InMemorySaver())
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        claude = ClaudeTurn(SPEC, launcher, identity="test-user", thread_key="t-resume", steering=steering)
+        config = {"configurable": {"thread_id": "t-resume", TURN_KEY: claude}, "metadata": {"run_id": "run-1"}}
+        try:
+            with mock.patch("ptc_agent.agent.claude_code.mid_turn.build_message_checker", inbox.checker):
+                await graph.ainvoke({"messages": [HumanMessage("Follow-up instructions arrived.")]}, config)
+        finally:
+            await claude.close()
+        requests = list(api.model_requests)
+    values = (await graph.aget_state({"configurable": {"thread_id": "t-resume"}})).values
+    _, call, result, reply = values["messages"]
+    assert [(a, t) for a, t, _ in resumed] == [("resume", "k1")] and "Also check Q3." in resumed[0][2]
+    assert call.additional_kwargs["lc_source"] == "steering" and result.tool_call_id == call.tool_calls[0]["id"]
+    assert inbox.released == [("t-resume", "run-1", "k1", ["job-r"])]
+    assert isinstance(reply, AIMessage) and len(requests) == 1
+    [asked] = [m for m in requests[0]["messages"] if m["role"] == "user"]
+    assert asked["content"] == [
+        {"type": "text", "text": "Follow-up instructions arrived."},
+        {"type": "text", "text": frame_reminder("Resumed **Task-1** in background with new instructions.")},
+    ]

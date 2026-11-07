@@ -155,6 +155,16 @@ async def test_publish_with_task_id_extends_payload():
 
 
 @pytest.mark.asyncio
+async def test_a_nudge_naming_a_run_carries_it_to_the_owning_worker():
+    cache = _cache()
+    with patch(CACHE, return_value=cache):
+        await publish_cancel_nudge("t-1", None, task_id="abc123", task_run_id="tr-1")
+
+    _channel, payload = cache.client.publish.await_args.args
+    assert json.loads(payload)["task_run_id"] == "tr-1"
+
+
+@pytest.mark.asyncio
 async def test_listener_routes_task_targeted_nudge_to_registry_store():
     listener = TurnCancelListener()
     store = MagicMock()
@@ -173,10 +183,12 @@ async def test_listener_routes_task_targeted_nudge_to_registry_store():
         ),
     ):
         await listener._handle(
-            json.dumps({"thread_id": "t-1", "task_id": "abc123"}).encode()
+            json.dumps(
+                {"thread_id": "t-1", "task_id": "abc123", "task_run_id": "tr-1"}
+            ).encode()
         )
 
-    store.cancel_task.assert_awaited_once_with("t-1", "abc123")
+    store.cancel_task.assert_awaited_once_with("t-1", "abc123", task_run_id="tr-1")
     # A task nudge never falls through to the run-level cancel.
     btm.signal_cancel.assert_not_awaited()
 
@@ -206,3 +218,36 @@ async def test_listener_stops_a_run_whose_intent_no_nudge_delivered():
 
     stamped.assert_awaited_once_with(["r-1", "r-2"])
     btm.signal_cancel.assert_awaited_once_with("t-1", "r-1")
+
+
+@pytest.mark.asyncio
+async def test_listener_stops_a_task_run_whose_intent_no_nudge_delivered():
+    """A task can outlive the turn that launched it, so the run reconcile
+    never reaches it; its own row says to stop, by run."""
+    listener = TurnCancelListener()
+    btm = MagicMock(uncancelled_runs=AsyncMock(return_value=[]))
+    store = MagicMock(
+        live_task_runs=AsyncMock(return_value=[("t-1", "k1", "tr-1"), ("t-2", "k2", "tr-2")]),
+        cancel_task=AsyncMock(return_value=True),
+    )
+
+    async def nothing_arrives(**_):
+        listener._stopping.set()
+        return None
+
+    pubsub = MagicMock(subscribe=AsyncMock(), unsubscribe=AsyncMock(), aclose=AsyncMock())
+    pubsub.get_message = nothing_arrives
+    client = MagicMock(pubsub=MagicMock(return_value=pubsub))
+    with (
+        patch("src.server.services.workspace_status_pubsub.get_shared_pubsub_client", AsyncMock(return_value=client)),
+        patch("src.server.services.runs.executor.LocalRunExecutor.get_instance", return_value=btm),
+        patch("src.server.database.runs.lifecycle.cancel_requested_runs", AsyncMock(return_value=set())),
+        patch("src.server.services.background_registry_store.BackgroundRegistryStore.get_instance", return_value=store),
+        patch(
+            "src.server.database.runs.subagent_runs.cancel_requested_task_runs", AsyncMock(return_value={"tr-2"})
+        ) as stamped,
+    ):
+        await listener._run()
+
+    stamped.assert_awaited_once_with(["tr-1", "tr-2"])
+    store.cancel_task.assert_awaited_once_with("t-2", "k2", task_run_id="tr-2")

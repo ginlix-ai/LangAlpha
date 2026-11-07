@@ -1310,3 +1310,21 @@ async def test_a_cut_off_reply_captures_no_tool_calls(finished) -> None:
 
     captured = [c.args[1]["event"] for c in registry.append_captured_event.await_args_list]
     assert captured == (["tool_calls"] if finished else [])
+
+
+@pytest.mark.asyncio
+async def test_a_reply_a_claude_code_run_commits_reports_its_tool_calls_to_the_task() -> None:
+    """A Claude Code run makes no model call for the middleware to wrap, so
+    it hands each reply it commits to ``capture``."""
+    from langchain_core.messages import AIMessage
+
+    registry = BackgroundTaskRegistry()
+    task = await registry.register(tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose")
+    token = current_background_tool_call_id.set("tc1")
+    try:
+        await SubagentEventCaptureMiddleware(registry).capture(
+            AIMessage("", id="m1", tool_calls=[{"name": "Bash", "args": {"command": "ls"}, "id": "c1"}])
+        )
+    finally:
+        current_background_tool_call_id.reset(token)
+    assert task.captured_event_count == 1

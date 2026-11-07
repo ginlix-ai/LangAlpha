@@ -24,7 +24,7 @@ from ptc_agent.agent.claude_code.launcher import Credential
 from ptc_agent.config.core import SandboxConfig
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.app import claude_code as route
-from src.server.database.claude_code_hosted import CLOUD_TURN, Custody
+from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, CLOUD_TURN, Custody
 from src.server.services.claude_code import hosted as hosted_module
 from src.server.services.claude_code.launchers import HostedCredential
 from src.server.services.claude_code.saved import token_hash
@@ -47,6 +47,13 @@ CLOUD = {"computer_id": "c-2", "name": "Research", "kind": "daytona", "resource_
 OWN = {"computer_id": "c-1", "kind": "ssh"}
 KEY = "sk-ant-api03-" + "k" * 40
 SAVED = {"api_key": KEY, "base_url": None}
+
+
+@pytest.fixture(autouse=True)
+def no_stored_task_runs():
+    """No subagent run on the stored token unless a test says otherwise."""
+    with patch(f"{HOSTED}.live_stored_task_runs", AsyncMock(return_value=[])) as runs:
+        yield runs
 
 
 def sizer(sandbox):
@@ -366,6 +373,31 @@ def test_a_computer_fits_where_the_tier_its_sandbox_runs_at_reaches_the_smallest
         assert hosted_module.tier_refusal(computer) == refusal
 
 
+@pytest.mark.parametrize(
+    ("computer", "cap"),
+    [
+        (OWN, 4),
+        ({**CLOUD, "resource_tier": "performance"}, 5),
+        ({**CLOUD, "resource_tier": "max"}, 10),
+        ({"computer_id": "c-3", "kind": "docker", "resource_tier": "standard"}, 5),
+        (_resizing("max", "performance"), 5),
+        ({**CLOUD, "resource_tier": "retired"}, None),
+    ],
+)
+def test_a_computer_runs_a_cli_per_800_mb_of_its_smallest_size_and_an_own_one_as_many_as_its_slots(computer, cap):
+    """Turns and subagents together, wherever the CLIs run; a size the server
+    cannot tell caps nothing."""
+    with platform():
+        assert hosted_module.cli_cap(computer) == cap
+
+
+@pytest.mark.parametrize("tier", ["standard", "max", "retired"])
+def test_where_the_clis_run_in_the_backend_a_computer_runs_as_many_as_a_medium_one(tier):
+    """Its own size is not theirs there."""
+    with platform(), patch(f"{HOSTED}.in_sandbox", lambda: False):
+        assert hosted_module.cli_cap({**CLOUD, "resource_tier": tier}) == 5
+
+
 def test_a_kind_this_server_cannot_size_fails_rather_than_blame_the_computer():
     with platform(), pytest.raises(ValueError):
         hosted_module.tier_refusal({"kind": "mainframe", "resource_tier": "max"})
@@ -585,16 +617,19 @@ async def test_a_self_hosted_server_with_the_cli_in_the_sandbox_names_its_cloud_
 
 
 @pytest.mark.parametrize(
-    ("mode", "hosted", "saved", "stamp"),
+    ("mode", "claude_code", "hosted", "saved", "stamp"),
     [
-        ("platform", "api_key", None, CLOUD_TURN),
-        ("platform", None, None, {}),
-        ("oss", "saved_token", "saved_token", CLOUD_TURN),
-        ("oss", None, "saved_token", {}),
+        ("platform", True, "api_key", None, {**CLAUDE_CODE_TURN, **CLOUD_TURN}),
+        ("platform", True, None, None, CLAUDE_CODE_TURN),
+        ("oss", True, "saved_token", "saved_token", {**CLAUDE_CODE_TURN, **CLOUD_TURN}),
+        ("oss", True, None, "saved_token", CLAUDE_CODE_TURN),
+        ("oss", False, None, None, {}),
     ],
 )
-def test_a_turn_admitted_on_a_cloud_computer_is_counted_on_any_server(mode, hosted, saved, stamp):
-    config = SimpleNamespace(claude_code_hosted=hosted, claude_code_saved=saved)
+def test_a_turn_admitted_on_a_cloud_computer_is_counted_on_any_server(mode, claude_code, hosted, saved, stamp):
+    """Every Claude Code turn is counted as a CLI its computer runs, and one
+    on a cloud computer as a turn of its user's there too."""
+    config = SimpleNamespace(claude_code=claude_code, claude_code_hosted=hosted, claude_code_saved=saved)
     with patch("src.config.settings.HOST_MODE", mode):
         assert run_stamp(config) == stamp
 

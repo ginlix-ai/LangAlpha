@@ -42,6 +42,32 @@ async def test_cancel_task_cancels_only_the_matching_live_task():
 
 
 @pytest.mark.asyncio
+async def test_a_cancel_naming_a_run_stops_the_task_only_while_that_is_its_run():
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await _register(registry)
+    task.task_run_id = "tr-2"
+
+    assert await registry.cancel_task(task.task_id, task_run_id="tr-1") is False
+    assert task.cancelled is False
+    assert await registry.cancel_task(task.task_id, task_run_id="tr-2") is True
+    assert task.cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_the_workers_store_stops_only_the_run_a_cancel_names():
+    from src.server.services.background_registry_store import BackgroundRegistryStore
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await _register(registry)
+    task.task_run_id = "tr-2"
+    store = BackgroundRegistryStore()
+    store._registries["thread-x"] = registry
+
+    assert await store.cancel_task("thread-x", task.task_id, task_run_id="tr-1") is False
+    assert task.cancelled is False
+
+
+@pytest.mark.asyncio
 async def test_cancel_task_unknown_or_settled_returns_false():
     registry = BackgroundTaskRegistry(thread_id="thread-x")
     task = await _register(registry)
@@ -198,3 +224,21 @@ async def test_adopt_writer_outcome_ignores_an_unknown_declared_status():
 
     task.adopt_writer_outcome(writer)
     assert task.terminal_status == "error"
+
+
+@pytest.mark.asyncio
+async def test_the_workers_store_lists_the_task_runs_no_cancel_reached():
+    from src.server.services.background_registry_store import BackgroundRegistryStore
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    live = await _register(registry, "tc-1")
+    stopped = await _register(registry, "tc-2")
+    done = await _register(registry, "tc-3")
+    await _register(registry, "tc-4")
+    live.task_run_id, stopped.task_run_id, done.task_run_id = "tr-1", "tr-2", "tr-3"
+    await registry.cancel_task(stopped.task_id)
+    done.terminal_status = "completed"
+    store = BackgroundRegistryStore()
+    store._registries["thread-x"] = registry
+
+    assert await store.live_task_runs() == [("thread-x", live.task_id, "tr-1")]
