@@ -82,7 +82,9 @@ export function RestoreOffer({ workspaceId, variant, className }: RestoreOfferPr
       data-testid="restore-offer"
       className={cn(
         'flex items-start gap-2 border text-sm',
-        notice ? 'mx-2 mt-2 rounded-md px-2.5 py-2' : 'rounded-lg px-3 py-2.5',
+        // The banner sits in the composer stack, which sets its corner and
+        // its text's inset (ChatView).
+        notice ? 'mx-2 mt-2 rounded-md px-2.5 py-2' : 'rounded-[var(--stack-row-radius,var(--radius-lg))] py-2.5 pr-3 pl-[var(--stack-row-pad,0.75rem)]',
         className,
       )}
       // Opaque, like the disk warning: above the composer the transcript

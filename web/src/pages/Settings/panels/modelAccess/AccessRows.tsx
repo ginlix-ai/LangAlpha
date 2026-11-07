@@ -81,7 +81,7 @@ export function AccessRow({
   return (
     // Too narrow for the name and its detail beside the status and actions,
     // the status and actions take a line of their own under them.
-    <li className="pf-access-row flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
       <BrandMark name={name} art={llmProviderArt(provider)} size="sm" className="rounded-md" />
       <div className="flex min-w-0 flex-[1_1_12rem] flex-col gap-0.5">
         {nameLine}

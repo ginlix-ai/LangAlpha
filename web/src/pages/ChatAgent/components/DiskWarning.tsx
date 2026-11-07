@@ -191,7 +191,9 @@ export function DiskWarning({ computer, className }: DiskWarningProps) {
       role={critical ? 'alert' : 'status'}
       data-testid="disk-warning"
       data-level={level}
-      className={cn('flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm', className)}
+      // In the composer stack the corner and the text's inset are the
+      // stack's (ChatView); in the gallery, these.
+      className={cn('flex items-start gap-2 rounded-[var(--stack-row-radius,var(--radius-lg))] border py-2.5 pr-3 pl-[var(--stack-row-pad,0.75rem)] text-sm', className)}
       // Opaque: the tint is layered over the page surface, since in a chat the
       // warning sits above the composer and the transcript scrolls under it.
       style={{

@@ -120,7 +120,6 @@ import { ClaudeCodePlanRow } from './chatView/ClaudeCodePlanRow';
 import { useNextSummary } from '../hooks/useNextSummaryHint';
 import { ChatDiskWarning } from './chatView/ChatDiskWarning';
 import { ChatRestoreOffer } from './chatView/ChatRestoreOffer';
-import { STACK_ROW_CLASS } from './chatView/composerStack';
 import { useToolCallAnnouncer } from './chatView/useToolCallAnnouncer';
 import { MobileNavDrawer } from './chatView/MobileNavDrawer';
 import { useChatScroll } from './chatView/useChatScroll';
@@ -1732,8 +1731,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   reads it. */}
               {/* The stack moves to the foot of a file tab while the chat is
                   out of view (chatView/useComposerDock), as the same elements. */}
+              {/* The rows here that draw a surface (the error, the restore
+                  offer, the disk warning) take the composer's corner, 16 unless
+                  the card style says otherwise (--cs-composer-*,
+                  styles/cardStyle.css), and set their text in where Balanced's
+                  rounder corner needs it. The same rows elsewhere keep their own. */}
               <DockableComposer home={composerDock.home} host={composerDock.host}>
-              <div className="w-full max-w-3xl sibling-space-y-3 relative pointer-events-auto [--composer-h:initial]">
+              <div className="w-full max-w-3xl sibling-space-y-3 relative pointer-events-auto [--composer-h:initial] [--stack-row-radius:var(--cs-composer-stack-radius,16px)] [--stack-row-pad:var(--cs-composer-row-pad)]">
                 {activeAgentId === 'main' ? (
                   <>
                     {/* Only rows with a surface of their own sit here: the
@@ -1757,10 +1761,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     )}
                     {/* A notice is not about the running turn, so it need not wait for it to end. */}
                     {messageError && (!isLoading || (typeof messageError === 'object' && messageError.kind === 'notice')) && (
-                      <ErrorBanner
-                        error={messageError}
-                        className={typeof messageError === 'object' && messageError.kind === 'notice' ? undefined : STACK_ROW_CLASS}
-                      />
+                      <ErrorBanner error={messageError} />
                     )}
                     {workspaceRecord?.computer_id && (
                       <ChatRestoreOffer

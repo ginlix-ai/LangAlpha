@@ -188,18 +188,17 @@
 
 /* Intervals and Light / Advanced in the open card styles: Terminal's
    bracketed words with the picked one in full ink, Balanced's pills; the
-   filled track goes in both. Ahead of the legend's rules below, which win
-   the ties (a hovered interval's wash, its padding beside a legend). */
+   filled track goes in both. Beside a legend (below), its hover wash
+   outranks their unwashed buttons and its padding Balanced's, while
+   Terminal's words keep their own padding there. */
 :root:not([data-card-style='quiet']) .interval-selector {
   background: transparent;
   padding: 0;
 }
 :root:not([data-card-style]) .interval-selector { gap: 0.125rem; }
-:root:not([data-card-style]) :is(.interval-btn, .interval-btn-active, .interval-btn:hover) {
-  background: transparent;
-  padding-inline: 0.25rem;
-}
+:root:not([data-card-style]) .interval-selector .interval-btn { padding-inline: 0.25rem; }
 :root:not([data-card-style]) .interval-btn {
+  background: transparent;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   text-transform: var(--term-case);
@@ -216,12 +215,10 @@
 :root[data-card-style='balanced'] .interval-btn {
   border: 1px solid var(--term-mark);
   border-radius: 999px;
-  padding-block: 2px;
 }
-:root[data-card-style='balanced'] :is(.interval-btn-active, .interval-btn-active:hover) {
-  background: transparent;
-  border-color: var(--color-term-text);
-}
+:root[data-card-style='balanced'] :where(.interval-btn) { padding-block: 2px; }
+:root[data-card-style='balanced'] .interval-btn-active { background: transparent; }
+:root[data-card-style='balanced'] .interval-btn.interval-btn-active { border-color: var(--color-term-text); }
 
 /* Beside a ticker legend (`chart--with-lead`) the intervals are text, not a
    segmented control: the legend already reads at toolbar weight, and a filled

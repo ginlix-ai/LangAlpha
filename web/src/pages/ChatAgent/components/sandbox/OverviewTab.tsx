@@ -116,12 +116,12 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
         {resourceCards.map(({ icon: Icon, label, value }) => (
           <div
             key={label}
-            className="pf-sbx-box flex items-center gap-3 p-3 rounded-[var(--cs-radius-box,var(--radius-lg))]"
+            className="flex items-center gap-3 p-3 rounded-[var(--cs-radius-box,var(--radius-lg))]"
             style={SBX_BOX}
           >
             <Icon className="h-5 w-5 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
             <div>
-              <div className="pf-sbx-label label-voice text-xs" style={{ color: 'var(--color-text-tertiary)', fontSize: 'var(--cs-text-label, 0.75rem)' }}>{label}</div>
+              <div className="label-voice text-xs" style={{ color: 'var(--color-text-tertiary)', fontSize: 'var(--cs-text-label, 0.75rem)' }}>{label}</div>
               <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{value}</div>
             </div>
           </div>
@@ -132,7 +132,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
           this workspace lives and what a stop reaches sit in the same card as
           the button, read before it is pressed rather than found beneath it. */}
       <div
-        className="pf-sbx-box flex flex-col gap-3 p-3 rounded-[var(--cs-radius-box,var(--radius-lg))]"
+        className="flex flex-col gap-3 p-3 rounded-[var(--cs-radius-box,var(--radius-lg))]"
         style={SBX_BOX}
       >
       {(computerName || dirName) && (
@@ -197,7 +197,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
             onClick={onRefresh}
             aria-label={t('computer.overview.refreshAria')}
             title={t('computer.overview.refresh')}
-            className={cn('pf-sbx-action flex items-center gap-1.5 px-2 py-1.5', ACTION_CLASS)}
+            className={cn('flex items-center gap-1.5 px-2 py-1.5', ACTION_CLASS)}
             style={{ ...ACTION_TYPE, color: 'var(--color-text-tertiary)', border: ACTION_EDGE }}
           >
             {refreshing
@@ -213,7 +213,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('archive')}
               disabled={isTransitioning}
               data-computer-power
-              className={cn('pf-sbx-action flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
+              className={cn('flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
               style={{ ...ACTION_TYPE, color: 'var(--color-text-tertiary)', border: ACTION_EDGE }}
             >
               <Archive className="h-3 w-3" />
@@ -225,8 +225,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('stop')}
               disabled={isTransitioning}
               data-computer-power
-              className={cn('pf-sbx-action flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
-              data-tone="danger"
+              className={cn('flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
               style={{ ...ACTION_TYPE, color: 'var(--color-loss)', border: '1px solid var(--color-border-loss)' }}
             >
               <Square className="h-3 w-3" />
@@ -237,8 +236,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('start')}
               disabled={isTransitioning}
               data-computer-power
-              className={cn('pf-sbx-action flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
-              data-tone="go"
+              className={cn('flex items-center gap-1.5 px-3 py-1.5', ACTION_CLASS, 'disabled:opacity-50')}
               style={{ ...ACTION_TYPE, color: 'var(--color-profit)', border: '1px solid var(--color-profit-border)' }}
             >
               <Play className="h-3 w-3" />

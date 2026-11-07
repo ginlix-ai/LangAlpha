@@ -8,9 +8,8 @@
 
    A component reads a style variable with its own value as the fallback,
    `var(--cs-text-label, 0.75rem)`, and a style declares a variable only where
-   it changes that role. So Quiet declares nothing (but the composer, which
-   every style states) and draws each component as the component itself
-   says. Two facts make this work:
+   it changes that role. So Quiet declares nothing and draws each component
+   as the component itself says. Two facts make this work:
    - An undeclared custom property makes var() take its fallback.
    - A custom property that references an undeclared one is itself invalid,
      so a reader's fallback further down still applies.
@@ -123,27 +122,15 @@
   --cs-composer-row-pad: 14px;
 }
 
-/* Quiet declares the composer alone: the one surface whose values every
-   style states for itself, so a later change to one style's composer is an
-   edit here rather than to the components. One corner for the whole stack,
-   and an 8px send button set 8px in from the right and bottom edges, so it
-   is concentric (16 - 8). The button drops to the foot of its row, 9px up
-   however tall the row's tallest control is, and `translate` takes it the
-   rest of the way, 5px right and 1px down. Both move the button alone, where
-   padding would move the text and the other controls too. */
-:root[data-card-style='quiet'] {
-  --cs-composer-radius: 16px;
-  --cs-composer-send-radius: 8px;
-  --cs-composer-send-align: end;
-  --cs-composer-send-shift: 5px 1px;
-  --cs-composer-stack-radius: 16px;
-}
-
 /* Both open styles: a workspace card's corner, and the selected row of a
-   list (the sidebar, a rail) said by full ink rather than a wash. */
+   list (the sidebar, a rail) said by full ink rather than a wash. The send
+   button stays centred in its row, where the composer's own is set into its
+   corner (chat-input.composerParts). */
 :root:not([data-card-style='quiet']) {
   --cs-radius-card: 8px;
   --cs-weight-selected: 700;
+  --cs-composer-send-align: auto;
+  --cs-composer-send-shift: none;
 }
 
 /* ════════════════════════════════════════════════════════════════════

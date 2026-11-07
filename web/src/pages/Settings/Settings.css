@@ -336,12 +336,13 @@ label.settings-row-label { cursor: pointer; }
 }
 
 /* The theme's style choices stand as tiles: the preview across the top, the
-   name and its line under it, the check in the corner. A row's layout would
+   name and its line under it, the check 7px inside the preview's corner
+   (the card's own padding, py-3.5 and px-4, plus 7). A row's layout would
    squeeze the line into a column beside the preview at a third of the card. */
-.settings-style-tiles > label { flex-direction: column; gap: 8px; }
-.settings-style-tiles > label > span[aria-hidden]:first-of-type { align-self: stretch; justify-content: center; padding: 6px 0; }
-.settings-style-tiles > label > span[aria-hidden]:first-of-type svg { width: 84px; height: 60px; }
-.settings-style-tiles > label > span[aria-hidden]:last-child { position: absolute; top: 21px; right: 23px; margin: 0; }
+.settings-style-tiles > [data-slot='option-card'] { flex-direction: column; gap: 8px; }
+.settings-style-tiles [data-slot='option-media'] { align-self: stretch; justify-content: center; padding: 6px 0; }
+.settings-style-tiles [data-slot='option-media'] svg { width: 84px; height: 60px; }
+.settings-style-tiles [data-slot='option-check'] { position: absolute; top: calc(0.875rem + 7px); right: calc(1rem + 7px); margin: 0; }
 
 /* The setting the search opened on, marked until the eye has found it. */
 .settings-row[data-found],

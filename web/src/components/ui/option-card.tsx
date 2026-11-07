@@ -142,6 +142,7 @@ export function OptionCard<V extends string>({
         // A well, as a quote list sets its charts in.
         <span
           aria-hidden="true"
+          data-slot="option-media"
           className="flex shrink-0 rounded-md bg-(--color-bg-page) shadow-[inset_0_0_0_1px_var(--color-border-muted)] transition-colors"
           style={{ color: checked ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
         >
@@ -180,7 +181,7 @@ function CheckMark({ checked }: { checked: boolean }) {
   return (
     <span
       aria-hidden="true"
-      data-slot="radio"
+      data-slot="option-check"
       className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors"
       style={
         checked
