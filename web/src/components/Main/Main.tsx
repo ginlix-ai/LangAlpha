@@ -3,7 +3,6 @@ import { Routes, Route, Navigate, useLocation } from 'react-router';
 import PageLoading from '@/components/PageLoading/PageLoading';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useSyncUserLocale } from '@/hooks/useSyncUserLocale';
-import { useSyncAppearance } from '@/hooks/useSyncAppearance';
 import { ContextOverflowPill } from '@/components/ui/ContextOverflowPill';
 import NetworkBanner from '@/components/NetworkBanner/NetworkBanner';
 import { StaleBuildBoundary } from '@/components/StaleBuildBoundary';
@@ -116,7 +115,6 @@ function Main() {
   const location = useLocation();
   const isMobile = useIsMobile();
   useSyncUserLocale();
-  useSyncAppearance();
   useWarmSections();
   // Key by top-level path segment so /chat sub-routes share a key (no re-animation)
   const pageKey = location.pathname.split('/')[1] || 'dashboard';

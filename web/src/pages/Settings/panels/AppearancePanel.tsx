@@ -1,14 +1,14 @@
 import { useId, useState } from 'react';
 import { Sun, Moon, Monitor } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useTheme, type ThemePreference } from '@/contexts/ThemeContext';
+import type { ThemePreference } from '@/contexts/ThemeContext';
+import { useAppearance } from '@/hooks/useAppearance';
 import { FONT_SCALES, getFontScale, setFontScale, type FontScale } from '@/lib/fontScale';
-import { CARD_STYLES, setCardStyle, useCardStyle, type CardStyle } from '@/lib/cardStyle';
-import { cardStylePatch, themePatch } from '@/lib/appearancePreference';
+import { CARD_STYLES, type CardStyle } from '@/lib/cardStyle';
 import { OptionCard, OptionGroup } from '@/components/ui/option-card';
 import { SegmentedRow, SettingsCardBody, SettingsGroup } from '../components/SettingsLayout';
 import { useSettingCopy } from '../components/useSettingCopy';
-import { usePreferenceWrite } from './usePreferenceWrite';
+import { useSaveFailureToast } from './usePreferenceWrite';
 import { SETTINGS } from '../sections';
 
 /** A card as each style draws it, small enough for a choice: Quiet fills it,
@@ -51,23 +51,11 @@ const STYLE_COPY: Record<CardStyle, { title: string; desc: string }> = {
 export function AppearancePanel() {
   const { t } = useTranslation();
   const copy = useSettingCopy();
-  const write = usePreferenceWrite();
-  const { preference, setTheme } = useTheme();
-  const cardStyle = useCardStyle();
+  const reportFailure = useSaveFailureToast();
+  const { cardStyle, theme, pickStyle, pickTheme } = useAppearance();
   const [fontScale, setFontScaleState] = useState(getFontScale);
   const styleLabelId = useId();
   const styleCopy = copy(SETTINGS.cardStyle);
-
-  const pickStyle = (style: CardStyle) => {
-    if (style === cardStyle) return;
-    setCardStyle(style);
-    void write(cardStylePatch(style));
-  };
-  const pickMode = (mode: ThemePreference) => {
-    if (mode === preference) return;
-    setTheme(mode);
-    void write(themePatch(mode));
-  };
 
   return (
     <>
@@ -75,7 +63,7 @@ export function AppearancePanel() {
         <SettingsCardBody id={styleCopy.id}>
           <span id={styleLabelId} className="settings-row-label">{styleCopy.label}</span>
           <p className="settings-row-desc">{styleCopy.description}</p>
-          <OptionGroup value={cardStyle} onChange={pickStyle} labelledBy={styleLabelId} className="settings-style-tiles mt-3 sm:grid-cols-3">
+          <OptionGroup value={cardStyle} onChange={(style: CardStyle) => void reportFailure(pickStyle(style))} labelledBy={styleLabelId} className="settings-style-tiles mt-3 sm:grid-cols-3">
             {CARD_STYLES.map((style) => (
               <OptionCard
                 key={style}
@@ -89,8 +77,8 @@ export function AppearancePanel() {
         </SettingsCardBody>
         <SegmentedRow
           {...copy(SETTINGS.theme)}
-          value={preference}
-          onChange={pickMode}
+          value={theme}
+          onChange={(mode: ThemePreference) => void reportFailure(pickTheme(mode))}
           options={[
             { value: 'dark', label: <><Moon className="h-3.5 w-3.5" />{t('settings.dark')}</> },
             { value: 'light', label: <><Sun className="h-3.5 w-3.5" />{t('settings.light')}</> },
