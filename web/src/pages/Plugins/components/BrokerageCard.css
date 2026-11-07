@@ -147,26 +147,22 @@
   gap: 5px;
   height: 24px;
   padding: 0 9px;
-  border-radius: 6px;
+  border-radius: var(--cs-radius-pill, 6px);
+  border: var(--cs-pill-border, 0);
   background: var(--color-shell-fill, var(--color-bg-elevated));
   /* A capability is a phrase, not a status word: it keeps its case. */
   font-size: var(--cs-text-control, 0.75rem);
   white-space: nowrap;
   color: var(--color-text-secondary);
 }
-/* A bracketed phrase with no box (Terminal), an outlined pill (Balanced). The
-   face is Terminal's alone: the card is drawn outside the app's shell too
-   (the welcome flow), where the other styles keep the page's face. */
-.broker-cap::before { content: var(--term-open); margin-right: 0.5ch; color: var(--color-term-text-tertiary); }
-.broker-cap::after { content: var(--term-close); margin-left: 0.5ch; color: var(--color-term-text-tertiary); }
+/* A bracketed phrase with no box (Terminal, data-bracket="tag"), an outlined
+   pill (Balanced). The face is Terminal's alone: the card is drawn outside the
+   app's shell too (the welcome flow), where the other styles keep the page's
+   face. */
 :root:not([data-card-style]) .broker-cap {
   padding-inline: 0;
   border-radius: 0;
   font-family: var(--cs-face);
-}
-:root[data-card-style='balanced'] .broker-cap {
-  border: 1px solid var(--term-mark);
-  border-radius: var(--cs-radius-pill);
 }
 .broker-cap-glyph { width: 12px; height: 12px; flex-shrink: 0; }
 .broker-cap.is-money { color: var(--color-text-primary); }

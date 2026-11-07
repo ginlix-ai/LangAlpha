@@ -57,19 +57,6 @@
   color: var(--color-text-primary);
   margin: 0;
 }
-/* A bracketed name in Terminal. */
-.cwm-title::before {
-  content: var(--term-open);
-  margin-right: 0.5ch;
-  font-weight: 400;
-  color: var(--color-term-text-tertiary);
-}
-.cwm-title::after {
-  content: var(--term-close);
-  margin-left: 0.5ch;
-  font-weight: 400;
-  color: var(--color-term-text-tertiary);
-}
 
 .cwm-close-btn {
   padding: 4px;

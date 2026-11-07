@@ -1,6 +1,6 @@
 "use client"
 
-import type { CSSProperties, Ref } from "react"
+import type { Ref } from "react"
 import { Search } from "lucide-react"
 import {
   Autocomplete,
@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils"
 interface SearchFieldProps extends AriaSearchFieldProps {
   placeholder?: string
   inputRef?: Ref<HTMLInputElement>
+  /** False where the row it sits in draws the rule across the whole row. */
+  ruled?: boolean
 }
 
 /**
@@ -25,20 +27,16 @@ interface SearchFieldProps extends AriaSearchFieldProps {
  * It filters a list rather than taking free text, so it turns off what an
  * `Autocomplete` turns off on its input, for a list filtered without one.
  *
- * The rule is the card styles' divider (styles/cardStyle.css): dashed in the
- * edge's ink in Terminal, the hairline in Balanced.
+ * The rule is the card styles' divider (`rule-b`, styles/cardStyle.css):
+ * dashed in the edge's ink in Terminal, the hairline in Balanced.
  */
-function SearchField({ className, placeholder, inputRef, ...props }: SearchFieldProps) {
+function SearchField({ className, placeholder, inputRef, ruled = true, ...props }: SearchFieldProps) {
   return (
     <AriaSearchField
       data-slot="search"
       className={composeRenderProps(className, (className) =>
-        cn(
-          "flex shrink-0 items-center gap-2 border-b border-[var(--color-shell-divider,var(--color-border-muted))] px-3",
-          className
-        )
+        cn("flex shrink-0 items-center gap-2 px-3", ruled && "rule-b", className)
       )}
-      style={{ borderBottomStyle: "var(--cs-rule-style, solid)" as CSSProperties["borderBottomStyle"] }}
       {...props}
     >
       <Search

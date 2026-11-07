@@ -194,7 +194,7 @@ export function WorkspaceCard({
               <Pin className="mt-1 h-3.5 w-3.5 shrink-0 rotate-45" style={{ color: 'var(--color-text-tertiary)' }} />
             )}
             {/* One line at every width, so every card is the same height. */}
-            <div className="pf-card-title font-medium flex-1 min-w-0 line-clamp-1 break-words" style={{ color: 'var(--color-text-primary)' }} title={text.name}>
+            <div data-bracket="title" className="pf-card-title font-medium flex-1 min-w-0 line-clamp-1 break-words" style={{ color: 'var(--color-text-primary)' }} title={text.name}>
               {text.name}
             </div>
             {when && (

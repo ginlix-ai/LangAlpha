@@ -78,7 +78,5 @@
   border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
 :root:not([data-card-style='quiet']) .pf-sources-count { font-family: var(--font-mono); }
-.pf-sources-count::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
-.pf-sources-count::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
 :root:not([data-card-style]) .pf-sources-count { padding-inline: 0; }
-:root[data-card-style='balanced'] .pf-sources-count { border: 1px solid var(--term-mark); }
+.pf-sources-count { border: var(--cs-pill-border, 0); }

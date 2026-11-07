@@ -47,7 +47,7 @@ export default function PdfRail({
   return (
     <div className="pdf-rail">
       {hasOutline && (
-        <div className="pdf-rail-tabs">
+        <div className="pdf-rail-tabs rule-b">
           <SegmentedControl
             size="compact"
             label={t('pdfViewer.sidebar')}

@@ -39,7 +39,7 @@ export function PreviewCrumbs({ entry, onRefresh, workspaceId = null, readOnly =
   };
 
   return (
-    <div className="file-panel-crumbs">
+    <div className="file-panel-crumbs rule-b">
       <LayoutDashboard className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-icon-muted)' }} />
       <span className="file-panel-crumb is-file">{name}</span>
       <span className="file-panel-port-chip">:{entry.port}</span>
@@ -47,7 +47,7 @@ export function PreviewCrumbs({ entry, onRefresh, workspaceId = null, readOnly =
       {/* The path gives way before the buttons do: it shrinks to an
           ellipsis, and they keep their size at any length of it. */}
       {entry.path && (
-        <span className="file-panel-crumb-meta file-panel-crumb-path font-mono" title={entry.path}>
+        <span className="file-panel-crumb-meta control-voice file-panel-crumb-path font-mono" title={entry.path}>
           {entry.path}
         </span>
       )}

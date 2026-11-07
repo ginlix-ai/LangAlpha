@@ -76,14 +76,11 @@
 
 /* ── Shared voices ──────────────────────────────────── */
 
-/* The one label voice (styles/cardStyle.css) every section heading on the
-   page speaks in. */
+/* The one label voice (label-voice, styles/cardStyle.css) every section
+   heading on the page speaks in, at the label's size. */
 .automations-kicker {
-  font-family: var(--term-words);
   font-size: var(--cs-text-label, 0.75rem);
   font-weight: 500;
-  letter-spacing: calc(0.08em * var(--term-track));
-  text-transform: var(--term-case);
   color: var(--color-text-tertiary);
 }
 

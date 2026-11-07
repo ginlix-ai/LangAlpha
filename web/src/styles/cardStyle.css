@@ -65,8 +65,10 @@
   --cs-text-row: 0.78125rem;
   --cs-text-label: 0.6875rem;
   --cs-weight-control: 600;
-  /* Kickers and group labels, heavier in mono. */
+  /* Kickers and group labels, heavier in mono, and the picked one of a row
+     of words (a filter, a tab, an interval) said by weight. */
   --cs-weight-label: 600;
+  --cs-weight-picked: 700;
   /* Corners by what the element is: a mark inside a control, a control
      Balanced leaves square, a button, a text field, a card-sized choice. */
   --cs-radius-mark: 2px;
@@ -100,6 +102,9 @@
      is; a field stays a box, so it does not read as a button. */
   --cs-radius-control: 999px;
   --cs-radius-pill: 999px;
+  /* A pill's outline, drawn from the muted ink (--term-mark): a tag, a
+     filter, a count. */
+  --cs-pill-border: 1px solid var(--term-mark);
   --cs-radius-field: 8px;
   --cs-radius-choice: 12px;
   --cs-radius-float: 10px;
@@ -141,12 +146,62 @@
   letter-spacing: calc(0.08em * var(--term-track));
 }
 
+/* A label at the label's size and weight, for one that sets nothing of its
+   own: a group head, a section label over a list. The line is text-xs's. */
+@utility label-text {
+  font-family: var(--term-words);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+  font-size: var(--cs-text-label, 0.75rem);
+  line-height: 1rem;
+  font-weight: var(--cs-weight-label, 500);
+}
+
 /* A control's words in the voice, for a control the button hooks do not
    draw (a text button, a toned action): its case and tracking, not its face. */
 @utility control-voice {
   text-transform: var(--term-case);
   letter-spacing: calc(0.06em * var(--term-track));
 }
+
+/* A card's divider, above or below: Terminal's dashed, the open styles' ink.
+   A caller whose ink differs (an edge rather than a divider, another Quiet
+   ink) sets --rule-ink, which stops at that element: a rule inside it (a
+   dialog opened from a header) keeps its own ink. */
+@property --rule-ink {
+  syntax: '*';
+  inherits: false;
+}
+@utility rule-t {
+  border-top: 1px var(--cs-rule-style, solid) var(--rule-ink, var(--color-shell-divider, var(--color-border-muted)));
+}
+@utility rule-b {
+  border-bottom: 1px var(--cs-rule-style, solid) var(--rule-ink, var(--color-shell-divider, var(--color-border-muted)));
+}
+
+/* An open box: the open styles' edge around no fill, Quiet's card. */
+@utility shell-box {
+  border-radius: var(--cs-radius-box, 0.5rem);
+  background-color: var(--color-shell-fill, var(--color-bg-card));
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+}
+
+/* Terminal's brackets around a word (data-bracket on the element), by what
+   the word is: a chip or a count, close and faint; a word, faint; a tag, in
+   the muted ink; a title, in the muted ink and light beside a heavy name.
+   The brackets are `none` in Balanced and Quiet, so the rules need no style
+   scope; an element whose ::after is also its touch target (.tap-target,
+   base.css) draws its own instead, since this would take that box away. */
+[data-bracket]::before { content: var(--term-open); margin-right: 0.5ch; }
+[data-bracket]::after { content: var(--term-close); margin-left: 0.5ch; }
+[data-bracket='chip']::before { margin-right: 0.4ch; }
+[data-bracket='chip']::after { margin-left: 0.4ch; }
+:is([data-bracket='chip'], [data-bracket='word'])::before,
+:is([data-bracket='chip'], [data-bracket='word'])::after { opacity: 0.6; }
+:is([data-bracket='tag'], [data-bracket='title'])::before,
+:is([data-bracket='tag'], [data-bracket='title'])::after { color: var(--color-term-text-tertiary); }
+[data-bracket='title']::before,
+[data-bracket='title']::after { font-weight: 400; }
 
 /* The shell's face on the app's roots, the setup wizard (drawn outside the
    app) and the portals they open. Scoped rather than read unconditionally:
@@ -186,9 +241,12 @@
   border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
 
-/* The open row of a rail (the sidebar's thread, a page's section) prompts
-   its name. The name carries the class while its row is open. */
-:root:not([data-card-style]) .rail-prompt::before {
+/* A prompt: the open row of a rail (the sidebar's thread, a page's section)
+   before its name, which carries the class while its row is open, and the
+   reader's message before its first line (the welcome chat's bubble carries
+   the class; the chat's is the Markdown inside UserBubble.tsx). */
+:root:not([data-card-style]) .rail-prompt::before,
+:root:not([data-card-style]) .pf-bubble .font-content > p:first-child::before {
   content: '> ';
   color: var(--color-term-text-tertiary);
 }
@@ -346,10 +404,10 @@
 :root:not([data-card-style]) [data-slot='segmented'] > button::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
 :root:not([data-card-style]) [data-slot='segmented'] > button:is([aria-pressed='true'], [data-selected]) {
   color: var(--color-shell-ink, var(--color-text-primary));
-  font-weight: 700;
+  font-weight: var(--cs-weight-picked);
 }
 :root[data-card-style='balanced'] [data-slot='segmented'] > button {
-  border: 1px solid var(--term-mark);
+  border: var(--cs-pill-border);
   border-radius: var(--cs-radius-pill);
   color: var(--color-text-secondary);
 }
@@ -371,11 +429,11 @@
 :root:not([data-card-style]) [data-slot='tab']::after { content: var(--term-close); margin-left: 0.5ch; opacity: 0; }
 :root:not([data-card-style]) [data-slot='tab'][data-active]::before,
 :root:not([data-card-style]) [data-slot='tab'][data-active]::after { opacity: 0.6; }
-:root:not([data-card-style]) [data-slot='tab'][data-active] { font-weight: 700; }
+:root:not([data-card-style]) [data-slot='tab'][data-active] { font-weight: var(--cs-weight-picked); }
 :root:not([data-card-style]) [data-slot='tab-indicator'] { display: none; }
 
-/* Badges and chips: bracketed words with no box (Terminal); pills as the
-   components draw them in the other two. */
+/* Badges and chips: bracketed words with no box (Terminal; a badge brackets
+   itself, data-bracket); pills as the components draw them in the other two. */
 :root:not([data-card-style]) [data-slot='badge'] {
   border: 0;
   background: var(--color-shell-fill, transparent);
@@ -385,8 +443,6 @@
   text-transform: var(--term-case);
   letter-spacing: calc(0.06em * var(--term-track));
 }
-:root:not([data-card-style]) [data-slot='badge']::before { content: var(--term-open); margin-right: 0.5ch; opacity: 0.6; }
-:root:not([data-card-style]) [data-slot='badge']::after { content: var(--term-close); margin-left: 0.5ch; opacity: 0.6; }
 :root:not([data-card-style]) [data-slot='chip-group'] > label {
   border-radius: var(--cs-radius-small);
   font-family: var(--cs-face);
@@ -483,7 +539,7 @@
   box-shadow: var(--cs-frame-shadow);
 }
 /* A header that is only a title takes Terminal's dashed rule too; one with
-   a rule of its own reads it inline (ModalShell). */
+   a rule of its own draws it with `rule-b` (ModalShell). */
 :root:not([data-card-style]) [data-slot='dialog-header'] {
   border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-muted));
 }
@@ -496,20 +552,6 @@
 }
 :root:not([data-card-style]) [data-slot='dialog-desc'] {
   font-size: var(--cs-text-label);
-}
-
-/* A dialog's title as a bracketed name (Terminal). */
-:root:not([data-card-style]) [data-slot='dialog-title']::before {
-  content: var(--term-open);
-  margin-right: 0.5ch;
-  font-weight: 400;
-  color: var(--color-term-text-tertiary);
-}
-:root:not([data-card-style]) [data-slot='dialog-title']::after {
-  content: var(--term-close);
-  margin-left: 0.5ch;
-  font-weight: 400;
-  color: var(--color-term-text-tertiary);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -554,7 +596,8 @@
    gives the first row room. */
 :root:not([data-card-style='quiet']) [data-testid='workspace-grid'] { padding-top: 0.875rem; }
 
-/* line-clamp sets the title as a box; the brackets need it inline. */
+/* line-clamp sets the title as a box; its brackets (data-bracket) need it
+   inline. */
 :root:not([data-card-style]) .pf-card .pf-card-title {
   display: block;
   white-space: nowrap;
@@ -564,8 +607,6 @@
   font-weight: 700;
   letter-spacing: calc(0.02em * var(--term-track));
 }
-:root:not([data-card-style]) .pf-card .pf-card-title::before { content: var(--term-open); margin-right: 0.5ch; font-weight: 400; color: var(--color-term-text-tertiary); }
-:root:not([data-card-style]) .pf-card .pf-card-title::after { content: var(--term-close); margin-left: 0.5ch; font-weight: 400; color: var(--color-term-text-tertiary); }
 :root:not([data-card-style]) .pf-card .pf-card-meta {
   font-size: var(--cs-text-label);
   text-transform: var(--term-case);
@@ -581,19 +622,16 @@
 }
 
 /* The reader's message (UserBubble.tsx): an open box, its first line a
-   prompt in Terminal. The bubble reads its own fill; the edge stays a rule,
-   since a border would take a pixel of room in Quiet's borderless bubble.
-   Its text is the shared Markdown root, so its face is set from the bubble. */
+   prompt in Terminal (with .rail-prompt above). The bubble reads its own
+   fill; the edge stays a rule, since a border would take a pixel of room in
+   Quiet's borderless bubble. Its text is the shared Markdown root, so its
+   face is set from the bubble. */
 :root:not([data-card-style='quiet']) .pf-bubble {
   border: 1px solid var(--color-shell-edge, transparent);
 }
 :root:not([data-card-style]) .pf-bubble .font-content {
   font-family: var(--cs-face);
   font-size: var(--cs-text-field);
-}
-:root:not([data-card-style]) .pf-bubble .font-content > p:first-child::before {
-  content: '> ';
-  color: var(--color-term-text-tertiary);
 }
 
 /* The port and an app's version, a tag beside its name, Balanced's taking a

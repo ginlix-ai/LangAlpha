@@ -20,13 +20,8 @@
 /* The Settings shape: one hairline stack, a setting's name on the left in
    the column the starting points draw their cadence in, its field on the
    right. No card around it, so the form reads as the page it opened on. */
-/* Its rows parted by a card's divider: dashed in Terminal, a hairline in
-   Balanced. */
-.automation-form-rows {
-  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
-  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
-}
-
+/* Its rows parted by a card's divider (rule-t, rule-b on the stack): dashed
+   in Terminal, a hairline in Balanced. */
 .automation-form-rows > * + * {
   border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }

@@ -354,7 +354,7 @@ export function ServerDetail({
               // connected, and the reason sits under the switch, where a held
               // switch is the first thing tried.
               <span className="flex flex-col items-end gap-1.5">
-                <span className={held ? 'connector-onoff is-blocked' : 'connector-onoff'}>
+                <span className={held ? 'connector-onoff control-voice is-blocked' : 'connector-onoff control-voice'}>
                   {enabled ? t('plugins.surface.on') : t('plugins.surface.off')}
                   <EnabledToggle
                     enabled={enabled}

@@ -226,7 +226,7 @@ export function UserTurn({
         </button>
       )}
       <UserBubble isMobile={isMobile} className="max-w-[80%]">
-        <p className="whitespace-pre-wrap text-base leading-normal">
+        <p className="rail-prompt whitespace-pre-wrap text-base leading-normal">
           <span>{children}</span>
         </p>
       </UserBubble>

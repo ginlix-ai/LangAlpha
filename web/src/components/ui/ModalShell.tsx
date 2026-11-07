@@ -59,10 +59,6 @@ const DENSITY = {
 
 const NOOP = () => {};
 
-/** The rule under a header and over a footer: the card styles' divider,
- *  dashed in the edge's ink in Terminal, the hairline in Balanced. */
-const DIVIDER = '1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted))';
-
 /**
  * Page scroll is held while any shell is mounted, and a nested pair releases
  * once. The capture is module-level and happens on the outermost lock only: a
@@ -277,14 +273,14 @@ export function ModalShell({
             </button>
           )}
           {header ? (
-            <div data-slot="dialog-header" className={cn('shrink-0 pt-5 pb-4', space.x)} style={{ borderBottom: DIVIDER }}>
+            <div data-slot="dialog-header" className={cn('rule-b shrink-0 pt-5 pb-4', space.x)}>
               {header}
             </div>
           ) : (
             // The close button's room is set after the density's padding,
             // which would otherwise win over it and run a long title under it.
             <div data-slot="dialog-header" className={cn('shrink-0 pt-5 pb-3', space.x, 'pr-12')}>
-              <h3 id={labelId} data-slot="dialog-title" className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+              <h3 id={labelId} data-slot="dialog-title" data-bracket="title" className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
                 {title}
               </h3>
               {subtitle && (
@@ -304,8 +300,7 @@ export function ModalShell({
           {footer && (
             <div
               data-slot="dialog-footer"
-              className={cn('shrink-0', space.x, space.footer)}
-              style={{ borderTop: DIVIDER }}
+              className={cn('rule-t shrink-0', space.x, space.footer)}
             >
               {footer}
             </div>

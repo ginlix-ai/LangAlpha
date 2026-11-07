@@ -84,7 +84,7 @@ export function ManageSheet({
       ) : option && editingKey ? (
         <KeySheet option={option} configured={configured} onSaved={() => setEditingKey(false)} onCancel={() => setEditingKey(false)} />
       ) : (
-        <div className="flex items-center justify-between gap-3 rounded-[var(--cs-radius-box,0.5rem)] p-4" style={{ background: 'var(--color-shell-fill, var(--color-bg-card))', border: '1px solid var(--color-shell-edge, var(--color-border-muted))' }}>
+        <div className="shell-box flex items-center justify-between gap-3 p-4">
           <div className="flex min-w-0 flex-col gap-0.5">
             <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
               {local ? t('setup.baseUrlLabel') : t('modelAccess.apiKey.savedKey')}

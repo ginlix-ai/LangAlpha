@@ -1962,7 +1962,7 @@ const MarketChart = React.memo(function MarketChart({
   const renderIndicatorsContent = () => (
     <>
       <div className="dropdown-section">
-        <span className="indicator-toggles-label">MA</span>
+        <span className="indicator-toggles-label label-voice">MA</span>
         <div className="indicator-toggles">
           {MA_CONFIGS.map(({ period, color }) => (
             <button
@@ -1978,7 +1978,7 @@ const MarketChart = React.memo(function MarketChart({
         </div>
       </div>
       <div className="dropdown-section">
-        <span className="indicator-toggles-label">RSI</span>
+        <span className="indicator-toggles-label label-voice">RSI</span>
         <div className="indicator-toggles">
           {RSI_PERIODS.map((p) => (
             <button
@@ -1994,7 +1994,7 @@ const MarketChart = React.memo(function MarketChart({
         </div>
       </div>
       <div className="dropdown-section">
-        <span className="indicator-toggles-label">{t('marketView.chart.overlay')}</span>
+        <span className="indicator-toggles-label label-voice">{t('marketView.chart.overlay')}</span>
         <div className="indicator-toggles">
           {Object.entries(OVERLAY_LABELS).map(([key, label]) => (
             <button
@@ -2080,14 +2080,16 @@ const MarketChart = React.memo(function MarketChart({
     <div className="interval-selector">
       <button
         type="button"
-        className={`interval-btn${!isTV ? ' interval-btn-active' : ''}`}
+        data-bracket="chip"
+        className={`interval-btn control-voice${!isTV ? ' interval-btn-active' : ''}`}
         onClick={() => { setChartMode('custom'); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
       >
         {t('marketView.chart.light')}
       </button>
       <button
         type="button"
-        className={`interval-btn${isTV ? ' interval-btn-active' : ''}`}
+        data-bracket="chip"
+        className={`interval-btn control-voice${isTV ? ' interval-btn-active' : ''}`}
         onClick={() => { setChartMode('tradingview'); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
       >
         {t('marketView.chart.advanced')}
@@ -2127,7 +2129,7 @@ const MarketChart = React.memo(function MarketChart({
       ref={rootRef}
     >
       {/* ---- Toolbar: intervals, indicator dropdown, values, tools dropdown, mode switcher ---- */}
-      <div className="chart-tools">
+      <div className="chart-tools rule-b">
         {/* The lead is a sibling of the two groups, not inside the left one,
             so the row wraps on the groups' own widths and the lead takes
             whatever is left, down to nothing; see `.chart-toolbar-lead`. */}
@@ -2140,7 +2142,8 @@ const MarketChart = React.memo(function MarketChart({
               <div key={key} style={{ position: 'relative', display: 'inline-flex' }}>
                 <button
                   type="button"
-                  className={`interval-btn${interval === key ? ' interval-btn-active' : ''}${isDisabled ? ' interval-btn-disabled' : ''}`}
+                  data-bracket="chip"
+                  className={`interval-btn control-voice${interval === key ? ' interval-btn-active' : ''}${isDisabled ? ' interval-btn-disabled' : ''}`}
                   onClick={() => pickInterval(key)}
                 >
                   {label}
@@ -2156,7 +2159,8 @@ const MarketChart = React.memo(function MarketChart({
             <div className="toolbar-dropdown" ref={intervalsDropdownRef} style={{ display: 'inline-flex' }}>
               <button
                 type="button"
-                className={`interval-btn${(intervalsCollapsed || !PRIMARY_INTERVAL_KEYS.has(interval) || intervalsOpen) ? ' interval-btn-active' : ''}`}
+                data-bracket="chip"
+                className={`interval-btn control-voice${(intervalsCollapsed || !PRIMARY_INTERVAL_KEYS.has(interval) || intervalsOpen) ? ' interval-btn-active' : ''}`}
                 onClick={() => { setIntervalsOpen((v) => !v); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
               >
                 {intervalsCollapsed || !PRIMARY_INTERVAL_KEYS.has(interval)
@@ -2287,7 +2291,7 @@ const MarketChart = React.memo(function MarketChart({
                       {toolbarLevel >= 4 && showModeSwitch && (
                         <>
                           {/* Mode section */}
-                          <div className="compact-menu-section-label">{t('marketView.chart.modeLabel')}</div>
+                          <div className="compact-menu-section-label label-voice">{t('marketView.chart.modeLabel')}</div>
                           {renderModeButtons()}
                           <div className="compact-menu-divider" />
                         </>
@@ -2295,11 +2299,11 @@ const MarketChart = React.memo(function MarketChart({
                       {toolbarLevel >= 3 && (
                         <>
                           {/* Indicators section */}
-                          <div className="compact-menu-section-label">{t('marketView.chart.indicators')}</div>
+                          <div className="compact-menu-section-label label-voice">{t('marketView.chart.indicators')}</div>
                           {renderIndicatorsContent()}
                           {/* Tools section */}
                           <div className="compact-menu-divider" />
-                          <div className="compact-menu-section-label">{t('marketView.chart.tools')}</div>
+                          <div className="compact-menu-section-label label-voice">{t('marketView.chart.tools')}</div>
                           <div className="dropdown-tool-grid">
                             {renderToolsContent()}
                           </div>
@@ -2307,7 +2311,7 @@ const MarketChart = React.memo(function MarketChart({
                         </>
                       )}
                       {/* View section */}
-                      <div className="compact-menu-section-label">{t('marketView.chart.view')}</div>
+                      <div className="compact-menu-section-label label-voice">{t('marketView.chart.view')}</div>
                       <div className="dropdown-tool-grid compact-menu-view-grid">
                         {renderViewButtons()}
                       </div>
@@ -2334,7 +2338,7 @@ const MarketChart = React.memo(function MarketChart({
           {toolbarTrail && <div className="chart-toolbar-trail" ref={toolbarTrailRef}>{toolbarTrail}</div>}
         </div>
       </div>
-      {toolbarSubrow && <div className="chart-subrow">{toolbarSubrow}</div>}
+      {toolbarSubrow && <div className="chart-subrow rule-b">{toolbarSubrow}</div>}
 
       {/* ---- Charts area: shared flex container for both modes ---- */}
       <div style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -2431,7 +2435,7 @@ const MarketChart = React.memo(function MarketChart({
           )}
 
           {/* ---- Bottom bar: viewing-window presets + venue clock (TradingView-style) ---- */}
-          <div className="chart-bottom-bar">
+          <div className="chart-bottom-bar rule-t">
             <div className="chart-range-selector clips-focus-ring">
               {RANGE_PRESETS.map((preset) => (
                 <button

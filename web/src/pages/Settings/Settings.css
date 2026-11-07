@@ -166,13 +166,11 @@
   gap: 8px 16px;
   margin: 0 2px 8px;
 }
+/* In the voice (label-voice) at a group title's own size and weight. */
 .settings-group-title {
   margin: 0;
-  font-family: var(--term-words);
   font-size: var(--cs-text-label, 0.8125rem);
   font-weight: 600;
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.08em * var(--term-track));
   line-height: 18px;
   color: var(--color-shell-label, var(--color-text-primary));
 }

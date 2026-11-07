@@ -68,7 +68,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
     <aside className="automations-rail">
       {attention.length > 0 && (
         <section className="automations-rail-section">
-          <h2 className="automations-kicker">{t('automation.groupAttention')}</h2>
+          <h2 className="automations-kicker label-voice">{t('automation.groupAttention')}</h2>
           {attention.map((a) => (
             <AttentionRow
               key={a.automation_id}
@@ -82,7 +82,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
 
       {upNext.length > 0 && (
         <section className="automations-rail-section automations-rail-schedule">
-          <h2 className="automations-kicker">{t('automation.upNext')}</h2>
+          <h2 className="automations-kicker label-voice">{t('automation.upNext')}</h2>
           {upNext.map((a) => (
             <div key={a.automation_id} className="automations-rail-row">
               <span className="automation-mono automations-rail-when" title={relativeTime(a.next_run_at, locale, now)}>
@@ -98,7 +98,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
 
       {upNext.length === 0 && watching.length === 0 && (
         <section className="automations-rail-section">
-          <h2 className="automations-kicker">{t('automation.upNext')}</h2>
+          <h2 className="automations-kicker label-voice">{t('automation.upNext')}</h2>
           <p className="automations-quiet-note">{t('automation.nothingScheduled')}</p>
           <ul className="automations-rail-starters">
             {RECURRING_STARTERS.map((tpl) => (
@@ -117,7 +117,7 @@ export function FeedRail({ automations, readings, mutations, onOpenAutomation, o
 
       {watching.length > 0 && (
         <section className="automations-rail-section">
-          <h2 className="automations-kicker">{t('automation.groupWatching')}</h2>
+          <h2 className="automations-kicker label-voice">{t('automation.groupWatching')}</h2>
           {watching.map((a) => {
             const w = readings.get(a.automation_id);
             return (

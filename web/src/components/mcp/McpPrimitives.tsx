@@ -125,10 +125,14 @@ export function TagBadge({
   title,
   soft = false,
   tone = 'muted',
+  bracket,
   children,
 }: {
   title?: string;
   soft?: boolean;
+  /** Terminal's brackets around it (cardStyle.css `data-bracket`), for a host
+   *  that sets the badge as a bracketed word rather than a tag. */
+  bracket?: 'chip' | 'word' | 'tag' | 'title';
   /** `warning` borrows the pill's colour and not its fill, the same rule
    *  `RowNote` follows: a tinted background here would make this the pill it
    *  is deliberately not. For a badge naming something that moves real money. */
@@ -156,6 +160,7 @@ export function TagBadge({
             }),
       }}
       title={title}
+      data-bracket={bracket}
     >
       {children}
     </span>

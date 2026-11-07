@@ -141,7 +141,7 @@ export function TermStatus({
   tone?: TermTone;
   testid?: string;
 }): React.ReactElement {
-  return <span className="term-status" data-tone={tone} data-testid={testid}>{children}</span>;
+  return <span className="term-status control-voice" data-tone={tone} data-testid={testid}>{children}</span>;
 }
 
 /**
@@ -189,7 +189,7 @@ export function TermKV({
     <div className="term-kv" style={{ '--term-cols': cols } as React.CSSProperties}>
       {rows.map(([label, value], i) => (
         <div key={i}>
-          <span className="term-k">{label}</span>
+          <span className="term-k label-voice">{label}</span>
           <span className="term-kv-leader" aria-hidden="true" />
           <span className="term-v">{value}</span>
         </div>
@@ -222,7 +222,7 @@ export function TermRange({
 
 /** `── SECTOR PERFORMANCE · 1D ─────`: a second section in the same box. */
 export function TermDivider({ children }: { children: React.ReactNode }): React.ReactElement {
-  return <div className="term-divider">{children}</div>;
+  return <div className="term-divider control-voice">{children}</div>;
 }
 
 /** `+15 MORE` under a list that was cut. */

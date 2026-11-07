@@ -472,17 +472,7 @@
   border-color: var(--color-shell-edge, var(--color-border-default, rgba(20, 20, 23, 0.16)));
 }
 
-/* Terminal's is a bracketed word, with no pill around it. */
-.widget-deck-show-less::before {
-  content: var(--term-open);
-  margin-right: 0.5ch;
-  opacity: 0.6;
-}
-.widget-deck-show-less::after {
-  content: var(--term-close);
-  margin-left: 0.5ch;
-  opacity: 0.6;
-}
+/* Terminal's is a bracketed word (data-bracket), with no pill around it. */
 :root:not([data-card-style]) .widget-deck-show-less {
   border: 0;
   padding: 0;

@@ -360,8 +360,6 @@
 .dash-range {
   font-family: var(--term-words);
   font-size: 0.6875rem;
-  letter-spacing: calc(0.06em * var(--term-track));
-  text-transform: var(--term-case);
 }
 .dash-field {
   display: inline-flex;

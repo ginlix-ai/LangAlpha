@@ -100,6 +100,7 @@ export function PageIntroModal({
                 bracketed word without it (styles/cardStyle.css). */}
             <span
               data-slot="badge"
+              data-bracket="word"
               className="w-fit rounded-full bg-[color-mix(in_srgb,var(--color-accent-primary)_12%,transparent)] px-2.5 py-0.5 text-xs font-medium"
               style={{ color: 'var(--color-accent-primary)' }}
             >

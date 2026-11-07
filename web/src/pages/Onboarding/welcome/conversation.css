@@ -43,8 +43,9 @@
 
 /* Terminal: the agent's lines stay in the reply's face, as replies do
    everywhere; the controls answering them, and the reader's own answers, take
-   the shell's mono, the answers after a prompt. Scoped here rather than set in
-   the shared bubble and option card, which the chat draws otherwise. */
+   the shell's mono, the answers after a prompt (.rail-prompt). Scoped here
+   rather than set in the shared bubble and option card, which the chat draws
+   otherwise. */
 :root:not([data-card-style]) .welcome-chat :is([data-slot='option-card'], [data-slot='chip-group']) {
   font-family: var(--cs-face);
 }
@@ -54,8 +55,4 @@
 :root:not([data-card-style]) .welcome-chat .pf-bubble p {
   font-family: var(--cs-face);
   font-size: var(--cs-text-field);
-}
-:root:not([data-card-style]) .welcome-chat .pf-bubble p::before {
-  content: '> ';
-  color: var(--color-term-text-tertiary);
 }

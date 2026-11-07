@@ -224,10 +224,7 @@ function ModelList({
 
   return (
     <>
-      <div
-        className="flex flex-none items-center pr-2"
-        style={{ borderBottom: '1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted))' }}
-      >
+      <div className="rule-b flex flex-none items-center pr-2">
         {/* A grid takes no virtual focus from a search field, so the field
             hands over itself: Down moves into the list, and Enter picks the
             top row. Any other key goes on, so Escape still closes. */}
@@ -250,7 +247,8 @@ function ModelList({
             }
           }}
           autoFocus
-          className="min-w-0 flex-1 border-b-0"
+          ruled={false}
+          className="min-w-0 flex-1"
         />
         <Button
           aria-label={t('chat.modelSelector.manageModels')}

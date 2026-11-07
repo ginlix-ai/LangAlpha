@@ -39,7 +39,7 @@ export function TermPanelHead({
         <span className="term-bracket" aria-hidden="true">]</span>
       </span>
       {sub != null && sub !== '' && <span className="term-panel-sub">{sub}</span>}
-      {aside && <span className="term-panel-aside">{aside}</span>}
+      {aside && <span className="term-panel-aside control-voice">{aside}</span>}
     </header>
   );
 }
@@ -61,9 +61,9 @@ export function TermLink({
     </>
   );
   return href ? (
-    <a className="term-link" href={href} target="_blank" rel="noopener noreferrer">{body}</a>
+    <a className="term-link control-voice" href={href} target="_blank" rel="noopener noreferrer">{body}</a>
   ) : (
-    <button type="button" className="term-link" onClick={onClick}>{body}</button>
+    <button type="button" className="term-link control-voice" onClick={onClick}>{body}</button>
   );
 }
 
@@ -88,7 +88,7 @@ export function TermCopy({ text }: { text: string }): React.ReactElement {
   };
   const Mark = copied ? Check : Copy;
   return (
-    <button type="button" className="term-link" onClick={copy}>
+    <button type="button" className="term-link control-voice" onClick={copy}>
       <span>{copied ? t('common.copied') : t('common.copy')}</span>
       <Mark className="term-link-mark" aria-hidden="true" />
     </button>

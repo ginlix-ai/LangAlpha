@@ -452,14 +452,12 @@ export default function SourcesPanel({
                 ) : (
                   <ChevronDown className="h-3.5 w-3.5 shrink-0" style={TERTIARY} />
                 )}
-                <span
-                  className="label-voice text-xs"
-                  style={{ ...TERTIARY, fontSize: 'var(--cs-text-label, 0.75rem)', fontWeight: 'var(--cs-weight-label, 500)' }}
-                >
+                <span className="label-text" style={TERTIARY}>
                   {groupLabel}
                 </span>
                 <span
                   data-testid={`group-count-${group.type}`}
+                  data-bracket="chip"
                   className="pf-sources-count inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
                   style={{ backgroundColor: 'var(--color-shell-fill, var(--color-border-muted))', color: 'var(--color-text-tertiary)' }}
                 >

@@ -437,6 +437,7 @@ export function ChatInputWidgetDeck({
             {fanned && cardCount > 1 && (
               <button
                 type="button"
+                data-bracket="word"
                 className="widget-deck-show-less"
                 onClick={(e) => {
                   e.stopPropagation();

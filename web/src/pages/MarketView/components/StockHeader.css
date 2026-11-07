@@ -1,7 +1,7 @@
 .stock-header {
   padding: 12px 20px;
   background-color: var(--color-bg-card);
-  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-default));
+  --rule-ink: var(--color-shell-divider, var(--color-border-default));
   flex-shrink: 0;
 }
 
@@ -247,7 +247,7 @@
   grid-template-columns: repeat(5, 1fr);
   gap: 10px;
   padding-top: 10px;
-  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-default));
+  --rule-ink: var(--color-shell-divider, var(--color-border-default));
 }
 
 .metric-item {

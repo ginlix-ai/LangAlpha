@@ -15,17 +15,15 @@
   margin-top: 28px;
 }
 
-/* Days and runs are parted by a card's divider in the card styles. */
+/* Days and runs are parted by a card's divider (rule-b) in the card styles. */
 .automations-day-heading {
   padding-bottom: 8px;
-  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
 
 .automation-run {
   display: flex;
   gap: 16px;
   padding: 16px 0;
-  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
 
 .automation-run-time {

@@ -386,8 +386,6 @@
     gap: 0.5rem;
     min-height: 34px;
     padding: 0.125rem 0.5rem 0.125rem 0.75rem;
-    /* A divider inside the panel, as the cards draw theirs. */
-    border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
     flex-shrink: 0;
     /* What sits in it can fold to the panel's width (CommentTools.css). */
     container: file-crumbs / inline-size;
@@ -458,8 +456,6 @@
   .file-panel-crumb-meta {
     flex-shrink: 0;
     font-size: 0.6875rem;
-    text-transform: var(--term-case);
-    letter-spacing: calc(0.06em * var(--term-track));
     color: var(--color-text-tertiary);
     white-space: nowrap;
   }

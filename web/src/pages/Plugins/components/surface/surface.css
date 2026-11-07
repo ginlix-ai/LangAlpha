@@ -15,14 +15,11 @@
   /* A card's divider: dashed in Terminal, a hairline in Balanced. */
   border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-subtle));
 }
-/* The section's label, in the voice in every style. */
+/* The section's label, in the voice in every style (label-voice). */
 .surface-section-head h2 {
   margin: 0;
-  font-family: var(--term-words);
   font-size: var(--cs-text-label, 0.84375rem);
   font-weight: var(--cs-weight-label, 600);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.08em * var(--term-track));
   color: var(--color-shell-label, var(--color-text-primary));
 }
 /* A group titled by a plugin's name keeps the name as written. */
@@ -53,18 +50,18 @@
 .surface-section-link:disabled { opacity: 0.6; cursor: default; }
 .surface-section-link:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--color-focus-ring); border-radius: 4px; }
 
-/* Filter chips in a section head ("All 29 / On / Off") */
+/* Filter chips in a section head ("All 29 / On / Off"): a bracketed word in
+   Terminal (data-bracket="chip"), the picked one in full ink and weight; a
+   pill in Balanced, the picked one outlined in ink. */
 .surface-chip {
   height: 26px;
   padding: 0 10px;
-  border-radius: 13px;
-  border: 0;
+  border-radius: var(--cs-radius-pill, 13px);
+  border: var(--cs-pill-border, 0);
   background: transparent;
   color: var(--color-shell-meta, var(--color-text-tertiary));
   font-family: var(--cs-face);
   font-size: var(--cs-text-label, 0.78125rem);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -74,18 +71,10 @@
 .surface-chip.is-on {
   background: var(--color-shell-fill, var(--color-bg-elevated));
   color: var(--color-shell-ink, var(--color-text-primary));
+  font-weight: var(--cs-weight-picked, inherit);
 }
 .surface-chip .surface-count { font-size: 0.6875rem; }
-/* Terminal draws a filter as a bracketed word, the picked one in full ink;
-   Balanced as a pill, the picked one outlined in ink. */
-.surface-chip::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
-.surface-chip::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
 :root:not([data-card-style]) .surface-chip { padding-inline: 0.25rem; }
-:root:not([data-card-style]) .surface-chip.is-on { font-weight: 700; }
-:root[data-card-style='balanced'] .surface-chip {
-  border: 1px solid var(--term-mark);
-  border-radius: var(--cs-radius-pill);
-}
 :root[data-card-style='balanced'] .surface-chip.is-on { border-color: var(--color-shell-ink, var(--color-text-primary)); }
 
 /* The grid: as many ~340px columns as fit. The negative margin lets a cell's
@@ -359,28 +348,22 @@
   font-size: 0.6875rem;
   color: var(--color-text-quaternary);
 }
+/* A bracketed word with no box (Terminal, data-bracket="tag"), an outlined
+   pill (Balanced). */
 .surface-tag {
   display: inline-flex;
   align-items: center;
   height: 18px;
   padding: 0 7px;
-  border-radius: 9px;
+  border-radius: var(--cs-radius-pill, 9px);
+  border: var(--cs-pill-border, 0);
   background: var(--color-shell-fill, var(--color-bg-tag));
   color: var(--color-text-secondary);
   font-family: var(--cs-face);
   font-size: var(--cs-text-label, 0.65625rem);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
   white-space: nowrap;
 }
-/* A bracketed word with no box (Terminal), an outlined pill (Balanced). */
-.surface-tag::before { content: var(--term-open); margin-right: 0.5ch; color: var(--color-term-text-tertiary); }
-.surface-tag::after { content: var(--term-close); margin-left: 0.5ch; color: var(--color-term-text-tertiary); }
 :root:not([data-card-style]) .surface-tag { padding-inline: 0; border-radius: 0; }
-:root[data-card-style='balanced'] .surface-tag {
-  border: 1px solid var(--term-mark);
-  border-radius: var(--cs-radius-pill);
-}
 
 /* Detail pages (DetailPage, under the page's DetailPageProvider) */
 .detail-page { min-width: 0; container-type: inline-size; }

@@ -140,7 +140,8 @@ function NewsArticleView() {
           )}
           {article.source?.name && (
             <span
-              className="news-page-tag inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-md font-medium"
+              className="news-page-tag control-voice inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-[var(--cs-radius-pill,calc(var(--radius)_-_2px))] font-medium"
+              data-bracket="tag"
               style={{ color: 'var(--color-text-primary)' }}
             >
               {article.source.favicon_url && (
@@ -162,7 +163,8 @@ function NewsArticleView() {
             {article.tickers.map((ticker) => (
               <span
                 key={ticker}
-                className="news-page-tag text-xs px-2 py-0.5 rounded-full font-mono font-medium"
+                className="news-page-tag control-voice text-xs px-2 py-0.5 rounded-full font-mono font-medium"
+                data-bracket="tag"
                 style={{ color: 'var(--color-accent-primary)' }}
               >
                 {ticker}
@@ -204,14 +206,16 @@ function NewsArticleView() {
             {rows.map((s, i) => (
               <div key={i} className="news-page-row flex items-start gap-3 text-xs p-2.5">
                 <span
-                  className="news-page-tag shrink-0 font-mono font-medium px-1.5 py-0.5 rounded"
+                  className="news-page-tag control-voice shrink-0 font-mono font-medium px-1.5 py-0.5 rounded-[var(--cs-radius-pill,0.25rem)]"
+                  data-bracket="tag"
                   style={{ color: 'var(--color-accent-primary)' }}
                 >
                   {s.ticker}
                 </span>
                 {s.sentiment ? (
                   <span
-                    className="news-page-tag shrink-0 font-medium px-1.5 py-0.5 rounded"
+                    className="news-page-tag control-voice shrink-0 font-medium px-1.5 py-0.5 rounded-[var(--cs-radius-pill,0.25rem)]"
+                    data-bracket="tag"
                     style={{
                       color: s.sentiment === 'positive' ? 'var(--color-profit)' : s.sentiment === 'negative' ? 'var(--color-loss)' : 'var(--color-text-secondary)',
                     }}
@@ -232,7 +236,7 @@ function NewsArticleView() {
 
       {/* Read Full Article */}
       {article.article_url && (
-        <div className="news-page-foot">
+        <div className="news-page-foot rule-t">
           <a
             href={article.article_url}
             target="_blank"

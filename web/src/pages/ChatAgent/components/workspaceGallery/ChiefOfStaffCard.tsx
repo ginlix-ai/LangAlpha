@@ -141,7 +141,7 @@ export function ChiefOfStaffCard({
             >
               <HomeRowIcon className="h-5 w-5" style={{ color: 'var(--color-accent-primary)' }} aria-hidden="true" />
             </span>
-            <h2 className="pf-card-title title-font text-[17px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+            <h2 data-bracket="title" className="pf-card-title title-font text-[17px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>
               {text.name}
             </h2>
           </div>

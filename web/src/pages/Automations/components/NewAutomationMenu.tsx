@@ -40,7 +40,7 @@ export function NewAutomationMenu({ onPick }: { onPick: (id: TemplateId) => void
           </span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <div className="automations-kicker px-2.5 pb-1 pt-1.5">{t('automation.fromTemplate')}</div>
+        <div className="automations-kicker label-voice px-2.5 pb-1 pt-1.5">{t('automation.fromTemplate')}</div>
         {templates.map((tpl) => {
           const Icon = tpl.icon;
           return (

@@ -44,7 +44,7 @@ export function BlueprintCards({ blueprints, atCap, onSelect }: BlueprintCardsPr
             meta={
               bp.plugin_name ? (
                 <span className="vault-bp-origin">
-                  <PluginOriginBadge plugin={bp.plugin_name} />
+                  <PluginOriginBadge plugin={bp.plugin_name} bracket="tag" />
                 </span>
               ) : undefined
             }

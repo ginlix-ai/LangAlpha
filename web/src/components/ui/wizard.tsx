@@ -83,8 +83,7 @@ export function WizardShell({ progress, exit, footer, stepKey, stepIndex, childr
         </div>
       </div>
       <footer
-        className="wizard-footer shrink-0 bg-(--color-bg-page)"
-        style={{ borderTop: '1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-muted))' }}
+        className="wizard-footer rule-t shrink-0 bg-(--color-bg-page) [--rule-ink:var(--color-shell-edge,var(--color-border-muted))]"
       >
         <div className="mx-auto w-full max-w-[600px] px-4 py-3 sm:px-6">{footer}</div>
       </footer>
@@ -295,8 +294,7 @@ export function WizardProgress({ steps, current, label }: WizardProgressProps) {
               {i > 0 && (
                 <span
                   aria-hidden="true"
-                  className="h-0 w-4"
-                  style={{ borderTop: '1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-default))' }}
+                  className="rule-t h-0 w-4 [--rule-ink:var(--color-shell-edge,var(--color-border-default))]"
                 />
               )}
               {/* Step names in the voice of a card's labels. */}

@@ -13,12 +13,6 @@ import type { SandboxStats } from './sandboxTypes';
 // The fields Date#toLocaleDateString() prints by default.
 const createdDate = createDateFormatter({ year: 'numeric', month: 'numeric', day: 'numeric' });
 
-// The resource tiles and the computer's card: open boxes in the open card
-// styles (styles/cardStyle.css).
-const SBX_BOX = {
-  backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))',
-  border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
-} as const;
 // The actions are boxed in every style, Stop and Start in their own tone, so
 // they keep their edge where the button hooks would shed it: Balanced's pills,
 // Terminal's type without the brackets.
@@ -114,14 +108,10 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
       {/* Resource cards -- 2x2 grid */}
       <div className="grid grid-cols-2 gap-3">
         {resourceCards.map(({ icon: Icon, label, value }) => (
-          <div
-            key={label}
-            className="flex items-center gap-3 p-3 rounded-[var(--cs-radius-box,var(--radius-lg))]"
-            style={SBX_BOX}
-          >
+          <div key={label} className="shell-box flex items-center gap-3 p-3">
             <Icon className="h-5 w-5 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
             <div>
-              <div className="label-voice text-xs" style={{ color: 'var(--color-text-tertiary)', fontSize: 'var(--cs-text-label, 0.75rem)' }}>{label}</div>
+              <div className="label-voice text-[length:var(--cs-text-label,0.75rem)] leading-4" style={{ color: 'var(--color-text-tertiary)' }}>{label}</div>
               <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{value}</div>
             </div>
           </div>
@@ -131,10 +121,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
       {/* Status + control. The machine is shared, so the rows that say where
           this workspace lives and what a stop reaches sit in the same card as
           the button, read before it is pressed rather than found beneath it. */}
-      <div
-        className="flex flex-col gap-3 p-3 rounded-[var(--cs-radius-box,var(--radius-lg))]"
-        style={SBX_BOX}
-      >
+      <div className="shell-box flex flex-col gap-3 p-3">
       {(computerName || dirName) && (
         <div className="flex flex-col gap-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
           {computerName && (

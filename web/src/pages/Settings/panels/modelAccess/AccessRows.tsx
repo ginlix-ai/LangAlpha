@@ -130,12 +130,8 @@ export function Group({ title, children, empty, subgrid = false }: {
     <div className={subgrid ? 'col-span-full grid grid-cols-subgrid gap-y-1.5' : 'flex flex-col gap-1.5'}>
       {/* A section label, in the voice in every style. */}
       <h3
-        className={cn('label-voice text-xs font-medium', subgrid && 'col-span-full')}
-        style={{
-          color: 'var(--color-shell-label, var(--color-text-tertiary))',
-          fontSize: 'var(--cs-text-label, 0.75rem)',
-          fontWeight: 'var(--cs-weight-label, 500)',
-        }}
+        className={cn('label-text', subgrid && 'col-span-full')}
+        style={{ color: 'var(--color-shell-label, var(--color-text-tertiary))' }}
       >
         {title}
       </h3>
@@ -144,10 +140,9 @@ export function Group({ title, children, empty, subgrid = false }: {
         // by a card's divider.
         <ul
           className={cn(
-            'divide-y divide-[color:var(--color-shell-divider,hsl(var(--border)))] [&>*]:[border-style:var(--cs-rule-style,solid)] rounded-[var(--cs-radius-box,0.5rem)]',
+            'shell-box divide-y divide-[color:var(--color-shell-divider,hsl(var(--border)))] [&>*]:[border-style:var(--cs-rule-style,solid)]',
             subgrid && 'col-span-full grid grid-cols-subgrid',
           )}
-          style={{ background: 'var(--color-shell-fill, var(--color-bg-card))', border: '1px solid var(--color-shell-edge, var(--color-border-muted))' }}
         >
           {children}
         </ul>

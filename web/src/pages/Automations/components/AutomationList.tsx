@@ -132,7 +132,7 @@ export function AutomationList({ groups, readings, selectedId, onSelect, keyboar
             {foldable ? (
               <button
                 type="button"
-                className="automations-kicker automations-list-heading automations-list-fold"
+                className="automations-kicker label-voice automations-list-heading automations-list-fold"
                 aria-expanded={open}
                 onClick={() => setFinishedOpen((v) => !v)}
               >
@@ -141,7 +141,7 @@ export function AutomationList({ groups, readings, selectedId, onSelect, keyboar
                 <span className="automations-list-count">{items.length}</span>
               </button>
             ) : (
-              <h2 className="automations-kicker automations-list-heading">
+              <h2 className="automations-kicker label-voice automations-list-heading">
                 {t(GROUP_LABEL_KEY[group])}
                 <span className="automations-list-count">{items.length}</span>
               </h2>

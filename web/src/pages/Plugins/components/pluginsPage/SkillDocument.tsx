@@ -192,7 +192,7 @@ export function SkillDocument({
         </nav>
       )}
       <div className="pp-doc">
-        <div className="pp-doc-bar">
+        <div className="pp-doc-bar rule-b">
           {markdown ? (
             <FileText className="h-3.5 w-3.5" aria-hidden />
           ) : (

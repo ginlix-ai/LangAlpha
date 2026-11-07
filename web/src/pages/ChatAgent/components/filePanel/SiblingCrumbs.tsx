@@ -18,7 +18,7 @@ interface SiblingCrumbsProps {
 export function SiblingCrumbs({ workspaceName, onReturnHome, returnLabel = null }: SiblingCrumbsProps): React.ReactElement {
   const { t } = useTranslation();
   return (
-    <div className="file-panel-crumbs">
+    <div className="file-panel-crumbs rule-b">
       <FolderOpen className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-icon-muted)' }} aria-hidden="true" />
       {workspaceName && (
         // The name is the whole point of the row, so it takes the width the

@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import type { ComponentProps } from 'react';
 import { MetaText, TagBadge } from '@/components/mcp/McpPrimitives';
 import { isPluginSuppressed, type PluginProvenancedRow } from '../utils/provenance';
 
@@ -34,16 +35,19 @@ export function PluginOriginBadge({
    *  nullable field don't each need their own guard. */
   plugin,
   variant = 'chip',
+  bracket,
 }: {
   plugin: string | null | undefined;
   variant?: PluginBadgeVariant;
+  /** Terminal's brackets around the chip, for a host that sets it as a tag. */
+  bracket?: ComponentProps<typeof TagBadge>['bracket'];
 }) {
   const { t } = useTranslation();
   if (!plugin) return null;
   const label = t('plugins.component.fromPlugin', { plugin });
   if (variant === 'prose') return <MetaText>{label}</MetaText>;
   return (
-    <TagBadge soft title={label}>
+    <TagBadge soft title={label} bracket={bracket}>
       {plugin}
     </TagBadge>
   );

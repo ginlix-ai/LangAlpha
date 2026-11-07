@@ -431,6 +431,7 @@ function CapabilityChip({
         // Amber only where it is both real and granted, as on the detail page.
         settled && on && money && 'is-live',
       )}
+      data-bracket="tag"
     >
       {settled ? (
         <Icon className="broker-cap-glyph" role="img" aria-label={state} />

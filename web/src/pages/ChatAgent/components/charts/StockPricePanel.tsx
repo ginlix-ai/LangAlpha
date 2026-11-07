@@ -195,7 +195,7 @@ export function StockPriceChart({ data }: PanelProps): React.ReactElement {
 /** A line series' key, its stroke drawn: `── MA20`. */
 function LineKey({ color, children }: { color: string; children: React.ReactNode }): React.ReactElement {
   return (
-    <span className="term-key">
+    <span className="term-key control-voice">
       <span className="term-key-mark" style={{ background: color }} aria-hidden="true" />
       {children}
     </span>
