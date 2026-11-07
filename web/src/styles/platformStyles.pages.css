@@ -44,15 +44,15 @@
 
 /* A section's head rule is a card's divider: dashed in Terminal, a hairline
    in Balanced. */
-:root:not([data-card-style='quiet']) :is(.surface-section-head, .detail-page-head) { border-bottom-color: var(--color-term-rule); }
-:root:not([data-card-style='quiet']) .detail-page-verbs { border-top-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) :is(.surface-section-head, .detail-page-head) { border-bottom-color: var(--color-shell-rule); }
+:root:not([data-card-style='quiet']) .detail-page-verbs { border-top-color: var(--color-shell-rule); }
 :root:not([data-card-style]) :is(.surface-section-head, .detail-page-head) {
   border-bottom-style: dashed;
-  border-bottom-color: var(--color-term-edge);
+  border-bottom-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .detail-page-verbs {
   border-top-style: dashed;
-  border-top-color: var(--color-term-edge);
+  border-top-color: var(--color-shell-edge);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -85,7 +85,7 @@
   border-color: transparent !important;
 }
 :root:not([data-card-style]) :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back, .wizard-btn.is-ghost):not(.is-primary, .is-danger):hover {
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 /* A destructive door keeps a box, in the loss color, and no brackets: the
    brackets alone made Logout read as one more neutral door. */
@@ -100,7 +100,7 @@
 }
 :root[data-card-style='balanced'] :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back):not(.is-primary) {
   background: transparent !important;
-  border: 1px solid var(--color-term-edge) !important;
+  border: 1px solid var(--color-shell-edge) !important;
 }
 :root[data-card-style='balanced'] :is(.pp-btn, .connector-btn).is-danger {
   border-color: color-mix(in srgb, var(--color-loss) 40%, transparent) !important;
@@ -109,7 +109,7 @@
 /* The On switch's frame */
 :root:not([data-card-style='quiet']) :is(.pp-onoff, .connector-onoff) {
   background: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) :is(.pp-onoff, .connector-onoff) {
   border-radius: 3px;
@@ -189,18 +189,18 @@
 
 :root:not([data-card-style='quiet']) :is(.broker-card, .detail-callout, .pp-doc, .pp-key, .tool-params, .connector-empty-box, .sa-banner, .sa-conflict, .sa-start-card) {
   background: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) :is(.broker-card, .detail-callout, .pp-doc, .pp-key, .tool-params, .connector-empty-box, .sa-banner, .sa-conflict, .sa-start-card) { border-radius: 4px; }
-:root:not([data-card-style='quiet']) :is(.pp-doc-bar, .tool-param + .tool-param, .tool-row + .tool-row) { border-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) :is(.pp-doc-bar, .tool-param + .tool-param, .tool-row + .tool-row) { border-color: var(--color-shell-rule); }
 :root:not([data-card-style]) :is(.pp-doc-bar, .tool-param + .tool-param, .tool-row + .tool-row) {
   border-style: dashed;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 /* The chosen starting point outlined in full ink, as a chosen option is. */
 :root:not([data-card-style='quiet']) .pp-file.is-selected {
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
   font-weight: 700;
 }
 :root:not([data-card-style]) .pp-file.is-selected { border-radius: 3px; }
@@ -212,7 +212,7 @@
 /* Fields drawn by the page itself: unfilled, as the shared Input is. */
 :root:not([data-card-style='quiet']) :is(.sa-input, .pp-cmdbox, .vault-search input) {
   background: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) :is(.sa-input, .pp-cmdbox, .vault-search input) { border-radius: 3px; }
 :root[data-card-style='balanced'] .vault-search input { border-radius: 999px; }
@@ -263,16 +263,16 @@
 :root:not([data-card-style='quiet']) .automation-inspector-section > .automations-kicker::after {
   content: '';
   flex: 1;
-  border-top: 1px dashed var(--color-term-edge);
+  border-top: 1px dashed var(--color-shell-edge);
 }
 :root[data-card-style='balanced'] .automation-inspector-section > .automations-kicker::after {
   border-top-style: solid;
-  border-top-color: var(--color-term-rule);
+  border-top-color: var(--color-shell-rule);
 }
 
 :root:not([data-card-style='quiet']) :is(.automation-report, .automation-instruction) {
   background-color: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) :is(.automation-report, .automation-instruction) { border-radius: 4px; }
 /* The instruction is prose the user wrote: the reply's face in every style. */
@@ -287,46 +287,46 @@
   font-size: 0.75rem;
   font-weight: 500;
 }
-:root:not([data-card-style='quiet']) .automation-history th { border-bottom-color: var(--color-term-edge); }
-:root:not([data-card-style='quiet']) .automation-history td { border-bottom-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) .automation-history th { border-bottom-color: var(--color-shell-edge); }
+:root:not([data-card-style='quiet']) .automation-history td { border-bottom-color: var(--color-shell-rule); }
 :root:not([data-card-style]) .automation-history td {
   border-bottom-style: dashed;
-  border-bottom-color: var(--color-term-edge);
+  border-bottom-color: var(--color-shell-edge);
 }
 
 /* The manage view's columns sit on a rule, as the rails do. */
-:root:not([data-card-style='quiet']) :is(.automations-manage, .automations-manage-list) { border-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) :is(.automations-manage, .automations-manage-list) { border-color: var(--color-shell-edge); }
 :root:not([data-card-style]) .automations-manage { border-top-style: dashed; }
 :root:not([data-card-style]) .automations-manage-list { border-right-style: dashed; }
 /* The open automation: full ink and an edge, no wash, as the rails mark it. */
 :root:not([data-card-style='quiet']) .automations-list-row[aria-current='true'] {
   background-color: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 :root:not([data-card-style]) .automations-list-row[aria-current='true'] { border-radius: 3px; }
 
 /* The run on show, outlined rather than washed. */
 :root:not([data-card-style='quiet']) .automation-history-run[aria-current='true'] {
   background-color: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 
 /* The form: its rows parted by the card's divider. */
-:root:not([data-card-style='quiet']) :is(.automation-form-rows, .automation-form-rows > * + *) { border-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) :is(.automation-form-rows, .automation-form-rows > * + *) { border-color: var(--color-shell-rule); }
 :root:not([data-card-style]) :is(.automation-form-rows, .automation-form-rows > * + *) {
   border-style: dashed;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style='quiet']) .automation-form :is(input, textarea, select, .automation-moment-field) {
   background-color: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .automation-form :is(input, textarea, select, .automation-moment-field) { border-radius: 3px; }
 /* What the automation is told to do is typed prose: it keeps the text face. */
 :root:not([data-card-style]) .automation-form textarea { font-family: var(--font-content); }
 :root:not([data-card-style='quiet']) :is(.automation-trigger-option, .automation-day, .automation-delivery-chip) {
   background-color: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style='quiet']) :is(.automation-trigger-option, .automation-day)[aria-pressed='true'] {
   border-color: var(--color-term-text);
@@ -345,7 +345,7 @@
 /* Trading: each level an open box, the chosen one in full ink. */
 :root:not([data-card-style='quiet']) .pf-level {
   background-color: transparent !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style='quiet']) .pf-level:has(input:checked) { border-color: var(--color-term-text) !important; }
 :root:not([data-card-style]) .pf-level { border-radius: 4px; }
@@ -354,13 +354,13 @@
 /* Models: the access lists are cards of rows. */
 :root:not([data-card-style='quiet']) .pf-access-list {
   background: transparent !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
-:root:not([data-card-style='quiet']) .pf-access-list > * + * { border-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) .pf-access-list > * + * { border-color: var(--color-shell-rule); }
 :root:not([data-card-style]) .pf-access-list { border-radius: 4px; }
 :root:not([data-card-style]) .pf-access-list > * + * {
   border-top-style: dashed;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -393,13 +393,13 @@
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
 }
-:root:not([data-card-style='quiet']) .wizard-progress-rule { background: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) .wizard-progress-rule { background: var(--color-shell-edge); }
 :root:not([data-card-style]) .wizard-progress-rule {
   height: 0;
   background: none;
-  border-top: 1px dashed var(--color-term-edge);
+  border-top: 1px dashed var(--color-shell-edge);
 }
-:root:not([data-card-style='quiet']) .wizard-footer { border-top-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) .wizard-footer { border-top-color: var(--color-shell-edge); }
 :root:not([data-card-style]) .wizard-footer { border-top-style: dashed; }
 :root:not([data-card-style]) .wizard-exit {
   font-size: 0.71875rem;
@@ -427,7 +427,7 @@
 }
 :root:not([data-card-style='quiet']) .pf-news-body {
   background-color: transparent !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) .pf-news-body { border-radius: 4px !important; }
 
@@ -437,7 +437,7 @@
   position: relative;
   margin-top: 0.75rem;
   padding: 1.125rem 0.875rem 0.5rem !important;
-  border: 1px solid var(--color-term-edge) !important;
+  border: 1px solid var(--color-shell-edge) !important;
   border-radius: 8px;
 }
 :root:not([data-card-style]) .pf-news-section { border-radius: 4px; }
@@ -456,16 +456,16 @@
   border-radius: 0 !important;
   padding-inline: 0 !important;
 }
-:root:not([data-card-style='quiet']) .pf-news-row + .pf-news-row { border-top: 1px solid var(--color-term-rule) !important; }
-:root:not([data-card-style]) .pf-news-row + .pf-news-row { border-top: 1px dashed var(--color-term-edge) !important; }
-:root:not([data-card-style='quiet']) .pf-news-foot { border-top-color: var(--color-term-rule) !important; }
-:root:not([data-card-style]) .pf-news-foot { border-top: 1px dashed var(--color-term-edge) !important; }
+:root:not([data-card-style='quiet']) .pf-news-row + .pf-news-row { border-top: 1px solid var(--color-shell-rule) !important; }
+:root:not([data-card-style]) .pf-news-row + .pf-news-row { border-top: 1px dashed var(--color-shell-edge) !important; }
+:root:not([data-card-style='quiet']) .pf-news-foot { border-top-color: var(--color-shell-rule) !important; }
+:root:not([data-card-style]) .pf-news-foot { border-top: 1px dashed var(--color-shell-edge) !important; }
 :root:not([data-card-style]) .pf-news-back > svg { display: none; }
 
 /* Panels drawn inline (the setup steps', a model sheet's saved key): open
    boxes in the open styles. */
 :root:not([data-card-style='quiet']) .pf-box {
   background: transparent !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) .pf-box { border-radius: 4px; }

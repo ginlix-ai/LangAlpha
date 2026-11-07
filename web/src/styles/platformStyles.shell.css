@@ -33,10 +33,10 @@
    inked thumb, as every other open control is. */
 :root:not([data-card-style='quiet']) [data-slot='switch'][aria-checked='false'] {
   background-color: transparent !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style='quiet']) [data-slot='switch'][aria-checked='false'] > [data-slot='switch-thumb'] {
-  background-color: var(--color-term-edge-hover);
+  background-color: var(--color-shell-edge-hover);
 }
 :root:not([data-card-style='quiet']) [data-slot='switch'][aria-checked='true'] {
   border-color: transparent !important;
@@ -60,14 +60,14 @@
    sheet keeps its rounded top, which says it slides. */
 :root:not([data-card-style='quiet']) :is([data-slot='sheet'], [data-slot='dialog'][data-sheet]) {
   background-color: var(--color-bg-page) !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
   box-shadow: none !important;
 }
 :root:not([data-card-style]) :is([data-slot='sheet'], [data-slot='dialog'][data-sheet]) {
   border-top-style: dashed !important;
 }
 :root:not([data-card-style='quiet']) [data-slot='sheet-handle'] > * {
-  background-color: var(--color-term-edge) !important;
+  background-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) [data-slot='sheet-handle'] > * { border-radius: 1px; }
 
@@ -79,7 +79,7 @@
    edge to ink rather than lighting it amber. */
 :root:not([data-card-style='quiet']) .dashboard-search-form {
   background-color: transparent !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
   box-shadow: none !important;
 }
 :root:not([data-card-style='quiet']) .dashboard-search-form:focus-within {
@@ -117,13 +117,13 @@
 /* The cards keep the composer's fill, since a stack overlaps them, but
    lose the lift: an edge from the cards' palette, no shadow. */
 :root:not([data-card-style='quiet']) .widget-deck-card {
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
   box-shadow: none !important;
 }
 :root:not([data-card-style]) .widget-deck-card { border-radius: 4px; }
 :root:not([data-card-style]) .widget-deck-card-thumb {
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
   border-radius: 3px;
 }
 :root:not([data-card-style]) .widget-deck-card-title { font-size: 0.75rem; font-weight: 700; }
@@ -139,7 +139,7 @@
 :root:not([data-card-style]) .widget-deck-show-less::after { content: var(--term-close); margin-left: 0.5ch; opacity: 0.6; }
 :root[data-card-style='balanced'] .widget-deck-show-less {
   background: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -198,9 +198,9 @@
   /* The section rails become a row of tabs above the page. They take the
      open styles' edge, the open one outlined in ink; Terminal squares them,
      where the open one alone had lost its pill. */
-  :root:not([data-card-style='quiet']) :is(.settings-rail, .plugins-rail) { border-bottom-color: var(--color-term-edge); }
+  :root:not([data-card-style='quiet']) :is(.settings-rail, .plugins-rail) { border-bottom-color: var(--color-shell-edge); }
   :root:not([data-card-style]) :is(.settings-rail, .plugins-rail) { border-bottom-style: dashed; }
-  :root:not([data-card-style='quiet']) :is(.settings-rail-link, .plugins-rail-link) { border-color: var(--color-term-edge); }
+  :root:not([data-card-style='quiet']) :is(.settings-rail-link, .plugins-rail-link) { border-color: var(--color-shell-edge); }
   :root:not([data-card-style='quiet']) :is(.settings-rail-link, .plugins-rail-link).is-active {
     border-color: var(--color-term-text);
     box-shadow: none;
@@ -211,7 +211,7 @@
      with the open styles' edge. Terminal squares it. */
   :root:not([data-card-style='quiet']) .bottom-tab-bar-pill {
     background: var(--color-bg-page);
-    border-color: var(--color-term-edge);
+    border-color: var(--color-shell-edge);
   }
   :root:not([data-card-style]) .bottom-tab-bar-pill { border-radius: 6px; }
   :root:not([data-card-style]) .bottom-tab-item { border-radius: 3px; }

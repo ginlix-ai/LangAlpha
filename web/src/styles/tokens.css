@@ -170,6 +170,12 @@ html {
   --color-term-text-secondary: #9B9FA6;
   --color-term-text-tertiary: rgba(230, 230, 228, 0.62);
 
+  /* The shell's own edges and rules under the card styles
+     (styles/platformStyles*.css). Dark draws them as the cards do. */
+  --color-shell-edge: var(--color-term-edge);
+  --color-shell-edge-hover: var(--color-term-edge-hover);
+  --color-shell-rule: var(--color-term-rule);
+
   --color-text-primary: #E6E6E4;
   --color-text-secondary: #9B9FA6;
   --color-text-tertiary: rgba(230, 230, 228, 0.62);
@@ -390,6 +396,12 @@ html {
   --color-term-text: #15181D;
   --color-term-text-secondary: #5B6370;
   --color-term-text-tertiary: #8A919C;
+
+  /* Light keeps the slate on the data cards alone: the shell's edge is an
+     untinted gray, so the cards stay the one cool surface. */
+  --color-shell-edge: #D6D6D6;
+  --color-shell-edge-hover: #A3A3A3;
+  --color-shell-rule: var(--color-border-default);
 
   /* Every step is read as text, so each holds 4.5:1 on white and all but the
      last on the canvas too (styles/__tests__/textContrast.test.ts). */

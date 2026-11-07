@@ -8,32 +8,32 @@
 /* The panel's inner rules are the cards' dividers. The header's own line is
    left alone: it continues the thread header's line across the split, and
    the two must change together or not at all. */
-:root:not([data-card-style='quiet']) :is(.file-panel, .file-panel-tree) { border-left-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) :is(.file-panel, .file-panel-tree) { border-left-color: var(--color-shell-edge); }
 :root:not([data-card-style]) :is(.file-panel, .file-panel-tree) { border-left-style: dashed; }
 :root:not([data-card-style='quiet']) :is(
   .file-panel-crumbs, .file-panel-store-group, .file-panel-preview-group,
   .pdf-controls, .pdf-rail-tabs, .preview-viewer-toolbar, .excel-fbar
 ) {
-  border-bottom-color: var(--color-term-rule);
+  border-bottom-color: var(--color-shell-rule);
 }
 :root:not([data-card-style]) :is(
   .file-panel-crumbs, .file-panel-store-group, .file-panel-preview-group,
   .pdf-controls, .pdf-rail-tabs, .preview-viewer-toolbar, .excel-fbar
 ) {
   border-bottom-style: dashed;
-  border-bottom-color: var(--color-term-edge);
+  border-bottom-color: var(--color-shell-edge);
 }
-:root:not([data-card-style='quiet']) :is(.excel-footer, .excel-truncated) { border-top-color: var(--color-term-rule); }
-:root:not([data-card-style]) :is(.excel-footer, .excel-truncated) { border-top-style: dashed; border-top-color: var(--color-term-edge); }
-:root:not([data-card-style='quiet']) .pdf-rail { border-right-color: var(--color-term-rule); }
-:root:not([data-card-style]) .pdf-rail { border-right-style: dashed; border-right-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) :is(.excel-footer, .excel-truncated) { border-top-color: var(--color-shell-rule); }
+:root:not([data-card-style]) :is(.excel-footer, .excel-truncated) { border-top-style: dashed; border-top-color: var(--color-shell-edge); }
+:root:not([data-card-style='quiet']) .pdf-rail { border-right-color: var(--color-shell-rule); }
+:root:not([data-card-style]) .pdf-rail { border-right-style: dashed; border-right-color: var(--color-shell-edge); }
 
 /* Open tabs. The one in front is an open box rather than a raised fill, as
    the sidebar's open thread is; brackets would come and go with the choice
    and push every tab after it. */
 :root:not([data-card-style='quiet']) .file-panel-tab[aria-selected='true'] {
   background-color: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .file-panel-tab {
   border-radius: 3px;
@@ -55,7 +55,7 @@
 /* A toggled icon (the tree, select mode) is an open box, not a wash. */
 :root:not([data-card-style='quiet']) .file-panel-icon-btn[aria-pressed='true'] {
   background-color: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 :root:not([data-card-style]) .file-panel-icon-btn { border-radius: 3px; }
 :root[data-card-style='balanced'] .file-panel-icon-btn { border-radius: 999px; }
@@ -92,7 +92,7 @@
   background-color: transparent !important;
 }
 :root:not([data-card-style='quiet']) .file-panel-tree-search:not(:focus-within) {
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) .file-panel-tree-search { border-radius: 3px; }
 :root[data-card-style='balanced'] .file-panel-tree-search { border-radius: 999px; }
@@ -109,7 +109,7 @@
 :root:not([data-card-style='quiet']) .file-panel-item-open .truncate { font-weight: 600; }
 :root:not([data-card-style='quiet']) .file-panel-item-active {
   /* The hover edge: the resting one all but vanishes on the dark ground. */
-  box-shadow: inset 0 0 0 1px var(--color-term-edge-hover);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge-hover);
 }
 :root:not([data-card-style='quiet']) .file-panel-item-active .truncate { font-weight: 700; }
 :root:not([data-card-style='quiet']) .file-panel-item-open:hover { background-color: var(--color-border-muted); }
@@ -122,7 +122,7 @@
    surface. */
 :root:not([data-card-style='quiet']) :is(.file-panel-sort-menu, .file-panel-context-menu) {
   background-color: var(--color-bg-page);
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) :is(.file-panel-sort-menu, .file-panel-context-menu) {
   border-radius: 4px;
@@ -148,7 +148,7 @@
    ════════════════════════════════════════════════════════════════════ */
 
 /* PDF: page and zoom controls as doors; the page field unfilled. */
-:root:not([data-card-style='quiet']) .pdf-btn { background: transparent; border-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) .pdf-btn { background: transparent; border-color: var(--color-shell-edge); }
 :root:not([data-card-style='quiet']) .pdf-btn:hover:not(:disabled) { background: var(--color-bg-hover); }
 :root:not([data-card-style]) .pdf-btn {
   border-radius: 3px;
@@ -156,23 +156,23 @@
   letter-spacing: calc(0.06em * var(--term-track));
 }
 :root[data-card-style='balanced'] .pdf-btn { border-radius: 999px; }
-:root:not([data-card-style='quiet']) .pdf-page-input { background: transparent; border-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) .pdf-page-input { background: transparent; border-color: var(--color-shell-edge); }
 :root:not([data-card-style]) .pdf-page-input { border-radius: 3px; }
 :root[data-card-style='balanced'] .pdf-page-input { border-radius: 999px; }
 
 /* Spreadsheet: the formula bar on the page's ground, the sheet tabs drawn
    as the file panel's own tabs. */
 :root:not([data-card-style='quiet']) .excel-fbar { background: transparent; }
-:root:not([data-card-style='quiet']) :is(.excel-namebox, .excel-fx-toggle) { border-color: var(--color-term-rule); }
-:root:not([data-card-style]) :is(.excel-namebox, .excel-fx-toggle) { border-right-style: dashed; border-left-style: dashed; border-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) :is(.excel-namebox, .excel-fx-toggle) { border-color: var(--color-shell-rule); }
+:root:not([data-card-style]) :is(.excel-namebox, .excel-fx-toggle) { border-right-style: dashed; border-left-style: dashed; border-color: var(--color-shell-edge); }
 :root:not([data-card-style='quiet']) .excel-fx-toggle.is-on {
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 :root:not([data-card-style='quiet']) .excel-sheet-tab { border-color: transparent; }
 :root:not([data-card-style='quiet']) .excel-sheet-tab.active {
   background: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .excel-sheet-tab { border-radius: 3px; }
 :root:not([data-card-style]) .excel-sheet-tab.active { font-weight: 700; }
@@ -203,11 +203,11 @@
 :root:not([data-card-style='quiet']) .pf-sources-group-head::after {
   content: '';
   flex: 1;
-  border-top: 1px dashed var(--color-term-edge);
+  border-top: 1px dashed var(--color-shell-edge);
 }
 :root[data-card-style='balanced'] .pf-sources-group-head::after {
   border-top-style: solid;
-  border-top-color: var(--color-term-rule);
+  border-top-color: var(--color-shell-rule);
 }
 /* The count: a bracketed figure in Terminal, the cards' outlined tag in
    Balanced. */
@@ -223,14 +223,14 @@
 /* Each source: an open box on the panel's ground. */
 :root:not([data-card-style='quiet']) .pf-sources-card {
   background-color: var(--color-bg-page);
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
   box-shadow: none !important;
 }
-:root:not([data-card-style='quiet']) .pf-sources-card:hover { border-color: var(--color-term-edge-hover); }
+:root:not([data-card-style='quiet']) .pf-sources-card:hover { border-color: var(--color-shell-edge-hover); }
 :root:not([data-card-style]) .pf-sources-card { border-radius: 4px; }
 :root:not([data-card-style='quiet']) .pf-sources-thumb {
   background: transparent !important;
-  box-shadow: inset 0 0 0 1px var(--color-term-rule);
+  box-shadow: inset 0 0 0 1px var(--color-shell-rule);
 }
 :root:not([data-card-style]) .pf-sources-thumb { border-radius: 2px; }
 
@@ -240,10 +240,10 @@
 
 /* The section tabs take the shared tab hooks; the accent underline gives way
    to the style's own mark, since amber does not select (DESIGN.md). */
-:root:not([data-card-style='quiet']) .pf-sbx-tabs { border-bottom-color: var(--color-term-rule) !important; }
+:root:not([data-card-style='quiet']) .pf-sbx-tabs { border-bottom-color: var(--color-shell-rule) !important; }
 :root:not([data-card-style]) .pf-sbx-tabs {
   border-bottom-style: dashed;
-  border-bottom-color: var(--color-term-edge) !important;
+  border-bottom-color: var(--color-shell-edge) !important;
   gap: 0.125rem;
 }
 :root:not([data-card-style='quiet']) .pf-sbx-tabs > [data-slot='tab'] { border-bottom-color: transparent !important; }
@@ -262,7 +262,7 @@
 /* Resource tiles and the computer's card: open boxes, their labels kickers. */
 :root:not([data-card-style='quiet']) .pf-sbx-box {
   background-color: transparent !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) .pf-sbx-box { border-radius: 4px; }
 :root .pf-sbx-label {
@@ -281,7 +281,7 @@
   letter-spacing: calc(0.06em * var(--term-track));
 }
 :root[data-card-style='balanced'] .pf-sbx-action { border-radius: 999px; }
-:root:not([data-card-style='quiet']) .pf-sbx-action:not([data-tone='danger']):not([data-tone='go']) { border-color: var(--color-term-edge) !important; }
+:root:not([data-card-style='quiet']) .pf-sbx-action:not([data-tone='danger']):not([data-tone='go']) { border-color: var(--color-shell-edge) !important; }
 :root:not([data-card-style='quiet']) .pf-sbx-chip { background-color: transparent !important; }
 :root:not([data-card-style]) .pf-sbx-chip {
   padding-inline: 0 !important;
@@ -295,14 +295,14 @@
    ════════════════════════════════════════════════════════════════════ */
 
 /* The rule under the search and beside the provider rail: the card's divider. */
-:root:not([data-card-style='quiet']) :is(.pf-picker-search, .pf-picker-rail) { border-color: var(--color-term-rule); }
-:root:not([data-card-style]) .pf-picker-search { border-bottom-style: dashed; border-bottom-color: var(--color-term-edge); }
-:root:not([data-card-style]) .pf-picker-rail { border-right-style: dashed; border-right-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) :is(.pf-picker-search, .pf-picker-rail) { border-color: var(--color-shell-rule); }
+:root:not([data-card-style]) .pf-picker-search { border-bottom-style: dashed; border-bottom-color: var(--color-shell-edge); }
+:root:not([data-card-style]) .pf-picker-rail { border-right-style: dashed; border-right-color: var(--color-shell-edge); }
 
 /* The picked provider: an open box, not a fill. */
 :root:not([data-card-style='quiet']) .pf-picker-rail-tab[data-selected] {
   background-color: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 :root:not([data-card-style]) .pf-picker-rail-tab { border-radius: 3px; }
 :root[data-card-style='balanced'] .pf-picker-rail-tab { border-radius: 999px; }
@@ -327,10 +327,10 @@
    ════════════════════════════════════════════════════════════════════ */
 
 /* Rules */
-:root:not([data-card-style='quiet']) :is(.stock-header, .chart-tools, .chart-subrow) { border-bottom-color: var(--color-term-rule); }
-:root:not([data-card-style='quiet']) :is(.stock-metrics, .chart-bottom-bar) { border-top-color: var(--color-term-rule); }
-:root:not([data-card-style]) :is(.stock-header, .chart-tools, .chart-subrow) { border-bottom-style: dashed; border-bottom-color: var(--color-term-edge); }
-:root:not([data-card-style]) :is(.stock-metrics, .chart-bottom-bar) { border-top-style: dashed; border-top-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) :is(.stock-header, .chart-tools, .chart-subrow) { border-bottom-color: var(--color-shell-rule); }
+:root:not([data-card-style='quiet']) :is(.stock-metrics, .chart-bottom-bar) { border-top-color: var(--color-shell-rule); }
+:root:not([data-card-style]) :is(.stock-header, .chart-tools, .chart-subrow) { border-bottom-style: dashed; border-bottom-color: var(--color-shell-edge); }
+:root:not([data-card-style]) :is(.stock-metrics, .chart-bottom-bar) { border-top-style: dashed; border-top-color: var(--color-shell-edge); }
 
 /* The stats: labels in the words' face, figures in mono. The labels keep
    their capitals in every style: the copy under them is cased unevenly
@@ -366,7 +366,7 @@
 :root:not([data-card-style]) .stock-overview-toggle::after { content: var(--term-close); margin-left: 0.25ch; font-weight: 400; opacity: 0.55; }
 :root[data-card-style='balanced'] .stock-overview-toggle {
   border-radius: 999px;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 
 /* Intervals and Light / Advanced: Terminal's bracketed words with the
@@ -407,13 +407,13 @@
 }
 /* Beside a ticker legend the intervals are already words; they keep that,
    with the open styles' mark in place of the underline. */
-:root:not([data-card-style='quiet']) .chart--with-lead .interval-selector--intervals { border-left-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) .chart--with-lead .interval-selector--intervals { border-left-color: var(--color-shell-rule); }
 :root:not([data-card-style='quiet']) .chart--with-lead .interval-selector--intervals .interval-btn-active { text-decoration: none; }
 
 /* Tool buttons: open boxes; an armed tool keeps its accent hairline. */
 :root:not([data-card-style='quiet']) .chart-tool-btn {
   background-color: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style='quiet']) .chart-tool-btn-active { border-color: var(--color-accent-primary); }
 :root:not([data-card-style]) .chart-tool-btn { border-radius: 3px; }
@@ -431,19 +431,19 @@
 /* The toolbar's own dropdowns: the menus' surface. */
 :root:not([data-card-style='quiet']) .toolbar-dropdown-panel {
   background: var(--color-bg-page);
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .toolbar-dropdown-panel { border-radius: 4px; box-shadow: none; }
 :root[data-card-style='balanced'] .toolbar-dropdown-panel { border-radius: 10px; }
 :root:not([data-card-style]) .interval-dropdown-item { text-transform: var(--term-case); }
 :root:not([data-card-style='quiet']) .interval-dropdown-item-active {
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 :root:not([data-card-style]) .compact-menu-divider {
   height: 0;
   background: none;
-  border-top: 1px dashed var(--color-term-edge);
+  border-top: 1px dashed var(--color-shell-edge);
 }
 
 /* The range bar under the chart: the picked window bracketed in Terminal

@@ -6,7 +6,10 @@
    It speaks in the cards' own voice tokens (termCard.css: --term-case,
    --term-track, --term-words, --term-open/close; termCardStyles.css flips
    them for Balanced and Quiet) and draws its edges and rules from the
-   --color-term-* tokens, which Quiet maps back onto the platform's grays.
+   --color-shell-* tokens: the cards' own in dark, an untinted gray in light
+   (the data cards keep the slate). Quiet reads none of them: its one
+   bordered surface, .pf-card, takes the cards' edge, which Quiet maps onto
+   the platform's grays.
 
    Selector shorthands:
      Terminal          :root:not([data-card-style])
@@ -69,11 +72,11 @@
 :root:not([data-card-style='quiet']) .pf-kicker::after {
   content: '';
   flex: 1;
-  border-top: 1px dashed var(--color-term-edge);
+  border-top: 1px dashed var(--color-shell-edge);
 }
 :root[data-card-style='balanced'] .pf-kicker::after {
   border-top-style: solid;
-  border-top-color: var(--color-term-rule);
+  border-top-color: var(--color-shell-rule);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -150,7 +153,7 @@
 }
 :root[data-card-style='balanced'] :is([data-slot='button'][data-variant='outline'], .cwm-btn-cancel) {
   background: transparent !important;
-  border: 1px solid var(--color-term-edge) !important;
+  border: 1px solid var(--color-shell-edge) !important;
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -159,7 +162,7 @@
 
 :root:not([data-card-style='quiet']) :is([data-slot='input'], .cwm-textarea) {
   background: transparent !important;
-  border: 1px solid var(--color-term-edge) !important;
+  border: 1px solid var(--color-shell-edge) !important;
   box-shadow: none;
 }
 :root:not([data-card-style]) :is([data-slot='input'], .cwm-textarea) {
@@ -280,14 +283,14 @@
   position: relative;
   overflow: visible !important;
   background: transparent !important;
-  border: 1px solid var(--lift-edge, var(--color-term-edge)) !important;
+  border: 1px solid var(--lift-edge, var(--color-shell-edge)) !important;
   border-radius: 8px !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   padding-top: 1.125rem !important;
 }
 :root:not([data-card-style='quiet']) .hover-lift:hover {
-  --lift-edge: var(--color-term-edge-hover);
+  --lift-edge: var(--color-shell-edge-hover);
   box-shadow: none;
 }
 :root:not([data-card-style='quiet']) .pf-card .pf-card-head {
@@ -340,7 +343,7 @@
 /* Quiet: the card's own fill and edge, as a Quiet data card has them. */
 :root[data-card-style='quiet'] .pf-card {
   background: var(--color-bg-card) !important;
-  border: 1px solid var(--lift-edge, var(--color-term-edge)) !important;
+  border: 1px solid var(--color-term-edge) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
@@ -351,7 +354,7 @@
 
 :root:not([data-card-style='quiet']) .cwm-modal {
   background: var(--color-bg-page);
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .cwm-modal {
   border-radius: 6px;
@@ -359,10 +362,10 @@
 }
 :root:not([data-card-style='quiet']) .cwm-header {
   padding-bottom: 0.75rem;
-  border-bottom: 1px dashed var(--color-term-edge);
+  border-bottom: 1px dashed var(--color-shell-edge);
 }
 :root[data-card-style='balanced'] .cwm-header {
-  border-bottom: 1px solid var(--color-term-rule);
+  border-bottom: 1px solid var(--color-shell-rule);
 }
 :root:not([data-card-style]) .cwm-title {
   font-family: var(--font-mono);
@@ -380,8 +383,8 @@
 :root:not([data-card-style]) :is(.cwm-label-optional, .cwm-dropzone-sublabel, .cwm-dropzone-text) {
   font-size: 0.6875rem;
 }
-:root:not([data-card-style]) .cwm-dropzone { border-radius: 3px; border-width: 1px; border-color: var(--color-term-edge); }
-:root[data-card-style='balanced'] .cwm-dropzone { border-style: solid; border-width: 1px; border-color: var(--color-term-edge); }
+:root:not([data-card-style]) .cwm-dropzone { border-radius: 3px; border-width: 1px; border-color: var(--color-shell-edge); }
+:root[data-card-style='balanced'] .cwm-dropzone { border-style: solid; border-width: 1px; border-color: var(--color-shell-edge); }
 :root[data-card-style='balanced'] .cwm-title { font-family: var(--font-content); }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -391,7 +394,7 @@
 :root:not([data-card-style]) :is([data-slot='menu'], [data-slot='popover'], [data-slot='listbox']) {
   border-radius: 4px;
   box-shadow: none;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
   background: var(--color-bg-page);
 }
 :root:not([data-card-style]) [data-slot='menu-item'] {
@@ -406,14 +409,14 @@
 :root:not([data-card-style]) [data-slot='menu-separator'] {
   height: 0;
   background: none;
-  border-top: 1px dashed var(--color-term-edge);
+  border-top: 1px dashed var(--color-shell-edge);
 }
 :root[data-card-style='balanced'] :is([data-slot='menu'], [data-slot='popover'], [data-slot='listbox']) {
   border-radius: 10px;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
   background: var(--color-bg-page);
 }
-:root[data-card-style='balanced'] [data-slot='menu-separator'] { background: var(--color-term-rule); }
+:root[data-card-style='balanced'] [data-slot='menu-separator'] { background: var(--color-shell-rule); }
 
 /* A list in a popover is the popover's content, not a second box. */
 :root:not([data-card-style='quiet']) [data-slot='popover'] [data-slot='listbox'] {
@@ -422,17 +425,17 @@
 }
 
 /* The search heading a popover's list: its rule is the card's divider. */
-:root:not([data-card-style='quiet']) [data-slot='search'] { border-bottom-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) [data-slot='search'] { border-bottom-color: var(--color-shell-rule); }
 :root:not([data-card-style]) [data-slot='search'] {
   border-bottom-style: dashed;
-  border-bottom-color: var(--color-term-edge);
+  border-bottom-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) [data-slot='search'] input { font-size: 0.8125rem; }
 
 /* Tooltips: the menu's surface, a size down. */
 :root:not([data-card-style='quiet']) [data-slot='tooltip'] {
   background-color: var(--color-bg-page) !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
   box-shadow: none;
 }
 :root:not([data-card-style]) [data-slot='tooltip'] {
@@ -444,7 +447,7 @@
 /* Toasts: one quiet surface for every tone, drawn as an open panel. */
 :root:not([data-card-style='quiet']) [data-slot='toast'] {
   background-color: var(--color-bg-page);
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) [data-slot='toast'] {
   border-radius: 4px;
@@ -464,19 +467,19 @@
 
 :root:not([data-card-style='quiet']) [data-slot='dialog'] {
   background-color: var(--color-bg-page) !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) [data-slot='dialog']:not(.rounded-t-3xl) {
   border-radius: 6px;
 }
 :root:not([data-card-style]) [data-slot='dialog'] { box-shadow: none !important; }
-:root:not([data-card-style='quiet']) [data-slot='dialog-header'] { border-bottom-color: var(--color-term-rule) !important; }
-:root:not([data-card-style='quiet']) [data-slot='dialog-footer'] { border-top-color: var(--color-term-rule) !important; }
+:root:not([data-card-style='quiet']) [data-slot='dialog-header'] { border-bottom-color: var(--color-shell-rule) !important; }
+:root:not([data-card-style='quiet']) [data-slot='dialog-footer'] { border-top-color: var(--color-shell-rule) !important; }
 :root:not([data-card-style]) [data-slot='dialog-header'] {
-  border-bottom: 1px dashed var(--color-term-edge) !important;
+  border-bottom: 1px dashed var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) [data-slot='dialog-footer'] {
-  border-top: 1px dashed var(--color-term-edge) !important;
+  border-top: 1px dashed var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) [data-slot='dialog-title'] {
   font-family: var(--font-mono);
@@ -507,7 +510,7 @@
    outlined in full ink, as a Balanced segment is. */
 :root:not([data-card-style='quiet']) [data-slot='option-card'] {
   background-color: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style='quiet']) [data-slot='option-card'][data-state='checked'] {
   border-color: var(--color-term-text);
@@ -525,7 +528,7 @@
 
 :root:not([data-card-style='quiet']) .sidebar {
   background: var(--color-bg-page);
-  border-right-color: var(--color-term-edge);
+  border-right-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .sidebar { border-right-style: dashed; }
 :root:not([data-card-style]) :is(.sidebar-panel-item, .sidebar-account-row-name) {
@@ -540,11 +543,11 @@
   font-weight: 700;
 }
 :root:not([data-card-style='quiet']) .nav-panel-row-active {
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 :root:not([data-card-style]) .nav-panel-row-active { border-radius: 3px; }
 :root:not([data-card-style]) .nav-panel-row-active > span::before { content: '> '; color: var(--color-term-text-tertiary); }
-:root:not([data-card-style='quiet']) .sidebar-panel-bottom { border-top-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) .sidebar-panel-bottom { border-top-color: var(--color-shell-rule); }
 :root:not([data-card-style]) .sidebar-panel-bottom { border-top-style: dashed; }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -554,7 +557,7 @@
 /* The reader's message: an open box, a prompt line in Terminal. */
 :root:not([data-card-style='quiet']) .pf-bubble {
   background: transparent !important;
-  border: 1px solid var(--color-term-edge);
+  border: 1px solid var(--color-shell-edge);
 }
 :root:not([data-card-style]) .pf-bubble {
   border-radius: 4px;
@@ -571,14 +574,14 @@
 /* The turn's fold row reads as a card's divider. */
 :root:not([data-card-style]) [data-turn-fold] {
   border-bottom-style: dashed !important;
-  border-bottom-color: var(--color-term-edge) !important;
+  border-bottom-color: var(--color-shell-edge) !important;
   font-size: 0.6875rem !important;
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
 }
 :root:not([data-card-style]) [data-turn-fold] button { text-transform: inherit; }
 :root[data-card-style='balanced'] [data-turn-fold] {
-  border-bottom-color: var(--color-term-rule) !important;
+  border-bottom-color: var(--color-shell-rule) !important;
 }
 
 /* The bar over the thread */
@@ -589,11 +592,11 @@
    CJK and long input badly, and on a phone wrapped the placeholder. */
 :root:not([data-card-style]) .chat-input-container {
   border-radius: 6px !important;
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 :root:not([data-card-style]) .chat-input-container .send-button { border-radius: 3px !important; }
 :root[data-card-style='balanced'] .chat-input-container {
-  border-color: var(--color-term-edge) !important;
+  border-color: var(--color-shell-edge) !important;
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -613,12 +616,12 @@
 
 /* A rail reads as the sidebar does: on the page's ground, beside it on a
    rule, the open section in full ink rather than a wash. */
-:root:not([data-card-style='quiet']) :is(.settings-rail, .plugins-rail) { border-right-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) :is(.settings-rail, .plugins-rail) { border-right-color: var(--color-shell-edge); }
 :root:not([data-card-style]) :is(.settings-rail, .plugins-rail) { border-right-style: dashed; }
 :root:not([data-card-style]) :is(.settings-rail-link, .plugins-rail-link) { font-size: 0.78125rem; }
 :root:not([data-card-style='quiet']) :is(.settings-rail-link, .plugins-rail-link).is-active {
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
   font-weight: 700;
 }
 :root:not([data-card-style]) :is(.settings-rail-link, .plugins-rail-link).is-active { border-radius: 3px; }
@@ -628,7 +631,7 @@
 }
 :root:not([data-card-style='quiet']) :is(.settings-search, .plugins-search) input {
   background: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) :is(.settings-search, .plugins-search) input { border-radius: 3px; font-family: var(--font-mono); }
 /* Balanced draws a search the shape of the buttons beside it; a form field
@@ -640,13 +643,13 @@
    divider. Quiet keeps the filled card it already draws. */
 :root:not([data-card-style='quiet']) .settings-card {
   background: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
-:root:not([data-card-style='quiet']) .settings-card > * + * { border-top-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) .settings-card > * + * { border-top-color: var(--color-shell-rule); }
 :root:not([data-card-style]) .settings-card { border-radius: 4px; }
 :root:not([data-card-style]) .settings-card > * + * {
   border-top-style: dashed;
-  border-top-color: var(--color-term-edge);
+  border-top-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .settings-row-label { font-size: 0.78125rem; }
 :root:not([data-card-style]) :is(.settings-row-desc, .settings-group-desc, .settings-head-def) {
@@ -660,12 +663,12 @@
 
 :root:not([data-card-style='quiet']) .orders-table-scroll {
   background-color: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
-:root:not([data-card-style='quiet']) .orders-head { border-bottom-color: var(--color-term-edge); }
-:root:not([data-card-style='quiet']) .orders-cell { border-top-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) .orders-head { border-bottom-color: var(--color-shell-edge); }
+:root:not([data-card-style='quiet']) .orders-cell { border-top-color: var(--color-shell-rule); }
 :root:not([data-card-style]) .orders-table-scroll { border-radius: 4px; }
-:root:not([data-card-style]) .orders-cell { border-top-style: dashed; border-top-color: var(--color-term-edge); }
+:root:not([data-card-style]) .orders-cell { border-top-style: dashed; border-top-color: var(--color-shell-edge); }
 :root:is([data-card-style='balanced'], [data-card-style='quiet']) .orders-head {
   font-family: var(--term-words);
   text-transform: var(--term-case);
@@ -680,16 +683,16 @@
    ════════════════════════════════════════════════════════════════════ */
 
 :root:not([data-card-style='quiet']) :is(.market-left-panel, .company-overview-panel) { background-color: var(--color-bg-page); }
-:root:not([data-card-style='quiet']) :is(.market-right-panel, .company-overview-panel) { border-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) :is(.market-right-panel, .company-overview-panel) { border-color: var(--color-shell-edge); }
 :root:not([data-card-style]) :is(.market-right-panel, .company-overview-panel) { border-left-style: dashed; border-right-style: dashed; }
 :root:not([data-card-style='quiet']) .market-quick-query-card {
   background: transparent;
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .market-quick-query-card { border-radius: 4px; font-size: 0.75rem; }
 :root:not([data-card-style='quiet']) .crosshair-tooltip {
   background: var(--color-bg-page);
-  border-color: var(--color-term-edge);
+  border-color: var(--color-shell-edge);
 }
 :root:not([data-card-style]) .crosshair-tooltip { border-radius: 3px; box-shadow: none; }
 
@@ -699,10 +702,10 @@
 
 :root:not([data-card-style]) :is(.automation-run, .automations-day-heading) {
   border-bottom-style: dashed;
-  border-bottom-color: var(--color-term-edge);
+  border-bottom-color: var(--color-shell-edge);
 }
 :root[data-card-style='balanced'] :is(.automation-run, .automations-day-heading) {
-  border-bottom-color: var(--color-term-rule);
+  border-bottom-color: var(--color-shell-rule);
 }
 :root:not([data-card-style]) .automation-run-name { font-size: 0.8125rem; font-weight: 700; }
 :root:not([data-card-style]) .automation-run-excerpt { font-size: 0.78125rem; }
