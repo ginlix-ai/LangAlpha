@@ -9,14 +9,19 @@ turn; everything else asks this module.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn
 
 from ptc_agent.core.sandbox.providers.ssh import MUSL_UNSUPPORTED
 from src.llms.claude_code import (
     FEATURE,
     ClaudeTurnFailed,
+    PlanStopped,
+    PlanWindow,
     another_model_replied_last,
+    binding_limit,
     is_claude_code_model,
     rows_available,
 )
@@ -26,12 +31,17 @@ from src.server.database.claude_code_hosted import CLOUD_TURN, STORED_TURN, live
 from src.server.services.claude_code.flow import POLICY_BLOCKED
 from src.server.services.claude_code.hosted import hosted, placement, relay_offered
 from src.server.services.claude_code.machine import NEEDS_PERL, MachineAnswer, computer_state, read_answer
+from src.server.database import claude_code_plan
+from src.server.database.claude_code_plan import SAVED, plan_credential
+from src.server.services.claude_code.plan import PlanState, plan_out
 from src.server.services.claude_code.saved import saved_refusal, usable_token
 
 from .availability import drop_models, model_resolves
 
 if TYPE_CHECKING:
     from ptc_agent.agent.roles import AgentRole
+
+logger = logging.getLogger(__name__)
 
 #: Why a Claude Code row cannot run this turn, as the user is told it.
 CLAUDE_CODE_OFF = {
@@ -93,7 +103,31 @@ CLAUDE_CODE_OFF = {
         "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. "
         "Change its spec, or move this workspace to a computer of your own."
     ),
+    "plan_stopped": (
+        "Your Claude plan's {window} limit is used up, so this turn stopped. It resets at {time}. "
+        "Nothing ran on another model."
+    ),
+    "plan_limited": (
+        "Your Claude plan's {window} limit is used up until {time}. Pick another model, or send this again after "
+        "it resets."
+    ),
 }
+
+#: The windows as the server's own words name them.
+_PLAN_WINDOW_WORDS: dict[PlanWindow, str] = {
+    "five_hour": "5-hour", "seven_day": "weekly", "seven_day_opus": "weekly Opus", "seven_day_sonnet": "weekly Sonnet",
+    "seven_day_overage_included": "weekly Fable",
+}
+#: A plan refusal's words where Claude said no reset, by reason.
+_PLAN_NO_RESET = {
+    "plan_stopped": "Your Claude plan's limit is used up, so this turn stopped. Nothing ran on another model.",
+    "plan_limited": (
+        "Your Claude plan's limit is used up, and Claude didn't say when it resets. Pick another model, or send "
+        "this again later."
+    ),
+}
+#: Added to ``plan_stopped`` where usage credits paid for requests first.
+_CREDITS_BILLED = "Requests already under way were billed to your usage credits."
 
 #: The reasons the platform words otherwise, where a larger computer comes
 #: with the user's LangAlpha plan.
@@ -112,10 +146,10 @@ def claude_code_off_message(reason: str) -> str:
     return (_PLATFORM_OFF.get(reason) if HOST_MODE == "platform" else None) or CLAUDE_CODE_OFF[reason]
 
 
-def raise_claude_code_off(model_name: str, reason: str, **fields: Any) -> NoReturn:
+def raise_claude_code_off(model_name: str, reason: str, *, message: str | None = None, **fields: Any) -> NoReturn:
     """Raise the 400 for a Claude Code row this turn cannot run, ``reason``
-    keying ``CLAUDE_CODE_OFF``, whose message ``fields`` fill and the
-    detail carries beside it.
+    keying ``CLAUDE_CODE_OFF``, whose message ``fields`` fill, unless
+    ``message`` words it, and the detail carries beside it.
 
     Not ``model_removed``: the row is in the catalog, so nothing saved is
     cleared. Nor one of the refusals a service turn answers by running the
@@ -123,13 +157,37 @@ def raise_claude_code_off(model_name: str, reason: str, **fields: Any) -> NoRetu
     """
     from fastapi import HTTPException
 
-    raise HTTPException(status_code=400, detail=_refusal(model_name, reason, **fields))
+    raise HTTPException(status_code=400, detail=_refusal(model_name, reason, message=message, **fields))
 
 
-def _refusal(model_name: str | None, reason: str, **fields: Any) -> dict[str, Any]:
-    words = claude_code_off_message(reason)
-    message = words.format(**fields) if fields else words
+def _refusal(model_name: str | None, reason: str, *, message: str | None = None, **fields: Any) -> dict[str, Any]:
+    if message is None:
+        words = claude_code_off_message(reason)
+        message = words.format(**fields) if fields else words
     return {"message": message, "type": "claude_code_off", "model": model_name, "reason": reason, **fields}
+
+
+def _plan_fields(reason: str, window: PlanWindow | None, until: datetime | None) -> dict[str, Any]:
+    """A plan refusal's words from the server, for a client that words none
+    itself, and the window and its reset (ISO 8601) the frame carries, which
+    the app words in the reader's zone and language, so the reset here is in
+    UTC, since the server does not know the reader's zone. Where Claude said
+    no reset (``until`` None), words that name none, and neither field."""
+    if window is None or until is None:
+        return {"message": _PLAN_NO_RESET[reason]}
+    time = until.astimezone(UTC).strftime("%b %-d, %H:%M UTC")
+    message = claude_code_off_message(reason).format(window=_PLAN_WINDOW_WORDS[window], time=time)
+    return {"message": message, "window": window, "until": until.isoformat()}
+
+
+def plan_refusal(model_name: str | None, stopped: PlanStopped) -> dict[str, Any]:
+    """The ``plan_stopped`` refusal a turn the Claude plan stopped ends with."""
+    fields = _plan_fields("plan_stopped", stopped.window, stopped.until)
+    message = fields.pop("message")
+    return _refusal(
+        model_name, "plan_stopped", message=f"{message} {_CREDITS_BILLED}" if stopped.credits_billed else message,
+        credits_billed=stopped.credits_billed, **fields,
+    )
 
 
 #: The turn failures admission would have refused the turn for, by the
@@ -153,8 +211,12 @@ _ADMISSION_REASON = {
 def claude_code_refusal(exc: BaseException, model_name: str | None) -> dict[str, Any] | None:
     """The refusal a turn ends with when it failed, after admission let it
     run, for what admission refuses a turn for, worded as admission would
-    have refused it; None for any other failure."""
+    have refused it, and the Claude plan's stop (``plan_stopped``), which
+    names the window and its reset as admission's ``plan_limited`` does;
+    None for any other failure."""
     for current in iter_exception_chain(exc):
+        if isinstance(current, PlanStopped):
+            return plan_refusal(model_name, current)
         if isinstance(current, ClaudeTurnFailed) and current.kind in _ADMISSION_REASON:
             return _refusal(model_name, _ADMISSION_REASON[current.kind])
     return None
@@ -184,8 +246,9 @@ async def require_runnable(
     they run ``claude_code.hosted_turns_per_user`` at once, the thread's own
     aside, since a message to a running thread steers it. That count is the
     one bound on the CLIs a cloud computer's sandbox or a worker runs.
-    The cap is soft: two turns admitted at once may both pass. Neither waits
-    on Anthropic or dials a machine.
+    The cap is soft: two turns admitted at once may both pass. A turn whose
+    credential's Claude plan is used up is refused until it resets
+    (``require_plan``). None of it waits on Anthropic or dials a machine.
 
     Returns what the turn was admitted on, which the run's row is stamped
     from (``run_stamp``) and the run signs in with.
@@ -198,14 +261,64 @@ async def require_runnable(
         raise_claude_code_off(model, "chief_of_staff")
     where = await placement(user_id, workspace_id, token=True)
     if where.own_computer is not None:
-        return Admitted(saved=await require_computer_signed_in(model, user_id, str(where.own_computer["computer_id"])))
+        computer_id = str(where.own_computer["computer_id"])
+        answer = await read_answer(computer_id)
+        saved = await require_computer_signed_in(model, user_id, answer)
+        if answer is not None and answer.fresh:
+            await require_plan(model, user_id, plan_credential("saved" if saved else "machine", computer_id))
+        return Admitted(saved=saved)
     if where.refusal is not None:
         raise_claude_code_off(model, where.refusal)
     state = where.hosted
+    if state.token_signs_in:
+        await require_plan(model, user_id, SAVED)
     limit = get_claude_code_config().hosted_turns_per_user
     if await live_cloud_turns(user_id, besides=thread_id) >= limit:
         raise_claude_code_off(model, "too_many_turns", limit=limit)
     return Admitted(state.runs_on, state.runs_on if state.token_signs_in else None)
+
+
+async def require_plan(model: str, user_id: str, credential: str) -> None:
+    """Refuse a turn on ``model`` whose credential's Claude plan is used up
+    for it until a time still ahead (``plan_limited``, naming the limit
+    that lasts longest), before any CLI starts: a weekly family limit
+    refuses only that family's rows. Under Stop the turn is refused
+    whatever the account's usage credits; under Use usage credits only where
+    those are refused too, since it would run on them otherwise. Reads one
+    row, never Anthropic; a row that can't be read refuses nothing, since the
+    run's gate still stops it before its first request, and a choice that
+    can't be read is Stop, as that gate reads it.
+
+    An own computer whose answer is not known yet, or no longer fresh, is
+    not asked: whether its turn signs in with the computer's own token or
+    the saved one is known only once the CLI starts, where that gate reads
+    the right row.
+    """
+    try:
+        row = (await claude_code_plan.get_plans(user_id, [credential])).get(credential)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[claude_code] could not read the plan state at admission for user_id={user_id}: {type(e).__name__}")
+        return
+    state = PlanState.of((row or {}).get("state"))
+    if (limit := binding_limit(state.held(), _model_id(model))) is None:
+        return
+    try:
+        out = await plan_out(user_id) if state.credits_value != "off" else "stop"
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[claude_code] could not read the plan choice at admission for user_id={user_id}: {type(e).__name__}")
+        out = "stop"
+    if out == "credits":
+        return
+    until = limit.until if limit.known else None
+    raise_claude_code_off(model, "plan_limited", **_plan_fields("plan_limited", limit.window, until))
+
+
+def _model_id(model: str) -> str:
+    """The model a catalog row runs, by its API id, which names its family."""
+    from src.llms.llm import LLM
+
+    entry = LLM.get_model_config().get_model_config(model) or {}
+    return entry.get("model_id") or model
 
 
 def run_stamp(config) -> dict[str, Any]:
@@ -254,7 +367,7 @@ async def relayed_token(user_id: str, answer: MachineAnswer | None, *, conn=None
     return state.runs_on if state is not None and state.token_signs_in else None
 
 
-async def require_computer_signed_in(model: str, user_id: str, computer_id: str) -> str | None:
+async def require_computer_signed_in(model: str, user_id: str, answer: MachineAnswer | None) -> str | None:
     """Refuse a turn on an own computer whose fresh answer reads, as Settings
     shows it (``computer_state``), as one that cannot run there: an
     organization's policy is installed there, the machine has no
@@ -262,7 +375,8 @@ async def require_computer_signed_in(model: str, user_id: str, computer_id: str)
     token (Claude refused the machine's, or it has none and nothing can be
     relayed). A relayed token not known to be refused runs, as on the backend.
 
-    Never dials the machine: a computer not checked lately runs, and one
+    ``answer`` is the computer's last (``read_answer``). Never dials the
+    machine: a computer not checked lately runs, and one
     refused there ends the turn with this same message. A computer last found
     to sign in with the relayed token is refused as the backend is once
     Claude refused that token, however long ago it was found so.
@@ -272,7 +386,6 @@ async def require_computer_signed_in(model: str, user_id: str, computer_id: str)
     (``Hosted.token_signs_in``) to a machine with none of its own, or one not
     looked at yet; the launcher relays no other.
     """
-    answer = await read_answer(computer_id)
     relays = await relayed_token(user_id, answer)
     if answer is None:
         return relays

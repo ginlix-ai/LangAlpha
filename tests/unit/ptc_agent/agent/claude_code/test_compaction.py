@@ -286,7 +286,7 @@ async def test_the_transcripts_save_counts_against_the_compactions_budget(monkey
     monkeypatch.setattr(compaction, "_compacted", compacted)
     started = time.monotonic()
     with pytest.raises(ClaudeTurnFailed, match="within 1s"):
-        await compaction.compact(None, {}, None, thread_key="t", identity="u", records={}, transcript_note=slow("the note"))
+        await compaction.compact(None, {}, None, plan=None, thread_key="t", identity="u", records={}, transcript_note=slow("the note"))
     assert time.monotonic() - started < 1.15
-    written = await compaction.compact(None, {}, None, thread_key="t", identity="u", records={}, transcript_note=slow("the note", 0.2))
+    written = await compaction.compact(None, {}, None, plan=None, thread_key="t", identity="u", records={}, transcript_note=slow("the note", 0.2))
     assert written[0]["note"] == "the note"

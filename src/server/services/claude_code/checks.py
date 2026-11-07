@@ -17,9 +17,12 @@ from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
-from src.llms.claude_code import token_check_model
+from src.llms.claude_code import binding_limit, token_check_model
+from src.server.database import claude_code_plan as plan_store
 from src.server.services.oauth_signin import OAuthRefusal
 from src.utils.cache.redis_cache import get_cache_client
+
+from .plan import PlanState, plan_out
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.launcher import Launcher
@@ -85,6 +88,29 @@ async def run_check(launcher: Launcher) -> bool:
 
     async with asyncio.timeout(CHECK_S):
         return await token_works(launcher, token_check_model())
+
+
+async def check_would_bill(user_id: str, credential: str) -> bool:
+    """Whether a check of ``credential``'s token would be billed to usage
+    credits the user chose not to spend: under Stop, its row holds a limit on
+    the model a check asks for, and usage credits are not known to be off,
+    where the request would be refused at no cost. Such a check sends
+    nothing, since Claude served the token for that limit to be seen. A row
+    that can't be read holds nothing, and a choice that can't be read is
+    Stop, as admission reads them."""
+    try:
+        row = (await plan_store.get_plans(user_id, [credential])).get(credential) or {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[claude_code] could not read the plan state before a token check: {type(e).__name__}")
+        return False
+    state = PlanState.of(row.get("state"))
+    if state.credits_value == "off" or binding_limit(state.held(), token_check_model()) is None:
+        return False
+    try:
+        return await plan_out(user_id) == "stop"
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[claude_code] could not read the plan choice before a token check: {type(e).__name__}")
+        return True
 
 
 async def require_works(launcher: Launcher, *, rejected: OAuthRefusal, retryable: bool) -> None:

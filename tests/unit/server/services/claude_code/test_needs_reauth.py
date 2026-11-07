@@ -247,9 +247,8 @@ async def test_a_computer_that_signs_in_with_the_relayed_token_is_refused_once_c
     answer = SimpleNamespace(relays=True, fresh=fresh)
     with (
         serving(Cache()), _store(_row(flagged=True)),
-        patch("src.server.services.llm.claude_code.read_answer", AsyncMock(return_value=answer)),
         patch("src.server.services.claude_code.hosted.backend_available", lambda: True),
         pytest.raises(HTTPException) as refused,
     ):
-        await require_computer_signed_in(CODE, "user-1", "c-1")
+        await require_computer_signed_in(CODE, "user-1", answer)
     assert refused.value.detail["reason"] == "token_refused"

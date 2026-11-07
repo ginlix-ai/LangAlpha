@@ -39,6 +39,11 @@ EXCLUDED: dict[str, tuple[frozenset[str], str]] = {
         "Stores and reads the slices and lines themselves.",
     ),
     "src/server/database/pool.py": (ANY, "Connections."),
+    "src/llms/claude_code.py": (
+        frozenset({"PLAN_NOTICE_KEY"}),
+        "Names the response_metadata key a Claude Code reply's plan notice is "
+        "stamped under, which the stamps already saved carry.",
+    ),
     "src/server/database/runs/subagent_runs.py": (
         ANY,
         "The run ledger, read as data: a run's status decides whether lines "

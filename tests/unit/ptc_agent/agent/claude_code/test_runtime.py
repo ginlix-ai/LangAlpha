@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,7 @@ from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.core.sandbox.livefs_mount import TranscriptReach
 from ptc_agent.agent.claude_code.mid_turn import NOT_RUN, AfterTool, BeforeTool, mid_turn_messages
 from ptc_agent.agent.claude_code.launcher import LocalLauncher, Prepared
+from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.runtime import (
     _END, ClaudeCodeState, ClaudeTurn, ClaudeTurnFailed, _Message, _Run, turn_prompt,
 )
@@ -37,6 +39,9 @@ from ptc_agent.agent.claude_code.tools_bridge import Deferred, ToolResults, tool
 from ptc_agent.agent.main_state import MainAgentState
 from ptc_agent.agent.middleware.credit_gate import CreditGateState, CreditLease, current_credit_gate
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
+
+#: A watch that only records, as a token's check opens one: nothing it sees stops a run.
+UNWATCHED = PlanWatch(LocalLauncher(), "m", stop_at_limit=False)
 
 
 def result(**kw) -> ResultMessage:
@@ -66,14 +71,17 @@ def result(**kw) -> ResultMessage:
     ],
 )
 def test_a_query_that_did_not_do_its_turn_is_a_failure(res, errors, kind):
-    failed = turn_failure(res, errors)
+    failed = turn_failure(res, errors, UNWATCHED)
     assert (failed.kind if failed else None) == kind
 
 
 def test_a_rejected_rate_limit_is_a_spent_plan_only_when_the_query_failed():
-    event = SimpleNamespace(rate_limit_info=SimpleNamespace(status="rejected", rate_limit_type="five_hour", resets_at=1))
-    assert turn_failure(result(terminal_reason="api_error", result="limit"), [], [event]).kind == "plan_exhausted"
-    assert turn_failure(result(), [], [event]) is None
+    plan = PlanWatch(LocalLauncher(), "m", stop_at_limit=False)
+    plan.seen(SimpleNamespace(rate_limit_info=SimpleNamespace(raw={"status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1})))
+    failed = turn_failure(result(terminal_reason="api_error", result="limit"), [], plan)
+    assert (failed.kind, failed.window, failed.until) == ("plan_stopped", "five_hour", datetime.fromtimestamp(1, UTC))
+    assert "1" not in str(failed)
+    assert turn_failure(result(), [], plan) is None
 
 
 def test_a_claude_code_thread_keeps_every_main_agent_channel():
@@ -187,7 +195,7 @@ def bash(command: str) -> str:
 def test_options_give_claude_code_none_of_its_own_prompt_settings_or_tools():
     spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={}, effort="high")
     options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"),
-                          before_tool=BeforeTool(ToolResults(), spec.waits), after_tool=AfterTool(ToolResults(), send=_unsent))
+                          before_tool=BeforeTool(ToolResults(), spec.waits), after_tool=AfterTool(ToolResults(), send=_unsent, plan=UNWATCHED))
     assert options.tools == [] and options.setting_sources == [] and options.strict_mcp_config is True
     assert options.system_prompt == {"type": "file", "path": "/c/system-prompt.md"} and options.allowed_tools == ["mcp__langalpha__Bash"]
     assert options.verbatim_prompts is True and options.cwd == "/w"
@@ -208,13 +216,13 @@ async def _unsent(text: str) -> None:
 def _run(client, spec, launcher=None, results=None, store=None) -> _Run:
     results = results or ToolResults()
     return _Run(launcher, None, store or CheckpointSessionStore(), client, results, spec, BeforeTool(results, spec.waits),
-                AfterTool(results, send=_unsent))
+                AfterTool(results, send=_unsent, plan=UNWATCHED), UNWATCHED)
 
 
 def test_a_turns_launch_hooks_each_call_before_it_runs_and_a_compactions_does_not():
     spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={})
     common = dict(pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(),
-                  session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent))
+                  session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent, plan=UNWATCHED))
     before = BeforeTool(ToolResults(), spec.waits)
     assert [m.hooks for m in options_for(spec, before_tool=before, **common).hooks["PreToolUse"]] == [[before]]
     assert "PreToolUse" not in options_for(spec, compaction=True, **common).hooks
@@ -223,7 +231,7 @@ def test_a_turns_launch_hooks_each_call_before_it_runs_and_a_compactions_does_no
 @pytest.mark.parametrize(("threshold", "window"), [(500_000, "533000"), (20_000, "100000"), (990_000, "1000000")])
 def test_the_cli_is_launched_to_compact_at_the_threads_threshold(threshold, window):
     spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={})
-    options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent), compact_at=threshold)
+    options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent, plan=UNWATCHED), compact_at=threshold)
     assert options.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == window
 
 
@@ -235,7 +243,7 @@ async def test_a_thread_with_compaction_off_launches_a_cli_that_makes_none_on_it
 
     spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={})
     common = dict(pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(),
-                  session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent))
+                  session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent, plan=UNWATCHED))
     assert "DISABLE_AUTO_COMPACT" not in options_for(spec, **common, compact_at=120_000).env
     assert options_for(spec, **common, auto_compact=False).env["DISABLE_AUTO_COMPACT"] == "1"
 
@@ -268,7 +276,7 @@ def test_only_a_claude_haiku_is_haiku(model, haiku):
 async def test_only_a_haiku_launch_asks_the_clis_summary_for_the_whole_conversation(model, compaction):
     """Every other model's summary request is the CLI's own."""
     spec = RuntimeSpec(system_prompt="sys", model=model, tools=[bash], billing={})
-    options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent), compaction=compaction)
+    options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent, plan=UNWATCHED), compaction=compaction)
     if not is_haiku(model):
         assert "PreCompact" not in options.hooks
         return
@@ -601,7 +609,7 @@ async def test_a_closing_run_takes_nothing_more_in_as_its_calls_return():
     async def take():
         taken.append(True)
 
-    hook = AfterTool(ToolResults(), send=_unsent)
+    hook = AfterTool(ToolResults(), send=_unsent, plan=UNWATCHED)
     hook.open(["t1"], take)
     hook.close()
     assert await hook({"hook_event_name": "PostToolUseFailure"}, "t1", None) == {}
@@ -661,7 +669,7 @@ async def test_a_result_that_ends_the_turn_stops_the_cli_once_the_rest_of_its_ba
     results = ToolResults(ends_turn=lambda message: message.content == "Ended without a reply.")
     for content, tool_use_id in [("Ended without a reply.", "t1"), ("Set w1.", "t2"), ("ok", "t3")]:
         results.resolve(ToolMessage(content, tool_call_id=tool_use_id))
-    hook = AfterTool(results, send=_unsent)
+    hook = AfterTool(results, send=_unsent, plan=UNWATCHED)
     hook.open(["t1", "t2"], take)
     assert "continue" not in await hook({"hook_event_name": "PostToolUse"}, "t1", None)
     assert (await hook({"hook_event_name": "PostToolUse"}, "t2", None))["continue"] is False
@@ -683,9 +691,9 @@ async def test_a_query_sent_after_another_starts_with_nothing_the_last_ones_end_
     spec = RuntimeSpec(system_prompt="s", model="m", tools=[], billing={})
     run = _run(_Ends(), spec)
     await run._pump
-    run.rate_limits, run.assistant_errors = [object()], [("rate_limit", "x")]
+    run.plan.rejected, run.assistant_errors = True, [("rate_limit", "x")]
     await run.again("next")
-    assert (run.rate_limits, run.assistant_errors, run.result, run.queries) == ([], [], None, 2)
+    assert (run.plan.rejected, run.assistant_errors, run.result, run.queries) == (False, [], None, 2)
 
 
 @pytest.mark.asyncio
@@ -851,7 +859,7 @@ async def test_a_cli_that_exits_after_its_init_fails_a_compaction_as_its_request
     monkeypatch.setattr(compaction_module, "received", received)
     with pytest.raises(ClaudeTurnFailed) as failed:
         await compaction_module.compact(RuntimeSpec(system_prompt="s", model="m", tools=[], billing={}),
-                                        {"system_prompt": "s", "tools": []}, _Released(), thread_key="t",
+                                        {"system_prompt": "s", "tools": []}, _Released(), plan=UNWATCHED, thread_key="t",
                                         identity="u", records={"session_id": "s", "entries": []})
     assert failed.value.kind == "api_error" and "exited with code 1" in str(failed.value) and "abcdefgh12345" not in str(failed.value)
 
@@ -875,7 +883,7 @@ async def test_only_a_haiku_compaction_is_handed_its_session_ending_on_one_more_
                                               answered, {"type": "last-prompt"}]}
     with pytest.raises(RuntimeError, match="launched"):
         await compaction_module.compact(RuntimeSpec(system_prompt="s", model=model, tools=[], billing={}),
-                                        {"system_prompt": "s", "tools": []}, _Released(), thread_key="t", identity="u",
+                                        {"system_prompt": "s", "tools": []}, _Released(), plan=UNWATCHED, thread_key="t", identity="u",
                                         records=records)
     (given,) = handed
     if not is_haiku(model):
@@ -924,7 +932,7 @@ async def test_a_compactions_summary_request_is_metered_as_a_turns_requests_are(
         with pytest.raises(ClaudeTurnFailed):
             await compaction_module.compact(
                 RuntimeSpec(system_prompt="s", model="m", tools=[], billing={"billing_type": "oauth", "manifest_model": "m"}),
-                {"system_prompt": "s", "tools": []}, _Released(), thread_key="t", identity="u",
+                {"system_prompt": "s", "tools": []}, _Released(), plan=UNWATCHED, thread_key="t", identity="u",
                 records={"session_id": "s", "entries": []})
     finally:
         var_child_runnable_config.reset(ambient)

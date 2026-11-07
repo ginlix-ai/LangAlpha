@@ -54,6 +54,7 @@ from langgraph.constants import TAG_NOSTREAM
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, compacts_at, is_haiku, launch, pointed, received, turn_failure
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
+from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay
 from ptc_agent.agent.claude_code.session import (
     SETTLE_TIMEOUT_S,
@@ -71,7 +72,7 @@ from ptc_agent.agent.transcript import Window
 from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_note, transcript_target
 from src.config.settings import get_compaction_timeout
 from src.llms.cache_markers import ttl_seconds
-from src.llms.claude_code import ClaudeTurnFailed
+from src.llms.claude_code import ClaudeTurnFailed, PlanStopped
 from src.llms.token_counter import extract_token_usage
 from src.server.utils.error_sanitization import sanitize_error_text
 
@@ -345,15 +346,18 @@ def next_summary(rules: Mapping[str, Any], records: SessionRecords, *, settled_a
 NO_RULES = CompactionRules(floor_tokens=0)
 
 
-async def compact(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, thread_key: str, identity: str,
-                  records: SessionRecords, transcript_note: Awaitable[str] | None = None) -> list[SessionWrite]:
+async def compact(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, plan: PlanWatch, thread_key: str,
+                  identity: str, records: SessionRecords,
+                  transcript_note: Awaitable[str] | None = None) -> list[SessionWrite]:
     """Have the CLI compact the session on the pin it runs on, in a launch of
     its own that takes no turn, and return the records it wrote; none when
     there was nothing to summarize. A launch or a summary request that fails
     raises as a turn's would, a refused login reported as a turn reports it,
     and the whole of it is held to the compaction budget an API thread's is,
     the transcript's save for ``transcript_note`` included: admission holds
-    a send for about that budget.
+    a send for about that budget. ``plan`` is the turn's watch of the Claude
+    plan: the launch stops at its limit as a run's does, and what the summary
+    request said stops the run after it.
 
     Its own launch, because the summary request is then the session's own
     prefix, thinking included, and a launch that does not compact leaves the
@@ -363,24 +367,23 @@ async def compact(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, thr
     try:
         async with asyncio.timeout(budget):
             note = await transcript_note if transcript_note is not None else ""
-            return await _compacted(spec, pin, launcher, thread_key=thread_key, identity=identity, records=records,
-                                    transcript_note=note)
+            return await _compacted(spec, pin, launcher, plan=plan, thread_key=thread_key, identity=identity,
+                                    records=records, transcript_note=note)
     except TimeoutError:
         raise ClaudeTurnFailed("api_error", f"the compaction did not finish within {budget:g}s") from None
 
 
-async def _compacted(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, thread_key: str, identity: str,
-                     records: SessionRecords, transcript_note: str) -> list[SessionWrite]:
+async def _compacted(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, plan: PlanWatch, thread_key: str,
+                     identity: str, records: SessionRecords, transcript_note: str) -> list[SessionWrite]:
     store = CheckpointSessionStore()
     prepared, client, _ = await launch(
         spec, pin, launcher, thread_key=thread_key, identity=identity,
         records=noted(records) if is_haiku(spec.model) else records, store=store,
-        results=ToolResults(), query="/compact", compaction=True, transcript_note=transcript_note,
+        results=ToolResults(), query="/compact", compaction=True, transcript_note=transcript_note, plan=plan,
     )
     try:
         boundary, result, failed = None, None, None
         errors: list[tuple[str, str]] = []
-        limits: list[RateLimitEvent] = []
         try:
             async for m in received(client):
                 if isinstance(m, SystemMessage) and m.subtype == "init" and m.data.get("model") != spec.model:
@@ -392,7 +395,7 @@ async def _compacted(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, 
                 elif isinstance(m, AssistantMessage) and m.error and m.parent_tool_use_id is None:
                     errors.append((m.error, " ".join(getattr(b, "text", "") for b in m.content).strip()))
                 elif isinstance(m, RateLimitEvent):
-                    limits.append(m)
+                    plan.seen(m)
                 elif isinstance(m, ResultMessage):
                     result = m
                     break
@@ -404,11 +407,13 @@ async def _compacted(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, 
         if result is not None:
             await _metered(spec, result)
         if boundary is None:
-            failed = failed or turn_failure(result, errors, limits)
+            failed = turn_failure(result, errors, plan, failed)
             if failed is None:
                 return []
             if failed.kind == "auth_failed":
                 await launcher.refused()
+            if isinstance(failed, PlanStopped):
+                await plan.settled()
             raise failed
         await store.arrived.wait([boundary], SETTLE_TIMEOUT_S)
     finally:

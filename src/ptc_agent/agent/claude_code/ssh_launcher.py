@@ -76,6 +76,7 @@ from ptc_agent.agent.claude_code.machine_token import (
 from ptc_agent.core.claude_code_managed import claude_code_managed_sh, parse_managed
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.providers._ssh_shell import check_env
+from ptc_agent.agent.claude_code.plan import PlanLog, SignedIn
 from ptc_agent.agent.claude_code.shell_link import ShellLink, ShellProcess
 from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS, TRANSPORT_ERRORS, Machine, SlotWaitTimeout
 from ptc_agent.core.sandbox.providers.ssh import IS_MUSL_SH, MUSL_UNSUPPORTED
@@ -150,6 +151,9 @@ class SSHLauncher:
     ``on_unsupported(present)`` that it runs musl, each with whether
     anything is at ``token_file``'s path there. ``source`` is where the last
     run's credential came from. One launcher serves one run at a time. ``env`` is for a test endpoint.
+    ``plan`` keeps what the CLI reports of the Claude plan behind that
+    credential: the token file, given only where it is the computer's own,
+    or a relayed setup token, the saved one.
     """
 
     machine: Machine[ShellLink]
@@ -165,7 +169,10 @@ class SSHLauncher:
     on_no_perl: Callable[[bool], Awaitable[None]] | None = None
     on_unsupported: Callable[[bool], Awaitable[None]] | None = None
     env: dict[str, str] = field(default_factory=dict, repr=False)
+    plan: PlanLog | None = None
     source: TokenOrigin | None = field(default=None, init=False)
+    #: What the last run was relayed: a setup token or an API key.
+    relayed: Literal["setup_token", "api_key"] | None = field(default=None, init=False)
     _link: ShellLink | None = field(default=None, init=False, repr=False)
     _cli: str | None = field(default=None, init=False)
     _root: str | None = field(default=None, init=False)
@@ -173,6 +180,12 @@ class SSHLauncher:
     def __post_init__(self) -> None:
         if self.token_file is not None:
             checked_name(self.token_file)
+
+    @property
+    def signed_in(self) -> SignedIn | None:
+        if self.source == "file":
+            return "machine"
+        return "saved" if self.source == "relay" and self.relayed == "setup_token" else None
 
     @property
     def base(self) -> str:
@@ -351,9 +364,10 @@ class SSHLauncher:
             + " ".join(map(word, argv))
         )
 
-    async def started(self, source: TokenOrigin) -> None:
-        """The run's CLI started on a token from ``source``, as the shim announced it."""
-        self.source = source
+    async def started(self, source: TokenOrigin, relayed: Literal["setup_token", "api_key"] | None = None) -> None:
+        """The run's CLI started on a token from ``source``, as the shim
+        announced it, and of the kind ``relayed`` where it was relayed one."""
+        self.source, self.relayed = source, relayed
         if self.on_announced is None:
             return
         try:
@@ -403,9 +417,11 @@ class SSHTransport(Transport):
             if isinstance(e, SlotWaitTimeout):
                 raise CLIConnectionError(CLI_SLOTS_FULL if e.which == "cli" else COMMAND_SLOTS_FULL) from None
             raise
-        relayed = False
+        relayed: Literal["setup_token", "api_key"] | None = None
         try:
             async with asyncio.timeout(START_TIMEOUT_S):
+                if self._launcher.plan is not None:
+                    await self._launcher.plan.launching()
                 self._process = await start(STREAM_BOOT)
                 self._stderr_task = asyncio.ensure_future(self._read_stderr())
                 self._process.stdin.write(script.encode() + b"\n")
@@ -418,14 +434,16 @@ class SSHTransport(Transport):
                         raise CLIConnectionError("The stored credential is not one line of text, so it was not sent")
                     line = f"{credential.kind} {credential.secret}" if credential is not None else ""
                     self._process.stdin.write(line.encode() + b"\n")
-                    relayed = credential is not None
+                    relayed = credential.kind if credential is not None else None
                     await self._process.stdin.drain()
+                    if relayed == "setup_token" and self._launcher.plan is not None:
+                        await self._launcher.plan.took(credential.secret)
         except BaseException as e:
             await self.close()
             if isinstance(e, CLIConnectionError | ClaudeTurnFailed | asyncio.CancelledError):
                 raise
             raise CLIConnectionError(f"Claude Code did not start on {self._link.host}: {e or type(e).__name__}") from e
-        await self._launcher.started("none" if how == "relay" and not relayed else how)
+        await self._launcher.started("none" if how == "relay" and not relayed else how, relayed)
         self._ready = True
 
     async def _announced(self) -> TokenOrigin:

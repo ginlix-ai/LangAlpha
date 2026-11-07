@@ -10,6 +10,7 @@ found is kept by the token's hash, never the token.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import AsyncIterator, Mapping
@@ -20,6 +21,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from .hosted import TurnsNotStopped, saved_token_runs, stop_stored_turns
 from ptc_agent.core.claude_code_managed import local_managed
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn
+from src.server.database import claude_code_plan
+from src.server.database.claude_code_plan import SAVED
 from src.server.database.oauth_tokens import (
     CLAUDE_CODE_PROVIDER,
     clear_access_token_refused,
@@ -33,11 +36,23 @@ from src.server.database.oauth_tokens import (
 from src.server.models.claude_code import ClaudeCodeStatus, State
 from src.utils.cache.redis_cache import get_cache_client
 
-from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, Held, in_background, keep_check, read_check, run_check
+from .checks import (
+    CHECK_CLEANUP_S,
+    CHECK_S,
+    CHECKED,
+    Held,
+    check_would_bill,
+    in_background,
+    keep_check,
+    read_check,
+    run_check,
+)
 from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, rows_on, turns_running
+from .plan import CheckReports, UserPlan, plan_views
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.launcher import LocalLauncher
+    from ptc_agent.agent.claude_code.plan import PlanLog
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +141,13 @@ async def refuse(user_id: str, digest: str, saved_at: datetime) -> None:
         await keep_check(_check_key(digest), "refused")
 
 
-def _launcher(token: str) -> LocalLauncher:
-    """The backend's own CLI, signed in with ``token`` alone, as its check needs."""
+def _launcher(token: str, plan: PlanLog | None = None) -> LocalLauncher:
+    """The backend's own CLI, signed in with ``token`` alone, as its check
+    needs, keeping what it reports of the plan behind the saved token where
+    ``plan`` is given: ``token`` is that one."""
     from ptc_agent.agent.claude_code.launcher import LocalLauncher
 
-    return LocalLauncher(token=token)
+    return LocalLauncher(token=token, plan=plan)
 
 
 async def _check(user_id: str, row: dict, key: str, held: Held) -> None:
@@ -140,10 +157,15 @@ async def _check(user_id: str, row: dict, key: str, held: Held) -> None:
     a refusal stamped the flag again since the row was read. A refusal a
     turn met while the check ran is newer than its answer, so it stands:
     the answer is kept before the row is read again, and a refusal flags the
-    row before it keeps its own, so one of the two sees the other."""
+    row before it keeps its own, so one of the two sees the other. One that
+    would be billed to usage credits (``check_would_bill``) sends nothing
+    and keeps the answer the row stands on."""
     digest = token_hash(row["access_token"])
+    if await check_would_bill(user_id, SAVED):
+        await keep_check(key, "refused" if row.get("needs_reauth_at") is not None else "works")
+        return
     try:
-        works = await run_check(_launcher(row["access_token"]))
+        works = await run_check(_launcher(row["access_token"], UserPlan(user_id, token_digest=digest)))
     except Exception as e:
         logger.warning(f"[claude_code] token check failed: {type(e).__name__}")
         await keep_check(key, "unknown")
@@ -211,7 +233,8 @@ async def status(user_id: str) -> ClaudeCodeStatus:
     if await local_managed():
         saved = await get_oauth_connection(user_id, CLAUDE_CODE_PROVIDER) is not None
         return ClaudeCodeStatus(state="policy_blocked", saved=saved, enabled=True)
-    return await _current(user_id, await stored_row(user_id))
+    current, plans = await asyncio.gather(_current(user_id, await stored_row(user_id)), plan_views(user_id, [SAVED]))
+    return current.model_copy(update={"plan": plans.get(SAVED)}) if current.saved else current
 
 
 class SavedHome:
@@ -222,6 +245,8 @@ class SavedHome:
 
     def __init__(self, user_id: str) -> None:
         self.user_id = user_id
+        #: What the check of the token being saved reported of its plan.
+        self.checked = CheckReports()
         self.lock = f"claude_code:token_save:{user_id}"
         self.sign_in = PendingSignIn(f"claude_code:sign_in:{user_id}")
         self.who = f"user_id={user_id}"
@@ -235,7 +260,7 @@ class SavedHome:
 
     @asynccontextmanager
     async def placed(self, token: str, *, held: Held, retryable: bool) -> AsyncIterator[LocalLauncher]:
-        yield _launcher(token)
+        yield _launcher(token, self.checked)
 
     async def keep(
         self, token: str, *, held: Held, email: str | None, expires_at: datetime, token_uuid: str,
@@ -260,6 +285,9 @@ class SavedHome:
                 self.user_id, CLAUDE_CODE_PROVIDER, access_token=token, refresh_token="", account_id=token_uuid,
                 email=email, expires_at=expires_at, conn=conn,
             )
+            # The token saved may be another Claude account's.
+            await claude_code_plan.forget_plan(self.user_id, SAVED, token_digest=token_hash(token), conn=conn)
+        await self.checked.keep(UserPlan(self.user_id, token_digest=token_hash(token)))
         if previous is not None and previous["access_token"] != token:
             await get_cache_client().delete(token_check_key(previous["access_token"]))
         logger.info(f"[claude_code] setup token saved for user_id={self.user_id} token_uuid={token_uuid or '-'}")
@@ -278,6 +306,7 @@ class SavedHome:
             previous = None
         async with connection_change(self.user_id, CLAUDE_CODE_PROVIDER) as conn:
             await delete_oauth_tokens(self.user_id, CLAUDE_CODE_PROVIDER, conn=conn)
+            await claude_code_plan.forget_plan(self.user_id, SAVED, conn=conn)
         if previous is not None:
             await get_cache_client().delete(token_check_key(previous))
         try:

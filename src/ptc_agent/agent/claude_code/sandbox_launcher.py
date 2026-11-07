@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from ptc_agent.agent.claude_code import cli_install
 from ptc_agent.agent.claude_code.launcher import TokenStore
+from ptc_agent.agent.claude_code.plan import PlanLog
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 from ptc_agent.core.sandbox.leased_stream import LEASE_S, RENEW_S, keep_leased, leased_command, new_lease
 from ptc_agent.core.sandbox.providers._ssh_transport import Machine, ScriptResult, temp_sibling
@@ -241,10 +242,14 @@ class SandboxLink:
             raise RuntimeError(moved.stderr.decode(errors="replace").strip() or f"exit {moved.exit_code}")
 
 
-def sandbox_launcher(sandbox: PTCSandbox, *, identity: str, credential: TokenStore, env: dict[str, str] | None = None) -> SSHLauncher:
+def sandbox_launcher(
+    sandbox: PTCSandbox, *, identity: str, credential: TokenStore, env: dict[str, str] | None = None,
+    plan: PlanLog | None = None,
+) -> SSHLauncher:
     """The launcher of a turn in ``sandbox``, a cloud computer's, signed in with
     what ``credential`` holds as the run starts; it reads no token file
-    there. ``env`` is for a test endpoint."""
+    there. ``env`` is for a test endpoint, and ``plan`` keeps the plan
+    behind a stored token (``SSHLauncher.plan``)."""
     link: SandboxLink | None = None
 
     async def connect() -> SandboxLink:
@@ -256,5 +261,5 @@ def sandbox_launcher(sandbox: PTCSandbox, *, identity: str, credential: TokenSto
 
     return SSHLauncher(
         Machine(connect, lambda: sandbox.working_dir), identity=identity, token_file=None, credential=credential,
-        env=dict(env or {}),
+        env=dict(env or {}), plan=plan,
     )

@@ -21,15 +21,16 @@ from claude_agent_sdk import (
     HookMatcher,
     Message,
     ProcessError,
-    RateLimitEvent,
     ResultMessage,
     SystemMessage,
+    Transport,
 )
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, Waits
+from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.session import CheckpointSessionStore, SessionPin, SessionRecords
 from ptc_agent.agent.claude_code.tools_bridge import SERVER, ToolResults, allow_rule, build_tool_server
 from ptc_agent.agent.middleware.file_operations.multimodal import MAX_CONTENT_BYTES
@@ -254,20 +255,31 @@ def startup_failure(error: ProcessError) -> ClaudeTurnFailed:
 def turn_failure(
     result: ResultMessage | None,
     assistant_errors: Sequence[tuple[str, str]],
-    rate_limits: Sequence[RateLimitEvent] = (),
+    plan: PlanWatch,
+    failed: ClaudeTurnFailed | None = None,
 ) -> ClaudeTurnFailed | None:
-    """Why a finished query did not do its turn, or None if it did."""
+    """Why a finished query did not do its turn, or None if it did:
+    ``failed`` where the caller already knows, else what its result and
+    errors say. One the plan gate stopped did not, though the CLI ended it
+    as done, and a used-up plan's refusal names the window and its reset
+    where the turn's reports gave them (``PlanWatch.failure``).
+    """
+    return plan.failure(failed or _failure(result, assistant_errors, plan.rejected))
+
+
+def _failure(
+    result: ResultMessage | None, assistant_errors: Sequence[tuple[str, str]], rejected: bool,
+) -> ClaudeTurnFailed | None:
     if assistant_errors:
         error, text = assistant_errors[0]
         return ClaudeTurnFailed(_ASSISTANT_ERROR_KIND.get(error, "api_error"), text or error)
     if result is not None and not result.is_error and result.subtype == "success" and result.terminal_reason in _DONE:
         return None
-    # Only a query that failed reads the rate limits: a rejected plan window
-    # beside a served request means extra usage paid for it.
-    rejected = [e.rate_limit_info for e in rate_limits if e.rate_limit_info.status == "rejected"]
+    # Only a query that failed reads the plan as used up: a rejected window
+    # beside a served request means usage credits paid for it, where under
+    # Stop the gate ends the run before the next one (``PlanWatch``).
     if rejected:
-        info = rejected[-1]
-        return ClaudeTurnFailed("plan_exhausted", f"{info.rate_limit_type} limit reached, resets at {info.resets_at}")
+        return ClaudeTurnFailed("plan_exhausted", "the Claude plan's limit is used up")
     if result is None:
         return ClaudeTurnFailed("no_result", "the CLI ended without a result")
     text = str(result.result or "") or "; ".join(result.errors or [])
@@ -322,6 +334,51 @@ async def received(client: ClaudeSDKClient, *, init_seen: bool = False) -> Async
         raise startup_failure(e) from None
 
 
+class _Gated(Transport):
+    """``transport``, asking ``plan``'s gate once the CLI started on it and
+    before it is told anything: the credential it signed in with is known
+    by then, and a CLI resuming an interrupted turn sends its first request
+    as soon as it is initialized, with no query to hold back. A launch it
+    lets through starts a new query, so a refusal an earlier one saw is not
+    this one's (``PlanWatch.reopen``). A stop, and a turn cut off while the
+    gate reads, closes the transport itself: the
+    client's disconnect after a failed connect closes it only through a
+    query, and none exists yet, so the CLI (and over SSH its slot) would be
+    left running."""
+
+    def __init__(self, transport: Transport, plan: PlanWatch) -> None:
+        self._transport = transport
+        self._plan = plan
+
+    async def connect(self) -> None:
+        await self._transport.connect()
+        try:
+            stops = await self._plan.gate()
+        except BaseException:
+            await self._transport.close()
+            raise
+        if stops:
+            await self._transport.close()
+            await self._plan.settled()
+            raise self._plan.failure(None)
+        self._plan.reopen()
+
+    async def write(self, data: str) -> None:
+        await self._transport.write(data)
+
+    def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        return self._transport.read_messages()
+
+    async def close(self) -> None:
+        await self._transport.close()
+
+    def is_ready(self) -> bool:
+        return self._transport.is_ready()
+
+    async def end_input(self) -> None:
+        await self._transport.end_input()
+
+
 async def launch(
     spec: RuntimeSpec,
     pin: SessionPin,
@@ -338,6 +395,7 @@ async def launch(
     auto_compact: bool = True,
     compaction: bool = False,
     transcript_note: str = "",
+    plan: PlanWatch,
 ) -> tuple[Prepared, ClaudeSDKClient, AfterTool]:
     """Lay out the session, start the CLI on ``pin`` and send ``query``; nothing
     is left behind if any step fails, and the caller releases what it gets,
@@ -346,6 +404,9 @@ async def launch(
     With no query the CLI is resumed as an interrupted turn: it carries on
     from the tool results that end its session without a new query. Its
     compaction summaries end on ``transcript_note`` (``with_transcript``).
+    Nothing is sent, nor resumed, where ``plan``'s gate says the Claude
+    plan is used up, asked as the CLI starts (``_Gated``); the hook stops
+    the CLI at a batch end where it says so.
     """
     session_id = (records or {}).get("session_id")
     entries = with_transcript((records or {}).get("entries") or [], transcript_note)
@@ -354,7 +415,7 @@ async def launch(
     )
     client: ClaudeSDKClient | None = None
     try:
-        after_tool = AfterTool(results, send=lambda text: client.query(text))
+        after_tool = AfterTool(results, send=lambda text: client.query(text), plan=plan)
         options = options_for(
             spec, pin=pin, server=build_tool_server(pin["tools"], results), store=store, session_id=session_id,
             prepared=prepared, after_tool=after_tool, before_tool=before_tool, compact_at=compact_at,
@@ -362,7 +423,7 @@ async def launch(
         )
         if query is None:
             options.env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"] = "1"
-        client = ClaudeSDKClient(options, transport=launcher.transport(options))
+        client = ClaudeSDKClient(options, transport=_Gated(launcher.transport(options), plan))
         async with connected(client):
             if query is not None:
                 await client.query(query)

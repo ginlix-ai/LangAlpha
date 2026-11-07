@@ -47,6 +47,7 @@ from src.server.services.llm.thread_model import (
     carry_default_change,
 )
 from src.server.services.llm.user_models import model_preference_of
+from src.server.services.claude_code.plan import credits_unknown
 from src.server.services.onboarding import maybe_complete_onboarding
 from src.server.models.profile_vocabulary import STRUCTURED_PREFERENCES, check_profile
 from src.server.models.user import (
@@ -656,6 +657,8 @@ async def update_preferences(
                 model_preference=model_pref,
                 conn=conn,
             )
+            if (other_pref or {}).get("claude_code_plan_out") == "credits":
+                await credits_unknown(user_id, conn=conn)
             if changes_default:
                 threads_reassigned = await carry_default_change(
                     user_id,

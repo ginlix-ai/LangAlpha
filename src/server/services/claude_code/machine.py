@@ -37,19 +37,23 @@ from ptc_agent.core.sandbox.providers.ssh_errors import connect_failure
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn
+from src.server.database import claude_code_plan
+from src.server.database.claude_code_plan import computer_credential, plan_credential
 from src.server.database.computer import get_computer, get_computer_roster
 from src.server.models.claude_code import ClaudeCodeComputer, ClaudeCodeComputers, ComputerState, Source, State
 from src.server.models.computer import ComputerStatus as Lifecycle
 from src.server.services.ssh_computers import is_own_computer, ssh_info, tunnel_of, tunnels_for
 from src.utils.cache.redis_cache import get_cache_client
 
-from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, SHORT_TTL_S, Held, in_background, run_check, ttl
+from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, SHORT_TTL_S, Held, check_would_bill, in_background, run_check, ttl
 from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, changing, rows_on
 from .hosted import saved_token_runs
-from .saved import refusal_stamp, refuse, stored_row, token_state, usable
+from .plan import CheckReports, UserPlan, plan_views
+from .saved import refusal_stamp, refuse, stored_row, token_hash, token_state, usable
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.launcher import Credential
+    from ptc_agent.agent.claude_code.plan import PlanLog
     from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 
 logger = logging.getLogger(__name__)
@@ -313,14 +317,18 @@ async def machine_of(computer: Mapping[str, Any]) -> Machine[Link]:
     return await WorkspaceManager.get_instance().machine_link(dict(computer))
 
 
-def check_launcher(machine: Machine[Link], user_id: str, token_file: str) -> SSHLauncher:
+def check_launcher(machine: Machine[Link], user_id: str, token_file: str, *, plan: PlanLog | None = None) -> SSHLauncher:
     """A launcher signed in with the token file ``token_file`` names only, the
     computer's or a staged one, as a check of that token needs, and one that
     never installs the CLI nor waits long for a CLI slot: a check must end
-    inside its hold."""
+    inside its hold. What it reports of the plan behind the token goes to
+    ``plan``: the computer's own token's row, or for a staged one, its
+    reports kept until it is placed (``CheckReports``)."""
     from ptc_agent.agent.claude_code.ssh_launcher import START_TIMEOUT_S, SSHLauncher
 
-    return SSHLauncher(machine, identity=user_id, token_file=token_file, install=False, slot_wait_s=START_TIMEOUT_S)
+    return SSHLauncher(
+        machine, identity=user_id, token_file=token_file, install=False, slot_wait_s=START_TIMEOUT_S, plan=plan,
+    )
 
 
 async def check_machine(
@@ -328,7 +336,9 @@ async def check_machine(
 ) -> MachineAnswer:
     """The machine's token as it stands: whether a usable one is there, and if
     so whether Claude serves it, by one minimal turn on the machine, which
-    ``look_only`` skips, reading one there as ``unknown``. A machine with no
+    ``look_only`` skips, reading one there as ``unknown``, and one that
+    would be billed to usage credits (``check_would_bill``) skips, keeping
+    the last answer, or ``works`` where it told nothing. A machine with no
     CLI yet reads as ``unknown``: a check never installs it.
 
     The account and expiry are the last answer's, since the machine keeps
@@ -343,8 +353,10 @@ async def check_machine(
         return MachineAnswer(state.file, **found)
     if look_only:
         return carried(last, "unknown", **found)
+    if await check_would_bill(user_id, computer_credential(computer_id)):
+        return carried(last, last.file if last is not None and last.file in ("works", "refused") else "works", **found)
     try:
-        works = await run_check(check_launcher(machine, user_id, token_name(computer_id)))
+        works = await run_check(check_launcher(machine, user_id, token_name(computer_id), plan=UserPlan(user_id, computer_id)))
     except Exception as e:
         logger.info(f"[claude_code] token check could not tell on the machine: {type(e).__name__}")
         return carried(last, "unknown", **found)
@@ -484,9 +496,16 @@ async def list_computers(user_id: str, *, mark_offline: bool = False) -> ClaudeC
         tunnels = await tunnels_for(user_id, computers)
         entries = await asyncio.gather(*(_off(user_id, c, tunnels, mark_offline=mark_offline) for c in computers))
         return ClaudeCodeComputers(computers=list(entries))
-    tunnels, saved = await asyncio.gather(tunnels_for(user_id, computers), _relayed(user_id))
+    tunnels, saved, plans = await asyncio.gather(tunnels_for(user_id, computers), _relayed(user_id), plan_views(user_id))
     entries = await asyncio.gather(*(_status(user_id, c, tunnels, saved, mark_offline=mark_offline) for c in computers))
-    return ClaudeCodeComputers(computers=list(entries))
+    return ClaudeCodeComputers(computers=[_with_plan(e, plans) for e in entries])
+
+
+def _with_plan(entry: ClaudeCodeComputer, plans: Mapping[str, Any]) -> ClaudeCodeComputer:
+    """The entry with the plan behind the token a turn there signs in with:
+    the relayed saved token's, else the computer's own."""
+    key = plan_credential(entry.source, entry.computer_id) if entry.source else None
+    return entry.model_copy(update={"plan": plans.get(key)}) if key else entry
 
 
 async def remove_for_removed_computer(link: Link, computer_id: str) -> bool:
@@ -528,6 +547,8 @@ class MachineHome:
         self._machine: Machine[Link] | None = None
         #: The tokens' folder the token was put in, as the machine named it, which ``keep`` records.
         self._folder: str | None = None
+        #: What the check of the token being placed reported of its plan.
+        self.checked = CheckReports()
 
     @classmethod
     async def of(cls, user_id: str, computer_id: str) -> MachineHome:
@@ -599,7 +620,7 @@ class MachineHome:
             raise self._write_failed(retryable) from None
         promoted = False
         try:
-            yield check_launcher(self.machine, self.user_id, staged)
+            yield check_launcher(self.machine, self.user_id, staged, plan=self.checked)
             if not await held():
                 raise busy()
             if await get_computer(self.computer_id) is None:
@@ -645,6 +666,9 @@ class MachineHome:
             self.computer_id,
             MachineAnswer("works", email, expires_at.isoformat(), folder=self._folder),
         )
+        # The token placed may be another Claude account's.
+        await claude_code_plan.forget_plan(self.user_id, computer_credential(self.computer_id), token_digest=token_hash(token))
+        await self.checked.keep(UserPlan(self.user_id, self.computer_id))
         logger.info(f"[claude_code] setup token placed on computer_id={self.computer_id} for user_id={self.user_id}")
         return _entry(self.computer, "signed_in", "machine", **answer.meta)
 
@@ -658,7 +682,9 @@ class MachineHome:
         """Remove the token, then keep what the machine says now: its
         organization's policy may have changed since it was last read. A
         hold that lapsed may have let another change in, so then the next
-        read asks the machine instead."""
+        read asks the machine instead. The token's plan row is forgotten
+        last, so a failed write still leaves the answer matching the
+        machine."""
         from ptc_agent.agent.claude_code.machine_token import machine_state, remove_machine_token
 
         try:
@@ -684,4 +710,5 @@ class MachineHome:
             await keep_answer(
                 self.computer_id, MachineAnswer(state.file, present=state.present, folder=state.folder),
             )
+        await claude_code_plan.forget_plan(self.user_id, computer_credential(self.computer_id))
         logger.info(f"[claude_code] setup token removed={removed} on computer_id={self.computer_id} for user_id={self.user_id}")

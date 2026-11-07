@@ -1,6 +1,7 @@
 """What a removed ssh computer leaves on its machine: the folders its owner
 asked to have deleted, LangAlpha's own files when they asked for those too,
-its Claude Code token, the key's line and the tunnel.
+its Claude Code token, the key's line and the tunnel. The Claude plan state
+its token kept is dropped first, whether or not the machine is reached.
 
 All of them go after the computer's delete, on the connection the delete ran on
 (``ssh.removal_link``): a machine the delete could not reach is not dialed
@@ -35,6 +36,7 @@ from ptc_agent.core.sandbox.providers._ssh_shell import (
     uninstall_script,
 )
 from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Link
+from src.server.database import claude_code_plan
 from src.server.database.computer import get_computers_for_user
 from src.server.database.ssh_keys import get_user_ssh_public_key
 from src.server.database.workspace import (
@@ -124,6 +126,13 @@ async def leave_machine(
     remove_key = remove_key and not (computer.get("provider_config") or {}).get(
         "helper"
     )
+    try:
+        await claude_code_plan.drop_plan(user_id, claude_code_plan.computer_credential(str(computer.get("computer_id"))))
+    except Exception:  # noqa: BLE001 - the removal it follows already succeeded
+        logger.exception(
+            "Could not drop the Claude plan state of removed computer %s",
+            computer.get("computer_id"),
+        )
     try:
         config = SSHConfig.model_validate(
             {**settings.model_dump(), **(computer.get("provider_config") or {})}
