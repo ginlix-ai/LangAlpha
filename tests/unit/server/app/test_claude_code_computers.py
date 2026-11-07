@@ -9,7 +9,7 @@ import sys
 import time
 from contextlib import ExitStack
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -215,7 +215,7 @@ def _entry(state, source=None, email=None, expires_at=None, own_file=None):
     return {
         "computer_id": CID, "name": "Studio Mac", "kind": "helper", "state": state, "source": source,
         "own_file": source == "machine" if own_file is None else own_file, "email": email, "expires_at": expires_at,
-        "plan": None,
+        "plan": None, "check_in": None, "check_bills": False,
     }
 
 
@@ -454,6 +454,20 @@ async def test_a_pasted_token_is_staged_checked_there_then_put_in_place_and_kept
     assert launcher.slot_wait_s == START_TIMEOUT_S, "a check waits only briefly for a CLI slot"
     assert _kept(world.cache).file == "works"
     assert not world.cache.locks
+
+
+@pytest.mark.asyncio
+async def test_the_same_token_placed_again_answers_with_the_plan_and_hold_its_row_kept(client, world):
+    world.machine.token = "sk-ant-oat01-pasted"
+    now = datetime.now(timezone.utc)
+    use = {"used": 0.4, "resets_at": (now + timedelta(hours=2)).isoformat(), "seen_at": now.isoformat()}
+    row = {"state": {"windows": {"five_hour": use}}, "checked_at": now - timedelta(minutes=1), "read_at": now,
+           "updated_at": now, "generation": 1}
+    with patch("src.server.database.claude_code_plan.get_plans", AsyncMock(return_value={f"computer:{CID}": row})):
+        response = await client.put(f"{BASE}/token", json={"token": "sk-ant-oat01-pasted"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["plan"]["five_hour"]["used"], body["check_in"]) == (0.4, 240), "the cache it is written to keeps the meter and the hold"
 
 
 @pytest.mark.asyncio

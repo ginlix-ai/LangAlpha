@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
-from src.llms.claude_code import binding_limit, token_check_model
+from src.llms.claude_code import PlanOut, binding_limit, token_check_model
 from src.server.database import claude_code_plan as plan_store
 from src.server.services.oauth_signin import OAuthRefusal
 from src.utils.cache.redis_cache import get_cache_client
@@ -90,6 +90,12 @@ async def run_check(launcher: Launcher) -> bool:
         return await token_works(launcher, token_check_model())
 
 
+def check_bills(state: PlanState, out: PlanOut) -> bool:
+    """Whether a check on a credential in ``state`` would be billed under
+    ``out`` (``check_would_bill``), the rule Settings hides Check now by."""
+    return out == "stop" and state.credits_value != "off" and binding_limit(state.held(), token_check_model()) is not None
+
+
 async def check_would_bill(user_id: str, credential: str) -> bool:
     """Whether a check of ``credential``'s token would be billed to usage
     credits the user chose not to spend: under Stop, its row holds a limit on
@@ -103,8 +109,7 @@ async def check_would_bill(user_id: str, credential: str) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[claude_code] could not read the plan state before a token check: {type(e).__name__}")
         return False
-    state = PlanState.of(row.get("state"))
-    if state.credits_value == "off" or binding_limit(state.held(), token_check_model()) is None:
+    if not check_bills(PlanState.of(row.get("state")), "stop"):
         return False
     try:
         return await plan_out(user_id) == "stop"
@@ -139,7 +144,7 @@ async def holds(lock: str, holder: str) -> bool:
 
 
 async def in_background(
-    lock: str, budget_s: int, work: Callable[[Held], Coroutine[Any, Any, None]],
+    lock: str, budget_s: int, work: Callable[[Held], Coroutine[Any, Any, object]],
 ) -> bool | None:
     """Start ``work`` on this worker unless another holds ``lock``: True when
     it started here, False when another's is running, None with no Redis to
@@ -160,7 +165,7 @@ async def in_background(
     return leader
 
 
-async def _held(work: Coroutine[Any, Any, None], lock: str, holder: str, budget_s: int) -> None:
+async def _held(work: Coroutine[Any, Any, object], lock: str, holder: str, budget_s: int) -> None:
     try:
         async with asyncio.timeout(budget_s):
             await work

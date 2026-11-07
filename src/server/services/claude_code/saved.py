@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
@@ -36,10 +36,12 @@ from src.server.database.oauth_tokens import (
 from src.server.models.claude_code import ClaudeCodeStatus, State
 from src.utils.cache.redis_cache import get_cache_client
 
+from .check_now import CHECK_UNAVAILABLE, PLAN_WRITTEN_S, held_check, limit_held, not_checkable, unreached, unsaved
 from .checks import (
     CHECK_CLEANUP_S,
     CHECK_S,
     CHECKED,
+    Check,
     Held,
     check_would_bill,
     in_background,
@@ -47,8 +49,8 @@ from .checks import (
     read_check,
     run_check,
 )
-from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, rows_on, turns_running
-from .plan import CheckReports, UserPlan, plan_views
+from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, changing, require, rows_on, turns_running
+from .plan import CheckReports, CredentialPlan, UserPlan, plan_views
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.launcher import LocalLauncher
@@ -75,6 +77,11 @@ def token_check_key(token: str) -> str:
 
 def _check_key(digest: str) -> str:
     return f"claude_code:token_check:{digest}"
+
+
+def check_lock(token: str) -> str:
+    """One check of a token at a time, wherever it starts."""
+    return f"{token_check_key(token)}:lock"
 
 
 async def stored_row(user_id: str) -> dict | None:
@@ -150,8 +157,11 @@ def _launcher(token: str, plan: PlanLog | None = None) -> LocalLauncher:
     return LocalLauncher(token=token, plan=plan)
 
 
-async def _check(user_id: str, row: dict, key: str, held: Held) -> None:
-    """Ask Anthropic, and keep the answer by the token's hash. A refusal is
+async def check_token(
+    user_id: str, row: dict, key: str, held: Held, *, answered: Callable[[], None] = lambda: None,
+    skipped: Callable[[], None] = lambda: None, plan: UserPlan | None = None,
+) -> Check:
+    """Ask Anthropic, keep the answer by the token's hash, and return it. A refusal is
     flagged on the row too, and a token served clears a flag a refusal
     left, one a turn met for a reason other than the token included, unless
     a refusal stamped the flag again since the row was read. A refusal a
@@ -159,20 +169,27 @@ async def _check(user_id: str, row: dict, key: str, held: Held) -> None:
     the answer is kept before the row is read again, and a refusal flags the
     row before it keeps its own, so one of the two sees the other. One that
     would be billed to usage credits (``check_would_bill``) sends nothing
-    and keeps the answer the row stands on."""
+    and keeps the answer the row stands on, which ``skipped`` hears.
+    ``answered`` hears when Claude has answered, the request then spent;
+    ``plan`` keeps what the check reports of the plan, for a caller to wait on."""
     digest = token_hash(row["access_token"])
     if await check_would_bill(user_id, SAVED):
-        await keep_check(key, "refused" if row.get("needs_reauth_at") is not None else "works")
-        return
+        answer = "refused" if row.get("needs_reauth_at") is not None else "works"
+        await keep_check(key, answer)
+        skipped()
+        return answer
+    plan = plan or UserPlan(user_id, token_digest=digest)
     try:
-        works = await run_check(_launcher(row["access_token"], UserPlan(user_id, token_digest=digest)))
+        works = await run_check(_launcher(row["access_token"], plan))
+        answered()
+        await plan.written()
     except Exception as e:
         logger.warning(f"[claude_code] token check failed: {type(e).__name__}")
         await keep_check(key, "unknown")
-        return
+        return "unknown"
     if not works:
         await refuse(user_id, digest, row["updated_at"])
-        return
+        return "refused"
     await keep_check(key, "works")
     if row.get("needs_reauth_at") is not None:
         await clear_access_token_refused(
@@ -182,6 +199,8 @@ async def _check(user_id: str, row: dict, key: str, held: Held) -> None:
     current = await stored_row(user_id)
     if current is not None and current.get("needs_reauth_at") is not None and token_hash(current["access_token"]) == digest:
         await keep_check(key, "refused")
+        return "refused"
+    return "works"
 
 
 def _expired(row: dict) -> bool:
@@ -201,7 +220,7 @@ async def token_state(user_id: str, row: dict) -> State:
     key = token_check_key(token)
     if (answer := await read_check(key)) is not None:
         return CHECKED[answer]
-    started = await in_background(f"{key}:lock", CHECK_S + CHECK_CLEANUP_S, lambda held: _check(user_id, row, key, held))
+    started = await in_background(check_lock(token), CHECK_S + CHECK_CLEANUP_S, lambda held: check_token(user_id, row, key, held))
     if started is not None:
         return "checking"
     # With no Redis to keep an answer, a check here would spend a request on
@@ -234,7 +253,58 @@ async def status(user_id: str) -> ClaudeCodeStatus:
         saved = await get_oauth_connection(user_id, CLAUDE_CODE_PROVIDER) is not None
         return ClaudeCodeStatus(state="policy_blocked", saved=saved, enabled=True)
     current, plans = await asyncio.gather(_current(user_id, await stored_row(user_id)), plan_views(user_id, [SAVED]))
-    return current.model_copy(update={"plan": plans.get(SAVED)}) if current.saved else current
+    return _with_plan(current, plans)
+
+
+def _with_plan(status: ClaudeCodeStatus, plans: Mapping[str, CredentialPlan]) -> ClaudeCodeStatus:
+    """The status with the plan behind the saved token and its Check now's hold."""
+    found = plans.get(SAVED)
+    return status.model_copy(update=found._asdict()) if status.saved and found else status
+
+
+async def check_now(user_id: str) -> None:
+    """Check now on the saved token, where this server runs turns on it
+    (``check_now``): under the hold its saves and removals take, so the
+    token checked is the one saved and its hold the one taken, then under
+    its own check's, so it never runs beside the check a read starts. Where
+    an organization's policy is installed on the backend's machine, it is
+    refused as a save is, the CLI never run, and so is one that would be
+    billed to usage credits (``check_would_bill``), before its hold."""
+    require(await rows_on(user_id) and await saved_token_runs(user_id))
+    home = SavedHome(user_id)
+    await home.ready()
+    async with changing(home.lock, hold_s=CHECK_S + CHECK_CLEANUP_S, unavailable=CHECK_UNAVAILABLE):
+        row = await stored_row(user_id)
+        if row is None or not await usable(row):
+            raise not_checkable("Add a setup token that works first.")
+        if await check_would_bill(user_id, SAVED):
+            raise limit_held()
+        token = row["access_token"]
+        async with (
+            changing(check_lock(token), hold_s=CHECK_S + CHECK_CLEANUP_S, unavailable=CHECK_UNAVAILABLE) as held,
+            held_check(user_id, SAVED) as spend,
+        ):
+            plan, skips, spent = UserPlan(user_id, token_digest=token_hash(token)), [], []
+
+            def answered() -> None:
+                spend()
+                spent.append(True)
+
+            try:
+                async with asyncio.timeout(CHECK_S + CHECK_CLEANUP_S):
+                    answer = await check_token(
+                        user_id, row, token_check_key(token), held, answered=answered, skipped=lambda: skips.append(True), plan=plan,
+                    )
+            except TimeoutError:
+                if spent:
+                    raise unsaved() from None
+                answer = "unknown"
+            if skips:
+                raise limit_held()
+            if answer == "unknown":
+                raise unreached()
+            if not await plan.written(PLAN_WRITTEN_S):
+                raise unsaved()
 
 
 class SavedHome:
@@ -291,10 +361,12 @@ class SavedHome:
         if previous is not None and previous["access_token"] != token:
             await get_cache_client().delete(token_check_key(previous["access_token"]))
         logger.info(f"[claude_code] setup token saved for user_id={self.user_id} token_uuid={token_uuid or '-'}")
-        return _status({"email": email, "expires_at": expires_at}, "signed_in")
+        # The same token saved again keeps its plan and its Check now's hold.
+        return _with_plan(_status({"email": email, "expires_at": expires_at}, "signed_in"), await plan_views(self.user_id, [SAVED]))
 
     async def current(self) -> ClaudeCodeStatus:
-        return await _current(self.user_id, await stored_row(self.user_id))
+        current, plans = await asyncio.gather(_current(self.user_id, await stored_row(self.user_id)), plan_views(self.user_id, [SAVED]))
+        return _with_plan(current, plans)
 
     async def remove(self, *, held: Held) -> None:
         try:

@@ -152,7 +152,7 @@ async def test_a_status_check_flags_a_refused_token_and_clears_the_flag_of_one_c
         patch(f"{SAVED}.clear_access_token_refused", new_callable=AsyncMock) as clear,
         patch("ptc_agent.agent.claude_code.runtime.token_works", AsyncMock(return_value=works)),
     ):
-        await saved._check("user-1", _row(flagged=flagged), token_check_key(TOKEN), AsyncMock(return_value=True))
+        await saved.check_token("user-1", _row(flagged=flagged), token_check_key(TOKEN), AsyncMock(return_value=True))
     assert flag.await_count == int(not works)
     if not works:
         assert flag.await_args.kwargs["saved_at"] == SAVED_AT
@@ -177,7 +177,7 @@ async def test_a_refusal_a_turn_met_while_a_status_check_ran_stands_over_its_ans
         patch(f"{SAVED}.clear_access_token_refused", new_callable=AsyncMock) as clear,
         patch("ptc_agent.agent.claude_code.runtime.token_works", served_then_refused),
     ):
-        await saved._check("user-1", _row(), token_check_key(TOKEN), AsyncMock(return_value=True))
+        await saved.check_token("user-1", _row(), token_check_key(TOKEN), AsyncMock(return_value=True))
         assert await saved.token_state("user-1", _row(flagged=True)) == "rejected"
     clear.assert_not_awaited()
     assert cache.values == {token_check_key(TOKEN): False}
@@ -197,7 +197,7 @@ async def test_a_check_of_a_flagged_token_leaves_a_refusal_a_turn_met_while_it_r
         patch(f"{SAVED}.clear_access_token_refused", new_callable=AsyncMock, return_value=False) as clear,
         patch("ptc_agent.agent.claude_code.runtime.token_works", served_then_refused),
     ):
-        await saved._check("user-1", _row(flagged=True), token_check_key(TOKEN), AsyncMock(return_value=True))
+        await saved.check_token("user-1", _row(flagged=True), token_check_key(TOKEN), AsyncMock(return_value=True))
         assert await saved.token_state("user-1", restamped) == "rejected"
     assert clear.await_args.kwargs["flagged_at"] == NOW, "the clear names the flag the check read"
     assert cache.values == {token_check_key(TOKEN): False}

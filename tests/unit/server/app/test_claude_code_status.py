@@ -5,7 +5,7 @@ a token only once Anthropic serves it, and removing it."""
 import asyncio
 import json
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -69,21 +69,21 @@ async def _status(client, *, token="tok", answer=True, runs=True, rows=True, opt
 @pytest.mark.parametrize(("rows", "opted_in"), [(False, True), (True, False)])
 async def test_not_enabled_checks_nothing(client, rows, opted_in):
     body, check = await _status(client, rows=rows, opted_in=opted_in)
-    assert body == {"state": "off", "email": None, "expires_at": None, "saved": True, "enabled": False, "plan": None}
+    assert body == {"state": "off", "email": None, "expires_at": None, "saved": True, "enabled": False, "plan": None, "check_in": None, "check_bills": False}
     check.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_where_only_own_computers_run_it_it_is_on_and_the_saved_token_off(client):
     body, check = await _status(client, runs=False)
-    assert body == {"state": "off", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None}
+    assert body == {"state": "off", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     check.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_without_a_token_it_needs_one_and_nothing_runs(client):
     body, check = await _status(client, token=None)
-    assert body == {"state": "no_token", "email": None, "expires_at": None, "saved": False, "enabled": True, "plan": None}
+    assert body == {"state": "no_token", "email": None, "expires_at": None, "saved": False, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     check.assert_not_awaited()
 
 
@@ -92,10 +92,10 @@ async def test_without_a_token_it_needs_one_and_nothing_runs(client):
 async def test_a_read_never_waits_on_the_check_and_a_later_read_has_its_answer(client, answer, state):
     cache = _Cache()
     first, check = await _status(client, answer=answer, cache=cache)
-    assert first == {"state": "checking", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None}
+    assert first == {"state": "checking", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     check.assert_awaited_once()
     later, again = await _status(client, answer=answer, cache=cache)
-    assert later == {"state": state, "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None}
+    assert later == {"state": state, "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     again.assert_not_awaited()
     assert set(cache.ttls.values()) == {checks.TOKEN_CHECK_TTL_S} and not cache.locks
     assert set(cache.values.values()) == {answer}, "kept as a worker from before the words reads it"
@@ -106,7 +106,7 @@ async def test_a_check_that_could_not_tell_reads_as_unverified_and_is_kept_brief
     cache = _Cache()
     await _status(client, answer=TimeoutError(), cache=cache)
     later, again = await _status(client, answer=TimeoutError(), cache=cache)
-    assert later == {"state": "unverified", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None}
+    assert later == {"state": "unverified", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     again.assert_not_awaited()
     assert set(cache.ttls.values()) == {checks.SHORT_TTL_S} and set(cache.values.values()) == {"unknown"}
 
@@ -134,14 +134,14 @@ def _policy_installed(tmp_path, monkeypatch) -> None:
 async def test_where_a_policy_is_installed_on_the_backend_it_reads_so_and_checks_nothing(client, tmp_path, monkeypatch, token):
     _policy_installed(tmp_path, monkeypatch)
     body, check = await _status(client, token=token)
-    assert body == {"state": "policy_blocked", "email": None, "expires_at": None, "saved": token is not None, "enabled": True, "plan": None}
+    assert body == {"state": "policy_blocked", "email": None, "expires_at": None, "saved": token is not None, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     check.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_without_redis_a_read_spends_nothing_on_the_plan(client):
     body, check = await _status(client, answer=True, cache=_Cache(redis=False))
-    assert body == {"state": "unverified", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None}
+    assert body == {"state": "unverified", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     check.assert_not_awaited()
 
 
@@ -150,7 +150,7 @@ async def test_a_new_token_is_checked_at_once_and_no_key_holds_a_token(client):
     cache = _Cache()
     await _status(client, token="tok-1", cache=cache)
     body, check = await _status(client, token="tok-2", answer=False, cache=cache)
-    assert body == {"state": "checking", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None}
+    assert body == {"state": "checking", "email": None, "expires_at": None, "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     check.assert_awaited_once()
     assert not any(token in key for key in cache.values for token in ("tok-1", "tok-2"))
 
@@ -212,7 +212,7 @@ async def test_a_token_anthropic_serves_is_saved_over_the_last_and_the_last_one_
     assert response.status_code == 200
     body = response.json()
     saved_until = datetime.fromisoformat(body.pop("expires_at"))
-    assert body == {"state": "signed_in", "email": None, "saved": True, "enabled": True, "plan": None}
+    assert body == {"state": "signed_in", "email": None, "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     assert abs(saved_until - datetime.now(timezone.utc) - flow.TOKEN_LIFETIME).total_seconds() < 60
     assert check.await_args.args[0].token == "tok-new"
     assert store.token == "tok-new" and store.writes == [("lock", "claude-code"), ("upsert", "claude-code")]
@@ -253,8 +253,21 @@ async def test_the_same_token_saved_again_keeps_when_it_lapses_and_its_account(c
     store.email, store.expires_at = "user@example.com", datetime(2027, 1, 2, tzinfo=timezone.utc)
     response, _, _ = await _token_call(client, "PUT", body={"token": "tok"}, store=store)
     assert response.status_code == 200
-    assert response.json() == {"state": "signed_in", "email": "user@example.com", "expires_at": "2027-01-02T00:00:00Z", "saved": True, "enabled": True, "plan": None}
+    assert response.json() == {"state": "signed_in", "email": "user@example.com", "expires_at": "2027-01-02T00:00:00Z", "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     assert store.expires_at == datetime(2027, 1, 2, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_the_same_token_saved_again_answers_with_the_plan_and_hold_its_row_kept(client):
+    now = datetime.now(timezone.utc)
+    use = {"used": 0.4, "resets_at": (now + timedelta(hours=2)).isoformat(), "seen_at": now.isoformat()}
+    row = {"state": {"windows": {"five_hour": use}}, "checked_at": now - timedelta(minutes=1), "read_at": now,
+           "updated_at": now, "generation": 1}
+    with patch("src.server.database.claude_code_plan.get_plans", AsyncMock(return_value={"saved": row})):
+        response, _, _ = await _token_call(client, "PUT", body={"token": "tok"}, store=_Store("tok"))
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["plan"]["five_hour"]["used"], body["check_in"]) == (0.4, 240), "the cache it is written to keeps the meter and the hold"
 
 
 @pytest.mark.asyncio
@@ -346,7 +359,7 @@ async def test_a_signed_in_token_is_checked_then_saved_with_its_account_and_the_
         client, "POST", path=f"{SIGN_IN}/code", body={"code": " code#state-1 "}, cache=cache, store=store, mint=mint,
     )
     assert response.status_code == 200
-    assert response.json() == {"state": "signed_in", "email": "user@example.com", "expires_at": "2027-10-29T00:00:00Z", "saved": True, "enabled": True, "plan": None}
+    assert response.json() == {"state": "signed_in", "email": "user@example.com", "expires_at": "2027-10-29T00:00:00Z", "saved": True, "enabled": True, "plan": None, "check_in": None, "check_bills": False}
     assert mint.await_args.args == ("code", "state-1", "verifier")
     assert check.await_args.args[0].token == "sk-ant-oat01-minted"
     assert (store.token, store.account_id, store.email) == ("sk-ant-oat01-minted", "tok-uuid", "user@example.com")

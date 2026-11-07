@@ -866,8 +866,13 @@ class ClaudeTurn:
         return key, block
 
     async def close(self) -> None:
+        """End the run's CLI, then wait, briefly, for what its responses said
+        of the Claude plan to be kept: the run's closing frame comes after,
+        and the client reads the plan again on it, however the run ended."""
         if self._run is not None:
             await self._run.close()
+        if self._plan is not None:
+            await self._plan.settled()
 
 
 def _pinned_after(writes: list[SessionWrite], pin: SessionPin | None, *, due: bool = False) -> list[SessionWrite]:

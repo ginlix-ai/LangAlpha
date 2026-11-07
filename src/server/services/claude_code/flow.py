@@ -123,14 +123,18 @@ def turns_running() -> OAuthRefusal:
 
 
 @asynccontextmanager
-async def changing(lock: str, *, hold_s: int, wait_s: float = 0, required: bool = True) -> AsyncIterator[Held]:
+async def changing(
+    lock: str, *, hold_s: int, wait_s: float = 0, required: bool = True,
+    unavailable: str = "Connecting an account is unavailable right now. Try again shortly.",
+) -> AsyncIterator[Held]:
     """One change to a token at a time, held for ``hold_s``, what the change
     spends at most, and ``MARGIN_S`` more; yields whether the hold still
     stands, which a change asks before each write.
 
     The hold is waited for up to ``wait_s``. One not taken by then refuses
     the change, unless it is not ``required``: a change that must happen
-    whatever runs beside it goes on without the hold.
+    whatever runs beside it goes on without the hold. Without Redis to hold
+    it, a required change is refused saying ``unavailable``.
     """
     cache = get_cache_client()
     holder = uuid.uuid4().hex
@@ -143,10 +147,7 @@ async def changing(lock: str, *, hold_s: int, wait_s: float = 0, required: bool 
         raise busy()
     if required and acquired is None:
         # Redis did not answer: without the hold a removal could land mid-save.
-        raise OAuthRefusal(
-            503, "redis_unavailable", "Connecting an account is unavailable right now. Try again shortly.",
-            retryable=True,
-        )
+        raise OAuthRefusal(503, "redis_unavailable", unavailable, retryable=True)
     try:
         yield partial(holds, lock, holder)
     finally:

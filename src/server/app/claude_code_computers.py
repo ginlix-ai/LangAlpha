@@ -6,6 +6,7 @@ turn can run there, and the setup token kept on its machine.
 - POST   /api/v1/claude-code/computers/{computer_id}/sign-in/code    Finish it with the code Claude's page shows
 - PUT    /api/v1/claude-code/computers/{computer_id}/token           Place a token the user made themselves
 - DELETE /api/v1/claude-code/computers/{computer_id}/token           Remove the machine's token
+- POST   /api/v1/claude-code/computers/{computer_id}/check           Check now: read its own token's Claude plan with one minimal request
 
 The flow and the machine's token are ``services.claude_code`` (``flow``, ``machine``).
 """
@@ -18,7 +19,7 @@ from src.server.models.claude_code import ClaudeCodeComputer, ClaudeCodeComputer
 from src.server.services.claude_code import flow
 from src.server.services.claude_code.flow import pasted_code, pasted_token, require, rows_on
 from src.server.services.claude_code.hosted import cloud_refusals
-from src.server.services.claude_code.machine import MachineHome, list_computers
+from src.server.services.claude_code.machine import MachineHome, check_now, list_computers
 from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/claude-code/computers", tags=["claude-code"])
@@ -56,4 +57,10 @@ async def save_token(computer_id: str, body: TokenBody, x_user_id: CurrentUserId
 async def remove_token(computer_id: str, x_user_id: CurrentUserId):
     """Remove the machine's token, whether or not Claude Code is still on for the user or the server."""
     await flow.remove(await MachineHome.of(x_user_id, computer_id))
+    return Response(status_code=204)
+
+
+@router.post("/{computer_id}/check", status_code=204)
+async def check_computer(computer_id: str, x_user_id: CurrentUserId):
+    await check_now(x_user_id, computer_id)
     return Response(status_code=204)

@@ -414,7 +414,7 @@ async def test_a_saved_tokens_check_that_would_bill_sends_nothing_and_keeps_the_
     monkeypatch.setattr("ptc_agent.agent.claude_code.runtime.token_works", works)
     monkeypatch.setattr(saved, "keep_check", keep)
     row = {"access_token": "sk-ant-oat01-x", "updated_at": NOW, "needs_reauth_at": NOW if flagged else None}
-    await saved._check("u", row, "key", AsyncMock(return_value=True))
+    await saved.check_token("u", row, "key", AsyncMock(return_value=True))
     works.assert_not_awaited()
     keep.assert_awaited_once_with("key", kept)
 
