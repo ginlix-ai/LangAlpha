@@ -296,8 +296,6 @@
 
 /* The manage view's columns sit on a rule, as the rails do. */
 :root:not([data-card-style='quiet']) :is(.automations-manage, .automations-manage-list) { border-color: var(--color-shell-edge); }
-:root:not([data-card-style]) .automations-manage { border-top-style: dashed; }
-:root:not([data-card-style]) .automations-manage-list { border-right-style: dashed; }
 /* The open automation: full ink and an edge, no wash, as the rails mark it. */
 :root:not([data-card-style='quiet']) .automations-list-row[aria-current='true'] {
   background-color: transparent;

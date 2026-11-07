@@ -5,11 +5,11 @@
    File panel: rules, tabs, the tree column
    ════════════════════════════════════════════════════════════════════ */
 
-/* The panel's inner rules are the cards' dividers. The header's own line is
+/* The panel's inner rules are the cards' dividers; its outer edge stays
+   solid, as every edge that bounds a surface does. The header's own line is
    left alone: it continues the thread header's line across the split, and
    the two must change together or not at all. */
 :root:not([data-card-style='quiet']) :is(.file-panel, .file-panel-tree) { border-left-color: var(--color-shell-edge); }
-:root:not([data-card-style]) :is(.file-panel, .file-panel-tree) { border-left-style: dashed; }
 :root:not([data-card-style='quiet']) :is(
   .file-panel-crumbs, .file-panel-store-group, .file-panel-preview-group,
   .pdf-controls, .pdf-rail-tabs, .preview-viewer-toolbar, .excel-fbar
@@ -26,7 +26,7 @@
 :root:not([data-card-style='quiet']) :is(.excel-footer, .excel-truncated) { border-top-color: var(--color-shell-rule); }
 :root:not([data-card-style]) :is(.excel-footer, .excel-truncated) { border-top-style: dashed; border-top-color: var(--color-shell-edge); }
 :root:not([data-card-style='quiet']) .pdf-rail { border-right-color: var(--color-shell-rule); }
-:root:not([data-card-style]) .pdf-rail { border-right-style: dashed; border-right-color: var(--color-shell-edge); }
+:root:not([data-card-style]) .pdf-rail { border-right-color: var(--color-shell-edge); }
 
 /* Open tabs. The one in front is an open box rather than a raised fill, as
    the sidebar's open thread is; brackets would come and go with the choice
@@ -297,7 +297,7 @@
 /* The rule under the search and beside the provider rail: the card's divider. */
 :root:not([data-card-style='quiet']) :is(.pf-picker-search, .pf-picker-rail) { border-color: var(--color-shell-rule); }
 :root:not([data-card-style]) .pf-picker-search { border-bottom-style: dashed; border-bottom-color: var(--color-shell-edge); }
-:root:not([data-card-style]) .pf-picker-rail { border-right-style: dashed; border-right-color: var(--color-shell-edge); }
+:root:not([data-card-style]) .pf-picker-rail { border-right-color: var(--color-shell-edge); }
 
 /* The picked provider: an open box, not a fill. */
 :root:not([data-card-style='quiet']) .pf-picker-rail-tab[data-selected] {

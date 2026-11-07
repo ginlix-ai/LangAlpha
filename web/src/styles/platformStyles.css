@@ -18,6 +18,10 @@
      open boxes (T+B)  :root:not([data-card-style='quiet'])
      text face (B+Q)   :root:is([data-card-style='balanced'], [data-card-style='quiet'])
 
+   Terminal dashes only the dividers inside a surface (section heads, menu
+   separators, a header's rule); the edges that bound one (the sidebar, a
+   panel, a rail, a sheet) stay solid, or the app reads as broken.
+
    Quiet changes the least: it only aligns the labels (sentence case, the
    text face) with the other two and leaves the platform's filled surfaces. */
 
@@ -530,7 +534,6 @@
   background: var(--color-bg-page);
   border-right-color: var(--color-shell-edge);
 }
-:root:not([data-card-style]) .sidebar { border-right-style: dashed; }
 :root:not([data-card-style]) :is(.sidebar-panel-item, .sidebar-account-row-name) {
   font-size: 0.78125rem;
 }

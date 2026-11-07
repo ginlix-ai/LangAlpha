@@ -63,9 +63,6 @@
   border-color: var(--color-shell-edge) !important;
   box-shadow: none !important;
 }
-:root:not([data-card-style]) :is([data-slot='sheet'], [data-slot='dialog'][data-sheet]) {
-  border-top-style: dashed !important;
-}
 :root:not([data-card-style='quiet']) [data-slot='sheet-handle'] > * {
   background-color: var(--color-shell-edge) !important;
 }
