@@ -85,7 +85,7 @@ def _make_agent_config(
             daytona=DaytonaConfig(
                 api_key=api_key,
                 base_url=base_url,
-                snapshot_enabled=False,
+                snapshot_name="langalpha",
             ),
         ),
         mcp=MCPConfig(),
@@ -107,8 +107,7 @@ def _build_agent_config(sandbox_base_dir: str) -> AgentConfig:
             "DAYTONA_BASE_URL", "https://app.daytona.io/api"
         )
         return _make_agent_config(
-            # snapshot_enabled=False uses Daytona's base image home.
-            working_directory="/home/daytona",
+            working_directory="/home/workspace",
             provider="daytona",
             api_key=api_key,
             base_url=base_url,
