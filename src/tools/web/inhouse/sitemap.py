@@ -7,6 +7,7 @@ and produces a grouped summary for LLM context injection.
 Uses httpx + stdlib xml.etree.ElementTree.
 """
 
+import asyncio
 import logging
 import xml.etree.ElementTree as ET
 from typing import Optional
@@ -137,35 +138,29 @@ async def fetch_sitemap_urls(domain: str, max_urls: int = 100, timeout: float = 
 
     Returns:
         List of dicts with "url" key.
-        Returns empty list if sitemap unavailable or times out.
+        Returns empty list if sitemap unavailable, and the URLs collected so
+        far if it times out.
     """
+    urls: list[str] = []
     try:
-        async with httpx.AsyncClient(
+        async with asyncio.timeout(timeout), httpx.AsyncClient(
             transport=GuardedAsyncTransport(),
             timeout=httpx.Timeout(timeout, connect=5.0),
             follow_redirects=True,
             headers={"User-Agent": _USER_AGENT},
         ) as client:
-            sitemap_urls = await _find_sitemap_url(client, domain)
-            if not sitemap_urls:
-                logger.debug(f"No sitemap found for {domain}")
-                return []
-
-            urls: list[str] = []
-            for sitemap_url in sitemap_urls:
+            for sitemap_url in await _find_sitemap_url(client, domain):
                 if len(urls) >= max_urls:
                     break
                 await _parse_sitemap(client, sitemap_url, urls, max_urls)
-
-            logger.debug(f"Fetched {len(urls)} URLs from sitemap for {domain}")
-            return [{"url": u} for u in urls]
-
-    except httpx.TimeoutException:
+    except (httpx.TimeoutException, TimeoutError):
         logger.debug(f"Sitemap fetch timed out for {domain} (>{timeout}s)")
-        return []
     except Exception as e:
         logger.debug(f"Sitemap fetch failed for {domain}: {e}")
         return []
+
+    logger.debug(f"Fetched {len(urls)} URLs from sitemap for {domain}")
+    return [{"url": u} for u in urls]
 
 
 def summarize_sitemap(urls: list[dict], max_examples: int = 3) -> str:
@@ -247,6 +242,7 @@ async def get_sitemap_summary(
         is_sitemap_enabled,
         get_sitemap_max_urls,
         get_sitemap_max_examples,
+        get_sitemap_timeout,
     )
 
     # Check if sitemap is enabled
@@ -275,7 +271,7 @@ async def get_sitemap_summary(
             return ""
 
         # Fetch sitemap URLs
-        urls = await fetch_sitemap_urls(domain, max_urls)
+        urls = await fetch_sitemap_urls(domain, max_urls, timeout=get_sitemap_timeout())
         if not urls:
             return ""
 
