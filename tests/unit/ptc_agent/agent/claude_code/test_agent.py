@@ -1,6 +1,8 @@
 """A Claude Code turn takes the system prompt and the tool node of the agent a turn builds."""
 
 import asyncio
+import secrets
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,7 +15,7 @@ from langgraph.graph import START, MessagesState, StateGraph
 
 from ptc_agent.agent.claude_code.agent import ClaudeCodeGraph, claude_code_graph, waits_for_user
 from ptc_agent.agent.claude_code.compaction import NO_RULES
-from ptc_agent.agent.claude_code.launcher import LocalLauncher
+from ptc_agent.agent.claude_code.launcher import _THREAD_KEY, LocalLauncher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY
 from ptc_agent.agent.claude_code.tools_bridge import tool_specs
 from src.llms.llm import create_llm
@@ -54,14 +56,18 @@ def _graph(**kw):
     target = create_llm("claude-haiku-5-5-code", reasoning_effort="low")
     return claude_code_graph(
         _agent(), system_prompt="the prompt", target=target, checkpointer=None,
-        **{"user_id": "user-1", "thread_id": "thread-1", "launcher": LocalLauncher(), "compaction": NO_RULES, **kw},
+        **{"user_id": "user-1", "launcher": LocalLauncher, "compaction": NO_RULES, **kw},
     )
+
+
+#: A thread's turn: the run's config, as the producer streams the graph with.
+_RUN = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
 
 
 def test_the_turn_runs_the_agents_prompt_and_tools():
     graph = _graph()
-    turn = graph.config["configurable"][TURN_KEY]
-    assert turn is graph.turn
+    turn = graph.turn(_RUN)
+    assert TURN_KEY not in graph.config.get("configurable", {})
     assert graph.config["recursion_limit"] == 9999
     assert (turn.identity, turn.thread_key) == ("user-1", "thread-1")
     assert isinstance(turn.launcher, LocalLauncher)
@@ -86,6 +92,60 @@ async def test_tool_calls_go_through_the_agents_tool_middleware():
 def test_a_turn_without_a_user_or_a_thread_is_refused():
     with pytest.raises(RuntimeError, match="for a user, on a thread"):
         _graph(user_id=None)
+    with pytest.raises(RuntimeError, match="for a user, on a thread"):
+        _graph().turn({"configurable": {}})
+
+
+@pytest.mark.asyncio
+async def test_each_run_gets_a_turn_of_its_own_for_its_thread_and_namespace():
+    """One compiled graph serves every run of its agent, as a subagent's
+    serves each of its tasks: each run, streamed or invoked, gets its own
+    CLI, closed with the run."""
+    seen, closed = [], []
+
+    class _Turn:
+        def __init__(self, **run):
+            self.run = run
+
+        async def close(self):
+            closed.append(self.run)
+
+    class _Compiled:
+        async def astream(self, input, config, **kwargs):
+            seen.append(config["configurable"][TURN_KEY])
+            yield 1
+
+        async def ainvoke(self, input, config, **kwargs):
+            seen.append(config["configurable"][TURN_KEY])
+            return 2
+
+    graph = ClaudeCodeGraph(_Compiled(), _Turn)
+    for namespace in ("", "task:k3Xq_-", "task:k3Xq_-"):
+        async for _ in graph.astream({}, {"configurable": {"thread_id": "t-1", "checkpoint_ns": namespace}}):
+            pass
+    assert await graph.ainvoke({}, {"configurable": {"thread_id": "t-1", "checkpoint_ns": "task:a1b2c3"}}) == 2
+    runs = [{"thread_key": "t-1", "checkpoint_ns": ns} for ns in ("", "task:k3Xq_-", "task:k3Xq_-", "task:a1b2c3")]
+    assert [t.run for t in seen] == runs and closed == runs
+    assert len({id(t) for t in seen}) == 4
+
+
+def test_a_runs_directory_is_its_threads_or_its_tasks_by_a_plain_id_every_launcher_accepts():
+    """A resumed task finds its directory again, and no two CLIs on a thread share one."""
+    thread, task = str(uuid.uuid4()), secrets.token_urlsafe(4)[:6]
+    graph = _graph()
+
+    def key(namespace):
+        return graph.turn({"configurable": {"thread_id": thread, "checkpoint_ns": namespace}}).run_key
+
+    assert key("") == thread
+    assert key(f"task:{task}") == key(f"task:{task}|1") == f"{thread}-{task}"
+    assert _THREAD_KEY.fullmatch(key(f"task:{task}"))
+
+
+def test_each_turn_gets_a_launcher_of_its_own():
+    """A launcher serves one run at a time and holds that run's credential."""
+    graph = _graph()
+    assert graph.turn(_RUN).launcher is not graph.turn(_RUN).launcher
 
 
 def test_the_turn_opens_with_the_agents_entry_hooks_by_name():
@@ -116,10 +176,10 @@ async def test_the_turn_closes_when_its_stream_ends_however_it_ends():
             yield 1
             raise RuntimeError("the run failed")
 
-    graph = ClaudeCodeGraph(_Compiled(), _Turn())
+    graph = ClaudeCodeGraph(_Compiled(), lambda **_: _Turn())
     assert graph.checkpointer == "saver"
     with pytest.raises(RuntimeError):
-        async for _ in graph.astream({}):
+        async for _ in graph.astream({}, _RUN):
             pass
     assert closed == [True]
 
@@ -142,7 +202,7 @@ async def test_a_stream_closed_early_finishes_the_graph_before_the_cli_goes():
             finally:
                 order.append("graph closed")
 
-    stream = ClaudeCodeGraph(_Compiled(), _Turn()).astream({})
+    stream = ClaudeCodeGraph(_Compiled(), lambda **_: _Turn()).astream({}, _RUN)
     assert await anext(stream) == 1
     await stream.aclose()
     assert order == ["graph closed", "cli closed"]
@@ -179,14 +239,14 @@ def test_a_claude_code_turn_opens_with_the_skills_turn_and_baseline_hooks():
         path.append(node)
     assert path == ["SkillsMiddleware.before_agent", "TurnContextMiddleware.before_agent",
                     "BaselineContextMiddleware.before_agent", "model"]
-    assert graph.turn._baseline.__self__.__class__.__name__ == "BaselineContextMiddleware"
-    assert "AskUserQuestion" in {t.name for t in graph.turn.spec.tools}
-    assert not {"Task", "RunWorkflow"} & {t.name for t in graph.turn.spec.tools}
+    assert graph.turn(_RUN)._baseline.__self__.__class__.__name__ == "BaselineContextMiddleware"
+    assert "AskUserQuestion" in {t.name for t in graph.turn(_RUN).spec.tools}
+    assert not {"Task", "RunWorkflow"} & {t.name for t in graph.turn(_RUN).spec.tools}
 
 
 def test_a_claude_code_turn_can_answer_comments_on_a_file():
     """A comment send tells the agent to answer with this tool."""
-    assert "reply_to_comment" in {t.name for t in _built().turn.spec.tools}
+    assert "reply_to_comment" in {t.name for t in _built().turn(_RUN).spec.tools}
 
 
 def test_a_claude_code_turn_waits_for_the_user_on_a_call_that_places_an_order():
@@ -210,10 +270,10 @@ def test_a_claude_code_turn_waits_for_the_user_on_a_call_that_places_an_order():
     quote.metadata = {METADATA_KEY: {"server": "broker", "tool": "get_quote", "approval": False}}
     toolset = MagicMock(tools=[order, quote])
     graph = _built(direct_mcp=toolset, order_ledger=MagicMock())
-    names = {t.name for t in graph.turn.spec.tools}
+    names = {t.name for t in graph.turn(_RUN).spec.tools}
     assert {"mcp__broker__get_quote", "mcp__broker__place_order"} <= names
-    assert graph.turn.spec.waits("mcp__broker__place_order", {"symbol": "AAPL"})
-    assert not graph.turn.spec.waits("mcp__broker__get_quote", {"symbol": "AAPL"})
+    assert graph.turn(_RUN).spec.waits("mcp__broker__place_order", {"symbol": "AAPL"})
+    assert not graph.turn(_RUN).spec.waits("mcp__broker__get_quote", {"symbol": "AAPL"})
     edges = {a: b for a, b in graph.graph.builder.edges}
     path, node = ["CreditGateMiddleware.before_model"], "CreditGateMiddleware.before_model"
     while node in edges:
@@ -260,7 +320,7 @@ def test_a_claude_code_turn_takes_reports_and_steers_in_but_no_task_resume():
     """It runs no subagents, so no task waits to resume, but a command's end,
     a wakeup or an alert still reaches it while it runs."""
     graph = _built()
-    assert graph.turn.steering._steering.kinds == ("report", "steer")
+    assert graph.turn(_RUN).steering._steering.kinds == ("report", "steer")
 
 
 def test_a_claude_code_turn_compacts_and_moves_its_session_by_the_main_agents_threshold_and_floor():
@@ -268,7 +328,7 @@ def test_a_claude_code_turn_compacts_and_moves_its_session_by_the_main_agents_th
     from ptc_agent.agent.backends.sandbox import SandboxBackend
     from ptc_agent.config.agent import CompactionConfig
 
-    rules = _built().turn.compaction
+    rules = _built().turn(_RUN).compaction
     settings = CompactionConfig()
     assert (rules.floor_tokens, rules.threshold) == (settings.rebuild_floor_tokens, settings.token_threshold)
     assert isinstance(rules.backend, SandboxBackend)
@@ -282,7 +342,7 @@ CLI_DESCRIPTION_CAP = 4096
 @pytest.mark.parametrize("role", ["analyst", "chief_of_staff"])
 def test_every_tool_description_reaches_claude_whole(role):
     """A description past the CLI's cap would read differently than on any other turn."""
-    specs = tool_specs(_built(role=role).turn.spec.tools)
+    specs = tool_specs(_built(role=role).turn(_RUN).spec.tools)
     assert len(specs) > 20
     assert {s["name"]: len(s["description"]) for s in specs if len(s["description"]) > CLI_DESCRIPTION_CAP} == {}
 
@@ -291,7 +351,8 @@ def test_the_turn_runs_where_the_callers_launcher_puts_it_for_the_turns_sandbox(
     sandbox, launcher = MagicMock(), LocalLauncher()
     seen = []
     graph = _built(sandbox=sandbox, claude_code_launcher=lambda s, hosted, saved: seen.append(s) or launcher)
-    assert seen == [sandbox] and graph.turn.launcher is launcher
+    turn = graph.turn(_RUN)
+    assert seen == [sandbox] and turn.launcher is launcher
 
 
 def test_a_claude_code_turn_built_with_no_launcher_is_refused():

@@ -371,16 +371,19 @@ async def test_a_launch_points_a_summary_at_the_threads_transcript_where_it_is_r
 
 
 @pytest.mark.asyncio
-async def test_a_launch_points_a_summary_only_at_a_transcript_saved_from_the_threads_messages(monkeypatch):
+@pytest.mark.parametrize(("namespace", "target"), [("", TranscriptTarget("t-note")),
+                                                   ("task:k3Xq_-", TranscriptTarget("t-note", "k3Xq_-"))])
+async def test_a_launch_points_a_summary_only_at_a_transcript_saved_from_the_runs_messages(monkeypatch, namespace, target):
+    """A task's run saves its own transcript, never over its thread's."""
     monkeypatch.setattr(LocalLauncher, "prepare", _stop_at_layout)
     saved = []
     rules = CompactionRules(0, backend=_backend(routes_serve=True, saved=saved), workspace_id="w-1")
     turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[bash], billing={}), _NoTransport(), identity="u",
-                      thread_key="t-note", compaction=rules)
+                      thread_key="t-note", checkpoint_ns=namespace, compaction=rules)
     messages = [HumanMessage("first"), AIMessage("answer", response_metadata={"claude_message_id": "msg_1"}), HumanMessage("hi")]
     with pytest.raises(OSError, match="stop at the layout"):
         await turn.run({"messages": messages, "claude_session": _summarized(_CLI_SUMMARY)})
-    assert saved == [(TranscriptTarget("t-note"), messages)]
+    assert saved == [(target, messages)]
 
 
 @pytest.mark.asyncio

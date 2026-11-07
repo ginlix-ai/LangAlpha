@@ -95,6 +95,7 @@ from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.transcript.classify import ORCHESTRATOR_SOURCE, reentry_trigger
+from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.agent.prompts import release
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
 from src.llms.claude_code import ClaudeTurnFailed, another_model_replied_last
@@ -512,8 +513,11 @@ class ClaudeTurn:
     """One run's Claude Code, started by the step that first needs it and closed by the worker after the stream.
 
     ``identity`` is who the turn runs for (their user id): Claude Code is told one
-    device per identity. ``thread_key`` names the thread's working directory,
-    which is part of the prompt Claude caches, so it is the same on every turn.
+    device per identity. ``thread_key`` is the thread's id and ``checkpoint_ns``
+    the run's namespace, a subagent task's for its runs. Together they name
+    the run's working directory (``run_key``), which is part of the prompt
+    Claude caches, so it is the same on every run of that thread or task, and
+    the transcript its compaction summaries point at.
     The launcher picks the token the run signs in with, and ``compaction``
     when the session compacts and moves to this build's prompt and tools.
     ``steering`` takes in what is sent into the thread while the turn runs
@@ -521,12 +525,13 @@ class ClaudeTurn:
     """
 
     def __init__(self, spec: RuntimeSpec, launcher: Launcher, *, identity: str, thread_key: str,
-                 baseline: Baseline | None = None, compaction: CompactionRules = NO_RULES,
+                 checkpoint_ns: str = "", baseline: Baseline | None = None, compaction: CompactionRules = NO_RULES,
                  steering: SteeringMiddleware | None = None, alert_senders: frozenset[str] = frozenset()) -> None:
         self.spec = spec
         self.launcher = launcher
         self.identity = identity
         self.thread_key = thread_key
+        self.checkpoint_ns = checkpoint_ns
         self.compaction = compaction
         self._baseline = baseline
         self.steering = TurnSteering(steering, alert_senders)
@@ -567,6 +572,13 @@ class ClaudeTurn:
     def started(self) -> bool:
         return self._run is not None
 
+    @property
+    def run_key(self) -> str:
+        """The run's working directory: the thread's, or ``<thread>-<task>``
+        for a task's runs, so no two CLIs on a thread share one."""
+        task = TranscriptTarget.for_agent(self.thread_key, self.checkpoint_ns).task_id
+        return f"{self.thread_key}-{task}" if task else self.thread_key
+
     async def run(self, state: ClaudeCodeState) -> _Run:
         """The run, started on first use, and started again once its query
         ended with a call deferred: only a new CLI asks for that call again,
@@ -581,9 +593,9 @@ class ClaudeTurn:
                 state = {**state, "claude_session": {**records, "entries": entries}}
             pin, prompt = self.opening(state)
             self._run = await _Run.start(
-                self.spec, pin, self.launcher, self.thread_key, self.identity, state.get("claude_session"), prompt,
+                self.spec, pin, self.launcher, self.run_key, self.identity, state.get("claude_session"), prompt,
                 answered, compact_at=self.compaction.threshold, auto_compact=self.compaction.enabled,
-                transcript_note=await self.compaction.transcript_note(self.thread_key, state),
+                transcript_note=await self.compaction.transcript_note(self.thread_key, state, self.checkpoint_ns),
             )
             self._run.queries += self._sent_before
         return self._run
@@ -737,9 +749,9 @@ class ClaudeTurn:
         records = state.get("claude_session") or {}
         entries, answered = resume_from(records, state["messages"])
         writes = await compact(self.spec, records.get("pinned") or self.current_pin(), self.launcher,
-                               thread_key=self.thread_key, identity=self.identity,
+                               thread_key=self.run_key, identity=self.identity,
                                records={**records, "entries": answered_in(entries, answered) if answered else entries},
-                               transcript_note=self.compaction.transcript_note(self.thread_key, state))
+                               transcript_note=self.compaction.transcript_note(self.thread_key, state, self.checkpoint_ns))
         return _pinned_after(writes, self.current_pin())
 
     def opening(self, state: ClaudeCodeState) -> tuple[SessionPin, Prompt | None]:
