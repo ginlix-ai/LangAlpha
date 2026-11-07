@@ -16,6 +16,7 @@ import { isImeComposing } from '@/lib/ime';
 import type { ModelConnection, ModelGroup } from '@/lib/modelGroups';
 import { isSubscription, subscriptionPayer, type Payer } from '@/lib/modelPayer';
 import { usePayerLabel } from '@/hooks/usePayerLabel';
+import { useNow } from '@/hooks/useNow';
 import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import { ModelMark, MarkedModelName } from '@/components/model/ModelMark';
 import { PayerBadge } from '@/components/model/PayerBadge';
@@ -41,7 +42,9 @@ interface ListProps {
    *  under the favorites so the current model is always on the first tab. */
   recent: string[];
   onToggleFavorite: (model: string, favorite: boolean) => void;
-  rowStatus: (model: string) => ModelRowStatus;
+  /** What the row says at `now`, the picker's minute clock, so a hold that
+   *  ends while the picker is open ends there too. */
+  rowStatus: (model: string, now: number) => ModelRowStatus;
 }
 
 /**
@@ -82,7 +85,7 @@ export function ModelPicker({
       <ModelList
         {...list}
         onPick={(model) => {
-          const status = list.rowStatus(model);
+          const status = list.rowStatus(model, Date.now());
           if ('unavailable' in status) {
             onOpenChange(false);
             status.fix?.();
@@ -142,6 +145,7 @@ function ModelList({
 }: ListProps & { onPick: (model: string) => void; onManage: () => void }) {
   const { t } = useTranslation();
   const payerLabel = usePayerLabel();
+  const now = useNow();
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<string | null>(null);
   const [connectionTab, setConnectionTab] = useState<string | null>(null);
@@ -166,7 +170,7 @@ function ModelList({
   // The tab's own subscription (Claude Code's) is named by its header already.
   const headerNamesPayer = view.kind === 'brand' && headerPayer === subscriptionPayer(view.group.id);
   const inThread = view.kind === 'favorites' ? view.recent : [];
-  const first = [...view.rows, ...inThread].find((m) => !('unavailable' in rowStatus(m)));
+  const first = [...view.rows, ...inThread].find((m) => !('unavailable' in rowStatus(m, now)));
   const favoriteSet = new Set(favorites);
 
   // The current model's check is what the user looks for on opening, and a
@@ -198,7 +202,7 @@ function ModelList({
       payer={headerPayer ? undefined : payers[m]}
       selected={m === selectedModel}
       favorite={favoriteSet.has(m)}
-      status={rowStatus(m)}
+      status={rowStatus(m, now)}
       onToggleFavorite={onToggleFavorite}
     />
   );
@@ -269,7 +273,7 @@ function ModelList({
                   key={g.id}
                   id={g.id}
                   label={g.label}
-                  dot={g.connections.some((c) => isSubscription(c.payer) && c.models.some((m) => !('unavailable' in rowStatus(m))))}
+                  dot={g.connections.some((c) => isSubscription(c.payer) && c.models.some((m) => !('unavailable' in rowStatus(m, now))))}
                 >
                   <RailIcon provider={g.id} label={g.label} />
                 </RailTab>

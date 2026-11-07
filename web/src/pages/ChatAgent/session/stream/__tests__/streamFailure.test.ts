@@ -32,4 +32,16 @@ describe('readStreamFailure: a Claude Code refusal', () => {
   it("keeps the server's words for a reason the app does not word", () => {
     expect(readStreamFailure(refusal({ reason: 'server' }), SERVER, 'ws-1', t)).toBeUndefined();
   });
+
+  it("carries a plan limit's window and reset for the card to word, with nothing to fix", () => {
+    const until = '2026-11-06T20:40:00Z';
+    expect(readStreamFailure(refusal({ reason: 'plan_stopped', window: 'five_hour', until, credits_billed: true }), SERVER, 'ws-1', t))
+      .toEqual({ message: SERVER, planRefusal: { reason: 'plan_stopped', window: 'five_hour', until, creditsBilled: true } });
+    expect(readStreamFailure(refusal({ reason: 'plan_limited', window: 'seven_day', until }), SERVER, 'ws-1', t))
+      .toEqual({ message: SERVER, planRefusal: { reason: 'plan_limited', window: 'seven_day', until, creditsBilled: false } });
+  });
+
+  it("keeps the server's words for a plan limit without a time to word", () => {
+    expect(readStreamFailure(refusal({ reason: 'plan_limited', window: 'five_hour' }), SERVER, 'ws-1', t)).toBeUndefined();
+  });
 });

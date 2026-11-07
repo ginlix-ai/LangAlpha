@@ -7039,5 +7039,38 @@
       "maxOutputHint": "Set it if the endpoint rejects long replies. Empty uses the default.",
       "maxOutputInvalid": "Enter a number of tokens, like 8K."
     }
+  },
+  "claudeCodePlan": {
+    "window": {
+      "five_hour": "5-hour",
+      "seven_day": "weekly",
+      "seven_day_opus": "weekly Opus",
+      "seven_day_sonnet": "weekly Sonnet",
+      "seven_day_overage_included": "weekly Fable"
+    },
+    "limitTitle": "Claude plan limit reached",
+    "stopped": "Your Claude plan's {{window}} limit is used up, so this turn stopped. It resets at {{time}}. Nothing ran on another model.",
+    "stoppedBilled": "Your Claude plan's {{window}} limit is used up, so this turn stopped. It resets at {{time}}. Nothing ran on another model. Requests already under way were billed to your usage credits.",
+    "stoppedUnknown": "Your Claude plan's limit is used up, so this turn stopped. Nothing ran on another model.",
+    "stoppedBilledUnknown": "Your Claude plan's limit is used up, so this turn stopped. Nothing ran on another model. Requests already under way were billed to your usage credits.",
+    "refused": "Your Claude plan's {{window}} limit is used up until {{time}}. Pick another model, or send this again after it resets.",
+    "refusedUnknown": "Your Claude plan's limit is used up, and Claude didn't say when it resets. Pick another model, or send this again later.",
+    "billed": "Your Claude plan's {{window}} limit ran out during this reply, so its last request was billed to your usage credits. Claude Code turns wait until it resets at {{time}}.",
+    "billedUnknown": "Your Claude plan's limit ran out during this reply, so its last request was billed to your usage credits. Claude Code turns wait until it resets.",
+    "limit": "Your Claude plan's {{window}} limit is used up until {{time}}. Pick another model to keep going.",
+    "limitUnknown": "Your Claude plan's limit is used up. Pick another model to keep going.",
+    "credits": "Your Claude plan's {{window}} limit is used up, so Claude Code runs on your usage credits until it resets at {{time}}.",
+    "creditsUnknown": "Your Claude plan's limit is used up, so Claude Code runs on your usage credits until it resets.",
+    "picker": "Plan limit used up until {{time}}",
+    "pickerUnknown": "Plan limit used up",
+    "runsOut": {
+      "title": "When your Claude plan runs out",
+      "stop": "Stop",
+      "stopDetail": "Claude Code turns stop at your plan's limit and wait for it to reset. Nothing runs on another model.",
+      "credits": "Use usage credits",
+      "creditsDetail": "Claude Code keeps running on your usage credits, if they're on for your Claude account.",
+      "note": "Usage credits are on for the Claude account on {{names}}. Claude bills the first request past your limit to them before LangAlpha can stop, so turn them off in claude.ai if you never want them used.",
+      "noteLink": "Open claude.ai usage settings"
+    }
   }
 }

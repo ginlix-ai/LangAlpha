@@ -20,7 +20,7 @@ import {
   buildModelFallbackSegment, appendNotificationSegmentOnce, mapToolCallIdToAgentId,
 } from '../../hooks/utils/messageFinalizers';
 import { applyCallUsage, handleContextWindowEvent } from '../../hooks/utils/contextWindowEvent';
-import { handleProvenance } from '../stream/mainEventHandlers';
+import { handlePlanBilled, handleProvenance } from '../stream/mainEventHandlers';
 import {
   handleHistoryUserMessage,
   handleHistoryReasoningSignal,
@@ -308,6 +308,24 @@ export async function loadConversationHistory(
             if (msg.role !== 'assistant') return msg;
             return appendNotificationSegmentOnce(msg as AssistantMessage, segment);
           }));
+        }
+        return;
+      }
+
+      // A reply whose last request was billed to usage credits replays its
+      // notice under it, as the live stream drew it. Main agent only.
+      if (eventType === 'claude_code_plan') {
+        const msgId = currentActivePairIndex !== null
+          ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null;
+        if (!isSubagent && msgId) {
+          handlePlanBilled({
+            assistantMessageId: msgId,
+            event: event as Record<string, unknown>,
+            order: event._eventId != null
+              ? Number(event._eventId)
+              : (currentActivePairState ? ++currentActivePairState.contentOrderCounter : 0),
+            setMessages: setMessagesForHandlers,
+          });
         }
         return;
       }

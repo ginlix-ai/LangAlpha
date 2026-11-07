@@ -7,6 +7,8 @@
  * sent to resolve it.
  */
 
+import type { PlanRefusal } from '@/api/model';
+
 /** A 429's `detail`, as it comes off the wire. Only the two fields this module
  *  acts on are named: the counts the quota service also sends are already folded
  *  into `message`, so naming them here only invites reading them back out. */
@@ -85,6 +87,9 @@ export interface StructuredError {
    *  our pipeline. Undefined for rate-limit errors built on the client.
    *  ``notice`` = nothing failed, so it reads as information, not an error. */
   kind?: 'upstream' | 'internal' | 'notice';
+  /** A turn a Claude plan's limit ended, worded where it is drawn, in the
+   *  reader's zone and language, under its own headline. */
+  planRefusal?: PlanRefusal;
   /** HTTP status from the upstream provider, when known. */
   statusCode?: number;
   /** Bulleted guidance to render under the message. */

@@ -46,6 +46,7 @@ export function RadioChoice<V extends string>({
   name,
   value,
   onSelect,
+  onReselect,
   size = 'sm',
   checked,
   disabled,
@@ -60,6 +61,8 @@ export function RadioChoice<V extends string>({
   name: string;
   value: V;
   onSelect: (value: V) => void;
+  /** Picking the choice already checked, by click, Space or Enter, which a radio's change never reports. */
+  onReselect?: (value: V) => void;
   size?: keyof typeof RADIO_SIZE;
 }) {
   const dims = RADIO_SIZE[size];
@@ -75,6 +78,13 @@ export function RadioChoice<V extends string>({
         aria-labelledby={labelledBy}
         aria-describedby={describedBy}
         onChange={() => onSelect(value)}
+        onClick={() => { if (checked) onReselect?.(value); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && checked && onReselect) {
+            e.preventDefault();
+            onReselect(value);
+          }
+        }}
         className="sr-only"
       />
       <span

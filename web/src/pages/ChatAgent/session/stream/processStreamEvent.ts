@@ -34,7 +34,7 @@ import { BUSY_REPLY_KEYS, isBusyCode } from '../../hooks/utils/forkRefusal';
 import {
   handleReasoningSignal, handleReasoningContent, handleTextContent,
   handleToolCalls, handleToolCallResult, handleToolCallChunks,
-  handleTodoUpdate, handleHtmlWidget, handleProvenance,
+  handleTodoUpdate, handleHtmlWidget, handleProvenance, handlePlanBilled,
 } from './mainEventHandlers';
 import {
   isSubagentEvent, handleSubagentMessageChunk, handleSubagentToolCallChunks,
@@ -597,6 +597,21 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       return;
     }
 
+    // A reply whose last request was billed to usage credits gets its notice
+    // under it, as a reload replays it. Main agent only.
+    if (eventType === 'claude_code_plan') {
+      if (!isSubagent) {
+        const billed = handlePlanBilled({
+          assistantMessageId,
+          event,
+          order: event._eventId != null ? Number(event._eventId) : ++refs.contentOrderCounterRef.current,
+          setMessages: setMessagesForHandlers,
+        });
+        if (billed) deps.refreshClaudeCode();
+      }
+      return;
+    }
+
     // A `retry` ends the stream of a run that failed before it reached the
     // agent. After `metadata` the run lives on in the background executor, so
     // a `retry` there, which only an older server sends, means only this
@@ -848,9 +863,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // as a notice: the server's name the CLI's commands, and the reply's
       // Retry sends the message again.
       const busyCode = event.error_type === 'admission_conflict' && isBusyCode(event.code) ? event.code : null;
-      // A Claude Code refusal the server's next read of the tokens says:
-      // Settings and the picker take that now.
-      if (event.type === 'claude_code_off' && claudeCodeRefusal(event.reason, rt.workspaceId).reread) deps.refreshClaudeCode();
+      // A Claude Code refusal the server's next read of the tokens or of the
+      // Claude plan says: Settings, the picker and the composer take that now.
+      if (event.type === 'claude_code_off' && claudeCodeRefusal(event, rt.workspaceId).reread) deps.refreshClaudeCode();
       // Only the frame that ends the server's own retries carries `max_retries`.
       const errorMessage = busyCode !== null
         ? rt.t(BUSY_REPLY_KEYS[busyCode])

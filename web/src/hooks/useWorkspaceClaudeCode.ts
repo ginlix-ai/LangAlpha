@@ -1,5 +1,5 @@
 import { apiErrorStatus } from '@/api/errors';
-import type { ClaudeCodeComputerState } from '@/api/model';
+import type { ClaudeCodeComputerState, ClaudeCodePlan } from '@/api/model';
 import { TOKEN_WORKS } from '@/lib/claudeCode';
 import { useClaudeCodeComputers, useClaudeCodeStatus } from './useClaudeCode';
 import { useClaudeCodeCustody } from './useClaudeCodeCustody';
@@ -25,6 +25,10 @@ export interface WorkspaceClaudeCode {
   /** Whether the workspace's computer, and which computers are the user's
    *  own, are read; until they are, `computerId` says nothing. */
   known: boolean;
+  /** The Claude plan behind the token its turns run on: that computer's
+   *  entry's, or the saved token's where it runs on that. Absent on the
+   *  Anthropic API key, which has no plan, and until it is known. */
+  plan?: ClaudeCodePlan | null;
 }
 
 /**
@@ -59,10 +63,15 @@ export function useWorkspaceClaudeCode(workspaceId: string | null | undefined): 
   if (!known) return { state: 'checking', computerId: null, known };
   const computerId = workspace.data?.computer_id;
   const entry = own.computers.find((c) => c.computer_id === computerId);
-  if (entry) return { state: entry.state, computerId: entry.computer_id, known };
+  if (entry) return { state: entry.state, computerId: entry.computer_id, known, plan: entry.plan };
   const credential = cloudCredentialState(status, choice);
   const tooSmall = computerId != null && own.cloudRefusals[computerId] === 'needs_bigger_computer';
-  return { state: CREDENTIAL_RUNS.has(credential) && tooSmall ? 'needs_bigger_computer' : credential, computerId: null, known };
+  return {
+    state: CREDENTIAL_RUNS.has(credential) && tooSmall ? 'needs_bigger_computer' : credential,
+    computerId: null,
+    known,
+    plan: status.runsHere ? status.plan : undefined,
+  };
 }
 
 /** The states in which a turn on a cloud computer has a credential that runs. */

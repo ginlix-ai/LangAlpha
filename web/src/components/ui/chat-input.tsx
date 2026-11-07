@@ -36,6 +36,8 @@ import type { ModelRowStatus } from './chat-input.modelPicker';
 import { ANTHROPIC_KEY_URL, CLAUDE_CODE_CHOICE_URL, biggerComputer, claudeCodeTokenUrl, isClaudeCodeModel } from '@/lib/claudeCode';
 import type { Payer } from '@/lib/modelPayer';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
+import { usePlanReader } from '@/hooks/useClaudeCodePlan';
+import { pickerPlanHold, planOutOf } from '@/lib/claudeCodePlan';
 import { deriveRecentModels } from './chat-input.models';
 import { modelGroups } from '@/lib/modelGroups';
 import { useEffortToolbarItem, useToolbarItems } from './chat-input.toolbar';
@@ -861,8 +863,12 @@ function ChatInput({
   // computer runs it works or could not be checked, as admission lets it;
   // otherwise its row says why, and where the user can fix it: that
   // computer's token, or the saved one. On a cloud computer it may run on
-  // the user's Anthropic API key, which then pays for it.
+  // the user's Anthropic API key, which then pays for it. One whose Claude
+  // plan is used up for it waits for the reset, unless usage credits carry it,
+  // told by the picker's own minute clock (`now`), so the composer does not
+  // turn with the minute.
   const claudeCode = useWorkspaceClaudeCode(selectedWorkspaceId);
+  const planReader = usePlanReader();
   const pickerPayers = useMemo((): Record<string, Payer> => (claudeCode.state === 'api_key'
     ? Object.fromEntries(Object.entries(payers).map(([m, payer]) => [m, isClaudeCodeModel(modelMetadata[m]) ? 'own_key' : payer]))
     : payers), [claudeCode.state, payers, modelMetadata]);
@@ -881,7 +887,7 @@ function ChatInput({
   const recentModels = deriveRecentModels({ selectedModel: pillModel, threadModels: threadModelsProp, validModelNames })
     .filter((m) => !favorites.models.includes(m) && turn.offers(m));
   const tokenUrl = claudeCodeTokenUrl(selectedWorkspaceId);
-  const modelRowStatus = (m: string): ModelRowStatus => {
+  const modelRowStatus = (m: string, now: number): ModelRowStatus => {
     if (isClaudeCodeModel(modelMetadata[m])) {
       switch (claudeCode.state) {
         case 'checking': return { unavailable: t('modelAccess.status.working') };
@@ -900,6 +906,10 @@ function ChatInput({
         case 'needs_perl': return { unavailable: t('modelAccess.claudeCode.fail.needs_perl') };
         case 'computer_unsupported': return { unavailable: t('modelAccess.claudeCode.fail.computer_unsupported') };
       }
+      const planHold = pickerPlanHold(
+        t, claudeCode.plan, planOutOf(preferences?.other_preference), m, { ...planReader, now },
+      );
+      if (planHold) return { unavailable: planHold };
     }
     return { tag: lapsedSignIn(m) ? t('modelAccess.status.needsReauth') : undefined };
   };

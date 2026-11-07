@@ -38,6 +38,53 @@ export async function getAvailableModels(): Promise<ModelsResponse> {
  *  it would run, so Claude Code does not run there, whatever the token. */
 export type ClaudeCodeState = 'off' | 'no_token' | 'checking' | 'unverified' | 'signed_in' | 'rejected' | 'policy_blocked';
 
+/** A Claude plan's usage window, as Claude names it. `seven_day_overage_included`
+ *  is the weekly Fable limit. */
+export type ClaudeCodePlanWindow = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'seven_day_overage_included';
+
+/** A window a Claude plan is held at, and until when: both null where
+ *  Claude didn't say when it resets. */
+export interface ClaudeCodePlanLimit {
+  window: ClaudeCodePlanWindow | null;
+  until: string | null;
+}
+
+/** A limit the plan holds now, and the model family it binds: null for one
+ *  that binds every model. Where Claude didn't say when it resets
+ *  (`reset_known` false), `until` only bounds the hold and is never shown,
+ *  and `window` is null where Claude named none. */
+export interface ClaudeCodePlanHeld {
+  window: ClaudeCodePlanWindow | null;
+  until: string;
+  family: 'opus' | 'sonnet' | 'fable' | null;
+  reset_known: boolean;
+}
+
+/** How much of the Claude plan behind a token its last request reported
+ *  used: each window's share (0 to 1) and when it resets, every limit still
+ *  ahead, in no particular order, and whether the account bills past the
+ *  limit to usage credits (null until reported). A window that has passed is
+ *  sent as null. */
+export interface ClaudeCodePlan {
+  five_hour: { used: number; resets_at: string } | null;
+  seven_day: { used: number; resets_at: string } | null;
+  limits: ClaudeCodePlanHeld[];
+  credits: 'on' | 'off' | null;
+  observed_at: string;
+}
+
+/** A turn a Claude plan's limit ended: stopped partway (`plan_stopped`, with
+ *  whether requests already under way were billed to usage credits), or
+ *  refused before it started (`plan_limited`). */
+export interface PlanRefusal extends ClaudeCodePlanLimit {
+  reason: 'plan_stopped' | 'plan_limited';
+  creditsBilled: boolean;
+}
+
+/** A reply whose last request was billed to usage credits: the window that
+ *  ran out during it, and when it resets, both null where Claude didn't say. */
+export type PlanBilled = ClaudeCodePlanLimit;
+
 /** `GET /api/v1/claude-code/status`, and the answer to a token saved. A
  *  server that predates it answers 404, which reads as `off`. */
 export interface ClaudeCodeStatus {
@@ -52,6 +99,9 @@ export interface ClaudeCodeStatus {
   /** A token is saved, whatever `state` says: one is still there to remove
    *  once Claude Code is off. Absent from a server that predates it. */
   saved?: boolean;
+  /** The saved token's plan, null until a request on it reported one.
+   *  Absent from a server that predates it. */
+  plan?: ClaudeCodePlan | null;
 }
 
 /** Where Claude Code stands on one of the user's own computers. `off`: their
@@ -79,6 +129,9 @@ export interface ClaudeCodeComputer {
   own_file?: boolean;
   email: string | null;
   expires_at: string | null;
+  /** The plan of the token its turns use: the saved token's on `saved`.
+   *  Absent from a server that predates it. */
+  plan?: ClaudeCodePlan | null;
 }
 
 /** The user's own computers, and each cloud computer of theirs that refuses

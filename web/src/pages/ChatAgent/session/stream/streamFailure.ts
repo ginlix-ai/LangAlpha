@@ -7,14 +7,17 @@ import type { SSEEvent } from '../types';
  * `error_kind` says whose fault it was (the model provider's, or this
  * service's), with the status, hints and models an upstream failure carries.
  * Undefined for a frame the server did not classify. A Claude Code refusal
- * the app words reads in its words, in the user's language. The live stream
+ * the app words reads in its words, in the user's language, and a Claude
+ * plan's limit carries its window and reset for the card to word in the
+ * reader's zone. The live stream
  * and a reload both read it, so a failed turn shows the same card either way.
  */
 export function readStreamFailure(
   event: SSEEvent, message: string, workspaceId: string, t: (key: string, opts?: Record<string, unknown>) => string,
 ): StructuredError | undefined {
   if (event.type === 'claude_code_off') {
-    const { link, messageKey, messageValues } = claudeCodeRefusal(event.reason, workspaceId, event.limit);
+    const { link, messageKey, messageValues, planRefusal } = claudeCodeRefusal(event, workspaceId);
+    if (planRefusal) return { message, planRefusal };
     const worded = messageKey ? t(messageKey, messageValues) : message;
     if (link) return { message: worded, links: [link] };
     if (messageKey) return { message: worded };

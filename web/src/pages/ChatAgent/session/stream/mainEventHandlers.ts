@@ -9,7 +9,9 @@ import { ownerOfToolCall } from '../toolCallOwner';
 import { deriveTaskSegment, applyTaskSegment, applyLaunchReply } from '../subagents/taskSegmentBuilder';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from '../../hooks/utils/types';
 import type { ProvenanceEvent } from '@/types/sse';
-import type { ContentSegment, PendingToolCallChunk, ProvenanceRecord, SubagentTaskRecord, TextSegment } from '@/types/chat';
+import type { AssistantMessage, ContentSegment, PendingToolCallChunk, ProvenanceRecord, SubagentTaskRecord, TextSegment } from '@/types/chat';
+import { readPlanBilled } from '@/lib/claudeCodePlan';
+import { appendNotificationSegmentOnce } from '../../hooks/utils/messageFinalizers';
 import { provenanceEventToRecord, provenanceRecordKey } from './provenance';
 import { appendTextChunk } from './textChunks';
 import { addToolCallChunk, hasPreparing, removeLandedToolCall, withoutPending } from './toolCallChunks';
@@ -464,6 +466,29 @@ export function handleProvenance({ assistantMessageId, event, setMessages }: {
     })
   );
 
+  return true;
+}
+
+/**
+ * Handles a `claude_code_plan` event on both the live-stream and
+ * history-replay paths: a reply whose last request was billed to usage
+ * credits gets its notice under it, once on a reply however often the event
+ * is delivered. Callers keep it to the main agent's reply.
+ */
+export function handlePlanBilled({ assistantMessageId, event, order, setMessages }: {
+  assistantMessageId: string;
+  event: Record<string, unknown>;
+  order: number;
+  setMessages: SetMessages;
+}): boolean {
+  const planBilled = readPlanBilled(event);
+  if (!planBilled) return false;
+  setMessages((prev: MessageRecord[]) => prev.map((msg: MessageRecord) => {
+    if (msg.id !== assistantMessageId || msg.role !== 'assistant') return msg;
+    return appendNotificationSegmentOnce(
+      msg as AssistantMessage, { type: 'notification', planBilled, order }, (s) => !!s.planBilled,
+    );
+  }));
   return true;
 }
 

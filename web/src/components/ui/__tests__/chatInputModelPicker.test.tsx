@@ -3,7 +3,7 @@
  * ways to pay switch, and what a pick, a search and a star do.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cleanup, render, screen, fireEvent, within } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import type { ComponentProps } from 'react';
 import { ChatInputModelMenu } from '../chat-input.modelMenu';
@@ -244,6 +244,25 @@ describe('Claude Code', () => {
   const openCode = (signedOut: (m: string) => boolean = () => false) => open({
     metadata: codeMetadata, payers: codePayers, groups: codeGroups,
     rowStatus: (m): ModelRowStatus => (signedOut(m) ? { unavailable: SIGNED_OUT } : {}),
+  });
+
+  // A plan hold ends at its reset while the picker stays open: the picker
+  // draws its rows again on the minute, not only when it opens.
+  it('offers a held row again once its reset passes, the picker still open', () => {
+    vi.useFakeTimers({ now: Date.parse('2026-11-06T19:05:00Z'), toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      const reset = Date.now() + 30_000;
+      const dialog = open({
+        metadata: codeMetadata, payers: codePayers, groups: codeGroups,
+        rowStatus: (m): ModelRowStatus => (m === 'claude-opus-code' && Date.now() < reset ? { unavailable: 'Plan limit used up' } : {}),
+      });
+      fireEvent.click(tab(dialog, 'Claude Code'));
+      expect(within(dialog).getByRole('row')).toHaveAttribute('aria-disabled', 'true');
+      act(() => { vi.advanceTimersByTime(61_000); });
+      expect(within(dialog).getByRole('row')).not.toHaveAttribute('aria-disabled', 'true');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('is a provider of its own, whose header no tag repeats', () => {

@@ -171,7 +171,7 @@ export function ChatInputModelMenu({
   onToggleFavorite: (model: string, favorite: boolean) => void;
   onSelectModel: (model: string) => void;
   /** What each row says beside its model, and whether it is a pick. */
-  rowStatus: (model: string) => ModelRowStatus;
+  rowStatus: (model: string, now: number) => ModelRowStatus;
   dropdownDirection: 'up' | 'down';
   /** Mobile portals into the composer so the picker can't escape the sheet. */
   container: HTMLElement | null;

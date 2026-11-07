@@ -67,6 +67,7 @@ export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
     saved: data?.saved === true,
     email: data?.email ?? null,
     expiresAt: data?.expires_at ?? null,
+    plan: data?.plan,
     isLoading: featuresLoading || isLoading,
   };
 }

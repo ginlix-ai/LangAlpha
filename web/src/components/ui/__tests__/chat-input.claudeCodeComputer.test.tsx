@@ -73,15 +73,15 @@ vi.mock('../use-toast', () => ({
 // row, and runs a row's fix as a press on it would.
 vi.mock('../chat-input.modelMenu', () => ({
   ChatInputModelMenu: ({ rowStatus, payers, groups }: {
-    rowStatus: (m: string) => ModelRowStatus;
+    rowStatus: (m: string, now: number) => ModelRowStatus;
     payers: Record<string, string>;
     groups: { id: string; connections: { payer?: string }[] }[];
   }) => {
     const read = (m: string) => {
-      const s = rowStatus(m);
+      const s = rowStatus(m, Date.now());
       return 'unavailable' in s ? `held:${s.unavailable}${s.fix ? ':fix' : ''}` : 'pick';
     };
-    const code = rowStatus('claude-x-code');
+    const code = rowStatus('claude-x-code', Date.now());
     return (
       <>
         <span>{`claude-x:${read('claude-x')}`}</span>
