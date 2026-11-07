@@ -32,18 +32,25 @@ export function ToggleSwitch({ checked, onChange, disabled, className, ariaLabel
       aria-describedby={ariaDescribedBy}
       onClick={onChange}
       disabled={disabled}
+      // Off, the open card styles draw it as an open box with an inked thumb,
+      // as every other open control is: an elevated fill on a white page was
+      // a near-white track under a white thumb. On, they draw the fill alone
+      // (styles/cardStyle.css), so that edge is a class rather than inline.
       className={cn(
-        'tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+        'tap-target relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-[var(--cs-radius-small,9999px)] border-2 border-(--color-border-muted) transition-colors',
         className,
       )}
       style={{
-        backgroundColor: checked ? 'var(--color-accent-primary)' : 'var(--color-bg-elevated)',
-        borderColor: 'var(--color-border-muted)',
+        backgroundColor: checked ? 'var(--color-accent-primary)' : 'var(--color-shell-fill, var(--color-bg-elevated))',
+        borderColor: checked ? undefined : 'var(--color-shell-edge, var(--color-border-muted))',
       }}
     >
       <span
         data-slot="switch-thumb"
-        className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition"
+        className={cn(
+          'pointer-events-none inline-block h-4 w-4 transform rounded-[var(--cs-radius-mark,9999px)] shadow-sm ring-0 transition',
+          checked ? 'bg-white' : 'bg-[var(--color-shell-edge-hover,#fff)]',
+        )}
         style={{
           transform: checked ? 'translateX(16px)' : 'translateX(0)',
         }}

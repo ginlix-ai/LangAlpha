@@ -390,8 +390,8 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
               placeholder={t('workspace.enterWorkspaceName')}
               className="w-full"
               style={{
-                backgroundColor: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border-muted)',
+                backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))',
+                border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
                 color: 'var(--color-text-primary)',
               }}
               autoFocus

@@ -39,8 +39,9 @@ export function CompactSelect({
       disabled={disabled}
       className={cn(fill ? 'w-full min-w-0' : 'min-w-30')}
       // className lands on the wrapper, so the compact type has to come through
-      // style — the select itself hardcodes text-sm.
-      style={{ fontSize: '0.75rem', paddingTop: '0.25rem', paddingBottom: '0.25rem' }}
+      // style — the select itself hardcodes text-sm. Terminal sets every field
+      // in its own field size (styles/cardStyle.css).
+      style={{ fontSize: 'var(--cs-text-field, 0.75rem)', paddingTop: '0.25rem', paddingBottom: '0.25rem' }}
     >
       <option value="">{defaultLabel}</option>
       {options.map((o) => (

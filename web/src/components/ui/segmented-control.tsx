@@ -1,4 +1,5 @@
 import React from 'react';
+import { cn } from '@/lib/utils';
 
 export interface SegmentedOption<T extends string> {
   value: T;
@@ -52,12 +53,13 @@ export function SegmentedControl<T extends string>({
       data-slot="segmented"
       aria-labelledby={labelledBy}
       aria-label={label}
-      className={
-        compact
-          ? 'inline-flex rounded-md overflow-hidden clips-focus-ring shrink-0'
-          : 'inline-flex rounded-lg overflow-hidden clips-focus-ring'
-      }
-      style={{ border: '1px solid var(--color-border-muted)' }}
+      // The track and the ink are classes, not inline, so the open card
+      // styles can take the track away and recolor the words
+      // (styles/cardStyle.css).
+      className={cn(
+        'inline-flex overflow-hidden clips-focus-ring border border-(--color-border-muted)',
+        compact ? 'rounded-md shrink-0' : 'rounded-lg',
+      )}
     >
       {options.map((option) => {
         const selected = option.value === value;
@@ -69,21 +71,20 @@ export function SegmentedControl<T extends string>({
             disabled={disabled || option.disabled}
             onClick={() => onChange(option.value)}
             data-testid={option.testId}
-            className={`flex items-center gap-1.5 font-medium transition-colors disabled:cursor-default ${
-              compact ? 'px-2 py-0.5 text-[0.6875rem]' : 'px-2.5 py-1 text-[0.8125rem]'
-            }`}
             // The picked segment fills neutral with ink, as a picked option
             // card does: amber annotates and never selects (DESIGN.md).
-            style={{
-              backgroundColor: selected ? 'var(--color-bg-tag)' : 'transparent',
-              // Secondary, not tertiary: the tertiary grey reads under 2.5:1
-              // on the light surface, below AA for 13 px text.
-              color: option.disabled
-                ? 'var(--color-text-quaternary)'
+            // Secondary, not tertiary, at rest: the tertiary grey reads under
+            // 2.5:1 on the light surface, below AA for 13 px text.
+            className={cn(
+              'flex items-center gap-1.5 font-medium transition-colors disabled:cursor-default',
+              compact ? 'px-2 py-0.5 text-[0.6875rem]' : 'px-2.5 py-1 text-[0.8125rem]',
+              option.disabled
+                ? 'text-(--color-text-quaternary)'
                 : selected
-                  ? 'var(--color-text-primary)'
-                  : 'var(--color-text-secondary)',
-            }}
+                  ? 'text-(--color-text-primary)'
+                  : 'text-(--color-text-secondary)',
+            )}
+            style={{ backgroundColor: selected ? 'var(--color-shell-fill, var(--color-bg-tag))' : 'transparent' }}
           >
             {option.label}
           </button>

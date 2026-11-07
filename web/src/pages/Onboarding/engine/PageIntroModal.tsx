@@ -95,13 +95,12 @@ export function PageIntroModal({
         >
           {/* Copy + step navigation */}
           <div className={cn('flex flex-col gap-4 p-6 sm:p-9', visualFirst && 'sm:order-2')}>
+            {/* The tint is a class, so Terminal can draw the badge as a
+                bracketed word without it (styles/cardStyle.css). */}
             <span
               data-slot="badge"
-              className="w-fit rounded-full px-2.5 py-0.5 text-xs font-medium"
-              style={{
-                backgroundColor: 'color-mix(in srgb, var(--color-accent-primary) 12%, transparent)',
-                color: 'var(--color-accent-primary)',
-              }}
+              className="w-fit rounded-full bg-[color-mix(in_srgb,var(--color-accent-primary)_12%,transparent)] px-2.5 py-0.5 text-xs font-medium"
+              style={{ color: 'var(--color-accent-primary)' }}
             >
               {t('onboarding.badge', 'Quick tour')}
             </span>

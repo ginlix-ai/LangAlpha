@@ -67,8 +67,8 @@ const labelStyle = { color: 'var(--color-text-secondary)' } as const;
 const mutedStyle = { color: 'var(--color-text-tertiary)' } as const;
 const dangerStyle = { color: 'var(--color-icon-danger)' } as const;
 const inputStyle = {
-  backgroundColor: 'var(--color-bg-input)',
-  borderColor: 'var(--color-border-muted)',
+  backgroundColor: 'var(--color-shell-fill, var(--color-bg-input))',
+  borderColor: 'var(--color-shell-edge, var(--color-border-muted))',
   color: 'var(--color-text-primary)',
 } as const;
 

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "@/lib/framer";
 import { SPRING_INDICATOR } from "@/lib/motion";
+import { useCardStyle } from "@/lib/cardStyle";
 
 interface Tab {
   id: string;
@@ -27,6 +28,11 @@ export function AnimatedTabs({
   const prevValue = useRef(value);
   const valueChanged = prevValue.current !== value;
   useEffect(() => { prevValue.current = value; });
+  // A number, not a var(): framer corrects a px radius while the indicator
+  // slides and leaves a string it cannot parse uncorrected. Balanced draws
+  // it as a pill, as its other choices are; Terminal hides it
+  // (styles/cardStyle.css).
+  const indicatorRadius = useCardStyle() === "balanced" ? 999 : 6;
 
   return (
     <div data-slot="tabs" className="flex space-x-1">
@@ -58,11 +64,12 @@ export function AnimatedTabs({
                 data-slot="tab-indicator"
                 className="absolute inset-0"
                 style={{
-                  borderRadius: '6px',
-                  backgroundColor: 'var(--color-bg-elevated)',
+                  borderRadius: indicatorRadius,
+                  backgroundColor: 'var(--color-shell-fill, var(--color-bg-elevated))',
                   // The elevated fill alone is nearly invisible on a white page,
                   // so a hairline edge keeps the pill legible on both themes.
-                  boxShadow: 'inset 0 0 0 1px var(--color-border-default)',
+                  // The open styles leave it unfilled and edged in ink.
+                  boxShadow: 'inset 0 0 0 1px var(--color-shell-ink, var(--color-border-default))',
                 }}
                 transition={valueChanged ? SPRING_INDICATOR : { duration: 0 }}
               />

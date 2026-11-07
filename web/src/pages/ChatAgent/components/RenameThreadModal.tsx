@@ -78,8 +78,8 @@ function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenami
               disabled={isRenaming}
               className="w-full"
               style={{
-                backgroundColor: 'var(--color-border-muted)',
-                border: '1px solid var(--color-border-muted)',
+                backgroundColor: 'var(--color-shell-fill, var(--color-border-muted))',
+                border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
                 color: 'var(--color-text-primary)',
               }}
               autoFocus

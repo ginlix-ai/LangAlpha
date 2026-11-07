@@ -2,47 +2,6 @@
    selector shorthands and voice tokens this file speaks in. */
 
 /* ════════════════════════════════════════════════════════════════════
-   Buttons: a danger action keeps its weight
-   ════════════════════════════════════════════════════════════════════ */
-
-/* Terminal strips an outline button to bracketed words, which left a
-   destructive one (Log out) as red text level with every other action.
-   It keeps a box in the loss color, so it is still the one to stop at. */
-:root:not([data-card-style]) [data-slot='button'][data-tone='danger'] {
-  color: var(--color-loss) !important;
-  border: 1px solid color-mix(in srgb, var(--color-loss) 50%, transparent) !important;
-  padding-inline: 0.625rem !important;
-}
-:root:not([data-card-style='quiet']) [data-slot='button'][data-tone='danger']:hover {
-  background: var(--color-loss-soft) !important;
-}
-:root[data-card-style='balanced'] [data-slot='button'][data-tone='danger'] {
-  border-color: color-mix(in srgb, var(--color-loss) 50%, transparent) !important;
-}
-:root:not([data-card-style]) [data-slot='button'][data-tone='danger']::before,
-:root:not([data-card-style]) [data-slot='button'][data-tone='danger']::after {
-  opacity: 0.7;
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   Switches: the off state reads on the page's ground
-   ════════════════════════════════════════════════════════════════════ */
-
-/* Off, the switch was an elevated fill on a white page, a near-white track
-   with a white thumb. In the open styles it is drawn as an open box with an
-   inked thumb, as every other open control is. */
-:root:not([data-card-style='quiet']) [data-slot='switch'][aria-checked='false'] {
-  background-color: transparent !important;
-  border-color: var(--color-shell-edge) !important;
-}
-:root:not([data-card-style='quiet']) [data-slot='switch'][aria-checked='false'] > [data-slot='switch-thumb'] {
-  background-color: var(--color-shell-edge-hover);
-}
-:root:not([data-card-style='quiet']) [data-slot='switch'][aria-checked='true'] {
-  border-color: transparent !important;
-}
-
-/* ════════════════════════════════════════════════════════════════════
    Lists in popovers: group headings in the words' face
    ════════════════════════════════════════════════════════════════════ */
 

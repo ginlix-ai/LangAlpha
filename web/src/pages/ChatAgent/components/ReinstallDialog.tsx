@@ -32,8 +32,8 @@ interface ReinstallDialogProps {
 }
 
 const inputStyle = {
-  backgroundColor: 'var(--color-bg-input)',
-  borderColor: 'var(--color-border-muted)',
+  backgroundColor: 'var(--color-shell-fill, var(--color-bg-input))',
+  borderColor: 'var(--color-shell-edge, var(--color-border-muted))',
   color: 'var(--color-text-primary)',
 } as const;
 

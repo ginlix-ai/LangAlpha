@@ -14,8 +14,8 @@ function Select({ className, children, style, ref, ...props }: SelectProps) {
         data-slot="input"
         className="h-9 w-full appearance-none rounded-md py-0 pl-3 pr-9 text-sm disabled:cursor-not-allowed disabled:opacity-50"
         style={{
-          backgroundColor: "var(--color-bg-card)",
-          border: "1px solid var(--color-border-muted)",
+          backgroundColor: "var(--color-shell-fill, var(--color-bg-card))",
+          border: "1px solid var(--color-shell-edge, var(--color-border-muted))",
           color: "var(--color-text-primary)",
           ...style,
         }}
