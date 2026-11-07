@@ -242,6 +242,28 @@ class TestGetOptionsSnapshot:
         assert "symbol" not in result  # batch payload has no single symbol
 
     @pytest.mark.asyncio
+    async def test_rows_carry_local_times_and_a_stale_mark(self):
+        import plugins.langalpha_market_data.options_mcp_server as mod
+
+        stale = {
+            "ticker": _OPT, "type": "options", "name": "AAPL $220.00 call", "market_status": "open",
+            # 2026-10-23 10:54:03 New York, weeks before the read.
+            "session": {"close": 222.0, "change_percent": 0.0, "volume": 1.0,
+                        "timeframe": "DELAYED", "last_updated": 1792767243597000000},
+            "greeks": {"delta": 0.98}, "implied_volatility": 2.8, "open_interest": 33,
+        }
+        canned = {"count": 1, "data": [stale], "source": "ginlix-data"}
+        fetch = AsyncMock(return_value=canned)
+        with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_snapshot", new=fetch):
+            result = await mod.get_options_snapshot(_OPT)
+
+        row = result["data"][0]
+        assert row["session"]["last_updated"] == "2026-10-23 10:54:03"
+        assert row["session"]["stale"] is True
+        assert row["implied_volatility"] == 2.8
+        assert "greeks" in row
+
+    @pytest.mark.asyncio
     async def test_currency_omitted_when_underlying_unresolvable(self):
         import plugins.langalpha_market_data.options_mcp_server as mod
 
@@ -276,6 +298,20 @@ class TestTruncatedOptionsPrices:
 
         assert_ok_envelope(result, count=2)
         assert result["truncated"] is True
+
+
+class TestUnknownVenueCurrency:
+    @pytest.mark.asyncio
+    async def test_an_unknown_venue_gets_no_currency_and_a_us_class_share_keeps_usd(self):
+        import plugins.langalpha_market_data.options_mcp_server as mod
+
+        fetch = AsyncMock(return_value={"results": [], "truncated": False})
+        with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_chain", new=fetch):
+            unknown = await mod.get_options_chain("ZZZZ4.SA")
+            class_share = await mod.get_options_chain("BRK.B")
+
+        assert "currency" not in unknown
+        assert class_share["currency"] == "USD"
 
 
 class TestTruncatedOptionsChain:

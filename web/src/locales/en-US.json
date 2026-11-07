@@ -1268,7 +1268,10 @@
       "alertQuantityMissing": "Please enter quantity.",
       "alertAverageCostMissing": "Please enter average cost.",
       "alertQuantityInvalid": "Please enter a valid quantity greater than 0.",
-      "alertAverageCostInvalid": "Please enter a valid average cost greater than 0."
+      "alertAverageCostInvalid": "Please enter a valid average cost greater than 0.",
+      "currencyLabel": "Currency",
+      "currencyPlaceholder": "e.g. BRL",
+      "alertCurrencyMissing": "Please enter the three-letter currency code the average cost is in."
     },
     "chatInputCard": {
       "suggestion1": "Summarize Apple's earnings",
@@ -4070,6 +4073,7 @@
     "nMoreContracts": "+{{count}} more contract",
     "nMoreContracts_other": "+{{count}} more contracts",
     "noOptionsData": "No options data available",
+    "staleOption": "Not traded this session. Last print {{time}} New York time",
     "topGainers": "Top Gainers",
     "topLosers": "Top Losers",
     "marketMovers": "Market Movers",
@@ -4730,6 +4734,8 @@
       "holdings": {
         "ticker": "Ticker",
         "quantity": "Quantity",
+        "currency": "Currency",
+        "currencyPlaceholder": "e.g. BRL",
         "remove": "Remove {{symbol}}",
         "failed": "Couldn't add {{symbol}}.",
         "search": "Search by name or ticker",

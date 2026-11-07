@@ -201,6 +201,14 @@ async def test_pence_listing_declares_the_decimals_build_series_serves(client):
     assert header["display_decimals"] == 4
 
 
+async def test_an_unknown_venue_declares_no_currency(client):
+    with _stub(daily_result=_daily_result([_bar(_MS)])):
+        unknown = (await client.get("/api/v1/market-data/bars/PETR4.SA?schema=ohlcv-1d")).json()
+        share = (await client.get("/api/v1/market-data/bars/BRK.B?schema=ohlcv-1d")).json()
+    assert unknown["series"]["header"]["price_currency"] is None
+    assert share["series"]["header"]["price_currency"] == "USD"
+
+
 # ---------------------------------------------------------------------------
 # Measured freshness (the cache block, like the legacy bars routes' field)
 # ---------------------------------------------------------------------------

@@ -184,6 +184,13 @@ class CompanyInputs:
         # headline price; the profile is the fallback when there is no snapshot.
         return current_price(self.snapshot or {}) or self.profile.get("price")
 
+    @property
+    def money(self) -> DisplaySpec:
+        # Earnings and statement figures print at two places in the listing's
+        # currency, and bare for a venue whose currency is unknown, never in
+        # the dollars a missing code would default to.
+        return DisplaySpec(self.cur.currency, 2, bare=self.cur.bare)
+
 
 async def _first_row(rows_aw: Any) -> Optional[Dict[str, Any]]:
     return _first(await rows_aw)
@@ -752,7 +759,7 @@ def _filing_lines(inp: CompanyInputs) -> List[str]:
 def _cash_flow_lines(inp: CompanyInputs) -> List[str]:
     if not inp.cash_flow:
         return []
-    cur = inp.cash_flow_cur
+    cur = inp.cash_flow_cur or inp.money
     out = [
         "### Cash Flow (Quarterly)",
         "",
@@ -858,11 +865,11 @@ def _company_text(inp: CompanyInputs) -> str:
         *_performance_lines(inp),
         *_metrics_lines(inp),
         *_filing_lines(inp),
-        *next_earnings_lines(inp.earnings, inp.cur.currency),
-        *earnings_lines(inp.earnings, inp.cur.currency),
+        *next_earnings_lines(inp.earnings, inp.money),
+        *earnings_lines(inp.earnings, inp.money),
         *_cash_flow_lines(inp),
         *_analyst_lines(inp),
-        *segment_lines(inp.segments, inp.fiscal, inp.stmt_cur),
+        *segment_lines(inp.segments, inp.fiscal, inp.stmt_cur or inp.money),
     ]
     # Best-effort: a malformed snapshot must never blow away the assembled overview.
     stamp = None

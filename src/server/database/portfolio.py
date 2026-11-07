@@ -16,6 +16,7 @@ from market_protocol.symbology import MINOR_UNIT_PLACES
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from src.data_client.normalize import listing_currency
 from src.server.database.pool import get_db_connection
 from src.server.database.user_lock import lock_user_profile
 from src.server.models.user import normalize_symbol
@@ -25,11 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 class HoldingCurrencyMismatch(ValueError):
-    """A write named a currency the holding's average cost is not in.
+    """A write's currency cannot be the one the holding's average cost is in.
 
-    Merging would average two costs in different currencies, and relabeling a
+    Merging would average two costs in different currencies, relabeling a
     holding as pence without its cost would read the stored pounds as pence,
-    so the write is refused. A distinct type so a caller answers it as a
+    and a new holding on a venue whose currency is unknown has none to default
+    to, so the write is refused. A distinct type so a caller answers it as a
     conflict without reading every ValueError as one.
     """
 
@@ -43,6 +45,12 @@ _ASSET_CLASS_OF_TYPE = {
     "crypto": AssetClass.CRYPTO,
     "currency": AssetClass.FX,
 }
+
+
+# The holding types that are listed shares, whose currency is their venue's.
+# Any other type (cash, a bond) on a venue the protocol does not know keeps
+# the USD default rather than being refused.
+_LISTED_TYPES = frozenset({"stock", "etf", "fund", "adr", "reit"})
 
 
 # Search labels London listings in pence, but every quote the app serves for
@@ -80,17 +88,33 @@ def canonical_holding_cost(
     return currency.strip().upper() or None, average_cost
 
 
-def default_holding_currency(symbol: str, instrument_type: str) -> str:
+def default_holding_currency(symbol: str, instrument_type: str) -> Optional[str]:
     """The currency a holding is written in when the writer names none.
 
     The one its quotes are in, since the average cost is read against them. A
-    symbol the protocol cannot read is still stored, in USD as before.
+    symbol the protocol cannot read is still stored, in USD as before. A
+    stock or ETF on a venue the protocol does not know has no currency to
+    take, so None: the writer has to name one. Any other type there (a cash
+    line, a bond) is no listing whose currency is missing, and keeps USD.
     """
     hint = _ASSET_CLASS_OF_TYPE.get(instrument_type, AssetClass.EQUITY)
     try:
-        return to_canonical(symbol, asset_class=hint).price_currency
+        ref = to_canonical(symbol, asset_class=hint)
     except ValueError:
         return "USD"
+    currency = listing_currency(ref)
+    if currency is None and instrument_type not in _LISTED_TYPES:
+        return "USD"
+    return currency
+
+
+def unknown_currency_message(symbol: str) -> str:
+    """Why a new holding with no currency on an unknown venue is refused."""
+    return (
+        f"{symbol} is listed on a venue whose currency is not known here, so the "
+        f"holding has no currency to default to. Give the currency its average cost "
+        f"is in: the one the listing trades in, unless the cost was paid in another."
+    )
 
 
 async def get_user_portfolio(user_id: str) -> List[Dict[str, Any]]:
@@ -276,7 +300,8 @@ async def upsert_portfolio_holding(
 
     Raises:
         HoldingCurrencyMismatch: ``currency`` names another currency than the
-            existing holding's.
+            existing holding's, or is omitted for a new holding on a venue
+            whose currency is unknown.
     """
     _returning = """
         RETURNING
@@ -384,6 +409,8 @@ async def upsert_portfolio_holding(
                 else:
                     user_portfolio_id = str(uuid4())
                     currency = currency or default_holding_currency(symbol, instrument_type)
+                    if currency is None:
+                        raise HoldingCurrencyMismatch(unknown_currency_message(symbol))
                     await cur.execute(f"""
                         INSERT INTO user_portfolios (
                             user_portfolio_id, user_id, symbol, instrument_type, exchange,

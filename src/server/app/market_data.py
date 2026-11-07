@@ -38,7 +38,7 @@ from src.server.services.cache.intraday_cache_service import (
 from src.server.services.cache.daily_cache_service import (
     DailyCacheService,
 )
-from src.data_client.normalize import series_lineage
+from src.data_client.normalize import listing_currency, series_lineage
 from src.server.services.cache.quote_cache_service import QuoteCacheService
 from src.data_client.freshness import measure_bars, measure_daily, measure_quote
 from market_protocol import (
@@ -84,8 +84,7 @@ def _price_ref(symbol: str, *, is_index: bool = False, equity: bool = False):
 
 
 def _currency_of(symbol: str, *, is_index: bool = False, equity: bool = False) -> Optional[str]:
-    ref = _price_ref(symbol, is_index=is_index, equity=equity)
-    return ref.price_currency if ref else None
+    return listing_currency(_price_ref(symbol, is_index=is_index, equity=equity))
 
 
 class _SeriesMeta(NamedTuple):
@@ -108,7 +107,7 @@ def _series_meta(symbol: str, result, *, is_index: bool = False, equity: bool = 
     treatment, tier = series_lineage(header.get("publisher"), ref)
     return _SeriesMeta(
         fields={
-            "currency": ref.price_currency if ref else None,
+            "currency": listing_currency(ref),
             "timezone": ref.tz if ref else None,
             "price_treatment": header.get("price_treatment") or treatment,
         },
@@ -744,7 +743,7 @@ def _snapshot(
     """
     return SnapshotData(**{
         **row,
-        "currency": row.get("currency") or ref.price_currency,
+        "currency": row.get("currency") or listing_currency(ref),
         "asset_class": ref.asset_class.value,
         "symbol": symbol,
         "requested": requested,

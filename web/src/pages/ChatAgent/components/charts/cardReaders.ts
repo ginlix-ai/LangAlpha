@@ -411,12 +411,16 @@ export interface OptionRow {
   volume?: number;
   low?: number;
   high?: number;
+  /** Not traded in the session the feed has reached: the figures are from `updated`'s day. */
+  stale: boolean;
+  /** When the feed showed the session's last print, exchange-local `YYYY-MM-DD HH:MM:SS`. */
+  updated?: string;
 }
 
 export interface OptionsChain {
   underlying?: string;
   rows: OptionRow[];
-  currency: string;
+  currency: string | null;
   status?: string;
   asOfTs?: number;
   /** Each type present, calls first. */
@@ -444,6 +448,8 @@ export function readOptionsChain(artifact: Record<string, unknown>, toolArgs?: R
       volume: finite(session?.volume),
       low: finite(session?.low),
       high: finite(session?.high),
+      stale: session?.stale === true,
+      updated: text(session?.last_updated),
     };
   });
   const underlying = text(artifact.underlying) ?? text(raw[0]?.underlying_ticker) ?? text(toolArgs?.underlying)?.toUpperCase();
@@ -466,7 +472,7 @@ export interface MoverRow {
   change?: number;
   changePct?: number;
   volume?: number;
-  currency: string;
+  currency: string | null;
 }
 
 export interface MarketMovers {

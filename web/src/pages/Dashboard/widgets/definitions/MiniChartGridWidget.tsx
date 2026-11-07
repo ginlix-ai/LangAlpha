@@ -48,7 +48,7 @@ interface CellData {
   closes: number[];
   last: number;
   prev: number;
-  currency: string;
+  currency: string | null;
 }
 
 // Per-symbol delta-poll state carried across React Query refetches. `bars` is
@@ -57,12 +57,12 @@ interface CellData {
 interface SparkState {
   bars: ChartBar[];
   watermark: number | null;
-  currency: string;
+  currency: string | null;
 }
 
 const BAR_CAP = SPARK_DAYS + 5;
 
-function barsToCell(symbol: string, bars: ChartBar[], currency: string): CellData | null {
+function barsToCell(symbol: string, bars: ChartBar[], currency: string | null): CellData | null {
   const tail = bars.slice(-SPARK_DAYS);
   const closes = tail.map((b) => b.close);
   if (closes.length < 2) return null;

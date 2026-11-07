@@ -7,6 +7,7 @@ import { Loader } from '@/components/ui/loader';
 import { toast } from '@/components/ui/use-toast';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
 import type { StockSearchHit } from '@/lib/marketUtils';
+import { asksHoldingCurrency, isCurrencyCode, typedCurrencyCode } from '@/lib/holdingCurrency';
 import { apiErrorReason, apiErrorStatus } from '@/pages/ChatAgent/utils/api';
 import { portfolioHoldingsQuery } from '@/pages/Dashboard/hooks/usePortfolioData';
 import { addPortfolioHolding, deletePortfolioHolding } from '@/pages/Dashboard/utils/portfolio';
@@ -44,6 +45,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
   const searchId = useId();
   const listId = useId();
   const quantityId = useId();
+  const currencyId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const quantityRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
@@ -51,6 +53,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
   const [active, setActive] = useState(0);
   const [picked, setPicked] = useState<StockSearchHit | null>(null);
   const [quantity, setQuantity] = useState('');
+  const [typedCurrency, setTypedCurrency] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +73,9 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
 
   const amount = Number(quantity);
   const validQuantity = quantity.trim() !== '' && Number.isFinite(amount) && amount > 0;
+  const asksCurrency = picked !== null && asksHoldingCurrency(picked);
+  const currency = asksCurrency ? typedCurrencyCode(typedCurrency) : picked?.currency;
+  const canHold = validQuantity && (!asksCurrency || isCurrencyCode(currency));
 
   function nameOf(hit: StockSearchHit): string {
     return (zh ? hit.nameLocal || hit.name : hit.name || hit.nameEn || hit.nameLocal) || '';
@@ -87,6 +93,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
   function clear() {
     setPicked(null);
     setQuantity('');
+    setTypedCurrency('');
     setError(null);
     requestAnimationFrame(() => searchRef.current?.focus());
   }
@@ -135,7 +142,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
     // The form's own submit, which Enter in the quantity field also sends; the
     // flow's Enter-to-continue sees it handled and leaves it.
     event?.preventDefault();
-    if (!picked || !validQuantity || busy) return;
+    if (!picked || !canHold || busy) return;
     const symbol = picked.symbol.toUpperCase();
     setBusy(true);
     setError(null);
@@ -145,7 +152,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
         instrument_type: 'stock',
         quantity: amount,
         exchange: picked.exchangeShortName,
-        currency: picked.currency,
+        currency,
       });
       await queryClient.invalidateQueries({ queryKey: portfolioHoldingsQuery.queryKey });
       clear();
@@ -318,9 +325,27 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
                 data-testid="welcome-holdings-quantity"
               />
             </div>
+            {asksCurrency && (
+              <div className="flex flex-col gap-1 sm:w-24">
+                <label htmlFor={currencyId} className="text-xs font-medium text-(--color-text-secondary)">
+                  {t('onboarding.welcome.holdings.currency')}
+                </label>
+                <Input
+                  id={currencyId}
+                  value={typedCurrency}
+                  onChange={(e) => setTypedCurrency(e.target.value)}
+                  placeholder={t('onboarding.welcome.holdings.currencyPlaceholder')}
+                  maxLength={3}
+                  autoComplete="off"
+                  spellCheck={false}
+                  required
+                  data-testid="welcome-holdings-currency"
+                />
+              </div>
+            )}
             <button
               type="submit"
-              disabled={!validQuantity || busy}
+              disabled={!canHold || busy}
               aria-busy={busy || undefined}
               data-testid="welcome-holdings-to-holdings"
               className="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-(--color-border-default) px-4 text-sm font-medium text-(--color-text-primary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50"

@@ -139,6 +139,29 @@ class TestPortfolioParseAndDiff:
         diff = _diff_portfolio(payload, [])
         assert diff.inserts[0]["currency"] == "CNY"
 
+    def test_a_new_holding_on_an_unknown_venue_must_name_its_currency(self):
+        payload = self._make_payload("v1", [
+            {"symbol": "AAPL", "instrument_type": "stock", "quantity": "1"},
+            {"symbol": "PETR4.SA", "instrument_type": "stock", "quantity": "100"},
+        ])
+        with pytest.raises(UserDataValidationError) as exc:
+            _diff_portfolio(payload, [])
+        assert exc.value.error_type == "constraint_error"
+        assert exc.value.field_path == "holdings[1].currency"
+        assert exc.value.hint.startswith("PETR4.SA is listed on a venue whose currency is not known")
+        named = self._make_payload("v1", [
+            {"symbol": "PETR4.SA", "instrument_type": "stock", "quantity": "100", "currency": "BRL"},
+        ])
+        assert _diff_portfolio(named, []).inserts[0]["currency"] == "BRL"
+
+    def test_a_held_row_on_an_unknown_venue_with_no_currency_does_not_block_a_save(self):
+        existing = _portfolio_row(symbol="PETR4.SA", currency=None, exchange=None, name=None)
+        payload = self._make_payload("v1", [{
+            "symbol": "PETR4.SA", "instrument_type": "stock", "quantity": "200", "account_name": "Main",
+        }])
+        diff = _diff_portfolio(payload, [existing])
+        assert diff.updates[0]["currency"] is None
+
     def test_a_held_row_without_a_currency_keeps_the_one_it_is_held_in(self):
         existing = _portfolio_row(symbol="600519.SH", currency="CNY", exchange=None, name=None)
         payload = self._make_payload("v1", [{

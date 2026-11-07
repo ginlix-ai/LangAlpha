@@ -149,11 +149,12 @@ export interface DerivedOverviewQuote {
   currency: string | null;
   /** Places the quote's prices print at (lib/bars `quotePlaces`). */
   places: number;
-  /** What the statements (revenue, cash flow, segments) print in: always money. */
-  statementCurrency: string;
+  /** What the statements (revenue, cash flow, segments) print in: always money,
+   *  but no named currency for a listing on an unknown venue. */
+  statementCurrency: string | null;
   /** What earnings print in: consensus figures in the trading currency, so an
    *  ADR's EPS is dollars per ADS though its statements report in TWD or CNY. */
-  earningsCurrency: string;
+  earningsCurrency: string | null;
   dualName: DualName;
 }
 

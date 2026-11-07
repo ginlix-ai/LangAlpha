@@ -102,6 +102,38 @@ describe('HoldingsEntry', () => {
     expect(addPortfolioHolding).not.toHaveBeenCalled();
   });
 
+  it('asks for the currency of a listing on an unknown venue that search names none for', async () => {
+    hits.push({ symbol: 'PETR4.SA', name: 'Petrobras' });
+    try {
+      renderWithProviders(<HoldingsEntry />);
+      await listsLoaded();
+      search('petr');
+      fireEvent.mouseDown(screen.getByText('PETR4.SA'));
+      fireEvent.change(screen.getByTestId('welcome-holdings-quantity'), { target: { value: '100' } });
+      const button = screen.getByTestId('welcome-holdings-to-holdings');
+      expect(button).toBeDisabled();
+      fireEvent.change(screen.getByTestId('welcome-holdings-currency'), { target: { value: 'XYZ' } });
+      expect(button).toBeDisabled();
+      fireEvent.change(screen.getByTestId('welcome-holdings-currency'), { target: { value: 'brl' } });
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+      await waitFor(() => expect(addPortfolioHolding).toHaveBeenCalledWith(expect.objectContaining({
+        symbol: 'PETR4.SA',
+        quantity: 100,
+        currency: 'BRL',
+      })));
+    } finally {
+      hits.pop();
+    }
+  });
+
+  it('asks no currency of a listing search names one for', () => {
+    renderWithProviders(<HoldingsEntry />);
+    search('aap');
+    fireEvent.mouseDown(screen.getAllByRole('option')[0]);
+    expect(screen.queryByTestId('welcome-holdings-currency')).toBeNull();
+  });
+
   it('keeps the holdings button disabled until there is a quantity', () => {
     renderWithProviders(<HoldingsEntry />);
     search('aap');

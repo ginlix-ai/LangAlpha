@@ -117,6 +117,14 @@ async def test_single_snapshot_carries_the_instrument_currency(client):
     assert resp.json()["currency"] == "CNY"
 
 
+async def test_a_snapshot_on_an_unknown_venue_names_no_currency(client):
+    rows = [{"symbol": "PETR4.SA", "price": 45.78}, {"symbol": "BRK-B", "price": 571.48}]
+    with _stub_quotes(rows):
+        resp = await client.get("/api/v1/market-data/snapshots/stocks?symbols=PETR4.SA,BRK.B")
+    assert resp.status_code == 200
+    assert [s["currency"] for s in resp.json()["snapshots"]] == [None, "USD"]
+
+
 async def test_upstream_currency_wins_over_the_derived_one(client):
     with _stub_quotes([{"symbol": "AAPL", "price": 190.0, "currency": "EUR"}]):
         resp = await client.get("/api/v1/market-data/snapshots/stocks/AAPL")

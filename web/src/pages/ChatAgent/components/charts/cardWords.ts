@@ -16,7 +16,7 @@ import {
 } from '@/lib/format';
 import { cronToHuman } from '@/pages/Automations/utils/cron';
 import { formatPriceTrigger } from '@/pages/Automations/utils/price';
-import type { Automation, MarketMovers, OptionsChain } from './cardReaders';
+import type { Automation, MarketMovers, OptionRow, OptionsChain } from './cardReaders';
 
 // ─── The market's session ───────────────────────────────────────────
 
@@ -106,6 +106,12 @@ export function optionsEdge(
     // The regular session is the default reading, as on a quote.
     status: chain.status && chain.status !== 'open' ? marketStatusLabel(t, chain.status) : undefined,
   };
+}
+
+/** A stale contract's tooltip: no trade this session, and when the feed showed its last one. */
+export function staleOptionTitle(t: TFunction, row: OptionRow): string | undefined {
+  if (!row.stale) return undefined;
+  return t('toolArtifact.staleOption', { time: (row.updated ?? '').slice(0, 16) });
 }
 
 /** A row's expiry in its column: the day alone when every expiry shares a year, since the edge names it. */

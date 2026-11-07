@@ -1306,7 +1306,10 @@
       "alertQuantityMissing": "请输入数量。",
       "alertAverageCostMissing": "请输入平均成本。",
       "alertQuantityInvalid": "请输入大于 0 的有效数量。",
-      "alertAverageCostInvalid": "请输入大于 0 的有效平均成本。"
+      "alertAverageCostInvalid": "请输入大于 0 的有效平均成本。",
+      "currencyLabel": "币种",
+      "currencyPlaceholder": "例如 BRL",
+      "alertCurrencyMissing": "请输入平均成本所用币种的三位字母代码。"
     },
     "chatInputCard": {
       "suggestion1": "总结苹果公司的财报",
@@ -4054,6 +4057,7 @@
     "change": "涨跌额",
     "nMoreContracts": "还有 {{count}} 张",
     "noOptionsData": "暂无期权数据",
+    "staleOption": "本交易时段未成交，最近一笔成交于纽约时间 {{time}} 公布",
     "topGainers": "涨幅榜",
     "topLosers": "跌幅榜",
     "marketMovers": "市场异动",
@@ -4713,6 +4717,8 @@
       "holdings": {
         "ticker": "代码",
         "quantity": "数量",
+        "currency": "币种",
+        "currencyPlaceholder": "例如 BRL",
         "remove": "移除 {{symbol}}",
         "failed": "无法添加 {{symbol}}。",
         "search": "按名称或代码搜索",

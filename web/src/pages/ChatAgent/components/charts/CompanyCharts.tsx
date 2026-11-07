@@ -168,7 +168,7 @@ interface RevenueBreakdownChartProps {
   revenueByProduct: Record<string, number> | undefined;
   revenueByGeo: Record<string, number> | undefined;
   /** ISO code of the slice values. */
-  currency: string;
+  currency: string | null;
 }
 
 const buildPieData = (obj: Record<string, number>) => {
@@ -232,7 +232,7 @@ interface ChartArrayDataProps {
   data: Record<string, unknown>[] | undefined;
   /** ISO code of money-valued axes and tooltips; required so a forgotten
    *  prop cannot silently read as USD. */
-  currency: string;
+  currency: string | null;
 }
 
 export const QuarterlyRevenueChart = memo(function QuarterlyRevenueChart({ data, currency }: ChartArrayDataProps): React.ReactElement | null {

@@ -85,6 +85,18 @@ async def test_daily_carries_currency_and_timezone(client):
     assert body["cache"]["revision"] is None
 
 
+async def test_daily_on_an_unknown_venue_names_no_currency(client):
+    svc = MagicMock()
+    svc.get_stock_daily = AsyncMock(return_value=_result("PETR4.SA", header=None))
+    with patch(
+        "src.server.app.market_data.DailyCacheService.get_instance", return_value=svc
+    ):
+        resp = await client.get("/api/v1/market-data/daily/stocks/PETR4.SA")
+
+    assert resp.status_code == 200
+    assert resp.json()["currency"] is None
+
+
 async def test_stock_bars_echo_the_requested_spelling(client):
     """The cache result carries the vendor's spelling; the response answers in ours."""
     svc = MagicMock()

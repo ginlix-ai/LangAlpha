@@ -555,6 +555,28 @@ class TestMinorUnitConversion:
         assert result["data"][0]["close"] == 1.51
 
     @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
+    def test_an_unknown_venue_takes_the_currency_yfinance_declares(
+        self, mock_ticker_cls, mock_history_df
+    ):
+        stock = mock_ticker_cls.return_value
+        stock.history.return_value = mock_history_df
+        stock.history_metadata = {"currency": "BRL"}
+
+        assert_ok_envelope(get_stock_history("PETR4.SA"), currency="BRL")
+        entry = get_multiple_stocks_history(["PETR4.SA"])["data"]["PETR4.SA"]
+        assert entry["currency"] == "BRL"
+
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
+    def test_a_declared_currency_never_overrides_a_known_venue(
+        self, mock_ticker_cls, mock_history_df
+    ):
+        stock = mock_ticker_cls.return_value
+        stock.history.return_value = mock_history_df
+        stock.history_metadata = {"currency": "EUR"}
+
+        assert_ok_envelope(get_stock_history("BRK.B"), currency="USD")
+
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_multi_history_per_entry_conversion(self, mock_ticker_cls, pence_history_df):
         stock = mock_ticker_cls.return_value
         stock.history.return_value = pence_history_df

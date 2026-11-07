@@ -2219,6 +2219,71 @@ class TestFetchOptionsChain:
         assert artifact["currency"] == "USD"
 
     @pytest.mark.asyncio
+    async def test_table_dates_a_stale_close_and_states_the_delay(self):
+        """A contract not traded this session prints its last day, marked stale,
+        beside its IV, delta and open interest, under the feed's delay."""
+        chain = {"results": [
+            {"ticker": "O:ZZZZ261120C00125000", "contract_type": "call", "strike_price": 125.0, "expiration_date": "2026-11-20"},
+        ]}
+        intel = _make_fake_intel_source(options_chain=chain)
+        intel.get_options_snapshot = AsyncMock(return_value=[
+            {"ticker": "O:ZZZZ261120C00125000", "market_status": "open",
+             # 2026-10-23 10:54:03 New York, weeks before the read.
+             "session": {"close": 222.0, "change_percent": 0.0, "volume": 1.0,
+                         "timeframe": "DELAYED", "last_updated": 1792767243597000000},
+             "greeks": {"delta": 0.9819}, "implied_volatility": 0.394, "open_interest": 11599,
+             "underlying_asset": {"ticker": "ZZZZ", "price": 343.32, "timeframe": "REAL-TIME"}},
+        ])
+        provider = _make_fake_financial_provider(intel=intel)
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, artifact = await fetch_options_chain("ZZZZ")
+
+        assert "| Market: open | Underlying: $343.32 (real-time)" in content
+        assert "**Prices:** 15 minutes delayed." in content
+        assert (
+            "| $222.00 | +0.00% | 1 | 2026-10-23 10:54 (stale) | 39.4% | 0.98 | 11,599 |"
+            in content
+        )
+        assert artifact["results"][0]["session"]["stale"] is True
+        assert artifact["underlying"] == "ZZZZ"
+
+    @pytest.mark.asyncio
+    async def test_a_real_time_feed_still_explains_the_stale_mark(self):
+        chain = {"results": [
+            {"ticker": "O:ZZZZ261120C00125000", "contract_type": "call", "strike_price": 125.0, "expiration_date": "2026-11-20"},
+        ]}
+        intel = _make_fake_intel_source(options_chain=chain)
+        intel.get_options_snapshot = AsyncMock(return_value=[
+            {"ticker": "O:ZZZZ261120C00125000",
+             "session": {"close": 222.0, "timeframe": "REAL-TIME", "last_updated": 1792767243597000000}},
+        ])
+        provider = _make_fake_financial_provider(intel=intel)
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_options_chain("ZZZZ")
+
+        assert "**Prices:** real-time. Updated is when the feed showed the last print (New York time); a stale" in content
+        assert "2026-10-23 10:54 (stale)" in content
+
+    @pytest.mark.asyncio
+    async def test_a_feed_that_names_no_timeframe_states_no_delay(self):
+        chain = {"results": [
+            {"ticker": "O:ZZZZ261120C00125000", "contract_type": "call", "strike_price": 125.0, "expiration_date": "2026-11-20"},
+        ]}
+        intel = _make_fake_intel_source(options_chain=chain)
+        intel.get_options_snapshot = AsyncMock(return_value=[
+            {"ticker": "O:ZZZZ261120C00125000", "session": {"close": 2.0}},
+        ])
+        provider = _make_fake_financial_provider(intel=intel)
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_options_chain("ZZZZ")
+
+        assert "**Prices:**" not in content
+        assert "| $2.00 | — | — | — | — | — | — |" in content
+
+    @pytest.mark.asyncio
     async def test_empty_results(self):
         intel = _make_fake_intel_source(options_chain={"results": []})
         provider = _make_fake_financial_provider(intel=intel)
@@ -2615,6 +2680,14 @@ class TestMarketHeaderLabel:
         assert "**Market:** A-Share" in content
 
     @pytest.mark.asyncio
+    async def test_an_unknown_venue_names_no_market_or_currency(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_daily_prices("PETR4.SA", limit=5)
+        assert "**Market:** Stock" in content
+        assert "price_currency" not in artifact
+
+    @pytest.mark.asyncio
     async def test_beijing_listing_is_an_ashare_too(self):
         provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
         with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
@@ -2834,6 +2907,17 @@ class TestFetchQuote:
             _, artifact = await fetch_quote(["NVDA"])
         assert artifact["all_realtime"] is (not closed)
         assert artifact["quotes"][0]["currency"] == "USD"
+
+    @pytest.mark.asyncio
+    async def test_a_quote_on_an_unknown_venue_names_no_currency(self):
+        snaps = [{"symbol": "PETR4.SA", "price": 45.78, "change_percent": -0.37, "volume": 1,
+                  "market_status": "open", "tier": "delayed_15m"},
+                 {"symbol": "BRK-B", "price": 571.48, "change_percent": -0.15, "volume": 1,
+                  "market_status": "open", "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QCS_MOD}.get_market_data_provider", return_value=provider):
+            _, artifact = await fetch_quote(["PETR4.SA", "BRK.B"])
+        assert [q["currency"] for q in artifact["quotes"]] == [None, "USD"]
 
     @pytest.mark.asyncio
     async def test_a_closed_listing_no_provider_quotes_reads_its_daily_close(self):

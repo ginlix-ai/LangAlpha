@@ -91,6 +91,12 @@ def _statements(cursor):
         ("HSI", "stock", "USD"),
         # Unreadable, yet stored as before.
         ("...", "stock", "USD"),
+        # A venue the protocol does not know has no currency to default to.
+        ("PETR4.SA", "stock", None),
+        ("PETR4.SA", "etf", None),
+        ("BRK.B", "stock", "USD"),
+        # A non-listing there is not missing a venue's currency.
+        ("CASH.USD", "cash", "USD"),
     ],
 )
 def test_default_currency_is_the_listings(symbol, instrument_type, currency):
@@ -130,6 +136,42 @@ async def test_an_explicit_currency_is_kept_on_create(mock_cursor):
     )
 
     assert mock_cursor.execute.call_args_list[-1].args[1][8] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_a_new_holding_on_an_unknown_venue_must_name_its_currency(mock_cursor):
+    mock_cursor.fetchone.side_effect = [None]
+
+    with pytest.raises(HoldingCurrencyMismatch) as refused:
+        await upsert_portfolio_holding(
+            user_id="user-1",
+            symbol="PETR4.SA",
+            instrument_type="stock",
+            quantity=Decimal("100"),
+            average_cost=Decimal("45.78"),
+        )
+
+    assert str(refused.value) == (
+        "PETR4.SA is listed on a venue whose currency is not known here, so the "
+        "holding has no currency to default to. Give the currency its average cost "
+        "is in: the one the listing trades in, unless the cost was paid in another."
+    )
+    assert not any("INSERT" in sql for sql in _statements(mock_cursor))
+
+
+@pytest.mark.asyncio
+async def test_a_holding_on_an_unknown_venue_that_names_its_currency_is_kept(mock_cursor):
+    mock_cursor.fetchone.side_effect = [None, _row(symbol="PETR4.SA", currency="BRL")]
+
+    await upsert_portfolio_holding(
+        user_id="user-1",
+        symbol="PETR4.SA",
+        instrument_type="stock",
+        quantity=Decimal("100"),
+        currency="BRL",
+    )
+
+    assert mock_cursor.execute.call_args_list[-1].args[1][8] == "BRL"
 
 
 @pytest.mark.asyncio

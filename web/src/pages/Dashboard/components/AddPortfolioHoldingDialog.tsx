@@ -7,7 +7,7 @@ import { FormCard } from './FormCard';
 import { SymbolSearchCard } from './SymbolSearchCard';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
-import { currencyForSymbol } from '@/lib/bars/exchanges';
+import { asksHoldingCurrency, holdingCurrency, isCurrencyCode, typedCurrencyCode } from '@/lib/holdingCurrency';
 import { isMinorUnitListingInMajor } from '../utils/portfolioSummary';
 
 interface PortfolioHoldingPayload {
@@ -27,19 +27,6 @@ interface AddPortfolioHoldingDialogProps {
   open?: boolean;
   onClose?: () => void;
   onAdd: (payload: PortfolioHoldingPayload) => void;
-}
-
-/**
- * The currency a holding's cost is entered in: the one the app quotes the
- * listing in. Search names a pence-quoted London line in pence (GBp), which the
- * app quotes in pounds, so a cost typed against the app's price is pounds; a
- * London line traded in dollars keeps its USD. Absent, the server takes the
- * listing's.
- */
-function holdingCurrency(hit: StockSearchHit): string | undefined {
-  const code = hit.currency?.trim();
-  if (code === 'GBp' || code?.toUpperCase() === 'GBX') return currencyForSymbol(hit.symbol);
-  return code || undefined;
 }
 
 /**
@@ -64,7 +51,10 @@ function AddPortfolioHoldingDialog({
   const [averageCost, setAverageCost] = useState('');
   const [accountName, setAccountName] = useState('');
   const [notes, setNotes] = useState('');
-  const costCurrency = selectedStock ? holdingCurrency(selectedStock) : undefined;
+  const [typedCurrency, setTypedCurrency] = useState('');
+  const listedCurrency = selectedStock ? holdingCurrency(selectedStock) : undefined;
+  const asksCurrency = !!selectedStock && asksHoldingCurrency(selectedStock);
+  const costCurrency = asksCurrency ? typedCurrencyCode(typedCurrency) : listedCurrency;
 
   // Reset state when dialog closes
   useEffect(() => {
@@ -76,6 +66,7 @@ function AddPortfolioHoldingDialog({
       setAverageCost('');
       setAccountName('');
       setNotes('');
+      setTypedCurrency('');
     }
   }, [open]);
 
@@ -91,6 +82,7 @@ function AddPortfolioHoldingDialog({
     setAverageCost('');
     setAccountName('');
     setNotes('');
+    setTypedCurrency('');
   };
 
   const handleAdd = () => {
@@ -116,6 +108,11 @@ function AddPortfolioHoldingDialog({
 
     if (isNaN(averageCostNum) || averageCostNum <= 0) {
       alert(t('dashboard.addPortfolioDialog.alertAverageCostInvalid'));
+      return;
+    }
+
+    if (asksCurrency && !isCurrencyCode(costCurrency)) {
+      alert(t('dashboard.addPortfolioDialog.alertCurrencyMissing'));
       return;
     }
 
@@ -224,6 +221,21 @@ function AddPortfolioHoldingDialog({
                       />
                     </label>
                   </div>
+
+                  {asksCurrency && (
+                    <label className="block">
+                      <span className="term-label dash-form-label">
+                        {t('dashboard.addPortfolioDialog.currencyLabel')} <span className="dash-form-required">*</span>
+                      </span>
+                      <Input
+                        placeholder={t('dashboard.addPortfolioDialog.currencyPlaceholder')}
+                        maxLength={3}
+                        value={typedCurrency}
+                        onChange={(e) => setTypedCurrency(e.target.value)}
+                        className="dash-form-input border"
+                      />
+                    </label>
+                  )}
 
                   <label className="block">
                     <span className="term-label dash-form-label">{t('dashboard.addPortfolioDialog.accountNameLabel')}</span>

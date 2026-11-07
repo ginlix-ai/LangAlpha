@@ -342,6 +342,9 @@ button.term-card-title {
 .term-chg[data-dir='up'] { color: var(--color-profit); }
 .term-chg[data-dir='down'] { color: var(--color-loss); }
 .term-chg[data-dir='flat'] { color: var(--color-term-text-tertiary); }
+/* A figure from an older session than the one shown, such as an option not traded today. */
+.term-stale, .term-stale .term-chg[data-dir] { color: var(--color-term-text-tertiary); }
+.term-stale .term-range-at { background: var(--color-term-text-tertiary); }
 .term-chg-mark {
   width: 0.62em;
   height: 0.54em;

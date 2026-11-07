@@ -37,6 +37,17 @@ describe('exchange suffix table', () => {
     expect(currencyForSymbol(null)).toBe('USD');
   });
 
+  it('names no currency for a suffix no venue here knows', () => {
+    expect(currencyForSymbol('PETR4.SA')).toBeNull();
+    expect(currencyForSymbol('petr4.sa')).toBeNull();
+    expect(quoteCurrency(null, 'PETR4.SA')).toBeNull();
+    expect(quoteCurrency('BRL', 'PETR4.SA')).toBe('BRL');
+    expect(currencyForSymbol('BRK-B')).toBe('USD');
+    expect(currencyForSymbol('GC=F')).toBe('USD');
+    expect(currencyForSymbol('SPY.US')).toBe('USD');
+    expect(currencyForSymbol('BRK.B.US')).toBe('USD');
+  });
+
   it('classifies foreign listings as non-US (and US/indexes correctly)', () => {
     expect(isUSEquity('AAPL')).toBe(true);
     expect(isUSEquity('BRK.B')).toBe(true); // unknown suffix → US
