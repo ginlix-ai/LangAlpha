@@ -7,6 +7,7 @@
   display: flex;
   flex-direction: column;
   background-color: var(--color-bg-page);
+  container: settings-page / inline-size;
 }
 
 .settings-body {
@@ -319,8 +320,10 @@ label.settings-row-label { cursor: pointer; }
   .settings-column { padding-left: 28px; padding-right: 28px; }
 }
 
-/* ---------- Phone: the rail becomes the search over a row of pills ---------- */
-@media (max-width: 767px) {
+/* ---------- Phone: the rail becomes the search over a row of pills ----------
+   By the page's own width, not the viewport's: beside the app sidebar a
+   768px window leaves the page about 500px, too little for the rail. */
+@container settings-page (max-width: 767px) {
   .settings-body { flex-direction: column; }
   .settings-rail {
     width: auto;
