@@ -32,8 +32,10 @@ from langchain_core.runnables import RunnableConfig
 from ptc_agent.agent.claude_code.cli import RuntimeSpec
 from ptc_agent.agent.claude_code.compaction import CompactionRules
 from ptc_agent.agent.claude_code.launcher import Launcher
+from ptc_agent.agent.claude_code.mid_turn import TaskSteering
 from ptc_agent.agent.claude_code.runtime import TURN_KEY, Baseline, ClaudeTurn, build_claude_code_graph
 from ptc_agent.agent.middleware import ask_user
+from ptc_agent.agent.middleware.background_subagent.event_capture import SubagentEventCaptureMiddleware
 from ptc_agent.agent.middleware.credit_gate import CreditGateMiddleware
 from ptc_agent.agent.middleware.order_governance import OrderGovernanceMiddleware, places_order
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
@@ -78,11 +80,22 @@ class ClaudeCodeGraph:
     the run ends, in the run's own task, and only after the graph's own run,
     so no step is still using the CLI when it goes; everything else is the
     compiled graph's.
+
+    A run takes as input only the keys ``takes`` names, those the agent it
+    runs takes, as ``create_agent``'s graph drops the rest: a subagent's run
+    is handed its parent's whole state, private channels and Claude session
+    included, which are the parent's own.
     """
 
-    def __init__(self, graph: Any, turn: Callable[..., ClaudeTurn]) -> None:
+    def __init__(self, graph: Any, turn: Callable[..., ClaudeTurn], takes: frozenset[str] | None = None) -> None:
         self.graph = graph
         self._turn = turn
+        self._takes = takes
+
+    def _input(self, input: Any) -> Any:
+        if self._takes is None or not isinstance(input, Mapping):
+            return input
+        return {k: v for k, v in input.items() if k in self._takes}
 
     def turn(self, config: RunnableConfig) -> ClaudeTurn:
         """A turn for the run ``config`` names: its thread, and its namespace, a subagent task's for a task's run."""
@@ -94,13 +107,13 @@ class ClaudeCodeGraph:
     async def ainvoke(self, input: Any, config: RunnableConfig, **kwargs: Any) -> Any:
         turn = self.turn(config)
         try:
-            return await self.graph.ainvoke(input, _with_turn(config, turn), **kwargs)
+            return await self.graph.ainvoke(self._input(input), _with_turn(config, turn), **kwargs)
         finally:
             await turn.close()
 
     async def astream(self, input: Any, config: RunnableConfig, **kwargs: Any) -> AsyncIterator[Any]:
         turn = self.turn(config)
-        stream = self.graph.astream(input, _with_turn(config, turn), **kwargs)
+        stream = self.graph.astream(self._input(input), _with_turn(config, turn), **kwargs)
         try:
             async for event in stream:
                 yield event
@@ -110,6 +123,9 @@ class ClaudeCodeGraph:
             finally:
                 await turn.close()
 
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+        raise NotImplementedError("a Claude Code run runs through astream or ainvoke")
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self.graph, name)
 
@@ -118,7 +134,7 @@ def claude_code_graph(
     agent: Any, *, system_prompt: str, target: ClaudeCodeTarget, user_id: str | None,
     checkpointer: Any, launcher: Callable[[], Launcher], entry: Sequence[Any] = (),
     compaction: CompactionRules, middleware: Sequence[Any] = (), baseline: Baseline | None = None,
-    steering: SteeringMiddleware | None = None, alert_senders: frozenset[str] = frozenset(),
+    steering: SteeringMiddleware | TaskSteering | None = None, alert_senders: frozenset[str] = frozenset(),
 ) -> ClaudeCodeGraph:
     """The turn graph for ``agent``, the compiled agent ``create_agent`` built.
 
@@ -158,11 +174,14 @@ def claude_code_graph(
 
     holds = [m for m in middleware if isinstance(m, _HOLDS)]
     governance = next((m for m in holds if isinstance(m, OrderGovernanceMiddleware)), None)
+    capture = next((m for m in middleware if isinstance(m, SubagentEventCaptureMiddleware)), None)
     graph = build_claude_code_graph(
         tool_node,
         entry=hooks(entry, "before_agent") + hooks([m for m in middleware if isinstance(m, _OPENING_ROWS)], "before_model"),
         pause=hooks(holds, "before_model") + hooks(holds[::-1], "after_model"),
         checkpointer=checkpointer,
         abandon=governance.abandon if governance else None,
+        on_reply=capture.capture if capture else None,
     ).with_config({"recursion_limit": agent.config["recursion_limit"]})
-    return ClaudeCodeGraph(graph, turn)
+    builder = agent.builder
+    return ClaudeCodeGraph(graph, turn, frozenset(builder.schemas[builder.input_schema]))

@@ -87,12 +87,21 @@ class TaskRunRejected(Exception):
     Defined here — not in the server — so middleware code can catch it
     without importing server modules; the server-side ledger raises it.
     ``existing`` carries the conflicting run row when the rejection is a
-    duplicate/slot conflict rather than an infra failure.
+    duplicate/slot conflict rather than an infra failure. ``busy`` marks a
+    refusal that lifts by itself, the computer running as many Claude Code
+    CLIs as it may.
     """
 
-    def __init__(self, reason: str, existing: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        reason: str,
+        existing: dict[str, Any] | None = None,
+        *,
+        busy: bool = False,
+    ):
         self.reason = reason
         self.existing = existing
+        self.busy = busy
         super().__init__(reason)
 
 
@@ -1022,8 +1031,11 @@ class BackgroundTaskRegistry:
 
         return cancelled
 
-    async def cancel_task(self, task_id: str, *, force: bool = False) -> bool:
-        """Cancel one live task by its short id (user-targeted stop).
+    async def cancel_task(
+        self, task_id: str, *, force: bool = False, task_run_id: str | None = None
+    ) -> bool:
+        """Cancel one live task by its short id (user-targeted stop), only
+        while its run is ``task_run_id`` when one is given.
 
         Same stamp-then-cancel flow as ``cancel_all``; the entry stays
         registered — its turn collector still claims and drains it.
@@ -1032,7 +1044,9 @@ class BackgroundTaskRegistry:
             intent_targets = [
                 t
                 for t in self._tasks.values()
-                if t.task_id == task_id and self._cancellable(t)
+                if t.task_id == task_id
+                and self._cancellable(t)
+                and task_run_id in (None, t.task_run_id)
             ]
         if not intent_targets:
             return False

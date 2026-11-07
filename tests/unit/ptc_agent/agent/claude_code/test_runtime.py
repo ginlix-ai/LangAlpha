@@ -1152,3 +1152,42 @@ async def test_a_turn_start_compaction_runs_on_the_session_without_a_deferral_th
     state["claude_session"]["entries"] = [*kept, deferral]
     assert await turn._repin(state) == []
     assert compacted == [kept]
+
+
+def test_a_task_the_turn_resumed_as_it_opened_reaches_claude_as_the_resumes_result():
+    """Claude made no call for it and its session holds none, so it is told
+    the result as a reminder, after the messages ahead of the call, and the
+    call is no model's reply."""
+    from src.llms.claude_code import another_model_replied_last
+
+    resume = AIMessage("", id="steering-resume-1", tool_calls=[{"name": "Task", "args": {"action": "resume"}, "id": "r1"}],
+                       additional_kwargs={"lc_source": "steering"})
+    messages = [HumanMessage("old"), _claude("reply"), HumanMessage("notice"), resume,
+                ToolMessage("Resumed **Task-1** in background.", tool_call_id="r1")]
+    assert not another_model_replied_last(messages)
+    assert turn_prompt({"messages": messages}) == [
+        {"type": "text", "text": "notice"},
+        {"type": "text", "text": frame_reminder("Resumed **Task-1** in background.")},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["run", "task"])
+async def test_a_batch_past_the_credit_boundary_stops_the_cli_in_a_subagents_run_as_in_a_turn(kind):
+    """The step after it then stops at the gate, where a turn pauses and a
+    subagent's run ends, resumable, as a langalpha run's does."""
+    async def take():
+        return None
+
+    lease = CreditLease(user_id="u", run_ref="r", port=None)
+    lease.denial = {"message": "Out of credits."}
+    token = current_credit_gate.set(CreditGateState(run_ref="r", kind=kind, port=None, lease=lease))
+    try:
+        results = ToolResults()
+        results.resolve(ToolMessage("ok", tool_call_id="t1"))
+        hook = AfterTool(results, send=_unsent, plan=UNWATCHED)
+        hook.open(["t1"], take)
+        out = await hook({"hook_event_name": "PostToolUse"}, "t1", None)
+    finally:
+        current_credit_gate.reset(token)
+    assert out["continue"] is False

@@ -238,6 +238,23 @@ async def get_computer_for_workspace(
     return dict(row) if row else None
 
 
+async def get_computer_for_thread(thread_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
+    """The computer the thread's workspace is bound to; None for an unbound Home."""
+    async with _computer_cursor(conn) as cur:
+        await cur.execute(
+            f"""
+            SELECT {computer_cols("c")}
+            FROM computers c
+            JOIN workspaces w ON w.computer_id = c.computer_id
+            JOIN conversation_threads t ON t.workspace_id = w.workspace_id
+            WHERE t.conversation_thread_id = %s AND c.{FENCE_NOT_DELETED}
+            """,
+            (thread_id,),
+        )
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
 async def get_computer(
     computer_id: str,
     *,

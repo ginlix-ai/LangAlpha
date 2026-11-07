@@ -31,6 +31,10 @@ Mode = Literal["local", "api_key", "stored"]
 #: keeps its name from when that CLI ran in a worker, so runs stamped then
 #: still count.
 CLOUD_TURN = {"claude_code_worker": True}
+#: What every turn's run row carries while its Claude Code CLI runs,
+#: wherever it runs, which a computer's count of its CLIs reads
+#: (``subagent_runs.start_task_run``).
+CLAUDE_CODE_TURN = {"claude_code": True}
 #: What it carries while its CLI runs on the setup token the user stored,
 #: whose turns ``live_stored_turns`` finds when the token goes.
 STORED_TURN = {"claude_code_stored": True}
@@ -136,6 +140,21 @@ async def live_cloud_turns(user_id: str, *, besides: str | None = None) -> int:
             (user_id, Jsonb(CLOUD_TURN), besides),
         )
         return (await cur.fetchone())["live"]
+
+
+async def live_stored_task_runs(user_id: str) -> list[tuple[str, str, str]]:
+    """The thread, task and run of each of the user's subagent runs in progress
+    on their stored setup token (``STORED_TURN`` in its facts), which can
+    outlive the turn that launched it."""
+    async with get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT thread_id, task_id, task_run_id FROM subagent_runs
+            WHERE status = 'in_progress' AND user_id = %s AND replay_facts @> %s
+            """,
+            (user_id, Jsonb(STORED_TURN)),
+        )
+        return [(str(r["thread_id"]), str(r["task_id"]), str(r["task_run_id"])) for r in await cur.fetchall()]
 
 
 async def live_stored_turns(user_id: str) -> list[tuple[str, str]]:

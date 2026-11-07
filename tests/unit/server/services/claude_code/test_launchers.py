@@ -60,6 +60,20 @@ async def test_a_turn_on_an_own_computer_runs_there_and_relays_the_saved_token_o
     assert MachineAnswer(**cache.values[answer_key(CID)]).file == "unsupported", "and one on musl"
 
 
+def test_a_subagents_cli_keeps_the_claude_plan_on_the_rows_its_turns_do():
+    """Its rate limit reports go where a turn's go, so a limit either one
+    reaches stops the other at its next request, and Settings shows them as one."""
+    from src.server.services.claude_code.plan import UserPlan
+
+    turn = turn_launcher(_ssh_sandbox(), computer_id=CID, user_id="user-1", admitted=None, saved="saved_token")
+    subagent = turn_launcher(
+        _ssh_sandbox(), computer_id=CID, user_id="user-1", admitted=None, saved="saved_token", slot_wait_s=30
+    )
+    assert isinstance(subagent.plan, UserPlan) and isinstance(turn.plan, UserPlan)
+    assert (subagent.plan.user_id, subagent.plan.computer_id) == (turn.plan.user_id, turn.plan.computer_id)
+    assert subagent.plan.computer_id == CID
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("kept", "later", "there", "file", "present"), [
     (None, False, False, "no_perl", False), (None, False, True, "no_perl", True),
@@ -266,7 +280,9 @@ def test_the_agent_build_is_handed_the_turns_launcher_for_its_computer():
     sandbox = _ssh_sandbox()
     with patch("src.server.services.claude_code.launchers.turn_launcher", return_value="launcher") as picked:
         assert inputs.claude_code_launcher(sandbox, None, None) == "launcher"
-    picked.assert_called_once_with(sandbox, computer_id="c-1", user_id="user-1", admitted=None, saved=None)
+        assert inputs.claude_code_launcher(sandbox, None, None, slot_wait_s=30) == "launcher"
+    assert [c.kwargs["slot_wait_s"] for c in picked.call_args_list] == [None, 30]
+    picked.assert_called_with(sandbox, computer_id="c-1", user_id="user-1", admitted=None, saved=None, slot_wait_s=30)
     assert inputs.build_kwargs()["claude_code_launcher"] == inputs.claude_code_launcher
 
 @pytest.mark.asyncio

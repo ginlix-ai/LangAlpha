@@ -32,6 +32,9 @@ from typing import Any, Dict, List, Optional
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
+
+from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, STORED_TURN
 
 from ptc_agent.config.agent import SubagentModel
 from src.server.database import pool
@@ -88,6 +91,14 @@ class PredecessorClaimedError(SubagentRunError):
         )
 
 
+class ClaudeCodeCapError(SubagentRunError):
+    """The run's computer already runs as many Claude Code CLIs as it may."""
+
+    def __init__(self, cap: int):
+        self.cap = cap
+        super().__init__(f"the computer already runs {cap} Claude Code CLIs")
+
+
 class TaskRunNotFoundError(SubagentRunError):
     """No run row for the given task_run_id."""
 
@@ -124,10 +135,22 @@ async def start_task_run(
     predecessor_run_id: Optional[str] = None,
     start_checkpoint_id: Optional[str] = None,
     model: Optional[SubagentModel] = None,
+    claude_code: bool = False,
+    stored_token: bool = False,
+    cli_cap: Optional[tuple[str, int]] = None,
     conn=None,
 ) -> Dict[str, Any]:
     """The task-run START transaction: task upsert + in_progress run row +
     latest_run_id advance, atomically.
+
+    A run on Claude Code is marked so (``claude_code``), and as one on the
+    setup token the user stored (``STORED_TURN``) when the build that
+    launches it signs in with it (``stored_token``), so it is stopped with the
+    turns when the token goes. With
+    ``cli_cap``, its computer and how many CLIs it runs at once, is refused
+    with ``ClaudeCodeCapError`` when the computer's turns and runs on Claude
+    Code already reach that many. Admissions on one computer count one at a
+    time; a turn's own admission does not wait on them.
 
     Raises TaskRunSlotBusyError / DuplicateLaunchError /
     PredecessorClaimedError — each backed by a DB constraint, so two workers
@@ -137,6 +160,11 @@ async def start_task_run(
     never records which model ran and the build that knew is gone by replay.
     """
     conflict: Optional[str] = None
+    facts = {
+        **({"model": model} if model else {}),
+        **({"claude_code": True} if claude_code else {}),
+        **(STORED_TURN if stored_token else {}),
+    }
 
     try:
         async with _ledger_connection(conn) as conn:
@@ -153,6 +181,9 @@ async def start_task_run(
                     )
                     if existing:
                         raise DuplicateLaunchError(existing)
+
+                if cli_cap is not None:
+                    await _require_cli_room(conn, *cli_cap)
 
                 async with conn.cursor() as cur:
                     await cur.execute(
@@ -197,7 +228,7 @@ async def start_task_run(
                             predecessor_run_id,
                             cause,
                             start_checkpoint_id,
-                            SafeJson({"model": model}) if model else None,
+                            SafeJson(facts) if facts else None,
                             thread_id,
                         ),
                     )
@@ -243,6 +274,77 @@ async def start_task_run(
     raise PredecessorClaimedError(
         str(predecessor_run_id), await find_successor_run(str(predecessor_run_id))
     )
+
+
+async def _live_clis(cur, computer_id: str) -> int:
+    """The Claude Code CLIs the computer runs: its turns in progress
+    (``CLAUDE_CODE_TURN``) and its task runs on Claude Code."""
+    await cur.execute(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM conversation_responses r
+           JOIN conversation_threads t ON t.conversation_thread_id = r.conversation_thread_id
+           JOIN workspaces w ON w.workspace_id = t.workspace_id
+           WHERE w.computer_id = %(computer)s AND r.status = 'in_progress' AND r.metadata @> %(turn)s)
+        + (SELECT COUNT(*) FROM subagent_runs s
+           JOIN conversation_threads t ON t.conversation_thread_id = s.thread_id
+           JOIN workspaces w ON w.workspace_id = t.workspace_id
+           WHERE w.computer_id = %(computer)s AND s.status = 'in_progress'
+             AND s.replay_facts @> %(run)s) AS live
+        """,
+        {"computer": computer_id, "turn": Jsonb(CLAUDE_CODE_TURN), "run": Jsonb({"claude_code": True})},
+    )
+    return (await cur.fetchone())["live"]
+
+
+async def _require_cli_room(conn, computer_id: str, cap: int) -> None:
+    """Refuse a Claude Code run once the computer runs ``cap`` CLIs. The
+    lock holds the next admission on the computer until this one's row
+    commits."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute("SELECT pg_advisory_xact_lock(hashtext('claude_code_cli:' || %s))", (computer_id,))
+        if await _live_clis(cur, computer_id) >= cap:
+            raise ClaudeCodeCapError(cap)
+
+
+async def live_clis(computer_id: str) -> int:
+    """How many Claude Code CLIs the computer runs now, as admission counts
+    them, for a caller that only reads."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            return await _live_clis(cur, computer_id)
+
+
+async def cancel_requested_task_runs(task_run_ids: List[str]) -> set[str]:
+    """Of ``task_run_ids``, the runs still in progress that carry cancel intent."""
+    if not task_run_ids:
+        return set()
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT task_run_id FROM subagent_runs
+                WHERE task_run_id = ANY(%s::uuid[])
+                  AND status = 'in_progress' AND cancel_requested_at IS NOT NULL
+                """,
+                (task_run_ids,),
+            )
+            return {str(row["task_run_id"]) for row in await cur.fetchall()}
+
+
+async def ran_on_claude_code(thread_id: str, task_id: str) -> bool:
+    """Whether the task's latest run ran on Claude Code."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT COALESCE(replay_facts @> %s, false) AS claude_code FROM subagent_runs
+                WHERE thread_id = %s AND task_id = %s ORDER BY started_at DESC LIMIT 1
+                """,
+                (Jsonb({"claude_code": True}), thread_id, task_id),
+            )
+            row = await cur.fetchone()
+    return bool(row and row["claude_code"])
 
 
 async def _enqueue_report_back_job(conn, run_row: Dict[str, Any]) -> None:

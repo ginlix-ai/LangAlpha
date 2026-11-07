@@ -216,7 +216,13 @@ class ClaudeCodeTarget(BaseChatModel):
 
 
 def _last_reply(messages: Sequence[BaseMessage]) -> AIMessage | None:
-    return next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+    """The thread's last reply. A task resume the steering made for the
+    turn (``lc_source`` ``steering``) is no model's reply."""
+    return next(
+        (m for m in reversed(messages)
+         if isinstance(m, AIMessage) and (m.additional_kwargs or {}).get("lc_source") != "steering"),
+        None,
+    )
 
 
 def another_model_replied_last(messages: Sequence[BaseMessage]) -> bool:

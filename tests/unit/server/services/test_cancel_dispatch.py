@@ -824,7 +824,9 @@ async def test_task_cancel_local_owner_short_circuits():
             p.stop()
 
     assert result["cancelled"] is True
-    registry_store.cancel_task.assert_awaited_once_with("t-1", "abc123")
+    registry_store.cancel_task.assert_awaited_once_with(
+        "t-1", "abc123", task_run_id=None
+    )
     get_active.assert_not_awaited()
     nudge.assert_not_awaited()
 
@@ -847,7 +849,33 @@ async def test_task_cancel_foreign_owner_stamps_intent_and_nudges():
 
     assert result["cancelled"] is True
     intent.assert_awaited_once_with("tr-9", thread_id="t-1")
-    nudge.assert_awaited_once_with("t-1", None, task_id="abc123")
+    # The run it stamped: a resume racing the nudge leaves the next run be.
+    nudge.assert_awaited_once_with("t-1", None, task_id="abc123", task_run_id="tr-9")
+
+
+@pytest.mark.asyncio
+async def test_a_stop_of_one_run_leaves_the_tasks_next_run_running():
+    """The run it names ended before the stop reached it, and the task was
+    resumed since: nothing is stopped."""
+    from src.server.services.cancel_dispatch import cancel_subagent_task
+
+    patches, store, _get_active, intent, nudge = _patch_task_cancel(
+        local_cancel_returns=False,
+        active_task_run={"task_run_id": "tr-9"},
+        latest_statuses={"abc123": "in_progress"},
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_subagent_task("t-1", "abc123", task_run_id="tr-1")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is False
+    store.cancel_task.assert_awaited_once_with("t-1", "abc123", task_run_id="tr-1")
+    intent.assert_not_awaited()
+    nudge.assert_not_awaited()
 
 
 @pytest.mark.asyncio

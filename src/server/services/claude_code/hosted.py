@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Literal
 
 from src.config.settings import get_claude_code_config
@@ -32,6 +33,7 @@ from src.server.database.claude_code_hosted import (
     Mode,
     StoringBlocked,
     get_custody,
+    live_stored_task_runs,
     live_stored_turns,
     write_custody,
 )
@@ -46,6 +48,16 @@ DISCLOSURE = "2026-11-v1"
 #: The smallest computer that runs the CLI inside its own sandbox: Medium,
 #: whose resource tier key this is.
 SANDBOX_MIN_TIER = "performance"
+
+#: The memory each Claude Code CLI on a cloud computer is counted at: its
+#: tier's memory over this is how many it runs at once.
+CLI_MEMORY_MB = 800
+#: Why a Task is refused once the computer runs that many, as the refusal
+#: reads after "could not start <task>".
+CLI_CAP_REFUSAL = (
+    "Claude Code is already running {n} agents on this computer, the most it runs at once. "
+    "Wait for one of your subagents to finish, then launch this one again"
+)
 
 RunsOn = Literal["saved_token", "stored_token", "api_key"]
 #: Where a turn's CLI runs on a cloud computer: inside the computer's own
@@ -193,21 +205,48 @@ def tier_refusal(computer: Mapping[str, Any]) -> ComputerRefusal | None:
     server checks at startup that every kind it creates offers
     ``SANDBOX_MIN_TIER`` (``check_sandbox_tiers``)."""
     from src.server.services.computer_manager import ComputerManager
+
+    floor = ComputerManager.get_instance().tier_size(computer, SANDBOX_MIN_TIER)
+    for size in _sizes(computer):
+        if floor is None or size is None or size[0] < floor[0] or size[1] < floor[1]:
+            return "needs_bigger_computer"
+    return None
+
+
+def cli_cap(computer: Mapping[str, Any]) -> int | None:
+    """How many Claude Code CLIs ``computer`` runs at once, its turns' and
+    their subagents' together: an own computer as many as its connection's
+    CLI slots, any other one per ``CLI_MEMORY_MB`` of the smallest size its
+    sandbox may run at (``tier_refusal``). Where the CLIs run in the
+    backend instead (``cloud_runs_in`` ``worker``), the computer's size
+    is not theirs, so it runs as many as one at ``SANDBOX_MIN_TIER``. None
+    where a size is unknown."""
+    from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS
+    from src.server.services.computer_manager import ComputerManager
+    from src.server.services.ssh_computers import is_own_computer
+
+    if is_own_computer(computer):
+        return _CLI_SLOTS
+    sizes = _sizes(computer) if in_sandbox() else [ComputerManager.get_instance().tier_size(computer, SANDBOX_MIN_TIER)]
+    if any(size is None for size in sizes):
+        return None
+    return int(min(size[1] for size in sizes) * 1024 // CLI_MEMORY_MB)
+
+
+def _sizes(computer: Mapping[str, Any]) -> list[tuple[float, float] | None]:
+    """The sizes ``computer``'s sandbox may run at: its tier's, and while a
+    resize is under way, or once one was interrupted, both tiers'."""
+    from src.server.services.computer_manager import ComputerManager
     from src.server.services.spec_change import spec_change_from_row
 
-    manager = ComputerManager.get_instance()
-    floor = manager.tier_size(computer, SANDBOX_MIN_TIER)
     change = spec_change_from_row(computer)
     tiers = {computer.get("resource_tier")}
     if change is not None and (
         change.state == "in_progress" or (change.error is not None and change.error.code == "interrupted")
     ):
         tiers |= {change.from_tier, change.target_tier}
-    for tier in tiers:
-        size = manager.tier_size(computer, tier)
-        if floor is None or size is None or size[0] < floor[0] or size[1] < floor[1]:
-            return "needs_bigger_computer"
-    return None
+    manager = ComputerManager.get_instance()
+    return [manager.tier_size(computer, tier) for tier in tiers]
 
 
 def check_sandbox_tiers(sandbox: Any) -> None:
@@ -379,24 +418,29 @@ async def drop_stored(user_id: str, mode: Mode = "local", *, block_reason: str |
 
 async def stop_stored_turns(user_id: str) -> int:
     """Stop each of the user's turns on their stored setup token, once it is
-    gone; how many. Only the platform stamps them. Each is asked to stop
-    before a failed stop raises, since every one still runs on the token."""
+    gone, and each subagent run on it, which may outlive its turn; how many.
+    Only the platform stamps them. Each is asked to stop before a failed stop
+    raises, since every one still runs on the token."""
     from src.config.settings import HOST_MODE
-    from src.server.services.cancel_dispatch import cancel_workflow
+    from src.server.services.cancel_dispatch import cancel_subagent_task, cancel_workflow
 
     if HOST_MODE != "platform":
         return 0
-    turns = await live_stored_turns(user_id)
+    stops = [partial(cancel_workflow, thread_id, run_id, by_user=False) for thread_id, run_id in await live_stored_turns(user_id)]
+    stops += [
+        partial(cancel_subagent_task, thread_id, task_id, task_run_id=run_id)
+        for thread_id, task_id, run_id in await live_stored_task_runs(user_id)
+    ]
     failed: list[Exception] = []
-    for thread_id, run_id in turns:
+    for stop in stops:
         try:
-            await cancel_workflow(thread_id, run_id, by_user=False)
+            await stop()
         except Exception as exc:
             failed.append(exc)
     if failed:
-        logger.warning(f"[claude_code] {len(failed)} of {len(turns)} stored-token turns did not stop for user_id={user_id}")
+        logger.warning(f"[claude_code] {len(failed)} of {len(stops)} stored-token runs did not stop for user_id={user_id}")
         raise TurnsNotStopped(len(failed)) from failed[0]
-    return len(turns)
+    return len(stops)
 
 
 async def opted_out(user_id: str) -> None:

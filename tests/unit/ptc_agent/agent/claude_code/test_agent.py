@@ -208,8 +208,8 @@ async def test_a_stream_closed_early_finishes_the_graph_before_the_cli_goes():
     assert order == ["graph closed", "cli closed"]
 
 
-def _built(**kwargs) -> ClaudeCodeGraph:
-    """The real build of a Claude Code turn."""
+def _built(*, saved: str | None = None, **kwargs) -> ClaudeCodeGraph:
+    """The real build of a Claude Code turn, let to sign in with ``saved``."""
     from ptc_agent.agent.agent import PTCAgent
     from ptc_agent.config.agent import AgentConfig, LLMConfig
     from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SandboxConfig, SecurityConfig
@@ -218,6 +218,7 @@ def _built(**kwargs) -> ClaudeCodeGraph:
         llm=LLMConfig(name="claude-haiku-5-5-code"), security=SecurityConfig(), logging=LoggingConfig(),
         sandbox=SandboxConfig(daytona=DaytonaConfig(api_key="test-key")), mcp=MCPConfig(), filesystem=FilesystemConfig(),
     )
+    config.claude_code_saved = saved
     target = create_llm("claude-haiku-5-5-code")
     kwargs = {"sandbox": MagicMock(), "claude_code_launcher": lambda sandbox, hosted, saved: LocalLauncher(), **kwargs}
     with patch.object(AgentConfig, "get_llm_client", return_value=target):
@@ -238,10 +239,10 @@ def test_a_claude_code_turn_opens_with_the_skills_turn_and_baseline_hooks():
         node = edges[node]
         path.append(node)
     assert path == ["SkillsMiddleware.before_agent", "TurnContextMiddleware.before_agent",
-                    "BaselineContextMiddleware.before_agent", "model"]
+                    "BaselineContextMiddleware.before_agent", "resume"]
     assert graph.turn(_RUN)._baseline.__self__.__class__.__name__ == "BaselineContextMiddleware"
     assert "AskUserQuestion" in {t.name for t in graph.turn(_RUN).spec.tools}
-    assert not {"Task", "RunWorkflow"} & {t.name for t in graph.turn(_RUN).spec.tools}
+    assert {"Task", "TaskOutput"} <= {t.name for t in graph.turn(_RUN).spec.tools}
 
 
 def test_a_claude_code_turn_can_answer_comments_on_a_file():
@@ -302,7 +303,7 @@ async def test_a_claude_code_turn_refuses_the_order_cards_a_later_run_cut_off():
         _built(direct_mcp=MagicMock(tools=[order]), order_ledger=ledger)
     calls = [{"id": "c1", "name": "mcp__broker__place_order", "args": {"symbol": "AAPL"}},
              {"id": "c2", "name": "Bash", "args": {"command": "ls"}}]
-    await built[0]["abandon"](AIMessage("", id="m1", tool_calls=calls), calls)
+    await built[-1]["abandon"](AIMessage("", id="m1", tool_calls=calls), calls)
     ledger.abandon.assert_awaited_once_with("m1", "c1")
 
 
@@ -316,11 +317,12 @@ def test_a_chief_of_staff_call_waits_for_the_user_only_with_an_action_that_puts_
     assert not waits("Bash", {})
 
 
-def test_a_claude_code_turn_takes_reports_and_steers_in_but_no_task_resume():
-    """It runs no subagents, so no task waits to resume, but a command's end,
-    a wakeup or an alert still reaches it while it runs."""
-    graph = _built()
-    assert graph.turn(_RUN).steering._steering.kinds == ("report", "steer")
+def test_a_claude_code_turn_takes_reports_steers_and_task_resumes_in():
+    """A command's end, a wakeup or an alert reaches it while it runs, and a
+    task left a message after its run ended resumes as a turn opens; a turn
+    that runs no subagents has no task to resume."""
+    assert _built().turn(_RUN).steering._steering.kinds == ("report", "steer", "resume")
+    assert _built(disable_subagents=True).turn(_RUN).steering._steering.kinds == ("report", "steer")
 
 
 def test_a_claude_code_turn_compacts_and_moves_its_session_by_the_main_agents_threshold_and_floor():
@@ -358,3 +360,84 @@ def test_the_turn_runs_where_the_callers_launcher_puts_it_for_the_turns_sandbox(
 def test_a_claude_code_turn_built_with_no_launcher_is_refused():
     with pytest.raises(RuntimeError, match="claude_code_launcher"):
         _built(claude_code_launcher=None)
+
+
+@pytest.mark.asyncio
+async def test_a_run_never_takes_the_claude_session_or_approvals_it_is_handed_with_its_parents_state():
+    """A subagent's run is handed its parent's whole state; it takes only
+    what its agent takes as input, as ``create_agent``'s graph does, so the
+    parent's private channels and Claude session stay the parent's."""
+    seen = []
+
+    class _Turn:
+        async def close(self):
+            pass
+
+    class _Compiled:
+        async def astream(self, input, config, **kwargs):
+            seen.append(input)
+            yield 1
+
+        async def ainvoke(self, input, config, **kwargs):
+            seen.append(input)
+
+    parent = {"messages": [], "todos": [], "claude_session": {"session_id": "parent"}, "runtime_baseline": {"epoch": 3},
+              "_claude_code_rules": {}, "preapproved_calls": ["c1"]}
+    graph = ClaudeCodeGraph(_Compiled(), lambda **_: _Turn(), frozenset({"messages", "todos"}))
+    [_ async for _ in graph.astream(parent, _RUN)]
+    await graph.ainvoke(parent, _RUN)
+    assert seen == [{"messages": [], "todos": []}] * 2
+    assert _graph()._takes == frozenset(create_agent(FakeListChatModel(responses=["x"]), tools=[bash]).builder.input_schema.__annotations__)
+
+
+def test_a_subagent_of_a_claude_code_turn_runs_each_run_in_a_cli_of_its_own():
+    """Its runs take its own prompt, tools and stack, open with the hooks that
+    write its rows, take in what is sent into its task, stop only at the
+    credit gate, report the calls they make to its card, and wait a
+    subagent's time for a slot on an own computer."""
+    from ptc_agent.agent.claude_code import agent as cc_agent
+    from ptc_agent.agent.claude_code.mid_turn import TaskSteering
+    from ptc_agent.agent.middleware.background_subagent.event_capture import SubagentEventCaptureMiddleware
+
+    graphs, builds, launched = [], [], []
+    real_graph, real_build = cc_agent.claude_code_graph, cc_agent.build_claude_code_graph
+
+    def graph(*args, **kw):
+        graphs.append((kw, real_graph(*args, **kw)))
+        return graphs[-1][1]
+
+    def build(node, **kw):
+        builds.append(kw)
+        return real_build(node, **kw)
+
+    with patch.object(cc_agent, "claude_code_graph", side_effect=graph), \
+         patch.object(cc_agent, "build_claude_code_graph", side_effect=build):
+        main = _built(claude_code_launcher=lambda sandbox, hosted, saved, **kw: launched.append(kw) or LocalLauncher())
+    [(kw, sub, built)] = [(kw, g, b) for (kw, g), b in zip(graphs, builds, strict=True) if g is not main]
+    turn = sub.turn({"configurable": {"thread_id": "t-1", "checkpoint_ns": "task:k1"}})
+    assert turn.run_key == "t-1-k1" and launched == [{"slot_wait_s": 30}]
+    assert isinstance(turn.steering, TaskSteering)
+    assert "Task" not in {t.name for t in turn.spec.tools} and turn.spec.system_prompt != main.turn(_RUN).spec.system_prompt
+    assert [n for n, _ in built["entry"]][:2] == ["SkillsMiddleware.before_agent", "TurnContextMiddleware.before_agent"]
+    assert [n for n, _ in built["pause"]] == ["CreditGateMiddleware.before_model"]
+    assert isinstance(built["on_reply"].__self__, SubagentEventCaptureMiddleware)
+    assert builds[-1]["on_reply"] is None
+
+
+@pytest.mark.parametrize("saved", ["stored_token", None])
+def test_a_subagent_is_admitted_on_the_credential_its_turn_was_let_to_sign_in_with(saved):
+    """Its CLI signs in as the build that launches it does, so its run is
+    stopped with the turns when the token it used goes."""
+    from ptc_agent.agent.middleware.background_subagent.middleware import BackgroundSubagentMiddleware
+
+    made, real = [], BackgroundSubagentMiddleware.__init__
+
+    def init(self, *args, **kwargs):
+        real(self, *args, **kwargs)
+        made.append(self)
+
+    with patch.object(BackgroundSubagentMiddleware, "__init__", init):
+        _built(saved=saved)
+    [middleware] = made
+    assert middleware.claude_code_types
+    assert middleware.claude_code_stored is (saved is not None)

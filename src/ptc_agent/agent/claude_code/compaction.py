@@ -216,6 +216,20 @@ class CompactionRules:
             keep_full_context=bool(turn and turn.keep_full_context),
         )
 
+    @classmethod
+    def of_subagent(cls, settings: CompactionConfig, *, backend: SandboxBackend | None = None,
+                    workspace_id: str | None = None) -> CompactionRules:
+        """A subagent run's rules: its CLI compacts at the thread's threshold.
+        A run is bounded by its clock, so, as a langalpha subagent's, it makes
+        no turn-start rebuild and no cold compaction."""
+        return cls(
+            0,
+            threshold=compacts_at(settings.token_threshold) if settings.enabled else 0,
+            backend=backend,
+            workspace_id=workspace_id,
+            enabled=settings.enabled,
+        )
+
     def reading(self) -> dict[str, Any]:
         """What ``next_summary`` reads of this turn's rules between turns
         (``RULES_KEY``), the user's settings included, and when it was read."""

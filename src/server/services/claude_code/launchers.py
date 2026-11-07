@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from ptc_agent.agent.claude_code.launcher import Credential, Launcher, LocalLauncher
 from ptc_agent.agent.claude_code.machine_token import token_name
 from ptc_agent.agent.claude_code.sandbox_launcher import sandbox_launcher
-from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
+from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S, SSHLauncher
 from ptc_agent.core.sandbox.providers._ssh_transport import Link, Machine
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from src.llms.claude_code import ClaudeTurnFailed
@@ -85,6 +85,7 @@ class HostedCredential:
 
 def turn_launcher(
     sandbox: PTCSandbox, *, computer_id: str | None, user_id: str, admitted: str | None, saved: str | None,
+    slot_wait_s: float | None = None,
 ) -> Launcher:
     """The launcher of a turn in ``sandbox``, on the computer ``computer_id``.
 
@@ -100,6 +101,8 @@ def turn_launcher(
     starts (``needs_own_computer``), which is where a refusal reaches the
     turn as one. Either way the launcher keeps what the CLI reports of the
     Claude plan behind the credential it signed in with (``UserPlan``).
+    ``slot_wait_s`` is how long the CLI on an own computer waits for a slot
+    there, by default a turn's.
     """
     if not isinstance(sandbox.provider, SSHProvider):
         plan = UserPlan(user_id)
@@ -120,4 +123,5 @@ def turn_launcher(
         credential=token if saved else None, on_announced=token.announced, on_file_refused=token.file_refused,
         on_blocked=token.blocked, on_no_perl=token.no_perl, on_unsupported=token.unsupported,
         plan=UserPlan(user_id, computer_id),
+        slot_wait_s=CLI_SLOT_WAIT_S if slot_wait_s is None else slot_wait_s,
     )

@@ -1249,6 +1249,27 @@ async def test_a_released_steer_is_due_to_this_build_alone_through_nack_and_park
     await _assert_hidden_from_main(db_conn, thread)
 
 
+async def test_a_steer_waiting_for_room_is_due_by_its_own_clock(thread, db_conn):
+    """Its thread's latest run completed, so a plain park would be due to the
+    safety net on its next scan."""
+    from src.server.database.runs import outbox
+
+    run_id = await _run(thread)
+    job_id = await _accepted(thread, run_id, "x")
+    await _end(thread, run_id, "completed")
+    assert job_id in await _claimed_ids()
+
+    assert await outbox.defer_claimed_job(job_id, attempts=1, wait_s=60) == "pending"
+    waiting = await _row(db_conn, job_id)
+    assert waiting["status"] == "pending" and waiting["infinity"]
+    assert "due_at" in waiting["payload"] and not waiting["due"]
+    assert job_id not in await _claimed_ids()
+    await _assert_hidden_from_main(db_conn, thread)
+
+    await _backdate_due(db_conn, job_id)
+    assert job_id in await _claimed_ids()
+
+
 async def test_a_due_steer_a_live_turn_holds_is_parked_again(thread, db_conn):
     """The hold takes a due row in and drops its due_at, so the drainer does
     not start a turn for a steer a live run already has in its messages."""
@@ -1409,6 +1430,43 @@ async def test_a_resumed_run_that_keeps_dying_unread_gives_the_steer_up(
     assert row["payload"]["outcome"] == "returned"
     assert row["payload"]["returned_run_id"] == held.resumed
     assert await outbox.list_resumable_task_steers(thread.id, str(uuid.uuid4())) == []
+
+
+@pytest.mark.parametrize("counted", [False, True])
+async def test_a_resume_refused_while_the_computer_is_busy_keeps_its_refusals(
+    thread, db_conn, counted
+):
+    """A steer one refusal short of the cap: a counted refusal closes it, one
+    that lifts by itself (the computer was busy) gives it back as it was."""
+    from src.server.database.runs import outbox
+
+    held = await _resume_held(thread, "narrow it")
+    (job_id,) = held.jobs
+    await db_conn.execute(
+        "UPDATE hook_outbox SET payload = payload || jsonb_build_object("
+        "'resume_refusals', %s::int) WHERE hook_outbox_id = %s",
+        (outbox.MAX_RESUME_REFUSALS - 1, job_id),
+    )
+
+    released, returned = await outbox.release_task_resumes(
+        [job_id],
+        run_id=held.main,
+        max_refusals=outbox.MAX_RESUME_REFUSALS,
+        counted=counted,
+    )
+
+    row = await _row(db_conn, job_id)
+    if counted:
+        assert len(returned) == 1
+        assert row["status"] == "done"
+        assert row["payload"]["outcome"] == "returned"
+        return
+    assert [str(j) for j in released] == [job_id] and returned == []
+    assert row["status"] == "pending"
+    assert row["payload"]["resume_refusals"] == outbox.MAX_RESUME_REFUSALS - 1
+    assert row["payload"]["resume_refused_by"] == held.main
+    resumable = await outbox.list_resumable_task_steers(thread.id, str(uuid.uuid4()))
+    assert [str(r["hook_outbox_id"]) for r in resumable] == [job_id]
 
 
 async def test_a_stopped_resumed_run_returns_the_users_steer_on_its_own_run(

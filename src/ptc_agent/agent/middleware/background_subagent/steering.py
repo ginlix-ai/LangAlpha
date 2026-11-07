@@ -11,7 +11,7 @@ ends, in the same transaction (``report_back.task_steer``).
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -52,6 +52,14 @@ class SubagentSteeringMiddleware(AgentMiddleware):
         self, state: AgentState, runtime: Runtime
     ) -> dict[str, Any] | None:
         """Hold the run's waiting messages and inject them before the model call."""
+        message = await self.take_message()
+        return {"messages": [message]} if message is not None else None
+
+    async def take_message(self) -> HumanMessage | None:
+        """What was sent into this task's run since it last looked, held for
+        it, as the one message it is read in; None when nothing waits. For a
+        runtime that reads it in its own place rather than before a model
+        call (a Claude Code run, after each batch of calls)."""
         try:
             tool_call_id = current_background_tool_call_id.get()
             if not tool_call_id or self.registry is None:
@@ -113,7 +121,7 @@ class SubagentSteeringMiddleware(AgentMiddleware):
             except Exception:
                 pass
 
-            return {"messages": [human_msg]}
+            return human_msg
 
         except Exception as e:
             logger.error(f"[SubagentSteering] Error taking steering messages: {e}")
@@ -124,10 +132,10 @@ class SubagentSteeringMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        await self._confirm(request.state)
+        await self.confirm_read((request.state or {}).get("messages") or [])
         return await handler(request)
 
-    async def _confirm(self, state: Any) -> None:
+    async def confirm_read(self, messages: Sequence[Any]) -> None:
         """Close the rows injected since the last model response: the step
         that injected them is checkpointed before this one starts. That
         includes the rows a resume handed this run, on the message it opens
@@ -137,7 +145,7 @@ class SubagentSteeringMiddleware(AgentMiddleware):
         )
         if confirm is None:
             return
-        for message in reversed((state or {}).get("messages") or []):
+        for message in reversed(messages):
             if isinstance(message, AIMessage):
                 return
             held = (getattr(message, "additional_kwargs", None) or {}).get(_HELD_JOBS)

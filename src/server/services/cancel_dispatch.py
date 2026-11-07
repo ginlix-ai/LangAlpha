@@ -333,7 +333,9 @@ async def _await_task_holds(thread_id: str, task_id: str) -> None:
         )
 
 
-async def cancel_subagent_task(thread_id: str, task_id: str) -> dict:
+async def cancel_subagent_task(
+    thread_id: str, task_id: str, *, task_run_id: str | None = None
+) -> dict:
     """Targeted stop for one background task (e.g. a workflow run).
 
     Local-first: when this worker owns the live writer, the registry cancel
@@ -341,9 +343,11 @@ async def cancel_subagent_task(thread_id: str, task_id: str) -> dict:
     on the task's active ledger run and nudge the owning worker over the
     shared cancel channel. A lost nudge degrades to the task finishing on
     its own — never a stuck state. Every answer carries the messages the
-    stop gave back, so asking again recovers a lost response.
+    stop gave back, so asking again recovers a lost response. With
+    ``task_run_id`` it stops only that run: one that ended before the stop
+    reached it leaves the task's next run running.
     """
-    outcome = await _cancel_subagent_task(thread_id, task_id)
+    outcome = await _cancel_subagent_task(thread_id, task_id, task_run_id)
     try:
         if outcome.get("cancelled"):
             await _await_task_holds(thread_id, task_id)
@@ -357,14 +361,18 @@ async def cancel_subagent_task(thread_id: str, task_id: str) -> dict:
     return outcome
 
 
-async def _cancel_subagent_task(thread_id: str, task_id: str) -> dict:
+async def _cancel_subagent_task(
+    thread_id: str, task_id: str, task_run_id: str | None
+) -> dict:
     try:
         from src.server.services.background_registry_store import (
             BackgroundRegistryStore,
         )
 
         registry_store = BackgroundRegistryStore.get_instance()
-        if await registry_store.cancel_task(thread_id, task_id):
+        if await registry_store.cancel_task(
+            thread_id, task_id, task_run_id=task_run_id
+        ):
             logger.info(
                 f"[cancel-task] local cancel thread={thread_id} task={task_id}"
             )
@@ -379,7 +387,7 @@ async def _cancel_subagent_task(thread_id: str, task_id: str) -> dict:
         from src.server.database.runs import subagent_runs as sr_db
 
         active = await sr_db.get_active_task_run(thread_id, task_id)
-        if active is None:
+        if active is None or task_run_id not in (None, str(active["task_run_id"])):
             statuses = await sr_db.get_latest_run_statuses(thread_id, [task_id])
             status = statuses.get(task_id)
             if status:
@@ -426,7 +434,9 @@ async def _cancel_subagent_task(thread_id: str, task_id: str) -> dict:
 
         from src.server.services.runs.cancel import publish_cancel_nudge
 
-        await publish_cancel_nudge(thread_id, None, task_id=task_id)
+        await publish_cancel_nudge(
+            thread_id, None, task_id=task_id, task_run_id=str(active["task_run_id"])
+        )
         logger.info(
             f"[cancel-task] intent stamped + nudge published "
             f"thread={thread_id} task={task_id}"

@@ -1125,7 +1125,12 @@ async def release_deferred_notifications(conn, thread_id: str) -> int:
 
 
 async def defer_claimed_job(
-    job_id: str, *, attempts: int, max_attempts: int = 5, waits_on_user: bool = False
+    job_id: str,
+    *,
+    attempts: int,
+    max_attempts: int = 5,
+    waits_on_user: bool = False,
+    wait_s: Optional[int] = None,
 ) -> Optional[str]:
     """Park a CLAIMED job back to deferred (``next_retry_at='infinity'``).
 
@@ -1149,6 +1154,10 @@ async def defer_claimed_job(
     user's answer clears: each stop short of it releases the job again, so
     the claim that found the card still waiting is not spent (``waited``).
     Steers and alerts keep their own ceilings.
+
+    ``wait_s`` parks a steer due by its own clock that many seconds on, for a
+    wait no ending on its thread lifts (a full computer): the safety net would
+    otherwise hand it back on its next scan.
     """
     waits = f"(%(waits)s AND hook_type IN {_THREAD_REPORT_TYPES_SQL})"
     spent = f"({_spent_sql()} - {waits}::int)"
@@ -1180,6 +1189,12 @@ async def defer_claimed_job(
                                     'waited',
                                     COALESCE((payload->>'waited')::int, 0) + 1
                                 ) ELSE '{{}}'::jsonb END
+                                || CASE WHEN hook_type = 'steer'
+                                        AND %(wait_s)s::int IS NOT NULL
+                                    THEN jsonb_build_object(
+                                        'due_at',
+                                        NOW() + make_interval(secs => %(wait_s)s::int)
+                                    ) ELSE '{{}}'::jsonb END
                         WHERE hook_outbox_id = %(job_id)s AND status = 'claimed'
                           AND attempts = %(attempts)s
                         RETURNING *
@@ -1190,7 +1205,7 @@ async def defer_claimed_job(
                     comp AS ({_DEAD_REPORT_BACK_COMPENSATION_SQL})
                     SELECT status FROM parked
                     """,
-                    {**fence, "waits": waits_on_user},
+                    {**fence, "waits": waits_on_user, "wait_s": wait_s},
                 )
                 row = await cur.fetchone()
                 return row["status"] if row else None
@@ -3288,13 +3303,15 @@ async def list_resumable_task_steers(
 
 
 async def release_task_resumes(
-    job_ids: List[str], *, run_id: str, max_refusals: int
+    job_ids: List[str], *, run_id: str, max_refusals: int, counted: bool = True
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     """Give back task steers ``run_id`` held but could not resume their task
     with, counting the refusal on each row. A row refused ``max_refusals``
     times is closed instead (returned to the user, dropped for an agent), so
     a task that never resumes cannot keep a steer, or the turns posted for
-    it, coming back. Returns ``(released ids, returned entries)``."""
+    it, coming back. A refusal that lifts by itself (``counted`` False) is
+    not counted and closes nothing. Returns ``(released ids, returned
+    entries)``."""
     if not job_ids:
         return [], []
     params = {"ids": job_ids, "fence": run_id, "max": max_refusals}
@@ -3305,15 +3322,20 @@ async def release_task_resumes(
                     "o.hook_outbox_id = ANY(%(ids)s::uuid[]) AND "
                     + _TASK_FENCES["held"]
                 )
-                returned = await _close_task_steers(
-                    cur, f"{held} AND {_AT_REFUSAL_CAP_SQL}", params
+                returned = (
+                    await _close_task_steers(
+                        cur, f"{held} AND {_AT_REFUSAL_CAP_SQL}", params
+                    )
+                    if counted
+                    else []
                 )
+                refusals = f"'resume_refusals', {_REFUSALS_SQL}," if counted else ""
                 await cur.execute(
                     f"""
                     UPDATE hook_outbox o
                     SET payload = (o.payload - 'steered_run_id')
                         || jsonb_build_object(
-                            'resume_refusals', {_REFUSALS_SQL},
+                            {refusals}
                             'resume_refused_by', %(fence)s::text)
                     WHERE {_TASK_STEER_SQL} AND {held}
                     RETURNING o.hook_outbox_id

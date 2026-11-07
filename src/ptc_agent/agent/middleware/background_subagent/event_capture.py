@@ -137,12 +137,16 @@ class SubagentEventCaptureMiddleware(AgentMiddleware):
         # of the task: a tool call it returns is never run.
         if TAG_NOSTREAM in ((var_child_runnable_config.get() or {}).get("tags") or ()):
             return response
+        await self.capture(response.result[0] if response.result else None)
+        return response
 
-        # Capture events for post-interrupt persistence
+    async def capture(self, ai_msg: Any) -> None:
+        """Capture a reply's tool calls into the per-task event stream, for
+        post-interrupt persistence. A runtime that makes no model call
+        (Claude Code) hands each reply it commits here."""
         tool_call_id = current_background_tool_call_id.get()
         if tool_call_id and self.registry:
             try:
-                ai_msg = response.result[0] if response.result else None
                 # Model resilience, outside this middleware, retries a reply
                 # cut off before its response finished, so its calls never run.
                 if ai_msg and not is_unfinished_reply(ai_msg):
@@ -186,8 +190,6 @@ class SubagentEventCaptureMiddleware(AgentMiddleware):
                     tool_call_id=tool_call_id,
                     error=str(e),
                 )
-
-        return response
 
     def wrap_tool_call(
         self,

@@ -265,6 +265,59 @@ async def test_a_repark_at_the_ceiling_refreshes_the_launching_turn():
     assert refresh.await_args.args[0]["hook_outbox_id"] == "j-1"
 
 
+@pytest.mark.asyncio
+async def test_a_steer_waits_for_room_without_posting_a_turn_or_spending_one():
+    """A turn posted while the computer is full would only be refused the
+    resume, so the steer parks until a turn ends there, short of the attempts
+    ceiling, with its turns unspent."""
+    job, row = _claimed_job(2)
+    post = AsyncMock(return_value=("posted", "run-1"))
+    defer = AsyncMock(return_value="pending")
+    merge = AsyncMock()
+    with (
+        patch(f"{_OUTBOX}.get_steer_job", new=AsyncMock(return_value=row)),
+        patch(f"{_OUTBOX}.defer_claimed_job", new=defer),
+        patch(f"{_OUTBOX}.merge_job_payload", new=merge),
+        patch.object(task_steer, "_divert", new=AsyncMock(return_value=False)),
+        patch.object(task_steer, "_computer_full", new=AsyncMock(return_value=True)),
+        patch(f"{_NOTIFY}.park_while_thread_busy", new=AsyncMock(return_value=False)),
+        patch(f"{_NOTIFY}.post_notification_turn", new=post),
+    ):
+        await task_steer.execute_task_steer(job)
+
+    post.assert_not_awaited()
+    merge.assert_not_awaited()
+    # By its own clock: on an idle thread the safety net would hand it back
+    # at once, spending its attempts before any room frees up.
+    assert defer.await_args.kwargs["wait_s"] == 2 * task_steer._ROOM_WAIT_S
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("on_claude_code", "live", "cap", "full"),
+    [
+        pytest.param(True, 2, 4, False, id="room-for-both"),
+        pytest.param(True, 3, 4, True, id="room-for-the-turn-only"),
+        pytest.param(False, 4, 4, False, id="not-claude-code"),
+        pytest.param(True, 4, None, False, id="size-unknown"),
+    ],
+)
+async def test_a_computer_is_full_for_a_resume_without_room_for_the_turn_and_the_run(
+    on_claude_code, live, cap, full
+):
+    runs = "src.server.database.runs.subagent_runs"
+    with (
+        patch(f"{runs}.ran_on_claude_code", new=AsyncMock(return_value=on_claude_code)),
+        patch(f"{runs}.live_clis", new=AsyncMock(return_value=live)),
+        patch(
+            "src.server.database.computer.get_computer_for_thread",
+            new=AsyncMock(return_value={"computer_id": "c-1"}),
+        ),
+        patch("src.server.services.claude_code.hosted.cli_cap", lambda computer: cap),
+    ):
+        assert await task_steer._computer_full("t-1", "k7Xm2p") is full
+
+
 # Handing a resume's steers to the run it admitted
 #
 # The run the resume admits reads them and confirms them itself. A hand-off
@@ -288,7 +341,9 @@ async def test_the_hand_off_moves_the_rows_onto_the_resumed_run():
     )
 
 
-async def _resume_through_the_inbox(hand_off: AsyncMock) -> AsyncMock:
+async def _resume_through_the_inbox(
+    hand_off: AsyncMock, *, busy: bool = False
+) -> AsyncMock:
     """A main turn's resume of k7Xm2p with the server inbox, the Task call
     refusing as ``_handle_resume`` does when the hand-off fails. Returns the
     refusal-counting release."""
@@ -298,6 +353,7 @@ async def _resume_through_the_inbox(hand_off: AsyncMock) -> AsyncMock:
 
     from ptc_agent.agent.middleware.background_subagent.context import (
         hand_off_steer_resume,
+        steer_resume_busy,
     )
     from ptc_agent.agent.middleware.steering import (
         SteeringMiddleware,
@@ -317,7 +373,9 @@ async def _resume_through_the_inbox(hand_off: AsyncMock) -> AsyncMock:
     )
 
     async def task_call(_request):
-        if await hand_off_steer_resume("k7Xm2p", "tr-2"):
+        if busy:
+            steer_resume_busy("k7Xm2p")
+        elif await hand_off_steer_resume("k7Xm2p", "tr-2"):
             raise AssertionError("the hand-off should have failed")
         return ToolMessage(content="Error", tool_call_id="c", status="error")
 
@@ -365,5 +423,24 @@ async def test_a_failed_hand_off_refuses_the_resume_and_counts_it(hand_off):
     release = await _resume_through_the_inbox(hand_off)
 
     release.assert_awaited_once_with(
-        ["j-1"], run_id="run-A", max_refusals=task_steer.MAX_RESUME_REFUSALS
+        ["j-1"],
+        run_id="run-A",
+        max_refusals=task_steer.MAX_RESUME_REFUSALS,
+        counted=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_resume_refused_while_the_computer_is_busy_gives_the_steers_back_uncounted():
+    """The refusal lifts once a CLI on the computer ends, so a full computer
+    never uses up the refusals the steers get."""
+    hand_off = AsyncMock(return_value=["j-1"])
+    release = await _resume_through_the_inbox(hand_off, busy=True)
+
+    hand_off.assert_not_awaited()
+    release.assert_awaited_once_with(
+        ["j-1"],
+        run_id="run-A",
+        max_refusals=task_steer.MAX_RESUME_REFUSALS,
+        counted=False,
     )

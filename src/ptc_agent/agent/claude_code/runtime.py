@@ -46,6 +46,7 @@ from claude_agent_sdk import (
 )
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolCall, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.prebuilt import ToolNode
@@ -64,7 +65,7 @@ from ptc_agent.agent.claude_code.compaction import (
     same_pin,
 )
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
-from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, TurnSteering, credit_stops
+from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, TaskSteering, TurnSteering, credit_stops
 from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
 from ptc_agent.agent.claude_code.session import (
@@ -94,6 +95,7 @@ from ptc_agent.agent.pending_calls import pending_calls
 from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
+from ptc_agent.agent.middleware.stream_heartbeat import stream_heartbeat
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.transcript.classify import ORCHESTRATOR_SOURCE, reentry_trigger
 from ptc_agent.agent.transcript.store import TranscriptTarget
@@ -555,12 +557,13 @@ class ClaudeTurn:
     The launcher picks the token the run signs in with, and ``compaction``
     when the session compacts and moves to this build's prompt and tools.
     ``steering`` takes in what is sent into the thread while the turn runs
-    (``TurnSteering``).
+    (``TurnSteering``), or into the task for a subagent's run (``TaskSteering``).
     """
 
     def __init__(self, spec: RuntimeSpec, launcher: Launcher, *, identity: str, thread_key: str,
                  checkpoint_ns: str = "", baseline: Baseline | None = None, compaction: CompactionRules = NO_RULES,
-                 steering: SteeringMiddleware | None = None, alert_senders: frozenset[str] = frozenset()) -> None:
+                 steering: SteeringMiddleware | TaskSteering | None = None,
+                 alert_senders: frozenset[str] = frozenset()) -> None:
         self.spec = spec
         self.launcher = launcher
         self.identity = identity
@@ -568,7 +571,7 @@ class ClaudeTurn:
         self.checkpoint_ns = checkpoint_ns
         self.compaction = compaction
         self._baseline = baseline
-        self.steering = TurnSteering(steering, alert_senders)
+        self.steering = steering if isinstance(steering, TaskSteering) else TurnSteering(steering, alert_senders)
         #: The session this run writes records to, and what its next write
         #: owes it: the pin and baseline this run launched with that it does
         #: not hold yet.
@@ -908,15 +911,26 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
     A thread whose last reply another model wrote fails too: Claude's session
     holds only what Claude said, so it would carry on without that reply and
     everything before it that another model saw.
+
+    A task the turn resumed as it opened (``resume`` in
+    ``build_claude_code_graph``) is told as the result of each resume, as a
+    reminder after the messages ahead of it: Claude made no call for it, and
+    its session holds none.
     """
     if another_model_replied_last(state["messages"]):
         raise ClaudeTurnFailed("other_model_history", "the thread's last reply is another model's, which Claude's session does not hold")
-    added: list[HumanMessage] = []
+    window: list[BaseMessage] = []
     for msg in reversed(state["messages"]):
-        if isinstance(msg, AIMessage):
+        if isinstance(msg, AIMessage) and (msg.additional_kwargs or {}).get("lc_source") != "steering":
             break
-        if isinstance(msg, HumanMessage):
-            added.append(msg)
+        window.append(msg)
+    window.reverse()
+    resumed = {c["id"] for m in window if isinstance(m, AIMessage) for c in m.tool_calls}
+    added = [
+        m if isinstance(m, HumanMessage) else HumanMessage(frame_reminder(m.text), id=m.id)
+        for m in window
+        if isinstance(m, HumanMessage) or (isinstance(m, ToolMessage) and m.tool_call_id in resumed)
+    ]
     if not added:
         last = state["messages"][-1] if state["messages"] else None
         if isinstance(last, ToolMessage) and (state.get("claude_session") or {}).get("session_id"):
@@ -925,7 +939,6 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
             "nothing_to_resume",
             f"a Claude Code run resumes from a user message or after its tool results, not after a {type(last).__name__}",
         )
-    added.reverse()
     carried = compose_request(added, Carrier("reminder")).messages
     if baseline is None and len(carried) == 1 and isinstance(carried[0].content, str):
         return carried[0].content
@@ -943,12 +956,15 @@ async def _user_message(blocks: list[dict[str, Any]]) -> AsyncIterator[dict[str,
 def build_claude_code_graph(
     tool_node: ToolNode, *, entry: Sequence[tuple[str, Any]] = (), pause: Sequence[tuple[str, Any]] = (),
     checkpointer: Any = None, abandon: Callable[[AIMessage, Sequence[ToolCall]], Awaitable[None]] | None = None,
+    on_reply: Callable[[AIMessage], Awaitable[None]] | None = None,
 ) -> Any:
     """The turn graph. ``tool_node`` is the one a langalpha turn runs tools with.
 
     ``entry`` are the nodes a langalpha turn opens with, by name, run in
     order before the first ``model`` step: the hooks that write the turn's
-    rows and freeze the baseline ``turn_prompt`` hands Claude.
+    rows and freeze the baseline ``turn_prompt`` hands Claude. Then
+    ``resume`` resumes the tasks messages wait for, as a langalpha turn's
+    steering does before its first model call.
 
     A call the CLI deferred (``BeforeTool``) runs in ``held``, with no CLI,
     once the rest of its batch is committed and after ``pause``, the nodes a
@@ -968,6 +984,11 @@ def build_claude_code_graph(
     steers waited then, which the step sends the CLI as the turn's next query.
     When that query needs a new CLI, the steers go through ``pause`` first,
     where the credit gate stops them as it stops a langalpha turn's next call.
+
+    Each assistant message a ``model`` step commits goes to ``on_reply``
+    first, as a langalpha agent's model call returns it to its middleware.
+    The step beats on the stream while it waits for the CLI, as a langalpha
+    model call does (``StreamHeartbeatMiddleware``).
 
     The run's first step answers the calls a run before it cut off (a stop, a
     worker that died mid-tool) as the CLI did when it resumed, so the thread's
@@ -1007,7 +1028,8 @@ def build_claude_code_graph(
                     goto="model",
                 )
         await turn.steering.read(state["messages"])
-        message = await run.next_message(lambda stage: turn.compacting(state, stage))
+        async with stream_heartbeat(get_stream_writer()):
+            message = await run.next_message(lambda stage: turn.compacting(state, stage))
         if isinstance(message, _Compacting):
             return Command(update=turn.compacted(state, run), goto="model")
         if message is None:
@@ -1031,6 +1053,8 @@ def build_claude_code_graph(
         await run.settle(uuids)
         turn.settled(state)
         turn.stamp(ai)
+        if on_reply is not None:
+            await on_reply(ai)
         return Command(
             update={"messages": [ai], **turn.commit(run.store.drain(through=uuids))},
             goto="tools" if ai.tool_calls else "model",
@@ -1086,6 +1110,21 @@ def build_claude_code_graph(
         rules = {RULES_KEY: turn.compaction.reading()} if stop else {}
         return _step(updates, {"messages": steered, **session, **rules}, stop or "model")
 
+    async def resume(state: ClaudeCodeState, config: RunnableConfig) -> Command:
+        """Resume the tasks whose runs ended with messages they never read,
+        as a langalpha turn does before its first model call: the resume
+        call is committed, then run in ``held``, with no CLI, whose tool
+        node finds the rows it holds on it. The steers the turn opened with
+        are shown first, since the call ends the window they are read in.
+        A turn that opens on calls a run before it cut off resumes none: the
+        tasks wait for the next turn, so the call never hides the ones
+        ``model`` answers."""
+        turn = _turn(config)
+        if _cut_off(state["messages"]) or (call := await turn.steering.resume(config)) is None:
+            return Command(goto="model")
+        turn.steering.opened(state, config)
+        return Command(update={"messages": [call]}, goto="held")
+
     async def held_call(state: ClaudeCodeState, config: RunnableConfig) -> Any:
         """The call the CLI deferred, run as ``tools`` would with no CLI, where
         it may pause the run; nothing when a ``pause`` node answered it."""
@@ -1097,10 +1136,11 @@ def build_claude_code_graph(
     g = StateGraph(ClaudeCodeState)
     for name, node in [*entry, *pause]:
         g.add_node(name, node)
+    g.add_node("resume", resume, destinations=("model", "held"))
     g.add_node("model", model, destinations=("tools", "model", END))
     g.add_node("tools", tools, destinations=("model", END, held[0]))
     g.add_node("held", held_call, destinations=("model",))
-    for a, b in [*pairwise([START, *(name for name, _ in entry), "model"]), *pairwise(held)]:
+    for a, b in [*pairwise([START, *(name for name, _ in entry), "resume"]), *pairwise(held)]:
         g.add_edge(a, b)
     return g.compile(checkpointer=checkpointer)
 

@@ -37,6 +37,9 @@ TASK_STEER_REQUEST_NS = uuid.UUID("a4e2f7c1-6d3b-4f80-9b52-2c7e1d90a6f3")
 MAX_RESUME_TURNS = 2
 
 _BUSY_WAIT_CAP = 120.0
+# How long a steer waits for room on a full computer before it looks again,
+# doubling per attempt: about 15 minutes over the attempts it has.
+_ROOM_WAIT_S = 60
 # A posted turn takes the steer at its first model call, which ends this
 # executor's lease; a turn that has not reached one by now never will soon.
 _TERMINAL_WAIT_CAP = 10 * 60.0
@@ -358,11 +361,18 @@ async def confirm_resumes(run_id: str, job_ids: list[str]) -> list[str]:
 
 
 async def release_resumes(
-    thread_id: str, run_id: str, task_id: str, job_ids: list[str]
+    thread_id: str,
+    run_id: str,
+    task_id: str,
+    job_ids: list[str],
+    *,
+    counted: bool = True,
 ) -> None:
     """Give back steers ``run_id`` could not resume their task with. A
     refusal that will not lift is settled now; any other is counted, and
-    the next turn tries again."""
+    the next turn tries again. One that lifts by itself (the computer was
+    busy, ``counted`` False) is not counted, so a full computer never
+    uses up the refusals the steers get."""
     from src.server.database.runs import outbox as outbox_db
 
     jobs = await outbox_db.list_steer_jobs(job_ids)
@@ -376,7 +386,7 @@ async def release_resumes(
         logger.warning(f"{_LOG} Task-{task_id} hand-off failed", exc_info=True)
         return
     released, returned = await outbox_db.release_task_resumes(
-        job_ids, run_id=run_id, max_refusals=MAX_RESUME_REFUSALS
+        job_ids, run_id=run_id, max_refusals=MAX_RESUME_REFUSALS, counted=counted
     )
     if returned:
         await _refresh_launching_turns(jobs)
@@ -399,6 +409,28 @@ def _ours(row: dict | None, attempts: int) -> bool:
         and row.get("attempts") == attempts
         and "outcome" not in (row.get("payload") or {})
     )
+
+
+async def _computer_full(thread_id: str, task_id: str) -> bool:
+    """Whether a turn posted now would be refused the resume for room: the
+    task ran on Claude Code, and its computer cannot fit the turn and the
+    resume together. That lifts once a CLI there ends, so the steer waits
+    for it without spending one of its turns. A failed check posts the turn."""
+    from src.server.database.computer import get_computer_for_thread
+    from src.server.database.runs import subagent_runs as sr_db
+    from src.server.services.claude_code.hosted import cli_cap
+
+    try:
+        if not await sr_db.ran_on_claude_code(thread_id, task_id):
+            return False
+        computer = await get_computer_for_thread(thread_id)
+        cap = cli_cap(computer) if computer is not None else None
+        if cap is None:
+            return False
+        return await sr_db.live_clis(str(computer["computer_id"])) + 2 > cap
+    except Exception:
+        logger.warning(f"{_LOG} Room check for Task-{task_id} failed", exc_info=True)
+        return False
 
 
 async def _owner(payload: dict, thread_id: str) -> tuple[str | None, str | None]:
@@ -458,9 +490,9 @@ async def execute_task_steer(job: dict) -> None:
         await _settle(jobs, fence=claimed)
         logger.info(f"{_LOG} Closed {subject} on {thread_id}: {reason}")
 
-    async def repark() -> None:
+    async def repark(wait_s: int | None = None) -> None:
         status = await outbox_db.defer_claimed_job(
-            job_id, attempts=attempts, max_attempts=MAX_ATTEMPTS
+            job_id, attempts=attempts, max_attempts=MAX_ATTEMPTS, wait_s=wait_s
         )
         logger.info(f"{_LOG} Re-parked {subject} on {thread_id} (status={status})")
         if status == "exhausted":
@@ -492,6 +524,9 @@ async def execute_task_steer(job: dict) -> None:
     lap = int(payload.get("resume_turns") or 0)
     if lap >= MAX_RESUME_TURNS:
         await settle(f"{lap} turns posted for it never took it in")
+        return
+    if await _computer_full(thread_id, task_id):
+        await repark(wait_s=_ROOM_WAIT_S * 2 ** max(attempts - 1, 0))
         return
 
     async def fence() -> bool:

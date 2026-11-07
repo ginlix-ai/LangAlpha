@@ -93,7 +93,11 @@ EXIT_GRACE_S = 5
 #: How long a turn's CLI waits for one of the link's CLI slots, apart from
 #: its start: as long as another turn there may take to finish.
 CLI_SLOT_WAIT_S = 600
-CLI_SLOTS_FULL = f"Claude Code is already running {_CLI_SLOTS} turns on this computer. Try again when one finishes."
+#: How long a subagent's CLI waits for one: its Task was admitted under the
+#: computer's count of its CLIs (``hosted.cli_cap``), so a wait means a
+#: count that raced or another worker's link, and the run fails past it.
+SUBAGENT_CLI_SLOT_WAIT_S = 30
+CLI_SLOTS_FULL = f"Claude Code is already running {_CLI_SLOTS} agents on this computer. Try again when one finishes."
 COMMAND_SLOTS_FULL = "This computer is busy running other commands. Try again when one finishes."
 #: A turn's config dir left this long is one a lost connection orphaned.
 _STALE_MINUTES = 2 * 24 * 60
