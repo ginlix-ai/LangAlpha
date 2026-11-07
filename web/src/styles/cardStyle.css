@@ -471,28 +471,14 @@
   font-size: var(--cs-text-label);
 }
 
-/* The CreateWorkspace modal: its header ruled off as a card's divider, its
-   title a bracketed name (Terminal). Its surface, type and dropzone read the
-   variables in CreateWorkspaceModal.css. */
-:root:not([data-card-style='quiet']) .cwm-header {
-  padding-bottom: 0.75rem;
-  border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-muted));
-}
-:root:not([data-card-style]) :is(.cwm-label, .cwm-dropzone-label) {
-  color: var(--color-term-text-secondary);
-}
-/* A hairline where Quiet draws 1.5px, solid in Balanced. */
-:root:not([data-card-style='quiet']) .cwm-dropzone { border-width: 1px; }
-:root[data-card-style='balanced'] .cwm-dropzone { border-style: solid; }
-
-/* Titles as bracketed names (Terminal). */
-:root:not([data-card-style]) :is(.cwm-title, [data-slot='dialog-title'])::before {
+/* A dialog's title as a bracketed name (Terminal). */
+:root:not([data-card-style]) [data-slot='dialog-title']::before {
   content: var(--term-open);
   margin-right: 0.5ch;
   font-weight: 400;
   color: var(--color-term-text-tertiary);
 }
-:root:not([data-card-style]) :is(.cwm-title, [data-slot='dialog-title'])::after {
+:root:not([data-card-style]) [data-slot='dialog-title']::after {
   content: var(--term-close);
   margin-left: 0.5ch;
   font-weight: 400;
@@ -500,13 +486,17 @@
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   App shell and chat
+   Components with no stylesheet of their own
    ════════════════════════════════════════════════════════════════════ */
+
+/* A component's rules live in its own CSS. These components keep none, so
+   theirs stay here rather than in a sheet made for them; the cards' type
+   could not go into their Tailwind classes either, since a size in a text-*
+   class drops the line height the class carries. */
 
 /* Workspace cards: an open box with its title cut into the top edge. The
    cards paint their own fill, edge and corner (WorkspaceCard.tsx,
-   ChiefOfStaffCard.tsx); the cut title and its type are drawn here, since
-   the cards keep no CSS of their own. */
+   ChiefOfStaffCard.tsx); the cut title and its type are drawn here. */
 :root:not([data-card-style='quiet']) .pf-card {
   --term-ground: var(--color-bg-page);
   position: relative;
@@ -533,7 +523,8 @@
   padding-top: 0;
 }
 :root:not([data-card-style='quiet']) .pf-card .pf-card-icon { display: none; }
-/* The cut titles stand above their boxes: the grid gives the first row room. */
+/* The cut titles stand above their boxes: the grid (WorkspaceGallery.tsx)
+   gives the first row room. */
 :root:not([data-card-style='quiet']) [data-testid='workspace-grid'] { padding-top: 0.875rem; }
 
 /* line-clamp sets the title as a box; the brackets need it inline. */
@@ -562,17 +553,10 @@
   font-weight: 600;
 }
 
-/* The open thread and the open section are marked by a prompt (Terminal). */
-:root:not([data-card-style]) .nav-panel-row-active > span::before,
-:root:not([data-card-style]) :is(.settings-rail-link, .plugins-rail-link).is-active > :is(.settings-rail-name, .plugins-rail-name)::before {
-  content: '> ';
-  color: var(--color-term-text-tertiary);
-}
-
-/* The reader's message: an open box, its first line a prompt in Terminal.
-   The bubble reads its own fill; the edge stays a rule here, since a border
-   would take a pixel of room in Quiet's borderless bubble. Its text is the
-   shared Markdown root, so its face is set from the bubble. */
+/* The reader's message (UserBubble.tsx): an open box, its first line a
+   prompt in Terminal. The bubble reads its own fill; the edge stays a rule,
+   since a border would take a pixel of room in Quiet's borderless bubble.
+   Its text is the shared Markdown root, so its face is set from the bubble. */
 :root:not([data-card-style='quiet']) .pf-bubble {
   border: 1px solid var(--color-shell-edge, transparent);
 }
@@ -585,88 +569,13 @@
   color: var(--color-term-text-tertiary);
 }
 
-/* Section labels in Terminal's label ink; their face, case and size are
-   the pages' own (Settings.css, Plugins.css). */
-:root:not([data-card-style]) :is(.settings-group-title, .settings-rail-label, .plugins-rail-label) {
-  color: var(--color-term-text-secondary);
-}
-:root:not([data-card-style]) :is(.settings-row-desc, .settings-group-desc, .settings-head-def) {
-  line-height: 1.5;
-}
-
-/* Terminal sets these heavier in mono. */
-:root:not([data-card-style]) .orders-head { font-weight: 600; }
-:root:not([data-card-style]) .automation-run-name { font-weight: 700; }
-
-/* ════════════════════════════════════════════════════════════════════
-   Panels
-   ════════════════════════════════════════════════════════════════════ */
-
-/* The file panel's tabs: Terminal's open tab heavier, Balanced's pill
-   wider at its start. */
-:root:not([data-card-style]) .file-panel-tab[aria-selected='true'] { font-weight: 700; }
-:root[data-card-style='balanced'] .file-panel-tab { padding-left: 10px; }
-
-/* The tree's type filters (All, Docs, Data, Image) and System: the
-   dashboard's widget tabs in Terminal, the cards' pills in Balanced, the
-   picked one in full ink rather than a wash. */
-:root:not([data-card-style]) .file-panel-chip {
-  padding: 2px 1px;
-  border-color: transparent;
-  border-radius: 0;
-  background: transparent;
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
-}
-:root:not([data-card-style]) .file-panel-chip::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) .file-panel-chip::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) .file-panel-chip.active {
-  background: transparent;
-  color: var(--color-term-text);
-  font-weight: 700;
-}
-:root:not([data-card-style]) .file-panel-tree-chips { gap: 0.375rem; }
-:root[data-card-style='balanced'] .file-panel-chip { border-color: var(--term-mark); }
-:root[data-card-style='balanced'] .file-panel-chip.active {
-  background: transparent;
-  border-color: var(--color-term-text);
-  color: var(--color-term-text);
-}
-
-/* The tree's rows (TreeColumn.css) drop their tints in the open styles, so
-   an open row takes the row's hover wash, the one on screen and a selected
-   one too, where Quiet's tinted rows keep their tint. The names say open
-   and on screen by weight. */
-:root:not([data-card-style='quiet']) .file-panel-item-open:hover { background-color: var(--color-border-muted); }
-:root:not([data-card-style='quiet']) .file-panel-item-open .truncate { font-weight: 600; }
-:root:not([data-card-style='quiet']) .file-panel-item-active .truncate { font-weight: var(--cs-weight-selected); }
-
-/* Balanced's port pill takes a little more room. */
+/* The port and an app's version, a tag beside its name, Balanced's taking a
+   little more room. The chip's own rule is in filePanel/TreeColumn.css, but
+   the version picker also draws it on a share's artifact page
+   (ArtifactVersionPicker.tsx), which does not load that sheet. */
 :root[data-card-style='balanced'] .file-panel-port-chip { padding: 0 6px; }
 
-/* A PDF control rests unfilled in the open styles and washes under the
-   pointer; Quiet's rests filled and holds. */
-:root:not([data-card-style='quiet']) .pdf-btn:hover:not(:disabled) { background: var(--color-bg-hover); }
-
-/* Sheet tabs rest without an edge in the open styles; Terminal's open one
-   is heavier. */
-:root:not([data-card-style='quiet']) .excel-sheet-tab:not(.active) { border-color: transparent; }
-:root:not([data-card-style]) .excel-sheet-tab.active { font-weight: 700; }
-
-/* A source group's head runs out into a rule, as a card's divider does;
-   its count is a bracketed figure (Terminal) or an outlined tag (Balanced). */
-:root:not([data-card-style='quiet']) .pf-sources-group-head::after {
-  content: '';
-  flex: 1;
-  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
-}
-:root:not([data-card-style='quiet']) .pf-sources-count { font-family: var(--font-mono); }
-:root:not([data-card-style]) .pf-sources-count { padding-inline: 0; }
-:root:not([data-card-style]) .pf-sources-count::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) .pf-sources-count::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
-:root[data-card-style='balanced'] .pf-sources-count { border: 1px solid var(--term-mark); }
-
-/* The computer's section tabs (SandboxSettingsPanel) take the tab hooks;
+/* The computer's section tabs (SandboxSettingsPanel.tsx) take the tab hooks;
    the accent underline gives way to the style's own mark: Terminal's
    brackets over a dashed rule, Balanced's pills with no rule. */
 :root:not([data-card-style]) .pf-sbx-tabs {
@@ -686,102 +595,5 @@
 :root[data-card-style='balanced'] .pf-sbx-tabs > [data-slot='tab'][data-active] {
   border-color: var(--color-shell-front, var(--color-term-text));
 }
-/* Terminal's auto-stop chip is a word, not a box. */
+/* Terminal's auto-stop chip (sandbox/OverviewTab.tsx) is a word, not a box. */
 :root:not([data-card-style]) .pf-sbx-chip { padding-inline: 0; }
-
-/* Who pays, in the model picker, when a provider has more than one way in:
-   a segmented choice without its track, as bracketed words (Terminal) or
-   pills (Balanced). */
-:root:not([data-card-style='quiet']) .pf-picker-payer { background: transparent; padding: 0; gap: 0.25rem; }
-:root:not([data-card-style='quiet']) .pf-picker-payer > [data-selected] { background: transparent; }
-:root:not([data-card-style]) .pf-picker-payer > * {
-  padding-inline: 0;
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
-}
-:root:not([data-card-style]) .pf-picker-payer > *::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) .pf-picker-payer > *::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) .pf-picker-payer > [data-selected] { font-weight: 700; }
-:root[data-card-style='balanced'] .pf-picker-payer > * { border: 1px solid var(--term-mark); border-radius: 999px; }
-:root[data-card-style='balanced'] .pf-picker-payer > [data-selected] { border-color: var(--color-term-text); }
-
-/* Market View. Terminal's stat labels in its label ink, tracked wider. */
-:root:not([data-card-style]) .metric-label {
-  font-weight: inherit;
-  letter-spacing: 0.06em;
-  color: var(--color-term-text-tertiary);
-}
-
-/* Company Overview as a door (Terminal): a bracketed word with no edge. */
-:root:not([data-card-style]) .stock-overview-toggle {
-  border-color: transparent;
-  padding-inline: 0.25rem;
-}
-:root:not([data-card-style]) .stock-overview-toggle > svg { display: none; }
-:root:not([data-card-style]) .stock-overview-toggle::before { content: var(--term-open); margin-right: 0.25ch; font-weight: 400; opacity: 0.55; }
-:root:not([data-card-style]) .stock-overview-toggle::after { content: var(--term-close); margin-left: 0.25ch; font-weight: 400; opacity: 0.55; }
-
-/* Intervals and Light / Advanced: Terminal's bracketed words with the
-   picked one in full ink, Balanced's pills; the filled track goes in both. */
-:root:not([data-card-style='quiet']) .interval-selector {
-  background: transparent;
-  padding: 0;
-}
-:root:not([data-card-style]) .interval-selector { gap: 0.125rem; }
-:root:not([data-card-style]) :is(.interval-btn, .interval-btn-active, .interval-btn:hover) {
-  background: transparent;
-  padding-inline: 0.25rem;
-}
-:root:not([data-card-style]) .interval-btn {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
-  color: var(--color-term-text-tertiary);
-}
-:root:not([data-card-style]) .interval-btn::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) .interval-btn::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) .interval-btn-active { color: var(--color-term-text); font-weight: 700; }
-:root:not([data-card-style]) .interval-btn:hover { color: var(--color-term-text); }
-/* The "More" opener keeps its chevron inside the bracket. */
-:root:not([data-card-style]) .interval-btn > svg { order: 1; }
-:root:not([data-card-style]) .interval-btn::after { order: 2; }
-:root[data-card-style='balanced'] .interval-selector { gap: 0.25rem; }
-:root[data-card-style='balanced'] .interval-btn {
-  border: 1px solid var(--term-mark);
-  border-radius: 999px;
-  padding-block: 2px;
-}
-:root[data-card-style='balanced'] :is(.interval-btn-active, .interval-btn-active:hover) {
-  background: transparent;
-  border-color: var(--color-term-text);
-}
-/* Beside a ticker legend the intervals are already words; they keep that,
-   with the open styles' mark in place of the underline. */
-:root:not([data-card-style='quiet']) .chart--with-lead .interval-selector--intervals .interval-btn-active { text-decoration: none; }
-
-/* An armed chart tool keeps its accent hairline under the pointer, where
-   Quiet's hover edge replaces it. */
-:root:not([data-card-style='quiet']) .chart-tool-btn-active { border-color: var(--color-accent-primary); }
-
-/* Terminal's divider in the compact menu: dashed, as the cards'. */
-:root:not([data-card-style]) .compact-menu-divider {
-  height: 0;
-  background: none;
-  border-top: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-default));
-}
-
-/* The range bar under the chart: the picked window bracketed in Terminal
-   (the brackets are always there, so nothing moves), outlined in Balanced. */
-:root:not([data-card-style]) .range-btn {
-  padding-inline: 0.25rem;
-  text-transform: var(--term-case);
-  color: var(--color-term-text-tertiary);
-}
-:root:not([data-card-style]) .range-btn::before { content: var(--term-open); margin-right: 0.3ch; opacity: 0; }
-:root:not([data-card-style]) .range-btn::after { content: var(--term-close); margin-left: 0.3ch; opacity: 0; }
-:root:not([data-card-style]) .range-btn-active { color: var(--color-term-text); }
-:root:not([data-card-style]) .range-btn-active::before,
-:root:not([data-card-style]) .range-btn-active::after { opacity: 0.6; }
-:root[data-card-style='balanced'] .range-btn { border: 1px solid transparent; border-radius: 999px; }
-:root[data-card-style='balanced'] .range-btn-active { border-color: var(--color-term-text); }

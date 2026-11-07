@@ -428,6 +428,10 @@
   background: var(--color-shell-fill, var(--color-bg-elevated));
   border-color: var(--color-shell-front, var(--color-border-default));
 }
+/* The open styles' tabs rest without an edge; Terminal's open one is
+   heavier. */
+:root:not([data-card-style='quiet']) .excel-sheet-tab:not(.active) { border-color: transparent; }
+:root:not([data-card-style]) .excel-sheet-tab.active { font-weight: 700; }
 
 /* Truncated notice, CsvViewer's footer too */
 .excel-truncated {

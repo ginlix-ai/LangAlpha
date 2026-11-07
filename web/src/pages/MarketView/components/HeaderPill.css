@@ -11,7 +11,7 @@
   color: var(--color-text-secondary);
   background: transparent;
   /* A door in the open card styles: Balanced's pill keeps its edge under the
-     pointer, Terminal's word sheds it (styles/cardStyle.css). */
+     pointer, Terminal's word sheds it. */
   border: 1px solid var(--color-shell-edge, var(--color-border-default));
   border-radius: var(--cs-radius-control, var(--radius));
   cursor: pointer;
@@ -23,3 +23,12 @@
   background: var(--color-bg-hover);
   border-color: var(--color-shell-edge, var(--color-border-elevated));
 }
+
+/* Terminal's is a bracketed word with no edge or icon. */
+.stock-overview-toggle::before { content: var(--term-open); margin-right: 0.25ch; font-weight: 400; opacity: 0.55; }
+.stock-overview-toggle::after { content: var(--term-close); margin-left: 0.25ch; font-weight: 400; opacity: 0.55; }
+:root:not([data-card-style]) .stock-overview-toggle {
+  border-color: transparent;
+  padding-inline: 0.25rem;
+}
+:root:not([data-card-style]) .stock-overview-toggle > svg { display: none; }

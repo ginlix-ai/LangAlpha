@@ -46,39 +46,6 @@
   white-space: nowrap;
 }
 
-/* Beside a ticker legend (`chart--with-lead`) the intervals are text, not a
-   segmented control: the legend already reads at toolbar weight, and a filled
-   track and pill made the picker the heaviest thing in the row. Without the
-   track the choice still has to read as one, so a divider sets the group
-   apart from the readouts, the selected interval is underlined like a tab,
-   and hover brings back a light fill. Only the intervals group changes: the
-   Light / Advanced switch shares `.interval-selector` and keeps its track. */
-.chart--with-lead .interval-selector--intervals {
-  background: none;
-  padding: 0 0 0 8px;
-  margin-left: 4px;
-  gap: 2px;
-  /* The open card styles keep the hairline here, Terminal too. */
-  border-left: 1px solid var(--color-shell-rule, var(--color-border-default));
-  border-radius: 0;
-}
-
-.chart--with-lead .interval-selector--intervals .interval-btn,
-.chart--with-lead .interval-selector--intervals .interval-btn-active {
-  background: none;
-  padding: 4px 6px;
-}
-
-.chart--with-lead .interval-selector--intervals .interval-btn:hover {
-  background: var(--color-bg-hover);
-}
-
-.chart--with-lead .interval-selector--intervals .interval-btn-active {
-  text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 5px;
-}
-
 @keyframes chart-reveal {
   from { visibility: hidden; }
   to   { visibility: visible; }
@@ -219,6 +186,80 @@
 .interval-btn-active:hover { color: var(--color-text-primary); background: var(--color-bg-card); }
 .interval-btn-disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Intervals and Light / Advanced in the open card styles: Terminal's
+   bracketed words with the picked one in full ink, Balanced's pills; the
+   filled track goes in both. Ahead of the legend's rules below, which win
+   the ties (a hovered interval's wash, its padding beside a legend). */
+:root:not([data-card-style='quiet']) .interval-selector {
+  background: transparent;
+  padding: 0;
+}
+:root:not([data-card-style]) .interval-selector { gap: 0.125rem; }
+:root:not([data-card-style]) :is(.interval-btn, .interval-btn-active, .interval-btn:hover) {
+  background: transparent;
+  padding-inline: 0.25rem;
+}
+:root:not([data-card-style]) .interval-btn {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+  color: var(--color-term-text-tertiary);
+}
+.interval-btn::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
+/* The "More" opener keeps its chevron inside the bracket. */
+.interval-btn::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; order: 2; }
+:root:not([data-card-style]) .interval-btn > svg { order: 1; }
+:root:not([data-card-style]) .interval-btn-active { color: var(--color-term-text); font-weight: 700; }
+:root:not([data-card-style]) .interval-btn:hover { color: var(--color-term-text); }
+:root[data-card-style='balanced'] .interval-selector { gap: 0.25rem; }
+:root[data-card-style='balanced'] .interval-btn {
+  border: 1px solid var(--term-mark);
+  border-radius: 999px;
+  padding-block: 2px;
+}
+:root[data-card-style='balanced'] :is(.interval-btn-active, .interval-btn-active:hover) {
+  background: transparent;
+  border-color: var(--color-term-text);
+}
+
+/* Beside a ticker legend (`chart--with-lead`) the intervals are text, not a
+   segmented control: the legend already reads at toolbar weight, and a filled
+   track and pill made the picker the heaviest thing in the row. Without the
+   track the choice still has to read as one, so a divider sets the group
+   apart from the readouts, the selected interval is underlined like a tab,
+   and hover brings back a light fill. Only the intervals group changes: the
+   Light / Advanced switch shares `.interval-selector` and keeps its track. */
+.chart--with-lead .interval-selector--intervals {
+  background: none;
+  padding: 0 0 0 8px;
+  margin-left: 4px;
+  gap: 2px;
+  /* The open card styles keep the hairline here, Terminal too. */
+  border-left: 1px solid var(--color-shell-rule, var(--color-border-default));
+  border-radius: 0;
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn,
+.chart--with-lead .interval-selector--intervals .interval-btn-active {
+  background: none;
+  padding: 4px 6px;
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn-active {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
+}
+
+/* Beside a legend the open styles keep their own mark in place of the
+   underline. */
+:root:not([data-card-style='quiet']) .chart--with-lead .interval-selector--intervals .interval-btn-active { text-decoration: none; }
+
 .interval-disabled-tooltip {
   position: absolute;
   top: calc(100% + 6px);
@@ -283,6 +324,9 @@
   color: var(--color-text-primary);
   border-color: var(--color-accent-primary);
 }
+/* It keeps the hairline under the pointer in the open styles, where Quiet's
+   hover edge replaces it. */
+:root:not([data-card-style='quiet']) .chart-tool-btn-active { border-color: var(--color-accent-primary); }
 
 /* "Clear annotations" toolbar button — a chart-tool-btn that carries an icon
    plus a label, shown in the tools row only while agent annotations are drawn. */
@@ -508,6 +552,12 @@
   background: var(--color-border-default);
   margin: 2px 0;
 }
+/* Terminal's is dashed, as the cards' dividers. */
+:root:not([data-card-style]) .compact-menu-divider {
+  height: 0;
+  background: none;
+  border-top: 1px var(--cs-rule-style) var(--color-shell-divider, var(--color-border-default));
+}
 .compact-menu-view-grid { grid-template-columns: repeat(3, 1fr); }
 
 /* Mobile: compact menu stretches under toolbar, tighter spacing */
@@ -587,6 +637,20 @@
 .range-btn:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 .range-btn-active { color: var(--color-text-primary); font-weight: 700; }
 .range-btn-active:hover { background: transparent; color: var(--color-text-primary); }
+/* The picked window bracketed in Terminal (the brackets are always there,
+   so nothing moves), outlined in Balanced. */
+.range-btn::before { content: var(--term-open); margin-right: 0.3ch; opacity: 0; }
+.range-btn::after { content: var(--term-close); margin-left: 0.3ch; opacity: 0; }
+.range-btn-active::before,
+.range-btn-active::after { opacity: 0.6; }
+:root:not([data-card-style]) .range-btn {
+  padding-inline: 0.25rem;
+  text-transform: var(--term-case);
+  color: var(--color-term-text-tertiary);
+}
+:root:not([data-card-style]) .range-btn-active { color: var(--color-term-text); }
+:root[data-card-style='balanced'] .range-btn { border: 1px solid transparent; border-radius: 999px; }
+:root[data-card-style='balanced'] .range-btn-active { border-color: var(--color-term-text); }
 
 .venue-clock {
   display: inline-flex;

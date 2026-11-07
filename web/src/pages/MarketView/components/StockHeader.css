@@ -267,6 +267,12 @@
   color: var(--color-text-secondary);
   text-transform: uppercase;
 }
+/* Terminal's in its label ink, tracked wider. */
+:root:not([data-card-style]) .metric-label {
+  font-weight: inherit;
+  letter-spacing: 0.06em;
+  color: var(--color-term-text-tertiary);
+}
 
 .metric-value {
   font-family: var(--font-mono);

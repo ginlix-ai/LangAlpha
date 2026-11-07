@@ -34,7 +34,8 @@
 .settings-rail-group { display: flex; flex-direction: column; gap: 2px; }
 
 /* The rail's labels and the groups' titles are the page's kickers, in the
-   label voice (styles/cardStyle.css) in every style. */
+   label voice (styles/cardStyle.css) in every style, and Terminal's label
+   ink. */
 .settings-rail-label {
   margin: 18px 8px 4px;
   font-family: var(--term-words);
@@ -42,7 +43,7 @@
   font-weight: 500;
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
-  color: var(--color-text-quaternary);
+  color: var(--color-shell-label, var(--color-text-quaternary));
 }
 
 .settings-rail-link,
@@ -83,6 +84,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Terminal marks the open section with a prompt, as the sidebar's open
+   thread. */
+:root:not([data-card-style]) .settings-rail-link.is-active > .settings-rail-name::before {
+  content: '> ';
+  color: var(--color-term-text-tertiary);
 }
 
 /* ---------- Search ---------- */
@@ -252,7 +259,7 @@
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
   line-height: 18px;
-  color: var(--color-text-primary);
+  color: var(--color-shell-label, var(--color-text-primary));
 }
 .settings-group-desc {
   margin: 2px 0 0;
@@ -303,6 +310,10 @@ label.settings-row-label { cursor: pointer; }
   font-size: var(--cs-text-label, 0.75rem);
   line-height: 17px;
   color: var(--color-text-tertiary);
+}
+/* Terminal's smaller descriptions keep a looser line. */
+:root:not([data-card-style]) :is(.settings-row-desc, .settings-group-desc, .settings-head-def) {
+  line-height: 1.5;
 }
 .settings-row-control { display: flex; flex-shrink: 0; max-width: 100%; }
 .settings-row.is-wide .settings-row-control { flex: 0 1 280px; }

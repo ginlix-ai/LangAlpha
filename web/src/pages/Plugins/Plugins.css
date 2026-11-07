@@ -29,7 +29,7 @@
 }
 
 /* The rail's labels are the page's kickers, in the label voice
-   (styles/cardStyle.css) in every style. */
+   (styles/cardStyle.css) in every style, and Terminal's label ink. */
 .plugins-rail-label {
   margin: 18px 8px 4px;
   font-family: var(--term-words);
@@ -37,7 +37,7 @@
   font-weight: 500;
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
-  color: var(--color-text-quaternary);
+  color: var(--color-shell-label, var(--color-text-quaternary));
 }
 .plugins-rail > .plugins-rail-label:first-child { margin-top: 6px; }
 
@@ -80,6 +80,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Terminal marks the open section with a prompt, as the sidebar's open
+   thread. */
+:root:not([data-card-style]) .plugins-rail-link.is-active > .plugins-rail-name::before {
+  content: '> ';
+  color: var(--color-term-text-tertiary);
 }
 .plugins-rail-link .surface-dot { margin-left: auto; }
 .plugins-rail-count {

@@ -49,7 +49,7 @@
   text-align: left;
   font-family: var(--term-words);
   font-size: var(--cs-text-label, 0.71875rem);
-  font-weight: 500;
+  font-weight: var(--cs-weight-label, 500);
   text-transform: var(--term-case);
   letter-spacing: calc(0.14em * var(--term-track));
   color: var(--color-text-tertiary);

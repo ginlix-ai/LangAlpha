@@ -56,6 +56,7 @@
   font-size: var(--cs-text-field, 0.9375rem);
   font-weight: 500;
 }
+:root:not([data-card-style]) .automation-run-name { font-weight: 700; }
 
 @media (max-width: 1023px) {
   .automations-feed {

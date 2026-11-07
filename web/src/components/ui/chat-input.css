@@ -218,6 +218,24 @@
   color: var(--color-text-primary);
 }
 
+/* ====== Model picker: who pays ======
+
+   When a provider has more than one way in (chat-input.modelPicker.tsx), the
+   choice is a segmented control without its track, as bracketed words
+   (Terminal) or pills (Balanced). */
+:root:not([data-card-style='quiet']) .pf-picker-payer { background: transparent; padding: 0; gap: 0.25rem; }
+:root:not([data-card-style='quiet']) .pf-picker-payer > [data-selected] { background: transparent; }
+:root:not([data-card-style]) .pf-picker-payer > * {
+  padding-inline: 0;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+.pf-picker-payer > *::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
+.pf-picker-payer > *::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
+:root:not([data-card-style]) .pf-picker-payer > [data-selected] { font-weight: 700; }
+:root[data-card-style='balanced'] .pf-picker-payer > * { border: 1px solid var(--term-mark); border-radius: 999px; }
+:root[data-card-style='balanced'] .pf-picker-payer > [data-selected] { border-color: var(--color-term-text); }
+
 /* ====== Send / stop button (quiet ink) ====== */
 
 /* One button for both, so a turn starting or ending changes its face in place
