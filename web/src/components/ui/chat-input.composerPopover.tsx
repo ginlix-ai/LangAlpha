@@ -30,8 +30,8 @@ export const MENU_SECTION = '[&+&]:-mx-1 [&+&]:mt-1 [&+&]:border-t [&+&]:border-
  * answers while it is open. Blur closes it when focus moves to another
  * control, but react-aria ignores focus falling to the page, so a press on
  * something that takes no focus is caught here; the pill's own press toggles
- * it. Its content unmounts when it closes, so whatever the content holds (a
- * query, a tab) starts over on the next opening.
+ * it, and only that. Its content unmounts when it closes, so whatever the
+ * content holds (a query, a tab) starts over on the next opening.
  */
 export function ComposerPopover({
   triggerRef, isOpen, onOpenChange, direction, align, container, label, className, children,
@@ -79,6 +79,10 @@ export function ComposerPopover({
       isOpen={isOpen}
       onOpenChange={onOpenChange}
       isNonModal
+      // A press on the pill focuses it before its toggle runs, and the blur
+      // closing the panel first would let the toggle open it again. The toggle
+      // alone answers that press.
+      shouldCloseOnInteractOutside={(el) => !(lastInputWasPointer() && triggerRef.current?.contains(el))}
       placement={direction === 'down' ? `bottom ${align}` : `top ${align}`}
       offset={6}
       UNSTABLE_portalContainer={isMobile && container ? container : undefined}
