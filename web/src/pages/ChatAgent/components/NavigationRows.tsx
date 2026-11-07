@@ -25,6 +25,7 @@ import { toast } from '@/components/ui/use-toast';
 import { copyText } from '@/lib/clipboard';
 import { isDesktopShell } from '@/lib/desktop';
 import { isImeComposing } from '@/lib/ime';
+import { cn } from '@/lib/utils';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../components/ui/hover-card';
 import { mediumDate, relativeTime } from '@/lib/format';
 import { Loader } from '@/components/ui/loader';
@@ -134,7 +135,7 @@ function ThreadRowTitle({ tid, title, active, onActivate }: {
         e.preventDefault();
         onActivate();
       }}
-      className={`text-sm truncate${fading ? ' animate-fade-in' : ''}`}
+      className={cn('text-sm truncate', fading && 'animate-fade-in', active && 'rail-prompt')}
       style={{ color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}
     >
       {title}

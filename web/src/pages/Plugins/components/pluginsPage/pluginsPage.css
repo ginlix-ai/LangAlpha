@@ -264,29 +264,14 @@
   background: transparent;
   padding: 2px 10px;
   border-radius: 6px;
-  color: var(--color-shell-meta, var(--color-text-secondary));
-  font-family: var(--cs-face);
-  font-size: var(--cs-text-label, 0.75rem);
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.06em * var(--term-track));
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
   cursor: pointer;
 }
 .pp-seg button[aria-pressed='true'] {
   background: var(--color-shell-fill, var(--color-bg-elevated));
-  color: var(--color-shell-ink, var(--color-text-primary));
+  color: var(--color-text-primary);
 }
-/* The open styles lose the track: a row of bracketed words, the picked one
-   in full ink (Terminal), or of pills, the picked one outlined (Balanced). */
-.pp-seg button::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
-.pp-seg button::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style='quiet']) .pp-seg { border: 0; gap: 0.25rem; }
-:root:not([data-card-style]) .pp-seg button { padding-inline: 0.25rem; }
-:root:not([data-card-style]) .pp-seg button[aria-pressed='true'] { font-weight: 700; }
-:root[data-card-style='balanced'] .pp-seg button {
-  border: 1px solid var(--term-mark);
-  border-radius: var(--cs-radius-pill);
-}
-:root[data-card-style='balanced'] .pp-seg button[aria-pressed='true'] { border-color: var(--color-shell-ink, var(--color-text-primary)); }
 .pp-doc-status { padding: 18px 16px; font-size: 0.78125rem; color: var(--color-text-tertiary); }
 .pp-doc-source {
   margin: 0;

@@ -98,11 +98,11 @@ export function PluginsRail({
       <Link
         key={s}
         to={`?tab=${s}`}
-        className={cn('plugins-rail-link', active && 'is-active')}
+        className={cn('page-rail-link', active && 'is-active')}
         aria-current={active ? 'page' : undefined}
       >
-        <Icon className="plugins-rail-icon" aria-hidden />
-        <span className="plugins-rail-name">{t(SECTION_LABEL_KEYS[s])}</span>
+        <Icon className="page-rail-icon" aria-hidden />
+        <span className={cn('page-rail-name', active && 'rail-prompt')}>{t(SECTION_LABEL_KEYS[s])}</span>
         {attention[s] && (
           <>
             <StatusDot tone="attn" />
@@ -124,12 +124,12 @@ export function PluginsRail({
       <Link
         key={plugin.name}
         to={`?${search.toString()}`}
-        className={cn('plugins-rail-link', active && 'is-active', !plugin.enabled && 'is-off')}
+        className={cn('page-rail-link', active && 'is-active', !plugin.enabled && 'is-off')}
         aria-current={active ? 'page' : undefined}
         title={plugin.name}
       >
         <BrandMark name={plugin.name} size="xs" className="plugins-rail-mark" {...pluginMark(plugin)} />
-        <span className="plugins-rail-name">{plugin.name}</span>
+        <span className={cn('page-rail-name', active && 'rail-prompt')}>{plugin.name}</span>
         {!plugin.enabled && <span className="sr-only">{t('plugins.shell.pluginOff')}</span>}
         {problem && (
           <>
@@ -142,31 +142,31 @@ export function PluginsRail({
   };
 
   return (
-    <nav ref={navRef} className="plugins-rail" aria-label={t('plugins.shell.railLabel')}>
-      <div className="plugins-rail-label">{t('plugins.shell.group.customize')}</div>
+    <nav ref={navRef} className="page-rail plugins-rail" aria-label={t('plugins.shell.railLabel')}>
+      <div className="page-rail-label label-voice">{t('plugins.shell.group.customize')}</div>
       {CUSTOMIZE.map(sectionLink)}
-      <div className="plugins-rail-label">{t('plugins.shell.group.accounts')}</div>
+      <div className="page-rail-label label-voice">{t('plugins.shell.group.accounts')}</div>
       {ACCOUNTS.map(sectionLink)}
 
       {/* The label heads the built-in fold as well: without it, an account
           with only bundled plugins showed "Built in" straight under Accounts,
           read as one more account section. */}
       {installed.length + builtIn.length > 0 && (
-        <div className="plugins-rail-label">{t('plugins.shell.group.installed')}</div>
+        <div className="page-rail-label label-voice">{t('plugins.shell.group.installed')}</div>
       )}
       {installed.length > 0 && <div className="plugins-rail-plugins">{installed.map(pluginLink)}</div>}
       {builtIn.length > 0 && (
         <div className="plugins-rail-plugins">
           <button
             type="button"
-            className="plugins-rail-link plugins-rail-fold"
+            className="page-rail-link plugins-rail-fold"
             aria-expanded={builtInOpen}
             onClick={() => setBuiltInOpen((open) => !open)}
           >
             <span className="plugins-rail-chevron" aria-hidden>
               <ChevronRight className={cn('h-3.5 w-3.5', builtInOpen && 'rotate-90')} />
             </span>
-            <span className="plugins-rail-name">{t('plugins.shell.group.builtIn')}</span>
+            <span className="page-rail-name">{t('plugins.shell.group.builtIn')}</span>
             {!builtInOpen && builtInAttention && <StatusDot tone="attn" />}
             <span className="plugins-rail-count">{builtIn.length}</span>
           </button>

@@ -40,11 +40,8 @@
   box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
   font-weight: var(--cs-weight-selected);
 }
-/* Terminal marks the open thread with a prompt too. */
-:root:not([data-card-style]) .nav-panel-row-active > span::before {
-  content: '> ';
-  color: var(--color-term-text-tertiary);
-}
+/* Terminal marks the open thread with a prompt too: its title carries
+   rail-prompt (styles/cardStyle.css). */
 
 /* Terminal sets the sidebar's rows a size down. */
 .sidebar .nav-panel-row .text-sm {

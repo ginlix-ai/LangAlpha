@@ -186,6 +186,13 @@
   border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
 
+/* The open row of a rail (the sidebar's thread, a page's section) prompts
+   its name. The name carries the class while its row is open. */
+:root:not([data-card-style]) .rail-prompt::before {
+  content: '> ';
+  color: var(--color-term-text-tertiary);
+}
+
 /* The sidebar's section title keeps its heavier weight in mono. */
 :root:not([data-card-style]) .sidebar-section-title {
   font-weight: 600;
@@ -303,10 +310,14 @@
 
 /* Segmented controls lose their track: a row of bracketed words, the picked
    one in full ink, as the dashboard's widget tabs are drawn (Terminal), or
-   of pills, the picked one outlined in ink (Balanced). */
+   of pills, the picked one outlined in ink (Balanced). The track's fill is
+   the component's, read through --color-shell-fill. A row of pressed buttons
+   says its pick with `aria-pressed`; a React Aria toggle group (the model
+   picker's payer) with `data-selected`. */
 :root:not([data-card-style='quiet']) [data-slot='segmented'] {
   border: 0;
   border-radius: 0;
+  padding: 0;
   gap: 0.25rem;
 }
 :root[data-card-style='balanced'] [data-slot='segmented'] { overflow: visible; }
@@ -321,7 +332,7 @@
 :root:not([data-card-style]) [data-slot='segmented'] > button > svg { display: none; }
 :root:not([data-card-style]) [data-slot='segmented'] > button::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
 :root:not([data-card-style]) [data-slot='segmented'] > button::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
-:root:not([data-card-style]) [data-slot='segmented'] > button[aria-pressed='true'] {
+:root:not([data-card-style]) [data-slot='segmented'] > button:is([aria-pressed='true'], [data-selected]) {
   color: var(--color-shell-ink, var(--color-text-primary));
   font-weight: 700;
 }
@@ -330,7 +341,7 @@
   border-radius: var(--cs-radius-pill);
   color: var(--color-text-secondary);
 }
-:root[data-card-style='balanced'] [data-slot='segmented'] > button[aria-pressed='true'] {
+:root[data-card-style='balanced'] [data-slot='segmented'] > button:is([aria-pressed='true'], [data-selected]) {
   border-color: var(--color-shell-ink, var(--color-text-primary));
   color: var(--color-shell-ink, var(--color-text-primary));
 }

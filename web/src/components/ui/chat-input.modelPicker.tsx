@@ -313,7 +313,10 @@ function ModelList({
                     const [next] = keys;
                     if (next !== undefined) setConnectionTab(String(next));
                   }}
-                  className="pf-picker-payer flex flex-none gap-0.5 rounded-md bg-(--color-bg-tag) p-0.5"
+                  // One of the segmented controls, which the open card
+                  // styles draw without a track (styles/cardStyle.css).
+                  data-slot="segmented"
+                  className="flex flex-none gap-0.5 rounded-md bg-[var(--color-shell-fill,var(--color-bg-tag))] p-0.5"
                 >
                   {view.group.connections.map((c) => (
                     <ToggleButton
@@ -321,7 +324,7 @@ function ModelList({
                       id={c.id}
                       className={cn(
                         'rounded px-1.5 py-px text-[0.625rem] font-medium leading-normal text-(--color-text-tertiary) outline-hidden',
-                        'data-hovered:text-(--color-text-secondary) data-selected:bg-(--color-bg-elevated) data-selected:text-(--color-text-primary)',
+                        'data-hovered:text-(--color-text-secondary) data-selected:bg-[var(--color-shell-fill,var(--color-bg-elevated))] data-selected:text-(--color-text-primary)',
                         'data-focus-visible:outline-current',
                       )}
                     >

@@ -1,7 +1,8 @@
 /* The Settings page shell: a rail of sections beside one scrolling content
-   column, laid out as the Plugins page is. The scroll port is the column
-   rather than the root, so the desktop shell's drag strip can sit above both
-   and stay put while the page scrolls, and the rail keeps its place. */
+   column, drawn as the Plugins page is (styles/pageRail.css). The scroll
+   port is the column rather than the root, so the desktop shell's drag strip
+   can sit above both and stay put while the page scrolls, and the rail keeps
+   its place. */
 .settings-page {
   height: 100%;
   display: flex;
@@ -17,88 +18,12 @@
 }
 
 /* ---------- Rail ---------- */
-.settings-rail {
-  width: 240px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 14px 10px 16px;
-  overflow-y: auto;
-  /* The open card styles set it beside the page on their edge, as the sidebar. */
-  border-right: 1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-subtle));
-  scrollbar-width: thin;
-}
-
 .settings-rail-nav { display: flex; flex-direction: column; }
 /* A sliver between rows, so a hovered row never runs into the selected one. */
 .settings-rail-group { display: flex; flex-direction: column; gap: 2px; }
 
-/* The rail's labels and the groups' titles are the page's kickers, in the
-   label voice (styles/cardStyle.css) in every style, and Terminal's label
-   ink. */
-.settings-rail-label {
-  margin: 18px 8px 4px;
-  font-family: var(--term-words);
-  font-size: var(--cs-text-label, 0.71875rem);
-  font-weight: 500;
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.08em * var(--term-track));
-  color: var(--color-shell-label, var(--color-text-quaternary));
-}
-
-.settings-rail-link,
-.settings-result {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border-radius: 6px;
-  color: var(--color-text-tertiary);
-  font-size: 0.8125rem;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
-}
-.settings-rail-link { font-size: var(--cs-text-row, 0.8125rem); }
-.settings-rail-link:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
-/* The open card styles mark the open section as the sidebar marks its row:
-   no wash, hovered too, full ink, and an edge on a desktop rail. */
-.settings-rail-link.is-active {
-  background: var(--color-shell-fill, var(--color-bg-hover));
-  color: var(--color-text-primary);
-  font-weight: var(--cs-weight-selected);
-}
-@media (min-width: 768px) {
-  .settings-rail-link.is-active {
-    border-radius: var(--cs-radius-small, 6px);
-    box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
-  }
-}
-.settings-rail-link:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
-
-.settings-rail-icon { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.85; }
-.settings-rail-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Terminal marks the open section with a prompt, as the sidebar's open
-   thread. */
-:root:not([data-card-style]) .settings-rail-link.is-active > .settings-rail-name::before {
-  content: '> ';
-  color: var(--color-term-text-tertiary);
-}
-
 /* ---------- Search ---------- */
-.settings-search {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin: 2px 0 4px;
-}
+.settings-search { margin: 2px 0 4px; }
 .settings-search-icon {
   position: absolute;
   left: 9px;
@@ -110,22 +35,8 @@
 .settings-search input {
   width: 100%;
   height: 32px;
-  padding: 0 28px 0 30px;
-  /* An open field in the open card styles, the shape of their buttons. */
-  border: 1px solid var(--color-shell-edge, var(--color-border-default));
   border-radius: var(--cs-radius-control, var(--radius));
-  background: var(--color-shell-fill, var(--color-bg-input));
-  color: var(--color-text-primary);
-  font: inherit;
-  font-family: var(--cs-face);
   font-size: 0.8125rem;
-  outline: none;
-}
-.settings-search input::placeholder { color: var(--color-text-quaternary); }
-.settings-search input::-webkit-search-cancel-button { display: none; }
-.settings-search input:focus-visible {
-  border-color: var(--color-border-elevated);
-  box-shadow: 0 0 0 1px var(--color-focus-ring);
 }
 .settings-search-clear {
   position: absolute;
@@ -160,9 +71,22 @@
 .settings-search-clear:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 
 .settings-results { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
-/* Two lines, the setting and the section it opens. */
-.settings-result { height: auto; min-height: 40px; padding: 5px 8px; align-items: flex-start; }
-.settings-result .settings-rail-icon { margin-top: 2px; }
+/* Two lines, the setting and the section it opens, in the rail's row. */
+.settings-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--color-text-tertiary);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.settings-result .page-rail-icon { margin-top: 2px; }
 .settings-result.is-active { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .settings-result-name {
   display: block;
@@ -213,15 +137,6 @@
 }
 
 .settings-head { margin-bottom: 28px; }
-.settings-head-title {
-  margin: 0;
-  font-family: var(--cs-face, var(--font-ui));
-  font-size: var(--cs-text-title, 1.375rem);
-  font-weight: 600;
-  line-height: 30px;
-  letter-spacing: var(--cs-title-track, -0.015em);
-  color: var(--color-text-primary);
-}
 .settings-head-def {
   margin: 4px 0 0;
   font-size: var(--cs-text-label, 0.8125rem);
@@ -379,13 +294,7 @@ label.settings-row-label { cursor: pointer; }
    768px window leaves the page about 500px, too little for the rail. */
 @container settings-page (max-width: 767px) {
   .settings-body { flex-direction: column; }
-  .settings-rail {
-    width: auto;
-    padding: 8px 0;
-    overflow: visible;
-    border-right: 0;
-    border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-subtle));
-  }
+  .page-rail.settings-rail { padding: 8px 0; overflow: visible; }
   /* One row: the search is an icon at the head of the pills until it is
      opened, and then takes the row until it is closed. */
   .settings-rail:not(.is-searching) .settings-search { display: none; }
@@ -413,21 +322,7 @@ label.settings-row-label { cursor: pointer; }
     box-shadow: -12px 0 0 var(--color-bg-page), 6px 0 0 var(--color-bg-page);
   }
   .settings-rail-group { display: contents; }
-  .settings-rail-label,
-  .settings-rail-link .settings-rail-icon { display: none; }
-  .settings-rail-link {
-    flex-shrink: 0;
-    height: 28px;
-    padding: 0 11px;
-    border: 1px solid var(--color-shell-edge, var(--color-border-muted));
-    border-radius: var(--cs-radius-small, 14px);
-  }
-  /* The open one outlined in ink in the open card styles. */
-  .settings-rail-link.is-active {
-    background: var(--color-shell-fill, var(--color-bg-elevated));
-    border-color: var(--color-shell-ink, var(--color-border-default));
-  }
-  .settings-rail-name { overflow: visible; }
+  .settings-rail .page-rail-link { height: 28px; padding: 0 11px; }
   .settings-search-key { display: none; }
   .settings-results { max-height: 50vh; overflow-y: auto; }
 
@@ -435,7 +330,7 @@ label.settings-row-label { cursor: pointer; }
      the title, and everything below sits closer. */
   .settings-column { padding: 14px 12px 48px; }
   .settings-head { margin-bottom: 14px; }
-  .settings-head-title { font-size: var(--cs-text-title, 1.1875rem); line-height: 26px; }
+  .settings-head .page-head-title { font-size: var(--cs-text-title, 1.1875rem); line-height: 26px; }
   .settings-head-def { display: none; }
   .settings-content { gap: 18px; }
   .settings-group-head { margin: 0 4px 6px; }

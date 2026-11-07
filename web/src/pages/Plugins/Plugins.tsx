@@ -35,6 +35,7 @@ import {
   type SectionView,
 } from './utils/detailParam';
 import { SCOPE_TAB, type DiscoverScope } from './utils/marketplace';
+import '@/styles/pageRail.css';
 import './Plugins.css';
 
 // Its own chunk: the catalog is browsed far less often than the page opens.
