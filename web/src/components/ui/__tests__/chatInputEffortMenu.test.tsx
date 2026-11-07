@@ -8,6 +8,7 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { ChatInputEffortMenu } from '../chat-input.modelMenu';
 
@@ -188,4 +189,14 @@ describe('task cost', () => {
   });
 });
 
-
+describe('the pill', () => {
+  // A press on the pill moves focus onto it before its toggle runs, so a
+  // panel that closed on that blur would be opened again by the toggle.
+  it('closes the open menu on a second press', async () => {
+    const user = userEvent.setup();
+    renderMenu();
+    option('High').focus();
+    await user.click(screen.getByTitle('Effort'));
+    await vi.waitFor(() => expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0));
+  });
+});
