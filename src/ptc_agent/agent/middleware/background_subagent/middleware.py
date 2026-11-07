@@ -343,6 +343,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         task.result = None
         task.result_seen = False
         task.error = None
+        task.stop_at = None
         # tool_usage / per_call_records are not cleared: an earlier run's
         # usage left with the reclaim, so what stays is this run's own
         # earlier round, an unstamped task's, or anything left where no biller

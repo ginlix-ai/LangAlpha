@@ -11,6 +11,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from ptc_agent.agent.middleware.background_subagent.registry import (
+    TIME_LIMIT_CANCEL,
     BackgroundTaskRegistry,
 )
 from ptc_agent.agent.middleware.background_subagent.workflow.driver import (
@@ -818,6 +819,76 @@ async def test_cancellation_mid_child_cancels_children_and_finalizes() -> None:
     assert phases.index("child_done") < phases.index("run_completed")
     done = next(e for e in registry.events if e["phase"] == "child_done")
     assert done["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_stop_past_the_time_limit_ends_the_run_as_a_timeout() -> None:
+    started = asyncio.Event()
+    driver, registry, dispatcher, backend = await _make_driver(
+        _script("return await agent('park');"), behaviors=[Hang(started)]
+    )
+    run_task = asyncio.create_task(driver.run())
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    started = driver.spec.run_task.stop_at - driver.spec.caps.run_timeout
+    assert abs(started - driver._started_at) < 1e-6
+    run_task.cancel(TIME_LIMIT_CANCEL)
+    with pytest.raises(WorkflowRunError, match="timed out"):
+        await run_task
+
+    terminal = registry.events[-1]
+    assert terminal["phase"] == "run_completed"
+    assert terminal["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_user_stop_racing_the_time_limit_stays_a_stop() -> None:
+    started = asyncio.Event()
+    driver, registry, dispatcher, backend = await _make_driver(
+        _script("return await agent('park');"), behaviors=[Hang(started)]
+    )
+    run_task = asyncio.create_task(driver.run())
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    driver.spec.run_task.terminal_status = "cancelled"
+    run_task.cancel(TIME_LIMIT_CANCEL)
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+
+    terminal = registry.events[-1]
+    assert terminal["phase"] == "run_completed"
+    assert terminal["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_further_stop_does_not_cut_off_the_time_limit_terminal() -> None:
+    started = asyncio.Event()
+    driver, registry, dispatcher, backend = await _make_driver(
+        _script("return await agent('park');"), behaviors=[Hang(started)]
+    )
+    finalize = driver._finalize
+
+    async def slow_finalize(*args, **kwargs):
+        await asyncio.sleep(0.1)
+        await finalize(*args, **kwargs)
+
+    driver._finalize = slow_finalize
+    run_task = asyncio.create_task(driver.run())
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    run_task.cancel(TIME_LIMIT_CANCEL)
+    await asyncio.sleep(0.05)
+    run_task.cancel(TIME_LIMIT_CANCEL)
+    with pytest.raises((asyncio.CancelledError, WorkflowRunError)):
+        await run_task
+    # The terminal bookkeeping still checkpoints, so it is still a writer.
+    assert driver.spec.run_task.live_writers
+    await asyncio.sleep(0.2)
+    assert not driver.spec.run_task.live_writers
+
+    terminal = registry.events[-1]
+    assert terminal["phase"] == "run_completed"
+    assert terminal["status"] == "failed"
 
 
 @pytest.mark.asyncio

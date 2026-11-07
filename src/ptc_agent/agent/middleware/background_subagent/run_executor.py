@@ -25,7 +25,11 @@ from ptc_agent.agent.middleware.credit_gate import (
     CreditGateState,
     current_credit_gate,
 )
-from ptc_agent.agent.middleware.background_subagent.outcomes import Outcome
+from ptc_agent.agent.middleware.background_subagent.outcomes import (
+    Outcome,
+    SubagentTimeLimitError,
+    is_time_limit_cancel,
+)
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
     BackgroundTaskRegistry,
@@ -183,10 +187,12 @@ async def _run_background_task(
 ) -> dict[str, Any]:
     """Execute a subagent handler in a background asyncio.Task.
 
-    Shared by both the new-spawn and resume paths. On writer settle the
-    finally block releases the task's namespace lock and mirrors terminal
-    liveness to the Redis task meta — both only when the handler task is
-    actually done, so a shielded still-live writer is never unfenced.
+    Shared by both the new-spawn and resume paths. Once the handler is done,
+    the finally block settles the outcome (ledger, report-back, terminal
+    meta) at once, then waits out the handler's stragglers before it merges
+    the usage and releases the task's namespace lock, so a writer still
+    alive is never unfenced or left out of the bill. This task stays live
+    meanwhile, so everything keyed on it waits for the last writer too.
     """
     from src.tools.decorators import ToolUsageTracker, set_tool_tracker
 
@@ -276,6 +282,19 @@ async def _run_background_task(
                 ledger_status, ledger_failure = torn.status, torn.as_failure()
                 return torn.as_result()
             return {"success": True, "result": result}
+        except asyncio.CancelledError as e:
+            if not is_time_limit_cancel(e):
+                raise
+            outcome = Outcome.from_exception(
+                SubagentTimeLimitError("Timed out: still running past its time limit")
+            )
+            ledger_status, ledger_failure = outcome.status, outcome.as_failure()
+            logger.error(
+                "%s stopped past its time limit",
+                label,
+                display_id=task.display_id,
+            )
+            return outcome.as_result()
         except Exception as e:
             outcome = Outcome.from_exception(e)
             ledger_status, ledger_failure = outcome.status, outcome.as_failure()
@@ -303,18 +322,26 @@ async def _run_background_task(
         # possibly-live writer. A live handler is also still appending to the
         # tracker, so the merge below waits for the same condition.
         if handler_task.done():
-            # The one merge for every settle path. Doing it per-branch instead
-            # enumerates the ways a run can succeed, and a run force-cancelled
-            # mid-flight ends via a CancelledError that reaches none of them —
-            # its tokens were spent upstream and would go unbilled.
-            _merge_subagent_usage(task, tracker, tool_tracker)
             await _settle_terminal_run(
                 task,
                 ledger_status=ledger_status,
                 ledger_failure=ledger_failure,
                 registry=registry,
-                namespace_owner=namespace_owner,
+                namespace_owner=None,
             )
+            try:
+                while stragglers := [w for w in task.stragglers if not w.done()]:
+                    await asyncio.wait(stragglers)
+            except asyncio.CancelledError:
+                # The outcome is settled, so a stop here only ends the wait.
+                asyncio.current_task().uncancel()
+            # The one merge for every settle path. Doing it per-branch instead
+            # enumerates the ways a run can succeed, and a run force-cancelled
+            # mid-flight ends via a CancelledError that reaches none of them —
+            # its tokens were spent upstream and would go unbilled.
+            _merge_subagent_usage(task, tracker, tool_tracker)
+            if all(w.done() for w in task.stragglers):
+                await _release_task_ns(task, namespace_owner)
 
 
 async def _flush_held_delta(
@@ -465,12 +492,17 @@ async def _settle_terminal_run(
                 task_id=task.task_id,
                 exc_info=True,
             )
-    if namespace_owner is not None:
-        try:
-            await namespace_owner.release_task_ns(task.task_id)
-        except Exception:
-            logger.warning(
-                "task-ns release failed",
-                task_id=task.task_id,
-                exc_info=True,
-            )
+    await _release_task_ns(task, namespace_owner)
+
+
+async def _release_task_ns(task: BackgroundTask, namespace_owner: Any | None) -> None:
+    if namespace_owner is None:
+        return
+    try:
+        await namespace_owner.release_task_ns(task.task_id)
+    except Exception:
+        logger.warning(
+            "task-ns release failed",
+            task_id=task.task_id,
+            exc_info=True,
+        )

@@ -256,3 +256,15 @@ async def test_reset_for_resume_skips_redis_when_no_thread_id():
         )
 
     cache.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_round_does_not_inherit_the_previous_clock():
+    registry = BackgroundTaskRegistry(thread_id="")
+    middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True, subagent_types={"general-purpose"})
+    task = _make_completed_task()
+    task.stop_at = 1.0
+
+    await middleware._reset_task_for_resume(task, task_run_id=None, spawned_run_id=None)
+
+    assert task.stop_at is None

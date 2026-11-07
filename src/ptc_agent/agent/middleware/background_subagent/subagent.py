@@ -2,7 +2,7 @@
 
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 import structlog
@@ -49,7 +49,7 @@ from ptc_agent.agent.middleware.runtime_context.turn import (
 from ptc_agent.agent.state import DeltaAgentState
 from src.llms.llm import narrow_prompt_cache_key
 from src.observability.langsmith_tracer import with_run_tracer
-from src.utils.concurrency import aclose_within
+from src.utils.concurrency import iterate_until
 from src.utils.stream_coalescing import HEARTBEAT_EVENT_TYPE
 
 logger = structlog.get_logger(__name__)
@@ -377,11 +377,8 @@ async def arun_subagent_streaming(
     # where langchain_core's own tracer would put it, without that tracer
     # holding the subagent's whole tree until it ends.
     config = with_run_tracer(config)
-    # The clock's own end, checked on every event: a model call beats about
-    # ten times a second, so a run is stopped within the grace of it unless a
-    # tool runs silent past it, which that tool's own timeout bounds. Checked
-    # here rather than under an ``asyncio.timeout``, whose cancel could land in
-    # this loop's own spill and tear the task's event stream.
+    # The clock's own end bounds every wait for the graph's next event, so a
+    # run stops at it even inside a tool that never returns.
     configurable = config.get("configurable") or {}
     deadline = configurable.get(TURN_DEADLINE_KEY)
     stop_at = (
@@ -389,6 +386,8 @@ async def arun_subagent_streaming(
         if isinstance(deadline, int | float)
         else None
     )
+    if bg_task is not None:
+        bg_task.stop_at = stop_at
     try:
         with _detached_from_launcher():
             # Sync, as the main graph runs: a model call confirms the steers
@@ -399,13 +398,20 @@ async def arun_subagent_streaming(
                 stream_mode=["values", "messages", "custom"],
                 durability="sync",
             )
-            try:
-                async for mode, data in stream:
-                    if stop_at is not None and time.time() >= stop_at:
-                        raise SubagentTimeLimitError(
-                            f"Timed out after "
-                            f"{int(configurable.get(TURN_TIME_LIMIT_KEY) or 0)}s"
-                        )
+            async with aclosing(
+                iterate_until(
+                    stream,
+                    stop_at,
+                    on_deadline=lambda: SubagentTimeLimitError(
+                        f"Timed out after "
+                        f"{int(configurable.get(TURN_TIME_LIMIT_KEY) or 0)}s"
+                    ),
+                    close_timeout=SUBAGENT_CLOSE_TIMEOUT_S,
+                    label=f"the subagent stream for {tool_call_id}",
+                    track=None if bg_task is None else bg_task.keep_straggler,
+                )
+            ) as events:
+                async for mode, data in events:
                     # Root symmetry (retention contract): once the spill circuit
                     # opens, every further frame widens the hole in the replay
                     # archive — abort the graph instead of completing a run
@@ -466,16 +472,6 @@ async def arun_subagent_streaming(
                                 "Subagent custom-event forwarding failed",
                                 error=str(exc),
                             )
-            finally:
-                # Leaving the loop early leaves the graph suspended mid-step,
-                # its model call or tools running on until the garbage
-                # collector closes it. Closed here, within a bound, a stop
-                # ends the work it stops before the run settles.
-                await aclose_within(
-                    stream,
-                    SUBAGENT_CLOSE_TIMEOUT_S,
-                    label=f"the subagent stream for {tool_call_id}",
-                )
     except Exception as exc:
         # Every subagent run is nested, so LangGraph raises an interrupt here
         # instead of ending the stream. Task HITL is unsupported, and this is

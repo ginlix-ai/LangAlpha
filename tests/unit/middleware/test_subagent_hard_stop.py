@@ -22,9 +22,11 @@ from ptc_agent.agent.middleware.background_subagent.outcomes import (
     SubagentTimeLimitError,
 )
 from ptc_agent.agent.middleware.background_subagent.registry import (
+    TIME_LIMIT_CANCEL,
     BackgroundTaskRegistry,
 )
 from ptc_agent.agent.middleware.background_subagent.tools import _terminal_notice
+from src.utils.concurrency import iterate_until
 from src.utils.stream_coalescing import HEARTBEAT_EVENT_TYPE
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
@@ -43,6 +45,22 @@ class _BeatingGraph:
             while True:
                 await asyncio.sleep(0.01)
                 yield BEAT
+        finally:
+            await asyncio.sleep(self.cleanup_s)
+            self.closed = True
+
+
+class _SilentGraph:
+    """A graph stuck in a tool that never returns: no event ever arrives."""
+
+    def __init__(self, *, cleanup_s: float = 0.0) -> None:
+        self.closed = False
+        self.cleanup_s = cleanup_s
+
+    async def astream(self, state, config, stream_mode=None, durability=None):
+        try:
+            await asyncio.Event().wait()
+            yield BEAT
         finally:
             await asyncio.sleep(self.cleanup_s)
             self.closed = True
@@ -84,6 +102,95 @@ class TestTheStop:
         assert not graph.closed
         # The close is left to finish on its own rather than abandoned.
         await asyncio.sleep(0.6)
+        assert graph.closed
+
+    @pytest.mark.asyncio
+    async def test_a_tool_that_never_returns_is_stopped_at_the_clock(self, short_clock):
+        graph = _SilentGraph()
+        started = time.monotonic()
+        with pytest.raises(SubagentTimeLimitError):
+            await asyncio.wait_for(
+                subagent_mod.arun_subagent_streaming(
+                    graph, {"messages": []}, {"configurable": {}}, registry=None
+                ),
+                timeout=5,
+            )
+        assert time.monotonic() - started < 2
+        assert graph.closed
+
+    @pytest.mark.asyncio
+    async def test_a_silent_tool_close_is_bounded(self, short_clock, monkeypatch):
+        monkeypatch.setattr(subagent_mod, "SUBAGENT_CLOSE_TIMEOUT_S", 0.05)
+        graph = _SilentGraph(cleanup_s=0.5)
+        started = time.monotonic()
+        with pytest.raises(SubagentTimeLimitError):
+            await asyncio.wait_for(
+                subagent_mod.arun_subagent_streaming(
+                    graph, {"messages": []}, {"configurable": {}}, registry=None
+                ),
+                timeout=5,
+            )
+        assert time.monotonic() - started < 0.4
+        assert not graph.closed
+        await asyncio.sleep(0.6)
+        assert graph.closed
+
+    @pytest.mark.asyncio
+    async def test_a_step_cut_short_is_handed_over_while_it_runs(self):
+        graph = _SilentGraph(cleanup_s=0.5)
+        tracked: list[asyncio.Task] = []
+        events = iterate_until(
+            graph.astream({}, {}),
+            time.time() + 0.05,
+            on_deadline=lambda: SubagentTimeLimitError("Timed out after 0s"),
+            close_timeout=0.05,
+            label="a silent graph",
+            track=tracked.append,
+        )
+        with pytest.raises(SubagentTimeLimitError):
+            await anext(events)
+
+        # Still cleaning up past the bound, so whoever holds the session has
+        # to keep counting it as a writer.
+        assert [task.done() for task in tracked] == [False]
+        await asyncio.sleep(0.6)
+        assert graph.closed and tracked[0].done()
+
+    @pytest.mark.asyncio
+    async def test_a_stop_from_outside_waits_for_the_graph_to_stop(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.get_workflow_timeout", lambda: 600)
+        monkeypatch.setattr(subagent_mod, "SUBAGENT_CLOSE_TIMEOUT_S", 0.05)
+        graph = _SilentGraph(cleanup_s=0.3)
+        run = asyncio.create_task(
+            subagent_mod.arun_subagent_streaming(
+                graph, {"messages": []}, {"configurable": {}}, registry=None
+            )
+        )
+        await asyncio.sleep(0.05)
+        run.cancel()
+        await asyncio.wait({run}, timeout=5)
+
+        # The writer outlives its graph's unwind, so it keeps the namespace
+        # until nothing can write under it.
+        assert run.cancelled()
+        assert graph.closed
+
+    @pytest.mark.asyncio
+    async def test_a_second_stop_still_waits_for_the_graph_to_stop(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.get_workflow_timeout", lambda: 600)
+        graph = _SilentGraph(cleanup_s=0.3)
+        run = asyncio.create_task(
+            subagent_mod.arun_subagent_streaming(
+                graph, {"messages": []}, {"configurable": {}}, registry=None
+            )
+        )
+        await asyncio.sleep(0.05)
+        run.cancel()
+        await asyncio.sleep(0.05)
+        run.cancel(TIME_LIMIT_CANCEL)
+        await asyncio.wait({run}, timeout=5)
+
+        assert run.cancelled()
         assert graph.closed
 
     @pytest.mark.asyncio

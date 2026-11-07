@@ -45,6 +45,9 @@ __all__ = [
 # Bounded wait for a cancelled task's unwind before its registry entry drops
 # (normal unwind is milliseconds; see ``cancel_run_tasks``).
 CANCEL_UNWIND_TIMEOUT = 15.0
+# What a stop for running past the clock cancels a writer with, so its settle
+# records the time limit rather than a user's stop.
+TIME_LIMIT_CANCEL = "subagent ran past its time limit"
 
 # Cap on the pre-signal durable cancel-intent stamp (``stamp_cancel_intent``):
 # a hung ledger call must not block the user-facing local cancel.
@@ -429,10 +432,11 @@ class BackgroundTaskRegistry:
         async with self._lock:
             return take_task_usage(tasks, response_id)
 
-    async def live_writers_where(
+    async def live_writers_by_task(
         self, predicate: Callable[[BackgroundTask], bool]
-    ) -> list[asyncio.Task]:
-        """Snapshot the still-running writer handles of matching tasks.
+    ) -> list[tuple[BackgroundTask, list[asyncio.Task]]]:
+        """Snapshot the matching tasks that still have running writer handles,
+        each with those handles.
 
         Under the lock so a handle can't be swapped mid-scan. The predicate is
         the caller's because the scopes that need this aren't the registry's to
@@ -440,11 +444,11 @@ class BackgroundTaskRegistry:
         field records.
         """
         async with self._lock:
-            writers: list[asyncio.Task] = []
-            for task in self._tasks.values():
-                if predicate(task):
-                    writers.extend(task.live_writers)
-            return writers
+            return [
+                (task, writers)
+                for task in self._tasks.values()
+                if predicate(task) and (writers := task.live_writers)
+            ]
 
     def _locked_get_by_task_id(self, task_id: str) -> BackgroundTask | None:
         """Resolve a 6-char task_id. Caller must hold ``self._lock``."""
@@ -1039,6 +1043,32 @@ class BackgroundTaskRegistry:
             logger.info("Cancelled background task by request", task_id=task_id)
         return cancelled > 0
 
+    async def time_out_writers_where(
+        self, predicate: Callable[[BackgroundTask], bool]
+    ) -> list[asyncio.Task]:
+        """Stop the matching tasks' writers as past their time limit, and
+        return the handles still unwinding.
+
+        The backstop for a writer its own clock could not end. Each live
+        handle is cancelled with ``TIME_LIMIT_CANCEL``, which the writer
+        settles as the clock's own stop would: an error to the ledger, so the
+        report-back fires, and a timeout in memory. No cancel intent is
+        stamped, since that would settle it as a user's stop. A task already
+        stopped or settled keeps its outcome, so its writers get a plain
+        cancel. Scan and cancel share one lock hold, so a round resumed
+        meanwhile under another owner is never touched.
+        """
+        async with self._lock:
+            stopping = [
+                (writer, None if task.terminal_status else TIME_LIMIT_CANCEL)
+                for task in self._tasks.values()
+                if predicate(task)
+                for writer in task.live_writers
+            ]
+            for writer, message in stopping:
+                writer.cancel(message)
+            return [writer for writer, _ in stopping]
+
     async def cancel_run_tasks(
         self,
         run_id: str,
@@ -1236,21 +1266,22 @@ class BackgroundTaskRegistry:
             return
         if pending is not None:
             pending.reaper.cancel()
-        writers = [
-            t for t in (task.asyncio_task, task.handler_task) if t is not None
-        ]
-
         async def _late_remove() -> None:
-            try:
-                await asyncio.wait(writers)
-            except Exception:
-                pass
-            async with self._lock:
-                if (
-                    self._tasks.get(tool_call_id) is task
-                    and (task.task_run_id, task.asyncio_task) == round_
-                ):
-                    self._remove_entry_unlocked(tool_call_id)
+            while True:
+                async with self._lock:
+                    if (
+                        self._tasks.get(tool_call_id) is not task
+                        or (task.task_run_id, task.asyncio_task) != round_
+                    ):
+                        return
+                    writers = task.live_writers
+                    if not writers:
+                        self._remove_entry_unlocked(tool_call_id)
+                        return
+                try:
+                    await asyncio.wait(writers)
+                except Exception:
+                    return
 
         reaper = asyncio.create_task(
             _late_remove(), name=f"bg-task-late-remove-{tool_call_id[:8]}"

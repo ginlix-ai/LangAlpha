@@ -1307,39 +1307,22 @@ class LocalRunExecutor:
         run's tail) never do. Collectors are not writers (they read Redis
         and persist via the app pool).
 
-        Fail-closed: raises on registry failure or deadline, so the guard
-        teardown discards the session instead of clean-releasing it under
-        writers it could not account for. Re-snapshots after each wait to
-        catch writers registered while earlier ones were draining."""
+        Fail-closed: raises on registry failure or on a writer that will not
+        stop (``drain_tail_writers``), so the guard teardown discards the
+        session instead of clean-releasing it under writers it could not
+        account for."""
         from src.server.services.background_registry_store import (
             BackgroundRegistryStore,
         )
+        from ptc_agent.agent.middleware.background_subagent.tail_drain import (
+            drain_tail_writers,
+        )
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + subagent_collection.SUBAGENT_TAIL_TIMEOUT
-        while True:
-            bg_registry = await BackgroundRegistryStore.get_instance().get_registry(
-                thread_id
-            )
-            if not bg_registry:
-                return
-            writers = await bg_registry.live_writers_where(
-                lambda t: guard.owns_task_ns(t.task_id)
-            )
-            if not writers:
-                return
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"tail drain deadline: {len(writers)} subagent writer(s) "
-                    f"still running for run={run_id} after "
-                    f"{subagent_collection.SUBAGENT_TAIL_TIMEOUT:.0f}s"
-                )
-            logger.info(
-                f"[LocalRunExecutor] guard tail-drain awaiting "
-                f"{len(writers)} subagent writer(s) for run={run_id}"
-            )
-            await asyncio.wait(writers, timeout=remaining)
+        await drain_tail_writers(
+            lambda: BackgroundRegistryStore.get_instance().get_registry(thread_id),
+            lambda task: guard.owns_task_ns(task.task_id),
+            run_id=run_id,
+        )
 
     async def _apply_post_terminal_effects(
         self,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +14,9 @@ import structlog
 from ptc_agent.agent.middleware.background_subagent.dispatch import SubagentDispatcher
 from ptc_agent.core.paths import WorkspaceLayout
 from ptc_agent.core.project_context import ProjectContext, set_project
+from ptc_agent.agent.middleware.background_subagent.outcomes import (
+    is_time_limit_cancel,
+)
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
     BackgroundTaskRegistry,
@@ -236,6 +240,7 @@ class WorkflowDriver:
         self._emitter.bind_loop(asyncio.get_running_loop())
         self._sem = asyncio.Semaphore(caps.max_concurrent_children)
         self._started_at = time.time()
+        self.spec.run_task.stop_at = self._started_at + caps.run_timeout
         try:
             await self._emitter.emit(
                 "run_started",
@@ -256,9 +261,19 @@ class WorkflowDriver:
             # Terminal bookkeeping runs outside the deadline — a run that
             # beat the timeout must not have its finalize killed by it.
             terminal = await self._finish_outcome(outcome)
-        except asyncio.CancelledError:
-            await asyncio.shield(self._on_cancelled())
-            raise
+        except asyncio.CancelledError as cancel:
+            # A stop for running past its time limit ends the run as its own
+            # clock would, unless a user's stop reached the run too: it
+            # stamps the run cancelled, and wins.
+            user_stop = self.spec.run_task.terminal_status == "cancelled"
+            if user_stop or not is_time_limit_cancel(cancel):
+                await self._shielded(self._on_cancelled())
+                raise
+            asyncio.current_task().uncancel()
+            error = await self._shielded(
+                self._fail(f"Run timed out after {caps.run_timeout}s")
+            )
+            raise WorkflowRunError(error) from None
         except TimeoutError:
             terminal = _Terminal(error=f"Run timed out after {caps.run_timeout}s")
         except Exception as error:
@@ -273,6 +288,18 @@ class WorkflowDriver:
         if terminal.error is None:
             await self._finalize("completed", result_preview=terminal.result_preview)
             return terminal.summary
+        raise WorkflowRunError(await self._fail(terminal.error))
+
+    async def _shielded(self, cleanup: Coroutine[Any, Any, Any]) -> Any:
+        """Run a stop's terminal bookkeeping past a cancel of the run, so the
+        run card gets its terminal frame. It checkpoints, so it counts among
+        the run's writers until it ends, and like any of them it gets the tail
+        drain's bounded unwind before the time-limit backstop stops it."""
+        work = asyncio.ensure_future(cleanup)
+        self.spec.run_task.keep_straggler(work)
+        return await asyncio.shield(work)
+
+    async def _fail(self, raw_error: str) -> str:
         # Scrubbed and clipped once, here, because every delivery below shares
         # this string: the ledger row, the task result TaskOutput reads back,
         # and the reason the children are told. Terminal bookkeeping reaches
@@ -282,11 +309,11 @@ class WorkflowDriver:
         # Sanitize before clipping: clipping first can split a credential and
         # leave a fragment no pattern matches.
         error = truncate_to_bytes(
-            sanitize_error_text(terminal.error), _RECORD_ERROR_BYTES
+            sanitize_error_text(raw_error), _RECORD_ERROR_BYTES
         )[0]
         await self._cancel_children(reason=error)
         await self._finalize("failed", error=error)
-        raise WorkflowRunError(error)
+        return error
 
     async def _finish_outcome(self, outcome: WorkflowOutcome) -> _Terminal:
         if outcome.status != "completed":
