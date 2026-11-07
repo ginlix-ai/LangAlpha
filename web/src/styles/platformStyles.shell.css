@@ -159,12 +159,6 @@
 /* The scene is a picture of the app (DESIGN.md), drawn in its own faces:
    the shell's face would set the miniature's replies in mono. */
 :root:not([data-card-style='quiet']) .intro-visual { font-family: var(--font-ui); }
-/* The open styles redraw the way forward as their primary button: amber
-   annotates, it never fills a button (DESIGN.md). */
-:root:not([data-card-style='quiet']) .intro-dialog [data-slot='button'][data-variant='default'] {
-  background: var(--color-btn-primary-bg) !important;
-  color: var(--color-btn-primary-text) !important;
-}
 
 /* ════════════════════════════════════════════════════════════════════
    Welcome

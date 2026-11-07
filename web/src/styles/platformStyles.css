@@ -3,9 +3,9 @@
    every surface followed them. Not a shippable stylesheet: it overrides
    inline styles with !important where the components hard-code them.
 
-   It speaks in the cards' own voice tokens (termCard.css: --term-case,
-   --term-track, --term-words, --term-open/close; termCardStyles.css flips
-   them for Balanced and Quiet) and draws its edges and rules from the
+   It speaks in the cards' own voice tokens (cardStyle.css: --term-case,
+   --term-track, --term-words, --term-open/close, flipped for Balanced and
+   Quiet) and draws its edges and rules from the
    --color-shell-* tokens: the cards' own in dark, an untinted gray in light
    (the data cards keep the slate). Quiet reads none of them: its one
    bordered surface, .pf-card, takes the cards' edge, which Quiet maps onto
@@ -24,82 +24,6 @@
 
    Quiet changes the least: it only aligns the labels (sentence case, the
    text face) with the other two and leaves the platform's filled surfaces. */
-
-/* ════════════════════════════════════════════════════════════════════
-   Terminal: the whole shell in mono
-   ════════════════════════════════════════════════════════════════════ */
-
-:root:not([data-card-style]) :is(.app-layout, .pf-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-:root:not([data-card-style]) :is(.app-layout, .pf-shell) .title-font {
-  font-family: var(--font-mono);
-  letter-spacing: 0;
-}
-/* Long-form reading stays in the reply's face in every style. */
-:root:not([data-card-style]) :is(.app-layout, .pf-shell) .font-content:not(.pf-bubble .font-content) {
-  font-family: var(--font-content);
-}
-
-/* Balanced: words in the text face throughout, as the cards set theirs. */
-:root[data-card-style='balanced'] :is(.app-layout, .pf-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
-  font-family: var(--font-content);
-}
-:root[data-card-style='balanced'] :is(.app-layout, .pf-shell) .title-font {
-  font-family: var(--font-content);
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   Labels and kickers: the one place all three styles move
-   ════════════════════════════════════════════════════════════════════ */
-
-:root :is(.pf-kicker, .automations-kicker, .sidebar-section-title) {
-  font-family: var(--term-words, var(--font-mono)) !important;
-  text-transform: var(--term-case, uppercase);
-  letter-spacing: calc(0.08em * var(--term-track, 1));
-}
-:root:is([data-card-style='balanced'], [data-card-style='quiet']) :is(.pf-kicker, .automations-kicker, .sidebar-section-title) {
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-/* A section's kicker runs out into a rule, as a card's divider does:
-   dashed in Terminal, a hairline in Balanced. */
-:root:not([data-card-style='quiet']) .pf-kicker {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  /* Room for the cut titles of the boxes under it. */
-  margin-bottom: 1.125rem !important;
-}
-:root:not([data-card-style='quiet']) .pf-kicker::after {
-  content: '';
-  flex: 1;
-  border-top: 1px dashed var(--color-shell-edge);
-}
-:root[data-card-style='balanced'] .pf-kicker::after {
-  border-top-style: solid;
-  border-top-color: var(--color-shell-rule);
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   Page titles
-   ════════════════════════════════════════════════════════════════════ */
-
-:root:not([data-card-style]) :is(.pf-page-title, .automations-title, .settings-head-title, .plugins-head-title) {
-  font-family: var(--font-mono) !important;
-  font-size: 1.25rem;
-  font-weight: 600;
-  letter-spacing: 0;
-}
-:root:not([data-card-style]) .pf-page-title--bar {
-  font-size: 0.875rem;
-}
-:root[data-card-style='balanced'] :is(.pf-page-title, .automations-title, .settings-head-title, .plugins-head-title) {
-  font-family: var(--font-content) !important;
-  letter-spacing: -0.015em;
-}
 
 /* ════════════════════════════════════════════════════════════════════
    Buttons: doors in brackets (Terminal), pills (Balanced)
@@ -146,9 +70,6 @@
   background: transparent !important;
   border-color: transparent !important;
   padding-inline: 0.25rem !important;
-}
-:root:not([data-card-style]) [data-slot='button'][data-variant='ghost'] {
-  border-color: transparent !important;
 }
 
 /* Balanced: the pill a card's tag is drawn as, a size up. */
@@ -586,9 +507,6 @@
 :root[data-card-style='balanced'] [data-turn-fold] {
   border-bottom-color: var(--color-shell-rule) !important;
 }
-
-/* The bar over the thread */
-:root:not([data-card-style]) .pf-page-title--bar { text-transform: none; }
 
 /* Composer: Terminal squares it (and its send button, which must stay
    concentric with it). What is typed in it keeps the text face: mono set

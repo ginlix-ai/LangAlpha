@@ -611,7 +611,7 @@ export default function SharedChatView({ shareToken, metadata }: SharedChatViewP
             >
               <ArrowLeft className="h-5 w-5" />
             </Link>
-            <h1 className="pf-page-title pf-page-title--bar text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
+            <h1 className="title-font text-[length:var(--cs-text-heading,1rem)] leading-6 font-semibold tracking-[var(--cs-title-track,-0.01em)] whitespace-nowrap truncate" style={{ color: 'var(--color-text-primary)' }}>
               {metadata.workspace_name || metadata.title || 'Shared Conversation'}
             </h1>
             {loading && (

@@ -284,15 +284,17 @@ html.desktop-mac .sidebar-history {
   flex-shrink: 0;
 }
 
+/* In the label voice (styles/cardStyle.css); Terminal sets it heavier. */
 .sidebar-section-title {
   padding: 0;
   margin-right: auto;
   border: none;
   background: none;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.75rem);
+  font-weight: 500;
+  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: var(--term-case);
   color: var(--color-text-quaternary);
   cursor: pointer;
   transition: color var(--motion-quick) var(--ease-out);

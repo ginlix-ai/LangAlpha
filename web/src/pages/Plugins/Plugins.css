@@ -136,11 +136,11 @@
 }
 .plugins-head-title {
   margin: 0;
-  font-family: var(--font-ui);
-  font-size: 1.375rem;
+  font-family: var(--cs-face, var(--font-ui));
+  font-size: var(--cs-text-title, 1.375rem);
   font-weight: 600;
   line-height: 30px;
-  letter-spacing: -0.015em;
+  letter-spacing: var(--cs-title-track, -0.015em);
   color: var(--color-text-primary);
   white-space: nowrap;
 }

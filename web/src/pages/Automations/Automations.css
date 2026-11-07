@@ -48,7 +48,8 @@
 }
 
 .automations-title {
-  font-size: 1.5rem;
+  font-size: var(--cs-text-title, 1.5rem);
+  letter-spacing: var(--cs-title-track, -0.01em);
   font-weight: 600;
   line-height: 1.2;
   color: var(--color-text-primary);
@@ -75,13 +76,14 @@
 
 /* ── Shared voices ──────────────────────────────────── */
 
-/* The one small-caps voice every section heading on the page speaks in. */
+/* The one label voice (styles/cardStyle.css) every section heading on the
+   page speaks in. */
 .automations-kicker {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.75rem);
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: var(--term-case);
   color: var(--color-text-tertiary);
 }
 

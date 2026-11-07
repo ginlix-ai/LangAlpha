@@ -14,6 +14,7 @@
    Tailwind's rules sitting outside any layer (see the note there). Only the
    theme variables go in a layer; tokens.css declares the values that matter. */
 @import './styles/tokens.css';
+@import './styles/cardStyle.css';
 @import './styles/animations.css';
 @import './styles/chrome.css';
 @import './styles/dotGrid.css';

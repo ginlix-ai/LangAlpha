@@ -3,24 +3,13 @@
    only take marks away from it, so every card and panel keeps one layout in
    all three.
 
-   The voice is a set of tokens the stylesheets read, Terminal's by default
-   (termCard.css). Balanced moves the words to the text face in sentence case,
-   untracked and out of brackets; figures and identifiers (`term-code`) stay
-   mono. It also turns
+   The voice is a set of tokens the stylesheets read, declared per style in
+   styles/cardStyle.css. Balanced moves the words to the text face in
+   sentence case, untracked and out of brackets; figures and identifiers
+   (`term-code`) stay mono. It also turns
    tags into pills and every dashed or dotted rule into a solid hairline. Quiet
    is Balanced in the platform's own card: filled, the title inside, on the
    warm grays the rest of the app uses. */
-
-:root:is([data-card-style='balanced'], [data-card-style='quiet']) {
-  --term-case: none;
-  --term-track: 0;
-  --term-words: var(--font-content);
-  --term-open: none;
-  --term-close: none;
-  /* Pill outlines and the range track: drawn from the muted ink, so they read
-     on the page and on Quiet's filled card alike. */
-  --term-mark: color-mix(in srgb, var(--color-term-text-tertiary) 35%, transparent);
-}
 
 /* ── The text face's own sizes ── */
 

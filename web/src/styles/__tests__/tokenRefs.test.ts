@@ -23,6 +23,29 @@ const JS_STAMPED_PREFIXES = ['--radix-'];
 
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.css'];
 
+/**
+ * Roles tokens.css declares for the open card styles alone (Terminal and
+ * Balanced), so they are undeclared in Quiet. A read without a fallback would
+ * draw nothing there; each reader names its own Quiet value instead
+ * (`var(--color-shell-edge, var(--color-border-muted))`, cardStyle.css).
+ */
+const OPEN_STYLE_ONLY = new Set([
+  '--color-shell-edge',
+  '--color-shell-edge-hover',
+  '--color-shell-rule',
+  '--color-shell-divider',
+  '--color-shell-fill',
+  '--color-shell-float',
+  '--color-shell-ink',
+  '--color-shell-front',
+]);
+
+/**
+ * The experiment's override sheets scope every rule to an open style, so they
+ * read the roles bare. The card-styles refactor empties and deletes them.
+ */
+const OPEN_STYLE_SCOPED_FILES = /^styles\/platformStyles(\.\w+)?\.css$/;
+
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
@@ -68,5 +91,21 @@ describe('color token references', () => {
       });
     }
     expect(orphans).toEqual([]);
+  });
+
+  it('reads every open-style-only role with a fallback', () => {
+    expect([...OPEN_STYLE_ONLY].filter((name) => !declared.has(name))).toEqual([]);
+    const bare: string[] = [];
+    for (const file of walk(SRC)) {
+      const rel = relative(SRC, file);
+      if (file === TOKENS || OPEN_STYLE_SCOPED_FILES.test(rel)) continue;
+      const lines = readFileSync(file, 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        for (const match of line.matchAll(/(?:var)?\(\s*(--color-[\w-]+)\s*(,?)/g)) {
+          if (OPEN_STYLE_ONLY.has(match[1]) && !match[2]) bare.push(`${rel}:${i + 1} → ${match[1]}`);
+        }
+      });
+    }
+    expect(bare).toEqual([]);
   });
 });

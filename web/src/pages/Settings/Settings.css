@@ -187,11 +187,11 @@
 .settings-head { margin-bottom: 28px; }
 .settings-head-title {
   margin: 0;
-  font-family: var(--font-ui);
-  font-size: 1.375rem;
+  font-family: var(--cs-face, var(--font-ui));
+  font-size: var(--cs-text-title, 1.375rem);
   font-weight: 600;
   line-height: 30px;
-  letter-spacing: -0.015em;
+  letter-spacing: var(--cs-title-track, -0.015em);
   color: var(--color-text-primary);
 }
 .settings-head-def {
@@ -388,7 +388,7 @@ label.settings-row-label { cursor: pointer; }
      the title, and everything below sits closer. */
   .settings-column { padding: 14px 12px 48px; }
   .settings-head { margin-bottom: 14px; }
-  .settings-head-title { font-size: 1.1875rem; line-height: 26px; }
+  .settings-head-title { font-size: var(--cs-text-title, 1.1875rem); line-height: 26px; }
   .settings-head-def { display: none; }
   .settings-content { gap: 18px; }
   .settings-group-head { margin: 0 4px 6px; }
