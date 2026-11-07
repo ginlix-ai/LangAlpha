@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 
 from ptc_agent.core.claude_code_managed import local_managed
 from src.llms.claude_code import FEATURE, backend_available, rows_available
+from src.server.database.computer import get_computers_for_user
 from src.server.models.claude_code import (
-    ClaudeCodeComputer, ClaudeCodeCustody, ClaudeCodeSetup, ClaudeCodeStatus, SetupState,
+    ClaudeCodeCloudComputer, ClaudeCodeComputer, ClaudeCodeCustody, ClaudeCodeSetup, ClaudeCodeStatus, SetupState,
 )
 from src.config.features import USER_CONTROLLABLE_GATES, system_flag
 from src.server.services.features import user_feature_enabled
@@ -74,7 +75,9 @@ async def setup_state(user_id: str) -> ClaudeCodeSetup | None:
     on = await user_feature_enabled(user_id, FEATURE)
     if not on and system_flag(FEATURE).gate not in USER_CONTROLLABLE_GATES:
         return None
-    computers, status = await asyncio.gather(list_computers(user_id, mark_offline=True), saved.status(user_id))
+    computers, status, refusals = await asyncio.gather(
+        list_computers(user_id, mark_offline=True), saved.status(user_id), hosted.cloud_refusals(user_id),
+    )
     custody = await hosted.custody(user_id)
     # Before opt-in, whether the server would run turns on a saved token:
     # not where an organization's policy is installed on its machine.
@@ -87,4 +90,10 @@ async def setup_state(user_id: str) -> ClaudeCodeSetup | None:
     return ClaudeCodeSetup(
         state=state, on=on, computers=computers.computers, saved_token_runs=saved_token_runs,
         cloud=custody is not None and bool(custody.offered) and custody.refusal != "needs_own_computer",
+        cli_in_sandbox=hosted.in_sandbox(),
+        too_small=[
+            ClaudeCodeCloudComputer(computer_id=str(c["computer_id"]), name=c["name"])
+            for c in (await get_computers_for_user(user_id) if refusals else [])
+            if str(c["computer_id"]) in refusals
+        ],
     )

@@ -6769,7 +6769,7 @@
         "saved": "Claude Code is off, but your setup token is still saved.",
         "computer": "Claude Code is off, but this computer still has its setup token."
       },
-      "savedTag": "Saved token",
+      "savedTag": "Setup token",
       "hosted": {
         "heading": "Where Claude Code runs",
         "local": "Only on your own computers",
@@ -6869,7 +6869,10 @@
           "confirm": "Turn off",
           "bodyStored": "Claude Code models leave your model picker, and the setup token for cloud computers is removed. Tokens on your own computers stay until you remove them."
         },
-        "savedName": "For computers without a token"
+        "savedName": "Your setup token",
+        "savedDetailCloud": "Runs Claude Code on your cloud computers",
+        "savedDetailServer": "Runs Claude Code on this server",
+        "tooSmallTitle": "Too small for Claude Code"
       }
     },
     "claude": {

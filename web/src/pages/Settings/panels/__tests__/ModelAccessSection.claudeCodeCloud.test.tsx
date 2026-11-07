@@ -77,7 +77,7 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     saved.current = false;
-    setup.current = { state: 'not_connected', on: true, computers: [], saved_token_runs: false, cloud: true };
+    setup.current = { state: 'not_connected', on: true, computers: [], saved_token_runs: false, cloud: true, too_small: [] };
     catalog.read = true;
     (setClaudeCodeCustody as Mock).mockImplementation(async (mode: string) => ({ ...BASE, ...STORING, mode, api_key_saved: true }));
   });

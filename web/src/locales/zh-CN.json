@@ -6681,7 +6681,7 @@
         "saved": "Claude Code 已关闭，但你的 setup token 仍处于保存状态。",
         "computer": "Claude Code 已关闭，但这台电脑上仍有它的 setup token。"
       },
-      "savedTag": "已保存的 token",
+      "savedTag": "Setup token",
       "hosted": {
         "heading": "Claude Code 在哪里运行",
         "local": "仅在你自己的电脑上",
@@ -6781,7 +6781,10 @@
           "confirm": "关闭",
           "bodyStored": "Claude Code 模型将从模型选择器中移除，用于云端计算机的 setup token 也会被移除。你自己电脑上的 token 会一直保留，直到你将其移除。"
         },
-        "savedName": "供没有自己 token 的电脑使用"
+        "savedName": "你的 setup token",
+        "savedDetailCloud": "用于在你的云端计算机上运行 Claude Code",
+        "savedDetailServer": "用于在此服务器上运行 Claude Code",
+        "tooSmallTitle": "规格不足，无法运行 Claude Code"
       }
     },
     "claude": {

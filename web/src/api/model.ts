@@ -146,6 +146,12 @@ export interface ClaudeCodeSetup {
   saved_token_runs: boolean;
   /** This server runs Claude Code for workspaces on cloud computers too. */
   cloud: boolean;
+  /** A turn on a cloud computer runs Claude Code inside that computer, not
+   *  on this server. Absent from a server that predates it. */
+  cli_in_sandbox?: boolean;
+  /** The user's cloud computers too small for Claude Code, in their order.
+   *  Absent from a server that predates it. */
+  too_small?: { computer_id: string; name: string }[];
 }
 
 /** Null where this server offers no Claude Code (404), or one from before

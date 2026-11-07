@@ -69,6 +69,11 @@ class ClaudeCodeComputers(BaseModel):
     cloud_refusals: dict[str, ComputerRefusal] = Field(default_factory=dict)
 
 
+class ClaudeCodeCloudComputer(BaseModel):
+    computer_id: str
+    name: str
+
+
 #: Where the user's Claude Code stands as a whole, the first that holds: a
 #: token works somewhere (``connected``), one is being checked
 #: (``checking``), one was refused or has expired (``refused``), somewhere
@@ -87,13 +92,19 @@ class ClaudeCodeSetup(BaseModel):
     there whatever their computers. ``cloud``: users choose how Claude Code
     runs for workspaces on this server's cloud computers, so a computer of
     their own is not the only place it runs. A self-hosted server's own
-    machine is the user's, so it never sets this."""
+    machine is the user's, so it never sets this. ``cli_in_sandbox``: a turn on
+    a cloud computer runs Claude Code inside that computer's sandbox, not on
+    this server (``hosted.in_sandbox``). ``too_small``: their cloud
+    computers that refuse it whatever the credential
+    (``hosted.cloud_refusals``), so the entry names what to resize."""
 
     state: SetupState
     on: bool
     computers: list[ClaudeCodeComputer]
     saved_token_runs: bool = False
     cloud: bool = False
+    cli_in_sandbox: bool = False
+    too_small: list[ClaudeCodeCloudComputer] = Field(default_factory=list)
 
 
 #: The credentials a user may choose for their turns on a cloud computer.
