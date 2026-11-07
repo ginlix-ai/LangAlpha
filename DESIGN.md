@@ -8,7 +8,7 @@ be declared there (enforced by `web/src/styles/__tests__/tokenRefs.test.ts`).
 
 ## Identity
 
-- **Temperature**: dark charcoal layers / light warm paper. No decorative
+- **Temperature**: dark charcoal layers / light plain gray, no tint. No decorative
   gradients anywhere (`--color-accent-gradient` is intentionally flat).
 - **Accent**: burnished amber — `#E9954A` (dark) / `#D07D33` (light). It is an
   **annotation color, not a brand fill** (see Accent discipline).
@@ -29,9 +29,9 @@ be declared there (enforced by `web/src/styles/__tests__/tokenRefs.test.ts`).
 | Role | Dark | Light |
 |---|---|---|
 | Page ground | `hsl(var(--background))` charcoal ~#191919 | white |
-| Canvas under filled cards (orders; the dashboard's frames sit on the page) | = page | `#F5F4F1` warm paper |
-| Cards | `hsl(var(--card))` ~#202020 | white + `#E8E8E6` hairline |
-| Elevated (menus, tooltips) | `#2A2B2E` | `#F7F7F6` |
+| Canvas under filled cards (orders; the dashboard's frames sit on the page) | = page | `#F4F4F4` plain gray |
+| Cards | `hsl(var(--card))` ~#202020 | white + `#E6E6E6` hairline |
+| Elevated (menus, tooltips) | `#2A2B2E` | `#F6F6F6` |
 | Primary text | `#E6E6E4` | `#1F1F1E` |
 | Secondary, tertiary, quaternary text (each holds 4.5:1) | `#9B9FA6`, 62%, 55% of primary | `#5F5E5A`, `#716F6B`, `#767571` |
 | Focus ring | = primary text | = primary text |
@@ -144,10 +144,10 @@ dashboard's widgets and windows follow it too:
   with words in the text face, figures in mono and tags as pills. Data reads as
   data beside the filled cards a reply opens (files, dashboards).
 - **Quiet**, the default: the same type and marks in the platform's own card,
-  filled, its title inside, on the warm grays, so cards change the app least.
+  filled, its title inside, on the platform's grays, so cards change the app least.
 - **Terminal**: the unfilled frame with mono throughout, bracket tags, dashed
   rules and dotted leaders, on a cool palette (the `--color-term-*` tokens) so
-  a figure reads as data against the warm page.
+  a figure reads as data against the gray page.
 
 Terminal is the cards' own stylesheets. Balanced and Quiet live in
 `charts/termCardStyles.css` and only take marks away, so all three share one

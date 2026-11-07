@@ -135,7 +135,7 @@ export const CHART_THEME: Record<'dark' | 'light', ChartThemeColors> = {
   light: {
     bg: '#FFFFFF',
     text: '#5F5E5A',
-    grid: '#E8E8E6',
+    grid: '#E6E6E6',
     upColor: '#1A7F37',
     downColor: '#CF222E',
     volumeUp: 'rgba(26,127,55,0.25)',

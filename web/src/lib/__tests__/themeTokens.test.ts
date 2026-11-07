@@ -21,7 +21,7 @@ const SOURCES = {
 };
 const FALLBACKS = {
   dark: { bg: '#232426', up: '#0FEDBE', down: '#F85149' },
-  light: { bg: '#F5F4F1', up: '#1A7F37', down: '#CF222E' },
+  light: { bg: '#F4F4F4', up: '#1A7F37', down: '#CF222E' },
 };
 
 beforeEach(() => {

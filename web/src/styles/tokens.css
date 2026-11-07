@@ -160,9 +160,9 @@ html {
   --color-quote-highlight: color-mix(in srgb, Highlight 42%, transparent);
 
   /* Data cards in the transcript (charts/termCard.css): an unfilled box held
-     by its edge, the rules inside it a step quieter. Light is cool and
-     neutral against the warm page, so a number reads as data, not as
-     chrome; the cards are the only cool surface. */
+     by its edge, the rules inside it a step quieter. Light is cool against
+     the gray page, so a number reads as data, not as chrome; the
+     cards are the only cool surface. */
   --color-term-edge: #3A3C40;
   --color-term-edge-hover: #5C5F65;
   --color-term-rule: #2E3033;
@@ -345,28 +345,28 @@ html {
 
 /* ---------- Light theme overrides ---------- */
 /* Notion-paper: pure-white page, white cards separated by neutral hairline
-   borders (not tonal fills), warm-neutral grays for text. The amber darkens a
+   borders (not tonal fills), near-neutral grays for text. The amber darkens a
    step from the dark theme (#E9954A → #D07D33) so it holds on white — see
    --login-ember in Login/LoginPage.css, which owns the auth surface and must
    stay in step. */
 [data-theme="light"] {
   /* bg-page / bg-card / bg-input / bg-popover are derived from the HSL block
      below (see the role table in :root) — they need no override here. */
-  /* Warm paper ground so white cards read as raised surfaces instead of
+  /* A plain gray ground so white cards read as raised surfaces instead of
      border-only outlines on the same white. */
-  --color-bg-canvas: #F5F4F1;
+  --color-bg-canvas: #F4F4F4;
   /* Filled surfaces in the chat (task cards, the subagent bar, the chart
-     annotation chip): warm paper fill, the inverse of the canvas pairing
+     annotation chip): the canvas fill, the inverse of the canvas pairing
      (on the orders page white cards sit on tinted canvas; here tinted cards
      sit on the white chat page). The data cards are unfilled frames, and the
      detail panel's chart canvases draw on a transparent ground, so neither
      reads this token. */
-  --color-bg-tool-card: #F5F4F1;
-  --color-bg-card-hover: #FAFAF8;
-  --color-bg-elevated: #F7F7F6;
-  --color-bg-tag: #EFEFED;
-  --color-bg-code: #F4F4F2;
-  --color-bg-surface: #F4F4F2;
+  --color-bg-tool-card: #F4F4F4;
+  --color-bg-card-hover: #FAFAFA;
+  --color-bg-elevated: #F6F6F6;
+  --color-bg-tag: #EEEEEE;
+  --color-bg-code: #F4F4F4;
+  --color-bg-surface: #F4F4F4;
   --color-bg-hover: rgba(0, 0, 0, 0.04);
   --color-bg-subtle: rgba(0, 0, 0, 0.02);
   --color-bg-chart-placeholder: #FFFFFF;
@@ -377,10 +377,10 @@ html {
   --color-bg-overlay-strong: rgba(0, 0, 0, 0.45);
 
   --color-border-muted: rgba(31, 31, 30, 0.08);
-  --color-border-default: #E8E8E6;
-  --color-border-elevated: #E3E3E1;
-  --color-border-subtle: #EFEFEE;
-  --color-border-input: #E3E3E1;
+  --color-border-default: #E6E6E6;
+  --color-border-elevated: #E6E6E6;
+  --color-border-subtle: #EFEFEF;
+  --color-border-input: #E6E6E6;
   --color-border-strong: rgba(31, 31, 30, 0.3);
   --color-quote-highlight: color-mix(in srgb, Highlight 73%, transparent);
 
@@ -392,7 +392,7 @@ html {
   --color-term-text-tertiary: #8A919C;
 
   /* Every step is read as text, so each holds 4.5:1 on white and all but the
-     last on the warm canvas too (styles/__tests__/textContrast.test.ts). */
+     last on the canvas too (styles/__tests__/textContrast.test.ts). */
   --color-text-primary: #1F1F1E;
   --color-text-secondary: #5F5E5A;
   --color-text-tertiary: #716F6B;
@@ -454,12 +454,12 @@ html {
 
   --color-dot-grid: rgba(31, 31, 30, 0.05);
 
-  --color-art-ground: #FCFCFB;
+  --color-art-ground: #FBFBFB;
   --color-art-top: #FFFFFF;
-  --color-art-s3: #F4F4F1;
-  --color-art-s2: #EDEDEA;
-  --color-art-s1: #E5E5E2;
-  --color-art-s0: #DCDCD9;
+  --color-art-s3: #F3F3F3;
+  --color-art-s2: #ECECEC;
+  --color-art-s1: #E4E4E4;
+  --color-art-s0: #DBDBDB;
   --color-art-line-hi: #26262A;
   --color-art-line-mid: #8A8A8F;
   --color-art-line-lo: #B4B4B8;
@@ -492,7 +492,7 @@ html {
   /* Solid white tile + crisp system hairline — the 75%-white wash the dark
      theme uses for glass is invisible against the white page. */
   --color-bg-card-gradient: #ffffff;
-  --color-bg-card-border: #e8e8e6;
+  --color-bg-card-border: #E6E6E6;
 
   /* Tailwind/shadcn HSL — white page, white bordered cards, burnished amber */
   --background: 0 0% 100%;
@@ -503,7 +503,7 @@ html {
   --popover-foreground: 60 2% 12%;
   --primary: 28 63% 51%;
   --primary-foreground: 28 60% 8%;
-  --secondary: 60 3% 94%;
+  --secondary: 0 0% 94%;
   --secondary-foreground: 60 2% 20%;
   --muted: 48 2% 54%;
   --muted-foreground: 60 2% 12% / 0.55;
@@ -512,7 +512,7 @@ html {
   --destructive: 356 72% 47%;
   --destructive-foreground: 0 0% 100%;
   --border: 60 2% 12% / 0.09;
-  --input: 60 4% 96.5%;
+  --input: 0 0% 96.5%;
   /* The light theme's text ink, for the same reason. */
   --ring: var(--foreground);
   /* Kept tight rather than dropped: floating overlays (AgentEventOverlay,
@@ -523,13 +523,13 @@ html {
   --bg-main: 0 0% 100%;
   --bg-panel: 0 0% 100% / 0.92;
   --border-light: 60 2% 12% / 0.08;
-  --border-card: 60 4% 91%;
+  --border-card: 0 0% 90%;
   --color-up: 137 66% 30%;
   --color-up-soft: 137 66% 30% / 0.08;
   --color-down: 356 72% 47%;
   --color-down-soft: 356 72% 47% / 0.08;
   --accent-fin: 28 63% 51%;
-  --sidebar-bg: 60 9% 96.5%;
+  --sidebar-bg: 0 0% 97.3%;
   --sidebar-border: 60 2% 12% / 0.07;
   --sidebar-hover: 60 2% 12% / 0.04;
   --sidebar-icon: 60 2% 12% / 0.50;
