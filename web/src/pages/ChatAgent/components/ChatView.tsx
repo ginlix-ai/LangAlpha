@@ -8,6 +8,8 @@ import { useStableHandler } from '@/hooks/useStableHandler';
 import { useLatestRef } from '@/hooks/useLatestRef';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { usePreferences } from '@/hooks/usePreferences';
+import { usePlanReader } from '@/hooks/useClaudeCodePlan';
+import { planActionText } from '@/lib/claudeCodePlan';
 import { readTurnEndScroll } from '@/lib/turnEndScroll';
 import {
   readStreamingMode,
@@ -114,6 +116,7 @@ import type {
 import { TranscriptStatus } from './chatView/TranscriptStatus';
 import { FallbackSuggestionPill } from './chatView/FallbackSuggestionPill';
 import { ThreadOffers } from './chatView/ThreadNotices';
+import { ClaudeCodePlanRow } from './chatView/ClaudeCodePlanRow';
 import { useNextSummary } from '../hooks/useNextSummaryHint';
 import { ChatDiskWarning } from './chatView/ChatDiskWarning';
 import { ChatRestoreOffer } from './chatView/ChatRestoreOffer';
@@ -753,6 +756,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }));
   }, [marketWatchEnabled, stableSendMessage, takeChartSelections, takeQueuedComments, composerSendOptions]);
 
+  const planReader = useLatestRef(usePlanReader());
+
   // Handle action-type slash commands (e.g. /compact, /compaction, /offload)
   const handleAction = useCallback((cmd: ActionCommand) => {
     const tid = currentThreadId || threadId;
@@ -772,6 +777,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         const obj = detail as { code?: string; message?: string };
         if (obj.code === 'workflow_active') {
           thread.insertNotification(t('chat.compactBusy'), 'warning');
+          return;
+        }
+        const planWords = planActionText(t, detail as Record<string, unknown>, { ...planReader.current, now: Date.now() });
+        if (planWords) {
+          thread.insertNotification(planWords, 'warning');
           return;
         }
         if (typeof obj.message === 'string' && obj.message.length > 0) {
@@ -848,6 +858,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           console.error('[ChatView] Compaction failed:', err);
           handleActionError(err);
           clearIfCurrent(myGeneration);
+        })
+        .finally(() => {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() });
         });
     } else if (cmd.name === 'offload') {
       userStoppedCompactionRef.current = false;
@@ -870,7 +883,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           clearIfCurrent(myGeneration);
         });
     }
-  }, [currentThreadId, threadId, setIsCompacting, forThread, isCompacting, isLoading, t]);
+  }, [currentThreadId, threadId, setIsCompacting, forThread, isCompacting, isLoading, t, planReader, queryClient]);
 
   // Show sidebar at the start of each backend response (streaming)
   // Auto-refresh workspace files when agent finishes (isLoading transitions true→false)
@@ -1763,6 +1776,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       onDismiss={clearFallbackSuggestion}
                     />
                     <ThreadOffers model={threadModel} subagents={threadSubagents} summary={summaryHint} />
+                    <ClaudeCodePlanRow workspaceId={workspaceId} model={threadModel.model} />
                     <SelectionChips chips={chartSelectionChips} />
                     {/* At a file's foot the transcript is out of view, so the
                         turn's progress comes along with the composer. */}

@@ -499,10 +499,11 @@ async def test_a_replacement_claude_refuses_leaves_the_token_in_use_on_the_machi
 
     link = await machine.link()
     await write_machine_token(link, TOKEN)
-    checked = []
+    checked, plans = [], []
 
-    def check_launcher(handle, user_id, token_file):
+    def check_launcher(handle, user_id, token_file, *, plan=None):
         checked.append(token_file)
+        plans.append(plan)
         return _launcher(machine, api, token_file=token_file)
 
     async def held() -> bool:
@@ -517,6 +518,7 @@ async def test_a_replacement_claude_refuses_leaves_the_token_in_use_on_the_machi
             await flow._save(home, "sk-ant-oat01-revoked", held=held, rejected=rejected, retryable=True,
                              expires_at=datetime.now(timezone.utc))
     assert refused.value is rejected and checked[0].startswith(f".staged.{CID}.")
+    assert plans[0] is home.checked, "the check's plan reports are kept for the token it places"
     assert machine.sh(f"cat {TOKEN_FILE}").strip() == TOKEN
     assert machine.sh(f"ls -A {TOKEN_DIR}").split() == [CID], "the staged token is gone"
     await _turn(machine, api, "t-kept", "ECHO hi")

@@ -1098,3 +1098,11 @@ def test_a_write_or_edit_naming_another_computer_derives_no_artifact():
     assert "artifact" in _file_op_events("Edit", edit)
     assert "artifact" not in _file_op_events("Write", {**write, "computer": "Studio Mac"})
     assert "artifact" not in _file_op_events("Edit", {**edit, "computer": "Studio Mac"})
+
+
+def test_a_reply_the_claude_plan_ran_out_during_replays_its_notice_after_it():
+    notice = {"reason": "billed_credits", "window": "five_hour", "until": "2026-11-06T20:40:00+00:00"}
+    items = _sse([AIMessage(content="done", id="ai-1", response_metadata={"claude_plan_notice": notice})])
+    assert [i["event"] for i in items] == ["message_chunk", "claude_code_plan"]
+    assert items[1]["data"] == {"thread_id": THREAD_ID, "agent": "main", **notice}
+    assert [i["event"] for i in _sse([AIMessage(content="done", id="ai-2")])] == ["message_chunk"]

@@ -58,6 +58,19 @@ describe('useWorkspaceClaudeCode', () => {
     await waitFor(() => expect(result.current).toEqual({ state: 'rejected', computerId: null, known: true }));
   });
 
+  it("reads the plan of the token the turn runs on: the computer's own, the saved one, or none on the API key", async () => {
+    const plan = (credits: 'on' | 'off') => ({ five_hour: null, seven_day: null, limits: [], credits, observed_at: '2026-11-06T19:00:00Z' });
+    const own = run('cmp-mac', { ...RUNS_HERE, plan: plan('off') }, () => Promise.resolve({ computers: [{ ...MAC, plan: plan('on') }] }));
+    await waitFor(() => expect(own.result.current.plan).toEqual(plan('on')));
+    const saved = run('cmp-daytona', { ...RUNS_HERE, plan: plan('off') });
+    await waitFor(() => expect(saved.result.current.plan).toEqual(plan('off')));
+    const apiKey = run('cmp-daytona', { ...OWN_ONLY, plan: plan('off') }, undefined, () => Promise.resolve({
+      mode: 'api_key', api_key_saved: true, offered: ['api_key'], blocked: false, runs_on: 'api_key', refusal: null, disclosure: null,
+    }));
+    await waitFor(() => expect(apiKey.result.current.state).toBe('api_key'));
+    expect(apiKey.result.current.plan).toBeUndefined();
+  });
+
   it("needs one of the user's own computers on a hosted computer where no saved token runs", async () => {
     const { result } = run('cmp-daytona', OWN_ONLY);
     await waitFor(() => expect(result.current).toEqual({ state: 'needs_own_computer', computerId: null, known: true }));

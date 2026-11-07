@@ -50,6 +50,24 @@ describe('what survives a collapsed turn', () => {
     expect(roleOf(type)).toBe('retain');
   });
 
+  it('keeps the notice that a reply was billed to usage credits, which is what it cost', () => {
+    const message = {
+      id: 'a0',
+      role: 'assistant',
+      content: 'Done.',
+      contentType: 'text',
+      contentSegments: [
+        { type: 'text', content: 'Done.', order: 1 },
+        { type: 'notification', order: 2, planBilled: { window: 'five_hour', until: '2026-11-06T20:40:00Z' } },
+      ],
+      reasoningProcesses: {},
+      toolCallProcesses: {},
+    } as unknown as MessageRecord;
+    const projection = projectMessageContent(message);
+    const block = projection.blocks.find((b) => b.type === 'notification');
+    expect(projection.roles.get(block!.key)).toBe('retain');
+  });
+
   it.each(Object.keys(INLINE_ARTIFACT_MAP).filter((t) => !RETAINED.includes(t)))(
     'folds %s away with the rest of the working',
     (type) => {

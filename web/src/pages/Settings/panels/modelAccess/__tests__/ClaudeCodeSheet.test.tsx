@@ -29,6 +29,7 @@ vi.mock('@/hooks/useFeatures', () => ({
 vi.mock('@/hooks/useClaudeCode', () => ({ useClaudeCodeStatus: () => ({ enabled: h.statusOn }) }));
 vi.mock('@/hooks/useClaudeCodeCustody', () => ({ useClaudeCodeCustody: () => ({ custody: h.custody }) }));
 vi.mock('../ClaudeCodeHostedChoice', () => ({ ClaudeCodeHostedChoice: () => null }));
+vi.mock('../ClaudeCodePlanOutChoice', () => ({ ClaudeCodePlanOutChoice: () => null }));
 vi.mock('@/components/modelAccess/ClaudeCodeToken', () => ({
   ClaudeCodeTokenModal: ({ target }: { target: { kind: string; name?: string } }) => (
     <div role="dialog" aria-label="token sheet">{target.kind === 'computer' ? target.name : 'saved'}</div>

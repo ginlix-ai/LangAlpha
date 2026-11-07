@@ -105,6 +105,43 @@ describe('useChatMessages: a Claude Code refusal', () => {
     expect(reread).toHaveBeenCalledWith({ queryKey: queryKeys.user.claudeCodeCustody() });
   });
 
+  it("at admission carries a Claude plan's limit to the banner, and reads the plan again", async () => {
+    const worded = "Your Claude plan's 5-hour limit is used up.";
+    const until = '2026-11-06T20:40:00Z';
+    mockSendStream.mockRejectedValue(Object.assign(new Error(worded), {
+      status: 400, errorInfo: { type: 'claude_code_off', message: worded, reason: 'plan_limited', window: 'five_hour', until },
+    }));
+    const { result, queryClient } = renderHookWithProviders(() => useChatMessages('ws-test'));
+    const reread = vi.spyOn(queryClient, 'invalidateQueries');
+    await act(async () => {
+      await result.current.handleSendMessage('hello');
+    });
+    await waitFor(() => expect(result.current.messageError).toEqual({
+      message: worded, planRefusal: { reason: 'plan_limited', window: 'five_hour', until, creditsBilled: false },
+    }));
+    expect(reread).toHaveBeenCalledWith({ queryKey: queryKeys.features.claudeCode() });
+  });
+
+  it("mid-turn reads the plan again when a Claude plan's limit stops the turn", async () => {
+    mockSendStream.mockImplementation(async (_m: string, _w: string, _t: string | null, { onEvent }: { onEvent: (e: Record<string, unknown>) => void }) => {
+      onEvent({
+        event: 'error', error: 'Server words.', message: 'Server words.', type: 'claude_code_off',
+        reason: 'plan_stopped', window: 'five_hour', until: '2026-11-06T20:40:00Z',
+      });
+      return { disconnected: false };
+    });
+    const { result, queryClient } = renderHookWithProviders(() => useChatMessages('ws-test'));
+    const reread = vi.spyOn(queryClient, 'invalidateQueries');
+    await act(async () => {
+      await result.current.handleSendMessage('hello');
+    });
+    await waitFor(() => {
+      const reply = result.current.messages.find((m) => m.role === 'assistant') as { structuredError?: { planRefusal?: unknown } } | undefined;
+      expect(reply?.structuredError?.planRefusal).toMatchObject({ reason: 'plan_stopped' });
+    });
+    expect(reread).toHaveBeenCalledWith({ queryKey: queryKeys.features.claudeCode() });
+  });
+
   it.each(['api_key_refused', 'needs_bigger_computer'])("mid-turn words %s on the turn in the app's words", async (reason) => {
     mockSendStream.mockImplementation(async (_m: string, _w: string, _t: string | null, { onEvent }: { onEvent: (e: Record<string, unknown>) => void }) => {
       onEvent({ event: 'error', error: 'Server words.', message: 'Server words.', type: 'claude_code_off', reason });

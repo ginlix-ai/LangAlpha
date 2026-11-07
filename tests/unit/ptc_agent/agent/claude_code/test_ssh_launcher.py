@@ -445,3 +445,15 @@ def test_the_cli_is_signalled_by_ps_where_there_is_no_proc(tmp_path, named):
     finally:
         proc.kill()
         proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_a_cli_starting_fences_the_computers_reports_before_it_reads_the_token_file(tmp_path, monkeypatch):
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
+    cli.chmod(0o755)
+    _, launcher = _local(tmp_path, monkeypatch, str(cli))
+    plan = SimpleNamespace(launching=AsyncMock())
+    transport = await _started(launcher(plan=plan))
+    await transport.close()
+    plan.launching.assert_awaited_once()

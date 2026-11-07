@@ -215,6 +215,7 @@ def _entry(state, source=None, email=None, expires_at=None, own_file=None):
     return {
         "computer_id": CID, "name": "Studio Mac", "kind": "helper", "state": state, "source": source,
         "own_file": source == "machine" if own_file is None else own_file, "email": email, "expires_at": expires_at,
+        "plan": None,
     }
 
 

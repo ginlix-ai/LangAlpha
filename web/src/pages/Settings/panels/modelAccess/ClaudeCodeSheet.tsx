@@ -28,6 +28,7 @@ import { openComputerSpec, openComputersPanel } from '@/pages/ChatAgent/hooks/co
 import { useSaveFailedToast } from '../usePreferenceWrite';
 import { Group } from './AccessRows';
 import { ClaudeCodeHostedChoice } from './ClaudeCodeHostedChoice';
+import { ClaudeCodePlanOutChoice } from './ClaudeCodePlanOutChoice';
 import { claudeCodeHeadline } from './claudeCodeHeadline';
 import { KeySheet } from './KeySheet';
 
@@ -288,6 +289,8 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
           )}
         </div>
       )}
+
+      {on && (computerRows.length > 0 || savedRow) && <ClaudeCodePlanOutChoice tokenRows={tokenRows} />}
 
       {on && (
         <ClaudeCodeHostedChoice

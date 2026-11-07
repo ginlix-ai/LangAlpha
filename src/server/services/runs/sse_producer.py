@@ -615,6 +615,18 @@ class RunSSEProducer:
                             yield self._build_sse_event("provenance", prov_data)
                             continue
 
+                        # A reply the Claude plan ran out during, billed to
+                        # usage credits: its notice, which replay shows from
+                        # the reply's stamp (``PLAN_NOTICE_KEY``).
+                        if event_type == "claude_code_plan":
+                            yield self._build_sse_event("claude_code_plan", {
+                                "thread_id": self.thread_id,
+                                "agent": self._extract_agent_name(agent_from_stream, event_data)
+                                if agent_from_stream else "main",
+                                **{k: event_data[k] for k in ("reason", "window", "until") if k in event_data},
+                            })
+                            continue
+
                         # Handle steering delivery signal
                         if event_type == "steering_delivered":
                             yield self._build_sse_event("steering_delivered", {

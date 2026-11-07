@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -30,6 +30,9 @@ from ptc_agent.agent.middleware.background_subagent.utils import build_message_c
 from ptc_agent.agent.middleware.credit_gate import current_credit_gate
 from ptc_agent.agent.middleware.steering import SteeringMiddleware, announce, opened_with
 from ptc_agent.agent.transcript.steer_text import report_text, sender_block, sender_runs, sent_steers
+
+if TYPE_CHECKING:
+    from ptc_agent.agent.claude_code.plan import PlanWatch
 
 
 class TurnSteering:
@@ -152,13 +155,16 @@ class AfterTool:
     stops before it asks Claude again when a result ended the turn (a quiet
     wake turn's), or when the credit gate stops by then (``ToolResults.owes_gate``),
     which a quota refresh can do while a call runs, with no PreToolUse after
-    it to catch the CLI's next request. It then takes nothing in: what waits
-    is for the next turn, or for the turn once the gate lets it on.
+    it to catch the CLI's next request, or when the Claude plan is used up
+    under Stop (``PlanWatch.gate``), which ends the run there. It then
+    takes nothing in: what waits is for the next turn, or for the turn once
+    the gate lets it on.
     """
 
-    def __init__(self, results: ToolResults, send: Callable[[str], Awaitable[None]]) -> None:
+    def __init__(self, results: ToolResults, send: Callable[[str], Awaitable[None]], plan: PlanWatch) -> None:
         self.results = results
         self.send = send
+        self.plan = plan
         self._batch: frozenset[str] = frozenset()
         self._returned: set[str] = set()
         self._take: Callable[[], Awaitable[HumanMessage | None]] | None = None
@@ -194,9 +200,11 @@ class AfterTool:
         if not all(t in self._returned or self.results.refused(t) for t in self._batch):
             return {"hookSpecificOutput": out} if len(out) > 1 else {}
         ends = any(self.results.ends_turn(t) for t in self._batch or {tool_use_id})
-        if not ends and tool_use_id in self._batch and credit_stops():
+        at_end = not ends and tool_use_id in self._batch
+        plan_stops = at_end and await self.plan.gate()
+        if at_end and not plan_stops and credit_stops():
             self.results.pass_gate(tool_use_id)
-        if ends or self.results.owes_gate(tool_use_id):
+        if ends or plan_stops or self.results.owes_gate(tool_use_id):
             return {"continue": False, **({"hookSpecificOutput": out} if len(out) > 1 else {})}
         if self._take is not None and self._taking is None:
             self._taking = asyncio.ensure_future(self._take())

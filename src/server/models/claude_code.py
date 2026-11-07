@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
+from src.llms.claude_code import PlanWindow
+
 #: Where the user's Claude Code models stand on the backend. ``unverified``: a
 #: token is saved but the check could not reach Anthropic; its turns run, as
 #: admission lets them. ``policy_blocked``: an organization's managed Claude
@@ -26,6 +28,36 @@ ComputerState = Literal[
 Source = Literal["machine", "saved"]
 
 
+class PlanUse(BaseModel):
+    #: The share of the window used, as a fraction.
+    used: float
+    resets_at: datetime
+
+
+class PlanHeld(BaseModel):
+    #: None where Claude named no window, which holds every model.
+    window: PlanWindow | None
+    until: datetime
+    #: The model family the limit holds (``PLAN_LIMITS``), None for every model.
+    family: Literal["opus", "sonnet", "fable"] | None = None
+    #: False where Claude said no reset: ``until`` only bounds the hold, and is never shown.
+    reset_known: bool = True
+
+
+class ClaudeCodePlan(BaseModel):
+    """The Claude plan behind a token, as of the last Claude Code request on
+    it (``observed_at``): a window whose reset passed is none, and so is a
+    limit. ``limits``: every limit used up whose reset is still ahead, each
+    naming the model family it holds. ``credits``: whether the account's
+    usage credits pay past them, unknown until a request reports it."""
+
+    five_hour: PlanUse | None = None
+    seven_day: PlanUse | None = None
+    limits: list[PlanHeld] = []
+    credits: Literal["on", "off"] | None = None
+    observed_at: datetime
+
+
 class ClaudeCodeStatus(BaseModel):
     state: State
     #: The Claude account a token made through sign-in belongs to.
@@ -39,6 +71,8 @@ class ClaudeCodeStatus(BaseModel):
     #: ``state`` off they still run on the user's own computers, each with
     #: the token it holds, where this server does not run them on a saved one.
     enabled: bool = False
+    #: The Claude plan behind the token, once a request on it reported one.
+    plan: ClaudeCodePlan | None = None
 
 
 class ClaudeCodeComputer(BaseModel):
@@ -54,6 +88,9 @@ class ClaudeCodeComputer(BaseModel):
     email: str | None = None
     #: When the token stops working; for a pasted one, the latest it can.
     expires_at: datetime | None = None
+    #: The Claude plan behind the token a turn there signs in with: the
+    #: computer's own, or with ``source`` saved the saved token's.
+    plan: ClaudeCodePlan | None = None
 
 
 #: Why a cloud computer refuses a turn whatever its credential

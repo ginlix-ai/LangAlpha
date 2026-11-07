@@ -387,7 +387,7 @@ def _user_prefs_cache_key(user_id: str) -> str:
     return f"user_prefs:v{_USER_PREFS_SHAPE}:{user_id}"
 
 
-async def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
+async def get_user_preferences(user_id: str, *, cached: bool = True) -> Optional[Dict[str, Any]]:
     """
     Get user preferences (cached in Redis).
 
@@ -397,6 +397,9 @@ async def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
 
     Args:
         user_id: User ID
+        cached: False reads the row itself and leaves the cache alone, for a
+            read that must see the latest write: a read that misses the cache
+            as a write commits can put the old value back for the TTL.
 
     Returns:
         Preferences dict or None if not found
@@ -406,11 +409,12 @@ async def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
 
     cache_key = _user_prefs_cache_key(user_id)
     cache = get_cache_client()
-    if cache.enabled and cache.client:
+    use_cache = cached and cache.enabled and cache.client
+    if use_cache:
         try:
-            cached = await cache.client.get(cache_key)
-            if cached is not None:
-                return _json.loads(cached) if cached != b"null" else None
+            hit = await cache.client.get(cache_key)
+            if hit is not None:
+                return _json.loads(hit) if hit != b"null" else None
         except Exception:
             pass  # Redis down — fall through to DB
 
@@ -429,7 +433,7 @@ async def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
             row = await cur.fetchone()
             result = dict(row) if row else None
 
-    if cache.enabled and cache.client:
+    if use_cache:
         try:
             await cache.client.set(
                 cache_key,

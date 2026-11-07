@@ -60,16 +60,18 @@ function buildModelFallbackSegment(
 }
 
 /**
- * Append a notification segment unless one with the same order already exists.
- * Redelivery guard: a reconnect or replay that re-sends a persisted event
- * (same _eventId-derived order) must not create a duplicate divider.
+ * Append a notification segment unless one it duplicates already exists: by
+ * default one with the same order. Redelivery guard: a reconnect or replay
+ * that re-sends a persisted event (same _eventId-derived order) must not
+ * create a duplicate divider.
  */
 function appendNotificationSegmentOnce(
   aMsg: AssistantMessage,
   segment: NotificationSegment,
+  duplicates: (existing: NotificationSegment) => boolean = (s) => s.order === segment.order,
 ): AssistantMessage {
   const existing = aMsg.contentSegments || [];
-  if (existing.some((s) => s.type === 'notification' && s.order === segment.order)) {
+  if (existing.some((s) => s.type === 'notification' && duplicates(s))) {
     return aMsg;
   }
   return { ...aMsg, contentSegments: [...existing, segment] };

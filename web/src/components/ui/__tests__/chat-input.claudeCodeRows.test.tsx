@@ -10,7 +10,7 @@ import { MemoryRouter, useLocation } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ChatInput, { type ChatInputProps } from '../chat-input';
 import type { ModelRowStatus } from '../chat-input.modelPicker';
-import type { ClaudeCodeComputer, ClaudeCodeState } from '@/api/model';
+import type { ClaudeCodeComputer, ClaudeCodePlan, ClaudeCodeState } from '@/api/model';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import { claudeCodeTokenUrl } from '@/lib/claudeCode';
 
@@ -20,10 +20,20 @@ vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getHomeWorkspace: vi.fn().mockResolvedValue({ workspace_id: 'home-1', name: 'Home', status: 'running', is_home: true }),
 }));
 
-const mocks = vi.hoisted(() => ({ state: 'signed_in' as ClaudeCodeState, computers: [] as ClaudeCodeComputer[] }));
+const mocks = vi.hoisted(() => ({
+  state: 'signed_in' as ClaudeCodeState,
+  computers: [] as ClaudeCodeComputer[],
+  plan: undefined as ClaudeCodePlan | undefined,
+  planOut: undefined as string | undefined,
+  useNow: vi.fn(() => Date.now()),
+}));
 
 vi.mock('@/hooks/usePreferences', () => ({
-  usePreferences: () => ({ preferences: { model_preference: { preferred_model: 'claude-x' } }, isLoading: false, isLoaded: true }),
+  usePreferences: () => ({
+    preferences: { model_preference: { preferred_model: 'claude-x' }, other_preference: { claude_code_plan_out: mocks.planOut } },
+    isLoading: false,
+    isLoaded: true,
+  }),
 }));
 
 vi.mock('@/hooks/useAllModels', () => ({
@@ -47,10 +57,17 @@ vi.mock('@/hooks/useAllModels', () => ({
 // A self-hosted server, running the workspace's turns on the saved token: a
 // hosted computer, none of the user's own.
 vi.mock('@/hooks/useClaudeCode', () => ({
-  useClaudeCodeStatus: () => ({ enabled: mocks.state !== 'off', runsHere: mocks.state !== 'off', state: mocks.state }),
+  useClaudeCodeStatus: () => ({ enabled: mocks.state !== 'off', runsHere: mocks.state !== 'off', state: mocks.state, plan: mocks.plan }),
   useClaudeCodeComputers: () => ({ computers: mocks.computers, cloudRefusals: {}, isLoading: false }),
 }));
 vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { computer_id: 'cmp-hosted' }, isPending: false }) }));
+
+// The minute clock, which the composer must not read: a tick would draw it
+// again each minute for nothing the user can see.
+vi.mock('@/hooks/useNow', async (original) => ({
+  ...(await original<typeof import('@/hooks/useNow')>()),
+  useNow: mocks.useNow,
+}));
 
 vi.mock('@/hooks/useUpdatePreferences', () => ({
   useUpdatePreferences: () => ({ mutateAsync: vi.fn(), mutate: vi.fn() }),
@@ -64,12 +81,12 @@ vi.mock('../use-toast', () => ({
 // The menu stands in for the picker: it shows what the composer says of each
 // row, and runs a row's fix as a press on it would.
 vi.mock('../chat-input.modelMenu', () => ({
-  ChatInputModelMenu: ({ rowStatus }: { rowStatus: (m: string) => ModelRowStatus }) => {
+  ChatInputModelMenu: ({ rowStatus }: { rowStatus: (m: string, now: number) => ModelRowStatus }) => {
     const read = (m: string) => {
-      const s = rowStatus(m);
+      const s = rowStatus(m, Date.now());
       return 'unavailable' in s ? `held:${s.unavailable}${s.fix ? ':fix' : ''}` : 'pick';
     };
-    const code = rowStatus('claude-x-code');
+    const code = rowStatus('claude-x-code', Date.now());
     return (
       <>
         <span>{`claude-x:${read('claude-x')}`}</span>
@@ -112,6 +129,23 @@ describe('ChatInput: Claude Code rows by state', () => {
     ContextBus.__resetForTests();
     ChatInputRegistry.__resetForTests();
     Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it.each([
+    ['holds them until the reset once the plan is used up', undefined, /^claude-x-code:held:Plan limit used up until \S/],
+    ['offers them on the usage credits the user chose', 'credits', /^claude-x-code:pick$/],
+  ])('%s', (_, planOut, row) => {
+    mocks.state = 'signed_in';
+    mocks.planOut = planOut;
+    mocks.plan = {
+      five_hour: null, seven_day: null, credits: 'on', observed_at: new Date().toISOString(),
+      limits: [{ window: 'five_hour', family: null, until: new Date(Date.now() + 3_600_000).toISOString(), reset_known: true }],
+    };
+    renderInput();
+    expect(codeRow()).toMatch(row);
+    expect(mocks.useNow).not.toHaveBeenCalled();
+    mocks.plan = undefined;
+    mocks.planOut = undefined;
   });
 
   it.each(['signed_in', 'unverified'] as const)('offers the models as a pick while %s', (state) => {

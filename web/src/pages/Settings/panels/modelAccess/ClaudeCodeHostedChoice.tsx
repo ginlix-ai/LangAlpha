@@ -3,15 +3,14 @@ import { createPortal } from 'react-dom';
 import { ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import { RadioChoice } from '@/components/ui/choice';
 import { ModalShell } from '@/components/ui/ModalShell';
 import type { ClaudeCodeCustodyMode } from '@/api/model';
 import { readOAuthError } from '@/api/oauth';
 import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
 import { CLAUDE_CODE_MODE_LABELS } from '@/lib/claudeCode';
-import { cn } from '@/lib/utils';
 import { useSaveFailedToast } from '../usePreferenceWrite';
+import { ModeCard } from './ModeCard';
 
 const MODES: readonly { mode: ClaudeCodeCustodyMode; label: string; detail: string }[] = [
   { mode: 'local', label: CLAUDE_CODE_MODE_LABELS.local, detail: 'modelAccess.claudeCode.hosted.localDetail' },
@@ -130,41 +129,6 @@ export function ClaudeCodeHostedChoice({ onAddApiKey, onAddToken, onAsking }: {
 
 function Note({ children }: { children: string }) {
   return <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>{children}</p>;
-}
-
-/** One way to run it, drawn as Settings draws a trading level. Named by its
- *  label alone, so its detail is read as a description. */
-function ModeCard({ name, mode, checked, label, detail, onSelect }: {
-  name: string;
-  mode: ClaudeCodeCustodyMode;
-  checked: boolean;
-  label: string;
-  detail: string;
-  onSelect: (mode: ClaudeCodeCustodyMode) => void;
-}) {
-  const labelId = useId();
-  const detailId = useId();
-  return (
-    <RadioChoice
-      name={name}
-      value={mode}
-      checked={checked}
-      onSelect={onSelect}
-      aria-labelledby={labelId}
-      aria-describedby={detailId}
-      markClassName="mt-0.5"
-      className={cn(
-        'items-start gap-3 rounded-lg px-3 py-2.5 transition-colors',
-        checked ? 'bg-(--color-bg-tag)' : 'bg-(--color-bg-card) hover:bg-(--color-bg-hover)',
-      )}
-      style={{ border: `1px solid ${checked ? 'var(--color-text-primary)' : 'var(--color-border-muted)'}` }}
-    >
-      <span className="min-w-0 flex-1">
-        <span id={labelId} className="block text-[0.8125rem] font-medium" style={{ color: 'var(--color-text-primary)' }}>{label}</span>
-        <span id={detailId} className="mt-0.5 block text-xs leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>{detail}</span>
-      </span>
-    </RadioChoice>
-  );
 }
 
 /** What storing the token means, accepted before the server stores one. */

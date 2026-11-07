@@ -18,6 +18,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from src.server.database import claude_code_plan
 from src.server.database.encryption import get_encryption_key
 from src.server.database.oauth_tokens import CLAUDE_CODE_PROVIDER, connection_change
 from src.server.database.pool import get_db_connection
@@ -81,6 +82,7 @@ async def write_custody(
             await cur.execute(
                 "DELETE FROM user_oauth_tokens WHERE user_id = %s AND provider = %s", (user_id, CLAUDE_CODE_PROVIDER),
             )
+            await claude_code_plan.forget_plan(user_id, claude_code_plan.SAVED, conn=conn)
         await cur.execute(
             """
             INSERT INTO claude_code_custody (user_id, mode, disclosure, blocked_at, blocked_reason)

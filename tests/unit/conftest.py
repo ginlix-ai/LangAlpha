@@ -103,6 +103,31 @@ def _no_host_claude_code_managed(monkeypatch, tmp_path_factory):
         monkeypatch.setattr(claude_code_managed, name, str(empty / name))
 
 
+@pytest.fixture(autouse=True)
+def _no_claude_plan_rows(monkeypatch):
+    """Stub the Claude plan's rows (``claude_code_plan``) to none for unit tests.
+
+    Settings, admission, every token save and removal, and a Claude Code
+    run's reports read or write them, and unit tests have no pool. A test
+    about the plan state installs its own store over this one.
+    """
+    from src.server.database import claude_code_plan
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    async def _kept(*_args, **_kwargs):
+        return True
+
+    async def _no_rows(user_id, credentials=None):
+        return {}
+
+    monkeypatch.setattr(claude_code_plan, "forget_plan", _none)
+    monkeypatch.setattr(claude_code_plan, "drop_plan", _none)
+    monkeypatch.setattr(claude_code_plan, "update_plan", _kept)
+    monkeypatch.setattr(claude_code_plan, "get_plans", _no_rows)
+
+
 @pytest.fixture(scope="session")
 def shipped_skill_md():
     """Locate a shipped skill's SKILL.md on disk, by name.

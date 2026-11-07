@@ -12,8 +12,10 @@ SDK is an optional extra that only a Claude Code turn loads.
 from __future__ import annotations
 
 import importlib.util
-from collections.abc import Sequence
-from typing import Any, ClassVar
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any, ClassVar, Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
@@ -35,7 +37,8 @@ class ClaudeTurnFailed(RuntimeError):
     (``subtype="success"``, ``terminal_reason="api_error"``) with its error
     text as the assistant's reply, so a logged-out machine or a spent plan
     would otherwise commit an empty turn. ``kind`` is what the user is told:
-    ``auth_failed``, ``plan_exhausted``, ``interrupted``, ``api_error``,
+    ``auth_failed``, ``plan_exhausted`` (a refusal no plan window is known
+    for; ``PlanStopped`` names one), ``interrupted``, ``api_error``,
     ``no_result``, ``nothing_to_resume``, ``policy_blocked``, ``needs_perl``,
     ``computer_unsupported``, ``token_refused`` (Claude refused the saved
     setup token, which its store reports in place of ``auth_failed``),
@@ -56,6 +59,142 @@ class ClaudeTurnFailed(RuntimeError):
         super().__init__(template.format(detail) if template else f"{kind}: {detail}")
         self.kind = kind
         self.detail = detail
+
+
+#: The Claude plan's limits, as the CLI names them, each with the model
+#: family it binds; None binds every model. ``seven_day_overage_included`` is
+#: the weekly limit the CLI calls the Fable limit.
+PlanWindow = Literal["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included"]
+PLAN_LIMITS: dict[PlanWindow, str | None] = {
+    "five_hour": None, "seven_day": None, "seven_day_opus": "opus", "seven_day_sonnet": "sonnet",
+    "seven_day_overage_included": "fable",
+}
+#: What a used-up plan does to the user's Claude Code turns: stop until it
+#: resets, or go on on the account's usage credits.
+PlanOut = Literal["stop", "credits"]
+#: How long a limit Claude named no reset for holds the plan: the shortest
+#: plan window, so a missing reset bills at most one request a window, not
+#: one a turn. No one is told this time.
+UNKNOWN_RESET_HOLD = timedelta(hours=5)
+#: The windows whose use is kept: the two every plan reports.
+METERED = ("five_hour", "seven_day")
+#: Why usage credits cannot pay, among the reasons the CLI reports, that
+#: says nothing of the account: the CLI could not read it.
+_UNKNOWN_CREDITS = ("fetch_error", "unknown")
+#: The ``response_metadata`` key of a reply whose last request was billed to
+#: the account's usage credits under Stop: the notice under it, as the
+#: ``claude_code_plan`` event that showed it live carried it.
+PLAN_NOTICE_KEY = "claude_plan_notice"
+
+
+@dataclass(frozen=True)
+class PlanLimit:
+    """A used-up Claude plan window, and when it resets. Where Claude said no
+    reset (``known`` False), ``until`` is ``UNKNOWN_RESET_HOLD`` after
+    the report and no one is told it, and ``window`` is None where Claude
+    named no window either, which binds every model."""
+
+    window: PlanWindow | None
+    until: datetime
+    known: bool = True
+
+    def binds(self, model: str) -> bool:
+        """Whether the limit stops a run on ``model``: a weekly family limit
+        stops only that family's models."""
+        family = PLAN_LIMITS.get(self.window)
+        return family is None or family in model
+
+    def current(self, now: datetime | None = None) -> bool:
+        return self.until > (now or datetime.now(UTC))
+
+
+def binding_limit(limits: Iterable[PlanLimit], model: str, now: datetime | None = None) -> PlanLimit | None:
+    """The limit that holds ``model`` now: of those still ahead that bind its
+    family, the one that lasts longest, since the model runs again only once
+    every one of them has reset."""
+    held = [limit for limit in limits if limit.binds(model) and limit.current(now)]
+    return max(held, key=lambda limit: limit.until, default=None)
+
+
+@dataclass(frozen=True)
+class PlanReading:
+    """One ``rate_limit_event``, on a request for ``model``, as a
+    credential's plan state keeps it.
+
+    ``windows`` holds only the windows the event carried, each as (fraction
+    used, reset). ``limit`` is the window the response was refused for, or
+    billed to usage credits past, with its reset: where the event names no
+    plan window with one, the window it shows used up, and else a reset
+    unknown. Its use and whether usage credits paid come from the event's
+    raw dict, which carries what the typed fields leave out.
+    """
+
+    seen_at: datetime
+    model: str
+    windows: Mapping[str, tuple[float, datetime]]
+    limit: PlanLimit | None
+    #: Claude refused the request for the plan.
+    refused: bool
+    #: The response was billed to the account's usage credits.
+    billed: bool
+    credits: Literal["on", "off"] | None
+
+    @property
+    def allowed(self) -> bool:
+        """Whether the request ran on the plan, which says every limit that
+        holds its model has reset."""
+        return not (self.refused or self.billed)
+
+    @classmethod
+    def of(cls, raw: Mapping[str, Any], seen_at: datetime, model: str) -> PlanReading:
+        windows: dict[str, tuple[float, datetime]] = {}
+        for name, window in (raw.get("unifiedWindows") or {}).items():
+            used, resets = (window or {}).get("utilization"), (window or {}).get("resetsAt")
+            if name in METERED and isinstance(used, int | float) and isinstance(resets, int | float):
+                windows[name] = (float(used), _at(resets))
+        refused = raw.get("status") == "rejected"
+        billed = raw.get("isUsingOverage") is True or raw.get("overageInUse") is True
+        kind, resets = raw.get("rateLimitType"), raw.get("resetsAt")
+        limit = None
+        if refused or billed:
+            window = kind if kind in PLAN_LIMITS else None
+            full = [(at, name) for name, (used, at) in windows.items() if used >= 1]
+            if window is not None and isinstance(resets, int | float):
+                limit = PlanLimit(window, _at(resets))
+            elif full:
+                at, name = max(full)
+                limit = PlanLimit(name, at)
+            else:
+                limit = PlanLimit(window, seen_at + UNKNOWN_RESET_HOLD, known=False)
+        overage, disabled = raw.get("overageStatus"), raw.get("overageDisabledReason")
+        credits: Literal["on", "off"] | None = None
+        if overage in ("allowed", "allowed_warning"):
+            credits = "on"
+        elif overage == "rejected" and disabled and disabled not in _UNKNOWN_CREDITS:
+            credits = "off"
+        return cls(seen_at, model, windows, limit, refused, billed, credits)
+
+
+def _at(epoch: float) -> datetime:
+    return datetime.fromtimestamp(epoch, UTC)
+
+
+class PlanStopped(ClaudeTurnFailed):
+    """The Claude plan's ``window`` limit is used up until ``until``, so the
+    turn stopped (``plan_stopped``): Claude refused its request, or the
+    plan gate stopped it before the next one. Both are None where Claude
+    said no reset. ``credits_billed``: requests were billed to the account's
+    usage credits first. The detail names no reset as the CLI words it, nor
+    an epoch: the app tells the user the time in their own zone."""
+
+    def __init__(
+        self, window: PlanWindow | None = None, until: datetime | None = None, *, credits_billed: bool = False,
+    ) -> None:
+        super().__init__("plan_stopped", f"the Claude plan's {window} limit is used up" if window else
+                         "the Claude plan's limit is used up")
+        self.window = window
+        self.until = until
+        self.credits_billed = credits_billed
 
 
 class ClaudeCodeTarget(BaseChatModel):

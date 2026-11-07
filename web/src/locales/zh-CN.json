@@ -6951,5 +6951,38 @@
       "maxOutputHint": "端点拒绝较长回复时再设置。留空则使用默认值。",
       "maxOutputInvalid": "请输入 token 数，如 8K。"
     }
+  },
+  "claudeCodePlan": {
+    "window": {
+      "five_hour": "Claude 套餐的 5 小时限额",
+      "seven_day": "Claude 套餐的每周限额",
+      "seven_day_opus": "Claude 套餐的每周 Opus 限额",
+      "seven_day_sonnet": "Claude 套餐的每周 Sonnet 限额",
+      "seven_day_overage_included": "Claude 套餐的每周 Fable 限额"
+    },
+    "limitTitle": "Claude 套餐已达限额",
+    "stopped": "{{window}}已用完，本轮已停止，将于 {{time}} 重置。没有改用其他模型运行。",
+    "stoppedBilled": "{{window}}已用完，本轮已停止，将于 {{time}} 重置。没有改用其他模型运行。已在进行中的请求计入了你的额外用量。",
+    "stoppedUnknown": "Claude 套餐的限额已用完，本轮已停止。没有改用其他模型运行。",
+    "stoppedBilledUnknown": "Claude 套餐的限额已用完，本轮已停止。没有改用其他模型运行。已在进行中的请求计入了你的额外用量。",
+    "refused": "{{window}}已用完，{{time}} 重置前无法使用。请换一个模型，或在重置后再发送。",
+    "refusedUnknown": "Claude 套餐的限额已用完，Claude 没有告知重置时间。请换一个模型，或稍后再发送。",
+    "billed": "{{window}}在这次回复中用完，最后一次请求计入了你的额外用量。Claude Code 将等到 {{time}} 重置后再运行。",
+    "billedUnknown": "Claude 套餐的限额在这次回复中用完，最后一次请求计入了你的额外用量。Claude Code 将等到限额重置后再运行。",
+    "limit": "{{window}}已用完，{{time}} 重置前无法使用。如需继续，请换一个模型。",
+    "limitUnknown": "Claude 套餐的限额已用完。如需继续，请换一个模型。",
+    "credits": "{{window}}已用完，{{time}} 重置前 Claude Code 将使用你的额外用量运行。",
+    "creditsUnknown": "Claude 套餐的限额已用完，重置前 Claude Code 将使用你的额外用量运行。",
+    "picker": "套餐限额已用完，{{time}} 重置",
+    "pickerUnknown": "套餐限额已用完",
+    "runsOut": {
+      "title": "Claude 套餐用完时",
+      "stop": "停止",
+      "stopDetail": "Claude Code 在套餐达到限额时停止，等待重置。不会改用其他模型。",
+      "credits": "使用额外用量",
+      "creditsDetail": "如果你的 Claude 账户开启了额外用量，Claude Code 会继续用它运行。",
+      "note": "{{names}} 上的 Claude 账户开启了额外用量。超出限额的第一次请求会在 LangAlpha 停止之前计入额外用量。如果永远不想使用，请在 claude.ai 中关闭。",
+      "noteLink": "打开 claude.ai 用量设置"
+    }
   }
 }

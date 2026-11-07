@@ -21,6 +21,7 @@ from src.server.database.api_keys import get_key_with_base_url
 
 from .hosted import ANTHROPIC, cloud_placement, cloud_runs_in, in_sandbox
 from .machine import ComputerToken
+from .plan import UserPlan
 from .saved import refusal_stamp, refuse, stored_row
 
 if TYPE_CHECKING:
@@ -97,13 +98,15 @@ def turn_launcher(
     says: inside the computer's own sandbox, else in this worker. Where
     this server runs none, the credential's read refuses the run as it
     starts (``needs_own_computer``), which is where a refusal reaches the
-    turn as one.
+    turn as one. Either way the launcher keeps what the CLI reports of the
+    Claude plan behind the credential it signed in with (``UserPlan``).
     """
     if not isinstance(sandbox.provider, SSHProvider):
+        plan = UserPlan(user_id)
         credential = HostedCredential(user_id, admitted, computer_id)
         if cloud_runs_in() == "sandbox":
-            return sandbox_launcher(sandbox, identity=user_id, credential=credential)
-        return LocalLauncher(saved=credential)
+            return sandbox_launcher(sandbox, identity=user_id, credential=credential, plan=plan)
+        return LocalLauncher(saved=credential, plan=plan)
     if computer_id is None:
         raise RuntimeError("a turn on a computer of the user's own names that computer")
     token = ComputerToken(user_id, computer_id)
@@ -116,4 +119,5 @@ def turn_launcher(
         Machine(link, lambda: sandbox.working_dir), identity=user_id, token_file=token_name(computer_id),
         credential=token if saved else None, on_announced=token.announced, on_file_refused=token.file_refused,
         on_blocked=token.blocked, on_no_perl=token.no_perl, on_unsupported=token.unsupported,
+        plan=UserPlan(user_id, computer_id),
     )

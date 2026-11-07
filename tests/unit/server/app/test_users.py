@@ -349,6 +349,22 @@ async def test_update_preferences(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("out", "forgets"), [("credits", True), ("stop", False)])
+async def test_choosing_usage_credits_forgets_what_the_plan_said_of_them(client, out, forgets):
+    with (
+        patch(f"{DB}.db_get_user", new_callable=AsyncMock, return_value=_user()),
+        patch(f"{DB}.upsert_user_preferences", new_callable=AsyncMock, return_value=_prefs()),
+        patch(f"{DB}.maybe_complete_onboarding", new_callable=AsyncMock),
+        patch(f"{DB}.credits_unknown", new_callable=AsyncMock) as unknown,
+    ):
+        resp = await client.put(
+            "/api/v1/users/me/preferences", json={"other_preference": {"claude_code_plan_out": out}},
+        )
+    assert resp.status_code == 200
+    assert unknown.await_count == (1 if forgets else 0), "the next turn's first request says whether they pay"
+
+
+@pytest.mark.asyncio
 async def test_update_preferences_user_not_found(client):
     with patch(
         f"{DB}.db_get_user",

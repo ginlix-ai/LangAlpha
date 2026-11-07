@@ -4,6 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Info } from 'lucide-react';
 import { UPSTREAM_HINT_I18N_KEY, type ErrorLinkSpec, type StructuredError } from '@/utils/rateLimitError';
 import { parseErrorMessage } from '@/pages/ChatAgent/utils/parseErrorMessage';
+import { usePlanClock } from '@/hooks/useClaudeCodePlan';
+import type { PlanRefusal } from '@/api/model';
+import { planRefusalText } from '@/lib/claudeCodePlan';
 
 interface ErrorBannerProps {
   error: string | StructuredError | null | undefined;
@@ -61,6 +64,21 @@ export function NoticeLine({ message, className, style }: { message: string; cla
   );
 }
 
+/** A turn a Claude plan's limit refused, worded in the reader's zone. */
+function PlanRefusalWords({ refusal }: { refusal: PlanRefusal }): React.ReactElement {
+  const { t } = useTranslation();
+  return <>{planRefusalText(t, refusal, usePlanClock())}</>;
+}
+
+/** The banner's headline over a failure the server classified, or over a
+ *  Claude plan's limit; none for any other, whose message says it all. */
+function headlineOf(err: StructuredError, t: (key: string, opts?: Record<string, unknown>) => string): string | null {
+  if (err.planRefusal) return t('claudeCodePlan.limitTitle');
+  if (err.kind === 'internal') return t('chat.errorInternalHeadline');
+  if (err.kind !== 'upstream') return null;
+  return err.statusCode ? t('chat.errorUpstreamHeadlineStatus', { status: err.statusCode }) : t('chat.errorUpstreamHeadline');
+}
+
 export function ErrorBanner({ error, className, style }: ErrorBannerProps): React.ReactElement | null {
   const { t } = useTranslation();
   if (!error) return null;
@@ -82,16 +100,8 @@ export function ErrorBanner({ error, className, style }: ErrorBannerProps): Reac
 
   if (typeof error === 'object' && 'message' in error) {
     const err = error as StructuredError;
-    const isUpstream = err.kind === 'upstream';
-    const isInternal = err.kind === 'internal';
-    const headline = isUpstream
-      ? (err.statusCode
-          ? t('chat.errorUpstreamHeadlineStatus', { status: err.statusCode })
-          : t('chat.errorUpstreamHeadline'))
-      : isInternal
-        ? t('chat.errorInternalHeadline')
-        : null;
-    const hasHints = isUpstream && err.hints && err.hints.length > 0;
+    const headline = headlineOf(err, t);
+    const hasHints = err.kind === 'upstream' && err.hints && err.hints.length > 0;
     return (
       <div className={baseClass} style={baseStyle}>
         <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" style={{ color: 'var(--color-loss)' }} />
@@ -101,7 +111,7 @@ export function ErrorBanner({ error, className, style }: ErrorBannerProps): Reac
               and its headline is the whole message. */}
           {(err.message || (err.links && err.links.length > 0)) && (
             <span className="wrap-break-word">
-              {err.message}
+              {err.planRefusal ? <PlanRefusalWords refusal={err.planRefusal} /> : err.message}
               {err.links?.map((l, i) => (
                 <React.Fragment key={`${l.url}|${l.label}`}>
                   {i === 0 ? ' ' : <span aria-hidden="true"> · </span>}

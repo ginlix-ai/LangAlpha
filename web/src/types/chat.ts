@@ -9,6 +9,7 @@ import type {
   ProvenanceSourceType,
 } from './sse';
 import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
+import type { PlanBilled } from '@/api/model';
 import type { DispatchingAgent, ReportOutcome } from './api';
 import type { CommandFailureReason, CommandTool } from './commands';
 
@@ -115,6 +116,9 @@ export interface NotificationSegment {
   detail?: string;
   /** Picks the expander toggle label — 'summary' (default) or 'error'. */
   detailKind?: 'summary' | 'error';
+  /** A reply whose last request was billed to usage credits at a Claude
+   *  plan's limit: drawn as the quiet notice line under it, not a divider. */
+  planBilled?: PlanBilled;
 }
 
 export interface UserQuestionSegment {

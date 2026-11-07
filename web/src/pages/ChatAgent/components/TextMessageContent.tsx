@@ -3,6 +3,9 @@ import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Markdown from './Markdown';
 import { useModelName } from '@/hooks/useModelName';
+import { usePlanClock } from '@/hooks/useClaudeCodePlan';
+import type { PlanRefusal } from '@/api/model';
+import { planRefusalText } from '@/lib/claudeCodePlan';
 import { useAnimatedText } from '@/components/ui/animated-text';
 import { visibleParagraphPrefix } from '@/lib/paragraphGate';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
@@ -76,16 +79,28 @@ function TextMessageContent({ content, isStreaming, onOpenFile, onRevealed }: Te
  * kind is the server's classification, so a classified failure gets its
  * headline from the kind rather than from keywords in its text; only a
  * failure nobody classified (a client-side send failure, an older server's
- * frame) is still read by `parseErrorMessage`.
+ * frame) is still read by `parseErrorMessage`. A Claude plan's limit has a
+ * headline of its own, over the sentence that says until when.
  */
 function TurnErrorCard({ err }: { err: StructuredError }): React.ReactElement {
   const { t } = useTranslation();
+  if (err.planRefusal) return <PlanRefusalCard refusal={err.planRefusal} />;
   if (err.kind === 'notice') return <NoticeLine message={err.message} className="py-1.5" />;
   if (err.kind === 'upstream') return <StructuredErrorDisplay err={err} />;
   if (err.kind === 'internal') {
     return <ErrorDisplay parsed={{ title: t('chat.errorInternalHeadline'), detail: err.message || null, model: null, statusCode: null }} />;
   }
   return <ErrorDisplay parsed={parseErrorMessage(err.message)} />;
+}
+
+function PlanRefusalCard({ refusal }: { refusal: PlanRefusal }): React.ReactElement {
+  const { t } = useTranslation();
+  const clock = usePlanClock();
+  return (
+    <ErrorDisplay
+      parsed={{ title: t('claudeCodePlan.limitTitle'), detail: planRefusalText(t, refusal, clock), model: null, statusCode: null }}
+    />
+  );
 }
 
 interface ErrorDisplayProps {

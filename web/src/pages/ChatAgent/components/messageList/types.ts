@@ -1,4 +1,5 @@
 import type { ModelFallbackNotice, TextChunkMark } from '@/types/chat';
+import type { PlanBilled } from '@/api/model';
 
 // Stable empty object to avoid defeating React.memo with fresh `|| {}` fallbacks
 export const EMPTY_OBJ = {} as Record<string, never>;
@@ -34,6 +35,8 @@ export interface ContentSegmentRecord {
   detail?: string;
   /** Notification-only: expander toggle label flavor. */
   detailKind?: 'summary' | 'error';
+  /** Notification-only: a reply billed to usage credits, drawn as a notice line. */
+  planBilled?: PlanBilled;
 }
 
 /** Subagent info for opening subagent task tabs */

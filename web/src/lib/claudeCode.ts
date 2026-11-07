@@ -1,6 +1,7 @@
-import type { ClaudeCodeCustodyMode, ClaudeCodeSetupState } from '@/api/model';
+import type { ClaudeCodeCustodyMode, ClaudeCodeSetupState, PlanRefusal } from '@/api/model';
 import type { RowStatus } from '@/components/modelAccess/parts';
 import { PLAN_URL } from '@/config/supportLinks';
+import { readPlanRefusal } from '@/lib/claudeCodePlan';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import type { ErrorLinkSpec } from '@/utils/rateLimitError';
 
@@ -156,13 +157,24 @@ const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set([
  * fixes it; a choice paused on the server or storing blocked for the user has
  * nothing to fix. A computer too small for Claude Code reads as
  * `biggerComputer` says. Too many turns at once names the
- * user's cap, `limit`, and keeps the server's words without one. Any other
- * reason keeps the server's words alone.
+ * user's cap, `limit`, and keeps the server's words without one. A Claude
+ * plan's limit (`plan_stopped`, `plan_limited`) is news the plan the view
+ * read does not have yet, and carries its window and reset (`planRefusal`)
+ * for the card to word in the reader's zone, or keeps the server's words
+ * without them. Any other reason keeps the server's words alone.
  */
-export function claudeCodeRefusal(
-  reason: unknown, workspaceId: string | null | undefined, limit?: unknown,
-): { reread: boolean; link: ErrorLinkSpec | null; messageKey: string | null; messageValues?: { n: number } } {
+export function claudeCodeRefusal(frame: Record<string, unknown>, workspaceId: string | null | undefined): {
+  reread: boolean;
+  link: ErrorLinkSpec | null;
+  messageKey: string | null;
+  messageValues?: { n: number };
+  planRefusal?: PlanRefusal;
+} {
+  const { reason, limit } = frame;
   if (typeof reason !== 'string') return { reread: false, link: null, messageKey: null };
+  if (reason === 'plan_stopped' || reason === 'plan_limited') {
+    return { reread: true, link: null, messageKey: null, planRefusal: readPlanRefusal(frame) ?? undefined };
+  }
   if (reason === 'too_many_turns') {
     return typeof limit === 'number'
       ? { reread: false, link: null, messageKey: CLAUDE_CODE_OFF_KEYS[reason], messageValues: { n: limit } }

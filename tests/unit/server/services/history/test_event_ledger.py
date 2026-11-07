@@ -52,6 +52,8 @@ CHECKPOINT_PROJECTED = {
     # frames of a run whose worker died)
     "workflow_lifecycle",  # ui-channel `workflow_run` snapshot upserted by
     # the workflow driver at terminal; frames re-emitted verbatim on replay
+    "claude_code_plan",  # a Claude Code reply billed to usage credits: the
+    # notice rides the reply's response_metadata stamp (PLAN_NOTICE_KEY)
 }
 
 TABLE_SOURCED = {

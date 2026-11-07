@@ -58,6 +58,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
 )
 
 from ptc_agent.agent.claude_code.machine_token import _FD_ENV
+from ptc_agent.agent.claude_code.plan import PlanLog, SignedIn
 from ptc_agent.core.claude_code_managed import local_managed
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.database.encryption import get_encryption_key
@@ -221,7 +222,16 @@ class Launcher(Protocol):
     the token its run signs in with, so only it knows which one Anthropic
     refused: ``refused`` records that, wherever that token came from. One
     launcher serves one run at a time.
+
+    ``plan`` is the user's plan state, where what the CLI reports of the
+    Claude plan is kept, for the credential the run signed in with
+    (``signed_in``), known once the CLI started.
     """
+
+    plan: PlanLog | None
+
+    @property
+    def signed_in(self) -> SignedIn | None: ...
 
     async def prepare(
         self, thread_key: str, session_id: str | None, entries: list[dict[str, Any]], *, identity: str,
@@ -390,19 +400,28 @@ class LocalLauncher:
     run starts, which ``refused`` reports refused. ``env`` is for a test
     endpoint and its dummy credential. A worker an organization's managed
     Claude Code settings are installed on runs none (``local_managed``).
+    ``plan`` is given only where the setup token it signs in with is the
+    one the user saved.
     """
 
     env: dict[str, str] = field(default_factory=dict, repr=False)
     cli_path: str | None = None
     token: str | None = field(default=None, repr=False)
     saved: TokenStore | None = None
+    plan: PlanLog | None = None
     _used: Credential | None = field(default=None, init=False, repr=False)
+
+    @property
+    def signed_in(self) -> SignedIn | None:
+        return "saved" if self._used is not None and self._used.kind == "setup_token" else None
 
     async def _ready(self) -> None:
         """Take the run's credential, then refuse the run, before the CLI
         starts, where an organization's policy is installed, in admission's
         order."""
         self._used = Credential(self.token) if self.token else (await self.saved.read() if self.saved is not None else None)
+        if not self.token and self.plan is not None and self.signed_in == "saved":
+            await self.plan.took(self._used.secret)
         if sources := await local_managed():
             raise ClaudeTurnFailed("policy_blocked", f"the worker holds managed Claude Code settings {list(sources)}")
 

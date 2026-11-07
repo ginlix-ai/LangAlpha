@@ -160,9 +160,9 @@ export function useChatMessages(
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  // A refused token can be the saved one or a computer's, and a cloud
-  // computer's refusal may mean the user's choice for it changed: all are
-  // read again.
+  // A refused token can be the saved one or a computer's, a cloud computer's
+  // refusal may mean the user's choice for it changed, and a Claude plan's
+  // limit is news to the plan they report: all are read again.
   const refreshClaudeCode = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() });
     void queryClient.invalidateQueries({ queryKey: queryKeys.user.claudeCodeCustody() });
@@ -2081,10 +2081,12 @@ export function useChatMessages(
     const worded = typeof errorInfo?.message === 'string' && errorInfo.message ? errorInfo.message : null;
     // A Claude Code turn the server cannot run says what to change, and a
     // retry meets the same refusal. Without a working token, the change is
-    // one the user makes in Settings.
+    // one the user makes in Settings. A Claude plan's limit is worded where it
+    // is drawn, in the reader's zone.
     if (errorInfo?.type === 'claude_code_off' && worded) {
-      const { reread, link, messageKey, messageValues } = claudeCodeRefusal(errorInfo.reason, workspaceId, errorInfo.limit);
+      const { reread, link, messageKey, messageValues, planRefusal } = claudeCodeRefusal(errorInfo, workspaceId);
       if (reread) refreshClaudeCode();
+      if (planRefusal) return { banner: { message: worded, planRefusal }, answered: true };
       const message = messageKey ? t(messageKey, messageValues) : worded;
       return { banner: link ? { message, links: [link] } : { message }, answered: true };
     }

@@ -33,6 +33,7 @@ from ptc_agent.agent.middleware.compaction.utils import (
 from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from ptc_agent.agent.tools.computer_reach import ran_elsewhere
 from ptc_agent.agent.transcript.classify import STEERING_MARKERS, human_kind
+from src.llms.claude_code import PLAN_NOTICE_KEY
 from src.llms.content_utils import extract_content_with_type
 from src.llms.token_counter import extract_token_usage
 from src.server.utils.content_normalizer import normalize_text_content
@@ -56,6 +57,7 @@ HistoryEventKind = Literal[
     "steering-delivered",
     "context-window",
     "user-message",
+    "claude-code-plan",
 ]
 
 _FILE_OPERATION_TOOLS = {"Write", "Edit"}
@@ -220,6 +222,13 @@ def history_events_to_sse(
                     {"thread_id": thread_id, "agent": event.agent, **event.data},
                 )
             )
+        elif event.kind == "claude-code-plan":
+            items.append(
+                _sse(
+                    "claude_code_plan",
+                    {"thread_id": thread_id, "agent": event.agent, **event.data},
+                )
+            )
     return items
 
 
@@ -341,6 +350,10 @@ def _project_ai_message(
         if threshold is not None:
             usage_data["threshold"] = threshold
         events.append(HistoryEvent("context-window", agent, message_id, usage_data))
+    # A reply the Claude plan ran out during: its notice, after it, as live.
+    notice = (message.response_metadata or {}).get(PLAN_NOTICE_KEY)
+    if isinstance(notice, dict):
+        events.append(HistoryEvent("claude-code-plan", agent, message_id, dict(notice)))
     return events
 
 
