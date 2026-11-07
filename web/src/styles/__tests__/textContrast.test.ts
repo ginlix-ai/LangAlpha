@@ -46,7 +46,7 @@ describe('text tokens hold 4.5:1', () => {
     expect(ratio(lightToken(name), white)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it.each(['--color-text-secondary', '--color-text-tertiary', '--color-text-muted'])('%s on the warm canvas', (name) => {
+  it.each(['--color-text-secondary', '--color-text-tertiary', '--color-text-muted'])('%s on the canvas', (name) => {
     expect(ratio(lightToken(name), canvas)).toBeGreaterThanOrEqual(4.5);
   });
 

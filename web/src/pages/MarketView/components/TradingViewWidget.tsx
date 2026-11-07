@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { deviceTimezone } from '@/lib/deviceTimezone';
 import { TradingViewEmbed } from '@/pages/Dashboard/widgets/framework/TradingViewEmbed';
+import { CHART_THEME } from '../utils/chartConstants';
 
 // Map our interval keys to TradingView widget interval values
 const TV_INTERVALS: Record<string, string> = {
@@ -38,17 +39,19 @@ interface TradingViewWidgetProps {
  */
 function TradingViewWidget({ symbol, interval = '1day' }: TradingViewWidgetProps) {
   const { theme } = useTheme();
-  const isLight = theme === 'light';
+  // The embed is an iframe and cannot read our custom properties, and any
+  // config change reloads it, so it takes the chart theme's literal table
+  // (the tokens' mirror) rather than a DOM read that settles a second time
+  // after a theme flip and would load the chart twice.
+  const chart = CHART_THEME[theme];
   const config = {
     symbol,
     interval: TV_INTERVALS[interval] || 'D',
     timezone: deviceTimezone(),
     style: '1',
     isTransparent: false,
-    // Literals, not var() — the TV embed is an iframe and can't read our
-    // custom properties. These mirror --color-bg-card / --color-border-default.
-    backgroundColor: isLight ? '#FFFFFF' : '#232426',
-    gridColor: isLight ? '#E8E8E6' : '#2E3033',
+    backgroundColor: chart.bg,
+    gridColor: chart.grid,
     allow_symbol_change: false,
     hide_side_toolbar: false,
     hide_top_toolbar: false,

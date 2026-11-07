@@ -211,7 +211,7 @@ function PanelChart({ armed, clear }: { armed: boolean; clear: boolean }) {
   return (
     <div
       className="flex flex-1 flex-col px-[5px] pb-[5px] pt-1"
-      style={{ background: 'var(--color-bg-canvas)' }}
+      style={{ background: 'var(--color-bg-page)' }}
     >
       <div
         className="flex flex-1 flex-col overflow-hidden rounded-[4px] border"
