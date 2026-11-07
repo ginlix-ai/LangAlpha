@@ -273,6 +273,37 @@
         }
       }
     },
+    "deepseek": {
+      "display_name": "DeepSeek",
+      "env_key": "DEEPSEEK_API_KEY",
+      "capabilities": {
+        "search": {
+          "tracking_name": "DeepSeekSearchTool",
+          "default_level": "standard",
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 0.75,
+              "native_params": {}
+            }
+          ]
+        },
+        "fetch": {
+          "tracking_name": "DeepSeekFetchTool",
+          "default_level": "standard",
+          "max_batch_size": 1,
+          "levels": [
+            {
+              "name": "standard",
+              "display_name": "Standard",
+              "credits": 0.75,
+              "native_params": {}
+            }
+          ]
+        }
+      }
+    },
     "firecrawl": {
       "display_name": "Firecrawl",
       "env_key": "FIRECRAWL_API_KEY",

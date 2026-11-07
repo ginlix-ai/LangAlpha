@@ -204,7 +204,7 @@ make up       # Postgres, Redis, backend and web app
 | `FMP_API_KEY` | ファンダメンタルズ、財務諸表、マクロ、アナリストデータ（[無料枠あり](https://site.financialmodelingprep.com/)） |
 | `DAYTONA_API_KEY` | [Daytona](https://www.daytona.io/) のクラウド sandbox。設定しない場合、sandbox はローカルの Docker で動く |
 | `R2_*`、`S3_*` または `OSS_*` と `storage.provider` | Cloudflare R2、AWS S3、Alibaba OSS、MinIO のオブジェクトストレージ。workspace のファイルスナップショット、memo、添付ファイル、skill のアーカイブ、大きなトランスクリプト、チャットウィジェットのデータを保持し、署名付きリンクでダウンロードを提供する。バケットがない場合、これらのデータは Postgres に保存され、チャート画像のキャプチャは無効になる |
-| `TAVILY_API_KEY`、`SERPER_API_KEY`、`EXA_API_KEY`、`PARALLEL_API_KEY`、`BOCHA_API_KEY` | Web 検索。使うエンジンは `agent_config.yaml` の `search_api`（デフォルトは `tavily`）か、ユーザーごとに Settings で選ぶ |
+| `TAVILY_API_KEY`、`SERPER_API_KEY`、`EXA_API_KEY`、`PARALLEL_API_KEY`、`BOCHA_API_KEY`、`DEEPSEEK_API_KEY` | Web 検索。使うエンジンは `agent_config.yaml` の `search_api`（デフォルトは `tavily`）か、ユーザーごとに Settings で選ぶ |
 | `FIRECRAWL_API_KEY` | 強化された Web 取得とサイトのクロール。組み込みのクローラーは key 不要 |
 | `X_BEARER_TOKEN` | X の投稿検索とスレッドの参照。Plugins ページで vault secret として追加する |
 | `LANGSMITH_API_KEY`、`OTEL_EXPORTER_OTLP_ENDPOINT` | トレースとメトリクス |
@@ -261,7 +261,7 @@ LangAlpha は 2026 年 1 月の最初のリリース以来、programmatic tool c
 
 LangAlpha 独自のデータ server は、コードで扱いやすいように作られています。市場データツールはすべて同じエンベロープ（`symbol`、`currency`、`timezone`、`count`、`data`、`source`）を返し、時系列は古い順に並び、失敗は型付きのエラーコードとして返ります。そのため agent のコードは、文章を解析するのではなく、結果をそのままインデックスで参照できます。
 
-provider は市場ごとにフォールバックします。米国データには LangAlpha.ai のリアルタイムフィード、ファンダメンタルズとマクロには FMP、無料のフォールバック先として Yahoo Finance を使います。Web 検索は Tavily、Serper、Exa、Parallel、Bocha に対応します。Web 取得は組み込みのクローラーを使い、オプションで Firecrawl に委譲でき、provider ごとのサーキットブレーカーで保護されています。
+provider は市場ごとにフォールバックします。米国データには LangAlpha.ai のリアルタイムフィード、ファンダメンタルズとマクロには FMP、無料のフォールバック先として Yahoo Finance を使います。Web 検索は Tavily、Serper、Exa、Parallel、Bocha、DeepSeek に対応します。Web 取得は組み込みのクローラーを使い、オプションで Firecrawl か DeepSeek に委譲でき、provider ごとのサーキットブレーカーで保護されています。
 
 データ以外に、agent は次のツールを使います。
 
