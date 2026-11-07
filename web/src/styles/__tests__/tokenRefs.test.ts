@@ -42,12 +42,6 @@ const OPEN_STYLE_ONLY = new Set([
   '--color-shell-meta',
 ]);
 
-/**
- * The experiment's override sheets scope every rule to an open style, so they
- * read the roles bare. The card-styles refactor empties and deletes them.
- */
-const OPEN_STYLE_SCOPED_FILES = /^styles\/platformStyles(\.\w+)?\.css$/;
-
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
@@ -100,7 +94,7 @@ describe('color token references', () => {
     const bare: string[] = [];
     for (const file of walk(SRC)) {
       const rel = relative(SRC, file);
-      if (file === TOKENS || OPEN_STYLE_SCOPED_FILES.test(rel)) continue;
+      if (file === TOKENS) continue;
       const lines = readFileSync(file, 'utf8').split('\n');
       lines.forEach((line, i) => {
         for (const match of line.matchAll(/(?:var)?\(\s*(--color-[\w-]+)\s*(,?)/g)) {

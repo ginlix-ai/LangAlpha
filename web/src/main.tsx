@@ -7,11 +7,6 @@ import { AuthProvider } from './contexts/AuthContext'
 import App from './App'
 import { initI18n } from './i18n'
 import './index.css'
-// EXPERIMENT: the card styles carried to the whole shell. The voice tokens
-// live in the cards' stylesheets, so they load with it.
-import './pages/ChatAgent/components/charts/termCard.css'
-import './pages/ChatAgent/components/charts/termCardStyles.css'
-import './styles/platformStyles.css'
 // Side-effect import: the modality listeners have to be running before the
 // first click, not from whichever overlay happens to load first.
 import './lib/inputModality'

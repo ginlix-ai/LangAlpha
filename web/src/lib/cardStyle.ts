@@ -1,15 +1,17 @@
 /**
- * How the data cards, in chat and on the dashboard, and their detail panels
- * are drawn: Quiet, the default and the nearest to the rest of the app,
- * Balanced, or Terminal. Terminal is the cards' own stylesheets; the
- * other two take marks away from them (charts/termCardStyles.css). Saved to
- * the account with the theme (lib/appearancePreference) and kept in this
- * browser too, so the first paint is right before preferences load.
+ * How the app is drawn: Quiet (the default, which leaves each component as it
+ * draws itself), Balanced, or Terminal. Terminal is the data cards' own
+ * stylesheets, and the other two take marks away from them
+ * (charts/termCardStyles.css); the rest of the app reads the style as
+ * variables (styles/cardStyle.css, and the shell's color roles in
+ * styles/tokens.css). Saved to the account with the theme
+ * (lib/appearancePreference) and kept in this browser too, so the first paint
+ * is right before preferences load.
  *
- * Stamped on <html> as `data-card-style`, so a change restyles every card
- * already drawn and nothing re-renders. No card is on the first paint (cards
- * come with the thread), so main.tsx stamps it before the app renders rather
- * than index.html's pre-paint script.
+ * Stamped on <html> as `data-card-style`, so a change restyles everything
+ * already drawn and nothing re-renders. main.tsx stamps it before the app
+ * renders; index.html's pre-paint script does not need it, since nothing it
+ * paints reads the style.
  */
 
 import { useSyncExternalStore } from 'react';

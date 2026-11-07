@@ -579,6 +579,18 @@ html {
   --color-shell-label: var(--color-term-text-secondary);
   --color-shell-meta: var(--color-term-text-tertiary);
 }
+/* Quiet draws the data cards on the platform's own grays. Declared here, not
+   with the cards' sheets, because the shell reads the card inks too (the
+   workspace cards' edge and its hover), on routes that load no data card. */
+:root[data-card-style='quiet'] {
+  --color-term-text: var(--color-text-primary);
+  --color-term-text-secondary: var(--color-text-secondary);
+  --color-term-text-tertiary: var(--color-text-tertiary);
+  --color-term-edge: var(--color-border-default);
+  --color-term-edge-hover: var(--color-border-strong);
+  /* The platform's subtle border vanishes on the dark card fill. */
+  --color-term-rule: color-mix(in srgb, var(--color-text-tertiary) 22%, transparent);
+}
 
 /* Focus rings.
 

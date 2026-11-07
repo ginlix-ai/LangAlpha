@@ -5,7 +5,8 @@
    puts the cards on another fill sets --term-ground. */
 
 /* The voice (--term-case, --term-track, --term-words, --term-open/close) is
-   the app's, declared per card style in styles/cardStyle.css. */
+   the app's, declared per card style in styles/cardStyle.css, which loads
+   with the app; this sheet loads with the cards. */
 
 .term-card,
 .term-pill {
