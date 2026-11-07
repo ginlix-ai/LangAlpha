@@ -87,6 +87,22 @@ def _no_user_subagents(monkeypatch):
     monkeypatch.setattr(plugin_subagents, "subagents_snapshot", _no_snapshot)
 
 
+@pytest.fixture(autouse=True)
+def _no_host_claude_code_managed(monkeypatch, tmp_path_factory):
+    """Point Claude Code's managed-settings paths at folders that do not exist.
+
+    The check runs the real script, so on a machine with an organization's
+    managed settings installed (``/etc/claude-code``) every computer the
+    tests stand up, the backend's own included, would read as policy-blocked.
+    Tests *about* the check set these paths themselves.
+    """
+    from ptc_agent.core import claude_code_managed
+
+    empty = tmp_path_factory.getbasetemp() / "no-claude-code-managed"
+    for name in ("CLAUDE_CODE_MANAGED_DIR_LINUX", "CLAUDE_CODE_MANAGED_DIR_MAC", "MAC_MANAGED_PREFERENCES_DIR"):
+        monkeypatch.setattr(claude_code_managed, name, str(empty / name))
+
+
 @pytest.fixture(scope="session")
 def shipped_skill_md():
     """Locate a shipped skill's SKILL.md on disk, by name.

@@ -110,6 +110,11 @@ def test_the_libc_line_says_nothing_on_a_glibc_machine():
     assert out.stdout == ""
 
 
+@pytest.fixture
+def _no_host_claude_code_managed():
+    """The probe is built at import with the real managed-settings paths, which the test below reads."""
+
+
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])
 def test_the_probe_names_the_organizations_managed_claude_code_settings(tmp_path, system):
     """By the status check's own snippet, run as the probe runs it on a
@@ -121,7 +126,11 @@ def test_the_probe_names_the_organizations_managed_claude_code_settings(tmp_path
     (managed / "managed-settings.d").mkdir(parents=True)
     (managed / "managed-settings.d" / "org.json").write_text("{}")
     (managed / "managed-mcp.json").write_text("{}")
-    for folder in (claude_code_managed.CLAUDE_CODE_MANAGED_DIR_LINUX, claude_code_managed.CLAUDE_CODE_MANAGED_DIR_MAC):
+    for folder in (
+        claude_code_managed.CLAUDE_CODE_MANAGED_DIR_LINUX,
+        claude_code_managed.CLAUDE_CODE_MANAGED_DIR_MAC,
+        claude_code_managed.MAC_MANAGED_PREFERENCES_DIR,
+    ):
         line = line.replace(shlex.quote(folder), shlex.quote(str(managed)))
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -130,6 +139,7 @@ def test_the_probe_names_the_organizations_managed_claude_code_settings(tmp_path
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
     out = subprocess.run(["bash", "-c", line], capture_output=True, text=True, check=True, env=env).stdout
     key, _, value = out.strip().partition("=")
+    assert claude_code_managed.parse_managed(value) == ("dropins", "mcp")
     probe = _probe_result("key", "fp", {**_LINUX_FACTS, key: value + " bogus"}, True)
     assert probe.claude_code_blocked and probe.supported
     for source in claude_code_managed.CLAUDE_CODE_MANAGED:
