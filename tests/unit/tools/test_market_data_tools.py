@@ -2249,6 +2249,24 @@ class TestFetchOptionsChain:
         assert artifact["underlying"] == "ZZZZ"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("underlying, price, shown", [("ZZZZ", 0.8012, "$0.8012"), ("^GSPC", 0.5, "0.50")])
+    async def test_the_underlying_is_a_share_at_its_own_places_and_an_index_at_two(self, underlying, price, shown):
+        chain = {"results": [
+            {"ticker": "O:ZZZZ261120C00001000", "contract_type": "call", "strike_price": 1.0, "expiration_date": "2026-11-20"},
+        ]}
+        intel = _make_fake_intel_source(options_chain=chain)
+        intel.get_options_snapshot = AsyncMock(return_value=[
+            {"ticker": "O:ZZZZ261120C00001000", "market_status": "open",
+             "underlying_asset": {"ticker": underlying, "price": price}},
+        ])
+        provider = _make_fake_financial_provider(intel=intel)
+
+        with patch(f"{_QUOTES_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_options_chain(underlying)
+
+        assert f"| Underlying: {shown}\n" in content
+
+    @pytest.mark.asyncio
     async def test_a_real_time_feed_still_explains_the_stale_mark(self):
         chain = {"results": [
             {"ticker": "O:ZZZZ261120C00125000", "contract_type": "call", "strike_price": 125.0, "expiration_date": "2026-11-20"},

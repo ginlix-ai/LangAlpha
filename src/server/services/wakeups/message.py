@@ -20,13 +20,12 @@ from typing import Any, Mapping, Optional, Union
 from market_protocol import InstrumentRef
 
 from src.server.database.wakeups.contract import as_datetime, as_float
-from src.server.services.brokerage_orders.view import order_view, plain
+from src.server.services.brokerage_orders.view import order_price, order_view, plain
 from src.server.services.market_targets.listing import (
     PCT_FROM_TOOL,
     listing_ref,
     shown_symbol,
 )
-from src.tools.market_data.currency import fmt_price
 from src.tools.market_data.display import price_text
 from src.tools.market_data.quote_format import current_price
 from src.tools.wakeups.clock import clock, when, zone_name, zone_of
@@ -97,6 +96,8 @@ class OrderNotice:
     avg_fill_price: Optional[float]
     currency: Optional[str]
     reason: Optional[str]
+    #: The average fill as the line prints it, at the order's own places. Not sent.
+    avg_fill: str
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -200,15 +201,17 @@ def notice_payload(row: Mapping[str, Any], notice: str, seq: int) -> WakeNotice:
         outcome = row.get("order_outcome") or {}
         # The brokerage's own words, of any length and content.
         reason = outcome.get("reason")
+        avg_fill_price = as_float(outcome.get("avg_fill_price"))
         order = OrderNotice(
             vendor_order_id=row.get("vendor_order_id"),
             summary=(view.summary_live or view.summary) if view else None,
             outcome=outcome.get("outcome"),
             filled_qty=as_float(outcome.get("filled_qty")),
             qty=as_float(outcome.get("qty")),
-            avg_fill_price=as_float(outcome.get("avg_fill_price")),
+            avg_fill_price=avg_fill_price,
             currency=view.currency if view else None,
             reason=quoted_line(reason, _REASON_CHARS) or None if isinstance(reason, str) else None,
+            avg_fill=order_price(view.order if view else None, avg_fill_price),
         )
     schedule = schedule_of(row)
     # The next check is past the slots skipped while this one waited, or it
@@ -232,10 +235,6 @@ def notice_payload(row: Mapping[str, Any], notice: str, seq: int) -> WakeNotice:
         set_at=as_datetime(row.get("created_at")),
         next_at=schedule[upcoming] if upcoming < len(schedule) else None,
     )
-
-
-def _money(value: Optional[float], currency: Optional[str]) -> str:
-    return fmt_price(value, currency or "USD", group=True) if value is not None else "N/A"
 
 
 def wake_line(
@@ -325,7 +324,7 @@ def wake_line(
         order_id=order.vendor_order_id,
         qty=plain(qty) if qty is not None else "?",
         filled=plain(order.filled_qty) if order.filled_qty is not None else "?",
-        avg=_money(order.avg_fill_price, order.currency),
+        avg=order.avg_fill,
         reason=order.reason or "no reason given",
         fire_time=clock(fired_at, zone, fired_at),
     )

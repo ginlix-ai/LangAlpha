@@ -201,6 +201,28 @@ class TestGoldenPriceSummary:
         assert result == _expected_summary(stats, "HK$")
         assert "| Period Open | HK$150.00 |" in result
 
+    def test_a_sub_dollar_share_keeps_the_places_it_quotes_in(self):
+        stats = {**_summary_stats("SUBD"), "period_open": 0.2, "period_close": 0.1859,
+                 "period_high": 1.05, "period_low": 0.17, "period_change": -0.0141,
+                 "period_change_pct": -7.05, "min_close": 0.1809, "max_close": 0.443, "ma_20": 0.2247}
+        result = _format_price_summary(stats)
+        for row in ("| Period Open | $0.2000 |", "| Period Close | $0.1859 |", "| Period High | $1.05 |",
+                    "| Period Change | -$0.0141 (-7.05%) |", "| Price Range | $0.1809 - $0.4430 (",
+                    "| 20-Day MA | $0.2247 |"):
+            assert row in result
+
+    def test_an_index_level_keeps_two_places(self):
+        stats = {**_summary_stats("^GSPC"), "period_open": 0.5, "period_close": 0.6,
+                 "period_change": 0.1, "period_change_pct": 20.0}
+        result = _format_price_summary(stats)
+        assert "| Period Open | 0.50 |" in result
+        assert "| Period Change | +0.10 (" in result
+
+    def test_a_change_from_under_a_dollar_keeps_the_open_s_places(self):
+        stats = {**_summary_stats("SUBD"), "period_open": 0.996, "period_close": 1.0,
+                 "period_change": 0.004, "period_change_pct": 0.4}
+        assert "| Period Change | +$0.0040 (" in _format_price_summary(stats)
+
 
 # ---------------------------------------------------------------------------
 # KRW — zero-decimal precision sourced from the protocol table, not fmt_price
@@ -263,6 +285,15 @@ class TestGoldenPriceTable:
         for v in (150.0, 152.0, 149.0, 151.0):
             assert f"HK${v:.2f}" in result
 
+    def test_a_sub_dollar_share_keeps_the_places_it_quotes_in(self):
+        record = {**_table_record("SUBD")[0], "open": 0.2005, "high": 1.02, "low": 0.174, "close": 0.1809}
+        result = _format_price_data_as_table([record])
+        assert "|   $0.2005 |     $1.02 |   $0.1740 |   $0.1809 |" in result
+
+    def test_an_index_level_keeps_two_places(self):
+        record = {**_table_record("^GSPC")[0], "open": 0.5, "high": 0.6, "low": 0.4, "close": 0.55}
+        assert "|      0.50 |      0.60 |      0.40 |      0.55 |" in _format_price_data_as_table([record])
+
 
 # ---------------------------------------------------------------------------
 # Per-row currency threading — fetch_stock_screener
@@ -319,6 +350,17 @@ class TestScreenerPerRowCurrency:
         assert "$235.50" in content
         assert "HK$318.20" in content
         assert "HK$3.00T" in content
+
+    @pytest.mark.asyncio
+    async def test_a_sub_dollar_share_keeps_the_places_it_quotes_in(self):
+        results = [{"symbol": "SUBD", "price": 0.1859, "marketCap": 7.43e7}]
+        provider = _screener_provider(results)
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_stock_screener(exchange="NASDAQ", price_lower_than=0.155)
+
+        assert "Price <: $0.1550" in content
+        assert "| SUBD | $0.1859 | $74.30M |" in content
 
     @pytest.mark.asyncio
     async def test_cn_screen_echoes_its_thresholds_in_cny(self):

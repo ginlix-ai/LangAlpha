@@ -9,7 +9,7 @@ import asyncio
 
 from langchain_core.runnables import RunnableConfig
 
-from .currency import fmt_count, fmt_price
+from .currency import fmt_count, fmt_price, fmt_quote, quote_spec
 from .display import (
     _market_label,
     _symbol_currency,
@@ -32,6 +32,12 @@ from ._shared import _get_user_id, _mark_failure, _mark_no_data, _normalize_mark
 logger = logging.getLogger(__name__)
 
 
+def _price_format(ref) -> Any:
+    """How a price on *ref* prints: a traded price at the places it quotes in,
+    an index level at the two its display spec sets."""
+    return fmt_price if ref is not None and ref.asset_class is AssetClass.INDEX else fmt_quote
+
+
 def _format_price_data_as_table(data: List[Dict[str, Any]]) -> str:
     """
     Format OHLCV price data as a markdown table.
@@ -46,7 +52,9 @@ def _format_price_data_as_table(data: List[Dict[str, Any]]) -> str:
         return "No price data available."
 
     symbol = data[0].get("symbol", "N/A")
-    cur = _symbol_currency(resolve_ref(symbol))
+    ref = resolve_ref(symbol)
+    cur = _symbol_currency(ref)
+    price = _price_format(ref)
     num_days = len(data)
 
     # Get date range
@@ -88,10 +96,10 @@ def _format_price_data_as_table(data: List[Dict[str, Any]]) -> str:
         change_pct = record.get("changePercent")
 
         # Format prices
-        open_str = fmt_price(open_price, cur)
-        high_str = fmt_price(high_price, cur)
-        low_str = fmt_price(low_price, cur)
-        close_str = fmt_price(close_price, cur)
+        open_str = price(open_price, cur)
+        high_str = price(high_price, cur)
+        low_str = price(low_price, cur)
+        close_str = price(close_price, cur)
 
         # Format volume
         volume_str = (
@@ -231,7 +239,9 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     if not stats:
         return "No data available for summary"
 
-    cur = _symbol_currency(resolve_ref(stats.get("symbol")))
+    ref = resolve_ref(stats.get("symbol"))
+    cur = _symbol_currency(ref)
+    price = _price_format(ref)
     lines = []
 
     # Header
@@ -252,14 +262,14 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     period_low = stats.get("period_low")
 
     if period_open is not None:
-        metrics_rows.append(("Period Open", fmt_price(period_open, cur)))
+        metrics_rows.append(("Period Open", price(period_open, cur)))
     if period_close is not None:
         label = "Period Close (in progress)" if stats.get("period_close_in_progress") else "Period Close"
-        metrics_rows.append((label, fmt_price(period_close, cur)))
+        metrics_rows.append((label, price(period_close, cur)))
     if period_high is not None:
-        metrics_rows.append(("Period High", fmt_price(period_high, cur)))
+        metrics_rows.append(("Period High", price(period_high, cur)))
     if period_low is not None:
-        metrics_rows.append(("Period Low", fmt_price(period_low, cur)))
+        metrics_rows.append(("Period Low", price(period_low, cur)))
 
     # Performance
     period_change = stats.get("period_change")
@@ -267,10 +277,12 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
 
     if period_change is not None and period_change_pct is not None:
         sign = "+" if period_change >= 0 else ""
+        # The move keeps the finer places of the two prices it spans.
+        spec = cur if price is fmt_price else quote_spec(cur, min(period_open, period_close))
         metrics_rows.append(
             (
                 "Period Change",
-                f"{sign}{fmt_price(period_change, cur)} ({format_percentage(period_change_pct)})",
+                f"{sign}{fmt_price(period_change, spec)} ({format_percentage(period_change_pct)})",
             )
         )
 
@@ -281,7 +293,7 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
         metrics_rows.append(
             (
                 "Price Range",
-                f"{fmt_price(min_close, cur)} - {fmt_price(max_close, cur)} ({format_percentage(range_pct)} range)",
+                f"{price(min_close, cur)} - {price(max_close, cur)} ({format_percentage(range_pct)} range)",
             )
         )
 
@@ -295,11 +307,11 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     ma_200 = stats.get("ma_200")
 
     if ma_20 is not None:
-        metrics_rows.append(("20-Day MA", fmt_price(ma_20, cur)))
+        metrics_rows.append(("20-Day MA", price(ma_20, cur)))
     if ma_50 is not None:
-        metrics_rows.append(("50-Day MA", fmt_price(ma_50, cur)))
+        metrics_rows.append(("50-Day MA", price(ma_50, cur)))
     if ma_200 is not None:
-        metrics_rows.append(("200-Day MA", fmt_price(ma_200, cur)))
+        metrics_rows.append(("200-Day MA", price(ma_200, cur)))
 
     # Volume Statistics
     avg_volume = stats.get("avg_volume")

@@ -19,7 +19,7 @@ from market_protocol import display_spelling, to_major_units
 from market_protocol.symbology import MINOR_UNIT_PLACES
 
 from src.data_client.base import SCREEN_HOME_EXCHANGES
-from src.data_client.normalize import scale_quote_prices
+from src.data_client.normalize import minor_unit_places, scale_price, scale_quote_prices
 
 from .data_source import _fetch_single_snapshot
 from .yahoo import yahoo_ticker
@@ -186,11 +186,12 @@ def _get_profile(symbol: str) -> list[dict[str, Any]]:
         "ceo": None,
         "fullTimeEmployees": info.get("fullTimeEmployees"),
         "ipoDate": None,
-        "marketCap": fi.get("marketCap"),
         "price": float(fi.get("lastPrice", 0) or 0) or None,
         "beta": info.get("beta"),
     }
-    return scale_quote_prices([{k: _clean_value(v) for k, v in profile.items()}], symbol)
+    row = scale_quote_prices([{k: _clean_value(v) for k, v in profile.items()}], symbol)[0]
+    row["marketCap"] = _market_cap(ticker, info, symbol, row["price"])
+    return [row]
 
 
 def _get_realtime_quote(symbol: str) -> list[dict[str, Any]]:
@@ -210,17 +211,35 @@ def _get_realtime_quote(symbol: str) -> list[dict[str, Any]]:
         "dayHigh": snap["high"],
         "dayLow": snap["low"],
         "volume": snap["volume"],
-        "marketCap": info.get("marketCap"),
         "pe": info.get("trailingPE"),
         "eps": info.get("trailingEps"),
     }
     row = scale_quote_prices([row], symbol)[0]
-    if row["marketCap"] is None:
-        # Yahoo's info omits it for some listings (A-shares); price it here on
-        # the scaled price, since fast_info's own multiplies a pence quote.
-        shares = _clean_value(ticker.fast_info.get("shares"))
-        row["marketCap"] = shares * row["price"] if shares else None
+    row["marketCap"] = _market_cap(ticker, info, symbol, row["price"])
     return [row]
+
+
+def _market_cap(
+    ticker: yf.Ticker, info: dict[str, Any], symbol: str, price: float | None = None
+) -> float | None:
+    """Yahoo's market cap in the listing's major unit.
+
+    fast_info's own multiplies shares by the quote as listed, so a London line
+    quoted in pence reads 100x high. Info's cap is in pounds; where info omits
+    it (A-shares), shares are priced at *price*, already in the major unit, or
+    else at fast_info's last price scaled to it. Without a share count,
+    fast_info's cap is Yahoo's own figure, and no price is fetched.
+    """
+    cap = _clean_value(info.get("marketCap"))
+    if cap:
+        return cap
+    fi = ticker.fast_info
+    shares = _clean_value(fi.get("shares"))
+    if not shares:
+        return _clean_value(fi.get("marketCap"))
+    if price is None:
+        price = scale_price(_clean_value(fi.get("lastPrice")), minor_unit_places(symbol))
+    return shares * price if price else None
 
 
 def _get_income_statements(
@@ -294,13 +313,12 @@ def _percent_to_fraction(val: Any) -> float | None:
 # table reads one shape whichever provider served it.
 def _get_key_metrics(symbol: str) -> list[dict[str, Any]]:
     ticker = yahoo_ticker(symbol)
-    fi = ticker.fast_info
     info = ticker.info or {}
     if not info:
         return []
     metrics = {
         "symbol": symbol,
-        "marketCap": fi.get("marketCap"),
+        "marketCap": _market_cap(ticker, info, symbol),
         "enterpriseValueTTM": info.get("enterpriseValue"),
         "evToEBITDATTM": info.get("enterpriseToEbitda"),
         "returnOnEquityTTM": info.get("returnOnEquity"),
