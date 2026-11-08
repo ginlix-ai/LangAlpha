@@ -9,7 +9,6 @@ Falls back to regex-based extraction if edgartools fails.
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from langchain_core.tools import tool
@@ -76,12 +75,12 @@ def _fetch_sec_filing_blocking(
     sections: Optional[List[str]],
     include_financials: bool,
     output_format: str,
-) -> Tuple[Any, Optional[str], Dict[str, Any]]:
+) -> Tuple[Any, Dict[str, Any]]:
     """
     Blocking helper to fetch SEC filing content (runs in thread pool).
 
     Returns:
-        Tuple of (filing_content, filing_date_str, metadata) or (error_dict, None, {})
+        Tuple of (filing_content, metadata) or (error_dict, {})
     """
     logger.debug(f"Fetching {filing_type.value} filing for {symbol} using edgartools")
 
@@ -93,11 +92,7 @@ def _fetch_sec_filing_blocking(
             include_financials=include_financials,
             output_format=output_format,
         )
-
-        # Extract filing date from metadata
-        filing_date_str = metadata.get("filing_date")
-
-        return content, filing_date_str, metadata
+        return content, metadata
 
     except ParsingFailedError as e:
         logger.warning(f"edgartools failed: {e}")
@@ -105,7 +100,7 @@ def _fetch_sec_filing_blocking(
             "error": str(e),
             "symbol": symbol,
             "filing_type": filing_type.value,
-        }, None, {}
+        }, {}
 
     except Exception as e:
         logger.warning(f"edgartools error: {e}")
@@ -113,7 +108,7 @@ def _fetch_sec_filing_blocking(
             "error": f"Unexpected error: {e}",
             "symbol": symbol,
             "filing_type": filing_type.value,
-        }, None, {}
+        }, {}
 
 
 async def _fetch_sec_filing(
@@ -122,12 +117,12 @@ async def _fetch_sec_filing(
     sections: Optional[List[str]],
     include_financials: bool,
     output_format: str,
-) -> Tuple[Any, Optional[str], Dict[str, Any]]:
+) -> Tuple[Any, Dict[str, Any]]:
     """
     Async fetch SEC filing content using thread pool for blocking calls.
 
     Returns:
-        Tuple of (filing_content, filing_date_str, metadata) or (error_dict, None, {})
+        Tuple of (filing_content, metadata) or (error_dict, {})
     """
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
@@ -174,8 +169,8 @@ async def get_sec_filing_async(
         else:
             sections = DEFAULT_10Q_SECTIONS
 
-    # Step 1: Fetch SEC filing (sequential - need filing_date first)
-    result, filing_date_str, metadata = await _fetch_sec_filing(
+    # Step 1: Fetch SEC filing
+    result, metadata = await _fetch_sec_filing(
         symbol=symbol,
         filing_type=ftype,
         sections=sections,
@@ -193,24 +188,18 @@ async def get_sec_filing_async(
         **metadata,
     }
 
-    # If no filing date or not markdown, return as-is
-    if not filing_date_str or not isinstance(result, str):
+    # If not markdown, return as-is
+    if output_format != "markdown" or not isinstance(result, str):
         return str(result), artifact
-
-    # Parse filing date for parallel fetches
-    try:
-        filing_date_obj = datetime.strptime(filing_date_str, "%Y-%m-%d").date()
-    except ValueError:
-        logger.warning(f"Failed to parse filing date: {filing_date_str}")
-        return result, artifact
 
     # Step 2: Fetch earnings call and nearby 8-Ks IN PARALLEL
     tasks = []
 
-    if include_earnings_call:
+    period_end = metadata.get("period_end")
+    if include_earnings_call and period_end:
         tasks.append(
             asyncio.create_task(
-                fetch_matching_earnings_call(symbol, filing_date_obj),
+                fetch_matching_earnings_call(symbol, ftype, period_end),
                 name="earnings_call"
             )
         )
@@ -239,16 +228,10 @@ async def get_sec_filing_async(
             logger.warning(f"Task {task.get_name()} failed: {task_result}")
             continue
 
-        if task.get_name() == "earnings_call" and task_result:
-            try:
-                transcript, fiscal_year, quarter, call_date = task_result
-                earnings_section = format_earnings_call_section(
-                    transcript, fiscal_year, quarter, call_date, filing_date_obj
-                )
-                output += earnings_section
+        if task.get_name() == "earnings_call":
+            output += format_earnings_call_section(task_result, period_end)
+            if task_result and task_result.transcript:
                 artifact["has_earnings_call"] = True
-            except Exception as e:
-                logger.warning(f"Failed to format earnings call: {e}")
 
         elif task.get_name() == "recent_8k" and task_result:
             try:
@@ -315,8 +298,8 @@ async def get_sec_filing(
             after quarter end); "8-K" for every event-driven filing of the last
             90 days.
         include_financials: Include statements and key metrics. Default True.
-        include_earnings_call: Include the transcript for the same fiscal period,
-            matched to the filing date. Default True.
+        include_earnings_call: Include the earnings call for the filing's fiscal
+            period. Default True.
 
     Returns:
         A long markdown report carrying the filing's official SEC EDGAR source
