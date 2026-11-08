@@ -93,6 +93,9 @@ export interface StreamRouterDeps {
   /** Re-read the user's Claude Code tokens, after Anthropic refused the one
    *  a turn ran on mid-turn. */
   refreshClaudeCode: () => void;
+  /** Re-read the Claude plan behind the user's Claude Code tokens, which
+   *  each request of a turn on one reports. */
+  refreshClaudeCodePlan: () => void;
   /** Hears the turn the server admitted the run to, before the run's bubbles
    *  take it, while they still carry the turn the view counted. */
   onAdmittedTurn?: (bubbleId: string, turnIndex: number) => void;
@@ -290,6 +293,10 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     // stopped here, the way a reload shows it. This tab's Stop aborts the read
     // first and settles the bubble itself.
     if (eventType === 'run_end' && !isSubagent) {
+      // A turn on a Claude Code model moved its Claude plan, which the
+      // picker's meter and the composer's row read. The stream does not say
+      // which model ran, and only reads on screen go out again.
+      deps.refreshClaudeCodePlan();
       const counted = event.token_totals;
       if (counted) rt.setTokenUsage((prev) => withServerTotals(prev, counted));
       // A frame without the field could not read it, and the stream's end

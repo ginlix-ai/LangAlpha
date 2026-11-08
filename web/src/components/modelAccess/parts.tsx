@@ -11,7 +11,7 @@ export type AccessStatus = 'connected' | 'needs_reauth' | 'working' | 'unknown';
 /** Each row status but `working` as its word beside a dot, whose colour
  *  carries what it means: it works, it needs the user (a key a provider
  *  refused or no longer takes, a sign-in to redo, something that cannot run
- *  where it is), or it is not connected now (nothing added yet, its computer
+ *  where it is, a Claude plan used up), or it is not connected now (nothing added yet, its computer
  *  offline, off, no computer it can run on, or not known). */
 const DOTTED = {
   connected: { key: 'modelAccess.status.connected', color: 'var(--color-success)' },
@@ -19,6 +19,7 @@ const DOTTED = {
   refused: { key: 'modelAccess.status.keyRefused', color: 'var(--color-warning)' },
   withdrawn: { key: 'modelAccess.status.withdrawn', color: 'var(--color-warning)' },
   unavailable: { key: 'modelAccess.status.unavailable', color: 'var(--color-warning)' },
+  limit_reached: { key: 'claudeCodePlan.limitReached', color: 'var(--color-warning)' },
   not_connected: { key: 'modelAccess.status.notConnected', color: 'var(--color-text-quaternary)' },
   offline: { key: 'modelAccess.status.offline', color: 'var(--color-text-quaternary)' },
   off: { key: 'modelAccess.status.off', color: 'var(--color-text-quaternary)' },

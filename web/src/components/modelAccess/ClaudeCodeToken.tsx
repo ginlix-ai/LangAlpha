@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ExternalLink, MoreHorizontal, Shield } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -113,10 +113,12 @@ export function ClaudeCodeTokenModal({ target, action, onClose }: { target: Toke
 /** A token line's buttons, each as `TOKEN_ACTIONS` says: the first as a
  *  button, any after it (Remove beside a Replace or an Add) in a menu of
  *  their own, so a line's controls keep one width on one line. */
-export function TokenActions({ actions, onOpen, onRemove }: {
+export function TokenActions({ actions, onOpen, onRemove, menuItems }: {
   actions: TokenAction[];
   onOpen: (action: SheetAction) => void;
   onRemove: () => void;
+  /** Items the More actions menu holds before the actions, which open it even beside one action. */
+  menuItems?: ReactNode;
 }) {
   const { t } = useTranslation();
   if (actions.length === 0) return null;
@@ -131,7 +133,7 @@ export function TokenActions({ actions, onOpen, onRemove }: {
       <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} onClick={() => run(first)}>
         {t(TOKEN_ACTIONS[first].label)}
       </Button>
-      {more.length > 0 && (
+      {(more.length > 0 || menuItems) && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button type="button" variant="ghost" size="icon" className="tap-target h-9 w-9" aria-label={t('modelAccess.claudeCode.moreActions')}>
@@ -139,6 +141,7 @@ export function TokenActions({ actions, onOpen, onRemove }: {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {menuItems}
             {more.map((action) => (
               <DropdownMenuItem key={action} variant={action === 'remove' ? 'destructive' : 'default'} onSelect={() => run(action)}>
                 {t(TOKEN_ACTIONS[action].label)}

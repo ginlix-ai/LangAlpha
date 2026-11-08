@@ -12,6 +12,10 @@ import { ComposerPopover, MENU_ROW, usePickToDraft } from './chat-input.composer
 import { getModelDisplayName } from './chat-input.helpers';
 import { cn } from '@/lib/utils';
 import { llmProviderArt } from '@/lib/brandArt';
+import { isClaudeCodeModel } from '@/lib/claudeCode';
+import { CheckNowFor } from '@/components/modelAccess/PlanCheck';
+import { PickerPlanMeter, type PickerMeter } from '@/components/modelAccess/PlanUsage';
+import type { CheckTarget } from '@/components/modelAccess/usePlanCheck';
 import { isImeComposing } from '@/lib/ime';
 import type { ModelConnection, ModelGroup } from '@/lib/modelGroups';
 import { isSubscription, subscriptionPayer, type Payer } from '@/lib/modelPayer';
@@ -28,8 +32,10 @@ type Metadata = Record<string, ModelMetadataEntry>;
 /** What a row says about its model: a tag beside the name for one that is a
  *  pick, or, for one that is not, why, under its name where a sentence fits.
  *  A row held back by something the user can fix takes them there instead of
- *  picking, through `fix`. */
-export type ModelRowStatus = { tag?: string } | { unavailable: string; fix?: () => void };
+ *  picking, through `fix`. One a check may free offers Check now, through
+ *  `check`, and stays enabled so the control is reached as a row's second
+ *  one is, though a press on the row itself does nothing. */
+export type ModelRowStatus = { tag?: string } | { unavailable: string; fix?: () => void; check?: CheckTarget };
 
 interface ListProps {
   selectedModel: string | null;
@@ -45,6 +51,9 @@ interface ListProps {
   /** What the row says at `now`, the picker's minute clock, so a hold that
    *  ends while the picker is open ends there too. */
   rowStatus: (model: string, now: number) => ModelRowStatus;
+  /** The Claude plan Claude Code's models run on here, which heads their
+   *  tab, and Favorites while the current model is one of them. */
+  planMeter?: PickerMeter;
 }
 
 /**
@@ -87,8 +96,9 @@ export function ModelPicker({
         onPick={(model) => {
           const status = list.rowStatus(model, Date.now());
           if ('unavailable' in status) {
+            if (!status.fix) return;
             onOpenChange(false);
-            status.fix?.();
+            status.fix();
             return;
           }
           onPick(model);
@@ -141,7 +151,7 @@ function viewOf({ query, tab, connectionTab, groups, favorites, recent, selected
 /** The picker's content, mounted while it is open, so the search, the tab and
  *  the brand's payer start over on each opening. */
 function ModelList({
-  selectedModel, metadata, payers, groups, favorites, recent, onToggleFavorite, rowStatus, onPick, onManage,
+  selectedModel, metadata, payers, groups, favorites, recent, onToggleFavorite, rowStatus, planMeter, onPick, onManage,
 }: ListProps & { onPick: (model: string) => void; onManage: () => void }) {
   const { t } = useTranslation();
   const payerLabel = usePayerLabel();
@@ -171,6 +181,11 @@ function ModelList({
   const headerNamesPayer = view.kind === 'brand' && headerPayer === subscriptionPayer(view.group.id);
   const inThread = view.kind === 'favorites' ? view.recent : [];
   const first = [...view.rows, ...inThread].find((m) => !('unavailable' in rowStatus(m, now)));
+  // Claude Code's plan heads the tab of its models, and Favorites while the
+  // current model is one of them.
+  const isClaudeCode = (m: string | null) => !!m && isClaudeCodeModel(metadata?.[m]);
+  const meter = (view.kind === 'brand' && view.connection.models.some(isClaudeCode))
+    || (view.kind === 'favorites' && isClaudeCode(selectedModel)) ? planMeter : undefined;
   const favoriteSet = new Set(favorites);
 
   // The current model's check is what the user looks for on opening, and a
@@ -284,7 +299,7 @@ function ModelList({
         <div className="flex min-w-0 flex-1 flex-col">
           {header && (
             <div className="flex flex-none items-center justify-between gap-2 px-3 pb-1 pt-2 text-xs text-(--color-text-tertiary)">
-              <span className="truncate">{header}</span>
+              {meter ? <PickerPlanMeter meter={meter} /> : <span className="truncate">{header}</span>}
               {view.kind === 'brand' && view.group.connections.length > 1 ? (
                 <ToggleButtonGroup
                   aria-label={t('chat.modelSelector.paidBy')}
@@ -430,7 +445,8 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
   const provider = metadata?.[model]?.provider;
   const name = getModelDisplayName(model, metadata);
   const reason = 'unavailable' in status ? status.unavailable : undefined;
-  const fixable = 'unavailable' in status && !!status.fix;
+  const check = 'unavailable' in status ? status.check : undefined;
+  const actionable = 'unavailable' in status && (!!status.fix || !!check);
   const tag = 'tag' in status ? status.tag : undefined;
   return (
     <GridListItem
@@ -439,8 +455,8 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
       // A row a reason holds back says it as part of its name, which is all a
       // screen reader reads of a row.
       textValue={reason ? `${name}, ${reason}` : name}
-      isDisabled={reason !== undefined && !fixable}
-      className={cn('group', MENU_ROW, 'data-disabled:text-(--color-text-tertiary)', fixable && 'text-(--color-text-tertiary)')}
+      isDisabled={reason !== undefined && !actionable}
+      className={cn('group', MENU_ROW, 'data-disabled:text-(--color-text-tertiary)', actionable && 'text-(--color-text-tertiary)')}
     >
       {/* One line holds the name and everything after it, so the check and
           the star sit level with the name whether or not a reason goes under. */}
@@ -469,10 +485,12 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
             <Star aria-hidden className="h-3.5 w-3.5" fill={favorite ? 'currentColor' : 'none'} />
           </Button>
         </span>
-        {/* Under the name itself, past the mark and its gap, and clear of the star's column. */}
+        {/* Under the name itself, past the mark and its gap, and clear of the
+            star's column, which Check now takes on this line where it is offered. */}
         {reason && (
-          <span className={cn('pe-7 text-xs text-pretty text-(--color-text-tertiary)', provider && llmProviderArt(provider) && 'ps-[1.375rem]')}>
-            {reason}
+          <span className={cn('flex items-start gap-2 text-xs text-(--color-text-tertiary)', !check && 'pe-7', provider && llmProviderArt(provider) && 'ps-[1.375rem]')}>
+            <span className="min-w-0 flex-1 text-pretty">{reason}</span>
+            {check && <CheckNowFor target={check} icon />}
           </span>
         )}
       </span>

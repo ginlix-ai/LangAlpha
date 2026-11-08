@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import i18n from '@/i18n';
 import type { ClaudeCodePlan, ClaudeCodePlanHeld, ClaudeCodePlanWindow } from '@/api/model';
 import {
-  composerPlanLine, pickerPlanHold, planActionText, planBilledText, planRefusalText, planTime, readPlanBilled, readPlanRefusal,
+  composerPlanLine, creditsRefused, limitDetail, pickerPlanHold, planActionText, planBilledText, planRefusalText, planTime, readPlanBilled, readPlanRefusal,
   savedTokenInSentence, type PlanClock,
 } from '../claudeCodePlan';
 
@@ -228,6 +228,21 @@ describe('which models a limit holds', () => {
     expect(composerPlanLine(en, opus, 'stop', OPUS, NY)).toBe("Your Claude plan's limit is used up. Pick another model to keep going.");
     expect(pickerPlanHold(en, opus, 'stop', OPUS, NY)).toBe('Plan limit used up');
     expect(pickerPlanHold(en, unknown(null), 'stop', HAIKU, { ...NY, now: Date.parse(TODAY) })).toBeNull();
+  });
+
+  it("names a token row's window and reset, and only that the limit is used up where Claude said no reset", () => {
+    expect(limitDetail(en, limit('five_hour', TODAY), NY)).toBe('5h limit used up, resets 3:40 PM');
+    expect(limitDetail(en, { window: null, until: TODAY, family: null, reset_known: false }, NY)).toBe('Plan limit used up');
+    expect(limitDetail(en, { window: null, until: TODAY, family: null, reset_known: true }, NY)).toBe('Plan limit used up until 3:40 PM');
+    expect(limitDetail(zh, { window: 'seven_day_opus', until: TODAY, family: 'opus', reset_known: false }, NY_ZH)).toBe('套餐限额已用完');
+  });
+
+  it('offers a check on a model held because the account has the usage credits the user chose off', () => {
+    expect(creditsRefused(planAt('five_hour', TODAY, 'off'), 'credits', HAIKU, NOW)).toBe(true);
+    expect(creditsRefused(planAt('five_hour', TODAY, 'off'), 'stop', HAIKU, NOW)).toBe(false);
+    expect(creditsRefused(planAt('five_hour', TODAY, null), 'credits', HAIKU, NOW)).toBe(false);
+    expect(creditsRefused(planAt('seven_day_opus', TODAY, 'off'), 'credits', SONNET, NOW)).toBe(false);
+    expect(creditsRefused(planAt('five_hour', TODAY, 'off'), 'credits', HAIKU, Date.parse(TODAY))).toBe(false);
   });
 
   it('holds nothing without a limit, or once its reset has passed', () => {

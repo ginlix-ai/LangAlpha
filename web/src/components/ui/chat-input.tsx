@@ -37,7 +37,7 @@ import { ANTHROPIC_KEY_URL, CLAUDE_CODE_CHOICE_URL, biggerComputer, claudeCodeTo
 import type { Payer } from '@/lib/modelPayer';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { usePlanReader } from '@/hooks/useClaudeCodePlan';
-import { pickerPlanHold, planOutOf } from '@/lib/claudeCodePlan';
+import { creditsRefused, pickerPlanHold, planOutOf } from '@/lib/claudeCodePlan';
 import { deriveRecentModels } from './chat-input.models';
 import { modelGroups } from '@/lib/modelGroups';
 import { useEffortToolbarItem, useToolbarItems } from './chat-input.toolbar';
@@ -906,9 +906,12 @@ function ChatInput({
         case 'needs_perl': return { unavailable: t('modelAccess.claudeCode.fail.needs_perl') };
         case 'computer_unsupported': return { unavailable: t('modelAccess.claudeCode.fail.computer_unsupported') };
       }
-      const planHold = pickerPlanHold(
-        t, claudeCode.plan, planOutOf(preferences?.other_preference), m, { ...planReader, now },
-      );
+      const planOut = planOutOf(preferences?.other_preference);
+      const planHold = pickerPlanHold(t, claudeCode.plan, planOut, m, { ...planReader, now });
+      const credential = claudeCode.meter?.credential;
+      if (planHold && credential && creditsRefused(claudeCode.plan, planOut, m, now)) {
+        return { unavailable: planHold, check: { credential, checkAfter: claudeCode.meter?.checkAfter ?? null } };
+      }
       if (planHold) return { unavailable: planHold };
     }
     return { tag: lapsedSignIn(m) ? t('modelAccess.status.needsReauth') : undefined };
@@ -1132,6 +1135,7 @@ function ChatInput({
                 onToggleFavorite={(m, on) => (on ? favorites.add(m) : favorites.remove(m))}
                 onSelectModel={handlePickModel}
                 rowStatus={modelRowStatus}
+                planMeter={claudeCode.meter}
                 dropdownDirection={dropdownDirection}
                 container={chatContainer}
                 draftRef={textareaRef}

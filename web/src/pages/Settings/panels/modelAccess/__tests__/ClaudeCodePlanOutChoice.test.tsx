@@ -36,6 +36,9 @@ const computer = (computer_id: string, name: string, source: ClaudeCodeComputer[
 const rowOf = (key: string): TokenRow => ({
   key,
   target: key === 'saved' ? { kind: 'saved' } : { kind: 'computer', computerId: key, name: key },
+  credential: key === 'saved' ? { kind: 'saved' } : { kind: 'computer', computerId: key },
+  checkAfter: null,
+  checkBills: false,
   tag: null,
   line: { status: 'connected', detail: null, actions: [] },
 });

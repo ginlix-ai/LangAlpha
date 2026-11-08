@@ -171,6 +171,17 @@ async def test_a_check_of_a_token_read_before_it_opened_keeps_nothing_once_anoth
 
 
 @pytest.mark.asyncio
+async def test_a_report_the_run_had_nowhere_to_write_is_not_called_written(rows, monkeypatch):
+    plan = UserPlan("u", "c-1")
+    monkeypatch.setattr(store, "get_plans", AsyncMock(side_effect=RuntimeError("db down")))
+    with pytest.raises(RuntimeError):
+        await plan.open()
+    plan.record("saved", _reading(NOW))
+    assert await plan.written() is False
+    assert rows["writes"] == []
+
+
+@pytest.mark.asyncio
 async def test_a_run_reads_the_row_of_the_credential_it_signed_in_with(rows):
     rows["rows"] = {"computer:c-1": _row(_state(_reading(NOW, limit=PlanLimit("five_hour", datetime.now(UTC) + timedelta(hours=1)))))}
     assert (await UserPlan("u", "c-1").limit("machine", SONNET)).window == "five_hour"
@@ -414,7 +425,7 @@ async def test_a_saved_tokens_check_that_would_bill_sends_nothing_and_keeps_the_
     monkeypatch.setattr("ptc_agent.agent.claude_code.runtime.token_works", works)
     monkeypatch.setattr(saved, "keep_check", keep)
     row = {"access_token": "sk-ant-oat01-x", "updated_at": NOW, "needs_reauth_at": NOW if flagged else None}
-    await saved._check("u", row, "key", AsyncMock(return_value=True))
+    await saved.check_token("u", row, "key", AsyncMock(return_value=True))
     works.assert_not_awaited()
     keep.assert_awaited_once_with("key", kept)
 

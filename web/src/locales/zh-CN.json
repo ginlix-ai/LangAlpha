@@ -6986,6 +6986,39 @@
       "creditsDetail": "如果你的 Claude 账户开启了额外用量，Claude Code 会继续用它运行。",
       "note": "{{names}} 上的 Claude 账户开启了额外用量。超出限额的第一次请求会在 LangAlpha 停止之前计入额外用量。如果永远不想使用，请在 claude.ai 中关闭。",
       "noteLink": "打开 claude.ai 用量设置"
+    },
+    "short": {
+      "five_hour": "5 小时",
+      "seven_day": "7 天",
+      "seven_day_opus": "7 天 Opus",
+      "seven_day_sonnet": "7 天 Sonnet",
+      "seven_day_overage_included": "7 天 Fable"
+    },
+    "near": "{{window}}已用 {{percent}}%，将于 {{time}} 重置。",
+    "limitDetail": "{{short}}限额已用完，{{time}} 重置",
+    "limitReached": "已达限额",
+    "pending": "下一轮 Claude Code 运行后显示套餐用量",
+    "asOf": "截至{{ago}}，来自这个 token 最近一次 Claude Code 请求。在 claude.ai 和你自己的 Claude Code 中的使用也计入。",
+    "table": {
+      "computer": "电脑",
+      "token": "Token",
+      "account": "账户",
+      "resets": "重置"
+    },
+    "meter": {
+      "title": "{{name}} 上的 Claude 套餐",
+      "tip": "截至{{ago}}。5 小时将于 {{time5}} 重置，7 天将于 {{time7}} 重置。",
+      "empty": "首轮运行后显示用量",
+      "resets": "5 小时将于 {{time5}} 重置，7 天将于 {{time7}} 重置。"
+    },
+    "check": {
+      "now": "立即检查",
+      "running": "检查中…",
+      "tip": "用你的 Claude 套餐发送一次很小的请求来读取用量。",
+      "held": "{{time}} 后可再次检查。",
+      "failed": "无法连接 Claude 检查用量，请稍后再试。",
+      "computerUnreached": "无法连接这台电脑查看用量，请稍后再试。",
+      "unsaved": "Claude 已响应，但用量未能更新，请稍后再试。"
     }
   }
 }

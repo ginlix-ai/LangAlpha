@@ -44,6 +44,7 @@ import { sendChatMessageStream, cancelWorkflow, getWorkflowStatus, reconnectToWo
 import { useChatMessages } from '../useChatMessages';
 import type { AssistantMessage } from '@/types/chat';
 import { settleMountEffect } from './chatHookHarness';
+import { queryKeys } from '@/lib/queryKeys';
 
 const mockSendStream = sendChatMessageStream as Mock;
 const mockCancel = cancelWorkflow as Mock;
@@ -243,6 +244,20 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
     expect(afterProc?.isInProgress).toBe(false);
     expect(afterProc?.isComplete).toBe(true);
 
+    hang.resolve({ disconnected: false, aborted: true });
+    await act(async () => { await send.catch(() => undefined); });
+  });
+
+  it('rereads the Claude plan once the cancel settles, since the aborted reader hears no run_end', async () => {
+    const { result, queryClient } = await mountSettled();
+    const { hang, send } = await startHangingSendWithReasoning(result);
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+    const keys = invalidate.mock.calls.map(([filters]) => JSON.stringify(filters?.queryKey));
+    expect(keys).toContain(JSON.stringify(queryKeys.features.claudeCodeStatus()));
+    expect(keys).toContain(JSON.stringify(queryKeys.features.claudeCodeComputers()));
     hang.resolve({ disconnected: false, aborted: true });
     await act(async () => { await send.catch(() => undefined); });
   });

@@ -36,6 +36,8 @@ export const queryKeys = {
     claudeCodeStatus: () => [...queryKeys.features.claudeCode(), 'status'],
     claudeCodeComputers: () => [...queryKeys.features.claudeCode(), 'computers'],
     claudeCodeSetup: () => [...queryKeys.features.claudeCode(), 'setup'],
+    // Check now's mutations, each carrying its credential as variables.
+    claudeCodePlanCheck: () => [...queryKeys.features.claudeCode(), 'plan-check'],
   },
   platform: {
     all:    ['platform'],

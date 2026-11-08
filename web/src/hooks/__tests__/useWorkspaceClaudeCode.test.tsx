@@ -44,6 +44,8 @@ function run(
   if (computerId) queryClient.setQueryData(queryKeys.workspaces.detail('ws-1'), desk(computerId));
   return renderHookWithProviders(() => useWorkspaceClaudeCode('ws-1'), { queryClient });
 }
+/** The picker's meter on a token that works, which turns run on through the saved one. */
+const savedMeter = (name: string) => ({ name, plan: undefined, credential: { kind: 'saved' }, checkAfter: null });
 const desk = (computerId: string | null) => ({ workspace_id: 'ws-1', name: 'Desk', is_home: false, computer_id: computerId });
 const failed = (code: number) => Object.assign(new Error(`Request failed with status code ${code}`), { response: { status: code, data: {} } });
 
@@ -69,6 +71,31 @@ describe('useWorkspaceClaudeCode', () => {
     }));
     await waitFor(() => expect(apiKey.result.current.state).toBe('api_key'));
     expect(apiKey.result.current.plan).toBeUndefined();
+  });
+
+  it("holds Check now as long as the server says, counted from when its read arrived, never from a time on the server's clock", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const arrived = Date.parse('2026-11-07T15:00:00Z');
+    vi.setSystemTime(arrived);
+    // The server's clock runs an hour ahead of this browser's.
+    const plan = { five_hour: null, seven_day: null, limits: [], credits: null, observed_at: '2026-11-07T16:00:00Z' };
+    try {
+      const own = run('cmp-mac', OWN_ONLY, () => Promise.resolve({ computers: [{ ...MAC, state: 'signed_in', source: 'machine', plan, check_in: 60 }] }));
+      await waitFor(() => expect(own.result.current.meter?.checkAfter).toBe(arrived + 60_000));
+      const saved = run('cmp-daytona', { ...RUNS_HERE, state: 'signed_in', plan, check_in: 120 });
+      await waitFor(() => expect(saved.result.current.meter?.checkAfter).toBe(arrived + 120_000));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('offers no Check now in the meter where a check would be billed to usage credits', async () => {
+    const plan = { five_hour: null, seven_day: null, limits: [], credits: null, observed_at: '2026-11-07T16:00:00Z' };
+    const own = run('cmp-mac', OWN_ONLY, () => Promise.resolve({ computers: [{ ...MAC, state: 'signed_in', source: 'machine', plan, check_bills: true }] }));
+    await waitFor(() => expect(own.result.current.meter).toMatchObject({ name: 'Studio Mac', credential: null }));
+    const saved = run('cmp-daytona', { ...RUNS_HERE, state: 'signed_in', plan, check_bills: true });
+    await waitFor(() => expect(saved.result.current.meter).toBeDefined());
+    expect(saved.result.current.meter?.credential).toBeNull();
   });
 
   it("needs one of the user's own computers on a hosted computer where no saved token runs", async () => {
@@ -176,7 +203,7 @@ describe('useWorkspaceClaudeCode', () => {
 
   it('runs on a cloud computer the server does not name', async () => {
     const { result } = run('cmp-other', { ...RUNS_HERE, state: 'signed_in' }, SMALL);
-    await waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: null, known: true }));
+    await waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: null, known: true, meter: savedMeter('your setup token') }));
   });
 
   // The status says what the stored token is doing once it reads the choice.
@@ -225,14 +252,14 @@ describe('useWorkspaceClaudeCode', () => {
     const RELAYING: ClaudeCodeComputer = { ...MAC, state: 'signed_in', source: 'saved' };
 
     it.each([
-      ['a hosted computer', 'cmp-daytona', null],
-      ['a computer relaying it', 'cmp-mac', 'cmp-mac'],
-    ])('reads %s as refused', async (_, computerId, expected) => {
+      ['a hosted computer', 'cmp-daytona', null, 'your setup token'],
+      ['a computer relaying it', 'cmp-mac', 'cmp-mac', 'Studio Mac'],
+    ])('reads %s as refused', async (_, computerId, expected, name) => {
       vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
       vi.setSystemTime(NOW);
       try {
         const { result } = run(computerId, SIGNED_IN, () => Promise.resolve({ computers: [RELAYING] }));
-        await act(() => vi.waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: expected, known: true })));
+        await act(() => vi.waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: expected, known: true, meter: savedMeter(name) })));
         (getClaudeCodeStatus as Mock).mockResolvedValue({ ...SIGNED_IN, state: 'rejected' });
         (getClaudeCodeComputers as Mock).mockImplementation(() => Promise.resolve({ computers: [{ ...RELAYING, state: 'rejected' }] }));
         await act(() => vi.advanceTimersByTimeAsync(31_000));
@@ -249,7 +276,7 @@ describe('useWorkspaceClaudeCode', () => {
       queryClient.setQueryData(queryKeys.features.list(), [{ key: 'claude_code_runtime', enabled: true }]);
       queryClient.setQueryData(queryKeys.workspaces.detail('ws-1'), desk('cmp-mac'));
       const { result } = renderHookWithProviders(() => useWorkspaceClaudeCode('ws-1'), { queryClient });
-      await waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: 'cmp-mac', known: true }));
+      await waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: 'cmp-mac', known: true, meter: savedMeter('Studio Mac') }));
       (getClaudeCodeStatus as Mock).mockResolvedValue({ ...SIGNED_IN, state: 'rejected' });
       (getClaudeCodeComputers as Mock).mockResolvedValue({ computers: [{ ...RELAYING, state: 'rejected' }] });
       await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeStatus() }));

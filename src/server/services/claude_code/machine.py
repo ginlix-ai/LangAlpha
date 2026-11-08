@@ -24,7 +24,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime
@@ -46,9 +46,10 @@ from src.server.services.ssh_computers import is_own_computer, ssh_info, tunnel_
 from src.utils.cache.redis_cache import get_cache_client
 
 from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, SHORT_TTL_S, Held, check_would_bill, in_background, run_check, ttl
-from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, changing, rows_on
+from .check_now import CHECK_UNAVAILABLE, PLAN_WRITTEN_S, computer_unreached, held_check, limit_held, not_checkable, unreached, unsaved
+from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, changing, require, rows_on
 from .hosted import saved_token_runs
-from .plan import CheckReports, UserPlan, plan_views
+from .plan import CheckReports, CredentialPlan, UserPlan, plan_views
 from .saved import refusal_stamp, refuse, stored_row, token_hash, token_state, usable
 
 if TYPE_CHECKING:
@@ -69,6 +70,8 @@ STATUS_CHECK_S = 2 * MACHINE_IO_S + CHECK_S + CHECK_CLEANUP_S
 #: reading its token file's state.
 LOOK_S = 2 * MACHINE_IO_S
 
+#: Why Check now is refused on a computer whose turns sign in with the relayed saved token.
+_RELAYS = "This computer signs in with your setup token, so check that."
 #: Why a sign-in or a paste is refused, and a turn is refused, on a computer with no perl.
 NEEDS_PERL = "Claude Code needs perl on this computer. Install perl, then try again."
 
@@ -333,6 +336,7 @@ def check_launcher(machine: Machine[Link], user_id: str, token_file: str, *, pla
 
 async def check_machine(
     machine: Machine[Link], user_id: str, computer_id: str, last: MachineAnswer | None, *, look_only: bool = False,
+    answered: Callable[[], None] = lambda: None, skipped: Callable[[], None] = lambda: None, plan: UserPlan | None = None,
 ) -> MachineAnswer:
     """The machine's token as it stands: whether a usable one is there, and if
     so whether Claude serves it, by one minimal turn on the machine, which
@@ -343,7 +347,9 @@ async def check_machine(
 
     The account and expiry are the last answer's, since the machine keeps
     only the token. Raises when the machine cannot be reached or refuses to
-    say.
+    say. ``answered`` hears when Claude has answered, the request then spent,
+    and ``skipped`` that the check sent nothing, since it would be billed;
+    ``plan`` keeps what the check reports of the plan, for a caller to wait on.
     """
     from ptc_agent.agent.claude_code.machine_token import machine_state, token_name
 
@@ -354,9 +360,13 @@ async def check_machine(
     if look_only:
         return carried(last, "unknown", **found)
     if await check_would_bill(user_id, computer_credential(computer_id)):
+        skipped()
         return carried(last, last.file if last is not None and last.file in ("works", "refused") else "works", **found)
+    plan = plan or UserPlan(user_id, computer_id)
     try:
-        works = await run_check(check_launcher(machine, user_id, token_name(computer_id), plan=UserPlan(user_id, computer_id)))
+        works = await run_check(check_launcher(machine, user_id, token_name(computer_id), plan=plan))
+        answered()
+        await plan.written()
     except Exception as e:
         logger.info(f"[claude_code] token check could not tell on the machine: {type(e).__name__}")
         return carried(last, "unknown", **found)
@@ -370,28 +380,35 @@ def _unreached(e: BaseException) -> bool:
     return connect_failure(e) is not None or isinstance(e, (TimeoutError, SandboxTransientError, *TRANSPORT_ERRORS))
 
 
-async def _check_then_keep(
+async def check_then_keep(
     user_id: str, computer_id: str, last: MachineAnswer | None, held: Held, *, look_only: bool = False,
-) -> None:
+    answered: Callable[[], None] = lambda: None, skipped: Callable[[], None] = lambda: None, plan: UserPlan | None = None,
+) -> MachineAnswer | None:
+    """Check the computer's token and keep what was found, unless the hold
+    lapsed or a newer answer was kept meanwhile; what was found, or None
+    where the machine was not reached."""
     # The roster a listing reads holds no provider_ref, which dialing needs.
     computer = await get_computer(computer_id)
     if computer is None:
-        return
+        return None
     started = time.time()
     try:
         async with asyncio.timeout(MACHINE_IO_S):
             machine = await machine_of(computer)
-        answer = await check_machine(machine, user_id, computer_id, last, look_only=look_only)
+        answer = await check_machine(
+            machine, user_id, computer_id, last, look_only=look_only, answered=answered, skipped=skipped, plan=plan,
+        )
     except Exception as e:
         if _unreached(e):
             logger.info(f"[claude_code] computer_id={computer_id} not reached for its token check: {type(e).__name__}")
             await get_cache_client().set(unreached_key(computer_id), True, ttl=SHORT_TTL_S)
-            return
+            return None
         # By its type alone: what the machine said may hold anything.
         logger.warning(f"[claude_code] computer_id={computer_id} could not say how its token stands: {type(e).__name__}")
         answer = carried(last, "unknown")
     if await held():
         await keep_unless_newer(computer_id, answer, started)
+    return answer
 
 
 def _kind(computer: Mapping[str, Any]) -> Literal["ssh", "helper"]:
@@ -459,7 +476,7 @@ async def _status(
         return await _from_answer(user_id, computer, answer, saved)
     if _awake(computer, tunnels) and not await get_cache_client().get(unreached_key(computer_id)):
         started = await in_background(
-            change_lock(computer_id), STATUS_CHECK_S, partial(_check_then_keep, user_id, computer_id, answer),
+            change_lock(computer_id), STATUS_CHECK_S, partial(check_then_keep, user_id, computer_id, answer),
         )
         return _entry(computer, "unverified" if started is None else "checking")
     if answer is not None:
@@ -482,7 +499,7 @@ async def _off(
     reachable = _awake(computer, tunnels) and not await get_cache_client().get(unreached_key(computer_id))
     if answer is None and reachable:
         await in_background(
-            change_lock(computer_id), LOOK_S, partial(_check_then_keep, user_id, computer_id, None, look_only=True),
+            change_lock(computer_id), LOOK_S, partial(check_then_keep, user_id, computer_id, None, look_only=True),
         )
     source = "machine" if answer is not None and answer.names_file else None
     return _entry(computer, "off" if reachable or not mark_offline else "offline", source)
@@ -501,11 +518,59 @@ async def list_computers(user_id: str, *, mark_offline: bool = False) -> ClaudeC
     return ClaudeCodeComputers(computers=[_with_plan(e, plans) for e in entries])
 
 
-def _with_plan(entry: ClaudeCodeComputer, plans: Mapping[str, Any]) -> ClaudeCodeComputer:
-    """The entry with the plan behind the token a turn there signs in with:
-    the relayed saved token's, else the computer's own."""
+def _with_plan(entry: ClaudeCodeComputer, plans: Mapping[str, CredentialPlan]) -> ClaudeCodeComputer:
+    """The entry with the plan behind the token a turn there signs in with,
+    and its Check now's hold: the relayed saved token's, else the computer's own."""
     key = plan_credential(entry.source, entry.computer_id) if entry.source else None
-    return entry.model_copy(update={"plan": plans.get(key)}) if key else entry
+    found = plans.get(key) if key else None
+    return entry.model_copy(update=found._asdict()) if found else entry
+
+
+async def check_now(user_id: str, computer_id: str) -> None:
+    """Check now on the computer's own token, on the computer (``check_now``),
+    under its change hold, so it never runs beside a check or change of the
+    token there, and on the answer kept as it stands then. One whose turns
+    sign in with the relayed saved token is that token's to check; one
+    asleep, or a dial just found out of reach, is refused before its hold
+    is taken, and so is one that would be billed to usage credits
+    (``check_would_bill``). Only an answer whether Claude serves the token
+    spent a request."""
+    require(await rows_on(user_id))
+    await MachineHome.of(user_id, computer_id)
+    async with changing(change_lock(computer_id), hold_s=STATUS_CHECK_S, unavailable=CHECK_UNAVAILABLE) as held:
+        last = await read_answer(computer_id)
+        if last is not None and last.relays:
+            raise not_checkable(_RELAYS)
+        computer = await get_computer(computer_id)
+        if computer is None or not _awake(computer, await tunnels_for(user_id, [computer])) \
+                or await get_cache_client().get(unreached_key(computer_id)):
+            raise computer_unreached()
+        if await check_would_bill(user_id, computer_credential(computer_id)):
+            raise limit_held()
+        async with held_check(user_id, computer_credential(computer_id)) as spend:
+            plan, skips, spent = UserPlan(user_id, computer_id), [], []
+
+            def answered() -> None:
+                spend()
+                spent.append(True)
+
+            try:
+                async with asyncio.timeout(STATUS_CHECK_S):
+                    answer = await check_then_keep(
+                        user_id, computer_id, last, held, answered=answered, skipped=lambda: skips.append(True), plan=plan,
+                    )
+            except TimeoutError:
+                raise (unsaved() if spent else unreached()) from None
+            if skips:
+                raise limit_held()
+            if answer is None:
+                raise computer_unreached()
+            if answer.file == "unknown":
+                raise unreached()
+            if answer.file not in ("works", "refused"):
+                raise not_checkable(_RELAYS if answer.relays else "Add a setup token that works first.")
+            if not await plan.written(PLAN_WRITTEN_S):
+                raise unsaved()
 
 
 async def remove_for_removed_computer(link: Link, computer_id: str) -> bool:
@@ -670,13 +735,18 @@ class MachineHome:
         await claude_code_plan.forget_plan(self.user_id, computer_credential(self.computer_id), token_digest=token_hash(token))
         await self.checked.keep(UserPlan(self.user_id, self.computer_id))
         logger.info(f"[claude_code] setup token placed on computer_id={self.computer_id} for user_id={self.user_id}")
-        return _entry(self.computer, "signed_in", "machine", **answer.meta)
+        # The same token placed again keeps its plan and its Check now's hold.
+        plans = await plan_views(self.user_id, [computer_credential(self.computer_id)])
+        return _with_plan(_entry(self.computer, "signed_in", "machine", **answer.meta), plans)
 
     async def current(self) -> ClaudeCodeComputer:
         answer = await read_answer(self.computer_id)
         if answer is None:
             return _entry(self.computer, "checking")
-        return await _from_answer(self.user_id, self.computer, answer, await _relayed(self.user_id))
+        entry, plans = await asyncio.gather(
+            _from_answer(self.user_id, self.computer, answer, await _relayed(self.user_id)), plan_views(self.user_id),
+        )
+        return _with_plan(entry, plans)
 
     async def remove(self, *, held: Held) -> None:
         """Remove the token, then keep what the machine says now: its

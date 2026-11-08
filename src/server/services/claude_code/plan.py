@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -21,6 +22,8 @@ from src.llms.claude_code import PLAN_LIMITS, PlanLimit, PlanOut, binding_limit
 from src.server.database import claude_code_plan as store
 from src.server.database.user import get_user_preferences
 from src.server.models.claude_code import ClaudeCodePlan, PlanHeld, PlanUse
+
+from .check_now import CHECK_EVERY
 
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.plan import SignedIn
@@ -213,6 +216,9 @@ class UserPlan:
         #: Each credential's generation as the run opened, which its writes go to.
         self._fences: dict[str, int] | None = None
         self._pending: set[asyncio.Task[None]] = set()
+        #: A report was not kept: its write failed, its token was replaced, or
+        #: the run could not read which generation to write it to.
+        self._lost = False
 
     async def open(self) -> None:
         credentials = [c for c in (store.SAVED, store.plan_credential("machine", self.computer_id)) if c]
@@ -252,17 +258,23 @@ class UserPlan:
 
     def record(self, signed_in: SignedIn, reading: PlanReading) -> None:
         credential = store.plan_credential(signed_in, self.computer_id)
-        generation = (self._fences or {}).get(credential) if credential else None
-        if credential is None or generation is None:
+        if credential is None:
+            return
+        if (generation := (self._fences or {}).get(credential)) is None:
+            self._lost = True
             return
         task = asyncio.create_task(self._record(credential, generation, reading))
         for kept in (_writes, self._pending):
             kept.add(task)
             task.add_done_callback(kept.discard)
 
-    async def written(self) -> None:
-        if self._pending:
-            await asyncio.wait(set(self._pending), timeout=WRITTEN_WAIT_S)
+    async def written(self, within: float | None = None) -> bool:
+        """Wait up to ``within`` (``WRITTEN_WAIT_S`` unless given) for the
+        reports so far to be written; whether every one was."""
+        pending = set(self._pending)
+        if pending:
+            await asyncio.wait(pending, timeout=WRITTEN_WAIT_S if within is None else within)
+        return all(task.done() for task in pending) and not self._lost
 
     async def _record(self, credential: str, generation: int, reading: PlanReading) -> None:
         try:
@@ -272,8 +284,10 @@ class UserPlan:
             )
         except Exception as e:  # noqa: BLE001 - a lost report costs freshness only
             logger.warning(f"[claude_code] could not keep a plan report for user_id={self.user_id} {credential}: {type(e).__name__}")
+            self._lost = True
             return
         if not kept:
+            self._lost = True
             logger.info(f"[claude_code] dropped a plan report of a replaced token for user_id={self.user_id} {credential}")
 
     async def limit(self, signed_in: SignedIn, model: str) -> PlanLimit | None:
@@ -344,13 +358,42 @@ def plan_view(row: dict[str, Any] | None, now: datetime | None = None) -> Claude
     )
 
 
-async def plan_views(user_id: str, credentials: list[str] | None = None) -> dict[str, ClaudeCodePlan]:
-    """The plans the user's credentials report, by credential, ``credentials``
-    only where given. A read that fails shows none: the plan is beside what
+def check_in(row: Mapping[str, Any]) -> int | None:
+    """Whole seconds until Check now may run on the row's credential again,
+    None where it may now, on the database's clock both stamps are on."""
+    if (checked_at := row.get("checked_at")) is None:
+        return None
+    left = (checked_at + CHECK_EVERY - row["read_at"]).total_seconds()
+    return math.ceil(left) if left > 0 else None
+
+
+class CredentialPlan(NamedTuple):
+    """What Settings shows of a credential: the plan behind it, when Check
+    now may read it again, and whether a check would be billed, so is not
+    offered (``check_bills``)."""
+
+    plan: ClaudeCodePlan | None
+    check_in: int | None
+    check_bills: bool = False
+
+
+async def plan_views(user_id: str, credentials: list[str] | None = None) -> dict[str, CredentialPlan]:
+    """What the user's credentials show, by credential, ``credentials`` only
+    where given. A read that fails shows nothing: the plan is beside what
     Settings reads, never a reason to fail it."""
     try:
         rows = await store.get_plans(user_id, credentials)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[claude_code] could not read the plan state for user_id={user_id}: {type(e).__name__}")
         return {}
-    return {key: view for key, row in rows.items() if (view := plan_view(row)) is not None}
+    from .checks import check_bills
+
+    bills = {key for key, row in rows.items() if check_bills(PlanState.of(row.get("state")), "stop")}
+    if bills:
+        try:
+            out = await plan_out(user_id)
+        except Exception as e:  # noqa: BLE001 - read as Stop, as Check now's gate reads it
+            logger.warning(f"[claude_code] could not read the plan choice for user_id={user_id}: {type(e).__name__}")
+            out = "stop"
+        bills = bills if out == "stop" else set()
+    return {key: CredentialPlan(plan_view(row), check_in(row), key in bills) for key, row in rows.items()}

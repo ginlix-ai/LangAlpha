@@ -14,6 +14,7 @@ import {
 } from './dropdown-menu';
 import { getModelDisplayName } from './chat-input.helpers';
 import { ModelPicker, type ModelRowStatus } from './chat-input.modelPicker';
+import type { PickerMeter } from '@/components/modelAccess/PlanUsage';
 import { EFFORT_LABELS, hasTuningMenu, tuningMenuLevels } from '@/lib/modelTuning';
 import type { ModelMetadataEntry, TaskCost } from '@/hooks/useFilteredModels';
 import type { ModelGroup } from '@/lib/modelGroups';
@@ -157,7 +158,7 @@ function Pill({ pill, buttonRef, open, popup, onPress, title, disabled, children
  */
 export function ChatInputModelMenu({
   selectedModel, metadata, payers, groups, favorites, recent, onToggleFavorite, onSelectModel,
-  rowStatus, dropdownDirection, container, draftRef, disabled = false, nameHidden = false,
+  rowStatus, planMeter, dropdownDirection, container, draftRef, disabled = false, nameHidden = false,
 }: {
   selectedModel: string | null;
   /** Supplies authored display names; a model without one gets a derived name. */
@@ -172,6 +173,8 @@ export function ChatInputModelMenu({
   onSelectModel: (model: string) => void;
   /** What each row says beside its model, and whether it is a pick. */
   rowStatus: (model: string, now: number) => ModelRowStatus;
+  /** The Claude plan Claude Code's models run on here, for the picker's meter. */
+  planMeter?: PickerMeter;
   dropdownDirection: 'up' | 'down';
   /** Mobile portals into the composer so the picker can't escape the sheet. */
   container: HTMLElement | null;
@@ -227,6 +230,7 @@ export function ChatInputModelMenu({
         onToggleFavorite={onToggleFavorite}
         onPick={onSelectModel}
         rowStatus={rowStatus}
+        planMeter={planMeter}
         onManage={toSettings}
       />
     </>

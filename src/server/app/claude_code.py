@@ -7,6 +7,7 @@ saving, removing, and whether it works, for Settings and the model picker.
 - POST   /api/v1/claude-code/sign-in/code    Finish it with the code Claude's page shows
 - PUT    /api/v1/claude-code/token           Save a setup token the user made themselves
 - DELETE /api/v1/claude-code/token           Remove the saved token
+- POST   /api/v1/claude-code/check           Check now: read the saved token's Claude plan with one minimal request
 - GET    /api/v1/claude-code/custody         How turns on cloud computers run, where the user chooses it
 - PUT    /api/v1/claude-code/custody         Choose it
 
@@ -61,6 +62,12 @@ async def save_token(body: TokenBody, x_user_id: CurrentUserId):
 @router.delete("/token", status_code=204)
 async def remove_token(x_user_id: CurrentUserId):
     await flow.remove(SavedHome(x_user_id))
+    return Response(status_code=204)
+
+
+@router.post("/check", status_code=204)
+async def check_saved(x_user_id: CurrentUserId):
+    await saved.check_now(x_user_id)
     return Response(status_code=204)
 
 

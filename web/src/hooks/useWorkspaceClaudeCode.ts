@@ -1,8 +1,12 @@
+import { useTranslation } from 'react-i18next';
 import { apiErrorStatus } from '@/api/errors';
-import type { ClaudeCodeComputerState, ClaudeCodePlan } from '@/api/model';
+import type { ClaudeCodeComputerState, ClaudeCodePlan, PlanCredential } from '@/api/model';
+import type { PickerMeter } from '@/components/modelAccess/PlanUsage';
 import { TOKEN_WORKS } from '@/lib/claudeCode';
+import { planCredentialOf, savedTokenInSentence } from '@/lib/claudeCodePlan';
 import { useClaudeCodeComputers, useClaudeCodeStatus } from './useClaudeCode';
 import { useClaudeCodeCustody } from './useClaudeCodeCustody';
+import { useLocale } from './useLocale';
 import { useWorkspace } from './useWorkspace';
 
 /** Why a turn on a cloud computer is refused, as the server's verdict gives it. */
@@ -29,6 +33,21 @@ export interface WorkspaceClaudeCode {
    *  entry's, or the saved token's where it runs on that. Absent on the
    *  Anthropic API key, which has no plan, and until it is known. */
   plan?: ClaudeCodePlan | null;
+  /** The model picker's meter of that plan, while the token works or is
+   *  being checked: whose plan, named by the computer of the user's own the
+   *  turns run on or as the saved token, and Check now only while it works. */
+  meter?: PickerMeter;
+}
+
+/** The picker's meter for a credential in `state`, or none where its token
+ *  neither works nor is being checked; Check now only where it works and a
+ *  check would not be billed (`checkBills`). */
+function meterOf(
+  state: WorkspaceClaudeCode['state'], credential: PlanCredential | null, name: string,
+  plan: ClaudeCodePlan | null | undefined, checkAfter: number | null, checkBills: boolean,
+): PickerMeter | undefined {
+  if (!credential || !(TOKEN_WORKS.has(state) || state === 'checking')) return undefined;
+  return { name, plan, credential: TOKEN_WORKS.has(state) && !checkBills ? credential : null, checkAfter };
 }
 
 /**
@@ -51,6 +70,8 @@ export interface WorkspaceClaudeCode {
  * admission refuses in.
  */
 export function useWorkspaceClaudeCode(workspaceId: string | null | undefined): WorkspaceClaudeCode {
+  const { t } = useTranslation();
+  const locale = useLocale();
   const status = useClaudeCodeStatus();
   const workspace = useWorkspace(workspaceId);
   const own = useClaudeCodeComputers();
@@ -63,15 +84,16 @@ export function useWorkspaceClaudeCode(workspaceId: string | null | undefined): 
   if (!known) return { state: 'checking', computerId: null, known };
   const computerId = workspace.data?.computer_id;
   const entry = own.computers.find((c) => c.computer_id === computerId);
-  if (entry) return { state: entry.state, computerId: entry.computer_id, known, plan: entry.plan };
+  if (entry) {
+    const meter = meterOf(entry.state, planCredentialOf(entry), entry.name, entry.plan, own.checkAfterOf(entry), entry.check_bills === true);
+    return { state: entry.state, computerId: entry.computer_id, known, plan: entry.plan, meter };
+  }
   const credential = cloudCredentialState(status, choice);
   const tooSmall = computerId != null && own.cloudRefusals[computerId] === 'needs_bigger_computer';
-  return {
-    state: CREDENTIAL_RUNS.has(credential) && tooSmall ? 'needs_bigger_computer' : credential,
-    computerId: null,
-    known,
-    plan: status.runsHere ? status.plan : undefined,
-  };
+  const state = CREDENTIAL_RUNS.has(credential) && tooSmall ? 'needs_bigger_computer' : credential;
+  if (!status.runsHere) return { state, computerId: null, known };
+  const savedName = savedTokenInSentence(t('modelAccess.claudeCode.setup.savedName'), locale);
+  return { state, computerId: null, known, plan: status.plan, meter: meterOf(state, { kind: 'saved' }, savedName, status.plan, status.checkAfter, status.checkBills) };
 }
 
 /** The states in which a turn on a cloud computer has a credential that runs. */

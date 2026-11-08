@@ -213,6 +213,22 @@ describe('ThreadStreamMux (v2 contract client)', () => {
     mux.detach();
   });
 
+  it('says a main run closed once the server closed it, a Stop from this tab included', async () => {
+    const tid = freshThread();
+    const { sink, closures } = makeSink();
+    const mainClosures: Array<string | null> = [];
+    const mux = getThreadMux(tid);
+    mux.attach({ ...sink, onMainRunClosed: (outcome) => mainClosures.push(outcome) });
+    const c = await connected(1);
+    c.push(chanOpen('rm', 'main'));
+    c.push(runEnd('rm', 'main', '2-0', 'cancelled'));
+    expect(mainClosures).toEqual([]);
+    c.push(chanClose('rm', 'terminal'));
+    expect(mainClosures).toEqual(['cancelled']);
+    expect(closures).toEqual([]);
+    mux.detach();
+  });
+
   it('drops main-lane frames (the foreground POST owns that transcript)', async () => {
     const tid = freshThread();
     const { sink, events } = makeSink();

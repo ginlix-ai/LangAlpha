@@ -106,11 +106,11 @@ function clickRemove(row: HTMLElement) {
 describe('ModelAccessSection: Claude Code on own computers', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('gives each own computer a row that says it uses its own token, and replaces or removes it', async () => {
+  it('gives each own computer a row that names its account, not that the token is its own, and replaces or removes it', async () => {
     render();
     const row = await rowOf('Studio Mac');
     expect(within(row).getByText('Connected')).toBeInTheDocument();
-    expect(within(row).getByText('Oct 29, 2027').parentElement).toHaveTextContent(/^Uses its own token · user@example\.com · Expires by Oct 29, 2027$/);
+    expect(within(row).getByText('Oct 29, 2027').parentElement).toHaveTextContent(/^user@example\.com · Expires by Oct 29, 2027$/);
     expect(buttonsOf(row)).toEqual(['Replace', 'More actions']);
   });
 
@@ -267,7 +267,7 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
   it('says the saved token takes over, where this server runs turns on one', async () => {
     render({ account: status({ state: 'signed_in', saved: true }) });
     const mac = await rowOf('Studio Mac');
-    await within(mac).findByText('Uses its own token', { exact: false });
+    await within(mac).findByText('user@example.com', { exact: false });
     clickRemove(mac);
     expect(screen.getByText(/Claude Code there then uses your saved token/)).toBeInTheDocument();
   });

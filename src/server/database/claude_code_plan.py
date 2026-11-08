@@ -12,8 +12,9 @@ that account's state onto the new one.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -85,8 +86,10 @@ async def change_plans(user_id: str, change: Callable[[dict[str, Any]], dict[str
 
 
 async def get_plans(user_id: str, credentials: list[str] | None = None) -> dict[str, dict[str, Any]]:
-    """The user's rows by credential, only ``credentials`` where given."""
-    query = "SELECT * FROM claude_code_plan WHERE user_id = %s"
+    """The user's rows by credential, only ``credentials`` where given, each
+    with the database's clock as it read them (``read_at``), which
+    ``checked_at`` is stamped by."""
+    query = "SELECT *, NOW() AS read_at FROM claude_code_plan WHERE user_id = %s"
     params: tuple[Any, ...] = (user_id,)
     if credentials is not None:
         query, params = f"{query} AND credential = ANY(%s)", (user_id, credentials)
@@ -102,6 +105,42 @@ async def drop_plan(user_id: str, credential: str) -> None:
         await cur.execute("DELETE FROM claude_code_plan WHERE user_id = %s AND credential = %s", (user_id, credential))
 
 
+async def hold_check(user_id: str, credential: str, every: timedelta) -> tuple[datetime | None, int]:
+    """Take the credential's on-demand check, which goes once per ``every``:
+    the hold's stamp where none went within it (what ``give_back_check``
+    names), None where one did; either way the seconds until the next may
+    go, on the database's clock. Taken in one statement under the row's
+    lock, so two workers asking at once take it once."""
+    async with get_db_connection() as conn, conn.transaction(), conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO claude_code_plan AS p (user_id, credential, checked_at) VALUES (%s, %s, NOW())
+            ON CONFLICT (user_id, credential) DO UPDATE SET checked_at = NOW()
+            WHERE p.checked_at IS NULL OR p.checked_at <= NOW() - %s
+            RETURNING checked_at
+            """,
+            (user_id, credential, every),
+        )
+        if (taken := await cur.fetchone()) is not None:
+            return taken[0], math.ceil(every.total_seconds())
+        await cur.execute(
+            "SELECT EXTRACT(EPOCH FROM checked_at + %s - NOW()) FROM claude_code_plan WHERE user_id = %s AND credential = %s",
+            (every, user_id, credential),
+        )
+        (left,) = await cur.fetchone()
+        return None, max(1, math.ceil(left))
+
+
+async def give_back_check(user_id: str, credential: str, stamp: datetime) -> None:
+    """Free the credential's check that ``hold_check`` took at ``stamp``,
+    unless another has been taken since."""
+    async with get_db_connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE claude_code_plan SET checked_at = NULL WHERE user_id = %s AND credential = %s AND checked_at = %s",
+            (user_id, credential, stamp),
+        )
+
+
 async def forget_plan(user_id: str, credential: str, *, token_digest: str | None = None, conn=None) -> None:
     """Drop what the credential's reports said and move its generation: the
     token on it now may be another Claude account's. ``token_digest`` names
@@ -113,7 +152,8 @@ async def forget_plan(user_id: str, credential: str, *, token_digest: str | None
             INSERT INTO claude_code_plan AS p (user_id, credential, generation, token_digest)
             VALUES (%s, %s, 1, %s)
             ON CONFLICT (user_id, credential) DO UPDATE SET
-                generation = p.generation + 1, state = '{}', token_digest = EXCLUDED.token_digest, updated_at = NOW()
+                generation = p.generation + 1, state = '{}', token_digest = EXCLUDED.token_digest, checked_at = NULL,
+                updated_at = NOW()
             WHERE EXCLUDED.token_digest IS NULL OR p.token_digest IS DISTINCT FROM EXCLUDED.token_digest
             """,
             (user_id, credential, token_digest),

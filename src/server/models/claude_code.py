@@ -73,6 +73,12 @@ class ClaudeCodeStatus(BaseModel):
     enabled: bool = False
     #: The Claude plan behind the token, once a request on it reported one.
     plan: ClaudeCodePlan | None = None
+    #: Seconds until Check now may read that plan again, while a check made
+    #: in the last 5 minutes holds it; None when it may run now.
+    check_in: int | None = None
+    #: Whether a check would be billed to usage credits the user chose not to
+    #: spend (``check_would_bill``), so Check now is not offered.
+    check_bills: bool = False
 
 
 class ClaudeCodeComputer(BaseModel):
@@ -91,6 +97,10 @@ class ClaudeCodeComputer(BaseModel):
     #: The Claude plan behind the token a turn there signs in with: the
     #: computer's own, or with ``source`` saved the saved token's.
     plan: ClaudeCodePlan | None = None
+    #: Seconds until Check now may read that plan again (``ClaudeCodeStatus``).
+    check_in: int | None = None
+    #: Whether a check would be billed (``ClaudeCodeStatus``).
+    check_bills: bool = False
 
 
 #: Why a cloud computer refuses a turn whatever its credential
