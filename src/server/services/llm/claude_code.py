@@ -114,6 +114,20 @@ _PLAN_NO_RESET = {
 #: Added to ``plan_stopped`` where usage credits paid for requests first.
 _CREDITS_BILLED = "Requests already under way were billed to your usage credits."
 
+#: What ``Task`` answers for a Claude Code subagent the Claude plan holds:
+#: with the limit and its reset, with a reset but no window, and with none.
+SUBAGENT_PLAN_REFUSAL = (
+    "Not started: the Claude plan's {window} limit is used up until {time}, so Claude Code subagents can't run "
+    "before then."
+)
+SUBAGENT_PLAN_REFUSAL_UNNAMED = (
+    "Not started: the Claude plan's limit is used up until {time}, so Claude Code subagents can't run before then."
+)
+SUBAGENT_PLAN_REFUSAL_NO_RESET = (
+    "Not started: the Claude plan's limit is used up, and Claude didn't say when it resets, so Claude Code "
+    "subagents can't run before then."
+)
+
 #: The reasons the platform words otherwise, where a larger computer comes
 #: with the user's LangAlpha plan.
 _PLATFORM_OFF = {
@@ -342,8 +356,9 @@ async def require_plan(model: str, user_id: str, credential: str) -> None:
 
 async def plan_hold(model_id: str, user_id: str, credential: str) -> PlanLimit | None:
     """The limit of ``credential``'s Claude plan that holds a run on
-    ``model_id`` now, as admission refuses a turn for it (``require_plan``);
-    None where none holds, or the row can't be read."""
+    ``model_id`` now, as admission refuses a turn for it (``require_plan``)
+    and ``Task`` a Claude Code subagent; None where none holds, or the row
+    can't be read."""
     if (state := await _plan_state(user_id, credential)) is None:
         return None
     if (limit := binding_limit(state.held(), model_id)) is None:
@@ -372,6 +387,43 @@ async def _plan_state(user_id: str, credential: str) -> PlanState | None:
         logger.warning(f"[claude_code] could not read the plan state for user_id={user_id}: {type(e).__name__}")
         return None
     return PlanState.of((row or {}).get("state"))
+
+
+async def subagent_plan_refusal(computer: dict[str, Any], model_id: str, saved: bool) -> str | None:
+    """What ``Task`` answers where the Claude plan behind the credential a
+    Claude Code subagent on ``model_id`` would sign in with is used up for
+    it, under Stop; None where it would run. The credential is the one its
+    turn's admission read (``require_runnable``): on the user's own
+    computer, the saved token where admission relayed it (``saved``) and
+    the machine still has none of its own, else the computer's own, once the
+    computer's answer says which; on a cloud
+    computer, the saved token it signs in with.
+    The reset is on the user's clock, which the agent tells them."""
+    from src.server.database.automation import get_user_timezone
+    from src.server.services.ssh_computers import is_own_computer
+
+    user_id, computer_id = str(computer["user_id"]), str(computer["computer_id"])
+    if is_own_computer(computer):
+        answer = await read_answer(computer_id)
+        if answer is None or not answer.fresh:
+            return None
+        credential = plan_credential("saved" if saved and answer.relays else "machine", computer_id)
+    elif saved:
+        credential = SAVED
+    else:
+        return None
+    if (limit := await plan_hold(model_id, user_id, credential)) is None:
+        return None
+    if not limit.known:
+        return SUBAGENT_PLAN_REFUSAL_NO_RESET
+    try:
+        zone = await get_user_timezone(user_id)
+    except Exception:  # noqa: BLE001
+        zone = None
+    time = _plan_time(limit.until, zone)
+    if limit.window is None:
+        return SUBAGENT_PLAN_REFUSAL_UNNAMED.format(time=time)
+    return SUBAGENT_PLAN_REFUSAL.format(window=PLAN_WINDOW_WORDS[limit.window], time=time)
 
 
 def _model_id(model: str) -> str:

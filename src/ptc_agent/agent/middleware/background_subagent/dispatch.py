@@ -205,7 +205,8 @@ async def dispatch_background_subagent(
         except TaskRunRefused as refusal:
             task.mark_never_started(refusal.settle_reason)
             raise SpawnError(
-                f"Error: could not start {task.display_id} — {refusal.reason}."
+                refusal.reason if refusal.whole
+                else f"Error: could not start {task.display_id} — {refusal.reason}."
             ) from refusal
         task.task_run_id = admitted or None
 
