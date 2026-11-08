@@ -67,7 +67,7 @@ function Where() {
 function show(setup: ClaudeCodeSetup | null, tokenRows: TokenRow[] = []) {
   return renderWithProviders(
     <>
-      <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} anthropicKey={null} configured={[]} onRemoveToken={vi.fn()} onCover={vi.fn()} />
+      <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} onRemoveToken={vi.fn()} onCover={vi.fn()} />
       <Where />
     </>,
     { route: '/settings?tab=model' },

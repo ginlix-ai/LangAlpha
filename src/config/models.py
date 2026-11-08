@@ -354,10 +354,6 @@ class ClaudeCodeConfig(BaseModel):
     turn on a cloud computer runs inside that computer's own sandbox, and only
     on Medium computers or larger (``hosted.SANDBOX_MIN_TIER``)."""
 
-    hosted_api_key: bool = Field(
-        default=False,
-        description="Run Claude Code turns on cloud computers on the user's own Anthropic API key",
-    )
     stored_custody: bool = Field(
         default=False,
         description="Run Claude Code turns on cloud computers on a setup token the user lets the server store",

@@ -823,23 +823,6 @@ async def test_a_turn_runs_on_the_saved_token_and_reports_one_anthropic_refuses(
     assert api.credentials[0] == TOKEN and set(api.credentials[1:]) == {revoked}
 
 
-class _SavedKey(_SavedToken):
-    """A user's Anthropic API key as a turn's launcher reads it."""
-
-    async def read(self) -> Credential:
-        return Credential(self.token, kind="api_key")
-
-
-async def test_a_turn_on_an_api_key_sends_it_as_one_on_every_request():
-    key, graph = "sk-ant-api03-user-key", new_graph()
-    async with FakeMessagesAPI(first_party=True) as api:
-        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, saved=_SavedKey(key))
-        await run_turn(SPEC, launcher, graph, "t-key", [HumanMessage("RUN_TOOL please")])
-        await run_turn(SPEC, launcher, graph, "t-key", [HumanMessage("ECHO again")])
-    assert len(api.requests) > 2
-    assert set(api.api_keys) == {key} and set(api.credentials) == {key}, "never as a bearer token"
-
-
 async def test_the_token_check_asks_anthropic_and_tells_a_refused_token_from_a_good_one():
     async with FakeMessagesAPI(first_party=True, refused=frozenset({"sk-ant-oat01-revoked"})) as api:
         good = await token_works(LocalLauncher(env=api.cli_env(), token=TOKEN), "claude-haiku-5-5")

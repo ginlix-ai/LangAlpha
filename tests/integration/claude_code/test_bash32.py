@@ -166,7 +166,7 @@ def test_a_turns_command_runs_under_bash_3_2_and_busybox(container):
     assert f"HOME={HOME}" in env and "CLAUDE_CONFIG_DIR=/tmp/cfg" in env and not any("MACHINE_SECRET" in e for e in env)
     assert not any(TOKEN in e for e in env)
     assert asyncio.run(remove_machine_token(link, CID))
-    announced, token, *_ = _turn(container, relay=True, after=f"setup_token {OLD}\n")
+    announced, token, *_ = _turn(container, relay=True, after=f"{OLD}\n")
     assert (announced, token) == ("langalpha-token relay", f"token={OLD}")
 
 

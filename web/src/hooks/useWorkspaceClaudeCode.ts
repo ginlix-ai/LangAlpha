@@ -9,10 +9,6 @@ import { useClaudeCodeCustody } from './useClaudeCodeCustody';
 import { useLocale } from './useLocale';
 import { useWorkspace } from './useWorkspace';
 
-/** Why a turn on a cloud computer is refused, as the server's verdict gives it. */
-type CloudRefusal = 'hosted_off' | 'hosted_paused' | 'needs_api_key' | 'api_key_endpoint';
-const CLOUD_REFUSALS: ReadonlySet<string> = new Set<CloudRefusal>(['hosted_off', 'hosted_paused', 'needs_api_key', 'api_key_endpoint']);
-
 /** Where Claude Code stands for a turn in one workspace, and the computer
  *  whose token that is, when it is one of the user's own. */
 export interface WorkspaceClaudeCode {
@@ -20,18 +16,17 @@ export interface WorkspaceClaudeCode {
    *  `needs_own_computer` where it offers no other way, or storing a token
    *  is blocked for the user and nothing else is offered, so Claude Code runs
    *  nowhere for it; else as the server's verdict for the user's choice for
-   *  cloud computers says: on their Anthropic API key (`api_key`), or the
-   *  reason it is refused for, a choice whose switch the server turned off
-   *  (`hosted_paused`) included. `needs_bigger_computer`: the credential
+   *  cloud computers says: `hosted_off` where the choice keeps Claude Code off
+   *  them. `needs_bigger_computer`: the credential
    *  would run, but the server names the computer as too small for it. */
-  state: ClaudeCodeComputerState | 'needs_own_computer' | CloudRefusal | 'api_key' | 'needs_bigger_computer';
+  state: ClaudeCodeComputerState | 'needs_own_computer' | 'hosted_off' | 'needs_bigger_computer';
   computerId: string | null;
   /** Whether the workspace's computer, and which computers are the user's
    *  own, are read; until they are, `computerId` says nothing. */
   known: boolean;
   /** The Claude plan behind the token its turns run on: that computer's
-   *  entry's, or the saved token's where it runs on that. Absent on the
-   *  Anthropic API key, which has no plan, and until it is known. */
+   *  entry's, or the saved token's where it runs on that. Absent until it is
+   *  known. */
   plan?: ClaudeCodePlan | null;
   /** The model picker's meter of that plan, while the token works or is
    *  being checked: whose plan, named by the computer of the user's own the
@@ -90,14 +85,11 @@ export function useWorkspaceClaudeCode(workspaceId: string | null | undefined): 
   }
   const credential = cloudCredentialState(status, choice);
   const tooSmall = computerId != null && own.cloudRefusals[computerId] === 'needs_bigger_computer';
-  const state = CREDENTIAL_RUNS.has(credential) && tooSmall ? 'needs_bigger_computer' : credential;
+  const state = TOKEN_WORKS.has(credential) && tooSmall ? 'needs_bigger_computer' : credential;
   if (!status.runsHere) return { state, computerId: null, known };
   const savedName = savedTokenInSentence(t('modelAccess.claudeCode.setup.savedName'), locale);
   return { state, computerId: null, known, plan: status.plan, meter: meterOf(state, { kind: 'saved' }, savedName, status.plan, status.checkAfter, status.checkBills) };
 }
-
-/** The states in which a turn on a cloud computer has a credential that runs. */
-const CREDENTIAL_RUNS: ReadonlySet<string> = new Set([...TOKEN_WORKS, 'api_key']);
 
 /** Where a turn on a cloud computer stands by its credential alone: the
  *  token saved in Settings where this server runs turns on one, else the
@@ -112,8 +104,7 @@ function cloudCredentialState(
   if (choice.isLoading || choice.unread) return 'checking';
   if (!choice.custody) return 'needs_own_computer';
   const { runs_on: runsOn, refusal } = choice.custody;
-  if (runsOn === 'api_key') return 'api_key';
   if (runsOn === 'stored_token') return 'checking';
   if (refusal === 'stored_blocked' || refusal === 'needs_own_computer') return 'needs_own_computer';
-  return refusal && CLOUD_REFUSALS.has(refusal) ? refusal as CloudRefusal : 'hosted_off';
+  return 'hosted_off';
 }

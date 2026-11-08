@@ -69,16 +69,10 @@ export function biggerComputer(): { rowKey: string; messageKey: string; link: Er
 export const CLAUDE_CODE_TOKEN_PARAM = 'connect';
 export const CLAUDE_CODE_TOKEN_URL = `${MODEL_ACCESS_URL}&${CLAUDE_CODE_TOKEN_PARAM}=${CLAUDE_CODE}`;
 
-/** The provider whose API key Claude Code runs on on cloud computers, and
- *  Settings → Model access with that key's sheet open, by the same query. */
-export const ANTHROPIC = 'anthropic';
-export const ANTHROPIC_KEY_URL = `${MODEL_ACCESS_URL}&${CLAUDE_CODE_TOKEN_PARAM}=${ANTHROPIC}`;
-
 /** What each way Claude Code can run on cloud computers is called, in its
  *  sheet and on its row in Model access. */
 export const CLAUDE_CODE_MODE_LABELS: Readonly<Record<ClaudeCodeCustodyMode, string>> = {
   local: 'modelAccess.claudeCode.hosted.local',
-  api_key: 'modelAccess.claudeCode.hosted.apiKey',
   stored: 'modelAccess.claudeCode.hosted.stored',
 };
 
@@ -112,13 +106,9 @@ const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
   account: 'chat.claudeCode.off.account',
   token_refused: 'chat.claudeCode.off.token_refused',
   hosted_off: 'chat.claudeCode.off.hosted_off',
-  hosted_paused: 'chat.claudeCode.off.hosted_paused',
-  needs_api_key: 'chat.claudeCode.off.needs_api_key',
-  api_key_endpoint: 'chat.claudeCode.off.api_key_endpoint',
   stored_blocked: 'chat.claudeCode.off.stored_blocked',
   stored_unattended: 'chat.claudeCode.off.stored_unattended',
   choice_changed: 'chat.claudeCode.off.choice_changed',
-  api_key_refused: 'chat.claudeCode.off.api_key_refused',
   too_many_turns: 'chat.claudeCode.off.too_many_turns',
   needs_bigger_computer: 'chat.claudeCode.off.needs_bigger_computer',
 };
@@ -126,19 +116,17 @@ const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
 const CLAUDE_CODE_CHOICE_LINK: ErrorLinkSpec = { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' };
 
 /** The links that fix a cloud computer's refusal: choosing how Claude Code
- *  runs there, or adding the Anthropic API key it runs on. */
+ *  runs there. */
 const CLAUDE_CODE_CLOUD_LINKS: Readonly<Record<string, ErrorLinkSpec>> = {
   hosted_off: CLAUDE_CODE_CHOICE_LINK,
   stored_unattended: CLAUDE_CODE_CHOICE_LINK,
-  needs_api_key: { url: ANTHROPIC_KEY_URL, label: 'Add an API key', labelKey: 'chat.errorLinkAddApiKey' },
-  api_key_endpoint: { url: ANTHROPIC_KEY_URL, label: 'Model access', labelKey: 'modelAccess.title' },
 };
 
 /** A cloud computer's refusals that say the user's choice for cloud
- *  computers, the key it runs on, what the server offers, or which of their
- *  computers are too small, is not what the view read. */
+ *  computers, what the server offers, or which of their computers are too
+ *  small, is not what the view read. */
 const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set([
-  'hosted_off', 'hosted_paused', 'needs_api_key', 'api_key_endpoint', 'stored_blocked', 'choice_changed', 'needs_bigger_computer',
+  'hosted_off', 'stored_blocked', 'choice_changed', 'needs_bigger_computer',
 ]);
 
 /**
@@ -152,10 +140,8 @@ const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set([
  * computer where Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`) is fixed
  * by no token. On a cloud computer, the choice of how it runs there
  * (`hosted_off`, and `stored_unattended` for automations and wakeups, which
- * a stored token does not run) or the Anthropic API key it runs on
- * (`needs_api_key`, or `api_key_endpoint` for one set to another endpoint)
- * fixes it; a choice paused on the server or storing blocked for the user has
- * nothing to fix. A computer too small for Claude Code reads as
+ * a stored token does not run) fixes it; a choice paused on the server or
+ * storing blocked for the user has nothing to fix. A computer too small for Claude Code reads as
  * `biggerComputer` says. Too many turns at once names the
  * user's cap, `limit`, and keeps the server's words without one. A Claude
  * plan's limit (`plan_stopped`, `plan_limited`) is news the plan the view

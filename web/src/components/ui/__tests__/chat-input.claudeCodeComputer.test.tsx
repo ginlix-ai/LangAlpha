@@ -4,7 +4,7 @@
  * fix links Settings to the workspace, which opens that computer's sheet;
  * on a hosted computer where no saved token runs, nowhere, which the rows
  * say with nothing to fix, unless the user chose how it runs there: then
- * Settings fixes it, and on their Anthropic API key the rows say that pays.
+ * Settings fixes it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -14,7 +14,7 @@ import ChatInput, { type ChatInputProps } from '../chat-input';
 import type { ModelRowStatus } from '../chat-input.modelPicker';
 import type { WorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
-import { ANTHROPIC_KEY_URL, CLAUDE_CODE_CHOICE_URL, claudeCodeTokenUrl } from '@/lib/claudeCode';
+import { CLAUDE_CODE_CHOICE_URL, claudeCodeTokenUrl } from '@/lib/claudeCode';
 
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getSkills: vi.fn().mockResolvedValue([]),
@@ -166,15 +166,12 @@ describe("ChatInput: Claude Code rows by the workspace's computer", () => {
     expect(screen.getByText(/^claude-x:/)).toHaveTextContent('claude-x:pick');
   });
 
-  it.each([
-    ['hosted_off', 'Choose in Settings how it runs on cloud computers', CLAUDE_CODE_CHOICE_URL],
-    ['needs_api_key', 'Add your Anthropic API key in Settings to use it on cloud computers', ANTHROPIC_KEY_URL],
-  ] as const)('on a hosted computer while %s, leads to Settings', (state, words, url) => {
-    mocks.where = { state, computerId: null, known: true };
+  it('on a hosted computer while the choice for cloud computers is off, leads to Settings', () => {
+    mocks.where = { state: 'hosted_off', computerId: null, known: true };
     renderInput();
-    expect(codeRow()).toBe(`claude-x-code:held:${words}:fix`);
+    expect(codeRow()).toBe('claude-x-code:held:Choose in Settings how it runs on cloud computers:fix');
     fireEvent.click(screen.getByRole('button', { name: 'fix' }));
-    expect(screen.getByText(/^at:/).textContent).toBe(`at:${url}`);
+    expect(screen.getByText(/^at:/).textContent).toBe(`at:${CLAUDE_CODE_CHOICE_URL}`);
   });
 
   it('holds them on a cloud computer too small for Claude Code, with nothing to fix here', () => {
@@ -195,20 +192,7 @@ describe("ChatInput: Claude Code rows by the workspace's computer", () => {
     opened.mockRestore();
   });
 
-  it('holds them where the user\'s choice for cloud computers is paused, with nothing to fix', () => {
-    mocks.where = { state: 'hosted_paused', computerId: null, known: true };
-    renderInput();
-    expect(codeRow()).toBe('claude-x-code:held:Paused on cloud computers on this server');
-    expect(screen.queryByRole('button', { name: 'fix' })).toBeNull();
-  });
-
-  it("runs them on a hosted computer on the user's Anthropic API key, which pays for them there", () => {
-    mocks.where = { state: 'api_key', computerId: null, known: true };
-    const { unmount } = renderInput();
-    expect(codeRow()).toBe('claude-x-code:pick');
-    expect(screen.getByText(/^paid:/)).toHaveTextContent('paid:credits,own_key');
-    expect(screen.getByText(/^tab:/)).toHaveTextContent('tab:own_key');
-    unmount();
+  it("runs them on the user's own computer, where the subscription pays for them", () => {
     mocks.where = { state: 'signed_in', computerId: 'cmp-mac', known: true };
     renderInput();
     expect(screen.getByText(/^paid:/)).toHaveTextContent('paid:credits,subscription:claude-code');

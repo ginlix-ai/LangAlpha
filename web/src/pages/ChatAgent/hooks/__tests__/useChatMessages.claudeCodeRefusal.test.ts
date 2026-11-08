@@ -142,7 +142,7 @@ describe('useChatMessages: a Claude Code refusal', () => {
     expect(reread).toHaveBeenCalledWith({ queryKey: queryKeys.features.claudeCode() });
   });
 
-  it.each(['api_key_refused', 'needs_bigger_computer'])("mid-turn words %s on the turn in the app's words", async (reason) => {
+  it.each(['needs_bigger_computer'])("mid-turn words %s on the turn in the app's words", async (reason) => {
     mockSendStream.mockImplementation(async (_m: string, _w: string, _t: string | null, { onEvent }: { onEvent: (e: Record<string, unknown>) => void }) => {
       onEvent({ event: 'error', error: 'Server words.', message: 'Server words.', type: 'claude_code_off', reason });
       return { disconnected: false };

@@ -24,35 +24,34 @@ def _own(state, expires_at=None):
 
 
 @pytest.mark.parametrize(
-    ("states", "status", "api_key_runs", "cloud_ready", "expected"),
+    ("states", "status", "cloud_ready", "expected"),
     [
-        (["offline", "signed_in"], OFF, False, False, "connected"),
-        (["rejected", "unverified"], OFF, False, False, "connected"),
-        ([], OFF, True, False, "connected"),
-        (["rejected", "checking"], OFF, False, False, "checking"),
-        (["no_token", "rejected"], OFF, False, False, "refused"),
-        (["no_token", "offline"], OFF, False, False, "not_connected"),
-        (["off", "offline"], OFF, False, False, "not_connected"),
-        (["offline"], OFF, False, True, "not_connected"),
-        (["offline", "needs_perl"], OFF, False, False, "offline"),
-        (["needs_perl", "policy_blocked", "computer_unsupported"], OFF, False, False, "unsupported"),
-        ([], OFF, False, False, "no_computer"),
-        ([], ClaudeCodeStatus(state="no_token"), False, False, "not_connected"),
-        ([], ClaudeCodeStatus(state="signed_in"), False, False, "connected"),
-        ([], ClaudeCodeStatus(state="policy_blocked"), False, False, "unsupported"),
+        (["offline", "signed_in"], OFF, False, "connected"),
+        (["rejected", "unverified"], OFF, False, "connected"),
+        (["rejected", "checking"], OFF, False, "checking"),
+        (["no_token", "rejected"], OFF, False, "refused"),
+        (["no_token", "offline"], OFF, False, "not_connected"),
+        (["off", "offline"], OFF, False, "not_connected"),
+        (["offline"], OFF, True, "not_connected"),
+        (["offline", "needs_perl"], OFF, False, "offline"),
+        (["needs_perl", "policy_blocked", "computer_unsupported"], OFF, False, "unsupported"),
+        ([], OFF, False, "no_computer"),
+        ([], ClaudeCodeStatus(state="no_token"), False, "not_connected"),
+        ([], ClaudeCodeStatus(state="signed_in"), False, "connected"),
+        ([], ClaudeCodeStatus(state="policy_blocked"), False, "unsupported"),
     ],
 )
-def test_the_first_state_that_holds_over_every_way_it_runs_wins(states, status, api_key_runs, cloud_ready, expected):
+def test_the_first_state_that_holds_over_every_way_it_runs_wins(states, status, cloud_ready, expected):
     computers = [_own(s) for s in states]
-    assert summary(computers, status, api_key_runs=api_key_runs, cloud_ready=cloud_ready, now=NOW) == expected
+    assert summary(computers, status, cloud_ready=cloud_ready, now=NOW) == expected
 
 
 def test_a_token_past_its_expiry_is_refused_though_its_last_check_passed():
     past, later = NOW - timedelta(minutes=1), NOW + timedelta(days=1)
-    assert summary([_own("signed_in", past)], OFF, api_key_runs=False, cloud_ready=False, now=NOW) == "refused"
+    assert summary([_own("signed_in", past)], OFF, cloud_ready=False, now=NOW) == "refused"
     saved = ClaudeCodeStatus(state="unverified", expires_at=past)
-    assert summary([], saved, api_key_runs=False, cloud_ready=False, now=NOW) == "refused"
-    assert summary([_own("signed_in", later)], OFF, api_key_runs=False, cloud_ready=False, now=NOW) == "connected"
+    assert summary([], saved, cloud_ready=False, now=NOW) == "refused"
+    assert summary([_own("signed_in", later)], OFF, cloud_ready=False, now=NOW) == "connected"
 
 
 async def _setup(world, **switches):  # noqa: F811
@@ -103,8 +102,8 @@ async def test_before_opting_in_a_computer_reads_reachable_or_offline_and_is_nev
     assert "check" not in world.machine.calls
 
 
-def _custody(mode="local", refusal="hosted_off", runs_on=None, offered=("api_key",)):
-    return ClaudeCodeCustody(mode=mode, api_key_saved=False, offered=list(offered), runs_on=runs_on, refusal=refusal)
+def _custody(mode="local", refusal="hosted_off", runs_on=None, offered=("stored",)):
+    return ClaudeCodeCustody(mode=mode, offered=list(offered), runs_on=runs_on, refusal=refusal)
 
 
 @pytest.mark.asyncio
@@ -114,12 +113,9 @@ def _custody(mode="local", refusal="hosted_off", runs_on=None, offered=("api_key
         (False, None, "no_computer"),
         (True, None, "not_connected"),
         (False, _custody(), "not_connected"),
-        (False, _custody(mode="api_key", refusal=None, runs_on="api_key"), "not_connected"),
-        (False, _custody(mode="stored", refusal="stored_blocked", offered=("api_key",)), "not_connected"),
-        (False, _custody(mode="stored", refusal="stored_blocked", offered=()), "no_computer"),
-        (False, _custody(mode="api_key", refusal="hosted_paused", offered=()), "no_computer"),
-        (False, _custody(mode="stored", refusal="hosted_paused", offered=("api_key",)), "not_connected"),
-        (False, _custody(mode="api_key", refusal="needs_own_computer", offered=("api_key",)), "no_computer"),
+        (False, _custody(mode="stored", refusal=None, runs_on="stored_token"), "not_connected"),
+        (False, _custody(refusal="stored_blocked", offered=()), "no_computer"),
+        (False, _custody(mode="stored", refusal="needs_own_computer"), "no_computer"),
     ],
 )
 async def test_with_no_own_computer_and_not_on_it_is_ready_only_where_something_else_would_run_it(
@@ -181,12 +177,6 @@ async def test_with_no_cloud_computer_too_small_it_names_none_and_reads_no_list(
     assert answer.too_small == []
     listed.assert_not_awaited()
 
-
-@pytest.mark.asyncio
-async def test_once_on_the_api_key_that_runs_on_cloud_computers_reads_connected(world):  # noqa: F811
-    with patch("src.server.services.claude_code.machine.get_computer_roster", new_callable=AsyncMock, return_value=[]):
-        answer = await _setup(world, custody=_custody(mode="api_key", refusal=None, runs_on="api_key"))
-    assert (answer.on, answer.state) == (True, "connected")
 
 
 @pytest.mark.asyncio

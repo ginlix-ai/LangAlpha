@@ -67,35 +67,18 @@ CLAUDE_CODE_OFF = {
         "can't use Claude Code models. Choose where it runs in Settings under Model access, or move this "
         "workspace to one of your computers."
     ),
-    "needs_api_key": (
-        "On cloud computers, Claude Code runs on the computer itself with your Anthropic API key, and you haven't "
-        "saved one. Add one in Settings under Model access, or move this workspace to one of your computers."
-    ),
-    "api_key_refused": (
-        "Anthropic refused your API key, or its account has no credit left. Check the key in Settings under "
-        "Model access."
-    ),
-    "api_key_endpoint": (
-        "Claude Code on cloud computers sends your Anthropic API key only to Anthropic, and yours is set to a "
-        "custom Base URL. Clear the Base URL in Settings under Model access, or move this workspace to one of "
-        "your computers."
-    ),
     "too_many_turns": (
         "You've reached the limit on Claude Code threads running at once on cloud computers ({limit}). Try again "
         "when one finishes."
-    ),
-    "hosted_paused": (
-        "Claude Code on cloud computers is paused on this server. It still runs on your own computers. Pick another "
-        "model, or move this workspace to one of them."
     ),
     "stored_blocked": (
         "Storing a setup token isn't available for your account, so Claude Code runs only on your own computers. "
         "Pick another model, or move this workspace to one of them."
     ),
     "stored_unattended": (
-        "Automations, wakeups and turns another agent sends don't run on the setup token LangAlpha stores for you. "
-        "Choose your Anthropic API key in Settings under Model access, or run this workspace on a computer of "
-        "yours with its own token."
+        "Automations, wakeups and work another agent starts on its own don't run on the setup token LangAlpha "
+        "stores for you. To run them on Claude Code, choose to run it on your own computers in Settings under "
+        "Model access."
     ),
     "choice_changed": (
         "How Claude Code runs on cloud computers changed as this turn started. Send your message again."
@@ -198,13 +181,11 @@ def plan_refusal(model_name: str | None, stopped: PlanStopped) -> dict[str, Any]
 #: with no perl or on musl, or the turn's workspace is not on an own computer
 #: where the backend runs none, or the user's choice for cloud computers
 #: changed since admission, or the computer is now below the tier Claude Code
-#: runs on. One only a run meets says so the same way: Anthropic refused the
-#: user's API key.
+#: runs on.
 _ADMISSION_REASON = {
     "auth_failed": "signed_out", "token_refused": "token_refused", "policy_blocked": "policy_blocked",
     "needs_own_computer": "needs_own_computer", "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
-    "hosted_off": "hosted_off", "needs_api_key": "needs_api_key", "api_key_endpoint": "api_key_endpoint",
-    "api_key_refused": "api_key_refused", "hosted_paused": "hosted_paused", "stored_blocked": "stored_blocked",
+    "hosted_off": "hosted_off", "stored_blocked": "stored_blocked",
     "choice_changed": "choice_changed", "needs_bigger_computer": "needs_bigger_computer",
 }
 
@@ -356,7 +337,7 @@ def require_attended(config, request) -> None:
     """Refuse a turn nobody started (``unattended``) that admission let sign in
     with the setup token the user stored, on a cloud computer or relayed to
     one of theirs: the server runs their Claude plan only for turns they
-    start. Their API key and a computer's own token run such turns."""
+    start. A computer's own token runs such turns."""
     if "stored_token" in (config.claude_code_hosted, config.claude_code_saved) and unattended(request):
         raise_claude_code_off(config.llm.name, "stored_unattended")
 

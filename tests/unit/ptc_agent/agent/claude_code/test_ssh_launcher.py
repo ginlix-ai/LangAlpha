@@ -25,7 +25,7 @@ from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError
 
 from ptc_agent.agent.claude_code import ssh_launcher
 from ptc_agent.agent.claude_code.launcher import _INHERITED, cli_env
-from ptc_agent.agent.claude_code.machine_token import API_KEY_FD_ENV, TOKEN_FD_ENV
+from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.machine_token import NO_PERL, STREAM_BOOT
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher, kill_if_cli, remote_session_path
 from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS, _COMMAND_SLOTS, Machine
@@ -69,9 +69,9 @@ def _machine(tmp_path: Path, token: str | None = TOKEN, mode: int = 0o600) -> di
             "SSH_CONNECTION": "10.0.0.1 1 10.0.0.2 22", "MACHINE_SECRET": "machine-only"}
 
 
-def _relayed(secret: str, kind: str = "setup_token") -> bytes:
-    """The line the transport relays a credential on."""
-    return f"{kind} {secret}\n".encode()
+def _relayed(secret: str) -> bytes:
+    """The line the transport relays a token on."""
+    return f"{secret}\n".encode()
 
 
 def _run(tmp_path: Path, machine: dict[str, str], *, relay: bool, after: bytes = b"") -> tuple[str, dict]:
@@ -80,7 +80,7 @@ def _run(tmp_path: Path, machine: dict[str, str], *, relay: bool, after: bytes =
     cli = tmp_path / "claude"
     cli.write_text(
         f"#!{sys.executable}\nimport json, os, socket, sys\n"
-        f"var = next((v for v in ({TOKEN_FD_ENV!r}, {API_KEY_FD_ENV!r}) if v in os.environ), None)\n"
+        f"var = {TOKEN_FD_ENV!r} if {TOKEN_FD_ENV!r} in os.environ else None\n"
         "token = socket.socket(fileno=int(os.environ[var])).recv(4096).decode().strip() if var else None\n"
         f"json.dump({{'env': dict(os.environ), 'argv': sys.argv, 'token': token, 'var': var, 'stdin': sys.stdin.read()}}, open({str(seen)!r}, 'w'))\n"
     )
@@ -117,21 +117,6 @@ def test_a_machine_without_a_token_is_relayed_one_line_and_the_cli_gets_the_rest
     assert announced == "langalpha-token relay"
     assert (seen["token"], seen["var"], seen["stdin"]) == (STORED, TOKEN_FD_ENV, '{"a":1}\n')
     assert not any(STORED in v for v in seen["env"].values())
-
-
-def test_a_relayed_api_key_reaches_the_cli_on_the_api_keys_descriptor(tmp_path):
-    key = "sk-ant-api03-" + "4" * 80
-    _, seen = _run(tmp_path, _machine(tmp_path, token=None), relay=True, after=_relayed(key, "api_key"))
-    assert (seen["token"], seen["var"]) == (key, API_KEY_FD_ENV)
-
-
-def test_a_relayed_line_of_no_known_kind_starts_nothing_and_echoes_nothing(tmp_path):
-    machine = _machine(tmp_path, token=None)
-    for line in (b"oauth " + STORED.encode() + b"\n", STORED.encode() + b"\n"):
-        done = subprocess.run(["sh", "-c", STREAM_BOOT], input=_launcher(True).command(
-            ClaudeAgentOptions(cli_path=sys.executable, cwd=str(tmp_path))).encode() + b"\n" + line,
-            env=machine, capture_output=True, timeout=30)
-        assert done.returncode != 0 and STORED.encode() not in done.stderr + done.stdout
 
 
 def test_a_relayed_empty_line_or_no_relay_starts_the_cli_with_no_token(tmp_path):

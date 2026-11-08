@@ -62,8 +62,8 @@ async def test_no_choice_reads_as_local_and_a_choice_replaces_the_last(user):
     from src.server.database.claude_code_hosted import Custody, get_custody, write_custody
 
     assert await get_custody(user) == Custody("local", blocked=False)
-    await write_custody(user, "api_key")
-    assert (await get_custody(user)).mode == "api_key"
+    await write_custody(user, "stored", disclosure="2026-11-v1")
+    assert (await get_custody(user)).mode == "stored"
     await write_custody(user, "local")
     assert (await get_custody(user)).mode == "local"
 
@@ -72,10 +72,10 @@ async def test_the_consent_accepted_for_storing_stays_on_record_after_a_later_ch
     from src.server.database.claude_code_hosted import write_custody
 
     await write_custody(user, "stored", disclosure="2026-11-v1")
-    await write_custody(user, "api_key")
+    await write_custody(user, "local")
     async with patched_get_db_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT mode, disclosure FROM claude_code_custody WHERE user_id = %s", (user,))
-        assert dict(await cur.fetchone()) == {"mode": "api_key", "disclosure": "2026-11-v1"}
+        assert dict(await cur.fetchone()) == {"mode": "local", "disclosure": "2026-11-v1"}
 
 
 async def test_any_choice_but_storing_deletes_the_token_with_it_and_a_block_outlasts_the_users_writes(user):
@@ -89,16 +89,15 @@ async def test_any_choice_but_storing_deletes_the_token_with_it_and_a_block_outl
     assert await write_custody(user, "stored") is None
     assert await get_oauth_connection(user, CLAUDE_CODE_PROVIDER) is not None
     assert user in await stored_users()
-    assert await write_custody(user, "api_key") == "sk-ant-oat01-stored"
+    assert await write_custody(user, "local") == "sk-ant-oat01-stored"
     assert await get_oauth_connection(user, CLAUDE_CODE_PROVIDER) is None
-    assert await get_custody(user) == Custody("api_key", blocked=False)
+    assert await get_custody(user) == Custody("local", blocked=False)
     assert user not in await stored_users()
     assert await write_custody(user, "local") is None
 
     await _store(user)
     await write_custody(user, "local", block_reason="terms")
     assert await get_oauth_connection(user, CLAUDE_CODE_PROVIDER) is None
-    await write_custody(user, "api_key")
     await write_custody(user, "local")
     assert await get_custody(user) == Custody("local", blocked=True)
     with pytest.raises(StoringBlocked):
@@ -171,16 +170,3 @@ async def test_only_the_users_runs_in_progress_on_the_stored_token_are_found(
                 run_id = str((await cur.fetchone())["conversation_response_id"])
     assert await live_stored_turns(user) == [(threads[0], run_id)]
 
-
-@pytest.mark.asyncio
-async def test_an_anthropic_key_reads_as_none_while_the_users_own_keys_are_off(user, monkeypatch):
-    from src.server.database.api_keys import get_key_with_base_url, saved_key, set_byok_enabled, upsert_api_key
-
-    monkeypatch.setenv("BYOK_ENCRYPTION_KEY", "claude-code-byok-test-key-32chars")
-    await upsert_api_key(user, "anthropic", "sk-ant-test")
-    await set_byok_enabled(user, False)
-    assert await saved_key(user, "anthropic") is None
-    assert await get_key_with_base_url(user, "anthropic") is None
-    await set_byok_enabled(user, True)
-    assert await saved_key(user, "anthropic") == {"base_url": None}
-    assert await get_key_with_base_url(user, "anthropic") == {"api_key": "sk-ant-test", "base_url": None}

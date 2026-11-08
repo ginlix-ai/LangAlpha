@@ -25,7 +25,7 @@ from src.server.database.pool import get_db_connection
 
 logger = logging.getLogger(__name__)
 
-Mode = Literal["local", "api_key", "stored"]
+Mode = Literal["local", "stored"]
 #: What a turn's run row carries in its metadata while its Claude Code CLI
 #: runs for a cloud computer, which ``live_cloud_turns`` counts. The key
 #: keeps its name from when that CLI ran in a worker, so runs stamped then

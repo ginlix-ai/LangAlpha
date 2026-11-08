@@ -155,33 +155,30 @@ class ClaudeCodeSetup(BaseModel):
 
 
 #: The credentials a user may choose for their turns on a cloud computer.
-HostedMode = Literal["api_key", "stored"]
+HostedMode = Literal["stored"]
 
 
 class ClaudeCodeCustody(BaseModel):
     """How the user's Claude Code turns on a cloud computer run: ``local``
-    runs none there (only on their own computers), ``api_key`` runs them on
-    their Anthropic API key, the one saved under Model access, which
-    ``api_key_saved`` says is there, and ``stored`` on the setup token they
-    let the server store. ``offered`` is what the server lets them choose
-    now: a mode chosen before its switch went off is kept, and paused.
-    ``blocked``: an operator turned storing a token off for this user.
+    runs none there (only on their own computers), and ``stored`` runs them
+    on the setup token they let the server store. ``offered`` is what the
+    server lets them choose now, none where ``blocked``: an operator turned
+    storing a token off for this user.
     ``runs_on`` and ``refusal`` are the verdict admission gives a turn there:
     the credential it runs on, else the ``CLAUDE_CODE_OFF`` reason it is
     refused for."""
 
-    mode: Literal["local", "api_key", "stored"]
-    api_key_saved: bool
+    mode: Literal["local", "stored"]
     offered: list[HostedMode]
     blocked: bool = False
-    runs_on: Literal["api_key", "stored_token"] | None = None
+    runs_on: Literal["stored_token"] | None = None
     refusal: str | None = None
     #: The version of the consent text storing a token needs accepted now.
     disclosure: str | None = None
 
 
 class CustodyBody(BaseModel):
-    mode: Literal["local", "api_key", "stored"]
+    mode: Literal["local", "stored"]
     #: The version of the consent text accepted, which storing a token needs.
     disclosure: str | None = Field(default=None, max_length=32)
 

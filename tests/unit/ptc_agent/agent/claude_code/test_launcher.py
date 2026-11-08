@@ -16,7 +16,7 @@ import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
-from ptc_agent.agent.claude_code.machine_token import API_KEY_FD_ENV, TOKEN_FD_ENV
+from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.launcher import (
     SDK_CONNECT_SHA256,
     Credential,
@@ -34,12 +34,12 @@ def test_the_transport_is_a_copy_of_the_pinned_sdks():
     )
 
 
-async def launch(launcher: LocalLauncher, tmp_path: Path, fd_env: str = TOKEN_FD_ENV) -> tuple[dict[str, str], str, str]:
-    """Start a stand-in CLI that records its environment, its argv and what the descriptor ``fd_env`` names holds."""
+async def launch(launcher: LocalLauncher, tmp_path: Path) -> tuple[dict[str, str], str, str]:
+    """Start a stand-in CLI that records its environment, its argv and what the token's descriptor holds."""
     cli, seen = tmp_path / "claude", tmp_path / "seen.json"
     cli.write_text(
         f"#!{sys.executable}\nimport json, os, socket, sys\n"
-        f"fd = os.environ.get({fd_env!r})\n"
+        f"fd = os.environ.get({TOKEN_FD_ENV!r})\n"
         "token = socket.socket(fileno=int(fd)).recv(4096).decode().strip() if fd else ''\n"
         f"json.dump({{'env': dict(os.environ), 'argv': sys.argv[1:], 'token': token}}, open({str(seen)!r}, 'w'))\n"
     )
@@ -96,15 +96,6 @@ class _Store:
         return self.credential
 
     async def refused(self, credential: Credential) -> None: ...
-
-
-@pytest.mark.asyncio
-async def test_an_api_key_reaches_the_cli_on_its_own_descriptor_never_its_environment_or_argv(tmp_path):
-    key = "sk-ant-api03-" + "9" * 80
-    launcher = LocalLauncher(saved=_Store(Credential(key, kind="api_key")))
-    env, argv, handed = await launch(launcher, tmp_path, fd_env=API_KEY_FD_ENV)
-    assert handed == key and TOKEN_FD_ENV not in env
-    assert key not in argv and not any(key in v for v in env.values())
 
 
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="reads open descriptors from /proc")
@@ -184,6 +175,5 @@ async def test_a_run_on_the_saved_setup_token_names_it_to_the_plan_once_read(mon
     plan = SimpleNamespace(took=AsyncMock())
     monkeypatch.setattr("ptc_agent.agent.claude_code.launcher.local_managed", AsyncMock(return_value=()))
     await LocalLauncher(saved=_Store(Credential("sk-ant-oat01-saved")), plan=plan)._ready()
-    await LocalLauncher(saved=_Store(Credential("sk-ant-api03-key", kind="api_key")), plan=plan)._ready()
     await LocalLauncher(token="sk-ant-oat01-checked", plan=plan)._ready()
     plan.took.assert_awaited_once_with("sk-ant-oat01-saved")

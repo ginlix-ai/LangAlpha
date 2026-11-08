@@ -4,14 +4,13 @@ On a self-hosted server the credential is the setup token each user saves in
 Settings (``saved``), and the CLI runs in the backend worker that owns the
 turn, or inside the computer's own sandbox with
 ``claude_code.sandbox_placement`` on. The platform runs it only inside the
-sandbox, so its users choose a credential for cloud computers
-(``claude_code_custody``) only with that switch on, each credential behind
-its operator's switch: their own Anthropic API key
-(``claude_code.hosted_api_key``), or the setup token they let the server
-store (``claude_code.stored_custody``), which also signs in their own
-computers that have none. With placement off, or both credential switches
-off, no turn reads a user's choice, and cloud computers there run no Claude
-Code, as before the choice existed; only turning Claude Code off in
+sandbox, so its users choose how Claude Code runs on cloud computers
+(``claude_code_custody``) only with that switch on: on the setup token they
+let the server store, behind its operator's switch
+(``claude_code.stored_custody``), which also signs in their own computers
+that have none. With placement off, or that switch off, no turn reads a
+user's choice, and cloud computers there run no Claude Code, as before the
+choice existed; only turning Claude Code off in
 Experiments reads it (``opted_out``). Where the CLI runs is decided once
 (``cloud_runs_in``), and wherever it runs in the sandbox only a computer at
 ``SANDBOX_MIN_TIER`` or above runs it (``tier_refusal``).
@@ -27,7 +26,6 @@ from typing import Any, Literal
 
 from src.config.settings import get_claude_code_config
 from src.llms.claude_code import backend_available, rows_available
-from src.server.database.api_keys import saved_key
 from src.server.database.claude_code_hosted import (
     Custody,
     Mode,
@@ -41,8 +39,6 @@ from src.server.models.claude_code import ClaudeCodeCustody, ComputerRefusal, Ho
 
 logger = logging.getLogger(__name__)
 
-#: The BYOK provider whose key a turn on the user's API key runs on.
-ANTHROPIC = "anthropic"
 #: The version of the consent text a user accepts to store their setup token.
 DISCLOSURE = "2026-11-v1"
 #: The smallest computer that runs the CLI inside its own sandbox: Medium,
@@ -59,7 +55,7 @@ CLI_CAP_REFUSAL = (
     "Wait for one of your subagents to finish, then launch this one again"
 )
 
-RunsOn = Literal["saved_token", "stored_token", "api_key"]
+RunsOn = Literal["saved_token", "stored_token"]
 #: Where a turn's CLI runs on a cloud computer: inside the computer's own
 #: sandbox, or in the backend worker that owns the turn.
 CloudRunsIn = Literal["sandbox", "worker"]
@@ -122,16 +118,15 @@ def _platform() -> bool:
 
 
 def _offered() -> list[HostedMode]:
-    """The credentials the operator lets users choose for cloud computers on the platform."""
-    config = get_claude_code_config()
-    return [mode for mode, on in (("api_key", config.hosted_api_key), ("stored", config.stored_custody)) if on]
+    """The modes the operator lets users choose for cloud computers on the platform."""
+    return ["stored"] if get_claude_code_config().stored_custody else []
 
 
 def cloud_runs_in() -> CloudRunsIn | None:
     """Where this server runs the CLI of a turn on a cloud computer, the one
     read of ``claude_code.sandbox_placement``: inside the computer's sandbox
     with it on, else in the worker on a self-hosted server. The platform runs
-    it only in the sandbox, and only once a credential is offered for it;
+    it only in the sandbox, and only once storing a token is offered;
     None where this server runs none on a cloud computer."""
     in_sandbox = get_claude_code_config().sandbox_placement
     if backend_available():
@@ -147,7 +142,7 @@ def in_sandbox() -> bool:
 
 def checks_automations() -> bool:
     """Whether a Claude Code automation's save is checked against how its
-    turns would run: where users choose a credential for cloud computers,
+    turns would run: where users choose how it runs on cloud computers,
     whose stored token automations never run on, here or relayed to their own
     computers, and where a cloud computer's size can refuse it."""
     return choice_offered() or in_sandbox()
@@ -155,7 +150,7 @@ def checks_automations() -> bool:
 
 def choice_offered() -> bool:
     """Whether users choose how Claude Code runs on this server's cloud
-    computers: on the platform, once the operator turned a credential on.
+    computers: on the platform, once the operator turned storing a token on.
     The choice stays theirs to change with the CLI's placement off, where
     their stored token still signs in their own computers and leaving
     ``stored`` deletes it; their cloud turns are refused there
@@ -166,33 +161,22 @@ def choice_offered() -> bool:
 async def hosted(user_id: str, *, conn=None) -> Hosted | None:
     """How the user's turns on a cloud computer run here; None where none
     do. Asked at admission and again as each run starts, since the user's
-    choice and their key may change in between. ``conn`` reads on a caller's
+    choice may change in between. ``conn`` reads on a caller's
     connection, as ``placement`` takes it."""
     if backend_available():
         return Hosted("saved_token")
     if not choice_offered():
         return None
-    current = await get_custody(user_id, conn=conn)
-    return _verdict(current, await saved_key(user_id, ANTHROPIC, conn=conn) if current.mode == "api_key" else None)
+    return _verdict(await get_custody(user_id, conn=conn))
 
 
-def _verdict(current: Custody, key: dict | None) -> Hosted:
-    """How a turn runs on the choice ``current``, ``key`` being the user's saved
-    Anthropic key where it runs on one. A blocked user is told storing is off
-    for them only where no other credential is offered. A key set to another
-    endpoint is refused, since the worker sends it to Anthropic alone."""
-    offered = _offered()
-    if current.mode == "local":
-        return Hosted(refusal="stored_blocked" if current.blocked and "api_key" not in offered else "hosted_off")
-    if current.mode not in offered:
-        return Hosted(refusal="hosted_paused")
-    if current.mode == "stored":
-        return Hosted(refusal="stored_blocked") if current.blocked else Hosted("stored_token")
-    if key is None:
-        return Hosted(refusal="needs_api_key")
-    if key["base_url"]:
-        return Hosted(refusal="api_key_endpoint")
-    return Hosted("api_key")
+def _verdict(current: Custody) -> Hosted:
+    """How a turn runs on the choice ``current``, read only while storing is
+    offered (``choice_offered``). A blocked user is told storing is off for
+    them, whatever they chose."""
+    if current.blocked:
+        return Hosted(refusal="stored_blocked")
+    return Hosted("stored_token") if current.mode == "stored" else Hosted(refusal="hosted_off")
 
 
 def tier_refusal(computer: Mapping[str, Any]) -> ComputerRefusal | None:
@@ -363,13 +347,9 @@ async def custody(user_id: str) -> ClaudeCodeCustody | None:
     if not choice_offered():
         return None
     current = await get_custody(user_id)
-    key = await saved_key(user_id, ANTHROPIC)
-    if cloud_runs_in() is None:
-        verdict = Hosted(refusal="needs_own_computer")
-    else:
-        verdict = _verdict(current, key)
+    verdict = Hosted(refusal="needs_own_computer") if cloud_runs_in() is None else _verdict(current)
     return ClaudeCodeCustody(
-        mode=current.mode, api_key_saved=key is not None,
+        mode=current.mode,
         offered=[mode for mode in _offered() if not (mode == "stored" and current.blocked)], blocked=current.blocked,
         runs_on=verdict.runs_on, refusal=verdict.refusal, disclosure=DISCLOSURE,
     )

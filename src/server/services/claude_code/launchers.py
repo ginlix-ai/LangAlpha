@@ -8,7 +8,7 @@ for.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from ptc_agent.agent.claude_code.launcher import Credential, Launcher, LocalLauncher
 from ptc_agent.agent.claude_code.machine_token import token_name
@@ -17,9 +17,8 @@ from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S, SSHLaunche
 from ptc_agent.core.sandbox.providers._ssh_transport import Link, Machine
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from src.llms.claude_code import ClaudeTurnFailed
-from src.server.database.api_keys import get_key_with_base_url
 
-from .hosted import ANTHROPIC, cloud_placement, cloud_runs_in, in_sandbox
+from .hosted import cloud_placement, cloud_runs_in, in_sandbox
 from .machine import ComputerToken
 from .plan import UserPlan
 from .saved import refusal_stamp, refuse, stored_row
@@ -32,23 +31,22 @@ class HostedCredential:
     """The credential a turn on a cloud computer signs in with, as its
     launcher reads it (``launcher.TokenStore``): as each run starts, by the
     rule admission asked (``cloud_placement``, on the computer
-    ``computer_id``), so a run whose user changed their choice or removed
-    their key since, or whose computer was resized below the tier the CLI
-    runs at, is refused as admission would refuse it, before any secret is
+    ``computer_id``), so a run whose user changed their choice since, or
+    whose computer was resized below the tier the CLI runs at, is refused as
+    admission would refuse it, before any secret is
     read, and so is one whose credential is no longer the one admission let
     it run on (``admitted``), which its run's row is stamped with, ahead of
     the size, as a credential is. A setup token Anthropic refuses is recorded as refused
     (``saved.refuse``) and ends the turn saying so, as admission will from
-    then on; an API key it refuses ends the turn saying so and is
-    never flagged, since the key's own status lives in Model access."""
+    then on."""
 
     def __init__(self, user_id: str, admitted: str | None, computer_id: str | None) -> None:
         self.user_id = user_id
         self.admitted = admitted
         self.computer_id = computer_id
-        #: What the last read handed out, for ``refused``: the API key, or the
-        #: stored token's refusal stamp, never the token.
-        self._handed: tuple[str, Any] | Literal["api_key"] | None = None
+        #: What the last read handed out, for ``refused``: the stored token's
+        #: refusal stamp, never the token.
+        self._handed: tuple[str, Any] | None = None
 
     async def read(self) -> Credential | None:
         from src.server.database.computer import get_computer
@@ -61,23 +59,13 @@ class HostedCredential:
         if where.refusal is not None:
             raise ClaudeTurnFailed(where.refusal, "what admission let the turn run on changed as it started")
         self._handed = None
-        if runs_on in ("saved_token", "stored_token"):
-            row = await stored_row(self.user_id)
-            if row is None:
-                return None
-            self._handed = refusal_stamp(row)
-            return Credential(row["access_token"])
-        key = await get_key_with_base_url(self.user_id, ANTHROPIC)
-        if not key:
-            raise ClaudeTurnFailed("needs_api_key", "the user's Anthropic API key was removed since admission")
-        if key["base_url"]:
-            raise ClaudeTurnFailed("api_key_endpoint", "the user's Anthropic API key was set to another endpoint")
-        self._handed = "api_key"
-        return Credential(key["api_key"], kind="api_key")
+        row = await stored_row(self.user_id)
+        if row is None:
+            return None
+        self._handed = refusal_stamp(row)
+        return Credential(row["access_token"])
 
     async def refused(self) -> None:
-        if self._handed == "api_key":
-            raise ClaudeTurnFailed("api_key_refused", "Anthropic refused the user's API key")
         if self._handed is not None:
             await refuse(self.user_id, *self._handed)
         raise ClaudeTurnFailed("token_refused", "Claude refused the saved setup token")
