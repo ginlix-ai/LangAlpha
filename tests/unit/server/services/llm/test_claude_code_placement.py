@@ -199,8 +199,8 @@ async def test_resolve_names_the_turns_workspace_to_the_placement_check():
         patch("src.server.services.llm.config.effective_flags_for_user", new_callable=AsyncMock, return_value={}),
         pytest.raises(HTTPException),
     ):
-        await resolve_llm_config(_base(), "user-1", None, False, workspace_id="ws-1")
-    assert seen.await_args.kwargs == {"user_id": "user-1", "workspace_id": "ws-1", "thread_id": None}
+        await resolve_llm_config(_base(), "user-1", None, False, workspace_id="ws-1", unattended=True)
+    assert seen.await_args.kwargs == {"user_id": "user-1", "workspace_id": "ws-1", "thread_id": None, "unattended": True}
 
 
 # -- What a turn on an own computer records --
@@ -234,3 +234,17 @@ async def test_a_relayed_token_is_handed_over_once_asked_and_its_refusal_marks_i
         assert cache.values == {token_check_key("sk-ant-oat01-saved"): False}
         assert "sk-ant-oat01-saved" not in repr(vars(machine))
         assert await ComputerToken("user-1", "c-1").read() is None, "a token Claude refused is not relayed again"
+
+
+@pytest.mark.asyncio
+async def test_a_thread_s_turn_says_whether_anybody_started_it():
+    from types import SimpleNamespace
+
+    from src.server.services.thread_agent import thread_resolver
+
+    seen = AsyncMock(return_value=None)
+    route = SimpleNamespace(workspace_id="ws-1", role="analyst")
+    with patch("src.server.services.llm.config.resolve_llm_config", new=seen):
+        await thread_resolver("user-1", "t-1", route, thread=None, is_byok=False, unattended=True)(None)
+        await thread_resolver("user-1", "t-1", route, thread=None, is_byok=False)(None)
+    assert [c.kwargs["unattended"] for c in seen.await_args_list] == [True, False]

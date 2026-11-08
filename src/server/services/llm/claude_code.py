@@ -98,7 +98,7 @@ CLAUDE_CODE_OFF = {
 }
 
 #: The windows as the server's own words name them.
-_PLAN_WINDOW_WORDS: dict[PlanWindow, str] = {
+PLAN_WINDOW_WORDS: dict[PlanWindow, str] = {
     "five_hour": "5-hour", "seven_day": "weekly", "seven_day_opus": "weekly Opus", "seven_day_sonnet": "weekly Sonnet",
     "seven_day_overage_included": "weekly Fable",
 }
@@ -151,27 +151,71 @@ def _refusal(model_name: str | None, reason: str, *, message: str | None = None,
     return {"message": message, "type": "claude_code_off", "model": model_name, "reason": reason, **fields}
 
 
+def plan_words(
+    reason: str, window: PlanWindow | None, until: datetime | None, *, zone: str | None = None,
+    credits_billed: bool = False,
+) -> str:
+    """A plan refusal's words, the reset in ``zone``: an automation's report
+    and delivery are read by its owner, on their clock. Without one the
+    reset is in UTC, for a frame the app words itself in the reader's zone.
+    Where Claude said no reset (``until`` None), words that name none."""
+    if window is None or until is None:
+        message = _PLAN_NO_RESET[reason]
+    else:
+        message = claude_code_off_message(reason).format(window=PLAN_WINDOW_WORDS[window], time=_plan_time(until, zone))
+    return f"{message} {_CREDITS_BILLED}" if credits_billed else message
+
+
+def _plan_time(until: datetime, zone: str | None) -> str:
+    """A reset on ``zone``'s clock: the time alone on today's date there."""
+    from src.tools.wakeups.clock import user_zone_of
+
+    if zone is None:
+        return until.astimezone(UTC).strftime("%b %-d, %H:%M UTC")
+    local = until.astimezone(user_zone_of(zone))
+    today = local.date() == datetime.now(local.tzinfo).date()
+    return local.strftime("%-I:%M %p %Z" if today else "%a %b %-d, %-I:%M %p %Z")
+
+
+def plan_detail(exc: BaseException) -> dict[str, Any] | None:
+    """The detail of ``exc`` where it is a Claude plan refusal: admission's
+    ``plan_limited``, or the ``plan_stopped`` a run ended with."""
+    from fastapi import HTTPException
+
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
+        detail = exc.detail
+    else:
+        detail = claude_code_refusal(exc, None) or {}
+    if detail.get("type") == "claude_code_off" and detail.get("reason") in ("plan_limited", "plan_stopped"):
+        return detail
+    return None
+
+
+def reword_plan(detail: dict[str, Any], zone: str | None) -> str:
+    """``detail``'s words (``plan_detail``), the reset on ``zone``'s clock."""
+    until = detail.get("until")
+    return plan_words(
+        detail["reason"], detail.get("window"), datetime.fromisoformat(until) if until else None,
+        zone=zone, credits_billed=bool(detail.get("credits_billed")),
+    )
+
+
 def _plan_fields(reason: str, window: PlanWindow | None, until: datetime | None) -> dict[str, Any]:
     """A plan refusal's words from the server, for a client that words none
     itself, and the window and its reset (ISO 8601) the frame carries, which
-    the app words in the reader's zone and language, so the reset here is in
-    UTC, since the server does not know the reader's zone. Where Claude said
-    no reset (``until`` None), words that name none, and neither field."""
+    the app words in the reader's zone and language. Where Claude said no
+    reset (``until`` None), words that name none, and neither field."""
+    message = plan_words(reason, window, until)
     if window is None or until is None:
-        return {"message": _PLAN_NO_RESET[reason]}
-    time = until.astimezone(UTC).strftime("%b %-d, %H:%M UTC")
-    message = claude_code_off_message(reason).format(window=_PLAN_WINDOW_WORDS[window], time=time)
+        return {"message": message}
     return {"message": message, "window": window, "until": until.isoformat()}
 
 
 def plan_refusal(model_name: str | None, stopped: PlanStopped) -> dict[str, Any]:
     """The ``plan_stopped`` refusal a turn the Claude plan stopped ends with."""
     fields = _plan_fields("plan_stopped", stopped.window, stopped.until)
-    message = fields.pop("message")
-    return _refusal(
-        model_name, "plan_stopped", message=f"{message} {_CREDITS_BILLED}" if stopped.credits_billed else message,
-        credits_billed=stopped.credits_billed, **fields,
-    )
+    fields["message"] = plan_words("plan_stopped", stopped.window, stopped.until, credits_billed=stopped.credits_billed)
+    return _refusal(model_name, "plan_stopped", credits_billed=stopped.credits_billed, **fields)
 
 
 #: The turn failures admission would have refused the turn for, by the
@@ -217,6 +261,7 @@ class Admitted(NamedTuple):
 
 async def require_runnable(
     config, model: str, role: AgentRole, *, user_id: str, workspace_id: str | None, thread_id: str | None = None,
+    unattended: bool = False,
 ) -> Admitted:
     """Refuse a turn on ``model``, a Claude Code row, that cannot run it
     where it would run.
@@ -230,8 +275,10 @@ async def require_runnable(
     own count of its CLIs, subagents' included, bounds them there
     (``hosted.cli_cap``). The cap is soft: two turns admitted at once may both
     pass. A turn whose credential's Claude plan is used up is refused until
-    it resets (``require_plan``). None of it waits on Anthropic or dials a
-    machine.
+    it resets (``require_plan``). A turn nobody started (``unattended``) on
+    the setup token LangAlpha stores is refused for that first
+    (``require_attended``), since no reset lets it run. None of it waits on
+    Anthropic or dials a machine.
 
     Returns what the turn was admitted on, which the run's row is stamped
     from (``run_stamp``) and the run signs in with.
@@ -247,12 +294,16 @@ async def require_runnable(
         computer_id = str(where.own_computer["computer_id"])
         answer = await read_answer(computer_id)
         saved = await require_computer_signed_in(model, user_id, answer)
+        if unattended and saved == "stored_token":
+            raise_claude_code_off(model, "stored_unattended")
         if answer is not None and answer.fresh:
             await require_plan(model, user_id, plan_credential("saved" if saved else "machine", computer_id))
         return Admitted(saved=saved)
     if where.refusal is not None:
         raise_claude_code_off(model, where.refusal)
     state = where.hosted
+    if unattended and state.runs_on == "stored_token":
+        raise_claude_code_off(model, "stored_unattended")
     if state.token_signs_in:
         await require_plan(model, user_id, SAVED)
     limit = get_claude_code_config().hosted_turns_per_user

@@ -3375,6 +3375,7 @@
     "stateLastRunFailed": "Last run failed",
     "stateKeyRejected": "API key rejected",
     "stateUsageLimit": "Usage limit reached",
+    "stateClaudePlan": "Claude plan limit reached",
     "statePaused": "Paused",
     "stateFinished": "Finished",
     "stateWatching": "Watching",

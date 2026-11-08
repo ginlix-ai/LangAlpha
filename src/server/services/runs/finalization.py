@@ -24,6 +24,7 @@ from src.server.database.runs.lifecycle import ProducerRecord, RunOutcome
 from src.server.services.runs.stream_errors import (
     failure_kind_metadata,
     model_call_failure,
+    plan_stop_metadata,
 )
 from src.server.utils.persistence_utils import (
     calculate_execution_time,
@@ -165,6 +166,7 @@ async def assemble_finalize_artifacts(
         )
         if status == "error":
             persist_metadata.update(failure_kind_metadata(exc))
+            persist_metadata.update(plan_stop_metadata(exc))
     # The pause's own words, which settling the run's automation relays. A
     # pause without words is stamped null, so settling knows there is
     # nothing to relay.

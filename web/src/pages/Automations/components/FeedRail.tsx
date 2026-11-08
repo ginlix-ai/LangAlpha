@@ -188,10 +188,11 @@ function AttentionRow({
       reason = t('automation.disabledAfter', { count: a.failure_count });
       break;
     case 'usage_limit':
+    case 'claude_plan':
       // No message means the limit paused the run midway, and its thread
       // holds the pause.
       quoted = !!last?.error_message;
-      reason = last?.error_message || t('automation.stateUsageLimit');
+      reason = last?.error_message || t(ui.labelKey);
       break;
     default:
       reason = t('automation.lastRunFailedAgo', { when: relativeTime(last?.completed_at, locale, now) });

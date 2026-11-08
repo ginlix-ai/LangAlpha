@@ -344,6 +344,32 @@ class TestCredentialGate:
         assert settled["error_message"].startswith("HTTPException: ")
 
 
+class TestClaudePlan:
+    """A firing the Claude plan refused at admission."""
+
+    @pytest.mark.asyncio
+    async def test_a_used_up_claude_plan_settles_the_firing_with_no_strike_in_its_owners_time(self):
+        detail = {
+            "message": "Your Claude plan's 5-hour limit is used up until Jan 3, 20:40 UTC. Pick another model, or "
+            "send this again after it resets.",
+            "type": "claude_code_off", "model": "claude-haiku-5-5-code", "reason": "plan_limited",
+            "window": "five_hour", "until": "2030-01-03T20:40:00+00:00", "held_until": "2030-01-03T20:40:00+00:00",
+        }
+        with patch(
+            "src.server.database.automation.get_user_timezone", new=AsyncMock(return_value="America/New_York")
+        ):
+            mock_adb, mock_astream, mock_settled = await _gated(HTTPException(status_code=400, detail=detail))
+
+        words = (
+            "Your Claude plan's 5-hour limit is used up until Thu Jan 3, 3:40 PM EST. Pick another model, or send "
+            "this again after it resets."
+        )
+        settled = mock_adb.settle_execution.await_args.kwargs
+        assert (settled["strike"], settled["failure_reason"], settled["error_message"]) == (None, "claude_plan", words)
+        assert mock_settled.await_args.kwargs["error"] == words
+        assert mock_settled.await_args.kwargs["failure_reason"] == "claude_plan"
+
+
 async def _gated(exc):
     """Fire an automation whose credit gate raises ``exc``."""
     patches = _patch_all(is_byok=False, has_oauth=False, credit_raises=exc)

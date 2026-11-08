@@ -289,6 +289,41 @@ async def test_admission_on_an_own_computer_reads_the_row_its_turn_signs_in_on(r
     assert rows["reads"] == ([read] if read else [])
 
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("own", [False, True])
+async def test_a_turn_nobody_started_on_the_stored_token_is_refused_for_that_before_its_plan(rows, monkeypatch, own):
+    # No reset would let it run, so a wake is not held for one, nor an
+    # automation told to wait for it.
+    hosted = SimpleNamespace(runs_on="stored_token", token_signs_in=True)
+
+    async def placement(*_args, **_kwargs):
+        if own:
+            return SimpleNamespace(own_computer={"computer_id": "c-1"})
+        return SimpleNamespace(own_computer=None, refusal=None, hosted=hosted)
+
+    async def read_answer(computer_id):
+        return SimpleNamespace(relays=True, fresh=True)
+
+    async def signed_in(model, user_id, given):
+        return "stored_token"
+
+    monkeypatch.setattr(admission, "placement", placement)
+    monkeypatch.setattr(admission, "read_answer", read_answer)
+    monkeypatch.setattr(admission, "require_computer_signed_in", signed_in)
+    monkeypatch.setattr(admission, "rows_available", lambda: True)
+    rows["rows"] = {c: _held(PlanLimit("five_hour", datetime.now(UTC) + timedelta(hours=1))) for c in ("saved", "computer:c-1")}
+    config = SimpleNamespace(feature_enabled=lambda feature: True)
+
+    async def reason(**kw) -> str:
+        with pytest.raises(HTTPException) as refused:
+            await admission.require_runnable(config, "claude-haiku-5-5-code", "analyst", user_id="u", workspace_id="w", **kw)
+        return refused.value.detail["reason"]
+
+    assert await reason(unattended=True) == "stored_unattended"
+    assert await reason() == "plan_limited"
+
+
 def test_a_turn_the_plan_stopped_ends_on_a_refusal_naming_its_window_reset_and_billing():
     assert claude_code_refusal(RuntimeError("another failure"), "m") is None
     stopped = PlanStopped("seven_day_opus", UNTIL, credits_billed=True)
@@ -583,3 +618,24 @@ async def test_a_turn_that_launches_after_a_token_was_placed_on_its_computer_kee
     plan.record("machine", _reading(NOW))
     await plan.written()
     assert rows["writes"] == [("computer:c-1", 4)]
+
+
+# --- unattended turns: automations, wakeups and subagents at the limit ---------
+
+
+def test_an_automations_report_words_the_reset_on_its_owners_clock():
+    from src.server.services.llm.claude_code import plan_words, reword_plan
+
+    until = datetime(2030, 1, 3, 20, 40, tzinfo=UTC)
+    assert plan_words("plan_limited", "five_hour", until, zone="America/New_York") == (
+        "Your Claude plan's 5-hour limit is used up until Thu Jan 3, 3:40 PM EST. Pick another model, or send this "
+        "again after it resets."
+    )
+    stopped = claude_code_refusal(PlanStopped("seven_day", until, credits_billed=True), "m")
+    assert reword_plan(stopped, "Asia/Shanghai") == (
+        "Your Claude plan's weekly limit is used up, so this turn stopped. It resets at Fri Jan 4, 4:40 AM CST. "
+        "Nothing ran on another model. Requests already under way were billed to your usage credits."
+    )
+    assert reword_plan(claude_code_refusal(PlanStopped(), "m"), "UTC") == (
+        "Your Claude plan's limit is used up, so this turn stopped. Nothing ran on another model."
+    )

@@ -3385,6 +3385,7 @@
     "stateLastRunFailed": "上次运行失败",
     "stateKeyRejected": "API 密钥被拒",
     "stateUsageLimit": "已达用量上限",
+    "stateClaudePlan": "Claude 套餐已达限额",
     "statePaused": "已暂停",
     "stateFinished": "已结束",
     "stateWatching": "监控中",

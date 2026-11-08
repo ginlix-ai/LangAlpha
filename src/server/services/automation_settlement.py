@@ -76,6 +76,10 @@ class Outcome(StrEnum):
     # alert ends instead: re-armed, it would fire into the same limit every
     # few minutes for as long as its condition holds.
     LIMITED = "limited"
+    # The Claude plan of the automation's Claude Code model refused the
+    # firing or stopped its run, until it resets: a usage limit, but the
+    # user's Claude plan rather than their LangAlpha plan, so it is told apart.
+    PLAN_LIMITED = "plan_limited"
     # Our outage, such as the credit gate's 503 when the quota service gives
     # no verdict, or a provider refusing the platform's own key. A restart
     # landing on a schedule window must not quietly switch off a user's
@@ -151,6 +155,15 @@ _POLICIES: Dict[Outcome, _Policy] = {
         finish="failed",
         failure_reason="usage_limit",
     ),
+    Outcome.PLAN_LIMITED: _Policy(
+        status="failed",
+        from_statuses=("pending", "waiting", "running"),
+        metric="limited",
+        schedule="close_alert",
+        webhook="automation.failed",
+        finish="failed",
+        failure_reason="claude_plan",
+    ),
     Outcome.FAILED_OURS: _Policy(
         status="failed",
         from_statuses=("pending", "waiting", "running"),
@@ -195,8 +208,10 @@ _POLICIES: Dict[Outcome, _Policy] = {
 
 # The outcomes a run's own ledger row explains, in ``run_failure_message``.
 RUN_FAILURES = frozenset(
-    {Outcome.FAILED, Outcome.KEY_REJECTED, Outcome.LIMITED, Outcome.FAILED_OURS}
+    {Outcome.FAILED, Outcome.KEY_REJECTED, Outcome.LIMITED, Outcome.PLAN_LIMITED, Outcome.FAILED_OURS}
 )
+# The outcomes of a usage limit, which never count toward auto-disable.
+LIMITS = frozenset({Outcome.LIMITED, Outcome.PLAN_LIMITED})
 
 
 def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
@@ -205,7 +220,8 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
 
     A cancel the reader did not ask for is a server stopping, and an error
     written by the ledger's recovery is a worker lost: both are ours. A run
-    the credit gate paused hit a usage limit. A model call refused 401/403
+    the credit gate paused hit a usage limit, and one the Claude plan stopped
+    (``claude_plan``, ``plan_stop_metadata``) the plan's. A model call refused 401/403
     is our outage when the key was the platform's; a row that does not say
     whose it was is treated as ours, so no disable rests on a guess. On the
     user's own key a 401 is the key rejected and a 403 an ordinary failure. A run paused on any other
@@ -226,6 +242,8 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     if status == "error":
         if metadata.get("recovery"):
             return Outcome.INTERRUPTED
+        if metadata.get("claude_plan"):
+            return Outcome.PLAN_LIMITED
         code = metadata.get("error_status_code")
         if code in _AUTH_STATUSES:
             if metadata.get("error_credential_owned") is not True:
@@ -259,6 +277,24 @@ def run_failure_message(run: Dict[str, Any]) -> Optional[str]:
         f"workflow run finished as '{run['status']}' "
         f"(run_id={run['conversation_response_id']})"
     )
+
+
+async def plan_message(detail: Dict[str, Any], user_id: str) -> Optional[str]:
+    """A Claude plan refusal's words (``plan_detail``) with its reset on the
+    automation owner's clock, since its report and delivery are theirs to
+    read; None where the stamp can't be worded."""
+    from src.server.database.automation import get_user_timezone
+    from src.server.services.llm.claude_code import reword_plan
+
+    try:
+        zone = await get_user_timezone(user_id) if user_id else None
+    except Exception:
+        zone = None
+    try:
+        return clean_error_text(reword_plan(detail, zone))
+    except Exception:
+        logger.warning("[AUTOMATION_SETTLE] Unreadable Claude plan stamp", exc_info=True)
+        return None
 
 
 def _one_shot_price(automation: Dict[str, Any]) -> bool:
@@ -700,7 +736,7 @@ async def _finish_again(
 
 # Reasons that refuse firing after firing until something outside the
 # automation changes: a usage limit until it resets, our outage until it ends.
-_STREAK_REASONS = frozenset({"usage_limit", "server_error"})
+_STREAK_REASONS = frozenset({"usage_limit", "claude_plan", "server_error"})
 
 
 def _repeats_a_refusal(
@@ -760,7 +796,9 @@ async def settle_by_run(
     error = excerpt = final_text = None
     if outcome in RUN_FAILURES:
         error = run_failure_message(run)
-        log = logger.warning if outcome is Outcome.LIMITED else logger.error
+        if outcome is Outcome.PLAN_LIMITED:
+            error = await plan_message(run["metadata"]["claude_plan"], str(automation.get("user_id") or "")) or error
+        log = logger.warning if outcome in LIMITS else logger.error
         log(
             f"[AUTOMATION_SETTLE] Run ended as {outcome}: "
             f"execution_id={execution_id} run_id={run_id} error={error}"

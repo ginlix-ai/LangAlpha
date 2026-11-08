@@ -27,8 +27,10 @@ from src.server.dependencies.usage_limits import enforce_credit_limit
 from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
 from src.server.services import automation_delivery
 from src.server.services.automation_settlement import (
+    LIMITS,
     Outcome,
     clean_error_text,
+    plan_message,
     settle,
 )
 from src.server.services.runs.admission import BUSY_STATES
@@ -911,8 +913,19 @@ class AutomationExecutor:
             if await self._left_to_run(execution_id, e, firing):
                 _exec_span.set_attribute("status", "handed_to_run")
                 return
+            # Lazy: the Claude Code services import the automation tools.
+            from src.server.services.llm.claude_code import plan_detail
+
             limit_message = _limit_message(e)
-            if limit_message is not None:
+            plan = plan_detail(e)
+            if plan is not None:
+                outcome = Outcome.PLAN_LIMITED
+                error_msg = await plan_message(plan, user_id) or clean_error_text(str(plan.get("message")))
+                logger.warning(
+                    f"[AUTOMATION_EXEC] The Claude plan refused the firing, no "
+                    f"strike: execution_id={execution_id}"
+                )
+            elif limit_message is not None:
                 outcome, error_msg = Outcome.LIMITED, limit_message
                 logger.warning(
                     f"[AUTOMATION_EXEC] A usage limit refused the firing, no "
@@ -940,7 +953,7 @@ class AutomationExecutor:
             _exec_span.set_attribute(
                 "status",
                 "settled_elsewhere" if not settled
-                else "limited" if outcome is Outcome.LIMITED else "failure",
+                else "limited" if outcome in LIMITS else "failure",
             )
         except asyncio.CancelledError:
             # The server is stopping. A cancel inside a wait already skipped

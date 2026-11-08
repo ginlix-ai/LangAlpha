@@ -37,6 +37,7 @@ def thread_resolver(
     reasoning_effort: str | None = None,
     fast_mode: bool | None = None,
     enabled_subagents: list[str] | None = None,
+    unattended: bool = False,
 ) -> Callable[[str | None], Awaitable[AgentConfig]]:
     """Maps a model name (None for the account default) to the config a turn
     on the thread runs it under, in the route's workspace and role.
@@ -66,6 +67,7 @@ def thread_resolver(
             enabled_subagents=enabled_subagents,
             workspace_id=route.workspace_id,
             role=route.role,
+            unattended=unattended,
         )
 
     return resolve

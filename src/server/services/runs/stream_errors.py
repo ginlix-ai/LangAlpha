@@ -238,6 +238,17 @@ def failure_kind_metadata(exc: BaseException) -> Dict[str, Any]:
     return {"error_kind": failure_kind(exc)["kind"]}
 
 
+def plan_stop_metadata(exc: BaseException) -> Dict[str, Any]:
+    """Ledger metadata for a run the Claude plan stopped (``plan_stopped``):
+    its window, reset and whether usage credits paid first, which settling
+    its automation words on its owner's clock. ``{}`` for any other failure."""
+    refusal = claude_code_refusal(exc, None)
+    if refusal is None or refusal.get("reason") != "plan_stopped":
+        return {}
+    keep = ("type", "reason", "window", "until", "credits_billed")
+    return {"claude_plan": {k: refusal[k] for k in keep if k in refusal}}
+
+
 def error_event_data(
     thread_id: str,
     error_message: str,
