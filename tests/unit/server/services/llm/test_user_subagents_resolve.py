@@ -112,13 +112,13 @@ def on_plan(monkeypatch) -> AsyncMock:
 
 
 async def _resolve(
-    deployment: SubagentsConfig | None = None, *, requested=None, claude_code_turn: bool = False,
+    deployment: SubagentsConfig | None = None, *, requested=None, claude_code: bool = False,
 ) -> ResolvedSubagents:
     reads = await read_user_subagents(USER, deployment or _deployment())
     return await resolve_user_subagents(
         USER, reads, model_pref={}, permits=_deny, is_byok=False,
         search_api="tavily", search_depth="standard", requested=requested,
-        claude_code_turn=claude_code_turn,
+        claude_code=claude_code,
     )
 
 
@@ -305,18 +305,19 @@ async def test_a_pin_the_manifest_lacks_runs_as_inherit_whoever_set_it(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("claude_code_turn", [False, True])
-async def test_a_pin_on_a_claude_code_row_runs_only_on_a_claude_code_turn(rows, plugin_rows, on_plan, claude_code_turn):
-    """There it runs a CLI of its own; any other turn has no runtime for it,
-    so it runs as inherit, whichever writer pinned it."""
+@pytest.mark.parametrize("claude_code", [False, True])
+async def test_a_pin_on_a_claude_code_row_runs_only_where_claude_code_runs(rows, plugin_rows, on_plan, claude_code):
+    """There it runs a CLI of its own; a turn whose workspace has no Claude
+    Code has no runtime for it, so it runs as inherit, whichever writer
+    pinned it."""
     on_plan.return_value = True
     rows += [_custom("macro-desk", model="claude-sonnet-5-5-code")]
     plugin_rows += [_plugin_row("desk", model="claude-haiku-5-5-code")]
 
-    resolved = await _resolve(claude_code_turn=claude_code_turn)
+    resolved = await _resolve(claude_code=claude_code)
 
     pins = (resolved.definitions["macro-desk"].model, resolved.definitions["desk"].model)
-    assert pins == (("claude-sonnet-5-5-code", "claude-haiku-5-5-code") if claude_code_turn else (None, None))
+    assert pins == (("claude-sonnet-5-5-code", "claude-haiku-5-5-code") if claude_code else (None, None))
 
 
 def _system(tier=None, provider="p-1") -> tuple[str, dict]:

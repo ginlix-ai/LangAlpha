@@ -11,6 +11,8 @@ import { ModelBlock, type SubagentModels } from '../SubagentAside';
  * effort to the ladder of the model it runs on.
  */
 
+vi.mock('@/hooks/useClaudeCode', () => ({ useClaudeCodeSetup: () => ({ setup: null }) }));
+
 vi.mock('@/components/model/ModelSelector', () => ({
   ModelSelector: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <select aria-label="model" value={value} onChange={(e) => onChange(e.target.value)}>

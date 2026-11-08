@@ -1325,7 +1325,7 @@ class _Resumes(_Inbox):
         taken, self.resumes = self.resumes, []
         return taken
 
-    async def release_resumes(self, thread_id, run_id, task_id, job_ids, *, counted=True):
+    async def release_resumes(self, thread_id, run_id, task_id, job_ids, *, counted=True, final=False):
         self.released.append((thread_id, run_id, task_id, job_ids))
 
 

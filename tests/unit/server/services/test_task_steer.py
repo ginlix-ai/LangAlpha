@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.server.database.home_workspace import get_home_workspace_id
+from src.server.services.llm.claude_code import Admitted
 from src.server.services.report_back import task_steer
 from src.server.services.report_back.notify_turn import TURN_ROOM_WAIT_S
 
@@ -333,21 +335,55 @@ async def test_the_wait_for_a_full_computer_doubles_on_tries_spent_not_on_claims
     assert defer.await_args.kwargs["wait_s"] == 2 * task_steer._ROOM_WAIT_S
 
 
+_PIN_RUNS = Admitted(saved="saved")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("on_claude_code", "live", "cap", "full"),
+    ("on_claude_code", "live", "cap", "full", "thread_model", "pin", "rows", "pinned", "workspace"),
     [
-        pytest.param(True, 2, 4, False, id="room-for-both"),
-        pytest.param(True, 3, 4, True, id="room-for-the-turn-only"),
-        pytest.param(False, 4, 4, False, id="not-claude-code"),
-        pytest.param(True, 4, None, False, id="size-unknown"),
+        pytest.param(True, 2, 4, False, "claude-sonnet-5-5-code", _PIN_RUNS, True, True, "ws-1", id="room-for-both"),
+        pytest.param(True, 3, 4, True, "claude-sonnet-5-5-code", _PIN_RUNS, True, True, "ws-1", id="room-for-the-turn-only"),
+        pytest.param(True, 3, 4, False, "gpt-6.1-terra", _PIN_RUNS, True, True, "ws-1", id="room-for-the-run-on-a-thread-of-another-model"),
+        pytest.param(True, 4, 4, True, "gpt-6.1-terra", _PIN_RUNS, True, True, "ws-1", id="no-room-on-a-thread-of-another-model"),
+        pytest.param(True, 3, 4, True, None, _PIN_RUNS, True, True, "ws-1", id="a-thread-on-the-account-default"),
+        pytest.param(False, 4, 4, False, "claude-sonnet-5-5-code", _PIN_RUNS, True, True, "ws-1", id="not-claude-code"),
+        pytest.param(True, 4, None, False, "claude-sonnet-5-5-code", _PIN_RUNS, True, True, "ws-1", id="size-unknown"),
+        pytest.param(
+            True, 4, 4, False, "gpt-6.1-terra", None, True, True, "ws-1",
+            id="a-pin-that-runs-on-the-thread-model-now",
+        ),
+        pytest.param(
+            True, 4, 4, False, "gpt-6.1-terra", _PIN_RUNS, False, True, "ws-1",
+            id="claude-code-off-for-the-user-now",
+        ),
+        pytest.param(
+            True, 4, 4, False, "gpt-6.1-terra", _PIN_RUNS, True, False, "ws-1",
+            id="a-subagent-whose-pin-was-changed-since",
+        ),
+        pytest.param(
+            True, 4, 4, False, "gpt-6.1-terra", _PIN_RUNS, True, True, get_home_workspace_id("user-1"),
+            id="the-chief-of-staff-whose-pins-run-on-its-model",
+        ),
     ],
 )
 async def test_a_computer_is_full_for_a_resume_without_room_for_the_turn_and_the_run(
-    on_claude_code, live, cap, full
+    on_claude_code, live, cap, full, thread_model, pin, rows, pinned, workspace
 ):
+    """The posted turn takes a CLI of its own unless the thread names another
+    model; a Claude Code pin's resume on a thread of another model takes one
+    for the run alone, and none where the pin runs on the thread's model now.
+    A thread naming none runs the account default."""
     runs = "src.server.database.runs.subagent_runs"
     with (
+        patch("src.server.services.claude_code.flow.rows_on", new=AsyncMock(return_value=rows)),
+        patch("src.server.services.llm.claude_code.pin_admitted", new=AsyncMock(return_value=pin)),
+        patch("src.server.services.llm.subagents.pinned_to_claude_code", new=AsyncMock(return_value=pinned)),
+        patch(f"{runs}.get_task", new=AsyncMock(return_value={"subagent_type": "research"})),
+        patch(
+            "src.server.database.conversation.threads_read.get_thread_auth_meta",
+            new=AsyncMock(return_value={"llm_model": thread_model}),
+        ),
         patch(f"{runs}.ran_on_claude_code", new=AsyncMock(return_value=on_claude_code)),
         patch(f"{runs}.live_clis", new=AsyncMock(return_value=live)),
         patch(
@@ -356,7 +392,7 @@ async def test_a_computer_is_full_for_a_resume_without_room_for_the_turn_and_the
         ),
         patch("src.server.services.claude_code.hosted.cli_cap", lambda computer: cap),
     ):
-        assert await task_steer._computer_full("t-1", "k7Xm2p") is full
+        assert await task_steer._computer_full("t-1", "k7Xm2p", "user-1", workspace) is full
 
 
 # Handing a resume's steers to the run it admitted
@@ -383,7 +419,7 @@ async def test_the_hand_off_moves_the_rows_onto_the_resumed_run():
 
 
 async def _resume_through_the_inbox(
-    hand_off: AsyncMock, *, busy: bool = False
+    hand_off: AsyncMock, *, busy: bool = False, final: bool = False, settle: AsyncMock | None = None
 ) -> AsyncMock:
     """A main turn's resume of k7Xm2p with the server inbox, the Task call
     refusing as ``_handle_resume`` does when the hand-off fails. Returns the
@@ -395,6 +431,7 @@ async def _resume_through_the_inbox(
     from ptc_agent.agent.middleware.background_subagent.context import (
         hand_off_steer_resume,
         steer_resume_busy,
+        steer_resume_final,
     )
     from ptc_agent.agent.middleware.steering import (
         SteeringMiddleware,
@@ -416,6 +453,8 @@ async def _resume_through_the_inbox(
     async def task_call(_request):
         if busy:
             steer_resume_busy("k7Xm2p")
+        elif final:
+            steer_resume_final("k7Xm2p")
         elif await hand_off_steer_resume("k7Xm2p", "tr-2"):
             raise AssertionError("the hand-off should have failed")
         return ToolMessage(content="Error", tool_call_id="c", status="error")
@@ -427,6 +466,7 @@ async def _resume_through_the_inbox(
         patch(f"{_OUTBOX}.release_task_resumes", new=release),
         patch(f"{_OUTBOX}.confirm_jobs", new=AsyncMock()) as confirm,
         patch.object(task_steer, "_divert", new=AsyncMock(return_value=False)),
+        patch.object(task_steer, "_settle", new=settle or AsyncMock()),
     ):
         await SteeringMiddleware(SteeredReportInbox()).awrap_tool_call(
             request, task_call
@@ -469,6 +509,19 @@ async def test_a_failed_hand_off_refuses_the_resume_and_counts_it(hand_off):
         max_refusals=task_steer.MAX_RESUME_REFUSALS,
         counted=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_a_resume_refused_for_as_long_as_the_task_lasts_settles_its_steers():
+    """Another model wrote the task's last reply, so no later turn can resume
+    it on Claude Code: its steers are closed now rather than offered to the
+    next turn, which would only be refused again."""
+    settle = AsyncMock()
+    release = await _resume_through_the_inbox(AsyncMock(), final=True, settle=settle)
+
+    settle.assert_awaited_once()
+    assert settle.await_args.kwargs["fence"] == ("held", "run-A")
+    release.assert_not_awaited()
 
 
 @pytest.mark.asyncio

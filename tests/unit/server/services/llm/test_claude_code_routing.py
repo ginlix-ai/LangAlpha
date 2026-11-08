@@ -170,7 +170,10 @@ def test_background_follows_the_primary_unless_the_primary_is_claude_code():
     assert saved_default_model({"preferred_model": CODE}, "background") is None
 
 
-def test_a_subagent_cannot_be_pinned_to_a_claude_code_row():
+@pytest.mark.asyncio
+async def test_a_subagent_can_be_pinned_to_a_claude_code_row_with_no_key_of_its_own():
+    """Each turn runs it where its workspace has Claude Code, on the setup
+    token kept there, so the pane neither refuses it nor marks it unavailable."""
     from src.server.services.subagents.context import SubagentContext
 
     ctx = SubagentContext(
@@ -178,5 +181,5 @@ def test_a_subagent_cannot_be_pinned_to_a_claude_code_row():
         search_provider="", search_depth="", skills=frozenset(), connectors=(),
         brokerages_connected=False, oauth_accounts={},
     )
-    assert ctx.model_known("claude-sonnet-5-5")
-    assert not ctx.model_known(CODE)
+    assert ctx.model_known("claude-sonnet-5-5") and ctx.model_known(CODE)
+    assert await ctx.model_has_key(CODE)
