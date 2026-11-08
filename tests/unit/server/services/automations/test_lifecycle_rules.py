@@ -145,19 +145,17 @@ class TestModelOnCreate:
 
     @pytest.mark.asyncio
     @patch(f"{_LIFECYCLE}.auto_db")
-    async def test_a_claude_code_model_is_refused_in_home_and_not_in_a_workspace(self, mock_auto_db, models):
-        """Chief of Staff, which runs Home's automations, does not run on one."""
+    async def test_a_claude_code_model_is_created_in_home_as_in_a_workspace(self, mock_auto_db, models):
+        """Chief of Staff, which runs Home's automations, runs on one too, so
+        only where its CLI would run can refuse it (``_check_claude_code_hosted``)."""
         models.return_value = ("system", {"model_id": "claude-haiku-5-5"})
-        with pytest.raises(AutomationRefusal) as exc:
-            await create_automation(OWNER, _create_data(llm_model="claude-haiku-5-5-code"))
-        assert exc.value.field == "llm_model"
-        mock_auto_db.create_automation.assert_not_called()
-
         mock_auto_db.create_automation = AsyncMock(return_value=_row(llm_model="claude-haiku-5-5-code"))
+        await create_automation(OWNER, _create_data(llm_model="claude-haiku-5-5-code"))
+
         workspace = str(uuid.uuid4())
         with patch(f"{_LIFECYCLE}._placement", AsyncMock(return_value=workspace)):
             await create_automation(OWNER, _create_data(llm_model="claude-haiku-5-5-code", workspace_id=workspace))
-        mock_auto_db.create_automation.assert_awaited_once()
+        assert mock_auto_db.create_automation.await_count == 2
 
     @pytest.mark.asyncio
     @patch(f"{_LIFECYCLE}.auto_db")
@@ -214,6 +212,29 @@ class TestClaudeCodeOnAPinnedThread:
         mock_auto_db.update_automation.assert_not_called()
 
 
+class TestClaudeCodeCheckOnTheCallersConnection:
+    """A file save holds the user's locks on its connection, so the placement
+    and the relayed-token reads of the Claude Code check borrow no second one."""
+
+    @pytest.mark.asyncio
+    async def test_where_the_cli_runs_and_whether_the_token_is_relayed_are_read_on_the_callers_conn(self):
+        from src.server.services.claude_code.hosted import OnOwn
+
+        conn, answer = object(), object()
+        placement = AsyncMock(return_value=OnOwn({"computer_id": "c-1", "name": "Studio", "kind": "ssh"}))
+        relayed = AsyncMock(return_value=None)
+        with (
+            patch("src.server.services.claude_code.hosted.checks_automations", return_value=True),
+            patch("src.server.services.claude_code.hosted.cli_placement", placement),
+            patch("src.server.services.claude_code.machine.read_answer", AsyncMock(return_value=answer)),
+            patch(f"{_LIFECYCLE}.relayed_token", relayed),
+        ):
+            await lifecycle._check_claude_code_hosted(OWNER, "claude-haiku-5-5-code", "ws-1", conn)
+
+        placement.assert_awaited_once_with(OWNER, "ws-1", conn=conn)
+        relayed.assert_awaited_once_with(OWNER, answer, conn=conn)
+
+
 class TestModelOnUpdate:
     @pytest.mark.asyncio
     @patch(f"{_LIFECYCLE}.auto_db")
@@ -228,17 +249,19 @@ class TestModelOnUpdate:
 
     @pytest.mark.asyncio
     @patch(f"{_LIFECYCLE}.auto_db")
-    async def test_moving_a_claude_code_automation_into_home_is_refused(self, mock_auto_db, models):
+    async def test_moving_a_claude_code_automation_into_home_is_judged_as_in_any_workspace(self, mock_auto_db, models):
+        """The Chief of Staff runs Claude Code where its CLI has somewhere to run."""
         workspace = str(uuid.uuid4())
         mock_auto_db.get_automation = AsyncMock(
             return_value=_row(workspace_id=workspace, llm_model="claude-haiku-5-5-code")
         )
+        mock_auto_db.update_automation = AsyncMock(
+            return_value=_row(workspace_id=HOME, llm_model="claude-haiku-5-5-code")
+        )
 
-        with pytest.raises(AutomationRefusal) as exc:
-            await update_automation(AUTOMATION_ID, OWNER, {"workspace_id": HOME})
+        await update_automation(AUTOMATION_ID, OWNER, {"workspace_id": HOME})
 
-        assert exc.value.field == "llm_model"
-        mock_auto_db.update_automation.assert_not_called()
+        mock_auto_db.update_automation.assert_awaited_once()
 
     @pytest.mark.asyncio
     @patch(f"{_LIFECYCLE}.auto_db")

@@ -9,14 +9,27 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.config.features import FeatureGate
-from src.server.models.claude_code import ClaudeCodeComputer, ClaudeCodeCustody, ClaudeCodeStatus
+from src.server.database.home_workspace import get_home_workspace_id
+from src.server.models.claude_code import (
+    ClaudeCodeChiefOfStaff, ClaudeCodeComputer, ClaudeCodeCustody, ClaudeCodeStatus,
+)
 from src.server.services.claude_code import checks
-from src.server.services.claude_code.setup_state import setup_state, summary
+from src.server.services.claude_code.hosted import Hosted, OnCloud, OnOwn, Refused
+from src.server.services.claude_code.setup_state import chief_of_staff, setup_state, summary
 from tests.unit.server.app.test_claude_code_computers import USER, _computer, world  # noqa: F401
 
 SETUP = "src.server.services.claude_code.setup_state"
 NOW = datetime(2026, 11, 4, tzinfo=timezone.utc)
 OFF = ClaudeCodeStatus(state="off")
+
+
+@pytest.fixture(autouse=True)
+def chief_of_staff_runs_nowhere_read():
+    """Where the Chief of Staff's Claude Code runs reads the user's computers,
+    which only its own tests below give it."""
+    nowhere = ClaudeCodeChiefOfStaff(kind="server")
+    with patch(f"{SETUP}.chief_of_staff", new_callable=AsyncMock, return_value=nowhere) as read:
+        yield read
 
 
 def _own(state, expires_at=None):
@@ -62,7 +75,10 @@ async def _setup(world, **switches):  # noqa: F811
         patch(f"{SETUP}.local_managed", new_callable=AsyncMock, return_value=switches.get("managed", False)),
         patch(f"{SETUP}.hosted.custody", new_callable=AsyncMock, return_value=switches.get("custody")),
         patch(f"{SETUP}.hosted.choice_offered", return_value=switches.get("offered", False)),
-        patch(f"{SETUP}.hosted.cloud_refusals", new_callable=AsyncMock, return_value=switches.get("refusals", {})),
+        patch(
+            f"{SETUP}.hosted.cloud_view", new_callable=AsyncMock,
+            return_value=(switches.get("refusals", {}), OnCloud(Hosted("saved_token"))),
+        ),
         patch(f"{SETUP}.hosted.in_sandbox", return_value=switches.get("sandbox", False)),
         patch(f"{SETUP}.get_computers_for_user", switches.get("listed", AsyncMock(return_value=[]))),
         patch("src.server.services.claude_code.saved.get_oauth_connection", new_callable=AsyncMock, return_value=None),
@@ -91,8 +107,14 @@ async def test_a_user_the_gate_keeps_off_has_nothing_to_set_up(world, gate, opte
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("status", "live", "state"), [("stopped", True, "offline"), ("running", False, "offline"), ("running", True, "off")])
+@pytest.mark.parametrize(
+    ("status", "live", "state"),
+    [("stopped", True, "off"), ("stopped", False, "offline"), ("running", False, "offline"), ("running", True, "off")],
+)
 async def test_before_opting_in_a_computer_reads_reachable_or_offline_and_is_never_checked(world, status, live, state):  # noqa: F811
+    """One the idle sweep stopped with its machine up is not offline, since a
+    turn starts it, but nothing dials it: the look for a token left there
+    waits for a computer that runs."""
     world.opted_in = False
     world.computer, world.tunnel_live = _computer(status), live
     answer = await _setup(world)
@@ -100,6 +122,7 @@ async def test_before_opting_in_a_computer_reads_reachable_or_offline_and_is_nev
         False, "not_connected" if state == "off" else "offline", state,
     )
     assert "check" not in world.machine.calls
+    assert world.machine.calls == (["state"] if status == "running" and live else [])
 
 
 def _custody(mode="local", refusal="hosted_off", runs_on=None, offered=("stored",)):
@@ -197,6 +220,20 @@ async def test_once_on_an_own_computer_is_checked_and_reads_connected_when_claud
 
 
 @pytest.mark.asyncio
+async def test_once_on_a_computer_the_idle_sweep_stopped_reads_as_its_token_last_worked_and_is_not_checked(world):  # noqa: F811
+    """A turn there starts it, so it is not offline; a check would dial a
+    machine nobody started, so none runs while it is stopped."""
+    world.machine.token = "sk-ant-oat01-mine"
+    await _setup(world)
+    assert (await _setup(world)).state == "connected"
+    checks = world.machine.calls.count("check")
+    world.computer = _computer("stopped")
+    answer = await _setup(world)
+    assert (answer.state, answer.computers[0].state) == ("connected", "signed_in")
+    assert world.machine.calls.count("check") == checks
+
+
+@pytest.mark.asyncio
 async def test_once_on_a_computer_that_went_out_of_reach_reads_offline_though_its_token_last_worked(world):  # noqa: F811
     world.machine.token = "sk-ant-oat01-mine"
     await _setup(world)
@@ -244,3 +281,126 @@ async def test_a_pin_counts_an_own_computer_only_by_a_token_that_signs_a_pin_in(
     ):
         answer = await _setup(world, backend=backend)
     assert (answer.state, answer.pin_state) == ("connected", pin_state)
+
+
+# -- Where the Chief of Staff's Claude Code runs --
+
+HOME = get_home_workspace_id(USER)
+STUDIO = {"computer_id": "c-9", "name": "Studio", "kind": "ssh"}
+
+
+DEFAULT_RUNS = "src.server.services.llm.claude_code.default_runs"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("where", "shown"),
+    [
+        (OnOwn(STUDIO), {"kind": "own", "computer_id": "c-9", "name": "Studio", "refusal": None}),
+        (OnOwn(STUDIO, picked=True), {"kind": "picked", "computer_id": "c-9", "name": "Studio", "refusal": None}),
+        (
+            Refused("cli_computer_offline", {"name": "Studio"}),
+            {"kind": "picked", "computer_id": None, "name": "Studio", "refusal": "cli_computer_offline"},
+        ),
+        (
+            Refused("no_own_computer"),
+            {"kind": "picked", "computer_id": None, "name": None, "refusal": "no_own_computer"},
+        ),
+        (
+            Refused("needs_bigger_computer", {"home": True}),
+            {"kind": "server", "computer_id": None, "name": None, "refusal": "needs_bigger_computer"},
+        ),
+    ],
+)
+@pytest.mark.parametrize("default_runs", [True, False])
+async def test_the_chief_of_staff_runs_on_the_own_computer_a_home_turn_would_or_names_its_refusal(
+    where, shown, default_runs,
+):
+    """By the rule every turn in Home follows, so Settings never says one thing and admission another."""
+    placed = AsyncMock(return_value=where)
+    unread = AsyncMock(side_effect=AssertionError("read Home's computer"))
+    with (
+        patch(f"{SETUP}.hosted.cli_placement", placed),
+        patch(f"{SETUP}.hosted.in_sandbox", lambda: False),
+        patch(DEFAULT_RUNS, AsyncMock(return_value=default_runs)) as ran,
+        patch("src.server.database.computer.get_computer_for_workspace", unread),
+    ):
+        answer = await chief_of_staff(USER)
+    assert answer.model_dump() == {**shown, "default_runs": default_runs}
+    placed.assert_awaited_once_with(USER, HOME, token=True)
+    ran.assert_awaited_once_with(USER, where)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("default_runs", "replied", "runs"),
+    [(True, False, True), (True, True, False), (False, False, False), (False, True, False)],
+)
+async def test_a_home_thread_another_model_last_replied_on_runs_the_deployments_default(default_runs, replied, runs):
+    """As its turn is admitted (``chief_of_staff_default_runs``), so the composer starts that thread
+    on the model the server runs. The checkpoint is read only where the Default would run otherwise."""
+    read = AsyncMock(return_value=replied)
+    with (
+        patch(f"{SETUP}.hosted.cli_placement", AsyncMock(return_value=OnOwn(STUDIO, picked=True))),
+        patch(f"{SETUP}.hosted.in_sandbox", lambda: False),
+        patch(DEFAULT_RUNS, AsyncMock(return_value=default_runs)),
+        patch("src.server.services.llm.claude_code.another_model_replied", read),
+    ):
+        answer = await chief_of_staff(USER, thread_id="t-1")
+    assert answer.default_runs is runs
+    if default_runs:
+        read.assert_awaited_once_with("t-1")
+    else:
+        read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("computer", "shown"),
+    [
+        ({"computer_id": "c-2", "name": "Research"}, ("c-2", "Research")),
+        (None, (None, None)),
+    ],
+)
+async def test_the_chief_of_staff_on_homes_cloud_computer_names_it_as_not_the_users_own(computer, shown):
+    """The placement carries Home's computer (the primary one it binds to, where not bound yet), so no second read."""
+    unread = AsyncMock(side_effect=AssertionError("read Home's computer"))
+    with (
+        patch(f"{SETUP}.hosted.cli_placement", AsyncMock(return_value=OnCloud(Hosted("stored_token"), computer))),
+        patch(f"{SETUP}.hosted.in_sandbox", lambda: True),
+        patch(DEFAULT_RUNS, AsyncMock(return_value=False)),
+        patch("src.server.database.computer.get_computer_for_workspace", unread),
+    ):
+        runs_on = await chief_of_staff(USER)
+    assert (runs_on.kind, runs_on.computer_id, runs_on.name, runs_on.refusal) == ("home_cloud", *shown, None)
+
+
+@pytest.mark.asyncio
+async def test_the_chief_of_staff_whose_cli_runs_in_this_servers_workers_names_no_computer():
+    """Home's cloud computer holds its tools, not its CLI, so naming it would mislead."""
+    unread = AsyncMock(side_effect=AssertionError("read Home's computer"))
+    with (
+        patch(
+            f"{SETUP}.hosted.cli_placement",
+            AsyncMock(return_value=OnCloud(Hosted("saved_token"), {"computer_id": "c-2", "name": "Research"})),
+        ),
+        patch(f"{SETUP}.hosted.in_sandbox", lambda: False),
+        patch(DEFAULT_RUNS, AsyncMock(return_value=True)),
+        patch("src.server.database.computer.get_computer_for_workspace", unread),
+    ):
+        runs_on = await chief_of_staff(USER)
+    assert (runs_on.kind, runs_on.computer_id, runs_on.name, runs_on.default_runs) == ("server", None, None, True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opted_in", [True, False])
+async def test_the_entry_says_where_the_chief_of_staff_runs_once_claude_code_is_on(
+    world, chief_of_staff_runs_nowhere_read, opted_in,  # noqa: F811
+):
+    world.opted_in = opted_in
+    runs_on = ClaudeCodeChiefOfStaff(kind="own", computer_id="c-9", name="Studio", default_runs=True)
+    chief_of_staff_runs_nowhere_read.return_value = runs_on
+    with patch("src.server.services.claude_code.machine.get_computer_roster", new_callable=AsyncMock, return_value=[]):
+        answer = await _setup(world)
+    assert answer.chief_of_staff == (runs_on if opted_in else None)
+    assert chief_of_staff_runs_nowhere_read.await_count == int(opted_in)

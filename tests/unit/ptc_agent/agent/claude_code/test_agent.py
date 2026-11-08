@@ -18,6 +18,7 @@ from ptc_agent.agent.claude_code.compaction import NO_RULES
 from ptc_agent.agent.claude_code.launcher import _THREAD_KEY, LocalLauncher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY
 from ptc_agent.agent.claude_code.tools_bridge import tool_specs
+from ptc_agent.config.agent import Admitted
 from src.llms.llm import create_llm
 
 
@@ -218,9 +219,9 @@ def _built(*, saved: str | None = None, **kwargs) -> ClaudeCodeGraph:
         llm=LLMConfig(name="claude-haiku-5-5-code"), security=SecurityConfig(), logging=LoggingConfig(),
         sandbox=SandboxConfig(daytona=DaytonaConfig(api_key="test-key")), mcp=MCPConfig(), filesystem=FilesystemConfig(),
     )
-    config.claude_code_saved = saved
+    config.claude_code_admitted = Admitted(saved=saved)
     target = create_llm("claude-haiku-5-5-code")
-    kwargs = {"sandbox": MagicMock(), "claude_code_launcher": lambda sandbox, hosted, saved: LocalLauncher(), **kwargs}
+    kwargs = {"sandbox": MagicMock(), "claude_code_launcher": lambda sandbox, admitted: LocalLauncher(), **kwargs}
     with patch.object(AgentConfig, "get_llm_client", return_value=target):
         graph = PTCAgent(config).create_agent(
             llm=target, thread_id="t-1", user_id="u-1", mcp_registry=MagicMock(), **kwargs
@@ -352,9 +353,12 @@ def test_every_tool_description_reaches_claude_whole(role):
 def test_the_turn_runs_where_the_callers_launcher_puts_it_for_the_turns_sandbox():
     sandbox, launcher = MagicMock(), LocalLauncher()
     seen = []
-    graph = _built(sandbox=sandbox, claude_code_launcher=lambda s, hosted, saved: seen.append(s) or launcher)
+    graph = _built(
+        saved="saved_token", sandbox=sandbox,
+        claude_code_launcher=lambda s, admitted: seen.append((s, admitted)) or launcher,
+    )
     turn = graph.turn(_RUN)
-    assert seen == [sandbox] and turn.launcher is launcher
+    assert seen == [(sandbox, Admitted(saved="saved_token"))] and turn.launcher is launcher
 
 
 def test_a_claude_code_turn_built_with_no_launcher_is_refused():
@@ -412,7 +416,7 @@ def test_a_subagent_of_a_claude_code_turn_runs_each_run_in_a_cli_of_its_own():
 
     with patch.object(cc_agent, "claude_code_graph", side_effect=graph), \
          patch.object(cc_agent, "build_claude_code_graph", side_effect=build):
-        main = _built(claude_code_launcher=lambda sandbox, hosted, saved, **kw: launched.append(kw) or LocalLauncher())
+        main = _built(claude_code_launcher=lambda sandbox, admitted, **kw: launched.append(kw) or LocalLauncher())
     [(kw, sub, built)] = [(kw, g, b) for (kw, g), b in zip(graphs, builds, strict=True) if g is not main]
     turn = sub.turn({"configurable": {"thread_id": "t-1", "checkpoint_ns": "task:k1"}})
     assert turn.run_key == "t-1-k1" and launched == [{"slot_wait_s": 30}]
@@ -458,7 +462,7 @@ def test_a_claude_code_pin_on_a_turn_of_another_model_runs_each_run_in_a_cli_of_
         sandbox=SandboxConfig(daytona=DaytonaConfig(api_key="test-key")), mcp=MCPConfig(), filesystem=FilesystemConfig(),
     )
     config.subsidiary_llm_clients["subagent:general-purpose"] = create_llm("claude-haiku-5-5-code")
-    config.claude_code_pins = ("stored_token", "stored_token")
+    config.claude_code_pins = Admitted("stored_token", "stored_token", "c-9")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     main_model = FakeListChatModel(responses=["x"])
     graphs, launched, made = [], [], []
@@ -480,13 +484,16 @@ def test_a_claude_code_pin_on_a_turn_of_another_model_runs_each_run_in_a_cli_of_
 
     with patch.object(cc_agent, "claude_code_graph", side_effect=graph), \
          patch.object(BackgroundSubagentMiddleware, "__init__", init):
-        main = build(claude_code_launcher=lambda sandbox, hosted, saved, **kw: launched.append((hosted, saved, kw)) or LocalLauncher())
+        main = build(
+            claude_code_launcher=lambda sandbox, admitted, **kw: launched.append((admitted, kw)) or LocalLauncher(),
+        )
     assert not isinstance(main, ClaudeCodeGraph)
     [sub] = graphs
     sub.turn({"configurable": {"thread_id": "t-1", "checkpoint_ns": "task:k1"}})
-    assert launched == [("stored_token", "stored_token", {"slot_wait_s": 30})]
+    assert launched == [(Admitted("stored_token", "stored_token", "c-9"), {"slot_wait_s": 30})]
     [middleware] = made
     assert middleware.claude_code_types == {"general-purpose"} and middleware.claude_code_stored
+    assert middleware.cli_computer == "c-9"
     with pytest.raises(RuntimeError, match="claude_code_launcher"):
         build(claude_code_launcher=None)
 

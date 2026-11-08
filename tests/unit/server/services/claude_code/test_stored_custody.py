@@ -23,6 +23,7 @@ from src.server.services.claude_code.saved import SavedHome, token_check_key
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.services.llm.claude_code import (
     CLAUDE_CODE_OFF,
+    Admitted,
     claude_code_refusal,
     require_attended,
     require_runnable,
@@ -128,9 +129,9 @@ async def test_a_turn_on_the_stored_token_runs_while_it_is_usable_up_to_the_user
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("given", "reason"),
-    [({"stored": False, "mode": "stored"}, "needs_own_computer"), ({"stored": True, "blocked": True}, "stored_blocked")],
+    [({"stored": False, "mode": "stored"}, "no_own_computer"), ({"stored": True, "blocked": True}, "no_own_computer")],
 )
-async def test_a_choice_switched_off_or_blocked_refuses_the_turn_in_its_own_words(given, reason):
+async def test_a_choice_switched_off_or_blocked_runs_the_cli_on_an_own_computer_or_says_none_is_there(given, reason):
     with platform(**given):
         assert await _admit() == {
             "message": CLAUDE_CODE_OFF[reason], "type": "claude_code_off", "model": CODE, "reason": reason,
@@ -140,7 +141,7 @@ async def test_a_choice_switched_off_or_blocked_refuses_the_turn_in_its_own_word
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("given", "reason"),
-    [({"stored": False, "mode": "stored"}, "needs_own_computer"), ({"stored": True, "blocked": True}, "stored_blocked")],
+    [({"stored": False, "mode": "stored"}, "choice_changed"), ({"stored": True, "blocked": True}, "choice_changed")],
 )
 async def test_a_run_switched_off_or_blocked_since_admission_never_starts_and_says_why(given, reason):
     with platform(**given), pytest.raises(ClaudeTurnFailed) as refused:
@@ -171,8 +172,8 @@ async def test_a_run_admitted_on_one_credential_never_starts_on_another_its_row_
     [
         ({"stored": True, "mode": "stored"}, CLOUD, None, {**CLOUD_TURN, **STORED_TURN}),
         ({"stored": True, "mode": "stored"}, OWN, None, STORED_TURN),
-        ({"stored": True, "mode": "stored"}, OWN, SimpleNamespace(relays=True, fresh=False), STORED_TURN),
-        ({"stored": True, "mode": "stored"}, OWN, SimpleNamespace(relays=False, fresh=False), {}),
+        ({"stored": True, "mode": "stored"}, OWN, SimpleNamespace(relays=True, fresh=False, expired=False), STORED_TURN),
+        ({"stored": True, "mode": "stored"}, OWN, SimpleNamespace(relays=False, fresh=False, expired=False), {}),
         ({"stored": True, "mode": "local"}, OWN, None, {}),
         ({"stored": False}, OWN, None, {}),
     ],
@@ -189,9 +190,9 @@ async def _stamp() -> dict:
     """The stamp a turn's row gets from what admission let it run on, past
     the one every Claude Code turn gets."""
     admitted = await require_runnable(
-        SimpleNamespace(feature_enabled=lambda _: True), CODE, "analyst", user_id="user-1", workspace_id="ws-1",
+        SimpleNamespace(feature_enabled=lambda _: True), CODE, user_id="user-1", workspace_id="ws-1",
     )
-    stamp = run_stamp(SimpleNamespace(claude_code=True, claude_code_hosted=admitted.hosted, claude_code_saved=admitted.saved))
+    stamp = run_stamp(SimpleNamespace(claude_code=True, claude_code_admitted=admitted))
     return {k: v for k, v in stamp.items() if k not in CLAUDE_CODE_TURN}
 
 
@@ -220,7 +221,7 @@ def test_a_turn_nobody_started_never_runs_on_the_stored_token(request_fields, no
     request = _request(**request_fields)
     assert unattended(request) is nobody
     def config(hosted, saved):
-        return SimpleNamespace(claude_code_hosted=hosted, claude_code_saved=saved, llm=SimpleNamespace(name=CODE))
+        return SimpleNamespace(claude_code_admitted=Admitted(hosted, saved), llm=SimpleNamespace(name=CODE))
 
     for stored in (config("stored_token", "stored_token"), config(None, "stored_token")):
         if nobody:
@@ -240,9 +241,9 @@ async def test_an_own_computer_relayed_the_stored_token_runs_no_turn_nobody_star
         patch(f"{SERVICE}.saved_refusal", AsyncMock(return_value=None)),
     ):
         admitted = await require_runnable(
-            SimpleNamespace(feature_enabled=lambda _: True), CODE, "analyst", user_id="user-1", workspace_id="ws-1",
+            SimpleNamespace(feature_enabled=lambda _: True), CODE, user_id="user-1", workspace_id="ws-1",
         )
-    config = SimpleNamespace(claude_code_hosted=admitted.hosted, claude_code_saved=admitted.saved, llm=SimpleNamespace(name=CODE))
+    config = SimpleNamespace(claude_code_admitted=admitted, llm=SimpleNamespace(name=CODE))
     with pytest.raises(HTTPException) as refused:
         require_attended(config, _request(wakeup={"v": 1}))
     assert refused.value.detail["reason"] == "stored_unattended"

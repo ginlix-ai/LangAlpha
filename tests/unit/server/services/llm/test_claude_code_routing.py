@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
-from ptc_agent.config.agent import AgentConfig, CredentialSource, LLMConfig
+from ptc_agent.config.agent import Admitted, AgentConfig, CredentialSource, LLMConfig
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SandboxConfig, SecurityConfig
 from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed
 from src.server.services.claude_code.launchers import HostedCredential
@@ -44,7 +44,7 @@ class _Status(Cache):
 
 async def _resolve(
     pref: dict, *, runs: bool = True, opted_in: bool = True, role: str = "analyst", request_model=None,
-    token: str | None = "sk-ant-oat01-tok", checked: str | None = "works", slot: str = "primary",
+    token: str | None = "sk-ant-oat01-tok", checked: str | None = "works", slot: str = "primary", **turn,
 ):
     cleanup = AsyncMock(return_value=[])
     with (
@@ -54,25 +54,22 @@ async def _resolve(
         patch("src.server.services.llm.clients.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
         patch(f"{HANDLER}.effective_flags_for_user", new_callable=AsyncMock, return_value={"claude_code_runtime": opted_in}),
         patch("src.server.services.llm.claude_code.rows_available", return_value=runs),
+        patch(f"{HANDLER}.rows_available", return_value=runs),
         patch("src.server.services.llm.claude_code.live_cloud_turns", new_callable=AsyncMock, return_value=0),
         patch("src.server.services.claude_code.hosted.backend_available", return_value=runs),
         patch(f"{HANDLER}.cleanup_stale_model_preferences", new=cleanup),
     ):
         try:
-            return await resolve_llm_config(_base(), "user-1", request_model, False, slot=slot, role=role)
+            return await resolve_llm_config(_base(), "user-1", request_model, False, slot=slot, role=role, **turn)
         finally:
             cleanup.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("runs", "opted_in", "role", "reason"),
-    [(False, True, "analyst", "server"), (True, False, "analyst", "account"), (True, True, "chief_of_staff", "chief_of_staff")],
-)
-async def test_a_turn_that_cannot_run_claude_code_is_refused_and_nothing_saved_is_cleared(runs, opted_in, role, reason):
-    named = CODE if role == "chief_of_staff" else None
+@pytest.mark.parametrize(("runs", "opted_in", "reason"), [(False, True, "server"), (True, False, "account")])
+async def test_a_turn_that_cannot_run_claude_code_is_refused_and_nothing_saved_is_cleared(runs, opted_in, reason):
     with pytest.raises(HTTPException) as refused:
-        await _resolve({"preferred_model": CODE}, runs=runs, opted_in=opted_in, role=role, request_model=named)
+        await _resolve({"preferred_model": CODE}, runs=runs, opted_in=opted_in)
     assert refused.value.status_code == 400
     assert refused.value.detail == {"message": CLAUDE_CODE_OFF[reason], "type": "claude_code_off", "model": CODE, "reason": reason}
 
@@ -118,9 +115,63 @@ async def test_a_token_not_checked_yet_runs_without_waiting_on_the_check(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_chief_of_staff_runs_the_deployment_model_beside_a_claude_code_default(monkeypatch):
+async def test_chief_of_staff_runs_claude_code_named_or_by_default_where_its_cli_has_somewhere_to_run(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    config = await _resolve({"preferred_model": CODE}, role="chief_of_staff")
+    for named in (None, CODE):
+        config = await _resolve({"preferred_model": CODE}, role="chief_of_staff", request_model=named)
+        assert isinstance(config.llm_client, ClaudeCodeTarget)
+
+
+@pytest.mark.asyncio
+async def test_chief_of_staff_runs_the_deployment_model_beside_a_claude_code_default_with_nowhere_to_run_it(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    with patch(f"{HANDLER}.chief_of_staff_default_runs", new_callable=AsyncMock, return_value=None) as placed:
+        config = await _resolve({"preferred_model": CODE}, role="chief_of_staff")
+    placed.assert_awaited_once_with("user-1", None, thread_id=None, checkpoint_id=None)
+    assert config.llm.name == "claude-sonnet-5-5" and not isinstance(config.llm_client, ClaudeCodeTarget)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replied", "at", "claude_code"),
+    [
+        ({None: True, "cp-before": False}, "cp-before", True),
+        ({None: False, "cp-after": True}, "cp-after", False),
+        ({None: True, "cp-before": False}, None, False),
+    ],
+    ids=["a-fork-from-before-another-models-reply", "a-fork-from-after-it", "the-head"],
+)
+async def test_chief_of_staff_reads_whether_another_model_replied_where_its_turn_starts(monkeypatch, replied, at, claude_code):
+    """An edit or a regenerate starts from its checkpoint, the one
+    ``require_claude_code_continues`` reads, not the thread's head."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    read = AsyncMock(side_effect=lambda _thread, checkpoint=None: replied[checkpoint])
+    with patch("src.server.services.llm.claude_code.another_model_replied", read):
+        config = await _resolve({"preferred_model": CODE}, role="chief_of_staff", thread_id="t-1", checkpoint_id=at)
+    read.assert_awaited_once_with("t-1", at)
+    assert isinstance(config.llm_client, ClaudeCodeTarget) is claude_code
+    assert config.llm.name == (CODE if claude_code else "claude-sonnet-5-5")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", [CODE, "claude-haiku-5-5"], ids=["claude-code", "another-model"])
+async def test_chief_of_staff_naming_a_model_never_reads_where_its_claude_code_default_would_run(monkeypatch, named):
+    """The default is the saved choice of a turn that names none; one that
+    names its model runs that model, and admission reads the placement."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    with patch(f"{HANDLER}.chief_of_staff_default_runs", new_callable=AsyncMock, return_value=None) as placed:
+        config = await _resolve({"preferred_model": CODE}, role="chief_of_staff", request_model=named)
+    placed.assert_not_awaited()
+    assert config.llm.name == named
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("runs", "opted_in"), [(False, True), (True, False)], ids=["server", "account"])
+async def test_chief_of_staff_runs_the_deployment_model_beside_a_claude_code_default_while_claude_code_is_off(
+    monkeypatch, runs, opted_in,
+):
+    """Not refused: a turn naming no model never chose that default."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    config = await _resolve({"preferred_model": CODE}, runs=runs, opted_in=opted_in, role="chief_of_staff")
     assert config.llm.name == "claude-sonnet-5-5" and not isinstance(config.llm_client, ClaudeCodeTarget)
 
 
@@ -136,7 +187,7 @@ async def test_an_opted_in_turn_resolves_to_the_runtime_target_on_the_users_own_
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")  # a fallback could be built, and is not
     config = await _resolve({"preferred_model": CODE, "fallback_models": ["claude-haiku-5-5"]})
     assert isinstance(config.llm_client, ClaudeCodeTarget) and config.llm_client.model == "claude-sonnet-5-5"
-    assert config.credential_source == CredentialSource.OAUTH and config.claude_code_hosted == "saved_token"
+    assert config.credential_source == CredentialSource.OAUTH and config.claude_code_admitted == Admitted("saved_token", "saved_token")
     assert config.fallback_llm_clients == [] and config.fallback_llm_names == []
     assert not any(isinstance(c, ClaudeCodeTarget) for c in config.subsidiary_llm_clients.values())
     assert config.llm.background == "claude-haiku-5-5", "Background follows the deployment, not a Claude Code primary"

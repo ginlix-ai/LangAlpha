@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from src.server.services.claude_code.hosted import Hosted, OnCloud, OnOwn
 
 from src.llms.claude_code import PlanLimit, PlanReading, PlanStopped, binding_limit
 from ptc_agent.agent.claude_code.machine_token import MachineState
@@ -272,7 +273,7 @@ async def test_a_passed_limit_or_an_unreadable_row_refuses_nothing(rows):
 ])
 async def test_admission_on_an_own_computer_reads_the_row_its_turn_signs_in_on(rows, monkeypatch, answer, saved, read):
     async def placement(*_args, **_kwargs):
-        return SimpleNamespace(own_computer={"computer_id": "c-1"})
+        return OnOwn({"computer_id": "c-1"})
 
     async def read_answer(computer_id):
         return answer
@@ -281,12 +282,12 @@ async def test_admission_on_an_own_computer_reads_the_row_its_turn_signs_in_on(r
         assert given is answer
         return saved
 
-    monkeypatch.setattr(admission, "placement", placement)
+    monkeypatch.setattr(admission, "cli_placement", placement)
     monkeypatch.setattr(admission, "read_answer", read_answer)
     monkeypatch.setattr(admission, "require_computer_signed_in", signed_in)
     monkeypatch.setattr(admission, "rows_available", lambda: True)
     config = SimpleNamespace(feature_enabled=lambda feature: True)
-    await admission.require_runnable(config, "claude-haiku-5-5-code", "analyst", user_id="u", workspace_id="w")
+    await admission.require_runnable(config, "claude-haiku-5-5-code", user_id="u", workspace_id="w")
     assert rows["reads"] == ([read] if read else [])
 
 
@@ -296,12 +297,10 @@ async def test_admission_on_an_own_computer_reads_the_row_its_turn_signs_in_on(r
 async def test_a_turn_nobody_started_on_the_stored_token_is_refused_for_that_before_its_plan(rows, monkeypatch, own):
     # No reset would let it run, so a wake is not held for one, nor an
     # automation told to wait for it.
-    hosted = SimpleNamespace(runs_on="stored_token", token_signs_in=True)
-
     async def placement(*_args, **_kwargs):
         if own:
-            return SimpleNamespace(own_computer={"computer_id": "c-1"})
-        return SimpleNamespace(own_computer=None, refusal=None, hosted=hosted)
+            return OnOwn({"computer_id": "c-1"})
+        return OnCloud(Hosted("stored_token"))
 
     async def read_answer(computer_id):
         return SimpleNamespace(relays=True, fresh=True)
@@ -309,7 +308,7 @@ async def test_a_turn_nobody_started_on_the_stored_token_is_refused_for_that_bef
     async def signed_in(model, user_id, given):
         return "stored_token"
 
-    monkeypatch.setattr(admission, "placement", placement)
+    monkeypatch.setattr(admission, "cli_placement", placement)
     monkeypatch.setattr(admission, "read_answer", read_answer)
     monkeypatch.setattr(admission, "require_computer_signed_in", signed_in)
     monkeypatch.setattr(admission, "rows_available", lambda: True)
@@ -318,7 +317,7 @@ async def test_a_turn_nobody_started_on_the_stored_token_is_refused_for_that_bef
 
     async def reason(**kw) -> str:
         with pytest.raises(HTTPException) as refused:
-            await admission.require_runnable(config, "claude-haiku-5-5-code", "analyst", user_id="u", workspace_id="w", **kw)
+            await admission.require_runnable(config, "claude-haiku-5-5-code", user_id="u", workspace_id="w", **kw)
         return refused.value.detail["reason"]
 
     assert await reason(unattended=True) == "stored_unattended"

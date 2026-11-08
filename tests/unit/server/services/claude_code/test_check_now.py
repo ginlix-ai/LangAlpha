@@ -467,6 +467,38 @@ async def test_a_machines_check_says_when_claude_answered(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("works", "expires_at", "kept"),
+    [
+        pytest.param(True, "2020-01-01T00:00:00+00:00", None, id="served-past-expiry"),
+        pytest.param(True, "2999-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00", id="served-before-expiry"),
+        pytest.param(False, "2020-01-01T00:00:00+00:00", "2020-01-01T00:00:00+00:00", id="refused"),
+    ],
+)
+async def test_a_check_claude_serves_drops_an_expiry_already_past(monkeypatch, works, expires_at, kept):
+    """A token put there by hand since the sign-in that gave the expiry would
+    otherwise read as expired, and be refused, however often Claude served it."""
+    from ptc_agent.agent.claude_code import machine_token
+
+    class Plan:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def written(self):
+            pass
+
+    monkeypatch.setattr(machine_token, "machine_state", AsyncMock(return_value=SimpleNamespace(file="file", present=True, folder=None)))
+    monkeypatch.setattr(machine, "run_check", AsyncMock(return_value=works))
+    monkeypatch.setattr(machine, "check_launcher", lambda *args, **kwargs: None)
+    monkeypatch.setattr(machine, "UserPlan", Plan)
+    monkeypatch.setattr(machine, "check_would_bill", AsyncMock(return_value=False))
+    last = machine.MachineAnswer("works", email="a@example.com", expires_at=expires_at)
+    answer = await machine.check_machine(SimpleNamespace(link=AsyncMock()), "u", "00000000-0000-4000-8000-000000000001", last)
+    assert answer.file == ("works" if works else "refused"), answer
+    assert (answer.email, answer.expires_at) == ("a@example.com", kept)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("on", ["saved", "computer"])
 async def test_a_check_that_would_be_billed_sends_nothing_and_takes_no_hold(request, monkeypatch, holds, on):
     found = request.getfixturevalue("saved_token" if on == "saved" else "computer")

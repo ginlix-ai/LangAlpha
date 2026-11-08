@@ -12,11 +12,11 @@ import uuid
 
 import pytest
 
-from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN
+from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, CLI_COMPUTER
 from src.server.database.computer import create_computer
 from src.server.database.conversation import create_thread
 from src.server.database.runs import subagent_runs
-from src.server.database.runs.lifecycle import start_run
+from src.server.database.runs.lifecycle import computer_has_active_run, start_run
 from src.server.database.workspace import create_workspace_on_computer
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
@@ -43,10 +43,31 @@ async def _turn(thread_id: str, user_id: str, stamp: dict) -> None:
 
 
 async def _task(thread_id: str, task_id: str, cap: tuple[str, int] | None, *, claude_code: bool = True,
-                stored_token: bool = False, conn=None) -> dict:
+                stored_token: bool = False, cli_computer: str | None = None, conn=None) -> dict:
     return await subagent_runs.start_task_run(task_run_id=str(uuid.uuid4()), thread_id=thread_id, task_id=task_id,
                                               cause="init", claude_code=claude_code, stored_token=stored_token,
-                                              cli_cap=cap, conn=conn)
+                                              cli_cap=cap, cli_computer=cli_computer, conn=conn)
+
+
+async def test_a_cli_on_an_own_computer_for_another_workspace_counts_and_keeps_that_computer_alone(seed_user):
+    """A cloud workspace's turn and task run whose CLIs run on the user's own
+    computer are that computer's, which every worker's admission there counts
+    and its teardown gate sees; the cloud computer counts only its own."""
+    user = seed_user["user_id"]
+    cloud, (research, macro) = await _threads(user, "Research", "Macro")
+    studio, _ = await _threads(user)
+    assert not await computer_has_active_run(studio)
+    await _turn(research, user, {**CLAUDE_CODE_TURN, CLI_COMPUTER: studio})
+    run = await _task(macro, "k1", (studio, 2), cli_computer=studio)
+    await _task(research, "k2", None)
+
+    assert run["replay_facts"] == {"claude_code": True, CLI_COMPUTER: studio}
+    assert (await subagent_runs.live_clis(studio), await subagent_runs.live_clis(cloud)) == (2, 1)
+    with pytest.raises(subagent_runs.ClaudeCodeCapError):
+        await _task(macro, "k3", (studio, 2), cli_computer=studio)
+    assert await subagent_runs.count_open_runs_for_computer(studio) == 1
+    assert await subagent_runs.count_open_runs_for_computer(cloud) == 2
+    assert await computer_has_active_run(studio)
 
 
 async def test_a_computer_admits_claude_code_runs_until_its_turns_and_runs_reach_its_cap(seed_user):
