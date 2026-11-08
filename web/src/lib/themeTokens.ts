@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ResolvedTheme } from '@/contexts/ThemeContext';
+import { useCardStyle, type CardStyle } from './cardStyle';
 
 /**
  * Design-token access for painters that cannot resolve CSS custom properties
@@ -15,9 +16,9 @@ import type { ResolvedTheme } from '@/contexts/ThemeContext';
 
 /** Resolved values per theme and card style, the two stamps on `<html>` the
  *  tokens are declared under: the card style restyles the `--color-term-*`
- *  tokens (lib/cardStyle.ts), which the chart canvases paint with. A chart
- *  reads the card style when it mounts, which is enough: only Settings changes
- *  it, and Settings is its own route, so no chart is mounted across a change. */
+ *  tokens (lib/cardStyle.ts), which the chart canvases paint with. The style
+ *  can change under a mounted chart (the account's look arriving, or another
+ *  device's on refocus), so useThemeTokens reads again when it does. */
 const tokenCache = new Map<string, Map<string, string>>();
 
 function stampKey(theme: ResolvedTheme): string {
@@ -143,6 +144,8 @@ export function createThemeResolver<K extends string>(
  * the stamp is still the outgoing theme), re-read in a passive effect where
  * the stamp is guaranteed current. Only a genuinely different resolver result
  * schedules the second render, so a steady-state mount costs nothing extra.
+ * A card style change reads again too; its stamp lands before the store tells
+ * its readers, so the render-phase read is already current.
  *
  * The re-read lands in state rather than being repeated in render: a render
  * that calls `resolve` again with the same arguments is served from the
@@ -152,17 +155,32 @@ export function useThemeTokens<K extends string>(
   resolve: (theme: ResolvedTheme) => Record<K, string>,
   theme: ResolvedTheme,
 ): Record<K, string> {
+  const style = useCardStyle();
   const [settled, setSettled] = useState<{
     resolve: typeof resolve;
     theme: ResolvedTheme;
+    style: CardStyle;
     tokens: Record<K, string>;
   } | null>(null);
-  const tokens = settled?.resolve === resolve && settled.theme === theme ? settled.tokens : resolve(theme);
+  const tokens =
+    settled?.resolve === resolve && settled.theme === theme && settled.style === style
+      ? settled.tokens
+      : readFor(resolve, theme, style);
   useEffect(() => {
     const current = resolve(theme);
-    if (current !== tokens) setSettled({ resolve, theme, tokens: current });
-  }, [resolve, theme, tokens]);
+    if (current !== tokens) setSettled({ resolve, theme, style, tokens: current });
+  }, [resolve, theme, style, tokens]);
   return tokens;
+}
+
+// The style is an argument, though unread, so the compiler keys the read on
+// it and a style change is not served the previous style's tokens.
+function readFor<K extends string>(
+  resolve: (theme: ResolvedTheme) => Record<K, string>,
+  theme: ResolvedTheme,
+  _style: CardStyle,
+): Record<K, string> {
+  return resolve(theme);
 }
 
 /** Test seam — resolved values are cached for the process lifetime otherwise. */

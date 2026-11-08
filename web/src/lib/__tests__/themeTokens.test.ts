@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
+import { setCardStyle } from '../cardStyle';
 import {
   clearThemeTokenCache,
   createThemeResolver,
@@ -93,5 +94,22 @@ describe('useThemeTokens', () => {
     const resolve = () => (reads++ === 0 ? literals : live);
     const { result } = renderHook(() => useThemeTokens(resolve, 'dark'));
     expect(result.current).toBe(live);
+  });
+});
+
+describe('useThemeTokens across a card style change', () => {
+  it('reads the tokens again when the style changes under a mounted chart', () => {
+    const balanced = { ink: 'balanced-ink' };
+    const soft = { ink: 'soft-ink' };
+    // The real resolver keys on the stamp the same way; jsdom resolves no
+    // custom property, so the style's values are faked here.
+    const resolve = (_theme: 'dark' | 'light') =>
+      document.documentElement.getAttribute('data-card-style') === 'soft' ? soft : balanced;
+    setCardStyle('balanced');
+    const { result } = renderHook(() => useThemeTokens(resolve, 'dark'));
+    expect(result.current).toBe(balanced);
+
+    act(() => setCardStyle('soft'));
+    expect(result.current).toBe(soft);
   });
 });
