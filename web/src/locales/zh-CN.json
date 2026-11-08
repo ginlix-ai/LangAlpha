@@ -2595,7 +2595,10 @@
       "claudeCodeNeedsOwnComputer": "仅可在你自己电脑上的工作区中使用",
       "claudeCodePolicyBlocked": "你所在组织的 Claude Code 策略不允许它在这台电脑上运行",
       "claudeCodeHostedOff": "请在设置中选择它在云端计算机上的运行方式",
+      "claudeCodeNoOwnComputer": "需要一台有独立 setup token 的电脑在线",
+      "claudeCodeCliComputerOffline": "{{name}} 目前离线",
       "claudeCodeNeedsBiggerComputer": "需要中型及以上规格的云端计算机，或你自己的电脑",
+      "claudeCodeNeedsBiggerComputerHome": "需要中型及以上规格的云端计算机",
       "claudeCodeNeedsBiggerComputerPlan": "需要中型及以上规格的云端计算机：可更改规格或升级 LangAlpha 套餐，或使用你自己的电脑"
     },
     "voice": {
@@ -2737,13 +2740,15 @@
       "off": {
         "account": "你的账户未开启 Claude Code。请在设置的“模型接入”中开启，或选择其他模型。",
         "token_refused": "Claude 拒绝了你的 setup token，它可能已过期或被撤销。请在设置的“模型接入”中添加新的 token 后使用此模型。",
-        "hosted_off": "你的账户设置为只在你自己的电脑上运行 Claude Code，所以云端计算机上的工作区无法使用 Claude Code 模型。请在设置的“模型接入”中选择运行位置，或把此工作区移到你自己的电脑上。",
+        "no_own_computer": "Claude Code 会在你自己的电脑上运行，但目前没有一台有独立 setup token 的电脑在线。请开启其中一台，或在设置的“模型接入”中为一台电脑添加 token。",
+        "cli_computer_offline": "为你运行 Claude Code 的 {{name}} 目前离线。请开启它，或选择其他模型。",
         "too_many_turns": "你在云端计算机上同时运行的 Claude Code 对话已达上限（{{n}} 个），请等其中一个结束后再试。",
-        "stored_blocked": "你的账户无法保存 setup token，因此 Claude Code 只能在你自己的电脑上运行。请选择其他模型，或把此工作区移到你自己的电脑上。",
         "stored_unattended": "自动化、唤醒以及其他 Agent 自行发起的工作不会使用 LangAlpha 为你保存的 setup token 运行。如需用 Claude Code 运行它们，请在设置的“模型接入”中改为在你自己的电脑上运行。",
         "choice_changed": "本轮开始时，云端计算机上 Claude Code 的运行方式发生了变化。请重新发送你的消息。",
         "needs_bigger_computer": "Claude Code 可在中型及以上规格的云端计算机上运行，而此工作区所在的计算机规格较小。你可以更改这台计算机的规格，或把此工作区移到你自己的电脑上。",
-        "needs_bigger_computer_plan": "Claude Code 可在中型及以上规格的云端计算机上运行，而此工作区所在的计算机规格较小。你可以更改这台计算机的规格或升级 LangAlpha 套餐，或把此工作区移到你自己的电脑上。"
+        "needs_bigger_computer_home": "Claude Code 可在中型及以上规格的云端计算机上运行，而 Home 所在的计算机规格较小。你可以更改这台计算机的规格。",
+        "needs_bigger_computer_plan": "Claude Code 只在中型及以上规格的云端计算机上运行，而此工作区所在的计算机规格更小。请更改它的规格或升级 LangAlpha 套餐，或在设置的“模型接入”中改为在你自己的电脑上运行 Claude Code。",
+        "needs_bigger_computer_plan_home": "Claude Code 只在中型及以上规格的云端计算机上运行，而 Home 所在的计算机规格更小。请更改它的规格或升级 LangAlpha 套餐，或在设置的“模型接入”中改为在你自己的电脑上运行 Claude Code。"
       }
     }
   },
@@ -6693,9 +6698,9 @@
       "savedTag": "Setup token",
       "hosted": {
         "heading": "Claude Code 在哪里运行",
-        "local": "仅在你自己的电脑上",
-        "localDetail": "Claude Code 在你自己的电脑上运行，每台电脑各用自己的 setup token，LangAlpha 不保留副本。云端计算机上的工作区无法使用 Claude Code 模型。",
-        "stored": "也用于云端计算机，使用由 LangAlpha 保存的 setup token",
+        "local": "在你自己的电脑上",
+        "localDetail": "Claude Code 在你自己的、有独立 setup token 的电脑上运行，所有工作区都是如此，包括云端计算机上的工作区。这些工作区的文件和命令仍在云端计算机上运行，LangAlpha 不会保留 token 的副本。",
+        "stored": "在云端计算机上，使用 LangAlpha 为你保存的 setup token",
         "storedDetail": "在中型及以上规格的云端计算机上，工作区的 Claude Code 直接在这台计算机上运行；没有独立 token 的你自己的电脑也在本机运行 Claude Code。每轮对话由 LangAlpha 把加密保存的 setup token 发给运行它的计算机。用量计入你的 Claude 套餐。",
         "paused": "此服务器已暂停在云端计算机上运行 Claude Code。你的选择会保留，Claude Code 在你自己的电脑上照常运行。",
         "blocked": "你的账户无法保存 setup token。Claude Code 在你自己的电脑上照常运行。"
@@ -6767,8 +6772,9 @@
         },
         "connected": {
           "title": "Claude Code 已可使用",
-          "body": "在这些电脑上的工作区中，模型选择器里已有 Claude Code 模型。",
-          "bodyAny": "模型选择器里已有 Claude Code 模型。"
+          "body": "模型选择器里已有 Claude Code 模型。",
+          "cliOwn": "你的云端工作区和 Chief of Staff Agent 都在 {{name}} 上运行 Claude Code。",
+          "cliHome": "你的 Chief of Staff Agent 在 Home 所在的计算机 {{name}} 上运行 Claude Code。"
         },
         "checking": {
           "title": "正在检查 setup token",

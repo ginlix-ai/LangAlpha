@@ -140,6 +140,12 @@ vi.mock('@/components/ui/chat-input', () => ({
   },
 }));
 
+// The real hook, watched for the role the panel gives it.
+vi.mock('@/pages/ChatAgent/hooks/useThreadModel', async (importActual) => {
+  const actual = await importActual<typeof import('@/pages/ChatAgent/hooks/useThreadModel')>();
+  return { ...actual, useThreadModel: vi.fn(actual.useThreadModel) };
+});
+
 vi.mock('@/pages/MarketView/components/MarketChatHistoryButton', () => ({
   default: () => <div data-testid="history-btn" />,
 }));
@@ -154,6 +160,7 @@ vi.mock('@/pages/ChatAgent/utils/api', async (importActual) => ({
 
 import MarketChatPanel from '../MarketChatPanel';
 import { useChatMessages } from '@/pages/ChatAgent/hooks/useChatMessages';
+import { useThreadModel } from '@/pages/ChatAgent/hooks/useThreadModel';
 import { chartSelectionStore } from '../../stores/chartSelectionStore';
 import { userLocalStorage } from '@/lib/userStorage';
 import type { ComposerSend } from '@/components/ui/chat-input.types';
@@ -850,6 +857,19 @@ describe('MarketChatPanel', () => {
     const open = ml.actions!.onToolCallDetailClick as (toolCallId: string) => void;
     act(() => open('tc-missing'));
     expect(screen.getByText(/no longer in the chat/i)).toBeInTheDocument();
+  });
+
+  // A Chief of Staff turn may start on another Default than the account's,
+  // and a thread whose row names no model sends none, as in the chat view.
+  it.each([
+    ['all', true],
+    ['workspace', false],
+  ] as const)("holds the composer's model as its role's and sends what the thread sends (scope %s)", (scope, chiefOfStaff) => {
+    vi.mocked(useThreadModel).mockClear();
+    renderPanel({ ...(scope === 'all' ? ALL : {}), scope });
+    expect(vi.mocked(useThreadModel)).toHaveBeenLastCalledWith(expect.objectContaining({ chiefOfStaff }));
+    const held = vi.mocked(useThreadModel).mock.results.at(-1)!.value as ReturnType<typeof useThreadModel>;
+    expect(ci.props).toHaveProperty('sendModel', held.sendModel);
   });
 
   describe('the Chief of Staff', () => {

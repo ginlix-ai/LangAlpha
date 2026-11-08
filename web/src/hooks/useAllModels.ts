@@ -65,9 +65,9 @@ export type SearchProviderCatalog = Record<string, SearchProviderInfo>;
 export interface UseAllModelsResult {
   /** Filtered models the user can access (grouped by provider). */
   models: Record<string, ProviderModelsData>;
-  /** The listed models a Background, fetch, compaction or fallback slot, or a
-   *  Chief of Staff turn, may name: all but Claude Code's, which run only an
-   *  analyst's conversation and a subagent pinned to one of them. */
+  /** The listed models a Background, fetch, compaction or fallback slot may
+   *  name: all but Claude Code's, which run only a conversation and a
+   *  subagent pinned to one of them. */
   slotModels: Record<string, ProviderModelsData>;
   /** Full metadata (including custom model entries). */
   metadata: Record<string, ModelMetadataEntry>;

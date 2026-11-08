@@ -22,6 +22,10 @@ const mocks = vi.hoisted(() => ({
   updateThread: vi.fn(),
   toast: vi.fn(),
   defaultModel: 'model-default' as string | null,
+  /** The Default a Chief of Staff turn starts on, where it is not the account's. */
+  chiefOfStaffDefault: null as string | null,
+  /** The thread the Default was last asked for, where the row follows it. */
+  askedThread: undefined as string | null | undefined,
   catalogModelNames: new Set<string>(),
   /** The server's row, which a read returns unless a test says otherwise. */
   server: null as unknown,
@@ -38,6 +42,13 @@ vi.mock('../../utils/api', () => ({
 
 vi.mock('@/hooks/useSlotDefaultModels', () => ({
   useDefaultModel: () => mocks.defaultModel,
+}));
+
+vi.mock('@/hooks/useTurnModels', () => ({
+  useTurnDefaultModel: (home: boolean, threadId: string | null) => {
+    mocks.askedThread = threadId;
+    return (home && mocks.chiefOfStaffDefault) || mocks.defaultModel;
+  },
 }));
 
 // No sign-in has lapsed here; that hint has its own test.
@@ -94,6 +105,7 @@ describe('useThreadModel', () => {
     mocks.updateThread.mockReset();
     mocks.toast.mockReset();
     mocks.defaultModel = 'model-default';
+    mocks.chiefOfStaffDefault = null;
     mocks.catalogModelNames = new Set();
     sessionStorage.clear();
   });
@@ -102,6 +114,65 @@ describe('useThreadModel', () => {
     it("opens on the thread's model from its row", () => {
       const { result } = setup();
       expect(result.current.model).toBe('model-thread');
+    });
+
+    // The account default may be a Claude Code model the Chief of Staff's
+    // turn would not run, which the server reads as unset there.
+    it("opens a Chief of Staff thread with no model of its own on the Default its turn starts on", () => {
+      mocks.chiefOfStaffDefault = 'model-deployment';
+      expect(setup({ chiefOfStaff: true }, row(null)).result.current.model).toBe('model-deployment');
+      expect(setup({ chiefOfStaff: true }, row('model-default')).result.current.model).toBe('model-default');
+      expect(setup({}, row(null)).result.current.model).toBe('model-default');
+    });
+
+    // The server clears a model that left the catalog and resolves a Default
+    // with the thread's history, dropping a Claude Code one where another
+    // model replied, and refuses a send naming it there; so a thread whose
+    // row names no model, or one that left, names none until a pick, which
+    // the row then carries.
+    it.each([true, false])('sends no model on a thread whose row names none, until a pick (Chief of Staff: %s)', async (chiefOfStaff) => {
+      mocks.updateThread.mockImplementation((_id: string, patch: { llm_model: string }) => row(patch.llm_model));
+      const { result } = setup({ chiefOfStaff }, row(null));
+      expect(result.current).toMatchObject({ model: 'model-default', sendModel: null });
+      await act(async () => { await result.current.pickModel('model-beta'); });
+      expect(result.current).toMatchObject({ model: 'model-beta', sendModel: 'model-beta' });
+    });
+
+    // Which Default a thread starts on can depend on its history, so it is
+    // asked for the thread only where the row leaves the model to the Default.
+    it.each([
+      ['names no model', row(null), THREAD],
+      ['names one that left the catalog', row('model-retired'), THREAD],
+      ['names one the catalog carries', row('model-beta'), null],
+    ])('asks for the Default of a thread whose row %s', (_, cached, asked) => {
+      mocks.catalogModelNames = new Set(['model-default', 'model-beta']);
+      setup({ chiefOfStaff: true }, cached);
+      expect(mocks.askedThread).toBe(asked);
+    });
+
+    it.each([true, false])("shows the Default over a model that left the catalog but sends none, until a pick (Chief of Staff: %s)", async (chiefOfStaff) => {
+      mocks.chiefOfStaffDefault = 'model-code';
+      mocks.catalogModelNames = new Set(['model-default', 'model-code', 'model-beta']);
+      mocks.updateThread.mockImplementation((_id: string, patch: { llm_model: string }) => row(patch.llm_model));
+      const { result } = setup({ chiefOfStaff }, row('model-retired'));
+      const shown = chiefOfStaff ? 'model-code' : 'model-default';
+      expect(result.current).toMatchObject({ model: shown, sendModel: null, retired: { model: 'model-retired', fallback: shown } });
+      await act(async () => { await result.current.pickModel('model-beta'); });
+      expect(result.current).toMatchObject({ model: 'model-beta', sendModel: 'model-beta' });
+    });
+
+    it('sends a pick on a thread whose row names no model while its save is out', () => {
+      mocks.updateThread.mockReturnValue(deferred<Thread>().promise);
+      const { result } = setup({}, row(null));
+      act(() => { void result.current.pickModel('model-beta'); });
+      expect(result.current).toMatchObject({ model: 'model-beta', sendModel: 'model-beta' });
+    });
+
+    it("sends the thread's own model while the catalog carries it, and the shown one before the thread exists", () => {
+      mocks.catalogModelNames = new Set(['model-default', 'model-thread']);
+      expect(setup({ chiefOfStaff: true }, row('model-thread')).result.current.sendModel).toBe('model-thread');
+      expect(setup({}, row('model-thread')).result.current.sendModel).toBe('model-thread');
+      expect(setup({ chiefOfStaff: true, threadId: '__default__' }, null).result.current.sendModel).toBe('model-default');
     });
 
     it("falls back to the default when the row's model has left the catalog, and names it", () => {
@@ -441,6 +512,8 @@ describe('useThreadModel', () => {
       const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
       rerender({ threadId: THREAD, isLoading: false });
       expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.threads.detail(THREAD) });
+      // Another model's reply moves the Default a Home thread starts on.
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.features.claudeCodeChiefOfStaff(THREAD) });
     });
 
     it('leaves the reread to a pick still saving, which reads the row once it settles', async () => {

@@ -87,10 +87,12 @@ interface TreeProps {
   onPickModel?: (model: string) => void;
   /** Set for a thread host; left out, the composer holds its own model. */
   model?: string | null;
+  /** Set where the host's thread sends another model than the pill shows. */
+  sendModel?: string | null;
   ref?: Ref<ChatInputHandle>;
 }
 
-function tree({ onSend = vi.fn(), onPickModel, model, ref }: TreeProps = {}) {
+function tree({ onSend = vi.fn(), onPickModel, model, sendModel, ref }: TreeProps = {}) {
   if (!queryClient.getQueryData(queryKeys.user.preferences())) {
     queryClient.setQueryData(queryKeys.user.preferences(), mocks.preferences);
   }
@@ -102,6 +104,7 @@ function tree({ onSend = vi.fn(), onPickModel, model, ref }: TreeProps = {}) {
           onSend={onSend}
           onPickModel={onPickModel}
           model={model}
+          sendModel={sendModel}
         />
       </MemoryRouter>
     </QueryClientProvider>
@@ -181,6 +184,18 @@ describe('ChatInput: the thread owns the model', () => {
     expect(ref.current?.getModelOptions()).toMatchObject({ model: 'model-beta' });
     send('again');
     expect(onSend.mock.calls[1][0].modelOptions).toMatchObject({ model: 'model-beta' });
+  });
+
+  // A thread in Home with no model of its own shows the Default it would
+  // start on, but its send names none, so the server resolves it.
+  it('sends the model the host names for a send over the one the pill shows, from a send and from getModelOptions', () => {
+    const onSend = vi.fn();
+    const ref = createRef<ChatInputHandle>();
+    render(tree({ onSend, ref, model: 'model-thread', sendModel: null, onPickModel: vi.fn() }));
+    expect(screen.getByText('pill:model-thread')).toBeInTheDocument();
+    send('hello');
+    expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ model: null });
+    expect(ref.current?.getModelOptions()).toMatchObject({ model: null });
   });
 
   it('opens on the account default with no host, and follows it when it changes', () => {

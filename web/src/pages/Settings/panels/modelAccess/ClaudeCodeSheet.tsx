@@ -10,7 +10,7 @@ import type { ClaudeCodeComputer, ClaudeCodePlan, ClaudeCodeSetup } from '@/api/
 import { DESKTOP_DOWNLOAD_URL } from '@/config/supportLinks';
 import { isPlatformMode } from '@/config/hostMode';
 import { useFeatures, useSetFeatureOverride } from '@/hooks/useFeatures';
-import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
+import { useClaudeCodeComputers, useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useNow } from '@/hooks/useNow';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
 import { ClaudeCodeTokenModal, TokenActions } from '@/components/modelAccess/ClaudeCodeToken';
@@ -176,7 +176,6 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
   // choice is still offered: with none read, warn of it wherever a hosted
   // server keeps the user's token.
   const storedMayGo = custody ? custody.mode === 'stored' : isPlatformMode && claudeCodeStatus.saved;
-  const now = useNow();
   // An operator may gate the flag so the user cannot turn it on or off
   // (`none`, or a plan); only an opt-in or opt-out gate takes their pick,
   // so a gate not yet read takes none.
@@ -227,7 +226,9 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
     />
   );
 
-  const headline = setup && claudeCodeHeadline(t, setup, now);
+  const { cliComputer } = useClaudeCodeComputers();
+  const now = useNow();
+  const headline = setup && claudeCodeHeadline(t, setup, now, cliComputer);
   const kindOf = new Map((setup?.computers ?? []).map((c) => [c.computer_id, c.kind]));
   // A saved token left behind after Claude Code was turned off still shows, to be removed.
   const savedRow = tokenRows.find(({ key }) => key === 'saved');
@@ -301,7 +302,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
     || (!offeredSaved && !setup.computers.some((c) => c.state === 'off' && c.source !== 'machine'))
   );
   const remoteControl = canRemoteControl();
-  const bigger = biggerComputer();
+  const bigger = biggerComputer(false);
   const tooSmall = setup?.too_small ?? [];
   const savedOnCloud = isPlatformMode ? setup?.cloud : setup?.cli_in_sandbox;
   const savedDetail = savedOnCloud ? t(S + '.savedDetailCloud') : !isPlatformMode ? t(S + '.savedDetailServer') : null;
@@ -349,6 +350,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
         <div className="flex flex-col gap-1">
           <h3 className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{headline.title}</h3>
           <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{headline.body}</div>
+          {headline.runsOn && <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{headline.runsOn}</div>}
         </div>
       )}
 

@@ -13,6 +13,7 @@ import type { PlanOut } from '@/lib/claudeCodePlan';
 const h = vi.hoisted(() => ({
   plan: null as ClaudeCodePlan | null, planOut: 'stop' as PlanOut,
   meter: undefined as { credential: { kind: 'saved' } | null; checkAfter: number | null } | undefined,
+  homePlan: null as ClaudeCodePlan | null,
 }));
 
 vi.mock('@/hooks/useAllModels', () => ({
@@ -24,7 +25,9 @@ vi.mock('@/hooks/useAllModels', () => ({
     },
   }),
 }));
-vi.mock('@/hooks/useWorkspaceClaudeCode', () => ({ useWorkspaceClaudeCode: () => ({ plan: h.plan, meter: h.meter }) }));
+vi.mock('@/hooks/useWorkspaceClaudeCode', () => ({
+  useTurnClaudeCode: (home: boolean) => ({ plan: home ? h.homePlan : h.plan, meter: h.meter }),
+}));
 vi.mock('@/components/modelAccess/PlanCheck', () => ({
   CheckNowFor: ({ target }: { target: { credential: { kind: string } } }) => <button type="button">{`Check now:${target.credential.kind}`}</button>,
 }));
@@ -49,6 +52,15 @@ describe('ClaudeCodePlanRow', () => {
     h.plan = null;
     h.planOut = 'stop';
     h.meter = { credential: { kind: 'saved' }, checkAfter: null };
+    h.homePlan = null;
+  });
+
+  it("reads the plan the Chief of Staff's turns run on in Home", () => {
+    h.homePlan = limited('five_hour', 'on');
+    render(<ClaudeCodePlanRow workspaceId="home-1" chiefOfStaff model="claude-opus-5-5-code" />);
+    expect(screen.getByRole('status')).toHaveTextContent(
+      "Your Claude plan's 5-hour limit is used up until 3:40 PM. Pick another model to keep going.",
+    );
   });
 
   it('says the limit is used up under Stop', () => {

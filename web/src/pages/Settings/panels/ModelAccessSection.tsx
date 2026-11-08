@@ -14,7 +14,7 @@ import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import {
   CLAUDE_CODE, CLAUDE_CODE_CHOICE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_MODE_LABELS, CLAUDE_CODE_SETUP_STATUS,
-  CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM,
+  CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM, computerTokenWorks,
 } from '@/lib/claudeCode';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
 import type { ProviderCatalogEntry } from '@/components/model/types';
@@ -39,7 +39,7 @@ import { AccessRow, Group, KeyRow } from './modelAccess/AccessRows';
 import { KeySheet } from './modelAccess/KeySheet';
 import { ManageSheet, SubscriptionFlow } from './modelAccess/ManageSheet';
 import { ClaudeCodeSheet } from './modelAccess/ClaudeCodeSheet';
-import { claudeCodeHeadline, computerTokenWorks } from './modelAccess/claudeCodeHeadline';
+import { claudeCodeHeadline } from './modelAccess/claudeCodeHeadline';
 
 /** The Subscriptions card as a usage table, once Claude Code's row has a
  *  plan's use to show: its rows on one grid under a header row, stepping

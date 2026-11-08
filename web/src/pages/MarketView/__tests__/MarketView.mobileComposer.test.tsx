@@ -120,7 +120,7 @@ vi.mock('@/hooks/useAllModels', () => ({
     payers: {},
     validModelNames: new Set<string>(),
     catalogModelNames: new Set<string>(),
-    metadata: {},
+    metadata: { 'model-code': { provider: 'claude-code', sdk: 'claude-code' } },
     isLoading: false,
     systemDefaults: { default_model: 'model-default', background_model: '' },
     offPlanModels: new Set(),
@@ -261,6 +261,23 @@ describe('the mobile market composer', () => {
     expect(chat).toHaveAttribute('data-workspace', 'ws-1');
     // Both scopes run the Default model.
     expect(chat).toHaveTextContent('model-p0');
+  });
+
+  // The server reads a Claude Code Default it does not run for the Chief of
+  // Staff as unset there, so that composer starts on the deployment's.
+  it("starts a Chief of Staff send on the deployment's Default over a Claude Code one it does not run there", async () => {
+    queryClient.setQueryData(queryKeys.user.preferences(), prefs('model-code'));
+    queryClient.setQueryData(queryKeys.features.claudeCodeSetup(), {
+      state: 'not_connected', on: true, computers: [], saved_token_runs: false, cloud: false, too_small: [],
+      chief_of_staff: { kind: 'picked', computer_id: null, name: null, refusal: 'no_own_computer', default_runs: false },
+    });
+    renderPage();
+    expand();
+    expect(screen.getByText('pill:model-default')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Chief of Staff' }));
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'Workspace 1' }));
+    expect(screen.getByText('pill:model-code')).toBeInTheDocument();
   });
 
   it('shows the Subagents toggle, keeps a flip across a fold, and sends it into the new chat', async () => {

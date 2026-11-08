@@ -5,7 +5,7 @@
  * one, says so and leads to where a token is added.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ChatInput, { type ChatInputProps } from '../chat-input';
@@ -13,6 +13,8 @@ import type { ModelRowStatus } from '../chat-input.modelPicker';
 import type { ClaudeCodeComputer, ClaudeCodePlan, ClaudeCodeState } from '@/api/model';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import { claudeCodeTokenUrl } from '@/lib/claudeCode';
+import { queryKeys } from '@/lib/queryKeys';
+import { getHomeWorkspace } from '@/pages/ChatAgent/utils/api';
 
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getSkills: vi.fn().mockResolvedValue([]),
@@ -55,10 +57,14 @@ vi.mock('@/hooks/useAllModels', () => ({
 }));
 
 // A self-hosted server, running the workspace's turns on the saved token: a
-// hosted computer, none of the user's own.
+// hosted computer, none of the user's own; and the Chief of Staff's in its
+// workers.
 vi.mock('@/hooks/useClaudeCode', () => ({
   useClaudeCodeStatus: () => ({ enabled: mocks.state !== 'off', runsHere: mocks.state !== 'off', state: mocks.state, plan: mocks.plan }),
   useClaudeCodeComputers: () => ({ computers: mocks.computers, cloudRefusals: {}, isLoading: false, checkAfterOf: () => null }),
+  useClaudeCodeSetup: () => ({
+    setup: { on: true, chief_of_staff: { kind: 'server', computer_id: null, name: null, refusal: null, default_runs: true } }, isLoading: false, unread: false,
+  }),
 }));
 vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { computer_id: 'cmp-hosted' }, isPending: false }) }));
 
@@ -104,9 +110,10 @@ function Where() {
   return <span>{`at:${pathname}${search}`}</span>;
 }
 
-function renderInput() {
+function renderInput(props: Partial<ChatInputProps> = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ChatInput
           onSend={vi.fn()}
@@ -115,11 +122,13 @@ function renderInput() {
           workspaces={[{ workspace_id: 'ws-1', name: 'Alpha desk' }] as ChatInputProps['workspaces']}
           selectedWorkspaceId="ws-1"
           onWorkspaceChange={vi.fn()}
+          {...props}
         />
         <Where />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 const codeRow = () => screen.getByText(/^claude-x-code:/).textContent;
@@ -171,6 +180,24 @@ describe('ChatInput: Claude Code rows by state', () => {
     expect(codeRow()).toBe(`claude-x-code:held:${words}:fix`);
     fireEvent.click(screen.getByRole('button', { name: 'fix' }));
     expect(screen.getByText(/^at:/)).toHaveTextContent(`at:${claudeCodeTokenUrl('ws-1')}`);
+  });
+
+  it("leads the Chief of Staff's row to adding a token for Home, where its turn runs", async () => {
+    mocks.state = 'no_token';
+    const queryClient = renderInput({ scope: 'all' });
+    await waitFor(() => expect(queryClient.getQueryData(queryKeys.workspaces.home())).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'fix' }));
+    expect(screen.getByText(/^at:/)).toHaveTextContent(`at:${claudeCodeTokenUrl('home-1')}`);
+  });
+
+  // Reading Home's id upserts Home and refetches the MCP catalog.
+  it("never reads Home from a workspace's composer", async () => {
+    vi.mocked(getHomeWorkspace).mockClear();
+    mocks.state = 'no_token';
+    renderInput();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(codeRow()).toBe('claude-x-code:held:Add a setup token in Settings to use this model:fix');
+    expect(getHomeWorkspace).not.toHaveBeenCalled();
   });
 
   it("says the organization's policy keeps them off the workspace's own computer, with nothing to fix", () => {

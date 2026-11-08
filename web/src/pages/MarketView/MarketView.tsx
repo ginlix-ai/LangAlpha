@@ -225,9 +225,9 @@ function MarketViewInner() {
   // The FAB unmounts its composer after every send, so the model lives here,
   // which outlives the FAB. No thread is behind it: a send opens a new thread
   // in the chat view, and the pick goes with that navigation. The Chief of Staff
-  // opens that thread in Home, which runs the default model as a workspace
-  // does.
-  const threadModel = useThreadModel({ threadId: null, isLoading: false });
+  // opens that thread in Home, whose turn may start on another Default than
+  // the account's.
+  const threadModel = useThreadModel({ threadId: null, isLoading: false, chiefOfStaff: scope === 'all' });
   // The Subagents pick lives here too, so a fold keeps it. The send carries
   // it into the thread it opens.
   const subagents = useThreadSubagents({ threadId: null });
@@ -656,6 +656,7 @@ function MarketViewInner() {
               scope={scope}
               onScopeChange={setScope}
               model={threadModel.model}
+              sendModel={threadModel.sendModel}
               onPickModel={threadModel.pickModel}
               subagentsAllowed={subagents.allowed}
               onToggleSubagents={subagents.setAllowed}

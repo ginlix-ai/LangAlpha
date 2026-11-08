@@ -51,6 +51,7 @@ vi.mock('@/hooks/useAllModels', () => ({
 vi.mock('@/hooks/useClaudeCode', () => ({
   useClaudeCodeStatus: () => ({ enabled: mocks.state !== 'off', runsHere: mocks.state !== 'off', state: mocks.state, plan: mocks.plan, checkAfter: null }),
   useClaudeCodeComputers: () => ({ computers: [], cloudRefusals: {}, isLoading: false, checkAfterOf: () => null }),
+  useClaudeCodeSetup: () => ({ setup: null, isLoading: false, unread: false }),
 }));
 vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { computer_id: 'cmp-hosted' }, isPending: false }) }));
 vi.mock('@/hooks/useUpdatePreferences', () => ({

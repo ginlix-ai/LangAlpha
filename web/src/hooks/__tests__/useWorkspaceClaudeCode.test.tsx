@@ -10,16 +10,18 @@ import { act, waitFor } from '@testing-library/react';
 import { QueryClient } from '@tanstack/react-query';
 import { renderHookWithProviders } from '@/test/utils';
 import { queryKeys } from '@/lib/queryKeys';
-import type { ClaudeCodeComputer, ClaudeCodeCustody, ClaudeCodeStatus } from '@/api/model';
+import type { ClaudeCodeChiefOfStaff, ClaudeCodeComputer, ClaudeCodeCustody, ClaudeCodeStatus } from '@/api/model';
 
-vi.mock('@/api/model', () => ({ getClaudeCodeStatus: vi.fn(), getClaudeCodeComputers: vi.fn(), getClaudeCodeCustody: vi.fn() }));
+vi.mock('@/api/model', () => ({
+  getClaudeCodeStatus: vi.fn(), getClaudeCodeComputers: vi.fn(), getClaudeCodeCustody: vi.fn(), getClaudeCodeSetup: vi.fn(),
+}));
 vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/pages/ChatAgent/utils/api')>()),
   getWorkspace: vi.fn(),
 }));
-import { getClaudeCodeComputers, getClaudeCodeCustody, getClaudeCodeStatus } from '@/api/model';
+import { getClaudeCodeComputers, getClaudeCodeCustody, getClaudeCodeSetup, getClaudeCodeStatus } from '@/api/model';
 import { getWorkspace } from '@/pages/ChatAgent/utils/api';
-import { useWorkspaceClaudeCode, type WorkspaceClaudeCode } from '../useWorkspaceClaudeCode';
+import { useChiefOfStaffClaudeCode, useWorkspaceClaudeCode, type WorkspaceClaudeCode } from '../useWorkspaceClaudeCode';
 
 const MAC: ClaudeCodeComputer = {
   computer_id: 'cmp-mac', name: 'Studio Mac', kind: 'helper', state: 'no_token', source: null, email: null, expires_at: null,
@@ -269,8 +271,172 @@ describe('useWorkspaceClaudeCode', () => {
     });
   });
 
+  // Where the user's cloud computers run no CLI themselves, a cloud
+  // workspace's runs on the own computer the server picked.
+  describe('with the CLI on an own computer the server picks', () => {
+    const LOCAL: ClaudeCodeCustody = { mode: 'local', offered: ['stored'], blocked: false, runs_on: null, refusal: 'hosted_off', disclosure: null };
+    const plan = { five_hour: null, seven_day: null, limits: [], credits: null, observed_at: '2026-11-07T16:00:00Z' };
+    const picked = { ...MAC, state: 'signed_in' as const, source: 'machine' as const, plan };
+    const pick = (cli: object | null) => () => Promise.resolve({ computers: [picked], cli_computer: cli });
+
+    it("reads a cloud workspace as on that computer: its token, plan and meter", async () => {
+      const { result } = run('cmp-daytona', OWN_ONLY, pick({ kind: 'picked', computer_id: 'cmp-mac', name: 'Studio Mac', refusal: null }), () => Promise.resolve(LOCAL));
+      await waitFor(() => expect(result.current).toEqual({
+        state: 'signed_in', computerId: 'cmp-mac', known: true, plan,
+        meter: { name: 'Studio Mac', plan, credential: { kind: 'computer', computerId: 'cmp-mac' }, checkAfter: null },
+      }));
+    });
+
+    it.each([
+      [{ kind: 'picked', computer_id: null, name: null, refusal: 'no_own_computer' }, { state: 'no_own_computer' }],
+      [{ kind: 'picked', computer_id: null, name: 'Studio Mac', refusal: 'cli_computer_offline' }, { state: 'cli_computer_offline', cliComputerName: 'Studio Mac' }],
+    ])('reads why none can run it, naming the computer that is offline', async (cli, expected) => {
+      const { result } = run('cmp-daytona', OWN_ONLY, pick(cli), () => Promise.resolve(LOCAL));
+      await waitFor(() => expect(result.current).toEqual({ ...expected, computerId: null, known: true }));
+    });
+
+    it('keeps the verdict for cloud computers where they run the CLI themselves', async () => {
+      const { result } = run('cmp-daytona', OWN_ONLY, pick(null), () => Promise.resolve(LOCAL));
+      await waitFor(() => expect(result.current).toEqual({ state: 'hosted_off', computerId: null, known: true }));
+    });
+
+    it("follows the workspace's own computer over the pick", async () => {
+      const own = { ...MAC, computer_id: 'cmp-ssh', name: 'Lab box' };
+      const list = () => Promise.resolve({ computers: [picked, own], cli_computer: { kind: 'picked', computer_id: 'cmp-mac', name: 'Studio Mac', refusal: null } });
+      const { result } = run('cmp-ssh', OWN_ONLY, list, () => Promise.resolve(LOCAL));
+      await waitFor(() => expect(result.current).toEqual({ state: 'no_token', computerId: 'cmp-ssh', known: true }));
+    });
+  });
+
+  // Admission refuses an own computer's token past its expiry, whatever its
+  // last check said, so the picker reads it as refused rather than offering it.
+  it.each(['signed_in', 'unverified'] as const)("reads an own computer's %s token past its expiry as refused", async (state) => {
+    const expired = { ...MAC, state, source: 'machine' as const, expires_at: '2000-01-01T00:00:00Z' };
+    const { result } = run('cmp-mac', OWN_ONLY, () => Promise.resolve({ computers: [expired] }));
+    await waitFor(() => expect(result.current).toEqual({ state: 'rejected', computerId: 'cmp-mac', known: true }));
+  });
+
+  // The composer reads no minute clock, so the list is read again as the
+  // token expires, and the turn is judged at that read.
+  it("reads an own computer's token as refused once it expires, the composer left open", async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'], shouldAdvanceTime: true });
+    try {
+      const expiring = { ...MAC, state: 'signed_in' as const, source: 'machine' as const, expires_at: new Date(Date.now() + 60_000).toISOString() };
+      const { result } = run('cmp-mac', OWN_ONLY, () => Promise.resolve({ computers: [expiring] }));
+      await waitFor(() => expect(result.current.state).toBe('signed_in'));
+      const reads = (getClaudeCodeComputers as Mock).mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(62_000); });
+      await waitFor(() => expect(result.current.state).toBe('rejected'));
+      expect((getClaudeCodeComputers as Mock).mock.calls.length).toBeGreaterThan(reads);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A read again at the expiry that fails leaves the read from before it,
+  // which still finds the token working, so the list keeps being read.
+  it("keeps reading the list after an own computer's token expires until a read lands, and then stops", async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'], shouldAdvanceTime: true });
+    try {
+      const expiring = { ...MAC, state: 'signed_in' as const, source: 'machine' as const, expires_at: new Date(Date.now() + 60_000).toISOString() };
+      let reads = 0;
+      const list = () => {
+        reads += 1;
+        // The read at the expiry and its retry fail.
+        return reads === 2 || reads === 3 ? Promise.reject(new Error('offline')) : Promise.resolve({ computers: [expiring] });
+      };
+      const { result } = run('cmp-mac', OWN_ONLY, list);
+      await waitFor(() => expect(result.current.state).toBe('signed_in'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(62_000); });
+      expect(reads).toBe(3);
+      expect(result.current.state).toBe('signed_in');
+      await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+      await waitFor(() => expect(result.current.state).toBe('rejected'));
+      const landed = reads;
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(reads).toBe(landed);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads an own computer's token before its expiry as working", async () => {
+    const live = { ...MAC, state: 'signed_in' as const, source: 'machine' as const, expires_at: '2999-01-01T00:00:00Z' };
+    const { result } = run('cmp-mac', OWN_ONLY, () => Promise.resolve({ computers: [live] }));
+    await waitFor(() => expect(result.current).toMatchObject({ state: 'signed_in', computerId: 'cmp-mac', known: true }));
+  });
+
   it('is off while Claude Code is', async () => {
     const { result } = run('cmp-mac', { ...OWN_ONLY, enabled: false });
+    await waitFor(() => expect(result.current).toEqual({ state: 'off', computerId: null, known: true }));
+  });
+});
+
+/**
+ * A Chief of Staff turn reads where the server places its CLI as a
+ * workspace's turn reads that placement: the reason it runs nowhere, the own
+ * computer that runs it, or Home's cloud computer or this server by the
+ * credential.
+ */
+describe('useChiefOfStaffClaudeCode', () => {
+  const placed = (over: Partial<ClaudeCodeChiefOfStaff>): ClaudeCodeChiefOfStaff => ({
+    kind: 'server', computer_id: null, name: null, refusal: null, default_runs: true, ...over,
+  });
+  function runHome(
+    cos: ClaudeCodeChiefOfStaff | null,
+    status: ClaudeCodeStatus = OWN_ONLY,
+    list: () => Promise<unknown> = () => Promise.resolve({ computers: [MAC] }),
+  ) {
+    (getClaudeCodeStatus as Mock).mockResolvedValue(status);
+    (getClaudeCodeCustody as Mock).mockReset().mockResolvedValue(null);
+    (getClaudeCodeComputers as Mock).mockReset().mockImplementation(list);
+    (getClaudeCodeSetup as Mock).mockReset().mockResolvedValue({ state: 'connected', on: true, computers: [], saved_token_runs: true, cloud: true, chief_of_staff: cos });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
+    queryClient.setQueryData(queryKeys.features.list(), [{ key: 'claude_code_runtime', enabled: true }]);
+    return renderHookWithProviders(() => useChiefOfStaffClaudeCode(true), { queryClient });
+  }
+
+  it.each([
+    [placed({ kind: 'picked', refusal: 'cli_computer_offline', name: 'Studio Mac' }), { state: 'cli_computer_offline', cliComputerName: 'Studio Mac' }],
+    [placed({ kind: 'picked', refusal: 'no_own_computer' }), { state: 'no_own_computer' }],
+    [placed({ kind: 'home_cloud', refusal: 'needs_bigger_computer', name: 'Home desk' }), { state: 'needs_bigger_computer' }],
+    [placed({ kind: 'home_cloud', refusal: 'signed_out' }), { state: 'no_token' }],
+    [placed({ kind: 'home_cloud', refusal: 'token_refused' }), { state: 'rejected' }],
+    [placed({ kind: 'own', computer_id: 'cmp-mac', refusal: 'policy_blocked' }), { state: 'policy_blocked' }],
+  ])('reads a refusal as the state the rows word it in', async (cos, expected) => {
+    const { result } = runHome(cos);
+    await waitFor(() => expect(result.current).toEqual({ ...expected, computerId: null, known: true }));
+  });
+
+  it.each(['own', 'picked'] as const)('reads %s placement as on that computer: its token, plan and meter', async (kind) => {
+    const plan = { five_hour: null, seven_day: null, limits: [], credits: null, observed_at: '2026-11-07T16:00:00Z' };
+    const mac = { ...MAC, state: 'signed_in' as const, source: 'machine' as const, plan };
+    const { result } = runHome(placed({ kind, computer_id: 'cmp-mac', name: 'Studio Mac' }), OWN_ONLY, () => Promise.resolve({ computers: [mac] }));
+    await waitFor(() => expect(result.current).toEqual({
+      state: 'signed_in', computerId: 'cmp-mac', known: true, plan,
+      meter: { name: 'Studio Mac', plan, credential: { kind: 'computer', computerId: 'cmp-mac' }, checkAfter: null },
+    }));
+  });
+
+  it.each(['own', 'picked'] as const)("reads %s placement on a computer whose token is past its expiry as refused", async (kind) => {
+    const mac = { ...MAC, state: 'signed_in' as const, source: 'machine' as const, expires_at: '2000-01-01T00:00:00Z' };
+    const { result } = runHome(placed({ kind, computer_id: 'cmp-mac', name: 'Studio Mac' }), OWN_ONLY, () => Promise.resolve({ computers: [mac] }));
+    await waitFor(() => expect(result.current).toEqual({ state: 'rejected', computerId: 'cmp-mac', known: true }));
+  });
+
+  it.each(['home_cloud', 'server'] as const)('reads %s placement by the credential, as a cloud computer is', async (kind) => {
+    const { result } = runHome(placed({ kind, computer_id: kind === 'home_cloud' ? 'cmp-home' : null }), { ...RUNS_HERE, state: 'signed_in' });
+    await waitFor(() => expect(result.current).toEqual({ state: 'signed_in', computerId: null, known: true, meter: savedMeter('your setup token') }));
+  });
+
+  it("tells Home's cloud computer too small once the credential would run", async () => {
+    const list = () => Promise.resolve({ computers: [], cloud_refusals: { 'cmp-home': 'needs_bigger_computer' } });
+    const { result } = runHome(placed({ kind: 'home_cloud', computer_id: 'cmp-home' }), { ...RUNS_HERE, state: 'signed_in' }, list);
+    await waitFor(() => expect(result.current.state).toBe('needs_bigger_computer'));
+  });
+
+  it('is off while the server places it nowhere', async () => {
+    const { result } = runHome(null);
     await waitFor(() => expect(result.current).toEqual({ state: 'off', computerId: null, known: true }));
   });
 });

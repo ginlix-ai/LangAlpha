@@ -13,6 +13,7 @@ import ChatInput, { type ChatInputProps } from '../chat-input';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import { queryKeys } from '@/lib/queryKeys';
 import { getSkills } from '@/pages/ChatAgent/utils/api';
+import type { WorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getSkills: vi.fn().mockResolvedValue([]),
@@ -26,7 +27,19 @@ const mocks = vi.hoisted(() => ({
   models: {} as Record<string, { models: string[] }>,
   slotModels: {} as Record<string, { models: string[] }>,
   metadata: {} as Record<string, { provider: string; sdk?: string }>,
+  where: { state: 'off', computerId: null, known: true } as WorkspaceClaudeCode,
+  setup: null as unknown,
 }));
+
+vi.mock('@/hooks/useWorkspaceClaudeCode', () => ({ useTurnClaudeCode: () => mocks.where }));
+
+vi.mock('@/hooks/useClaudeCode', async (importActual) => ({
+  ...(await importActual<typeof import('@/hooks/useClaudeCode')>()),
+  useClaudeCodeSetup: () => ({ setup: mocks.setup, isLoading: false, unread: false }),
+}));
+
+/** Where the server places the Chief of Staff's CLI, running a saved Claude Code Default. */
+const PLACED = { kind: 'picked', computer_id: 'cmp-mac', name: 'Studio Mac', refusal: null, default_runs: true };
 
 vi.mock('@/hooks/usePreferences', () => ({
   usePreferences: () => ({ preferences: mocks.preferences, isLoading: false, isLoaded: true }),
@@ -119,32 +132,45 @@ describe('ChatInput scope picker', () => {
     mocks.models = {};
     mocks.slotModels = {};
     mocks.metadata = {};
+    mocks.where = { state: 'off', computerId: null, known: true };
+    mocks.setup = null;
     vi.mocked(getSkills).mockClear();
   });
 
-  // There a saved Claude Code Default reads as unset and a named one is
-  // refused, so the composer shows and sends the deployment's Default instead,
-  // whether the composer or a Home thread holds it.
-  it("shows and sends the deployment's Default over a Claude Code one on the Chief of Staff", () => {
+  // Where the server does not run a saved Claude Code Default for the Chief
+  // of Staff, the composer shows and sends the deployment's Default instead;
+  // a model a Home thread holds stays.
+  it.each([
+    ['does not run it there', { on: true, chief_of_staff: { ...PLACED, default_runs: false } }],
+    ['has Claude Code off', { chief_of_staff: null }],
+  ])("shows and sends the deployment's Default over a Claude Code one on the Chief of Staff where the server %s", async (_, setup) => {
     mocks.metadata = { 'claude-x-code': { provider: 'claude-code', sdk: 'claude-code' } };
     mocks.preferences = { model_preference: { preferred_model: 'claude-x-code' } };
+    mocks.setup = setup;
     const onSend = vi.fn();
     const { rerender } = renderInput({ onSend });
-    expect(screen.getByText('pill:model-default')).toBeInTheDocument();
+    expect(await screen.findByText('pill:model-default')).toBeInTheDocument();
     const box = screen.getByRole('textbox');
     fireEvent.change(box, { target: { value: 'hello' } });
     fireEvent.keyDown(box, { key: 'Enter' });
     expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ model: 'model-default' });
 
     rerender(composer({ scope: 'workspace', inHome: true, model: 'claude-x-code', onSend }));
-    expect(screen.getByText('pill:model-default')).toBeInTheDocument();
+    expect(screen.getByText('pill:claude-x-code')).toBeInTheDocument();
     rerender(composer({ scope: 'workspace', onSend }));
     expect(screen.getByText('pill:claude-x-code')).toBeInTheDocument();
   });
 
-  // The server refuses Claude Code on a Chief of Staff turn, so its composer
-  // never offers one: neither a send to all workspaces nor a Home thread's.
-  it('offers no Claude Code model on the Chief of Staff', () => {
+  it('keeps a Claude Code Default on the Chief of Staff where the server runs it, whatever the row reads', () => {
+    mocks.metadata = { 'claude-x-code': { provider: 'claude-code', sdk: 'claude-code' } };
+    mocks.preferences = { model_preference: { preferred_model: 'claude-x-code' } };
+    mocks.setup = { on: true, chief_of_staff: PLACED };
+    mocks.where = { state: 'checking', computerId: null, known: false };
+    renderInput();
+    expect(screen.getByText('pill:claude-x-code')).toBeInTheDocument();
+  });
+
+  it('offers Claude Code models on the Chief of Staff, as in a workspace', () => {
     mocks.models = { anthropic: { models: ['claude-x'] }, 'claude-code': { models: ['claude-x-code'] } };
     mocks.slotModels = { anthropic: { models: ['claude-x'] } };
     mocks.metadata = {
@@ -153,10 +179,8 @@ describe('ChatInput scope picker', () => {
     };
     const offered = () => screen.getByText(/^offered:/).textContent;
     const { rerender } = renderInput();
-    expect(offered()).toBe('offered:claude-x');
+    expect(offered()).toBe('offered:claude-x,claude-x-code');
     rerender(composer({ scope: 'workspace', inHome: true }));
-    expect(offered()).toBe('offered:claude-x');
-    rerender(composer({ scope: 'workspace' }));
     expect(offered()).toBe('offered:claude-x,claude-x-code');
   });
   afterEach(() => {

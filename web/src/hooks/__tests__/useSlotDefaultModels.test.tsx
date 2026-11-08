@@ -4,9 +4,15 @@
  * while Settings (`useSlotDefaultModels`) still reads what is saved.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { waitFor } from '@testing-library/react';
 import { renderHookWithProviders } from '@/test/utils';
+import { queryKeys } from '@/lib/queryKeys';
+import { getHomeWorkspace } from '@/pages/ChatAgent/utils/api';
 import { useDefaultModel, useSlotDefaultModels } from '../useSlotDefaultModels';
-import { useTurnModels } from '../useTurnModels';
+import { useTurnDefaultModel, useTurnModels } from '../useTurnModels';
+
+/** Where the server places the Chief of Staff's CLI, running a saved Claude Code Default. */
+const PLACED = { kind: 'picked', computer_id: 'cmp-mac', name: 'Studio Mac', refusal: null, default_runs: true };
 
 const mocks = vi.hoisted(() => ({
   preferences: null as unknown,
@@ -16,6 +22,29 @@ const mocks = vi.hoisted(() => ({
   platformMode: false,
   platform: null as unknown,
   catalog: {} as unknown,
+  setup: null as unknown,
+  setupLoading: false,
+  threadAnswer: vi.fn(),
+}));
+
+vi.mock('@/api/model', async (importActual) => ({
+  ...(await importActual<typeof import('@/api/model')>()),
+  getClaudeCodeChiefOfStaff: mocks.threadAnswer,
+}));
+
+vi.mock('../useClaudeCode', async (importActual) => ({
+  ...(await importActual<typeof import('../useClaudeCode')>()),
+  useClaudeCodeSetup: ({ enabled = true }: { enabled?: boolean } = {}) => ({
+    setup: enabled ? mocks.setup : null, isLoading: enabled && mocks.setupLoading, unread: false,
+  }),
+}));
+
+vi.mock('@/pages/ChatAgent/utils/api', () => ({
+  getHomeWorkspace: vi.fn().mockResolvedValue({ workspace_id: 'home-1', name: 'Home', is_home: true }),
+}));
+
+vi.mock('../useWorkspaceClaudeCode', () => ({
+  useTurnClaudeCode: () => ({ state: 'off', computerId: null, known: true }),
 }));
 
 vi.mock('@/config/hostMode', async (importActual) => ({
@@ -48,6 +77,8 @@ describe('useDefaultModel', () => {
     mocks.platformMode = false;
     mocks.platform = null;
     mocks.catalog = {};
+    mocks.setup = null;
+    mocks.setupLoading = false;
     mocks.preferences = { model_preference: { preferred_model: 'model-paid' } };
   });
 
@@ -62,15 +93,101 @@ describe('useDefaultModel', () => {
     expect(result.current).toBe('model-deployment');
   });
 
-  // The server reads a saved Claude Code Default as unset on a Chief of Staff
-  // turn, and runs the deployment's; an analyst's turn runs it.
-  it("starts a Chief of Staff turn on the deployment's Default over a saved Claude Code one", () => {
+  // The server says whether a Chief of Staff turn runs a saved Claude Code
+  // Default (`default_runs`); where it does not, the turn starts on the
+  // deployment's. An analyst's turn runs it.
+  it.each([
+    ['does not run it there', { on: true, chief_of_staff: { ...PLACED, default_runs: false } }],
+    ['has Claude Code off', { chief_of_staff: null }],
+    // Turning it off writes `on` at once; the rest of the answer may be stale.
+    ['says Claude Code is off, the rest of its answer stale', { on: false, chief_of_staff: PLACED }],
+    ['predates the word', {}],
+  ])("starts a Chief of Staff turn on the deployment's Default over a saved Claude Code one where the server %s", (_, setup) => {
+    mocks.setup = setup;
     mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
     const { result } = renderHookWithProviders(() => ({
-      home: useTurnModels(true).defaultModel,
-      analyst: useTurnModels(false).defaultModel,
+      home: useTurnDefaultModel(true),
+      analyst: useTurnDefaultModel(false),
+      composer: useTurnModels(true, null).defaultModel,
     }));
-    expect(result.current).toEqual({ home: 'model-deployment', analyst: 'model-code' });
+    expect(result.current).toEqual({ home: 'model-deployment', analyst: 'model-code', composer: 'model-deployment' });
+  });
+
+  // Reading Home's id upserts Home and refetches the MCP catalog, so only a
+  // Chief of Staff turn reads it, for its token link.
+  it("reads Home's id only for a Chief of Staff turn", async () => {
+    vi.mocked(getHomeWorkspace).mockClear();
+    const analyst = renderHookWithProviders(() => useTurnModels(false, 'ws-1'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getHomeWorkspace).not.toHaveBeenCalled();
+    expect(analyst.result.current.workspaceId).toBe('ws-1');
+
+    const home = renderHookWithProviders(() => useTurnModels(true, 'ws-1'));
+    await waitFor(() => expect(home.result.current.workspaceId).toBe('home-1'));
+  });
+
+  it('keeps a saved Claude Code Default on a Chief of Staff turn where the server runs it', () => {
+    mocks.setup = { on: true, chief_of_staff: PLACED };
+    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
+    const { result } = renderHookWithProviders(() => useTurnDefaultModel(true));
+    expect(result.current).toBe('model-code');
+  });
+
+  // The server also starts a Home thread another model last replied on on the
+  // deployment's Default, which only that thread's answer says.
+  it.each([
+    ['another model last replied on', false, 'model-deployment'],
+    ["Claude Code's reply ends", true, 'model-code'],
+  ])("starts a Chief of Staff thread %s on the Default the server runs there", async (_, runs, shown) => {
+    mocks.setup = { on: true, chief_of_staff: PLACED };
+    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
+    let answer!: (value: unknown) => void;
+    mocks.threadAnswer.mockReset().mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    const { result } = renderHookWithProviders(() => useTurnDefaultModel(true, 'thread-1'));
+    expect(result.current).toBeNull();
+    answer({ ...PLACED, default_runs: runs });
+    await waitFor(() => expect(result.current).toBe(shown));
+    expect(mocks.threadAnswer).toHaveBeenCalledWith('thread-1');
+  });
+
+  // A sign-in, a computer started or a plan check reads the setup again; the
+  // thread's answer follows it, since it is read from the same placement.
+  it("reads the thread's answer again whenever the setup is read again", async () => {
+    mocks.setup = { on: true, chief_of_staff: PLACED };
+    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
+    mocks.threadAnswer.mockReset().mockResolvedValueOnce({ ...PLACED, default_runs: false }).mockResolvedValue(PLACED);
+    const { result, queryClient } = renderHookWithProviders(() => useTurnDefaultModel(true, 'thread-1'));
+    await waitFor(() => expect(result.current).toBe('model-deployment'));
+    await queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeSetup() });
+    await waitFor(() => expect(result.current).toBe('model-code'));
+    expect(mocks.threadAnswer).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['a turn with no thread yet', { on: true, chief_of_staff: PLACED }, null, 'model-code'],
+    ["an account whose Claude Code Default does not run in Home", { on: true, chief_of_staff: { ...PLACED, default_runs: false } }, 'thread-1', 'model-deployment'],
+    ['an account that turned Claude Code off since', { on: false, chief_of_staff: PLACED }, 'thread-1', 'model-deployment'],
+  ])('asks nothing of the thread for %s', async (_, setup, threadId, shown) => {
+    mocks.setup = setup;
+    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
+    mocks.threadAnswer.mockReset();
+    const { result } = renderHookWithProviders(() => useTurnDefaultModel(true, threadId));
+    expect(result.current).toBe(shown);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.threadAnswer).not.toHaveBeenCalled();
+  });
+
+  it("keeps any other Default on a Chief of Staff turn, whatever the server's word", () => {
+    mocks.setup = { chief_of_staff: { ...PLACED, default_runs: false } };
+    const { result } = renderHookWithProviders(() => useTurnDefaultModel(true));
+    expect(result.current).toBe('model-paid');
+  });
+
+  it('names no model on a Chief of Staff turn until the server says whether it runs a saved Claude Code Default', () => {
+    mocks.setupLoading = true;
+    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
+    const { result } = renderHookWithProviders(() => useTurnDefaultModel(true));
+    expect(result.current).toBeNull();
   });
 
   it('leaves the saved Default as Settings reads it', () => {
