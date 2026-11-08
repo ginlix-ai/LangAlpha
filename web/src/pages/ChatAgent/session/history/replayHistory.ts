@@ -43,6 +43,7 @@ import { createApprovalEvidence, recordApprovalEvidence } from '../interrupts/cl
 import { projectHistoryInterrupt } from '../interrupts/fromHistoryEvent';
 import type { HistoryRuntime } from '../runtime';
 import type { HistoryPageInfo, LoadedHistoryPage } from './olderPages';
+import type { PageBudget } from './pageBudget';
 import { applyHistoryToolResult, markSteeredResumeCards, settleResumedInterrupts } from './resumeSettlement';
 import { readStreamFailure } from '../stream/streamFailure';
 
@@ -65,8 +66,8 @@ export interface ReplayHistoryDeps {
    *  what the load will return. The caller settles here what only it can judge
    *  (a run that is over), so the transcript never appears unsettled first. */
   beforeReveal?: (ok: boolean) => void;
-  /** Page size for the newest page; omitted replays the whole thread. */
-  limit?: number;
+  /** What the newest page may carry; omitted replays the whole thread. */
+  page?: PageBudget;
   /** Replay the page before this turn instead, into a transcript of its own:
    *  an older page (loadOlderHistoryPage), with `signal` to abort its fetch. */
   beforeTurn?: number;
@@ -834,7 +835,7 @@ export async function loadConversationHistory(
       }
     };
       const result = await replayThreadHistory(threadIdToUse, onEvent, {
-        limit: deps.limit, beforeTurn: deps.beforeTurn, signal: deps.signal,
+        page: deps.page, beforeTurn: deps.beforeTurn, signal: deps.signal,
       });
       stripHistory();
       // An older page that did not arrive whole is no page.

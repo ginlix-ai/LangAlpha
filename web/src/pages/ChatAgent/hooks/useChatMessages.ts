@@ -7,13 +7,13 @@
 import { failAssistantMessage, finalizeAssistantMessage } from '../session/stream/finalizeMessage';
 import type React from 'react';
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react';
-import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { claudeCodeRefusal } from '@/lib/claudeCode';
 import { holdReload } from '@/lib/reloadHolds';
 import { useHomeTimezone } from '@/hooks/useHomeTimezone';
+import { getIsMobileSnapshot } from '@/hooks/useIsMobile';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, sendRetryStream, getWorkflowStatus, sendHitlResponse, fetchThreadTurns, cancelWorkflow } from '../utils/api';
@@ -80,8 +80,9 @@ import { prependSubagentRuns, projectSubagentHistory } from '../session/subagent
 import { createSubagentMuxController, getTaskIdFromEvent } from '../session/subagents/muxSink';
 import { sendTaskInstruction } from '../session/subagents/sendTaskInstruction';
 import { loadConversationHistory as replayConversationHistory } from '../session/history/replayHistory';
-import { loadOlderHistoryPage, commitOlderHistoryPage } from '../session/history/olderPages';
-import { createHistoryWindow, HISTORY_PAGE_TURNS } from '../session/history/historyWindow';
+import { createHistoryWindow } from '../session/history/historyWindow';
+import { createOlderHistory, type HoldPlace } from '../session/history/olderHistory';
+import { currentScreenBudget } from '../session/history/pageBudget';
 import { createStreamEventProcessor, type StreamRouterDeps } from '../session/stream/processStreamEvent';
 import { DROPPED_BEFORE_RUN, forkRequest, retryRequest, retryRequestFor, sendRequest, settleRetryNotice, type HeldRetry, type RetryNotice, type TurnRequest } from '../session/stream/autoRetry';
 import { createLiveTranscript, type LiveMessages } from '../session/stream/liveMessages';
@@ -391,7 +392,7 @@ export function useChatMessages(
   const newMessagesStartIndexRef = useRef(0); // Index where new messages start
   // Where the loaded transcript starts and the older page in flight.
   const [historyWindow] = useState(createHistoryWindow);
-  const olderHistoryStatus = useSyncExternalStore(historyWindow.subscribe, historyWindow.snapshot);
+  const olderHistorySnapshot = useSyncExternalStore(historyWindow.subscribe, historyWindow.snapshot);
   // Guards against the load-history effect doing a redundant replay when
   // (workspaceId, threadId, reloadTrigger) re-resolve to a tuple this hook
   // already loaded — most often during React 18 StrictMode's mount→unmount→
@@ -1077,7 +1078,7 @@ export function useChatMessages(
     // The newest turn the thread has: /status's count, or what this view has
     // seen when the count is missing or behind.
     const newest = Math.max(latestTurnIndex ?? -1, newestKnownTurn());
-    const limit = historyWindow.reloadLimit(tid, newest);
+    const page = historyWindow.newestPageBudget(tid, newest, currentScreenBudget());
     // A replay already running refuses this one, and owns the window.
     const token = historyLoadingRef.current ? null : historyWindow.beginReload();
     return replayConversationHistory(runtime, {
@@ -1090,54 +1091,29 @@ export function useChatMessages(
         // A failed reload leaves a transcript that cannot say what is gone.
         if (ok) settleEditDrafts();
       },
-      limit,
-      onPage: (page) => {
-        if (token !== null) historyWindow.land(token, tid, page);
+      page,
+      onPage: (landed) => {
+        if (token !== null) historyWindow.land(token, tid, landed);
       },
     });
   };
 
-  /**
-   * Replay the page of turns before the oldest one loaded and put it above the
-   * transcript, when the window lets one start. A page that a reload, a thread
-   * switch or a fork overtook is dropped, and the trigger asks again.
-   * `place` is handed the page's bubble count and the commit, which renders
-   * before it returns, so the view holds the reader's place across it in one
-   * task: no scroll can land between the place read and the page shown.
-   */
-  const loadOlderHistory = useStableHandler(async (place?: (prepended: number, commit: () => void) => void) => {
-    const tid = threadIdRef.current;
-    const request = historyWindow.request(tid);
-    if (!request) return;
-    const { beforeTurn, carry, signal, token } = request;
-
-    let older: Awaited<ReturnType<typeof loadOlderHistoryPage>> = null;
-    try {
-      older = await loadOlderHistoryPage(runtime, { threadId: tid, beforeTurn, limit: HISTORY_PAGE_TURNS, signal }, carry);
-    } catch (err) {
-      console.warn('[History] Older page failed to load:', err);
-    }
-    if (!historyWindow.isCurrent(token)) return;
-    if (!older) {
-      historyWindow.fail(token);
-      return;
-    }
-
-    const landed = older;
-    const commit = () => flushSync(() => commitOlderHistoryPage(
-      runtime,
-      {
-        projectSubagentHistory: (byTaskId) => projectSubagentHistory(runtime, byTaskId),
-        prependSubagentRuns: (agentId, runs) => prependSubagentRuns(runtime, agentId, runs),
-        isTaskLive: (agentId) => muxOpenTaskIds().has(agentId.replace(/^task:/, '')),
-        liveOutcome: (agentId) => terminalTaskOutcomesRef.current.get(agentId.replace(/^task:/, '')),
-      },
-      landed,
-    ));
-    if (place) place(landed.messages.length, commit);
-    else commit();
-    historyWindow.land(token, tid, landed.page);
+  /** Older pages, put above the transcript as the reader scrolls up
+   *  (`load`, under the view's `place`) and behind first paint while a newest
+   *  load cut short on its bytes is owed more (`backfill`): session/history/
+   *  olderHistory, bound at each call to the runtime of the latest render. */
+  const olderHistory = () => createOlderHistory({
+    window: historyWindow,
+    runtime,
+    threadId: () => threadIdRef.current,
+    projectSubagentHistory: (byTaskId) => projectSubagentHistory(runtime, byTaskId),
+    prependSubagentRuns: (agentId, runs) => prependSubagentRuns(runtime, agentId, runs),
+    isTaskLive: (agentId) => muxOpenTaskIds().has(agentId.replace(/^task:/, '')),
+    liveOutcome: (agentId) => terminalTaskOutcomesRef.current.get(agentId.replace(/^task:/, '')),
   });
+  const loadOlderHistory = useStableHandler((place?: HoldPlace) => olderHistory().load(place));
+  const backfillOlderHistory = useStableHandler((place?: HoldPlace) =>
+    olderHistory().backfill(place, getIsMobileSnapshot()));
 
   /** Recovery/ownership lifecycle lives in session/stream/lifecycle; the hook
    * binds the runtime and the composition-level recovery callbacks. */
@@ -3838,8 +3814,13 @@ export function useChatMessages(
     isLoadingHistory,
     historyLoadFailed,
     isLoadingThread,
-    // Older history, paged in above the transcript as the reader scrolls up.
-    olderHistory: { status: olderHistoryStatus, load: loadOlderHistory },
+    // Older history, paged in above the transcript as the reader scrolls up,
+    // and behind first paint when the newest page stopped short on its bytes.
+    olderHistory: {
+      snapshot: olderHistorySnapshot,
+      load: loadOlderHistory,
+      backfill: backfillOlderHistory,
+    },
     isReconnecting,
     modelStatus,
     fallbackSuggestion,

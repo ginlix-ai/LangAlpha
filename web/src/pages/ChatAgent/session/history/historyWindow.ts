@@ -1,44 +1,26 @@
 /**
  * Which turns a paged transcript holds, and whether it can page back further.
  *
- * A thread opens on its newest turns and older pages go above them only as the
- * reader scrolls up: nothing jumps to a turn that is not on screen (no URL
- * names a turn; the minimap, sources, files and tool links all point at loaded
- * bubbles), and a reload's place is a loaded bubble the reload's limit keeps.
- * The window holds the page the newest load or the last older page reported,
- * the one page in flight, and the token that refuses the landing of a page a
- * reload, a thread switch or a fork overtook.
+ * A thread opens on its newest turns, as many as a page's bytes allow, and
+ * older pages go above them as the reader scrolls up, or behind first paint
+ * when that page stopped short on its bytes (`backfill`): nothing jumps to a
+ * turn that is not on screen (no URL names a turn; the minimap, sources, files
+ * and tool links all point at loaded bubbles), and a reload's place is a
+ * loaded bubble the reload's floor keeps. The window holds the page the newest
+ * load or the last older page reported, the one page in flight or held ahead,
+ * and the token that refuses the landing of a page a reload, a thread switch
+ * or a fork overtook.
  */
 import { scrollMemory } from '@/lib/scrollMemory';
-import type { HistoryCarry, LoadedHistoryPage } from './olderPages';
-
-/**
- * Turns per replay page. A turn of a research thread can run to hundreds of
- * events, so this is about as much as replays in well under a second, and it
- * still fills a tall viewport several times over, which keeps the next page's
- * fetch ahead of a reader scrolling up.
- */
-export const HISTORY_PAGE_TURNS = 20;
-
-/**
- * Extra turns a reload asks for beyond the ones on screen. A reload asks for
- * the newest N turns, so turns that land between the status read it counts
- * from and the replay would otherwise push the oldest loaded turn off the top.
- * A return to a thread asks for none: its saved offset is measured from the
- * turn its transcript started at, so the page has to start there again.
- */
-export const HISTORY_RELOAD_MARGIN_TURNS = 5;
-
-/**
- * The limit for a replay of the newest page reaching back to turn `from`: one
- * page when nothing reaches further, otherwise every turn from `from` to the
- * newest the thread has, plus `margin`, so it never takes back what the
- * reader paged in.
- */
-export function newestPageLimit(from: number | null, newestTurn: number, margin = 0): number {
-  if (from === null) return HISTORY_PAGE_TURNS;
-  return Math.max(HISTORY_PAGE_TURNS, newestTurn - from + 1 + margin);
-}
+import type { HistoryCarry, LoadedHistoryPage, OlderHistoryPage } from './olderPages';
+import {
+  HISTORY_PAGE_TURNS,
+  HISTORY_RELOAD_MARGIN_TURNS,
+  newestPageReach,
+  pageBudget,
+  type PageBudget,
+  type ScreenBudget,
+} from './pageBudget';
 
 /**
  * What the top of the transcript can do: `reloading` while the newest load
@@ -63,6 +45,26 @@ export interface OlderPageRequest {
 const startKey = (threadId: string) => `thread-start:${threadId}`;
 const reachKey = (threadId: string) => `thread-reach:${threadId}`;
 
+/**
+ * What the window owes a transcript whose newest load stopped short of a
+ * page's turns on its bytes, once the reader can see it: `commit` an older
+ * page through the reader's hold, as the scroll trigger would, or replay the
+ * next one `ahead` without showing it, ready for the trigger.
+ */
+export type BackfillStep = 'commit' | 'ahead' | null;
+
+/**
+ * What the view renders from the window: the top's status, whether the
+ * transcript sits at the bottom of a screen it does not fill, and whether a
+ * page is held ahead, whose taking re-arms the backfill (useHistoryBackfill).
+ * A new object only when a field changes, as `useSyncExternalStore` needs.
+ */
+export interface HistoryWindowSnapshot {
+  readonly status: OlderHistoryStatus;
+  readonly aligned: boolean;
+  readonly hasAhead: boolean;
+}
+
 export function createHistoryWindow() {
   let threadId: string | null = null;
   let page: LoadedHistoryPage | null = null;
@@ -70,23 +72,40 @@ export function createHistoryWindow() {
   // reload's page can start up to the margin before it; taken as the reach,
   // that margin would be asked for again on top of itself at every reload.
   let reach: number | null = null;
+  // Turns the newest load holds, and turns loaded since it: its own, then
+  // each older page's. A newest load short of a page's turns stopped on its
+  // bytes, so the depth a page used to give is filled in behind it.
+  let newestTurns = 0;
+  let span = 0;
+  // Whether this thread view opened on a page with older turns behind it, so
+  // a transcript shorter than the screen sits at its bottom and a page landing
+  // above it never moves the newest reply. Decided by the first load of the
+  // thread in this view: a reload, which may hold more or fewer turns, keeps
+  // it, so the transcript never jumps between the two.
+  let aligned = false;
+  // An older page replayed but not shown (a phone keeps the next one ready).
+  // Whatever overtakes the window drops it, as it drops a page in flight.
+  let ahead: OlderHistoryPage | null = null;
   let base: Exclude<OlderHistoryStatus, 'held'> = 'end';
   let held = false;
   let token = 0;
   let inflight: AbortController | null = null;
-  let status: OlderHistoryStatus = 'end';
+  let shown: HistoryWindowSnapshot = Object.freeze({ status: 'end', aligned: false, hasAhead: false });
   const listeners = new Set<() => void>();
 
   const publish = () => {
-    const next = held && (base === 'idle' || base === 'failed') ? 'held' : base;
-    if (next === status) return;
-    status = next;
+    const status = held && (base === 'idle' || base === 'failed') ? 'held' : base;
+    const hasAhead = ahead !== null;
+    if (status === shown.status && aligned === shown.aligned && hasAhead === shown.hasAhead) return;
+    shown = Object.freeze({ status, aligned, hasAhead });
     for (const listener of listeners) listener();
   };
-  // Stops the page in flight and refuses its landing.
+  // Stops the page in flight and refuses its landing, and drops a page held
+  // ahead, which was replayed against the transcript this overtakes.
   const overtake = () => {
     inflight?.abort();
     inflight = null;
+    ahead = null;
     token += 1;
   };
 
@@ -97,15 +116,18 @@ export function createHistoryWindow() {
         listeners.delete(listener);
       };
     },
-    snapshot: (): OlderHistoryStatus => status,
+    snapshot: (): HistoryWindowSnapshot => shown,
 
-    /** The limit for the newest load of `tid`: one page, or for a reload or a
-     *  return to a thread left mid-way, every turn back to where it reached. */
-    reloadLimit(tid: string, newestTurn: number): number {
-      if (tid === threadId) return newestPageLimit(reach, newestTurn, HISTORY_RELOAD_MARGIN_TURNS);
+    /** The page for the newest load of `tid`: one page's worth on this screen,
+     *  or for a reload or a return to a thread left mid-way, every turn back
+     *  to where it reached, whatever their bytes. */
+    newestPageBudget(tid: string, newestTurn: number, screen: ScreenBudget): PageBudget {
+      if (tid === threadId) {
+        return pageBudget(screen, newestPageReach(reach, newestTurn, HISTORY_RELOAD_MARGIN_TURNS));
+      }
       const start = scrollMemory.get(startKey(tid));
       const resumed = typeof start === 'number' && typeof scrollMemory.get(`thread:${tid}`) === 'number';
-      return newestPageLimit(resumed ? start : null, newestTurn);
+      return pageBudget(screen, newestPageReach(resumed ? start : null, newestTurn));
     },
     /** A newest load starts: no older page goes on a transcript it rebuilds. */
     beginReload(): number {
@@ -117,10 +139,10 @@ export function createHistoryWindow() {
     /** Where the transcript starts now, from the load or page `t` named. */
     land(t: number, tid: string, next: LoadedHistoryPage | null): void {
       if (t !== token) return;
+      const opened = tid !== threadId;
+      const newest = opened || base === 'reloading';
       const saved = scrollMemory.get(reachKey(tid));
-      const prior = tid !== threadId ? (typeof saved === 'number' ? saved : null)
-        : base === 'reloading' ? reach
-        : null;
+      const prior = opened ? (typeof saved === 'number' ? saved : null) : newest ? reach : null;
       inflight = null;
       threadId = tid;
       page = next;
@@ -134,6 +156,10 @@ export function createHistoryWindow() {
         scrollMemory.set(startKey(tid), next.firstTurnIndex);
         scrollMemory.set(reachKey(tid), reach);
       }
+      const turns = next ? Math.max(0, next.lastTurnIndex - next.firstTurnIndex + 1) : 0;
+      if (newest) newestTurns = span = turns;
+      else span += turns;
+      if (opened) aligned = !!next?.hasMore;
       base = next?.hasMore ? 'idle' : 'end';
       publish();
     },
@@ -154,13 +180,42 @@ export function createHistoryWindow() {
       base = 'failed';
       publish();
     },
+    /** What a cut-short load is still owed, on a phone or not; null when
+     *  nothing is, or when nothing may start now. */
+    backfill(tid: string, phone: boolean): BackfillStep {
+      if (held || tid !== threadId || !page?.hasMore || base !== 'idle') return null;
+      if (newestTurns >= HISTORY_PAGE_TURNS) return null;
+      // A desktop fills back to a page's turns; a phone takes one page, and
+      // then only keeps the next one ready, as its link and screen are small.
+      if (phone ? span === newestTurns : span < HISTORY_PAGE_TURNS) return 'commit';
+      return phone && !ahead ? 'ahead' : null;
+    },
+    /** The page `t` replayed lands held, not shown: the top is idle again, and
+     *  the next ask for an older page takes it. */
+    keepAhead(t: number, older: OlderHistoryPage): void {
+      if (t !== token) return;
+      inflight = null;
+      ahead = older;
+      base = 'idle';
+      publish();
+    },
+    /** The page held ahead, once, with the token its landing names; null when
+     *  none is, or when no page may go on the transcript now. */
+    takeAhead(tid: string): { older: OlderHistoryPage; token: number } | null {
+      if (!ahead || held || tid !== threadId || base !== 'idle') return null;
+      const older = ahead;
+      ahead = null;
+      publish();
+      return { older, token };
+    },
     /** A fork cuts the transcript at an index, so nothing goes above the cut
-     *  until it is made. */
+     *  until it is made, and a page held ahead of it may be gone with it. */
     hold(): void {
       if (base === 'loading') {
         overtake();
         base = 'idle';
       }
+      ahead = null;
       held = true;
       publish();
     },
@@ -174,6 +229,9 @@ export function createHistoryWindow() {
       threadId = null;
       page = null;
       reach = null;
+      newestTurns = 0;
+      span = 0;
+      aligned = false;
       base = 'end';
       held = false;
       publish();

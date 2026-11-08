@@ -76,6 +76,8 @@ import SubagentStatusBar from './SubagentStatusBar';
 import TodoDrawer from './TodoDrawer';
 import { ComposerTray, ReconnectingChip, TrayDock } from './chatView/ComposerTray';
 import { useTrayContents } from './chatView/useTrayContents';
+import { useHistoryBackfill } from './chatView/useHistoryBackfill';
+import { OlderHistorySkeleton } from './chatView/OlderHistorySkeleton';
 import { useThreadCommands } from '../hooks/useCommands';
 import { ThreadCommandsContext } from './commands/threadCommandsContext';
 import { ChatCommentSendsProvider, useChatCommentSends } from './artifactComments/useChatCommentSends';
@@ -344,7 +346,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     isLoadingHistory,
     historyLoadFailed,
     isLoadingThread,
-    olderHistory: { status: olderHistoryStatus, load: loadOlderHistory },
+    olderHistory: { snapshot: olderHistory, load: loadOlderHistory, backfill: backfillOlderHistory },
     isReconnecting,
     modelStatus,
     fallbackSuggestion,
@@ -497,6 +499,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const loadOlderPage = useCallback(() => {
     void loadOlderHistory(holdPlace);
   }, [loadOlderHistory, holdPlace]);
+  // What a newest page cut short on its bytes is owed, landed the same way.
+  useHistoryBackfill({
+    snapshot: olderHistory,
+    ready: isActive && entryRestored,
+    backfill: backfillOlderHistory,
+    place: holdPlace,
+  });
 
   // One value for both transcripts below (main thread and subagent tab), so a
   // flip in Settings reaches them together and neither re-renders on the other's
@@ -1567,18 +1576,26 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               />
               {activeAgentId === 'main' ? (
                 <ScrollArea ref={scrollAreaRef} className={`h-full w-full${!isMobile && !rightPanelType ? ' chat-scroll-hide-scrollbar' : ''}`}>
-                  {/* The floor a pinned send holds open under its reply
-                      (chatView/turnPin). Never a transition: the pin
-                      measures the floor it has just written, and a transition
-                      would hand it the old one for a frame and clamp an
-                      instant pin short. */}
-                  <div ref={transcriptFloorRef} data-transcript-floor="" className="transition-none">
+                  {/* The floor a pinned send holds open (chatView/turnPin); a transition would
+                      hand the pin last frame's floor. A thread opened mid-way sits at the
+                      bottom under a skeleton, and back on top while a pin holds room. */}
+                  <div
+                    ref={transcriptFloorRef}
+                    data-transcript-floor=""
+                    className={cn(
+                      'group/floor transition-none',
+                      olderHistory.aligned && 'flex min-h-full flex-col justify-end data-[pinned]:justify-start',
+                    )}
+                  >
+                    {olderHistory.aligned && (olderHistory.status === 'idle' || olderHistory.status === 'loading') && (
+                      <OlderHistorySkeleton isMobile={isMobile} />
+                    )}
                     <div className={`${isMobile ? 'px-3 pt-3' : 'px-6 pt-4'} ${TRANSCRIPT_BOTTOM_PAD} flex justify-center`}>
-                      <div className="w-full max-w-3xl overflow-x-hidden">
+                      <div data-transcript-content="" className="w-full max-w-3xl overflow-x-hidden">
                         <OlderHistoryRow
                           getRoot={getMainScrollRoot}
-                          status={olderHistoryStatus}
-                          canLoad={isActive && entryRestored && olderHistoryStatus === 'idle'}
+                          status={olderHistory.status}
+                          canLoad={isActive && entryRestored && olderHistory.status === 'idle'}
                           onLoad={loadOlderPage}
                         />
                         <MessageActionsProvider actions={messageActions}>

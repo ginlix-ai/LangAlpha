@@ -17,9 +17,10 @@ export function resolveScrollViewport(root: HTMLElement | null): HTMLElement | n
   );
 }
 
-/** The growing content node inside the fixed-height viewport: the viewport itself never changes size as content lands, so this is what a ResizeObserver must watch. */
+/** The growing content node inside the fixed-height viewport: the viewport itself never changes size as content lands, so this is what a ResizeObserver must watch. A surface marks it `data-transcript-content`, since a placeholder drawn at the transcript's width (the older-history skeleton) can precede it in the DOM. */
 export function resolveScrollContent(viewport: HTMLElement): HTMLElement {
   return (
+    viewport.querySelector<HTMLElement>('[data-transcript-content]') ??
     viewport.querySelector<HTMLElement>('.max-w-3xl') ??
     (viewport.firstElementChild as HTMLElement | null) ??
     viewport

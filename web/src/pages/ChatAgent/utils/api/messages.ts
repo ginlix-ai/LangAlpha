@@ -7,6 +7,7 @@ import type { ArtifactCommentSendFields, CommentSend, WorkflowRunStatus } from '
 import type { CancelOutcome, HeldSteer } from '../cancelOutcome';
 import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
 import { PING_STREAM_BEAT_MS, RUN_STREAM_BEAT_MS, watchStreamSilence } from '@/lib/streamSilence';
+import type { PageBudget } from '../../session/history/pageBudget';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
 
 /**
@@ -15,8 +16,9 @@ import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport
  * saying where the page starts and whether older turns remain.
  */
 export interface ReplayPageRequest {
-  /** The newest this many checkpointed turns (before `beforeTurn` if given). */
-  limit?: number;
+  /** The newest turns the page's budget allows (before `beforeTurn` if
+   *  given). A server that predates the bytes sends `limit` turns. */
+  page?: PageBudget;
   /** Only turns older than this one: the previous page's first turn. */
   beforeTurn?: number;
   signal?: AbortSignal;
@@ -25,11 +27,15 @@ export interface ReplayPageRequest {
 export async function replayThreadHistory(
   threadId: string,
   onEvent: (event: Record<string, unknown>) => void = () => {},
-  { limit, beforeTurn, signal }: ReplayPageRequest = {},
+  { page, beforeTurn, signal }: ReplayPageRequest = {},
 ) {
   if (!threadId) throw new Error('Thread ID is required');
   const params = new URLSearchParams();
-  if (limit != null) params.set('limit', String(limit));
+  if (page) {
+    params.set('limit', String(page.limit));
+    params.set('max_bytes', String(page.maxBytes));
+    params.set('min_turns', String(page.minTurns));
+  }
   if (beforeTurn != null) params.set('before_turn', String(beforeTurn));
   const query = params.toString();
   const authHeaders = await getAuthHeaders();
