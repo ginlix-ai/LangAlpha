@@ -452,8 +452,10 @@ function PublishReview({ workspaceId, path, busyRef, onClose }: {
   return (
     <>
       {scout.element}
-      <DialogTitle className="text-base font-semibold truncate pr-6" style={{ color: 'var(--color-text-primary)' }} title={name}>
-        {t('publish.title', { file: name })}
+      {/* The ellipsis is the words' own, so Terminal's brackets (data-bracket,
+          on the title) both stay in view around a long name. */}
+      <DialogTitle className="flex min-w-0 text-base font-semibold pr-6" style={{ color: 'var(--color-text-primary)' }} title={name}>
+        <span className="truncate">{t('publish.title', { file: name })}</span>
       </DialogTitle>
       <DialogDescription className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
         {t('publish.description')}

@@ -208,7 +208,7 @@ export function WorkspaceCard({
             )}
             {/* One line at every width, so every card is the same height. */}
             <div data-bracket="title" className="pf-card-title font-medium flex-1 min-w-0 line-clamp-1 break-words" style={{ color: 'var(--color-text-primary)' }} title={text.name}>
-              {text.name}
+              <span className="pf-card-name">{text.name}</span>
             </div>
             {when && (
               // Under a mouse the menu takes this corner on hover, so the time

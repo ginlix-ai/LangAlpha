@@ -34,7 +34,8 @@
 :root:not([data-card-style='balanced']) .workspace-grid { padding-top: 0.875rem; }
 
 /* line-clamp sets the title as a box; its brackets (data-bracket) need it
-   inline. */
+   inline. A name that runs long ellipsizes inside them, so the closing one
+   stays in view. */
 :root:not([data-card-style]) .pf-card .pf-card-title {
   display: block;
   white-space: nowrap;
@@ -43,6 +44,12 @@
   font-size: var(--cs-text-field);
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+:root:not([data-card-style]) .pf-card .pf-card-title:has(> .pf-card-name) { display: flex; }
+:root:not([data-card-style]) .pf-card .pf-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 :root:not([data-card-style]) .pf-card .pf-card-meta {
   font-size: var(--cs-text-label);
