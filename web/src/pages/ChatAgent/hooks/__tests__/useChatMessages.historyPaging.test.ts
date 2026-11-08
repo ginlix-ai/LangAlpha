@@ -40,7 +40,7 @@ import {
   reconnectToWorkflowStream,
 } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
-import { HISTORY_PAGE_TURNS } from '../../session/history/historyWindow';
+import { HISTORY_PAGE_TURNS, type PageBudget } from '../../session/history/pageBudget';
 import { scrollMemory } from '@/lib/scrollMemory';
 import { settleMountEffect } from './chatHookHarness';
 
@@ -73,16 +73,16 @@ function pageOf(from: number, to: number, hasMore: boolean, threadId = 'thread-1
   ];
 }
 
-type PageRequest = { limit?: number; beforeTurn?: number; signal?: AbortSignal };
+type PageRequest = { page?: PageBudget; beforeTurn?: number; signal?: AbortSignal };
 
 /**
  * A thread whose newest turn is `latest()`, served the way the backend pages
- * it: the newest `limit` turns, or the `limit` turns before `beforeTurn`.
+ * it: the newest `page.limit` turns, or the `page.limit` turns before `beforeTurn`.
  */
 function threadOf(latest: () => number) {
   return async (tid: string, onEvent: Emit, req: PageRequest = {}) => {
     const end = req.beforeTurn === undefined ? latest() : req.beforeTurn - 1;
-    const from = Math.max(0, end - (req.limit ?? end + 1) + 1);
+    const from = Math.max(0, end - (req.page?.limit ?? end + 1) + 1);
     for (const item of pageOf(from, end, from > 0, tid)) onEvent(item);
   };
 }
@@ -188,7 +188,7 @@ describe('useChatMessages – absolute turn index on a paged transcript', () => 
     mockReplay.mockImplementation(threadOf(() => 80));
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
     await settleMountEffect();
-    await waitFor(() => expect(result.current.olderHistory.status).toBe('idle'));
+    await waitFor(() => expect(result.current.olderHistory.snapshot.status).toBe('idle'));
     await act(async () => {
       await result.current.olderHistory.load();
     });
@@ -260,21 +260,23 @@ describe('useChatMessages – paging older history', () => {
 
   it('opens on the newest page and puts each older page above it, keeping every bubble', async () => {
     const { result } = await mount();
-    expect(mockReplay.mock.calls[0][2]).toEqual({ limit: HISTORY_PAGE_TURNS });
+    // A page of turns, which the bytes may stop sooner, at least what fills
+    // jsdom's 768px desktop screen.
+    expect(mockReplay.mock.calls[0][2]).toEqual({ page: { limit: HISTORY_PAGE_TURNS, maxBytes: 3_000_000, minTurns: 5 } });
     expect(result.current.messages[0].id).toBe('history-user-61');
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
     const newest = ids(result.current.messages);
 
     await act(async () => {
       await result.current.olderHistory.load();
     });
     const request = olderCalls()[0][2] as PageRequest;
-    expect(request).toMatchObject({ beforeTurn: 61, limit: HISTORY_PAGE_TURNS });
+    expect(request).toMatchObject({ beforeTurn: 61, page: { limit: HISTORY_PAGE_TURNS, maxBytes: 3_000_000, minTurns: 5 } });
     expect(request.signal).toBeInstanceOf(AbortSignal);
     const afterOne = ids(result.current.messages);
     expect(afterOne.slice(0, 2)).toEqual(['history-user-41', 'history-assistant-41']);
     expect(afterOne.slice(-newest.length)).toEqual(newest);
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
 
     await act(async () => {
       await result.current.olderHistory.load();
@@ -284,7 +286,7 @@ describe('useChatMessages – paging older history', () => {
     // 21..40, then 1..20, then 0 alone: the start of the thread ends paging.
     expect(olderCalls().map((call) => (call[2] as PageRequest).beforeTurn)).toEqual([61, 41, 21, 1]);
     expect(result.current.messages[0].id).toBe('history-user-0');
-    expect(result.current.olderHistory.status).toBe('end');
+    expect(result.current.olderHistory.snapshot.status).toBe('end');
     expect(ids(result.current.messages).slice(-afterOne.length)).toEqual(afterOne);
   });
 
@@ -315,10 +317,10 @@ describe('useChatMessages – paging older history', () => {
     await waitFor(() => expect(result.current.messages.some((m) => m.id === 'history-user-82')).toBe(true));
     const reload = mockReplay.mock.calls.at(-1)![2] as PageRequest;
     expect(reload.beforeTurn).toBeUndefined();
-    expect(reload.limit).toBeGreaterThanOrEqual(82 - 41 + 1);
+    expect(reload.page!.limit).toBeGreaterThanOrEqual(82 - 41 + 1);
     expect(result.current.messages[0].id).not.toBe('history-user-61');
     expect(result.current.messages.some((m) => m.id === 'history-user-41')).toBe(true);
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
 
     // The next reload reaches back to turn 41 again, not to where the last
     // one's margin started: the transcript keeps its start.
@@ -328,7 +330,8 @@ describe('useChatMessages – paging older history', () => {
       await result.current.reconnectIfStaleRun();
     });
     await waitFor(() => expect(result.current.messages.some((m) => m.id === 'history-user-83')).toBe(true));
-    expect((mockReplay.mock.calls.at(-1)![2] as PageRequest).limit).toBe(83 - 41 + 1 + 5);
+    // Delivered whole, whatever its bytes: the floor is the reach.
+    expect(mockReplay.mock.calls.at(-1)![2]).toMatchObject({ page: { limit: 83 - 41 + 1 + 5, minTurns: 83 - 41 + 1 + 5 } });
     expect(result.current.messages[0].id).toBe(start);
   });
 
@@ -349,7 +352,7 @@ describe('useChatMessages – paging older history', () => {
     act(() => {
       page = result.current.olderHistory.load();
     });
-    await waitFor(() => expect(result.current.olderHistory.status).toBe('loading'));
+    await waitFor(() => expect(result.current.olderHistory.snapshot.status).toBe('loading'));
 
     latest = 81;
     await act(async () => {
@@ -365,7 +368,7 @@ describe('useChatMessages – paging older history', () => {
     expect(result.current.messages.some((m) => m.id === 'history-user-41')).toBe(false);
     // The reload still covers the page that was on screen, 61 onward.
     expect(result.current.messages.some((m) => m.id === 'history-user-61')).toBe(true);
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
   });
 
   it('a thread switch drops an older page still on its way', async () => {
@@ -382,7 +385,7 @@ describe('useChatMessages – paging older history', () => {
     act(() => {
       page = result.current.olderHistory.load();
     });
-    await waitFor(() => expect(result.current.olderHistory.status).toBe('loading'));
+    await waitFor(() => expect(result.current.olderHistory.snapshot.status).toBe('loading'));
 
     threadId = 'thread-2';
     rerender();
@@ -396,7 +399,7 @@ describe('useChatMessages – paging older history', () => {
     });
     expect(ids(result.current.messages)).toEqual(opened);
     expect(result.current.messages.some((m) => m.id === 'history-user-41')).toBe(false);
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
   });
 
   it('a thread switch starts the new thread on its own token totals', async () => {
@@ -594,7 +597,7 @@ describe('useChatMessages – paging older history', () => {
       // The offset is measured from turn 41 down, so the page starts there
       // again, with no margin above it.
       await waitFor(() => expect(result.current.messages[0]?.id).toBe('history-user-41'));
-      expect((mockReplay.mock.calls.at(-1)![2] as PageRequest).limit).toBe(80 - 41 + 1);
+      expect(mockReplay.mock.calls.at(-1)![2]).toMatchObject({ page: { limit: 80 - 41 + 1, minTurns: 80 - 41 + 1 } });
 
       // Left at the bottom: the newest page is enough.
       scrollMemory.set('thread:thread-1', 'bottom');
@@ -669,7 +672,7 @@ describe('useChatMessages – paging older history', () => {
     act(() => {
       page = result.current.olderHistory.load();
     });
-    await waitFor(() => expect(result.current.olderHistory.status).toBe('loading'));
+    await waitFor(() => expect(result.current.olderHistory.snapshot.status).toBe('loading'));
 
     let finishStream!: () => void;
     mockSendStream.mockImplementation(() => new Promise((resolve) => {
@@ -689,7 +692,7 @@ describe('useChatMessages – paging older history', () => {
     expect(olderCalls()).toHaveLength(1);
     expect(result.current.messages[0].id).toBe('history-user-41');
     expect(ids(result.current.messages).slice(-2)).toEqual(tail);
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
 
     await act(async () => {
       finishStream();
@@ -712,7 +715,7 @@ describe('useChatMessages – paging older history', () => {
     act(() => {
       page = result.current.olderHistory.load();
     });
-    await waitFor(() => expect(result.current.olderHistory.status).toBe('loading'));
+    await waitFor(() => expect(result.current.olderHistory.snapshot.status).toBe('loading'));
 
     // The fork cuts first, then reads the checkpoint it forks from.
     const checkpoints = gate();
@@ -724,7 +727,7 @@ describe('useChatMessages – paging older history', () => {
     act(() => {
       fork = result.current.handleRegenerate('history-assistant-70');
     });
-    await waitFor(() => expect(result.current.olderHistory.status).toBe('held'));
+    await waitFor(() => expect(result.current.olderHistory.snapshot.status).toBe('held'));
     expect(pageSignal?.aborted).toBe(true);
     await act(async () => {
       await result.current.olderHistory.load();
@@ -736,7 +739,7 @@ describe('useChatMessages – paging older history', () => {
       await fork;
     });
     expect(lastForkOpts().forkFromTurn).toBe(70);
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
 
     late.open();
     await act(async () => {
@@ -752,7 +755,7 @@ describe('useChatMessages – paging older history', () => {
       await result.current.handleRegenerate('history-assistant-70');
     });
     expect(result.current.messageError).toBe('Failed to process request');
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
     await act(async () => {
       await result.current.olderHistory.load();
     });
@@ -771,7 +774,7 @@ describe('useChatMessages – paging older history', () => {
     await act(async () => {
       await result.current.olderHistory.load();
     });
-    expect(result.current.olderHistory.status).toBe('end');
+    expect(result.current.olderHistory.snapshot.status).toBe('end');
   });
 
   it('an unpaged replay is the whole thread, with nothing more to load', async () => {
@@ -779,7 +782,7 @@ describe('useChatMessages – paging older history', () => {
     latest = 3;
     const { result } = await mount();
     expect(result.current.messages[0].id).toBe('history-user-0');
-    expect(result.current.olderHistory.status).toBe('end');
+    expect(result.current.olderHistory.snapshot.status).toBe('end');
     await act(async () => {
       await result.current.olderHistory.load();
     });
@@ -796,14 +799,14 @@ describe('useChatMessages – paging older history', () => {
     await act(async () => {
       await result.current.olderHistory.load();
     });
-    expect(result.current.olderHistory.status).toBe('failed');
+    expect(result.current.olderHistory.snapshot.status).toBe('failed');
     expect(ids(result.current.messages)).toEqual(before);
 
     mockReplay.mockImplementation(serve);
     await act(async () => {
       await result.current.olderHistory.load();
     });
-    expect(result.current.olderHistory.status).toBe('idle');
+    expect(result.current.olderHistory.snapshot.status).toBe('idle');
     expect(result.current.messages[0].id).toBe('history-user-41');
   });
 });

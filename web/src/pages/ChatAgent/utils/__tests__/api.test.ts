@@ -1313,6 +1313,8 @@ describe('replayThreadHistory: the page request', () => {
     global.fetch = originalFetch;
   });
 
+  const PAGE = { limit: 20, maxBytes: 3_000_000, minTurns: 5 };
+
   const requested = () => {
     const [url, opts] = (global.fetch as Mock).mock.calls[0];
     return { url: new URL(url as string), opts: opts as RequestInit };
@@ -1325,15 +1327,17 @@ describe('replayThreadHistory: the page request', () => {
     expect(url.search).toBe('');
   });
 
-  it('asks for the newest N turns with limit alone', async () => {
-    await replayThreadHistory('t-1', () => {}, { limit: 20 });
+  it('asks for the newest turns a page budget allows', async () => {
+    await replayThreadHistory('t-1', () => {}, { page: PAGE });
     const { url } = requested();
     expect(url.searchParams.get('limit')).toBe('20');
+    expect(url.searchParams.get('max_bytes')).toBe('3000000');
+    expect(url.searchParams.get('min_turns')).toBe('5');
     expect(url.searchParams.has('before_turn')).toBe(false);
   });
 
-  it('asks for the page before a turn with limit and before_turn', async () => {
-    await replayThreadHistory('t-1', () => {}, { limit: 20, beforeTurn: 75 });
+  it('asks for the page before a turn with the budget and before_turn', async () => {
+    await replayThreadHistory('t-1', () => {}, { page: PAGE, beforeTurn: 75 });
     const { url } = requested();
     expect(url.searchParams.get('limit')).toBe('20');
     expect(url.searchParams.get('before_turn')).toBe('75');
@@ -1348,7 +1352,7 @@ describe('replayThreadHistory: the page request', () => {
 
   it('passes the abort signal through to the fetch', async () => {
     const controller = new AbortController();
-    await replayThreadHistory('t-1', () => {}, { limit: 20, beforeTurn: 40, signal: controller.signal });
+    await replayThreadHistory('t-1', () => {}, { page: PAGE, beforeTurn: 40, signal: controller.signal });
     expect(requested().opts.signal).toBe(controller.signal);
   });
 
@@ -1358,7 +1362,7 @@ describe('replayThreadHistory: the page request', () => {
     const controller = new AbortController();
     controller.abort();
     await expect(
-      replayThreadHistory('t-1', () => {}, { limit: 20, beforeTurn: 40, signal: controller.signal }),
+      replayThreadHistory('t-1', () => {}, { page: PAGE, beforeTurn: 40, signal: controller.signal }),
     ).resolves.toMatchObject({ aborted: true, disconnected: false });
   });
 });

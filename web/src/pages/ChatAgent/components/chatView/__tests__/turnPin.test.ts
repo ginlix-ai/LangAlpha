@@ -48,4 +48,19 @@ describe('createTurnPin', () => {
     expect(landing(c, true)).toBe(1500 - 16);
     c.remove();
   });
+
+  // ChatView puts a bottom-aligned transcript back on top while it is set.
+  it('marks the floor pinned while it holds room', () => {
+    const c = transcript([{ attrs: user, top: 300 }]);
+    const floor = document.createElement('div');
+    const pin = createTurnPin();
+    pin.setFloor(floor);
+    pin.start(c, false);
+    expect(floor.style.minHeight).not.toBe('');
+    expect(floor.hasAttribute('data-pinned')).toBe(true);
+    pin.reset();
+    expect(floor.style.minHeight).toBe('');
+    expect(floor.hasAttribute('data-pinned')).toBe(false);
+    c.remove();
+  });
 });
