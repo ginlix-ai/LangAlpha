@@ -29,6 +29,11 @@ if os.environ.get("LANGALPHA_TEST_TRACING") != "1":
     for _flag in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"):
         os.environ[_flag] = "false"
 
+# Pinned the same way, so a developer's ``APP_ENV`` (from .env or the shell)
+# never layers a gitignored overlay such as ``config.development.yaml`` over
+# the committed YAML: tests run on the configuration CI runs on.
+os.environ["APP_ENV"] = ""
+
 
 # ---------------------------------------------------------------------------
 # Database mocking
