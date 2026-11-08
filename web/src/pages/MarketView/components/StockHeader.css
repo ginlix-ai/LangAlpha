@@ -100,8 +100,6 @@
 }
 
 .stock-price {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
   font-size: 1.75rem;
   font-weight: 600;
   margin-bottom: 4px;
@@ -125,8 +123,6 @@
 }
 
 .stock-change {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
   font-size: 0.875rem;
   font-weight: 500;
   white-space: nowrap;
@@ -256,14 +252,8 @@
   gap: 5px;
 }
 
-/* The stats: labels in the words' face, figures in mono. The labels keep
-   their capitals in every style: the copy under them is cased unevenly
-   ("Prev Close", "52 wk high"), which sentence case would show. */
 .metric-label {
-  font-family: var(--term-words);
-  font-size: var(--cs-text-label, 0.71875rem);
-  font-weight: 500;
-  letter-spacing: 0.04em;
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
   text-transform: uppercase;
 }
@@ -275,11 +265,24 @@
 }
 
 .metric-value {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
   font-size: 0.875rem;
   color: var(--color-text-primary);
   font-weight: 500;
+}
+
+/* The open card styles set the stats as the data cards do: labels in the
+   words' face, figures in mono. The labels keep their capitals: the copy
+   under them is cased unevenly ("Prev Close", "52 wk high"), which sentence
+   case would show. */
+:where(:root:not([data-card-style='balanced'])) :is(.stock-price, .stock-change, .metric-value) {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+:where(:root:not([data-card-style='balanced'])) .metric-label {
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.71875rem);
+  font-weight: 500;
+  letter-spacing: 0.04em;
 }
 
 .metrics-discrepancy-hint {

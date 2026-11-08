@@ -53,7 +53,7 @@ export function SurfaceSection({
     <section className={cn('surface-section', className)}>
       <div className="surface-section-head">
         {attention && <span className="surface-dot surface-dot-attn surface-section-dot" aria-hidden />}
-        <h2 className="label-voice">{title}</h2>
+        <h2 className="open-style:label-voice">{title}</h2>
         {typeof count === 'number' && <span className="surface-count">{count}</span>}
         {note && <span className="surface-note">{note}</span>}
         {action && <div className="surface-section-side">{action}</div>}

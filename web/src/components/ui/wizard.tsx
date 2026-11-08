@@ -301,7 +301,7 @@ export function WizardProgress({ steps, current, label }: WizardProgressProps) {
               <span
                 style={{ fontSize: 'var(--cs-text-label, 0.75rem)' }}
                 className={cn(
-                  'label-voice flex items-center gap-1.5 whitespace-nowrap text-xs transition-colors',
+                  'open-style:label-voice flex items-center gap-1.5 whitespace-nowrap text-xs transition-colors',
                   state === 'current' && 'font-medium text-(--color-text-primary)',
                   state === 'done' && 'text-(--color-text-secondary)',
                   state === 'upcoming' && 'text-(--color-text-tertiary)',
@@ -355,7 +355,7 @@ export function WizardExit({ label, onClick, testId }: { label: string; onClick:
       type="button"
       onClick={onClick}
       data-testid={testId}
-      className="wizard-exit control-voice inline-flex h-8 items-center rounded-md px-2.5 text-sm text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+      className="wizard-exit open-style:control-voice inline-flex h-8 items-center rounded-md px-2.5 text-sm text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       style={{ fontSize: 'var(--cs-text-control, 0.875rem)' }}
     >
       {label}
@@ -416,7 +416,7 @@ export function WizardSection({
     <section className={cn('mt-8', className)}>
       <h2
         id={titleId}
-        className="label-voice mb-3 text-[length:var(--cs-text-label,0.875rem)] font-[var(--cs-weight-label,500)] text-(--color-shell-label,var(--color-text-primary))"
+        className="open-style:label-voice mb-3 text-[length:var(--cs-text-label,0.875rem)] font-[var(--cs-weight-label,500)] text-(--color-shell-label,var(--color-text-primary))"
       >
         {title}
         {hint && <span className="ml-2 font-normal text-(--color-text-tertiary)">{hint}</span>}

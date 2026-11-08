@@ -48,7 +48,7 @@ export function PreviewCrumbs({ entry, onRefresh, workspaceId = null, readOnly =
       {/* The path gives way before the buttons do: it shrinks to an
           ellipsis, and they keep their size at any length of it. */}
       {entry.path && (
-        <span className="file-panel-crumb-meta control-voice file-panel-crumb-path font-mono" title={entry.path}>
+        <span className="file-panel-crumb-meta open-style:control-voice file-panel-crumb-path font-mono" title={entry.path}>
           {entry.path}
         </span>
       )}

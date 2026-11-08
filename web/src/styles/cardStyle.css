@@ -190,8 +190,17 @@
    Shared recipes
    ════════════════════════════════════════════════════════════════════ */
 
-/* A label in the voice: kickers, section and rail labels. It applies in Balanced
-   too, which sets labels in the text face and sentence case. */
+/* The shell's words in the open styles alone. Balanced declares the voice
+   for the data cards, which draw their words from it, so a shell label that
+   read it there would lose its own face, case and tracking. Markup takes the
+   recipes below through this variant (open-style:label-voice), which sorts
+   after a component's plain classes; a sheet scopes its rule the same way,
+   `:where(:root:not([data-card-style='balanced'])) .x`, after the component's
+   own. Neither adds specificity, so each wins by order alone, and Balanced
+   draws the component as it draws itself. */
+@custom-variant open-style (&:where(:root:not([data-card-style='balanced']) *));
+
+/* A label in the voice: kickers, section and rail labels. */
 @utility label-voice {
   font-family: var(--term-words);
   text-transform: var(--term-case);
@@ -548,9 +557,9 @@
   letter-spacing: 0.08em;
 }
 /* A list's group headings (This device, Common) take the words' face, as the
-   kickers do: the text face in Soft and Balanced, where they used to be
-   mono. Terminal's inherit the shell's mono. */
-:root:is([data-card-style='soft'], [data-card-style='balanced']) [data-slot='menu-label'] {
+   kickers do: the text face in Soft. Terminal's inherit the shell's mono, and
+   Balanced's keep their own. */
+:root[data-card-style='soft'] [data-slot='menu-label'] {
   font-family: var(--font-content);
 }
 /* Terminal redraws the separator as a dashed rule. */

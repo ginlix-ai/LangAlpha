@@ -380,13 +380,10 @@
   justify-content: space-between;
   gap: 12px;
   padding: 0 4px;
-  /* A kicker, in the words' voice: Terminal's tracked mono capitals, the
-     text face in sentence case otherwise. */
-  font-family: var(--term-words);
-  font-size: 0.71875rem;
-  font-weight: 500;
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.18em * var(--term-track));
+  font-family: var(--font-mono);
+  font-size: 0.5938rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
   color: var(--color-accent-primary, #b88a2c);
 }
 
@@ -426,10 +423,9 @@
   background: transparent;
   border: 0;
   font: inherit;
-  font-size: 0.71875rem;
-  font-weight: 500;
-  text-transform: var(--term-case);
-  letter-spacing: calc(0.18em * var(--term-track));
+  font-size: 0.5938rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
   color: var(--color-text-tertiary, #8a8a8a);
   cursor: pointer;
   padding: 0;
@@ -440,6 +436,15 @@
   color: var(--color-icon-danger);
 }
 
+/* A kicker in the open card styles' words (styles/cardStyle.css): Terminal's
+   tracked mono capitals, Soft's text face in sentence case. */
+:where(:root:not([data-card-style='balanced'])) :is(.widget-deck-eyebrow, .widget-deck-clear) {
+  font-family: var(--term-words);
+  font-size: 0.71875rem;
+  font-weight: 500;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.18em * var(--term-track));
+}
 :root:not([data-card-style]) :is(.widget-deck-eyebrow, .widget-deck-clear) {
   font-size: 0.5938rem;
   font-weight: inherit;

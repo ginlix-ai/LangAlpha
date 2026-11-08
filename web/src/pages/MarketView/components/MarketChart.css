@@ -124,12 +124,20 @@
   gap: 2px;
 }
 
-/* The labels in the cards' label voice (label-voice). */
 .indicator-toggles-label {
   font-size: 0.6875rem;
-  font-weight: var(--cs-weight-label, 500);
+  font-weight: 600;
   color: var(--color-text-secondary);
   margin-right: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+/* The open card styles' label voice (styles/cardStyle.css). */
+:where(:root:not([data-card-style='balanced'])) .indicator-toggles-label {
+  font-family: var(--term-words);
+  font-weight: var(--cs-weight-label, 500);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
 }
 
 .indicator-toggle-btn {
@@ -523,8 +531,17 @@
 .compact-menu-panel { min-width: 240px; }
 .compact-menu-section-label {
   font-size: 0.625rem;
-  font-weight: var(--cs-weight-label, 500);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   color: var(--color-text-tertiary);
+}
+/* The open card styles' label voice (styles/cardStyle.css). */
+:where(:root:not([data-card-style='balanced'])) .compact-menu-section-label {
+  font-family: var(--term-words);
+  font-weight: var(--cs-weight-label, 500);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
 }
 
 /* Tracking spaces Latin capitals; it only pulls Chinese characters apart. */

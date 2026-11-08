@@ -21,8 +21,8 @@
   scrollbar-width: thin;
 }
 
-/* The rail's labels are the page's kickers, in the label voice
-   (label-voice, styles/cardStyle.css) in every style, and Terminal's label
+/* The rail's labels are the page's kickers: in the open card styles' label
+   voice (open-style:label-voice, styles/cardStyle.css), and Terminal's label
    ink. */
 .page-rail-label {
   margin: 18px 8px 4px;

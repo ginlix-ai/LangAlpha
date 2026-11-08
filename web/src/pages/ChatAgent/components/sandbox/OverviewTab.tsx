@@ -17,7 +17,7 @@ const createdDate = createDateFormatter({ year: 'numeric', month: 'numeric', day
 // they keep their edge where the button hooks would shed it: Soft's pills,
 // Terminal's type without the brackets.
 const ACTION_CLASS =
-  'control-voice text-xs rounded-[var(--cs-radius-control,var(--radius-md))] transition-colors hover:bg-foreground/10';
+  'open-style:control-voice text-xs rounded-[var(--cs-radius-control,var(--radius-md))] transition-colors hover:bg-foreground/10';
 const ACTION_TYPE = { fontSize: 'var(--cs-text-control, 0.75rem)', fontWeight: 'var(--cs-weight-control, 400)' } as const;
 const ACTION_EDGE = '1px solid var(--color-shell-edge, var(--color-border-muted))';
 
@@ -111,7 +111,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
           <div key={label} className="shell-box flex items-center gap-3 p-3">
             <Icon className="h-5 w-5 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
             <div>
-              <div className="label-voice text-[length:var(--cs-text-label,0.75rem)] leading-4" style={{ color: 'var(--color-text-tertiary)' }}>{label}</div>
+              <div className="open-style:label-voice text-[length:var(--cs-text-label,0.75rem)] leading-4" style={{ color: 'var(--color-text-tertiary)' }}>{label}</div>
               <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{value}</div>
             </div>
           </div>
@@ -171,7 +171,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
         </div>
         <div className="flex items-center gap-2">
           {stats.auto_stop_interval != null && (
-            <span className="pf-sbx-chip control-voice text-xs px-2 py-1 rounded" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))' }}>
+            <span className="pf-sbx-chip open-style:control-voice text-xs px-2 py-1 rounded" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))' }}>
               {/* 0 disables auto-stop entirely, so rendering "0m" states the opposite */}
               {stats.auto_stop_interval === 0
                 ? t('computer.alwaysOn')

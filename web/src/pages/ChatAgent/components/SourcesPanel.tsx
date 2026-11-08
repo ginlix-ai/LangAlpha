@@ -452,7 +452,7 @@ export default function SourcesPanel({
                 ) : (
                   <ChevronDown className="h-3.5 w-3.5 shrink-0" style={TERTIARY} />
                 )}
-                <span className="label-text" style={TERTIARY}>
+                <span className="text-xs font-semibold uppercase tracking-wide open-style:label-text" style={TERTIARY}>
                   {groupLabel}
                 </span>
                 <span

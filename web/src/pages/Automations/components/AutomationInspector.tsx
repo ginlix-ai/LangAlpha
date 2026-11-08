@@ -112,7 +112,7 @@ export default function AutomationInspector({
 
   return (
     <article className="automation-inspector">
-      <div className="automations-kicker label-voice flex items-center gap-1.5">
+      <div className="automations-kicker flex items-center gap-1.5">
         <StatusGlyph ui={ui} size={12} />
         <span className="truncate">{kicker.join(' · ')}</span>
       </div>
@@ -169,7 +169,7 @@ export default function AutomationInspector({
       </div>
 
       <section ref={reportRef} className="automation-inspector-section">
-        <h3 className="automations-kicker label-voice">{t(isLatest ? 'automation.latestRun' : 'automation.selectedRun')}</h3>
+        <h3 className="automations-kicker">{t(isLatest ? 'automation.latestRun' : 'automation.selectedRun')}</h3>
         {runMissing && <p className="automations-quiet-note automation-run-missing">{t('automation.runNotFound')}</p>}
         {placing ? (
           <ListSkeleton rows={2} />
@@ -189,12 +189,12 @@ export default function AutomationInspector({
       </section>
 
       <section className="automation-inspector-section">
-        <h3 className="automations-kicker label-voice">{t('automation.instruction')}</h3>
+        <h3 className="automations-kicker">{t('automation.instruction')}</h3>
         <Instruction text={a.instruction} />
       </section>
 
       <section className="automation-inspector-section">
-        <h3 className="automations-kicker label-voice">{t('automation.runHistory')}</h3>
+        <h3 className="automations-kicker">{t('automation.runHistory')}</h3>
         {loading ? (
           <ListSkeleton rows={2} />
         ) : executions.length === 0 ? (
@@ -211,7 +211,7 @@ export default function AutomationInspector({
       </section>
 
       <section className="automation-inspector-section">
-        <h3 className="automations-kicker label-voice">{t('automation.details')}</h3>
+        <h3 className="automations-kicker">{t('automation.details')}</h3>
         <dl className="automation-details">
           <dt>{t('automation.detailModel')}</dt>
           <dd>{a.llm_model ? modelName(a.llm_model) : t('automation.defaultModel')}</dd>

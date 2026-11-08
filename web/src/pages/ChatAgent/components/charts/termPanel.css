@@ -80,6 +80,8 @@
   white-space: nowrap;
   font-family: var(--term-words);
   font-size: 0.6875rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
   color: var(--color-term-text-tertiary);
 }
 
@@ -94,6 +96,8 @@
   font: inherit;
   font-family: var(--term-words);
   font-size: 0.6875rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
   text-decoration: none;
   white-space: nowrap;
   color: var(--color-term-text-secondary);
@@ -575,6 +579,8 @@ button.term-delivery-path:focus-visible {
   gap: 0.75ch;
   font-family: var(--term-words);
   font-size: 0.65625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
   color: var(--color-term-text-tertiary);
 }
 .term-key-mark {

@@ -128,9 +128,9 @@ export function Group({ title, children, empty, subgrid = false }: {
 }) {
   return (
     <div className={subgrid ? 'col-span-full grid grid-cols-subgrid gap-y-1.5' : 'flex flex-col gap-1.5'}>
-      {/* A section label, in the voice in every style. */}
+      {/* A section label, in the open card styles' label voice. */}
       <h3
-        className={cn('label-text', subgrid && 'col-span-full')}
+        className={cn('text-xs font-medium open-style:label-text', subgrid && 'col-span-full')}
         style={{ color: 'var(--color-shell-label, var(--color-text-tertiary))' }}
       >
         {title}

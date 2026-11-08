@@ -15,7 +15,7 @@
   /* A card's divider: dashed in Terminal, a hairline in Soft. */
   border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-subtle));
 }
-/* The section's label, in the voice in every style (label-voice). */
+/* The section's label, in the open card styles' voice (open-style:label-voice). */
 .surface-section-head h2 {
   margin: 0;
   font-size: var(--cs-text-label, 0.84375rem);
@@ -452,12 +452,15 @@
 .detail-page-aside { display: flex; flex-direction: column; gap: 26px; min-width: 0; }
 .detail-aside-block h3 {
   margin: 0 0 10px;
-  font-family: var(--term-words);
   font-size: var(--cs-text-label, 0.78125rem);
   font-weight: var(--cs-weight-label, 600);
+  color: var(--color-shell-label, var(--color-text-primary));
+}
+/* The open card styles' label voice (styles/cardStyle.css). */
+:where(:root:not([data-card-style='balanced'])) .detail-aside-block h3 {
+  font-family: var(--term-words);
   text-transform: var(--term-case);
   letter-spacing: calc(0.08em * var(--term-track));
-  color: var(--color-shell-label, var(--color-text-primary));
 }
 .detail-aside-block h3.has-side {
   display: flex;

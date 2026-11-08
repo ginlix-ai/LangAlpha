@@ -43,19 +43,25 @@
   border-collapse: collapse;
 }
 
-/* In the words' voice: Terminal's tracked capitals, the text face in
-   sentence case in the other two. */
 .orders-head {
   text-align: left;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--color-text-tertiary);
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--color-shell-edge, var(--color-border-muted));
+  vertical-align: bottom;
+}
+/* The open card styles' voice (styles/cardStyle.css): Terminal's tracked
+   capitals, Soft's text face in sentence case. */
+:where(:root:not([data-card-style='balanced'])) .orders-head {
   font-family: var(--term-words);
   font-size: var(--cs-text-label, 0.71875rem);
   font-weight: var(--cs-weight-label, 500);
   text-transform: var(--term-case);
   letter-spacing: calc(0.14em * var(--term-track));
-  color: var(--color-text-tertiary);
-  padding: 10px 10px;
-  border-bottom: 1px solid var(--color-shell-edge, var(--color-border-muted));
-  vertical-align: bottom;
 }
 
 .orders-row {

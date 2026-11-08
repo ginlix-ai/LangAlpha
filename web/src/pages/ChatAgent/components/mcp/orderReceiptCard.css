@@ -13,6 +13,8 @@
   margin-bottom: 0.25rem;
   font-family: var(--term-words);
   font-size: 0.65625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
   color: var(--color-term-text-tertiary);
 }
 
@@ -101,6 +103,8 @@
   gap: 0.3em;
   font-family: var(--term-words);
   font-size: 0.65625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
   white-space: nowrap;
   color: var(--color-term-text-secondary);
   transition: color var(--motion-quick) var(--ease-out);

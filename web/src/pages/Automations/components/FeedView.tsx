@@ -67,7 +67,7 @@ export default function FeedView({ automations, readings, onOpenAutomation, onOp
           <>
             {days.map((day) => (
               <div key={day.key} className="automations-day">
-                <h2 className="automations-kicker label-voice automations-day-heading rule-b">{dayLabel(day.key, day.date)}</h2>
+                <h2 className="automations-kicker automations-day-heading rule-b">{dayLabel(day.key, day.date)}</h2>
                 {day.runs.map((run) => (
                   <RunEntry
                     key={run.automation_execution_id}
@@ -115,7 +115,7 @@ export function FeedSkeleton() {
       </section>
       <aside className="automations-rail" aria-hidden="true" data-testid="feed-skeleton-rail">
         <section className="automations-rail-section">
-          <h2 className="automations-kicker label-voice"><SkeletonBar className="w-16" /></h2>
+          <h2 className="automations-kicker"><SkeletonBar className="w-16" /></h2>
           {[55, 70, 45, 60].map((width) => (
             <div key={width} className="automations-rail-row">
               <span className="automation-mono automations-rail-when"><SkeletonBar className="w-20" /></span>
@@ -134,7 +134,7 @@ function FeedDaySkeleton() {
   return (
     <div className="automations-day">
       <span className="sr-only">{t('common.loading')}</span>
-      <div className="automations-kicker label-voice automations-day-heading rule-b" aria-hidden="true" data-testid="feed-skeleton-heading">
+      <div className="automations-kicker automations-day-heading rule-b" aria-hidden="true" data-testid="feed-skeleton-heading">
         <SkeletonBar className="w-12" />
       </div>
       {[0, 1, 2, 3].map((i) => (

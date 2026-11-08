@@ -28,7 +28,7 @@ export function SettingsGroup({
       {(title || description || action) && (
         <div className="settings-group-head">
           <div className="min-w-0 flex-[1_1_220px]">
-            {title && <h2 id={titleId} className="settings-group-title label-voice">{title}</h2>}
+            {title && <h2 id={titleId} className="settings-group-title open-style:label-voice">{title}</h2>}
             {description && <p className="settings-group-desc">{description}</p>}
           </div>
           {action}

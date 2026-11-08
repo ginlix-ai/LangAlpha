@@ -24,7 +24,7 @@ export function TradingPermissionSection() {
     <section aria-labelledby={headingId} className="space-y-2">
       <div className="mx-0.5">
         <div className="flex items-baseline justify-between gap-3">
-          <h2 id={headingId} className="settings-group-title label-voice">
+          <h2 id={headingId} className="settings-group-title open-style:label-voice">
             {t('settings.tradingPermission.title')}
           </h2>
           {pendingLevel && (

@@ -169,7 +169,7 @@ export function SettingsRail({ section }: { section: Section }) {
           </button>
           {GROUPS.map((group) => (
             <div key={group.labelKey} className="settings-rail-group">
-              <div className="page-rail-label label-voice">{t(group.labelKey)}</div>
+              <div className="page-rail-label open-style:label-voice">{t(group.labelKey)}</div>
               {group.sections.filter(sectionShown).map((s) => {
                 const Icon = SECTIONS[s].icon;
                 const current = s === section;

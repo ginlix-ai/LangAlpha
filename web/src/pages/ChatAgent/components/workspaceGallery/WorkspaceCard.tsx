@@ -83,13 +83,25 @@ const RESTING: CardDrag = { state: 'resting', dragging: false, held: false };
 
 // The card's box, shared with its skeleton so a placeholder is the card's size.
 // The open card styles draw it unfilled inside their edge, with its title cut
-// into the top edge (WorkspaceCard.css); Balanced fills it and edges it as a
-// Balanced data card. The edge brightens under the pointer (`.hover-lift`) in
-// the open styles only.
+// into the top edge (WorkspaceCard.css). The edge firms under the pointer
+// (`.hover-lift`).
 const CARD_BODY = 'pf-card relative flex h-full w-full flex-col gap-1.5 overflow-hidden rounded-[var(--cs-radius-card,0.75rem)] py-3.5 pl-[18px] pr-4 md:px-5 md:py-4';
+const CARD_FILL = 'var(--color-bg-card-gradient, linear-gradient(to bottom, var(--color-border-muted), var(--color-border-muted)))';
 const CARD_SURFACE = {
-  background: 'var(--color-shell-fill, var(--color-bg-card))',
-  border: '1px solid var(--lift-edge, var(--color-shell-edge, var(--color-term-edge)))',
+  background: `var(--color-shell-fill, ${CARD_FILL})`,
+  border: '1px solid var(--lift-edge, var(--color-shell-edge, var(--color-bg-card-border, var(--color-border-muted))))',
+} as const;
+// The lifted copy passes over other cards, so it is never see-through: the
+// open styles, whose card is unfilled, lift it on the page's ground, and the
+// card's own translucent fill blurs what is behind it. Only the lifted copy
+// blurs: a resting card has the flat page behind it, and a backdrop filter is
+// a compositor surface per card, which Electron on macOS drew stale over a
+// dialog open above the gallery.
+const LIFTED_SURFACE = {
+  ...CARD_SURFACE,
+  background: `var(--color-shell-float, ${CARD_FILL})`,
+  backdropFilter: 'blur(8px)',
+  WebkitBackdropFilter: 'blur(8px)',
 } as const;
 
 /**
@@ -186,7 +198,7 @@ export function WorkspaceCard({
           style={placeholder ? {
             background: 'transparent',
             border: '1.5px dashed var(--color-border-default)',
-          } : CARD_SURFACE}
+          } : lifted ? LIFTED_SURFACE : CARD_SURFACE}
         >
           {/* Where the menu always shows (a touch screen), the row leaves it its
               corner and the time sits clear of it. */}

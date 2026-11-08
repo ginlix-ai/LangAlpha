@@ -76,12 +76,22 @@
 
 /* ── Shared voices ──────────────────────────────────── */
 
-/* The one label voice (label-voice, styles/cardStyle.css) every section
-   heading on the page speaks in, at the label's size. */
+/* The one small-caps voice every section heading on the page speaks in. */
 .automations-kicker {
-  font-size: var(--cs-text-label, 0.75rem);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
   font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--color-text-tertiary);
+}
+/* The open card styles' label voice (styles/cardStyle.css), at the label's
+   size. */
+:where(:root:not([data-card-style='balanced'])) .automations-kicker {
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.75rem);
+  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: var(--term-case);
 }
 
 /* Tracking spaces Latin capitals; it only pulls Chinese characters apart. */

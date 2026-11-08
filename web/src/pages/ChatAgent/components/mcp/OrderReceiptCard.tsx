@@ -92,7 +92,7 @@ export function OrderReceiptCard({ artifact, onClick }: InlineCardProps): React.
       onClick={onClick}
       testid="order-receipt"
     >
-      {narrow && ownerLine && <div className="order-term-owner control-voice">{ownerLine}</div>}
+      {narrow && ownerLine && <div className="order-term-owner">{ownerLine}</div>}
       {receipt.ticket && (
         <ReceiptTicket ticket={receipt.ticket} lead={lead} />
       )}
@@ -230,7 +230,7 @@ function ReceiptTicket({
         <p className="order-term-note" data-testid="order-note">
           {note.labelKey && (
             <>
-              <span className="term-k label-voice">{t(note.labelKey)}</span>{' '}
+              <span className="term-k">{t(note.labelKey)}</span>{' '}
             </>
           )}
           <span className="term-t2">{note.value}</span>
@@ -311,7 +311,7 @@ function ReceiptOutcome({ receipt }: { receipt: OrderReceiptView }): React.React
     <div className="order-term-outcome" data-testid="order-outcome">
       {decisionMessage && (
         <p className="order-term-prose">
-          <span className="term-k label-voice">{t('toolArtifact.directTool.orderOutcome.decisionMessage')}</span>{' '}
+          <span className="term-k">{t('toolArtifact.directTool.orderOutcome.decisionMessage')}</span>{' '}
           {decisionMessage}
         </p>
       )}
@@ -353,10 +353,10 @@ function ReceiptOutcome({ receipt }: { receipt: OrderReceiptView }): React.React
               href={actionUrl}
               vendorLabel={vendorLabel}
               status={status}
-              className="order-term-link order-term-action control-voice"
+              className="order-term-link order-term-action"
               bracketed
             />
-            {attemptId && <OrdersPageLink attemptId={attemptId} className="order-term-link control-voice" />}
+            {attemptId && <OrdersPageLink attemptId={attemptId} className="order-term-link" />}
           </span>
         </div>
       )}

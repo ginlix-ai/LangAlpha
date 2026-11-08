@@ -91,8 +91,7 @@
    drops the rise. The edge is read through --lift-edge, so a card that draws
    its border inline writes `border: 1px solid var(--lift-edge, <its colour>)`.
    The open card styles (cardStyle.css) firm it to their own hover edge and
-   lay the card flat; Balanced keeps the card's resting edge (the workspace
-   card's, the only one that lifts). */
+   lay the card flat. */
 .hover-lift {
   transition-property: transform, scale, box-shadow, border-color;
   transition-duration: var(--motion-quick);
@@ -100,7 +99,7 @@
 }
 @media (hover: hover) {
   .hover-lift:hover {
-    --lift-edge: var(--color-shell-edge-hover, var(--color-term-edge));
+    --lift-edge: var(--color-shell-edge-hover, var(--color-border-strong));
     box-shadow: var(--cs-frame-shadow, var(--shadow-card));
   }
 }

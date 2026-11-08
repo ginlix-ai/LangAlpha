@@ -280,7 +280,7 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
           >
             <button
               type="button"
-              className={chip === null ? 'surface-chip control-voice is-on' : 'surface-chip control-voice'}
+              className={chip === null ? 'surface-chip open-style:control-voice is-on' : 'surface-chip open-style:control-voice'}
               data-bracket="chip"
               aria-pressed={chip === null}
               onClick={() => setChip(null)}
@@ -292,7 +292,7 @@ export function Discover({ scope = 'plugins' }: { scope?: DiscoverScope }) {
               <button
                 key={c.key}
                 type="button"
-                className={chip === c.key ? 'surface-chip control-voice is-on' : 'surface-chip control-voice'}
+                className={chip === c.key ? 'surface-chip open-style:control-voice is-on' : 'surface-chip open-style:control-voice'}
                 data-bracket="chip"
                 aria-pressed={chip === c.key}
                 onClick={() => setChip(chip === c.key ? null : c.key)}

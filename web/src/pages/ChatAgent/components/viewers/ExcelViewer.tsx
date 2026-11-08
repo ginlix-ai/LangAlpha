@@ -493,7 +493,7 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
             ))}
           </div>
         )}
-        {note && <div className="excel-footer-note control-voice">{note}</div>}
+        {note && <div className="excel-footer-note open-style:control-voice">{note}</div>}
       </div>
     </div>
   );

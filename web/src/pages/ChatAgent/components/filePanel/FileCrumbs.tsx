@@ -51,7 +51,7 @@ export function FileCrumbs({ path, onOpenDir, meta, chip, artifact, tools, actio
       {artifact}
       {chip}
       <span className="file-panel-crumb-spacer" />
-      {meta && <span className="file-panel-crumb-meta control-voice">{meta}</span>}
+      {meta && <span className="file-panel-crumb-meta open-style:control-voice">{meta}</span>}
       {tools}
       {actions}
     </div>

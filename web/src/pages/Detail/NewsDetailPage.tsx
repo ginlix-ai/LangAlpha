@@ -140,7 +140,7 @@ function NewsArticleView() {
           )}
           {article.source?.name && (
             <span
-              className="news-page-tag control-voice inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-[var(--cs-radius-pill,calc(var(--radius)_-_2px))] font-medium"
+              className="news-page-tag open-style:control-voice inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-[var(--cs-radius-pill,calc(var(--radius)_-_2px))] font-medium"
               data-bracket="tag"
               style={{ color: 'var(--color-text-primary)' }}
             >
@@ -163,7 +163,7 @@ function NewsArticleView() {
             {article.tickers.map((ticker) => (
               <span
                 key={ticker}
-                className="news-page-tag control-voice text-xs px-2 py-0.5 rounded-full font-mono font-medium"
+                className="news-page-tag open-style:control-voice text-xs px-2 py-0.5 rounded-full font-mono font-medium"
                 data-bracket="tag"
                 style={{ color: 'var(--color-accent-primary)' }}
               >
@@ -199,14 +199,14 @@ function NewsArticleView() {
       {/* Sentiments */}
       {article.sentiments && article.sentiments.length > 0 && (
         <div className="news-page-section flex flex-col gap-3">
-          <h3 className="news-page-section-title label-voice text-sm font-semibold">
+          <h3 className="news-page-section-title open-style:label-voice text-sm font-semibold">
             {scored ? 'AI Sentiment (news vendor estimate)' : 'Sentiment Analysis'}
           </h3>
           <div className="news-page-rows flex flex-col gap-2">
             {rows.map((s, i) => (
               <div key={i} className="news-page-row flex items-start gap-3 text-xs p-2.5">
                 <span
-                  className="news-page-tag control-voice shrink-0 font-mono font-medium px-1.5 py-0.5 rounded-[var(--cs-radius-pill,0.25rem)]"
+                  className="news-page-tag open-style:control-voice shrink-0 font-mono font-medium px-1.5 py-0.5 rounded-[var(--cs-radius-pill,0.25rem)]"
                   data-bracket="tag"
                   style={{ color: 'var(--color-accent-primary)' }}
                 >
@@ -214,7 +214,7 @@ function NewsArticleView() {
                 </span>
                 {s.sentiment ? (
                   <span
-                    className="news-page-tag control-voice shrink-0 font-medium px-1.5 py-0.5 rounded-[var(--cs-radius-pill,0.25rem)]"
+                    className="news-page-tag open-style:control-voice shrink-0 font-medium px-1.5 py-0.5 rounded-[var(--cs-radius-pill,0.25rem)]"
                     data-bracket="tag"
                     style={{
                       color: s.sentiment === 'positive' ? 'var(--color-profit)' : s.sentiment === 'negative' ? 'var(--color-loss)' : 'var(--color-text-secondary)',

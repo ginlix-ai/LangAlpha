@@ -143,16 +143,16 @@ export function PluginsRail({
 
   return (
     <nav ref={navRef} className="page-rail plugins-rail" aria-label={t('plugins.shell.railLabel')}>
-      <div className="page-rail-label label-voice">{t('plugins.shell.group.customize')}</div>
+      <div className="page-rail-label open-style:label-voice">{t('plugins.shell.group.customize')}</div>
       {CUSTOMIZE.map(sectionLink)}
-      <div className="page-rail-label label-voice">{t('plugins.shell.group.accounts')}</div>
+      <div className="page-rail-label open-style:label-voice">{t('plugins.shell.group.accounts')}</div>
       {ACCOUNTS.map(sectionLink)}
 
       {/* The label heads the built-in fold as well: without it, an account
           with only bundled plugins showed "Built in" straight under Accounts,
           read as one more account section. */}
       {installed.length + builtIn.length > 0 && (
-        <div className="page-rail-label label-voice">{t('plugins.shell.group.installed')}</div>
+        <div className="page-rail-label open-style:label-voice">{t('plugins.shell.group.installed')}</div>
       )}
       {installed.length > 0 && <div className="plugins-rail-plugins">{installed.map(pluginLink)}</div>}
       {builtIn.length > 0 && (

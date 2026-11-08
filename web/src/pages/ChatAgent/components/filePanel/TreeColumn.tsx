@@ -135,7 +135,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
           {selection.selectMode ? (
             <>
               <span className="file-panel-tree-count">{selection.selectedPaths.size}</span>
-              <button data-bracket="chip" className="file-panel-chip control-voice" onClick={selection.toggleSelectAll}>
+              <button data-bracket="chip" className="file-panel-chip open-style:control-voice" onClick={selection.toggleSelectAll}>
                 {selection.selectedPaths.size === filter.filteredSortedFiles.length
                   ? t('filePanel.deselectAll')
                   : t('filePanel.selectAllVisible')}
@@ -244,7 +244,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
               {props.onToggleSystemFiles && (
                 <button
                   data-bracket="chip"
-                  className={`file-panel-chip control-voice ${props.showSystemFiles ? 'active' : ''}`}
+                  className={`file-panel-chip open-style:control-voice ${props.showSystemFiles ? 'active' : ''}`}
                   onClick={props.onToggleSystemFiles}
                   title={t('filePanel.systemDirsHint')}
                 >
@@ -334,14 +334,14 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
 
         {filter.availableTypes.length > 1 && !selection.selectMode && (
           <div className="file-panel-tree-chips">
-            <button data-bracket="chip" className={`file-panel-chip control-voice ${filter.filterType === 'All' ? 'active' : ''}`} onClick={() => filter.setFilterType('All')}>
+            <button data-bracket="chip" className={`file-panel-chip open-style:control-voice ${filter.filterType === 'All' ? 'active' : ''}`} onClick={() => filter.setFilterType('All')}>
               {t('filePanel.filterAll')}
             </button>
             {filter.availableTypes.map((type) => (
               <button
                 key={type}
                 data-bracket="chip"
-                className={`file-panel-chip control-voice ${filter.filterType === type ? 'active' : ''}`}
+                className={`file-panel-chip open-style:control-voice ${filter.filterType === type ? 'active' : ''}`}
                 onClick={() => filter.setFilterType(filter.filterType === type ? 'All' : type)}
               >
                 {type}
