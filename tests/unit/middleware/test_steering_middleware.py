@@ -569,7 +569,7 @@ async def test_a_hand_off_that_moved_nothing_refuses_and_gives_the_rows_back():
     assert seen == {"handed": False, "held": None}
     inbox.confirm_resumes.assert_not_awaited()
     inbox.release_resumes.assert_awaited_once_with(
-        "t-1", "run-A", "k7Xm2p", ["job-1", "job-2"], counted=True
+        "t-1", "run-A", "k7Xm2p", ["job-1", "job-2"], counted=True, final=False
     )
 
 

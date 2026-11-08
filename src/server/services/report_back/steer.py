@@ -312,12 +312,13 @@ class SteeredReportInbox:
         job_ids: list[str],
         *,
         counted: bool = True,
+        final: bool = False,
     ) -> None:
         from src.server.services.report_back.task_steer import release_resumes
 
         try:
             await release_resumes(
-                thread_id, run_id, task_id, job_ids, counted=counted
+                thread_id, run_id, task_id, job_ids, counted=counted, final=final
             )
         except Exception:
             logger.warning(

@@ -231,6 +231,10 @@ export interface ClaudeCodeSetup {
   /** The user's cloud computers too small for Claude Code, in their order.
    *  Absent from a server that predates it. */
   too_small?: { computer_id: string; name: string }[];
+  /** `state` for a subagent's Claude Code pin on a thread of another model,
+   *  which never signs in with the setup token the user stored. Absent from
+   *  a server that predates it. */
+  pin_state?: ClaudeCodeSetupState;
 }
 
 /** Null where this server offers no Claude Code (404), or one from before

@@ -6365,6 +6365,7 @@
       "modelAria": "{{name}} 的模型",
       "modelHint": "保持“对话的模型”即可跟随对话所用的模型。",
       "modelUnavailableHint": "保存的模型目前对你不可用，因此它会使用对话的模型。选择其他模型即可清除这条提示。",
+      "claudeCodePinHint": "对话所在的工作区能运行 Claude Code 时，使用你的 Claude 套餐运行；其他情况下使用对话的模型。",
       "modelUnavailableOption": "{{model}}（不可用）",
       "unavailableOption": "{{name}}（不可用）",
       "effort": "推理强度",

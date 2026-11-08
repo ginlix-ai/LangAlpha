@@ -33,7 +33,7 @@ import {
 } from './chat-input.composerParts';
 import { ChatInputModelMenu, ModelTriggerMeasure, type EffortMenuProps } from './chat-input.modelMenu';
 import type { ModelRowStatus } from './chat-input.modelPicker';
-import { CLAUDE_CODE_CHOICE_URL, biggerComputer, claudeCodeTokenUrl, isClaudeCodeModel } from '@/lib/claudeCode';
+import { claudeCodeHold, isClaudeCodeModel } from '@/lib/claudeCode';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { usePlanReader } from '@/hooks/useClaudeCodePlan';
 import { creditsRefused, pickerPlanHold, planOutOf } from '@/lib/claudeCodePlan';
@@ -881,22 +881,15 @@ function ChatInput({
   }), [turn.models, visibleModels, payers, entryFor]);
   const recentModels = deriveRecentModels({ selectedModel: pillModel, threadModels: threadModelsProp, validModelNames })
     .filter((m) => !favorites.models.includes(m) && turn.offers(m));
-  const tokenUrl = claudeCodeTokenUrl(selectedWorkspaceId);
   const modelRowStatus = (m: string, now: number): ModelRowStatus => {
     if (isClaudeCodeModel(modelMetadata[m])) {
-      switch (claudeCode.state) {
-        case 'checking': return { unavailable: t('modelAccess.status.working') };
-        case 'no_token': return { unavailable: t('chat.modelSelector.claudeCodeSignedOut'), fix: () => navigate(tokenUrl) };
-        case 'rejected': return { unavailable: t('chat.modelSelector.claudeCodeRejected'), fix: () => navigate(tokenUrl) };
-        case 'needs_own_computer': return { unavailable: t('chat.modelSelector.claudeCodeNeedsOwnComputer') };
-        case 'hosted_off': return { unavailable: t('chat.modelSelector.claudeCodeHostedOff'), fix: () => navigate(CLAUDE_CODE_CHOICE_URL) };
-        case 'needs_bigger_computer': {
-          const { rowKey, link } = biggerComputer();
-          return { unavailable: t(rowKey), fix: link ? () => window.open(link.url, '_blank', 'noopener,noreferrer') : undefined };
-        }
-        case 'policy_blocked': return { unavailable: t('chat.modelSelector.claudeCodePolicyBlocked') };
-        case 'needs_perl': return { unavailable: t('modelAccess.claudeCode.fail.needs_perl') };
-        case 'computer_unsupported': return { unavailable: t('modelAccess.claudeCode.fail.computer_unsupported') };
+      const hold = claudeCodeHold(claudeCode.state, selectedWorkspaceId);
+      if (hold) {
+        const { link } = hold;
+        return {
+          unavailable: t(hold.messageKey),
+          fix: link ? () => (link.external ? window.open(link.url, '_blank', 'noopener,noreferrer') : navigate(link.url)) : undefined,
+        };
       }
       const planOut = planOutOf(preferences?.other_preference);
       const planHold = pickerPlanHold(t, claudeCode.plan, planOut, m, { ...planReader, now });

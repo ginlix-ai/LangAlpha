@@ -12,11 +12,13 @@ import {
 import { CompactSelect, EffortSelect } from '@/components/model/EffortSelect';
 import { ModelSelector } from '@/components/model/ModelSelector';
 import type { useAllModels } from '@/hooks/useAllModels';
+import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
 import { useLocale } from '@/hooks/useLocale';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useSearchTierAllows } from '@/hooks/useSearchTierAllows';
 import { useSkills } from '@/hooks/useSkills';
 import { cn } from '@/lib/utils';
+import { accountClaudeCodeHold, isClaudeCodeModel } from '@/lib/claudeCode';
 import { modelPrefs, modelProfile } from '@/lib/modelPreferences';
 import { EFFORT_LABELS, EFFORT_ORDER, effortLabelFor, hasEffortOptions, resolveTuning } from '@/lib/modelTuning';
 import type { SubagentEdit } from '@/hooks/useSubagents';
@@ -74,7 +76,12 @@ export function ModelBlock({ view, models, write }: AsideProps) {
   const { metadata } = models;
   const unavailable = hasProblem(view, 'model_unavailable');
   const base = view.base;
-  const offered = offerBasePin(models.slotModels, models.lockedModels, base?.model ?? null);
+  // Claude Code's models too: a pin runs one where the turn's workspace runs
+  // Claude Code, and the thread's model elsewhere.
+  const offered = offerBasePin(models.models, models.lockedModels, base?.model ?? null);
+  const { setup } = useClaudeCodeSetup();
+  const hold = accountClaudeCodeHold(setup);
+  const pinnedClaudeCode = !!view.model && isClaudeCodeModel(metadata[view.model]);
 
   // As a provider change does the depth: a set effort stays if the new model
   // offers it and goes if not, since a save holds it to that model's ladder.
@@ -103,6 +110,7 @@ export function ModelBlock({ view, models, write }: AsideProps) {
         payers={models.payers}
         metadata={metadata}
         disabledModels={offered.locked}
+        heldBy={(m) => (hold && isClaudeCodeModel(metadata[m]) ? { reason: t(hold.messageKey), pickable: !!hold.link } : null)}
         // The server says whether a saved model still runs; one this picker
         // doesn't list (a key the user can't pick today) may well still run.
         missingLabel={(m) =>
@@ -113,6 +121,16 @@ export function ModelBlock({ view, models, write }: AsideProps) {
       />
       {unavailable ? (
         <p className="sa-hint is-warn">{t('plugins.subagents.modelUnavailableHint')}</p>
+      ) : pinnedClaudeCode ? (
+        <p className="sa-hint">
+          {t('plugins.subagents.claudeCodePinHint')}
+          {hold?.link && (
+            <>
+              {' '}
+              <Link to={hold.link.url} className="sa-link">{t(hold.link.labelKey ?? hold.link.label)}</Link>
+            </>
+          )}
+        </p>
       ) : (
         !base && <p className="sa-hint">{t('plugins.subagents.modelHint')}</p>
       )}

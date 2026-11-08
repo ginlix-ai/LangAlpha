@@ -1,11 +1,12 @@
 """Where a Claude Code row runs: as an analyst turn's own model, and as its
-subagents'.
+subagents', on that turn or on a turn of another model in a workspace where
+Claude Code runs.
 
-A role, a fallback, a Background job and a subagent pin on any other turn
-each send their request through a chat client, which such a row does not
-build (``src.llms.claude_code``), and Chief of Staff does not run on the
-runtime yet. ``resolve_llm_config`` decides once whether the turn is a Claude Code
-turn; everything else asks this module.
+A role, a fallback and a Background job each send their request through a
+chat client, which such a row does not build (``src.llms.claude_code``), and
+Chief of Staff does not run on the runtime yet. ``resolve_llm_config``
+decides once whether the turn is a Claude Code turn, and whether its
+subagents' Claude Code pins run; everything else asks this module.
 """
 
 from __future__ import annotations
@@ -327,6 +328,54 @@ async def require_runnable(
     return Admitted(state.runs_on, state.runs_on if state.token_signs_in else None)
 
 
+async def claude_code_placement(
+    config, role: AgentRole, *, user_id: str, workspace_id: str | None,
+) -> Admitted | None:
+    """What a Claude Code CLI the user starts in ``workspace_id`` would sign
+    in with, read as admission reads it (``require_runnable``), or None
+    where Claude Code runs nowhere there for them now, where it would sign in
+    with the setup token the user stored, on a cloud computer or relayed to
+    an own computer, and where it could not be read.
+
+    Asked at turn start for a subagent's Claude Code pin on a turn of another
+    model, which runs on the turn's model where this is None. The stored
+    token is never asked because nothing on such a turn tells whether the
+    user started the work it carries on, which only a Claude Code turn's own
+    admission answers (``require_attended``). Neither the
+    Claude plan nor the cap on the user's cloud turns is asked: a pin's run is
+    stopped by its plan as it starts, and bounded by its computer's count of
+    CLIs, as a Claude Code turn's subagent is.
+    """
+    if not config.feature_enabled(FEATURE) or role == "chief_of_staff":
+        return None
+    return await pin_admitted(user_id, workspace_id)
+
+
+async def pin_admitted(user_id: str, workspace_id: str | None) -> Admitted | None:
+    """``claude_code_placement`` past the feature flag and the role, for a
+    caller holding no turn's config to read them from."""
+    from fastapi import HTTPException
+
+    if not rows_available():
+        return None
+    try:
+        where = await placement(user_id, workspace_id, token=True)
+        if where.refusal is not None:
+            return None
+        if where.own_computer is not None:
+            answer = await read_answer(str(where.own_computer["computer_id"]))
+            admitted = Admitted(saved=await require_computer_signed_in(None, user_id, answer))
+        else:
+            state = where.hosted
+            admitted = Admitted(state.runs_on, state.runs_on if state.token_signs_in else None)
+    except HTTPException:
+        return None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[claude_code] could not read where Claude Code runs for user_id={user_id}: {type(e).__name__}")
+        return None
+    return None if "stored_token" in admitted else admitted
+
+
 async def require_plan(model: str, user_id: str, credential: str) -> None:
     """Refuse a turn on ``model`` whose credential's Claude plan is used up
     for it until a time still ahead (``plan_limited``, naming the limit
@@ -482,7 +531,7 @@ async def relayed_token(user_id: str, answer: MachineAnswer | None, *, conn=None
     return state.runs_on if state is not None and state.token_signs_in else None
 
 
-async def require_computer_signed_in(model: str, user_id: str, answer: MachineAnswer | None) -> str | None:
+async def require_computer_signed_in(model: str | None, user_id: str, answer: MachineAnswer | None) -> str | None:
     """Refuse a turn on an own computer whose fresh answer reads, as Settings
     shows it (``computer_state``), as one that cannot run there: an
     organization's policy is installed there, the machine has no
@@ -519,11 +568,11 @@ async def require_computer_signed_in(model: str, user_id: str, answer: MachineAn
     return relays
 
 
-def role_resolves(model_pref: dict, name: str, *, claude_code_turn: bool = False) -> bool:
-    """Whether a role, a fallback or a subagent pin can run ``name``: a
-    Claude Code row only as a subagent of a Claude Code turn
-    (``claude_code_turn``), whose subagents run CLIs of their own."""
-    return (claude_code_turn or not is_claude_code_model(name)) and model_resolves(model_pref, name)
+def role_resolves(model_pref: dict, name: str, *, claude_code: bool = False) -> bool:
+    """Whether a subagent pin can run ``name``: a Claude Code row only where
+    Claude Code runs the turn's subagents (``claude_code``), each in a CLI
+    of its own."""
+    return (claude_code or not is_claude_code_model(name)) and model_resolves(model_pref, name)
 
 
 def drop_claude_code_roles(

@@ -162,12 +162,13 @@ class AgentInputs:
     def claude_code_launcher(
         self, sandbox: PTCSandbox, admitted: str | None, saved: str | None, *, slot_wait_s: float | None = None,
     ) -> Launcher:
-        """Where a Claude Code turn's CLI runs, on the token it signs in with:
-        on a cloud computer the credential admission let it run on
-        (``admitted``), and the setup token the user saved where admission let
-        it sign in with that (``saved``). ``slot_wait_s`` is how long a CLI on
-        an own computer waits for a slot there, a subagent's shorter than a
-        turn's. Imported here, never at the top: the SDK loads only for such a turn."""
+        """Where a Claude Code CLI runs, a turn's or a subagent's, on the token
+        it signs in with: on a cloud computer the credential admission let it
+        run on (``admitted``), and the setup token the user saved where
+        admission let it sign in with that (``saved``). ``slot_wait_s`` is how
+        long a CLI on an own computer waits for a slot there, a subagent's
+        shorter than a turn's. Imported here, never at the top: the SDK loads
+        only for such a CLI."""
         from src.server.services.claude_code.launchers import turn_launcher
 
         return turn_launcher(

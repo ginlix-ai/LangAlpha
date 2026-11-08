@@ -60,11 +60,11 @@ class SubagentContext:
         return frozenset(c.name for c in self.connectors)
 
     def model_known(self, name: str) -> bool:
-        """Whether a subagent can be pinned to ``name``. Never a Claude Code
-        row, which runs only as a thread's own model."""
+        """Whether a subagent can be pinned to ``name``, a Claude Code row
+        included, which each turn runs where its workspace has Claude Code."""
         from src.server.services.llm.claude_code import role_resolves
 
-        return role_resolves(self.model_pref, name)
+        return role_resolves(self.model_pref, name, claude_code=True)
 
     async def model_on_plan(self, name: str) -> bool:
         """The turn's own plan check for a model the user chose.
@@ -88,6 +88,7 @@ class SubagentContext:
         The turn finds this only once it builds the role's client, and then
         runs the subagent on the thread's model; the pane says so up front.
         """
+        from src.llms.claude_code import is_claude_code_model
         from src.llms.llm import LLM, platform_key_configured
         from src.server.services.llm import user_models
         from src.server.services.llm.clients import (
@@ -100,6 +101,9 @@ class SubagentContext:
         source, entry = await user_models.classify_model(
             self.user_id, name, _pref_cache=self.model_pref
         )
+        if source == user_models.ModelSource.SYSTEM and is_claude_code_model(name):
+            # It signs in with a setup token, where each turn's workspace has one.
+            return True
         if source == user_models.ModelSource.SYSTEM:
             provider = entry.get("provider")
             if LLM.get_model_config().get_provider_info(provider).get("access_type") != "oauth":
@@ -143,17 +147,12 @@ class SubagentContext:
         return canonical_reasoning_efforts(reasoning_block(entry).get("efforts"))
 
     async def model_options(self) -> list[str]:
-        """The models this user can pick, for a refusal to list. Never a
-        Claude Code row: a subagent does not run on the Claude Code runtime."""
+        """The models this user can pick, for a refusal to list."""
         from src.config.settings import HOST_MODE
-        from src.llms.claude_code import is_claude_code_model
         from src.llms.llm import get_configured_llm_models
         from src.llms.preferences import custom_model_names
 
-        names = [
-            n for group in get_configured_llm_models().values() for n in group
-            if not is_claude_code_model(n)
-        ]
+        names = [n for group in get_configured_llm_models().values() for n in group]
         names += sorted(custom_model_names(self.model_pref))
         names = list(dict.fromkeys(names))
         if HOST_MODE != "platform":

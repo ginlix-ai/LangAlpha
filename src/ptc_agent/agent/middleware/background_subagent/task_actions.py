@@ -20,6 +20,7 @@ from ptc_agent.agent.middleware.background_subagent.context import (
     current_background_tool_call_id,
     hand_off_steer_resume,
     steer_resume_busy,
+    steer_resume_final,
 )
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
@@ -562,6 +563,8 @@ async def _handle_resume(
             # resumable, so this refusal costs the model only a retry.
             if refusal.busy:
                 steer_resume_busy(task.task_id)
+            elif refusal.final:
+                steer_resume_final(task.task_id)
             return ToolMessage(
                 content=refusal.reason if refusal.whole
                 else f"Error: could not start {task.display_id} — {refusal.reason}.",

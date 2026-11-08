@@ -436,6 +436,10 @@ class AgentConfig(BaseModel):
     # Which setup token the user saved it may sign in with, there or relayed
     # to an own computer (``saved_token`` or ``stored_token``), None for none.
     claude_code_saved: str | None = Field(default=None, exclude=True)
+    # On a turn of another model, what admission let its subagents' Claude
+    # Code pins sign in with, as the pair above, never the stored setup
+    # token; None where they run the turn's model.
+    claude_code_pins: tuple[str | None, str | None] | None = Field(default=None, exclude=True)
     # None permits standalone name resolution; [] means resolution rejected all candidates.
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)
     # Display names aligned index-for-index with ``fallback_llm_clients``

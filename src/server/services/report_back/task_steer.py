@@ -367,12 +367,14 @@ async def release_resumes(
     job_ids: list[str],
     *,
     counted: bool = True,
+    final: bool = False,
 ) -> None:
     """Give back steers ``run_id`` could not resume their task with. A
-    refusal that will not lift is settled now; any other is counted, and
-    the next turn tries again. One that lifts by itself (the computer was
-    busy, ``counted`` False) is not counted, so a full computer never
-    uses up the refusals the steers get."""
+    refusal that will not lift (the task gone, or one that lasts as long as
+    it, ``final``) is settled now; any other is counted, and the next turn
+    tries again. One that lifts by itself (the computer was busy,
+    ``counted`` False) is not counted, so a full computer never uses up
+    the refusals the steers get."""
     from src.server.database.runs import outbox as outbox_db
 
     jobs = await outbox_db.list_steer_jobs(job_ids)
@@ -384,6 +386,10 @@ async def release_resumes(
     except Exception:
         # Still held: the run's ending releases them.
         logger.warning(f"{_LOG} Task-{task_id} hand-off failed", exc_info=True)
+        return
+    if final:
+        await _settle(jobs, fence=("held", run_id))
+        logger.info(f"{_LOG} Run {run_id} could not resume Task-{task_id}: closed its steers")
         return
     released, returned = await outbox_db.release_task_resumes(
         job_ids, run_id=run_id, max_refusals=MAX_RESUME_REFUSALS, counted=counted
@@ -411,14 +417,26 @@ def _ours(row: dict | None, attempts: int) -> bool:
     )
 
 
-async def _computer_full(thread_id: str, task_id: str) -> bool:
+async def _computer_full(thread_id: str, task_id: str, user_id: str, workspace_id: str | None) -> bool:
     """Whether a turn posted now would be refused the resume for room: the
-    task ran on Claude Code, and its computer cannot fit the turn and the
-    resume together. That lifts once a CLI there ends, so the steer waits
-    for it without spending one of its turns. A failed check posts the turn."""
+    task ran on Claude Code, and its computer cannot fit the resume and the
+    turn, unless the thread names a model that does not run on Claude Code (a
+    thread naming none runs the account default, which may). On such a thread
+    the resume needs a CLI only where an analyst turn still compiles the
+    task's subagent with a Claude Code pin and that pin runs on Claude Code
+    now, and runs on the thread's model elsewhere, the Chief of Staff's
+    included. That lifts once a CLI there ends, so
+    the steer waits for it without spending one of its turns. A failed check
+    posts the turn."""
+    from src.llms.claude_code import is_claude_code_model
     from src.server.database.computer import get_computer_for_thread
+    from src.server.database.conversation.threads_read import get_thread_auth_meta
+    from src.server.database.home_workspace import is_home_id
     from src.server.database.runs import subagent_runs as sr_db
+    from src.server.services.claude_code.flow import rows_on
     from src.server.services.claude_code.hosted import cli_cap
+    from src.server.services.llm.claude_code import pin_admitted
+    from src.server.services.llm.subagents import pinned_to_claude_code
 
     try:
         if not await sr_db.ran_on_claude_code(thread_id, task_id):
@@ -427,7 +445,21 @@ async def _computer_full(thread_id: str, task_id: str) -> bool:
         cap = cli_cap(computer) if computer is not None else None
         if cap is None:
             return False
-        return await sr_db.live_clis(str(computer["computer_id"])) + 2 > cap
+        thread = await get_thread_auth_meta(thread_id) or {}
+        model = thread.get("llm_model")
+        other_model = bool(model) and not is_claude_code_model(model)
+        if other_model:
+            if is_home_id(user_id, workspace_id):
+                return False
+            task = await sr_db.get_task(thread_id, task_id) or {}
+            if not (
+                await rows_on(user_id)
+                and await pinned_to_claude_code(user_id, str(task.get("subagent_type") or ""), "analyst")
+                and await pin_admitted(user_id, workspace_id) is not None
+            ):
+                return False
+        posted = 1 if other_model else 2
+        return await sr_db.live_clis(str(computer["computer_id"])) + posted > cap
     except Exception:
         logger.warning(f"{_LOG} Room check for Task-{task_id} failed", exc_info=True)
         return False
@@ -526,7 +558,7 @@ async def execute_task_steer(job: dict) -> None:
     if lap >= MAX_RESUME_TURNS:
         await settle(f"{lap} turns posted for it never took it in")
         return
-    if await _computer_full(thread_id, task_id):
+    if await _computer_full(thread_id, task_id, user_id, workspace_id):
         await repark(wait_s=_ROOM_WAIT_S * 2 ** max(attempts - int(payload.get("waited") or 0) - 1, 0))
         return
 
