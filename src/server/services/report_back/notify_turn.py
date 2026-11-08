@@ -278,9 +278,13 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
             log_prefix=log,
             subject=subject,
             still_due=_still_due if p.recheck else None,
+            room_fails_fast=True,
         )
         if outcome == "lost":
             return  # reclaimed: the live owner resumes; no teardown
+        if outcome == "full":
+            await outbox_db.wait_for_room(job_id, attempts=attempts, wait_s=TURN_ROOM_WAIT_S)
+            return
         if outcome == "superseded":
             await publish_cleared_wake(thread_id)
             return
@@ -482,6 +486,8 @@ async def post_notification_turn(
     busy_fails_fast: bool = False,
     refusal_fails_fast: bool = False,
     on_unanswered=None,
+    on_plan_limited=None,
+    room_fails_fast: bool = False,
 ) -> tuple[str, str | None]:
     """POST a synthetic turn to ``thread_id``, deferring through admission.
 
@@ -507,6 +513,13 @@ async def post_notification_turn(
     ``refusal_fails_fast`` returns ``"refused"`` on the first refusal no wait
     here outlives (``_lasting_refusal``), for a caller that can hand its
     message to the thread's next turn instead of retrying it.
+    ``on_plan_limited`` (async, given the refusal's detail) runs on a turn
+    the Claude plan refused until it resets (``plan_limited``), which then
+    returns ``"plan_limited"``, for a caller that holds its message until then.
+    ``room_fails_fast`` returns ``"full"`` on the first refusal for the
+    user's Claude Code turns at once (``too_many_turns``), for a caller that
+    asks again by the clock (``outbox.wait_for_room``) rather than waiting
+    here for turns on other threads to end.
     ``subject`` is a short label for log lines (e.g. the source PTC thread
     or task id).
     """
@@ -604,6 +617,21 @@ async def post_notification_turn(
                             return "taken", None
                         if busy_fails_fast:
                             return "busy", None
+                    if on_plan_limited is not None and (plan := await _plan_limited(resp)):
+                        logger.info(
+                            f"{log_prefix} The Claude plan refused the notification "
+                            f"for {subject or 'background work'} on thread {thread_id} "
+                            f"until {plan['held_until']}"
+                        )
+                        await on_plan_limited(plan)
+                        return "plan_limited", None
+                    if room_fails_fast and await _too_many_turns(resp):
+                        logger.info(
+                            f"{log_prefix} Thread {thread_id} has no room for another "
+                            f"Claude Code turn for {subject or 'background work'}; "
+                            f"asking again in {TURN_ROOM_WAIT_S}s"
+                        )
+                        return "full", None
                     if refusal_fails_fast and await _lasting_refusal(resp):
                         logger.info(
                             f"{log_prefix} Thread {thread_id} refused the "
@@ -616,6 +644,7 @@ async def post_notification_turn(
                         resp.status == 409
                         or resp.status >= 500
                         or resp.status in DEFER_STATUSES
+                        or await _too_many_turns(resp)
                     ):
                         # Don't log the body here: a 429 (credit/burst)
                         # response can carry the user's balance/limit figures.
@@ -657,6 +686,43 @@ async def post_notification_turn(
                     f"on thread {thread_id}"
                 )
                 return "cap", None
+
+
+async def _plan_limited(resp) -> dict | None:
+    """The detail of a turn admission refused because the Claude plan is used
+    up until ``held_until`` (``require_plan``), else None."""
+    if resp.status != 400:
+        return None
+    try:
+        detail = (await resp.json()).get("detail")
+    except Exception:
+        return None
+    if (
+        isinstance(detail, dict)
+        and detail.get("type") == "claude_code_off"
+        and detail.get("reason") == "plan_limited"
+        and isinstance(detail.get("held_until"), str)
+    ):
+        return detail
+    return None
+
+
+# How long a notification refused for the user's Claude Code turns at once
+# waits before it asks again (``room_fails_fast``).
+TURN_ROOM_WAIT_S = 60
+
+
+async def _too_many_turns(resp) -> bool:
+    """A Claude Code turn refused because the user runs as many at once as
+    they may (``too_many_turns``), which lifts as those end: wakes held for
+    one plan reset all come due in the same minute."""
+    if resp.status != 400:
+        return False
+    try:
+        detail = (await resp.json()).get("detail")
+    except Exception:
+        return False
+    return isinstance(detail, dict) and detail.get("type") == "claude_code_off" and detail.get("reason") == "too_many_turns"
 
 
 async def _lasting_refusal(resp) -> bool:

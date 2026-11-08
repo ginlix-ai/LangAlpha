@@ -145,6 +145,30 @@ describe('StatusPanel', () => {
     expect(rows[11]).toHaveTextContent('MSFT -4% from previous close');
   });
 
+  it('says a fire held for the Claude plan waits for its reset', async () => {
+    renderWakeups([
+      wakeup({
+        wakeup_id: 'held_plan', state: 'held_plan', kind: 'at', at: NEXT, timezone: 'UTC', price: null,
+        expires_at: null, plan_reset_at: '2030-01-02T15:00:00Z',
+      }),
+    ]);
+    const [row] = (await screen.findAllByRole('listitem')).filter((r) => r.hasAttribute('data-wakeup-state'));
+    expect(row).toHaveAttribute('data-wakeup-state', 'held_plan');
+    expect(row).toHaveTextContent(/Waiting for your Claude plan to reset at \S/);
+  });
+
+  it('names no reset time Claude never gave', async () => {
+    renderWakeups([
+      wakeup({
+        wakeup_id: 'held_plan', state: 'held_plan', kind: 'at', at: NEXT, timezone: 'UTC', price: null,
+        expires_at: null, plan_reset_at: null,
+      }),
+    ]);
+    const [row] = (await screen.findAllByRole('listitem')).filter((r) => r.hasAttribute('data-wakeup-state'));
+    expect(row).toHaveTextContent('Waiting for your Claude plan to reset');
+    expect(row).not.toHaveTextContent(/reset at/);
+  });
+
   it('names a series on another clock by its city', async () => {
     renderWakeups([WAKEUPS[1]], 'Asia/Shanghai');
     expect(await screen.findByText(/New York time/)).toBeInTheDocument();

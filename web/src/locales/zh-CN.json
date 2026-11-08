@@ -2435,6 +2435,8 @@
       "stateLapses": "等待中 · {{when}}失效",
       "stateHeld": "已触发 · 本轮结束后送达",
       "stateHeldUsage": "已触发 · 已达用量上限，将在你发送下一条消息时送达",
+      "stateHeldPlan": "等待 Claude 套餐在 {{time}} 重置",
+      "stateHeldPlanUnknown": "等待 Claude 套餐重置",
       "stateFired": "已触发 · {{time}}",
       "stateFinished": "已结束",
       "stateLapsed": "已失效",

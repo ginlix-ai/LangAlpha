@@ -381,9 +381,13 @@ async def render_notice(
     *,
     user_tz: Optional[str] = None,
     quote_timeout: float = _QUOTE_TIMEOUT,
+    plan_hold: Optional[Mapping[str, Any]] = None,
 ) -> tuple[str, dict[str, Any]]:
     """The notice's line and its WakeNotice. ``user_tz`` saves a read when
-    the caller renders several of one user's notices."""
+    the caller renders several of one user's notices. A notice held until
+    the Claude plan reset (``plan_hold``) says when it was due, unless the
+    plan still holds back the credential and model that held it: the turn
+    then runs on usage credits or another model, not after a reset."""
     user_id = str(row.get("user_id") or "")
     if user_tz is None:
         user_tz = await user_timezone(user_id)
@@ -398,4 +402,42 @@ async def render_notice(
             last_price = quote_price(quote)
         except Exception:
             logger.debug(f"{_LOG} last price unavailable", exc_info=True)
-    return wake_line(wake, last_price=last_price, user_tz=user_tz), wake.to_json()
+    line = wake_line(wake, last_price=last_price, user_tz=user_tz)
+    if (
+        plan_hold
+        and (waited := plan_waited_line(wake, plan_hold, user_tz=user_tz))
+        and not await _plan_still_holds(user_id, plan_hold)
+    ):
+        line = f"{line} {waited}"
+    return line, wake.to_json()
+
+
+async def _plan_still_holds(user_id: str, plan_hold: Mapping[str, Any]) -> bool:
+    from src.server.services.llm.claude_code import plan_still_holds
+
+    credential, model_id = plan_hold.get("credential"), plan_hold.get("model_id")
+    if not credential or not model_id:
+        return False
+    return await plan_still_holds(model_id, user_id, credential)
+
+
+def plan_waited_line(notice: WakeNotice, plan_hold: Mapping[str, Any], *, user_tz: str) -> Optional[str]:
+    """When a notice the Claude plan held was due and when it ran, on the
+    clock its own line reads; None where it runs before the hold's end, in
+    a turn the plan's limit did not hold back (another model's, or one on
+    usage credits)."""
+    from src.server.services.llm.claude_code import PLAN_WINDOW_WORDS
+
+    now = datetime.now(timezone.utc)
+    if (reset := as_datetime(plan_hold.get("reset_at"))) is not None and now < reset:
+        return None
+    due = notice.fired_at or now
+    if notice.price is not None:
+        zone = venue_zone(notice.price.ref, due)
+    else:
+        zone = zone_of(notice.timezone, user_tz)
+    fields = {"due": clock(due, zone, now), "ran": clock(now, zone, now)}
+    window = PLAN_WINDOW_WORDS.get(plan_hold.get("window") or "")
+    if window is None:
+        return BUILD_WAKE_LINES["plan_waited_unnamed"].format(**fields)
+    return WAKE_LINES["plan_waited"].format(window=window, **fields)

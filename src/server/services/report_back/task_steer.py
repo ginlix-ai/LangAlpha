@@ -469,6 +469,7 @@ async def execute_task_steer(job: dict) -> None:
     from src.server.database.runs import outbox as outbox_db
     from src.server.services.hook_outbox import LEASE_SECONDS, MAX_ATTEMPTS
     from src.server.services.report_back.notify_turn import (
+        TURN_ROOM_WAIT_S,
         await_run_terminal,
         park_while_thread_busy,
         post_notification_turn,
@@ -526,7 +527,7 @@ async def execute_task_steer(job: dict) -> None:
         await settle(f"{lap} turns posted for it never took it in")
         return
     if await _computer_full(thread_id, task_id):
-        await repark(wait_s=_ROOM_WAIT_S * 2 ** max(attempts - 1, 0))
+        await repark(wait_s=_ROOM_WAIT_S * 2 ** max(attempts - int(payload.get("waited") or 0) - 1, 0))
         return
 
     async def fence() -> bool:
@@ -553,8 +554,12 @@ async def execute_task_steer(job: dict) -> None:
         log_prefix=_LOG,
         subject=subject,
         still_due=still_due,
+        room_fails_fast=True,
     )
     if outcome in ("lost", "superseded", "taken"):
+        return
+    if outcome == "full":
+        await outbox_db.wait_for_room(job_id, attempts=attempts, wait_s=TURN_ROOM_WAIT_S)
         return
     if outcome == "cap":
         await repark()

@@ -251,3 +251,11 @@ def as_float(value: Any) -> Optional[float]:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+def plan_reset_of(hold: Any) -> Optional[datetime]:
+    """When the Claude plan resets that a notice's ``plan_hold`` waits for;
+    None where there is no hold, or Claude named no reset and the hold runs
+    to its own bound."""
+    if not isinstance(hold, dict) or hold.get("known") is False:
+        return None
+    return as_datetime(hold.get("reset_at"))

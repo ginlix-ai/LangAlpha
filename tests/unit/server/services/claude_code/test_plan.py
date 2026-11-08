@@ -623,6 +623,44 @@ async def test_a_turn_that_launches_after_a_token_was_placed_on_its_computer_kee
 # --- unattended turns: automations, wakeups and subagents at the limit ---------
 
 
+@pytest.mark.asyncio
+async def test_a_refused_turn_names_when_the_hold_lifts_with_a_reset_or_without(rows):
+    """A wake held for the reset waits until ``held_until``: the reset Claude
+    gave, or the hold's own bound where it gave none."""
+    hour = datetime.now(UTC) + timedelta(hours=1)
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", hour))}
+    detail = await _refused("claude-haiku-5-5-code")
+    assert (detail["held_until"], detail["held_known"]) == (hour.isoformat(), True)
+    seen = datetime.now(UTC)
+    rows["rows"] = {"saved": _row(_state(_no_reset(seen)))}
+    detail = await _refused("claude-haiku-5-5-code")
+    assert ("until" in detail, detail["held_until"], detail["held_known"]) == (
+        False, (seen + timedelta(hours=5)).isoformat(), False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_turn_names_the_credential_and_model_the_plan_held(rows):
+    hour = datetime.now(UTC) + timedelta(hours=1)
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", hour))}
+    detail = await _refused("claude-haiku-5-5-code")
+    assert detail["held_credential"] == "saved"
+    assert detail["held_model"] and "haiku" in detail["held_model"]
+
+
+@pytest.mark.asyncio
+async def test_the_plan_still_holds_a_model_until_its_limit_lifts_whatever_the_credits_choice(rows):
+    from src.server.services.llm.claude_code import plan_still_holds
+
+    hour = datetime.now(UTC) + timedelta(hours=1)
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", hour))}
+    assert await plan_still_holds("claude-haiku-5-5", "u", "saved")
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", hour), credits="on")}
+    assert await plan_still_holds("claude-haiku-5-5", "u", "saved")
+    rows["rows"] = {"saved": _row({})}
+    assert not await plan_still_holds("claude-haiku-5-5", "u", "saved")
+
+
 def test_an_automations_report_words_the_reset_on_its_owners_clock():
     from src.server.services.llm.claude_code import plan_words, reword_plan
 

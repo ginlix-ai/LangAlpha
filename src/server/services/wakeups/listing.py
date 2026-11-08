@@ -5,7 +5,8 @@ past storage in two places. A price or an order past its window shows closed
 before the sweep gets to it, as the monitor and the cancel already treat it.
 And a fired wakeup whose notice the agent has not read shows ``held`` (or
 ``held_usage``, waiting on usage) rather than fired, since the agent has not
-acted on it yet and it can still be called back.
+acted on it yet and it can still be called back; ``held_plan`` where it
+waits for the Claude plan to reset.
 """
 
 import logging
@@ -16,7 +17,7 @@ from src.server.database import market_targets as targets_db
 from src.server.database.automation import get_user_timezone
 from src.server.database.wakeups import read as wakeups_read
 from src.server.database.wakeups.cancel import cancel_decision, past_window
-from src.server.database.wakeups.contract import as_float
+from src.server.database.wakeups.contract import as_float, plan_reset_of
 from src.server.models.wakeup import (
     WakeupOrderOut,
     WakeupOut,
@@ -39,6 +40,8 @@ def _state(row: Dict[str, Any], now: datetime) -> str:
     if row["last_fired_seq"] > row["delivered_seq"]:
         # Held after its wake was refused, and not since taken by a turn.
         waiting = row.get("notice_waiting") and not row.get("notice_too_late")
+        if waiting and row.get("notice_plan_hold"):
+            return "held_plan"
         return "held_usage" if waiting else "held"
     if status == "armed" and past_window(row, now):
         status = "expired"
@@ -83,12 +86,13 @@ def wakeup_out(row: Dict[str, Any], now: datetime) -> WakeupOut:
     kind = row["kind"]
     schedule = row.get("schedule") or []
     timed = kind in ("at", "cron")
+    state = _state(row, now)
     return WakeupOut(
         wakeup_id=row["wakeup_id"],
         short_id=row["short_id"],
         label=row.get("label"),
         kind=kind,
-        state=_state(row, now),
+        state=state,
         timezone=row.get("timezone"),
         cron=row.get("cron"),
         at=schedule[0] if kind == "at" and schedule else None,
@@ -99,6 +103,7 @@ def wakeup_out(row: Dict[str, Any], now: datetime) -> WakeupOut:
         ends_at=(schedule[-1] if schedule else None) if timed else row.get("expires_at"),
         expires_at=row.get("expires_at"),
         fired_at=row.get("last_fired_at"),
+        plan_reset_at=plan_reset_of(row.get("notice_plan_hold")) if state == "held_plan" else None,
         price=(
             WakeupPriceOut(
                 symbol=shown_symbol(row),

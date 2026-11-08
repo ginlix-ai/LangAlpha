@@ -19,6 +19,7 @@ from ptc_agent.core.sandbox.providers.ssh import MUSL_UNSUPPORTED
 from src.llms.claude_code import (
     FEATURE,
     ClaudeTurnFailed,
+    PlanLimit,
     PlanStopped,
     PlanWindow,
     another_model_replied_last,
@@ -328,23 +329,49 @@ async def require_plan(model: str, user_id: str, credential: str) -> None:
     the saved one is known only once the CLI starts, where that gate reads
     the right row.
     """
-    try:
-        row = (await claude_code_plan.get_plans(user_id, [credential])).get(credential)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[claude_code] could not read the plan state at admission for user_id={user_id}: {type(e).__name__}")
+    model_id = _model_id(model)
+    if (limit := await plan_hold(model_id, user_id, credential)) is None:
         return
-    state = PlanState.of((row or {}).get("state"))
-    if (limit := binding_limit(state.held(), _model_id(model))) is None:
-        return
+    until = limit.until if limit.known else None
+    raise_claude_code_off(
+        model, "plan_limited", held_until=limit.until.isoformat(), held_known=limit.known,
+        held_credential=credential, held_model=model_id,
+        **_plan_fields("plan_limited", limit.window, until),
+    )
+
+
+async def plan_hold(model_id: str, user_id: str, credential: str) -> PlanLimit | None:
+    """The limit of ``credential``'s Claude plan that holds a run on
+    ``model_id`` now, as admission refuses a turn for it (``require_plan``);
+    None where none holds, or the row can't be read."""
+    if (state := await _plan_state(user_id, credential)) is None:
+        return None
+    if (limit := binding_limit(state.held(), model_id)) is None:
+        return None
     try:
         out = await plan_out(user_id) if state.credits_value != "off" else "stop"
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"[claude_code] could not read the plan choice at admission for user_id={user_id}: {type(e).__name__}")
+        logger.warning(f"[claude_code] could not read the plan choice for user_id={user_id}: {type(e).__name__}")
         out = "stop"
-    if out == "credits":
-        return
-    until = limit.until if limit.known else None
-    raise_claude_code_off(model, "plan_limited", **_plan_fields("plan_limited", limit.window, until))
+    return None if out == "credits" else limit
+
+
+async def plan_still_holds(model_id: str, user_id: str, credential: str) -> bool:
+    """Whether ``credential``'s Claude plan still holds a run on ``model_id``
+    back, whatever the usage credits choice: a wake the plan held that ran on
+    credits, or under a limit that outlasted the one it waited for, did not
+    wait out a reset. A row that can't be read counts as holding."""
+    state = await _plan_state(user_id, credential)
+    return state is None or binding_limit(state.held(), model_id) is not None
+
+
+async def _plan_state(user_id: str, credential: str) -> PlanState | None:
+    try:
+        row = (await claude_code_plan.get_plans(user_id, [credential])).get(credential)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[claude_code] could not read the plan state for user_id={user_id}: {type(e).__name__}")
+        return None
+    return PlanState.of((row or {}).get("state"))
 
 
 def _model_id(model: str) -> str:

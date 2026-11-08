@@ -2410,6 +2410,8 @@
       "stateLapses": "Pending · lapses {{when}}",
       "stateHeld": "Fired · arrives when this turn ends",
       "stateHeldUsage": "Fired · usage limit reached, arrives on your next message",
+      "stateHeldPlan": "Waiting for your Claude plan to reset at {{time}}",
+      "stateHeldPlanUnknown": "Waiting for your Claude plan to reset",
       "stateFired": "Fired · {{time}}",
       "stateFinished": "Finished",
       "stateLapsed": "Lapsed",

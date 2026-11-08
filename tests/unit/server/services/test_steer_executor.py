@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.server.services.report_back import steer_executor
+from src.server.services.report_back.notify_turn import TURN_ROOM_WAIT_S
 
 _OUTBOX = "src.server.database.runs.outbox"
 _RUNS = "src.server.database.runs.lifecycle"
@@ -155,6 +156,21 @@ async def test_a_busy_cap_at_the_ceiling_settles_through_the_defer():
     mocks = await _execute(_payload(), post=post)
 
     mocks["defer"].assert_awaited_once()
+    mocks["finish"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_room_for_another_claude_code_turn_asks_again_by_the_clock():
+    """Room opens as turns on other threads end: reparked, the safety net
+    would hand it straight back and spend its attempts."""
+    room = AsyncMock(return_value=True)
+    post = AsyncMock(return_value=("full", None))
+    with patch(f"{_OUTBOX}.wait_for_room", room):
+        mocks = await _execute(_payload(), post=post)
+
+    assert post.await_args.kwargs["room_fails_fast"]
+    room.assert_awaited_once_with(JOB_ID, attempts=1, wait_s=TURN_ROOM_WAIT_S)
+    mocks["defer"].assert_not_awaited()
     mocks["finish"].assert_not_awaited()
 
 

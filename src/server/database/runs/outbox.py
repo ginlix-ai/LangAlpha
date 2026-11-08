@@ -199,10 +199,14 @@ def alert_ordering_keys(thread_id: str) -> List[str]:
 def waiting_alert_sql(a: str) -> str:
     """An alert its executor gave up waking the thread for
     (``_exhaust_alerts``), parked until the thread's next turn takes it in or
-    a turn's ending makes it due. ``a`` is the hook_outbox alias."""
+    a turn's ending makes it due, or held until the Claude plan that refused
+    its wake resets (``plan_hold``). Once that hold is due the alert is
+    an ordinary pending job again, which blocks its chain while it runs.
+    ``a`` is the hook_outbox alias."""
     return (
         f"({a}.hook_type IN {_ALERT_TYPES_SQL} AND {a}.status = 'pending'"
-        f" AND {a}.next_retry_at = 'infinity'::timestamptz"
+        f" AND ({a}.next_retry_at = 'infinity'::timestamptz"
+        f" OR ({a}.payload ? 'plan_hold' AND {a}.next_retry_at > NOW()))"
         f" AND {a}.payload ? 'exhausted')"
     )
 
@@ -470,7 +474,7 @@ async def park_exhausted_jobs(*, max_attempts: int = 5) -> List[Dict[str, Any]]:
     """
     expired_at_ceiling = (
         "o.status = 'claimed' AND o.lease_expires_at <= NOW()"
-        " AND o.attempts >= %(max)s"
+        f" AND {_spent_sql('o')} >= %(max)s"
     )
     async with pool.get_db_connection() as conn:
         async with conn.transaction():
@@ -550,7 +554,7 @@ _PARKED_RETURNING_SQL = """o.hook_outbox_id, o.run_id, o.conversation_thread_id,
 
 
 async def _exhaust_alerts(
-    cur, where: str, params: Dict[str, Any]
+    cur, where: str, params: Dict[str, Any], *, plan_hold: Optional[Dict[str, Any]] = None
 ) -> List[Dict[str, Any]]:
     """Hold the alerts matching ``where`` for their thread's next turn, in
     the caller's transaction, instead of letting them go dead.
@@ -568,26 +572,38 @@ async def _exhaust_alerts(
     the turn that refused the head would refuse them too; each keeps the
     head it rode (``rode``), whose wake may yet turn out admitted. The head
     is locked before its riders, and they in id order, as the wakeups
-    contract orders every lock on a wake's jobs. Needs a ``dict_row``
-    cursor; returns the rows as held."""
+    contract orders every lock on a wake's jobs.
+
+    With ``plan_hold`` (its ``reset_at`` and ``window``), the Claude plan
+    refused the wake until it resets: the rows are held until a minute after
+    that instead, each carrying the hold, which the listing shows and the
+    wake that delivers them names. A turn that runs before then takes them
+    in as it would any waiting alert. Needs a ``dict_row`` cursor; returns
+    the rows as held."""
+    retry = "'infinity'::timestamptz"
+    hold = "'{}'::jsonb"
+    if plan_hold is not None:
+        retry = "%(hold_reset_at)s::timestamptz + interval '1 minute'"
+        hold = "jsonb_build_object('plan_hold', %(plan_hold)s::jsonb)"
+        params = {**params, "hold_reset_at": plan_hold["reset_at"], "plan_hold": SafeJson(plan_hold)}
     await cur.execute(
         f"""
         WITH held AS (
             UPDATE hook_outbox o
             SET status = 'pending',
                 lease_expires_at = NULL,
-                next_retry_at = 'infinity'::timestamptz,
-                payload = (o.payload - 'steered_run_id' - 'due_at' - 'riders')
-                    || jsonb_build_object('exhausted', true)
+                next_retry_at = {retry},
+                payload = (o.payload - 'steered_run_id' - 'due_at' - 'riders' - 'plan_hold')
+                    || jsonb_build_object('exhausted', true) || {hold}
             WHERE o.hook_type IN {_ALERT_TYPES_SQL} AND {where}
             RETURNING {_PARKED_RETURNING_SQL}
         ),
         riders AS (
             UPDATE hook_outbox r
-            SET next_retry_at = 'infinity'::timestamptz,
-                payload = (r.payload - 'rides' - 'steered_run_id' - 'due_at')
+            SET next_retry_at = {retry},
+                payload = (r.payload - 'rides' - 'steered_run_id' - 'due_at' - 'plan_hold')
                     || jsonb_build_object(
-                        'exhausted', true, 'rode', r.payload->>'rides')
+                        'exhausted', true, 'rode', r.payload->>'rides') || {hold}
             WHERE r.hook_outbox_id IN (
                 SELECT x.hook_outbox_id FROM hook_outbox x
                 WHERE x.hook_type = 'wakeup' AND x.status = 'pending'
@@ -626,6 +642,76 @@ async def exhaust_alert(job_id: str, *, attempts: int) -> bool:
             return bool(held)
 
 
+async def hold_alert_for_plan(job_id: str, *, attempts: int, plan_hold: Dict[str, Any]) -> bool:
+    """Hold a claimed alert whose wake the Claude plan refused until a minute
+    after the plan resets (``_exhaust_alerts`` with ``plan_hold``), fenced to
+    the caller's lease. False when the fence was lost."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            held = await _exhaust_alerts(
+                cur,
+                "o.hook_outbox_id = %(job_id)s::uuid AND o.status = 'claimed'"
+                " AND o.attempts = %(attempts)s",
+                {"job_id": job_id, "attempts": attempts},
+                plan_hold=plan_hold,
+            )
+            return bool(held)
+
+
+async def end_plan_hold(job_id: str, *, attempts: int) -> bool:
+    """End the Claude plan's hold on a claimed alert that came due
+    (``hold_alert_for_plan``), fenced to the caller's lease: from here it is
+    an ordinary job again, retried as a fresh one is (its claims so far stop
+    counting, ``waited``) and parked as any other, so the listing stops
+    saying it waits for the reset. The hold is kept as
+    ``plan_waited`` for the wake that delivers it to name. False when the
+    fence was lost."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE hook_outbox
+                SET payload = (payload - 'plan_hold' - 'exhausted')
+                    || jsonb_build_object(
+                        'plan_waited', payload->'plan_hold', 'waited', attempts - 1)
+                WHERE hook_outbox_id = %s::uuid AND status = 'claimed'
+                  AND attempts = %s AND payload ? 'plan_hold'
+                """,
+                (job_id, attempts),
+            )
+            return cur.rowcount == 1
+
+
+async def wait_for_room(job_id: str, *, attempts: int, wait_s: int) -> bool:
+    """Make a claimed job due again ``wait_s`` on, fenced to the caller's
+    lease, when its turn was refused because the user runs as many Claude
+    Code turns at once as they may (``too_many_turns``). Room opens as turns
+    on other threads end, which release nothing on this one, so it asks again
+    by the clock, and the claim does not count (``waited``): it waits as
+    long as those turns run. A steer is due by its own clock (``due_at``).
+    False when the fence was lost."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE hook_outbox
+                SET status = 'pending',
+                    lease_expires_at = NULL,
+                    next_retry_at = CASE WHEN hook_type = 'steer' THEN 'infinity'::timestamptz
+                        ELSE NOW() + make_interval(secs => %(wait_s)s::int) END,
+                    payload = (payload - 'steered_run_id' - 'due_at')
+                        || jsonb_build_object('waited', COALESCE((payload->>'waited')::int, 0) + 1)
+                        || CASE WHEN hook_type = 'steer'
+                            THEN jsonb_build_object('due_at', NOW() + make_interval(secs => %(wait_s)s::int))
+                            ELSE '{}'::jsonb END
+                WHERE hook_outbox_id = %(job_id)s::uuid AND status = 'claimed'
+                  AND attempts = %(attempts)s
+                """,
+                {"job_id": job_id, "attempts": attempts, "wait_s": wait_s},
+            )
+            return cur.rowcount == 1
+
+
 # How many times ``revive_dead_alerts`` brought the alert ``o`` back. Read
 # only as a number, so a value of any other type cannot fail the statement.
 _ALERT_REVIVALS_SQL = """(CASE WHEN jsonb_typeof(o.payload->'revived') = 'number'
@@ -643,7 +729,7 @@ async def revive_dead_alerts(
     the attempts ceiling: across a blue/green cutover the old color's
     drainer nacks a job it cannot run until it dies, and this build never
     tried its wake. Revived due, its executor here tries one, and a refusal
-    holds it as any other (at once when its attempts are past the ceiling).
+    holds it as any other (at once when its tries are spent).
     Only a row dead for ``cooldown_seconds`` comes back, so an old color
     still draining is less likely to kill it again, and ``revived`` counts
     revivals up to ``max_revivals``, so one it keeps killing stays dead. Only
@@ -707,8 +793,8 @@ async def close_unowed_waiting_alerts() -> List[Dict[str, Any]]:
     no longer bears on the thread's next turn.
 
     Closed as their executor would drop them, without waiting on a turn the
-    thread may never get. A wakeup's notice still owed there is made due
-    instead: its executor ends the wakeup before dropping it, which archive
+    thread may never get. A wakeup's notice still owed there, parked or held
+    for the Claude plan's reset, is made due instead: its executor ends the wakeup before dropping it, which archive
     and workspace delete only try once, and closing it here would leave the
     wakeup open with its fire lost. One a turn holds is left to that turn's
     confirm or ending. A deleted thread takes its rows with it, and an owner
@@ -723,7 +809,8 @@ async def close_unowed_waiting_alerts() -> List[Dict[str, Any]]:
                 WHERE h.hook_outbox_id IN (
                     SELECT o.hook_outbox_id FROM hook_outbox o
                     WHERE o.hook_type = 'wakeup' AND o.status = 'pending'
-                      AND o.next_retry_at = 'infinity'::timestamptz
+                      AND (o.next_retry_at = 'infinity'::timestamptz
+                           OR o.payload ? 'plan_hold')
                       AND NOT (o.payload ? 'steered_run_id')
                       AND {NO_TURN_SQL} AND {WAKEUP_OWED_SQL}
                     ORDER BY (o.payload ? 'rides'), o.hook_outbox_id
@@ -803,28 +890,29 @@ async def ack_outbox_job(job_id: str, *, attempts: int) -> bool:
             return cur.rowcount > 0
 
 
-_NACK_BACKOFF_SQL = (
-    "NOW() + make_interval(secs => LEAST(POWER(2, attempts), 60)::float)"
-)
-
 # A claimed job out of attempts, fenced to the caller's lease.
-_AT_CEILING_SQL = (
-    "o.hook_outbox_id = %(job_id)s::uuid AND o.status = 'claimed'"
-    " AND o.attempts = %(attempts)s AND o.attempts >= %(max)s"
-)
-
-
 def _fence_params(job_id: str, attempts: int, max_attempts: int) -> Dict[str, Any]:
     return {"job_id": job_id, "attempts": attempts, "max": max_attempts}
 
 
 def _spent_sql(a: str = "") -> str:
-    """The attempts a job has spent toward the ceiling: its claims, less the
-    parks that found its thread waiting on the user (``waited``, see
-    ``defer_claimed_job``). ``attempts`` itself only grows, the fence token.
-    ``a`` is the hook_outbox alias, if any."""
+    """The attempts a job has spent toward the ceiling: its claims, less those
+    that do not count (``waited``): a park that found its thread waiting on
+    the user (``defer_claimed_job``), a claim the user's Claude Code turn cap
+    refused (``wait_for_room``), and the claims before a Claude plan hold
+    ended (``end_plan_hold``). ``attempts`` itself only grows, the fence
+    token. ``a`` is the hook_outbox alias, if any."""
     c = f"{a}." if a else ""
     return f"({c}attempts - COALESCE(({c}payload->>'waited')::int, 0))"
+
+
+_AT_CEILING_SQL = (
+    "o.hook_outbox_id = %(job_id)s::uuid AND o.status = 'claimed'"
+    f" AND o.attempts = %(attempts)s AND {_spent_sql('o')} >= %(max)s"
+)
+_NACK_BACKOFF_SQL = (
+    f"NOW() + make_interval(secs => LEAST(POWER(2, {_spent_sql()}), 60)::float)"
+)
 
 
 async def nack_outbox_job(
@@ -859,14 +947,12 @@ async def nack_outbox_job(
                             -- _STEER_DUE_SQL), so a build that cannot run it
                             -- never claims it.
                             next_retry_at = CASE
-                                WHEN hook_type = 'steer' AND attempts < %s
+                                WHEN hook_type = 'steer' AND {_spent_sql()} < %s
                                     THEN 'infinity'::timestamptz
-                                ELSE NOW() + make_interval(
-                                    secs => LEAST(POWER(2, attempts), 60)::float
-                                )
+                                ELSE {_NACK_BACKOFF_SQL}
                             END,
                             payload = CASE
-                                WHEN hook_type = 'steer' AND attempts < %s
+                                WHEN hook_type = 'steer' AND {_spent_sql()} < %s
                                     THEN {_steer_due_at_sql("payload", _NACK_BACKOFF_SQL)}
                                 ELSE payload
                             END,

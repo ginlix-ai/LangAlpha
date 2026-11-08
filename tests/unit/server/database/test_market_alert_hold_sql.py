@@ -185,3 +185,26 @@ def test_the_owed_predicate_reads_each_notice_as_delivery_does():
         " AND t.status = 'armed' AND t.expires_at > NOW()"
     ) in owed
     assert "ELSE false" in owed
+
+
+@pytest.mark.asyncio
+async def test_a_hold_for_the_claude_plan_is_fenced_and_lasts_until_a_minute_past_the_reset(
+    mock_db_connection, mock_cursor
+):
+    mock_cursor.fetchall.return_value = []
+    hold = {"reset_at": "2026-11-08T02:43:31+00:00", "window": "five_hour"}
+
+    assert await outbox.hold_alert_for_plan(_JOB, attempts=2, plan_hold=hold) is False
+
+    call = mock_cursor.execute.call_args_list[-1]
+    sql, params = _flat(call.args[0]), call.args[1]
+    assert (
+        "o.hook_outbox_id = %(job_id)s::uuid AND o.status = 'claimed'"
+        " AND o.attempts = %(attempts)s"
+    ) in sql
+    # The head and its riders alike, each carrying the hold.
+    assert sql.count("next_retry_at = %(hold_reset_at)s::timestamptz + interval '1 minute'") == 2
+    assert sql.count("|| jsonb_build_object('plan_hold', %(plan_hold)s::jsonb)") == 2
+    assert params["hold_reset_at"] == hold["reset_at"]
+    assert params["plan_hold"].obj == hold
+

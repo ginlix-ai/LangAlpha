@@ -4,7 +4,8 @@
 still fire and how far its notices got; the panel needs to know what the user
 can do about it, which also turns on where an unread notice sits in the
 outbox (``held`` for one waiting on the next turn, ``held_usage`` for one
-waiting on usage).
+waiting on usage, ``held_plan`` for one waiting for the Claude plan to reset
+at ``plan_reset_at``, None where Claude named no reset).
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from src.server.database.wakeups.contract import Kind as WakeupKind
 from src.server.database.wakeups.contract import Outcome as CancelOutcomeName
 
 WakeupState = Literal[
-    "armed", "held", "held_usage", "fired", "finished", "lapsed", "expired", "cancelled"
+    "armed", "held", "held_usage", "held_plan", "fired", "finished", "lapsed", "expired", "cancelled"
 ]
 
 
@@ -73,6 +74,7 @@ class WakeupOut(BaseModel):
     ends_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     fired_at: Optional[datetime] = None
+    plan_reset_at: Optional[datetime] = None
     price: Optional[WakeupPriceOut] = None
     order: Optional[WakeupOrderOut] = None
     cancellable: bool

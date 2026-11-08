@@ -271,6 +271,31 @@ class TestOtherItems:
 
         assert (item.status, item.text) == (status, text)
 
+    def test_a_fire_the_claude_plan_holds_says_when_it_runs(self):
+        row = {
+            "short_id": "w_3fa9",
+            "kind": "at",
+            "label": "Look again",
+            "status": "fired",
+            "schedule": [NOW - timedelta(hours=1)],
+            "last_fired_at": NOW - timedelta(hours=1),
+            "last_fired_seq": 1,
+            "delivered_seq": 0,
+            "notice_plan_hold": {"reset_at": (NOW + timedelta(hours=2)).isoformat(), "known": True},
+            "updated_at": NOW,
+        }
+        item = listing.wakeup_item(row, NOW, TZ)
+
+        assert (item.status, item.text) == (
+            "completed",
+            "Look again · fired 10:00 today · waiting for the Claude plan to reset at 13:00 today",
+        )
+        assert listing.wakeup_item({**row, "delivered_seq": 1}, NOW, TZ).text == "Look again · fired 10:00 today"
+        unknown = {**row, "notice_plan_hold": {**row["notice_plan_hold"], "known": False}}
+        assert listing.wakeup_item(unknown, NOW, TZ).text == (
+            "Look again · fired 10:00 today · waiting for the Claude plan to reset"
+        )
+
     @pytest.mark.parametrize(
         ("expr", "words"),
         [

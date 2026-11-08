@@ -1996,3 +1996,44 @@ async def test_a_regenerate_leaves_what_the_turn_read_to_its_input_checkpoint(
     assert row["status"] == "done" and row["payload"]["outcome"] == "delivered"
     assert row["run_id"] == first
     assert await outbox.list_takeable_jobs(thread.id, ["steer"], run_id=fork_id) == []
+
+
+async def test_a_steer_that_waited_for_room_keeps_its_own_clock_and_its_tries(thread, db_conn):
+    # Each claim the user's Claude Code turn cap refused grows attempts but
+    # spends nothing: past the ceiling in claims, an expired lease is not
+    # given up and a nack still backs off by its due_at, never by a
+    # next_retry_at a build that cannot run steers would claim.
+    from src.server.database.runs import outbox
+
+    run_id = await _run(thread)
+    job_id = await _accepted(thread, run_id, "hello")
+    await _end(thread, run_id)
+
+    async def claim() -> int:
+        await db_conn.execute(
+            "UPDATE hook_outbox SET next_retry_at = 'infinity',"
+            " payload = payload - 'steered_run_id' || jsonb_build_object('due_at', NOW() - interval '1 second')"
+            " WHERE hook_outbox_id = %s",
+            (job_id,),
+        )
+        [job] = [r for r in await outbox.claim_outbox_jobs(limit=50, max_attempts=5) if str(r["hook_outbox_id"]) == job_id]
+        return job["attempts"]
+
+    attempts = await claim()
+    for _ in range(5):
+        assert await outbox.wait_for_room(job_id, attempts=attempts, wait_s=60)
+        row = await _row(db_conn, job_id)
+        assert (row["status"], row["infinity"], row["due"], "due_at" in row["payload"]) == ("pending", True, False, True)
+        attempts = await claim()
+    assert attempts > 5
+
+    await db_conn.execute(
+        "UPDATE hook_outbox SET lease_expires_at = NOW() - interval '1 second' WHERE hook_outbox_id = %s", (job_id,)
+    )
+    assert job_id not in {str(r["hook_outbox_id"]) for r in await outbox.park_exhausted_jobs(max_attempts=5)}
+    assert (await _row(db_conn, job_id))["status"] == "claimed"
+
+    assert await outbox.nack_outbox_job(job_id, attempts=attempts, max_attempts=5) == "pending"
+    row = await _row(db_conn, job_id)
+    assert (row["infinity"], "due_at" in row["payload"], row["payload"]["waited"]) == (True, True, 5)
+

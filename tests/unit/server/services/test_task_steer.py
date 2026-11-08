@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.server.services.report_back import task_steer
+from src.server.services.report_back.notify_turn import TURN_ROOM_WAIT_S
 
 _OUTBOX = "src.server.database.runs.outbox"
 _ACTIVE = "src.server.database.runs.subagent_runs.get_active_task_run"
@@ -266,6 +267,27 @@ async def test_a_repark_at_the_ceiling_refreshes_the_launching_turn():
 
 
 @pytest.mark.asyncio
+async def test_no_room_for_another_claude_code_turn_asks_again_by_the_clock():
+    job, row = _claimed_job(5)
+    defer = AsyncMock(return_value="exhausted")
+    room = AsyncMock(return_value=True)
+    post = AsyncMock(return_value=("full", None))
+    with (
+        patch(f"{_OUTBOX}.get_steer_job", new=AsyncMock(return_value=row)),
+        patch(f"{_OUTBOX}.defer_claimed_job", new=defer),
+        patch(f"{_OUTBOX}.wait_for_room", new=room),
+        patch.object(task_steer, "_divert", new=AsyncMock(return_value=False)),
+        patch(f"{_NOTIFY}.park_while_thread_busy", new=AsyncMock(return_value=False)),
+        patch(f"{_NOTIFY}.post_notification_turn", new=post),
+    ):
+        await task_steer.execute_task_steer(job)
+
+    assert post.await_args.kwargs["room_fails_fast"]
+    room.assert_awaited_once_with("j-1", attempts=5, wait_s=TURN_ROOM_WAIT_S)
+    defer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_steer_waits_for_room_without_posting_a_turn_or_spending_one():
     """A turn posted while the computer is full would only be refused the
     resume, so the steer parks until a turn ends there, short of the attempts
@@ -289,6 +311,25 @@ async def test_a_steer_waits_for_room_without_posting_a_turn_or_spending_one():
     merge.assert_not_awaited()
     # By its own clock: on an idle thread the safety net would hand it back
     # at once, spending its attempts before any room frees up.
+    assert defer.await_args.kwargs["wait_s"] == 2 * task_steer._ROOM_WAIT_S
+
+
+@pytest.mark.asyncio
+async def test_the_wait_for_a_full_computer_doubles_on_tries_spent_not_on_claims():
+    # Claims spent waiting for room among the user's Claude Code turns
+    # (``waited``) don't lengthen it.
+    job, row = _claimed_job(7)
+    row = {**row, "payload": {**row["payload"], "waited": 5}}
+    defer = AsyncMock(return_value="pending")
+    with (
+        patch(f"{_OUTBOX}.get_steer_job", new=AsyncMock(return_value=row)),
+        patch(f"{_OUTBOX}.defer_claimed_job", new=defer),
+        patch.object(task_steer, "_divert", new=AsyncMock(return_value=False)),
+        patch.object(task_steer, "_computer_full", new=AsyncMock(return_value=True)),
+        patch(f"{_NOTIFY}.park_while_thread_busy", new=AsyncMock(return_value=False)),
+    ):
+        await task_steer.execute_task_steer(job)
+
     assert defer.await_args.kwargs["wait_s"] == 2 * task_steer._ROOM_WAIT_S
 
 

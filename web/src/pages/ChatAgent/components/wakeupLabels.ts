@@ -187,7 +187,7 @@ export function triggerText(w: TriggerFields, t: TFunction, locale: string, now:
 
 /** Wakeups that can still fire, or whose fire has not reached the agent. */
 export function isPending(w: Wakeup): boolean {
-  return w.state === 'armed' || w.state === 'held' || w.state === 'held_usage';
+  return w.state === 'armed' || w.state === 'held' || w.state === 'held_usage' || w.state === 'held_plan';
 }
 
 /** The pending wakeups the chip counts, in listing order. */
@@ -324,6 +324,10 @@ export function stateLabel(w: Wakeup, t: TFunction, locale: string, now: number,
       return t('chat.wakeups.stateHeld');
     case 'held_usage':
       return t('chat.wakeups.stateHeldUsage');
+    case 'held_plan':
+      return w.plan_reset_at
+        ? t('chat.wakeups.stateHeldPlan', { time: whenLabel(w.plan_reset_at, userTimezone, locale, now) })
+        : t('chat.wakeups.stateHeldPlanUnknown');
     case 'fired':
       return firedLabel(w, t, locale, now, userTimezone);
     case 'finished':
