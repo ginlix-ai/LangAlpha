@@ -201,9 +201,10 @@ async def get_user_tunnel(user_id: str, tunnel_id: str) -> Optional[Dict[str, An
             return await cur.fetchone()
 
 
-async def get_tunnels(tunnel_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
-    """The tunnels a listing's computers name, by id, whoever owns each."""
-    async with get_db_connection() as conn:
+async def get_tunnels(tunnel_ids: Iterable[str], *, conn=None) -> Dict[str, Dict[str, Any]]:
+    """The tunnels a listing's computers name, by id, whoever owns each, on
+    ``conn`` where a caller holding locks on it passes one."""
+    async with get_db_connection(conn) as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"SELECT {_COLUMNS} FROM ssh_tunnels "

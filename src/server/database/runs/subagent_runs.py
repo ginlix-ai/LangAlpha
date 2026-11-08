@@ -34,7 +34,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, STORED_TURN
+from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, CLI_COMPUTER, STORED_TURN
 
 from ptc_agent.config.agent import SubagentModel
 from src.server.database import pool
@@ -138,6 +138,7 @@ async def start_task_run(
     claude_code: bool = False,
     stored_token: bool = False,
     cli_cap: Optional[tuple[str, int]] = None,
+    cli_computer: Optional[str] = None,
     conn=None,
 ) -> Dict[str, Any]:
     """The task-run START transaction: task upsert + in_progress run row +
@@ -146,7 +147,8 @@ async def start_task_run(
     A run on Claude Code is marked so (``claude_code``), and as one on the
     setup token the user stored (``STORED_TURN``) when the build that
     launches it signs in with it (``stored_token``), so it is stopped with the
-    turns when the token goes. With
+    turns when the token goes, and as one whose CLI runs on the own computer
+    ``cli_computer`` for a workspace on another (``CLI_COMPUTER``). With
     ``cli_cap``, its computer and how many CLIs it runs at once, is refused
     with ``ClaudeCodeCapError`` when the computer's turns and runs on Claude
     Code already reach that many. Admissions on one computer count one at a
@@ -164,6 +166,7 @@ async def start_task_run(
         **({"model": model} if model else {}),
         **({"claude_code": True} if claude_code else {}),
         **(STORED_TURN if stored_token else {}),
+        **({CLI_COMPUTER: cli_computer} if cli_computer else {}),
     }
 
     try:
@@ -277,22 +280,28 @@ async def start_task_run(
 
 
 async def _live_clis(cur, computer_id: str) -> int:
-    """The Claude Code CLIs the computer runs: its turns in progress
-    (``CLAUDE_CODE_TURN``) and its task runs on Claude Code."""
+    """The Claude Code CLIs the computer runs: turns in progress
+    (``CLAUDE_CODE_TURN``) and task runs on Claude Code, each counted on the
+    computer its row names as running its CLI (``CLI_COMPUTER``), else on
+    its workspace's. Driven by the partial indexes on rows in progress."""
     await cur.execute(
         """
         SELECT
           (SELECT COUNT(*) FROM conversation_responses r
            JOIN conversation_threads t ON t.conversation_thread_id = r.conversation_thread_id
            JOIN workspaces w ON w.workspace_id = t.workspace_id
-           WHERE w.computer_id = %(computer)s AND r.status = 'in_progress' AND r.metadata @> %(turn)s)
+           WHERE r.status = 'in_progress' AND r.metadata @> %(turn)s
+             AND COALESCE(r.metadata ->> %(key)s, w.computer_id::text) = %(computer)s)
         + (SELECT COUNT(*) FROM subagent_runs s
            JOIN conversation_threads t ON t.conversation_thread_id = s.thread_id
            JOIN workspaces w ON w.workspace_id = t.workspace_id
-           WHERE w.computer_id = %(computer)s AND s.status = 'in_progress'
-             AND s.replay_facts @> %(run)s) AS live
+           WHERE s.status = 'in_progress' AND s.replay_facts @> %(run)s
+             AND COALESCE(s.replay_facts ->> %(key)s, w.computer_id::text) = %(computer)s) AS live
         """,
-        {"computer": computer_id, "turn": Jsonb(CLAUDE_CODE_TURN), "run": Jsonb({"claude_code": True})},
+        {
+            "computer": computer_id, "key": CLI_COMPUTER, "turn": Jsonb(CLAUDE_CODE_TURN),
+            "run": Jsonb({"claude_code": True}),
+        },
     )
     return (await cur.fetchone())["live"]
 
@@ -810,7 +819,9 @@ async def count_open_runs_for_workspace(workspace_id: str) -> int:
 
 
 async def count_open_runs_for_computer(computer_id: str) -> int:
-    """Live task runs across every workspace bound to the computer.
+    """Live task runs across every workspace bound to the computer, and
+    those whose Claude Code CLI runs on it for a workspace on another
+    (``CLI_COMPUTER``).
 
     The machine-scoped twin of ``count_open_runs_for_workspace``. A join, never
     a denormalised counter: this gates tearing a computer down, so the count has
@@ -818,19 +829,20 @@ async def count_open_runs_for_computer(computer_id: str) -> int:
     workspace per computer the two functions return the same thing.
     """
     async with pool.get_db_connection() as conn:
-        async with conn.cursor() as cur:
+        async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT COUNT(*)
+                SELECT COUNT(*) AS open
                 FROM subagent_runs r
                 JOIN conversation_threads t
                   ON t.conversation_thread_id = r.thread_id
                 JOIN workspaces w ON w.workspace_id = t.workspace_id
-                WHERE w.computer_id = %s AND r.status = 'in_progress'
+                WHERE r.status = 'in_progress'
+                  AND (w.computer_id = %s OR r.replay_facts @> %s)
                 """,
-                (computer_id,),
+                (computer_id, Jsonb({CLI_COMPUTER: computer_id})),
             )
-            return (await cur.fetchone())[0]
+            return (await cur.fetchone())["open"]
 
 
 async def list_open_task_runs() -> List[Dict[str, Any]]:

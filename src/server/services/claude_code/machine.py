@@ -27,7 +27,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, fields, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -142,6 +142,11 @@ class MachineAnswer:
     @property
     def fresh(self) -> bool:
         return time.time() < self.checked_at + ttl(self.file)
+
+    @property
+    def expired(self) -> bool:
+        """Whether the token is past the expiry a sign-in gave it, by which Claude refuses it now."""
+        return self.expires_at is not None and datetime.fromisoformat(self.expires_at) <= datetime.now(timezone.utc)
 
     @property
     def meta(self) -> dict[str, str | None]:
@@ -346,7 +351,8 @@ async def check_machine(
     CLI yet reads as ``unknown``: a check never installs it.
 
     The account and expiry are the last answer's, since the machine keeps
-    only the token. Raises when the machine cannot be reached or refuses to
+    only the token, except an expiry already past when Claude serves the
+    token, which a token put there since has no part in. Raises when the machine cannot be reached or refuses to
     say. ``answered`` hears when Claude has answered, the request then spent,
     and ``skipped`` that the check sent nothing, since it would be billed;
     ``plan`` keeps what the check reports of the plan, for a caller to wait on.
@@ -370,7 +376,8 @@ async def check_machine(
     except Exception as e:
         logger.info(f"[claude_code] token check could not tell on the machine: {type(e).__name__}")
         return carried(last, "unknown", **found)
-    return carried(last, "works" if works else "refused", **found)
+    answer = carried(last, "works" if works else "refused", **found)
+    return replace(answer, expires_at=None) if works and answer.expired else answer
 
 
 def _unreached(e: BaseException) -> bool:
@@ -426,6 +433,58 @@ def _awake(computer: Mapping[str, Any], tunnels: dict[str, dict[str, Any]] | Non
     return info is not None and (info.tunnel_connected is True if tunnel_of(dict(computer)) else True)
 
 
+#: The states of a computer whose own token a turn there signs in with.
+_OWN_TOKEN_WORKS = frozenset({"signed_in", "unverified"})
+
+
+def _reachable(computer: Mapping[str, Any], tunnels: dict[str, dict[str, Any]] | None) -> bool:
+    """Whether a turn's CLI may run on the own computer now: its machine is
+    up as far as the server can tell without dialing (a connected tunnel for
+    one that connects out, any machine the server dials itself), whether the
+    computer runs or the idle sweep stopped it, which a run starts again
+    (``launchers._PickedComputer``)."""
+    if computer.get("status") not in (Lifecycle.RUNNING, Lifecycle.STOPPED):
+        return False
+    info = ssh_info(dict(computer), tunnels)
+    return info is not None and (info.tunnel_connected is True if tunnel_of(dict(computer)) else True)
+
+
+async def pick_cli_computer(user_id: str, *, conn=None) -> tuple[dict | None, str | None]:
+    """The own computer that runs the CLI of the user's turns in workspaces on
+    cloud computers: of their own computers, those last found signed in with
+    a token of their own, or only where none is, those with no answer kept
+    (never checked, or the answer lapsed), in the roster's order
+    (``get_computer_roster``), the first that is online now (``_reachable``,
+    and no recent dial found it out of reach), so successive turns keep to one
+    computer while it stays so. A computer never checked may have no token
+    there, so one signed in but offline is named rather than passed over for
+    it. One whose answer says its token does not work is never picked, and
+    one whose token is past its expiry only where no other is found, so its
+    turn is refused for the token (``require_computer_signed_in``) rather
+    than for a computer to sign in. Else
+    None, with the name of the first so found, offline, where any was. Never
+    dials a machine."""
+    own = [c for c in await get_computer_roster(user_id, conn=conn) if is_own_computer(c)]
+    ids = [str(c["computer_id"]) for c in own]
+    cache = get_cache_client()
+    answers, unreached = await asyncio.gather(
+        asyncio.gather(*(read_answer(i) for i in ids)), asyncio.gather(*(cache.get(unreached_key(i)) for i in ids)),
+    )
+    works = [(c, a) for c, a in zip(own, answers) if a is not None and computer_state(a, None) in _OWN_TOKEN_WORKS]
+    signed_in = [c for c, a in works if not a.expired]
+    unknown = [c for c, a in zip(own, answers) if a is None]
+    expired = [c for c, a in works if a.expired]
+    found = signed_in or unknown or expired
+    if not found:
+        return None, None
+    tunnels = await tunnels_for(user_id, found, conn=conn)
+    out_of_reach = {i for i, u in zip(ids, unreached) if u}
+    for computer in found:
+        if _reachable(computer, tunnels) and str(computer["computer_id"]) not in out_of_reach:
+            return computer, None
+    return None, found[0]["name"]
+
+
 def _entry(
     computer: Mapping[str, Any], state: ComputerState, source: Source | None = None, *, own_file: bool = False,
     **meta: str | None,
@@ -467,9 +526,10 @@ async def _status(
     """The computer's kept answer. On a miss with the computer awake, one
     worker checks it in the background and reads answer checking until it
     lands; one asleep or out of reach reads as it last answered, or with
-    ``mark_offline`` as ``offline``, since no turn runs there until it is back."""
+    ``mark_offline``, where no turn runs until it is back (``_reachable``: one
+    the idle sweep stopped is started by a turn), as ``offline``."""
     computer_id = str(computer["computer_id"])
-    if mark_offline and not (_awake(computer, tunnels) and not await get_cache_client().get(unreached_key(computer_id))):
+    if mark_offline and not (_reachable(computer, tunnels) and not await get_cache_client().get(unreached_key(computer_id))):
         return _entry(computer, "offline")
     answer = await read_answer(computer_id)
     if answer is not None and answer.fresh:
@@ -492,12 +552,13 @@ async def _off(
     (it lapsed, or Redis lost it) and the computer awake, one worker looks
     in the background for a token file there, never running a check, so a
     token left on the machine is named from the next read on. With
-    ``mark_offline``, one asleep or that a recent dial could not reach reads
-    ``offline``."""
+    ``mark_offline``, one no turn could start or reach (``_reachable``), or
+    that a recent dial could not reach, reads ``offline``."""
     computer_id = str(computer["computer_id"])
     answer = await read_answer(computer_id)
-    reachable = _awake(computer, tunnels) and not await get_cache_client().get(unreached_key(computer_id))
-    if answer is None and reachable:
+    unreached = await get_cache_client().get(unreached_key(computer_id))
+    reachable = _reachable(computer, tunnels) and not unreached
+    if answer is None and _awake(computer, tunnels) and not unreached:
         await in_background(
             change_lock(computer_id), LOOK_S, partial(check_then_keep, user_id, computer_id, None, look_only=True),
         )

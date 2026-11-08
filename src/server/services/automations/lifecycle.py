@@ -199,49 +199,62 @@ async def _check_claude_code_continues(name: str | None, pin: str | None) -> Non
         raise AutomationRefusal(exc.detail["message"], field="llm_model") from None
 
 
+#: Refusals that may not hold when an automation fires: no computer of the
+#: user's own signed in, or the one picked asleep.
+_MAY_RUN_LATER = frozenset({"no_own_computer", "cli_computer_offline"})
+
+
 async def _check_claude_code_hosted(
     user_id: str, name: str | None, workspace_id: str | None, conn=None, pref: dict[str, Any] | None = None,
 ) -> None:
     """Refuse a Claude Code row in a workspace on a cloud computer whose turns
-    admission refuses (``Placement.refusal``, in its order), or that run on
+    admission refuses (``hosted.Refused``, in its order), or that run on
     the setup token the user stored, which runs no automation
     (``require_attended``) and is told ahead of the computer's size, as a
-    credential is, so every firing would fail; on an own computer, where
-    admission would relay that token to it by its last answer. A row naming
-    no model is judged on the default its firing runs (``select_model``):
-    the user's saved one in ``pref``, else the deployment's; Home's Chief of
-    Staff runs no Claude Code default. Nothing is read where no such rule
-    applies (``checks_automations``).
-    Read on ``conn``, the caller's."""
-    from src.server.services.claude_code.hosted import checks_automations, placement
+    credential is, so every firing would fail; on an own computer, the
+    workspace's or the one its CLI runs on, where admission would relay that
+    token to it by its last answer. No computer of theirs signed in or awake
+    now refuses nothing, since one may be when the row fires. A row naming
+    no model is judged on the Claude Code default its firing would run
+    (``_claude_code_default_for``). Nothing is read where no such rule
+    applies (``checks_automations``). Read on ``conn``, the caller's."""
+    from src.server.services.claude_code.hosted import OnCloud, OnOwn, checks_automations, cli_placement
     from src.server.services.claude_code.machine import read_answer
-    from src.server.services.llm.config import deployment_llm, saved_default_model
 
     if not (workspace_id and checks_automations()):
         return
-    if not name and not is_home_id(user_id, workspace_id):
-        if pref is None:
-            pref = await user_models.get_model_preference(user_id)
-        name = saved_default_model(pref, "primary") or getattr(deployment_llm(), "name", None)
-    if not (name and is_claude_code_model(name)):
+    if not (name or (name := await _claude_code_default_for(user_id, workspace_id, pref))):
         return
-    where = await placement(user_id, workspace_id, conn=conn)
-    if where.own_computer is not None:
-        answer = await read_answer(str(where.own_computer["computer_id"]))
+    if not is_claude_code_model(name):
+        return
+    where = await cli_placement(user_id, workspace_id, conn=conn)
+    if isinstance(where, OnOwn):
+        answer = await read_answer(str(where.computer["computer_id"]))
         if await relayed_token(user_id, answer, conn=conn) == "stored_token":
             raise AutomationRefusal(claude_code_off_message("stored_unattended"), field="llm_model")
         return
     if where.hosted is not None and where.hosted.runs_on == "stored_token":
         raise AutomationRefusal(claude_code_off_message("stored_unattended"), field="llm_model")
-    if where.refusal is not None:
-        raise AutomationRefusal(claude_code_off_message(where.refusal), field="llm_model")
+    if isinstance(where, OnCloud) or where.reason in _MAY_RUN_LATER:
+        return
+    raise AutomationRefusal(claude_code_off_message(where.reason, **where.fields), field="llm_model")
 
 
-def _check_home_model(user_id: str, name: str | None, workspace_id: str | None) -> None:
-    """Refuse a Claude Code row in Home, whose Chief of Staff does not run on
-    it, so every firing would fail until the automation is disabled."""
-    if name and workspace_id and is_claude_code_model(name) and is_home_id(user_id, workspace_id):
-        raise AutomationRefusal(claude_code_off_message("chief_of_staff"), field="llm_model")
+async def _claude_code_default_for(user_id: str, workspace_id: str, pref: dict[str, Any] | None) -> str | None:
+    """The Claude Code default a row naming no model runs when it fires
+    (``select_model``): the user's saved one in ``pref``, else the
+    deployment's; None where that is another model's, and in Home, whose
+    Chief of Staff runs a Claude Code default only where it would run, and the
+    deployment's model otherwise (``chief_of_staff_default_runs``), so no
+    firing there is refused for it."""
+    from src.server.services.llm.config import deployment_llm, saved_default_model
+
+    if is_home_id(user_id, workspace_id):
+        return None
+    if pref is None:
+        pref = await user_models.get_model_preference(user_id)
+    name = saved_default_model(pref, "primary") or getattr(deployment_llm(), "name", None)
+    return name if name and is_claude_code_model(name) else None
 
 
 async def _check_model(user_id: str, name: str, pref: dict[str, Any] | None) -> None:
@@ -396,7 +409,6 @@ async def create_automation(
         await _require_pin_in(
             user_id, str(data.conversation_thread_id), workspace_id, conn
         )
-    _check_home_model(user_id, data.llm_model, workspace_id)
     await _check_claude_code_hosted(user_id, data.llm_model, workspace_id, conn, model_pref)
     if data.llm_model:
         await _check_model(user_id, data.llm_model, model_pref)
@@ -537,7 +549,6 @@ async def update_automation(
     moved_to = normalize_uuid(update_kwargs.get("workspace_id")) or stored_in
     runs_on = update_kwargs.get("llm_model", current.get("llm_model"))
     if runs_on != current.get("llm_model") or moved_to != stored_in:
-        _check_home_model(user_id, runs_on, moved_to)
         await _check_claude_code_hosted(user_id, runs_on, moved_to, conn, model_pref)
     pinned = update_kwargs.get("conversation_thread_id", stored_pin)
     strategy = update.thread_strategy or current.get("thread_strategy")

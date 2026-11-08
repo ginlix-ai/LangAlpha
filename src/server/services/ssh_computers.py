@@ -744,19 +744,24 @@ def tunnel_of(computer: Dict[str, Any]) -> str:
 
 
 async def tunnels_for(
-    user_id: str, computers: Iterable[Dict[str, Any]]
+    user_id: str, computers: Iterable[Dict[str, Any]], *, conn=None
 ) -> Optional[Dict[str, Dict[str, Any]]]:
     """The tunnels *computers* name, by id, for :func:`ssh_info` to tell which are up.
 
     None when none of *computers* has a tunnel, so a listing without one costs
     no query, and when they cannot be read: whether a tunnel is up is not worth
-    failing a listing over.
+    failing a listing over. Read on ``conn`` where a caller holding locks on
+    it passes one, inside a savepoint, so a read that fails leaves the
+    caller's transaction as it was.
     """
     tunnel_ids = {tunnel_of(computer) for computer in computers} - {""}
     if not tunnel_ids:
         return None
     try:
-        return await get_tunnels(tunnel_ids)
+        if conn is None:
+            return await get_tunnels(tunnel_ids)
+        async with conn.transaction():
+            return await get_tunnels(tunnel_ids, conn=conn)
     except Exception:  # noqa: BLE001 - shown as not known instead
         logger.warning("Could not read the tunnels of user %s", user_id, exc_info=True)
         return None

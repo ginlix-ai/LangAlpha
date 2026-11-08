@@ -343,25 +343,20 @@ class PTCAgent:
                 own Bash, ExecuteCode and file tools take a ``computer`` to run
                 on. None leaves every tool on this computer.
             claude_code_launcher: Where a Claude Code CLI runs, given the
-                sandbox, the credential admission let it run on a cloud
-                computer (``claude_code_hosted``) and the saved setup token
-                it let it sign in with (``claude_code_saved``), or the pair
-                its subagents' Claude Code pins were let on a turn of another
-                model (``claude_code_pins``); the server picks it, and the
-                token it signs in with.
+                sandbox and what admission let it run on (``Admitted``): the
+                turn's (``claude_code_admitted``), or its subagents' Claude
+                Code pins' on a turn of another model (``claude_code_pins``);
+                the server picks it, and the token it signs in with.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent.
         """
         turn = turn_model(self.config, llm, self.llm, background=False)
         claude_code = isinstance(turn.client, ClaudeCodeTarget)
-        # What a Claude Code CLI here signs in with: the turn's own, else its
-        # subagents' Claude Code pins' on a turn of another model.
-        claude_code_cli = (
-            (self.config.claude_code_hosted, self.config.claude_code_saved)
-            if claude_code
-            else self.config.claude_code_pins
-        )
+        # Where a Claude Code CLI here runs and what it signs in with: the
+        # turn's own, else its subagents' Claude Code pins' on a turn of
+        # another model.
+        claude_code_cli = self.config.claude_code_admitted if claude_code else self.config.claude_code_pins
         if claude_code_cli is not None and claude_code_launcher is None:
             raise RuntimeError("a Claude Code CLI needs a claude_code_launcher")
 
@@ -1049,7 +1044,7 @@ class PTCAgent:
         # agent, opens with the hooks that write its rows, and takes in what
         # is sent into its task between calls.
         claude_code_launcher_for = (
-            partial(claude_code_launcher, sandbox, *claude_code_cli)
+            partial(claude_code_launcher, sandbox, claude_code_cli)
             if claude_code_cli is not None and claude_code_launcher is not None
             else None
         )
@@ -1061,8 +1056,9 @@ class PTCAgent:
             from ptc_agent.agent.claude_code.ssh_launcher import SUBAGENT_CLI_SLOT_WAIT_S
 
             background_middleware.claude_code_types |= {spec["name"]}
-            background_middleware.claude_code_stored = bool(claude_code_cli[1])
+            background_middleware.claude_code_stored = bool(claude_code_cli.saved)
             background_middleware.claude_code_models[spec["name"]] = target.model
+            background_middleware.cli_computer = claude_code_cli.cli_computer
             own = list(spec.get("middleware") or [])
             baseline = next((m for m in own if isinstance(m, BaselineContextMiddleware)), None)
             return claude_code_graph(

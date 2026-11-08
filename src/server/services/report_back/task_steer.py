@@ -417,47 +417,78 @@ def _ours(row: dict | None, attempts: int) -> bool:
     )
 
 
+async def _posted_turn_runs_claude_code(
+    user_id: str, workspace_id: str | None, thread_id: str, held: str | None, *, home: bool,
+) -> bool:
+    """Whether the turn a steer posts, which names no model, runs on Claude
+    Code: on the thread's own model while it still resolves (``turn_model``),
+    else on the account default (``effective_default_model``), which the
+    Chief of Staff runs only where ``chief_of_staff_default_runs`` lets it on
+    this thread, as ``resolve_llm_config`` does, and on the deployment's
+    Default otherwise."""
+    from src.llms.claude_code import is_claude_code_model
+    from src.server.services.claude_code.flow import rows_on
+    from src.server.services.llm import user_models
+    from src.server.services.llm.availability import model_resolves
+    from src.server.services.llm.claude_code import chief_of_staff_default_runs
+    from src.server.services.llm.thread_model import effective_default_model
+
+    prefs = await user_models.get_model_preference(user_id)
+    if held and model_resolves(prefs, held):
+        return is_claude_code_model(held)
+    if not is_claude_code_model(effective_default_model(prefs)):
+        return False
+    if not home:
+        return True
+    return await rows_on(user_id) and await chief_of_staff_default_runs(
+        user_id, workspace_id, thread_id=thread_id,
+    ) is not None
+
+
 async def _computer_full(thread_id: str, task_id: str, user_id: str, workspace_id: str | None) -> bool:
     """Whether a turn posted now would be refused the resume for room: the
-    task ran on Claude Code, and its computer cannot fit the resume and the
-    turn, unless the thread names a model that does not run on Claude Code (a
-    thread naming none runs the account default, which may). On such a thread
-    the resume needs a CLI only where an analyst turn still compiles the
-    task's subagent with a Claude Code pin and that pin runs on Claude Code
-    now, and runs on the thread's model elsewhere, the Chief of Staff's
-    included. That lifts once a CLI there ends, so
-    the steer waits for it without spending one of its turns. A failed check
-    posts the turn."""
-    from src.llms.claude_code import is_claude_code_model
-    from src.server.database.computer import get_computer_for_thread
+    task ran on Claude Code, and the computer that would run the resume's CLI
+    now, where admission places a turn in the workspace (``cli_placement``),
+    cannot fit the resume and the turn, unless the posted turn runs on a model
+    that is not Claude Code (``_posted_turn_runs_claude_code``: the thread's
+    own, else the Default it starts on). On such a thread the resume needs a
+    CLI only where the thread's turn, an analyst's or in Home the Chief of
+    Staff's, still compiles the task's subagent with a Claude Code pin and
+    that pin runs on Claude Code now (``runs_unattended``), and runs on the
+    thread's model elsewhere. That lifts once a CLI there ends, so the steer
+    waits for it without spending one of its turns. A failed check posts the
+    turn, and so does a placement that refuses it, which the turn reports."""
     from src.server.database.conversation.threads_read import get_thread_auth_meta
     from src.server.database.home_workspace import is_home_id
     from src.server.database.runs import subagent_runs as sr_db
     from src.server.services.claude_code.flow import rows_on
-    from src.server.services.claude_code.hosted import cli_cap
-    from src.server.services.llm.claude_code import pin_admitted
+    from src.server.services.claude_code.hosted import Refused, cli_cap, cli_placement
+    from src.server.services.llm.claude_code import runs_unattended
     from src.server.services.llm.subagents import pinned_to_claude_code
 
     try:
         if not await sr_db.ran_on_claude_code(thread_id, task_id):
             return False
-        computer = await get_computer_for_thread(thread_id)
-        cap = cli_cap(computer) if computer is not None else None
-        if cap is None:
-            return False
         thread = await get_thread_auth_meta(thread_id) or {}
-        model = thread.get("llm_model")
-        other_model = bool(model) and not is_claude_code_model(model)
+        home = is_home_id(user_id, workspace_id)
+        other_model = not await _posted_turn_runs_claude_code(
+            user_id, workspace_id, thread_id, thread.get("llm_model"), home=home,
+        )
         if other_model:
-            if is_home_id(user_id, workspace_id):
-                return False
+            role = "chief_of_staff" if home else "analyst"
             task = await sr_db.get_task(thread_id, task_id) or {}
             if not (
                 await rows_on(user_id)
-                and await pinned_to_claude_code(user_id, str(task.get("subagent_type") or ""), "analyst")
-                and await pin_admitted(user_id, workspace_id) is not None
+                and await pinned_to_claude_code(user_id, str(task.get("subagent_type") or ""), role)
             ):
                 return False
+        where = await cli_placement(user_id, workspace_id, token=True)
+        if isinstance(where, Refused) or (other_model and await runs_unattended(user_id, where) is None):
+            return False
+        computer = where.computer
+        cap = cli_cap(computer) if computer is not None else None
+        if cap is None:
+            return False
         posted = 1 if other_model else 2
         return await sr_db.live_clis(str(computer["computer_id"])) + posted > cap
     except Exception:

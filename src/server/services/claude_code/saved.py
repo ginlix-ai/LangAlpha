@@ -84,9 +84,10 @@ def check_lock(token: str) -> str:
     return f"{token_check_key(token)}:lock"
 
 
-async def stored_row(user_id: str) -> dict | None:
-    """The token store's row for the setup token ``user_id`` saved, or None."""
-    row = await get_oauth_tokens(user_id, CLAUDE_CODE_PROVIDER)
+async def stored_row(user_id: str, *, conn=None) -> dict | None:
+    """The token store's row for the setup token ``user_id`` saved, or None;
+    read on ``conn`` where a caller holding locks on it passes one."""
+    row = await get_oauth_tokens(user_id, CLAUDE_CODE_PROVIDER, conn=conn)
     return row if row and row["access_token"] else None
 
 
@@ -121,10 +122,11 @@ async def usable_token(user_id: str) -> str | None:
     return row["access_token"] if row is not None and await usable(row) else None
 
 
-async def saved_refusal(user_id: str) -> Literal["signed_out", "token_refused"] | None:
+async def saved_refusal(user_id: str, *, conn=None) -> Literal["signed_out", "token_refused"] | None:
     """Why no turn may run on the saved token, as admission refuses one: none
-    is saved, or it is not ``usable``; None when one may."""
-    row = await stored_row(user_id)
+    is saved, or it is not ``usable``; None when one may. Read on ``conn``
+    where a caller passes one."""
+    row = await stored_row(user_id, conn=conn)
     if row is None:
         return "signed_out"
     return None if await usable(row) else "token_refused"

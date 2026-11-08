@@ -108,8 +108,47 @@ class ClaudeCodeComputer(BaseModel):
 ComputerRefusal = Literal["needs_bigger_computer"]
 
 
+#: Why no Claude Code turn runs in a workspace (``hosted.Refused``), each a
+#: ``CLAUDE_CODE_OFF`` reason.
+PlacementRefusal = Literal[
+    "needs_own_computer", "no_own_computer", "cli_computer_offline", "policy_blocked", "signed_out",
+    "token_refused", "needs_bigger_computer",
+]
+#: Where a turn's CLI runs: on the workspace's own computer (``own``), on an
+#: own computer the server picked for a workspace on a cloud computer that
+#: runs none (``picked``), inside Home's cloud computer's sandbox
+#: (``home_cloud``), or in this server's workers (``server``).
+CliKind = Literal["own", "picked", "home_cloud", "server"]
+
+
+class ClaudeCodeRunsOn(BaseModel):
+    """Where the CLI of some of the user's Claude Code turns runs (``kind``),
+    on the computer ``computer_id`` (named ``name``) where one does, or
+    refused for ``refusal``, naming the computer it would run on where one
+    is offline."""
+
+    kind: CliKind
+    computer_id: str | None = None
+    name: str | None = None
+    refusal: PlacementRefusal | None = None
+
+
+class ClaudeCodeChiefOfStaff(ClaudeCodeRunsOn):
+    """Where the Chief of Staff's CLI runs, and whether it runs a Claude Code
+    Default the user saved (``default_runs``, ``chief_of_staff_default_runs``
+    for Home), the one answer the composer starts Home's turns by."""
+
+    default_runs: bool = False
+
+
 class ClaudeCodeComputers(BaseModel):
     computers: list[ClaudeCodeComputer]
+    #: Where the CLI of turns in workspaces on cloud computers, Home's
+    #: included, runs where those computers run none for the user
+    #: (``hosted.picks_own``): on one of their own computers (``picked``),
+    #: or refused (``no_own_computer``, ``cli_computer_offline``). None where
+    #: cloud computers run it themselves.
+    cli_computer: ClaudeCodeRunsOn | None = None
     #: Each of the user's cloud computers that refuses a turn whatever the
     #: credential, by computer id (``hosted.cloud_refusals``). A turn there is
     #: told it only once its credential would run.
@@ -146,7 +185,8 @@ class ClaudeCodeSetup(BaseModel):
     (``hosted.cloud_refusals``), so the entry names what to resize.
     ``pin_state``: the same answer for a subagent's Claude Code pin on a
     thread of another model, which never signs in with the setup token the
-    user stored (``llm.claude_code.claude_code_placement``)."""
+    user stored (``llm.claude_code.claude_code_placement``).
+    ``chief_of_staff``: where the Chief of Staff's Claude Code runs."""
 
     state: SetupState
     on: bool
@@ -156,6 +196,10 @@ class ClaudeCodeSetup(BaseModel):
     cli_in_sandbox: bool = False
     too_small: list[ClaudeCodeCloudComputer] = Field(default_factory=list)
     pin_state: SetupState | None = None
+    #: Where the Chief of Staff's Claude Code runs (``hosted.cli_placement``
+    #: for Home), or why it can't, and whether it runs a saved Claude Code
+    #: Default; None until the user turns Claude Code on.
+    chief_of_staff: ClaudeCodeChiefOfStaff | None = None
 
 
 #: The credentials a user may choose for their turns on a cloud computer.

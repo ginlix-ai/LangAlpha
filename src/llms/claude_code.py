@@ -54,11 +54,13 @@ class ClaudeTurnFailed(RuntimeError):
         "startup_failed": "Claude Code could not start: {}",
     }
 
-    def __init__(self, kind: str, detail: str) -> None:
+    def __init__(self, kind: str, detail: str, **fields: Any) -> None:
         template = self.TEMPLATES.get(kind)
         super().__init__(template.format(detail) if template else f"{kind}: {detail}")
         self.kind = kind
         self.detail = detail
+        #: What the user's words for ``kind`` name (``CLAUDE_CODE_OFF``'s fields).
+        self.fields = fields
 
 
 #: The Claude plan's limits, as the CLI names them, each with the model
