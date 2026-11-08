@@ -156,6 +156,162 @@ class TestGetNews:
         assert captured["last_id"] == "abc-cursor"
 
 
+class TestDateWindow:
+    """published_after/published_before cut a newest-first feed paged with `last`."""
+
+    @staticmethod
+    def _feed(monkeypatch, hours_ago: list[int]):
+        """Install a fake feed of stories `hours_ago` (newest first); returns the call log."""
+        calls: list[str | None] = []
+        stories = [
+            {
+                **RAW_STORY,
+                "id": 1000 + i,
+                "time": f"2026-03-10T{23 - h:02d}:00:00+00:00",
+            }
+            for i, h in enumerate(hours_ago)
+        ]
+
+        async def fake_get_feed(self, query, limit=30, last_id=None):
+            calls.append(last_id)
+            start = 0
+            if last_id:
+                start = (
+                    next(i for i, s in enumerate(stories) if str(s["id"]) == last_id)
+                    + 1
+                )
+            return {"stories": stories[start : start + limit]}
+
+        monkeypatch.setattr(
+            "src.data_client.tickertick.news_source.TickerTickClient.get_feed",
+            fake_get_feed,
+        )
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_window_keeps_only_in_range_stories_and_stops_at_its_start(
+        self, monkeypatch
+    ):
+        calls = self._feed(monkeypatch, [0, 1, 2, 3, 4, 5, 6, 7])
+        result = await TickerTickNewsSource().get_news(
+            limit=10,
+            published_after="2026-03-10T18:00:00Z",
+            published_before="2026-03-10T21:00:00Z",
+        )
+        assert [r["published_at"][11:13] for r in result["results"]] == [
+            "21",
+            "20",
+            "19",
+            "18",
+        ]
+        assert result["count"] == 4
+        assert result["next_cursor"] is None
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_scan_stops_without_fetching_another_page_past_the_window(
+        self, monkeypatch
+    ):
+        from src.data_client.tickertick import news_source
+
+        calls = self._feed(
+            monkeypatch, [0] * 5 + [10] * (news_source._WINDOW_PAGE_SIZE + 15)
+        )
+        result = await TickerTickNewsSource().get_news(
+            limit=50, published_after="2026-03-10T20:00:00Z"
+        )
+        assert result["count"] == 5
+        assert result["next_cursor"] is None
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_window_cursor_is_the_last_returned_story_when_limit_fills(
+        self, monkeypatch
+    ):
+        self._feed(monkeypatch, [0, 1, 2, 3, 4, 5])
+        result = await TickerTickNewsSource().get_news(
+            limit=2, published_after="2026-03-10T00:00:00Z"
+        )
+        assert [r["id"] for r in result["results"]] == ["1000", "1001"]
+        assert result["next_cursor"] == "1001"
+
+    @pytest.mark.asyncio
+    async def test_scan_budget_hands_back_a_cursor_inside_a_deep_window(
+        self, monkeypatch
+    ):
+        from src.data_client.tickertick import news_source
+
+        scanned = news_source._WINDOW_PAGE_SIZE * news_source._WINDOW_MAX_PAGES
+        calls = self._feed(monkeypatch, [0] * (scanned + 50))
+        result = await TickerTickNewsSource().get_news(
+            limit=5, published_before="2026-03-10T00:00:00Z"
+        )
+        assert result["results"] == []
+        assert len(calls) == news_source._WINDOW_MAX_PAGES
+        assert result["next_cursor"] == str(1000 + scanned - 1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bound", ["yesterday", "2026-13-01"])
+    async def test_malformed_bound_is_ignored(self, monkeypatch, bound):
+        self._feed(monkeypatch, [0, 1])
+        result = await TickerTickNewsSource().get_news(
+            limit=5, published_after=bound, published_before=bound
+        )
+        assert result["count"] == 2
+        assert result["next_cursor"] is None
+
+    @pytest.mark.asyncio
+    async def test_failed_later_page_returns_what_was_gathered(self, monkeypatch):
+        from src.data_client.tickertick import news_source
+
+        size = news_source._WINDOW_PAGE_SIZE
+        stories = [
+            {**RAW_STORY, "id": 1000 + i, "time": "2026-03-10T12:00:00+00:00"}
+            for i in range(size)
+        ]
+        calls: list[str | None] = []
+
+        async def fake_get_feed(self, query, limit=30, last_id=None):
+            calls.append(last_id)
+            if last_id:
+                raise Exception("TickerTick request failed")
+            return {"stories": stories}
+
+        monkeypatch.setattr(
+            "src.data_client.tickertick.news_source.TickerTickClient.get_feed",
+            fake_get_feed,
+        )
+        result = await TickerTickNewsSource().get_news(
+            limit=size + 1, published_after="2026-03-10T00:00:00Z"
+        )
+        assert result["count"] == size
+        assert result["next_cursor"] == str(1000 + size - 1)
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_failed_first_page_raises(self, monkeypatch):
+        async def fake_get_feed(self, query, limit=30, last_id=None):
+            raise Exception("TickerTick request failed")
+
+        monkeypatch.setattr(
+            "src.data_client.tickertick.news_source.TickerTickClient.get_feed",
+            fake_get_feed,
+        )
+        with pytest.raises(Exception, match="TickerTick request failed"):
+            await TickerTickNewsSource().get_news(
+                limit=5, published_after="2026-03-10T00:00:00Z"
+            )
+
+    @pytest.mark.asyncio
+    async def test_short_page_ends_the_window(self, monkeypatch):
+        self._feed(monkeypatch, [0, 1])
+        result = await TickerTickNewsSource().get_news(
+            limit=5, published_after="2026-03-10T00:00:00Z"
+        )
+        assert result["count"] == 2
+        assert result["next_cursor"] is None
+
+
 class TestGetFeedErrors:
     """The HTTP client wraps transport/status failures in a clear Exception."""
 

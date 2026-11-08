@@ -89,16 +89,18 @@ class GinlixDataNewsSource:
                 "next_cursor": body.get("next_cursor"),
             }
 
-        # Multi-ticker: parallel requests, merge & sort by published_at desc
-        per_ticker_limit = max(limit // len(tickers), 5)
-
+        # Multi-ticker: parallel requests, merge & sort by published_at in the
+        # requested direction (desc by default). Asking each ticker for `limit`
+        # rows makes the merged top `limit` exact either way.
         async def _fetch(ticker: str) -> list[dict[str, Any]]:
             try:
                 body = await self._client.get_news(
                     ticker=ticker,
-                    limit=per_ticker_limit,
+                    limit=limit,
                     published_after=published_after,
                     published_before=published_before,
+                    order=order,
+                    sort=sort,
                     user_id=user_id,
                 )
                 return [_normalize_article(r) for r in body.get("results", [])]
@@ -119,7 +121,10 @@ class GinlixDataNewsSource:
                     seen_ids.add(article["id"])
                     merged.append(article)
 
-        merged.sort(key=lambda a: a.get("published_at", ""), reverse=True)
+        merged.sort(
+            key=lambda a: a.get("published_at", ""),
+            reverse=(order or "").lower() != "asc",
+        )
         merged = merged[:limit]
 
         return {

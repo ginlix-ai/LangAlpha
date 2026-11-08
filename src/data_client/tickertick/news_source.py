@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from .client import TickerTickClient
@@ -20,6 +21,26 @@ logger = logging.getLogger(__name__)
 # ticker tokens through — keeps a crafted ``?tickers=`` value from injecting DSL
 # operators (e.g. ``") (or s:cnn"``) into the feed query.
 _TICKER_RE = re.compile(r"^[A-Za-z0-9.\-]{1,15}$")
+
+# TickerTick's feed has no time filter, so a date window is served by paging
+# older with `last=<id>` and cutting client-side. The feed is strictly newest
+# first, so the first story older than the window ends the scan. The upstream
+# allows 5 requests per 30 s per IP, shared with the curated poller, so the scan
+# stops after two pages (the feed serves at most 150 stories per page); a deeper
+# window is resumed through the cursor.
+_WINDOW_PAGE_SIZE = 150
+_WINDOW_MAX_PAGES = 2
+
+
+def _parse_time(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 instant or date (naive reads as UTC); None when unparseable."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _build_query(tickers: list[str] | None) -> str:
@@ -54,6 +75,10 @@ def _normalize_story(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _page(results: list[dict[str, Any]], next_cursor: str | None) -> dict[str, Any]:
+    return {"results": results, "count": len(results), "next_cursor": next_cursor}
+
+
 class TickerTickNewsSource:
     """Fetches news from TickerTick (curated or ticker feeds)."""
 
@@ -69,16 +94,44 @@ class TickerTickNewsSource:
         user_id: str | None = None,
     ) -> dict[str, Any]:
         query = _build_query(tickers)
+        after = _parse_time(published_after)
+        before = _parse_time(published_before)
+        windowed = after is not None or before is not None
+        page_size = _WINDOW_PAGE_SIZE if windowed else limit
+        results: list[dict[str, Any]] = []
+        last_id = cursor
         async with TickerTickClient() as client:
-            data = await client.get_feed(query, limit=limit, last_id=cursor)
-
-        stories = data.get("stories", []) if isinstance(data, dict) else []
-        results = [_normalize_story(s) for s in stories]
-        # TickerTick paginates via ``last=<id>`` (older stories). Hand the last
-        # story id back as the cursor when we filled the page, so the caller can
-        # request the next page; a short page means we've reached the end.
-        next_cursor = results[-1]["id"] if results and len(results) >= limit else None
-        return {"results": results, "count": len(results), "next_cursor": next_cursor}
+            for page in range(_WINDOW_MAX_PAGES if windowed else 1):
+                try:
+                    data = await client.get_feed(
+                        query, limit=page_size, last_id=last_id
+                    )
+                except Exception:
+                    if page == 0:
+                        raise
+                    logger.warning(
+                        "news.tickertick.window_scan_interrupted", exc_info=True
+                    )
+                    return _page(results, last_id)
+                stories = data.get("stories", []) if isinstance(data, dict) else []
+                for story in stories:
+                    article = _normalize_story(story)
+                    last_id = article["id"]
+                    if windowed:
+                        published = _parse_time(article["published_at"])
+                        if published is None or (before and published > before):
+                            continue
+                        if after and published < after:
+                            return _page(results, None)
+                    results.append(article)
+                    # TickerTick paginates via ``last=<id>`` (older stories); the
+                    # last story id is the cursor for the next page.
+                    if len(results) >= limit:
+                        return _page(results, last_id)
+                if len(stories) < page_size:
+                    return _page(results, None)
+        # Scan budget spent inside the window: resume from the last story read.
+        return _page(results, last_id)
 
     async def get_news_article(
         self, article_id: str, user_id: str | None = None

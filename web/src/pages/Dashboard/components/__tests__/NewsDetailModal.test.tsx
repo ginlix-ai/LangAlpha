@@ -126,6 +126,60 @@ describe('NewsDetailModal — imageless (TickerTick) article', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('says the ticker table is the vendor\'s AI estimate, and shows an unscored ticker as Unscored rather than Neutral', async () => {
+    render(
+      <NewsDetailModal
+        newsId="mixed-1"
+        onClose={vi.fn()}
+        fallback={{
+          title: 'Mixed Scores Story',
+          description: 'Summary text.',
+          tickers: ['AAPL', 'MSFT', 'NVDA'],
+          sentiments: [
+            { ticker: 'AAPL', sentiment: 'negative', reasoning: 'Scored with a note.' },
+            { ticker: 'MSFT', sentiment: null },
+          ],
+        }}
+      />,
+    );
+
+    expect(await screen.findByText('Negative')).toBeInTheDocument();
+    expect(screen.getByTitle(/estimated by the news vendor's AI model/i)).toBeInTheDocument();
+    expect(screen.getAllByText('Unscored')).toHaveLength(2);
+    expect(screen.queryByText('Neutral')).not.toBeInTheDocument();
+  });
+
+  it('lists the tickers of a story the feed did not score as Unscored, with no AI attribution', async () => {
+    render(
+      <NewsDetailModal
+        newsId="unscored-1"
+        onClose={vi.fn()}
+        fallback={{ title: 'Unscored Story', description: 'Summary text.', tickers: ['AAPL'] }}
+      />,
+    );
+
+    expect(await screen.findByText('Unscored')).toBeInTheDocument();
+    expect(screen.queryByTitle(/news vendor's AI model/i)).not.toBeInTheDocument();
+  });
+
+  it('makes no AI claim when the feed returned sentiments but scored none', async () => {
+    render(
+      <NewsDetailModal
+        newsId="all-null-1"
+        onClose={vi.fn()}
+        fallback={{
+          title: 'Nothing Scored Story',
+          description: 'Summary text.',
+          tickers: ['AAPL'],
+          sentiments: [{ ticker: 'AAPL', sentiment: null }],
+        }}
+      />,
+    );
+
+    expect(await screen.findByText('Unscored')).toBeInTheDocument();
+    expect(screen.queryByTitle(/news vendor's AI model/i)).not.toBeInTheDocument();
+  });
+
   it('does not close on the Escape that abandons an IME composition', async () => {
     const onClose = vi.fn();
     getNewsArticle.mockResolvedValue(SENTIMENT_ARTICLE);

@@ -6,12 +6,7 @@ import { useScrollMemory } from '@/lib/scrollMemory';
 import { getNewsArticle } from '../Dashboard/utils/api';
 import { useLocale } from '@/hooks/useLocale';
 import { formatTimestamp } from '@/lib/format';
-
-interface ArticleSentiment {
-  ticker: string;
-  sentiment?: string;
-  reasoning?: string;
-}
+import { tickerImpactRows, type NewsSentiment } from '../Dashboard/utils/tickerImpact';
 
 interface ArticleSource {
   name?: string;
@@ -27,7 +22,7 @@ interface NewsArticle {
   tickers?: string[];
   image_url?: string;
   description?: string;
-  sentiments?: ArticleSentiment[];
+  sentiments?: NewsSentiment[];
   article_url?: string;
 }
 
@@ -109,6 +104,8 @@ function NewsArticleView() {
       </div>
     );
   }
+
+  const { rows, scored } = tickerImpactRows(article.sentiments, article.tickers);
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)', paddingTop: 'calc(var(--page-top) - 3px)' }}>
@@ -197,9 +194,11 @@ function NewsArticleView() {
       {/* Sentiments */}
       {article.sentiments && article.sentiments.length > 0 && (
         <div className="flex flex-col gap-3" style={{ borderTop: '1px solid var(--color-border-default)', paddingTop: '20px' }}>
-          <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>Sentiment Analysis</h3>
+          <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+            {scored ? 'AI Sentiment (news vendor estimate)' : 'Sentiment Analysis'}
+          </h3>
           <div className="flex flex-col gap-2">
-            {article.sentiments.map((s, i) => (
+            {rows.map((s, i) => (
               <div key={i} className="flex items-start gap-3 text-xs rounded-md p-2.5" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
                 <span
                   className="shrink-0 font-mono font-medium px-1.5 py-0.5 rounded"
@@ -207,7 +206,7 @@ function NewsArticleView() {
                 >
                   {s.ticker}
                 </span>
-                {s.sentiment && (
+                {s.sentiment ? (
                   <span
                     className="shrink-0 font-medium px-1.5 py-0.5 rounded"
                     style={{
@@ -217,9 +216,11 @@ function NewsArticleView() {
                   >
                     {s.sentiment}
                   </span>
+                ) : (
+                  <span className="shrink-0 px-1.5 py-0.5" style={{ color: 'var(--color-text-secondary)' }}>Unscored</span>
                 )}
-                {s.reasoning && (
-                  <span style={{ color: 'var(--color-text-secondary)' }}>{s.reasoning}</span>
+                {s.note && (
+                  <span style={{ color: 'var(--color-text-secondary)' }}>{s.note}</span>
                 )}
               </div>
             ))}

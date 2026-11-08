@@ -1329,6 +1329,9 @@
       "summary": "摘要",
       "summaryMeta": "AI",
       "tickerImpact": "标的影响",
+      "tickerImpactMeta": "AI",
+      "tickerImpactNote": "情绪与说明由新闻服务商的 AI 模型推断，可能与文章本身的观点不一致。",
+      "unscored": "未评分",
       "topics": "话题",
       "attachedNews": "新闻：{{title}}",
       "sentiment": {
