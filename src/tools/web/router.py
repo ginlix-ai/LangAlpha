@@ -159,6 +159,7 @@ _ADAPTER_BUILDERS = {
     for provider, class_name in {
         "exa": "ExaFetchAdapter",
         "parallel": "ParallelFetchAdapter",
+        "deepseek": "DeepSeekFetchAdapter",
         "firecrawl": "FirecrawlFetchAdapter",
         "tavily": "TavilyFetchAdapter",
         "inhouse": "InhouseFetchAdapter",

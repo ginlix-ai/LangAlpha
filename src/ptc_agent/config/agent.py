@@ -376,7 +376,7 @@ class AgentConfig(BaseModel):
     #: what the deployment and the manifest declare.
     prompt_guidance: str | None = None
 
-    # Search API provider (tavily, serper, bocha, exa, parallel)
+    # Search API provider (tavily, serper, bocha, exa, parallel, deepseek)
     search_api: str = "tavily"
 
     # Search depth level name from the provider's manifest entry

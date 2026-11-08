@@ -283,7 +283,7 @@ compaction:
 # =============================================================================
 
 # Search API Configuration
-# Options: tavily, bocha, serper, exa, parallel
+# Options: tavily, bocha, serper, exa, parallel, deepseek
 search_api: tavily
 
 # Crawler Configuration
