@@ -101,7 +101,7 @@ html {
      | token        | surface                                                |
      |--------------|--------------------------------------------------------|
      | bg-page      | the app ground: chat page, settings, auth               |
-     | bg-canvas    | ground behind filled cards (orders); = page in dark     |
+     | bg-canvas    | a recessed well: the PDF viewer; = page in dark        |
      | bg-card      | a card/panel sitting on page or canvas                  |
      | bg-card-hover| hover fill of a clickable card row (solid twin of card) |
      | bg-tool-card | agent tool/artifact cards inside the transcript         |
@@ -701,7 +701,9 @@ html {
    built instead of coming back to edit this selector. It must: the halo is
    a shadow, and a shadow draws on a borderless field too, as a faint
    rectangle inside a box already lit. The block below hands that box the
-   edge on its field's behalf, the way `.rings-within` hands it the ring. */
+   edge on its field's behalf, the way `.rings-within` hands it the ring; a
+   box that draws its focus otherwise says so in `--focus-edge`/`--focus-halo`
+   (the dashboard search, in ink in the open card styles). */
 :where(input, textarea, select):focus:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="submit"], [type="button"], [aria-invalid="true"], .owns-its-edge, .owns-its-edge *) {
   border-color: var(--color-accent-primary) !important;
   box-shadow: 0 0 0 1px var(--color-accent-soft) !important;
@@ -709,8 +711,8 @@ html {
 
 @supports selector(:has(*)) {
   .owns-its-edge:has(> :where(input, textarea):focus) {
-    border-color: var(--color-accent-primary) !important;
-    box-shadow: 0 0 0 1px var(--color-accent-soft) !important;
+    border-color: var(--focus-edge, var(--color-accent-primary)) !important;
+    box-shadow: var(--focus-halo, 0 0 0 1px var(--color-accent-soft)) !important;
   }
 }
 

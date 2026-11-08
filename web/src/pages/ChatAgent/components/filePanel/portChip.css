@@ -1,0 +1,15 @@
+/* The port, and the version beside an app's name (TreeColumn, PreviewCrumbs,
+   ArtifactVersionPicker): a tag, a card's tag in the open card styles, and
+   Soft's taking a little more room. */
+.file-panel-port-chip {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: var(--cs-radius-pill, 3px);
+  border: 1px solid var(--color-border-muted);
+  background-color: var(--color-shell-fill, var(--color-bg-elevated));
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+}
+:root[data-card-style='soft'] .file-panel-port-chip { padding: 0 6px; }

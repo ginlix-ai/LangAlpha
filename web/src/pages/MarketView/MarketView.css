@@ -22,7 +22,8 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background-color: var(--color-bg-card);
+  /* The chart's pane on the page's ground in the open card styles. */
+  background-color: var(--color-shell-float, var(--color-bg-card));
   min-width: 0;
   overflow: hidden;
 }
@@ -66,7 +67,7 @@
   display: flex;
   flex-direction: column;
   background-color: var(--color-bg-page);
-  border-left: 1px solid var(--color-border-muted);
+  border-left: 1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-muted));
   padding: 12px;
   box-sizing: border-box;
   overflow: hidden;
@@ -154,13 +155,15 @@ body.col-resizing * {
   padding: 0 4px 4px;
 }
 
+/* The agent's suggestions: open boxes in the open card styles, which hold
+   still under the pointer. */
 .market-quick-query-card {
-  background: var(--color-bg-card);
-  border: 1px solid var(--color-border-default);
-  border-radius: 10px;
+  background: var(--color-shell-fill, var(--color-bg-card));
+  border: 1px solid var(--color-shell-edge, var(--color-border-default));
+  border-radius: var(--cs-radius-box, 10px);
   padding: 10px 14px;
   color: var(--color-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--cs-text-menu, 0.8125rem);
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
@@ -169,8 +172,8 @@ body.col-resizing * {
 }
 
 .market-quick-query-card:hover {
-  background: var(--color-bg-hover);
-  border-color: var(--color-border-elevated);
+  background: var(--color-shell-fill, var(--color-bg-hover));
+  border-color: var(--color-shell-edge, var(--color-border-elevated));
 }
 
 .market-quick-query-shuffle {

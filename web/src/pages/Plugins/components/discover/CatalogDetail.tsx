@@ -145,7 +145,7 @@ export function CatalogDetail({
         <DetailAsideBlock title={t('plugins.discoverPage.covers')}>
           <div className="discover-tags">
             {covers.map((c) => (
-              <span key={c} className="surface-tag">{c}</span>
+              <span key={c} className="surface-tag open-style:control-voice" data-bracket="tag">{c}</span>
             ))}
           </div>
         </DetailAsideBlock>
@@ -380,7 +380,7 @@ function PartNames({ label, names, under }: { label?: string; names: string[]; u
       {label && <div className="discover-parts-label">{label}</div>}
       <div className="discover-tags">
         {names.map((name) => (
-          <span key={name} className="surface-tag">{name}</span>
+          <span key={name} className="surface-tag open-style:control-voice" data-bracket="tag">{name}</span>
         ))}
       </div>
     </div>

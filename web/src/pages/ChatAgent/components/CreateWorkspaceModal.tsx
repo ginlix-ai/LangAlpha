@@ -3,6 +3,7 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { X, Upload, FileText, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { buttonSlot } from '@/components/ui/button-class';
 import { Input } from '../../../components/ui/input';
 import { Select } from '@/components/ui/select';
 import { useLocale } from '@/hooks/useLocale';
@@ -276,7 +277,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
         <div className="cwm-modal" onClick={(e) => e.stopPropagation()}>
           {/* Header */}
           <div className="cwm-header">
-            <h2 className="cwm-title">
+            <h2 data-bracket="title" className="cwm-title">
               {creationStep === 'done' ? t('workspace.workspaceReady') : t('workspace.uploadingFiles')}
             </h2>
             {canClose && (
@@ -347,14 +348,14 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
             {/* Action buttons */}
             <div className="cwm-actions">
               {creationStep === 'done' && (
-                <button className="cwm-btn-create" onClick={handleOpenWorkspace}>
+                <button {...buttonSlot()} className="cwm-btn-create" onClick={handleOpenWorkspace}>
                   {t('workspace.openWorkspace')}
                 </button>
               )}
               {creationStep === 'error' && (
                 <>
-                  <button className="cwm-btn-cancel" disabled={submitting} onClick={resetAndClose}>{t('common.cancel')}</button>
-                  <button className="cwm-btn-create" onClick={handleRetry}>{t('common.retry')}</button>
+                  <button {...buttonSlot('outline')} className="cwm-btn-cancel" disabled={submitting} onClick={resetAndClose}>{t('common.cancel')}</button>
+                  <button {...buttonSlot()} className="cwm-btn-create" onClick={handleRetry}>{t('common.retry')}</button>
                 </>
               )}
             </div>
@@ -370,7 +371,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
       <div className="cwm-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="cwm-header">
-          <h2 className="cwm-title">{t('workspace.createNewWorkspace')}</h2>
+          <h2 data-bracket="title" className="cwm-title">{t('workspace.createNewWorkspace')}</h2>
           <button className="cwm-close-btn" disabled={!canClose} onClick={resetAndClose}>
             <X className="h-5 w-5" />
           </button>
@@ -390,8 +391,8 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
               placeholder={t('workspace.enterWorkspaceName')}
               className="w-full"
               style={{
-                backgroundColor: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border-muted)',
+                backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))',
+                border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
                 color: 'var(--color-text-primary)',
               }}
               autoFocus
@@ -407,6 +408,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
               onChange={(e) => setDescription(e.target.value)}
               placeholder={t('workspace.enterWorkspaceDesc')}
               rows={3}
+              data-slot="input"
               className="cwm-textarea"
             />
           </div>
@@ -506,11 +508,12 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
           {/* Actions */}
           <div className="cwm-actions">
-            <button type="button" className="cwm-btn-cancel" disabled={submitting} onClick={resetAndClose}>
+            <button type="button" {...buttonSlot('outline')} className="cwm-btn-cancel" disabled={submitting} onClick={resetAndClose}>
               {t('common.cancel')}
             </button>
             <button
               type="submit"
+              {...buttonSlot()}
               className="cwm-btn-create"
               disabled={!name.trim() || submitting || !!preparingTarget}
               aria-busy={submitting}

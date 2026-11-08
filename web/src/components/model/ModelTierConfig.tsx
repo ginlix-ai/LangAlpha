@@ -78,10 +78,10 @@ export function ModelTierConfig({
       {/* "Two ways to research" explainer */}
       {showExplainer && (
         <div
-          className="rounded-lg overflow-hidden"
+          className="rounded-[var(--cs-radius-box,0.5rem)] overflow-hidden"
           style={{
-            background: "var(--color-bg-surface)",
-            border: "1px solid var(--color-border-default)",
+            background: "var(--color-shell-fill, var(--color-bg-surface))",
+            border: "1px solid var(--color-shell-edge, var(--color-border-default))",
           }}
         >
           <button

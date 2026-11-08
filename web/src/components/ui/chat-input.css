@@ -302,7 +302,7 @@
   background: linear-gradient(to right, rgba(239, 68, 68, 0.05), transparent 20%, transparent 80%, rgba(239, 68, 68, 0.05));
   pointer-events: none;
   z-index: 5;
-  border-radius: 22px;
+  border-radius: var(--cs-composer-radius, 16px);
   /* motion-exempt: a live listening state; the overlay breathes on its own period */
   animation: overlay-pulse 2s ease-in-out infinite;
 }
@@ -436,17 +436,31 @@
   color: var(--color-icon-danger);
 }
 
+/* A kicker in the open card styles' words (styles/cardStyle.css): Terminal's
+   tracked mono capitals, Soft's text face in sentence case. */
+:where(:root:not([data-card-style='balanced'])) :is(.widget-deck-eyebrow, .widget-deck-clear) {
+  font-family: var(--term-words);
+  font-size: 0.71875rem;
+  font-weight: 500;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.18em * var(--term-track));
+}
+:root:not([data-card-style]) :is(.widget-deck-eyebrow, .widget-deck-clear) {
+  font-size: 0.5938rem;
+  font-weight: inherit;
+}
+
 /* Show-less pill — appears left of Clear when the deck is fanned. Pill
  * shape mirrors Apple's stack-collapse affordance: rounded background,
  * sentence-case label, sits inline with the uppercase eyebrow row. */
 .widget-deck-show-less {
   appearance: none;
-  border: 1px solid var(--color-border-muted, rgba(20, 20, 23, 0.08));
-  background: var(--color-bg-card, rgba(255, 255, 255, 0.6));
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted, rgba(20, 20, 23, 0.08)));
+  background: var(--color-shell-fill, var(--color-bg-card, rgba(255, 255, 255, 0.6)));
   font: inherit;
   font-size: 0.6875rem;
-  letter-spacing: 0;
-  text-transform: none;
+  letter-spacing: calc(0.18em * var(--term-track));
+  text-transform: var(--term-case);
   color: var(--color-text-secondary, #4a4a4a);
   cursor: pointer;
   padding: 2px 10px;
@@ -460,7 +474,13 @@
 
 .widget-deck-show-less:hover {
   color: var(--color-text-primary, #1a1a1c);
-  border-color: var(--color-border-default, rgba(20, 20, 23, 0.16));
+  border-color: var(--color-shell-edge, var(--color-border-default, rgba(20, 20, 23, 0.16)));
+}
+
+/* Terminal's is a bracketed word (data-bracket), with no pill around it. */
+:root:not([data-card-style]) .widget-deck-show-less {
+  border: 0;
+  padding: 0;
 }
 
 .widget-deck-stack {
@@ -479,11 +499,13 @@
   grid-template-columns: 32px 1fr 24px;
   align-items: center;
   gap: 10px;
+  /* The composer's fill, since a stack overlaps them; the open card styles
+     give them an edge from the cards' palette and no lift. */
   background: var(--color-bg-card, #ffffff);
-  border: 1px solid var(--color-border-muted, rgba(20, 20, 23, 0.08));
-  border-radius: 10px;
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted, rgba(20, 20, 23, 0.08)));
+  border-radius: var(--cs-radius-box, 10px);
   padding: 10px 12px;
-  box-shadow: 0 1px 2px rgba(20, 20, 23, 0.04);
+  box-shadow: var(--cs-frame-shadow, 0 1px 2px rgba(20, 20, 23, 0.04));
   transition:
     transform var(--motion-fold) var(--ease-out),
     opacity var(--motion-fold) var(--ease-out),
@@ -496,13 +518,13 @@
 }
 
 .widget-deck-stack.fanned .widget-deck-card {
-  box-shadow: 0 4px 12px rgba(20, 20, 23, 0.06), 0 1px 2px rgba(20, 20, 23, 0.04);
+  box-shadow: var(--cs-frame-shadow, 0 4px 12px rgba(20, 20, 23, 0.06), 0 1px 2px rgba(20, 20, 23, 0.04));
 }
 
 .widget-deck-card-thumb {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--cs-radius-small, 8px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -515,6 +537,12 @@
 .widget-deck-card-thumb.has-image {
   background: linear-gradient(180deg, #1d1d1f 0%, #2a2a2e 100%);
   position: relative;
+}
+
+/* Terminal draws the mark as an outline, a picture's dark ground included. */
+:root:not([data-card-style]) .widget-deck-card-thumb {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge);
 }
 
 .widget-deck-card-thumb-img {
@@ -530,12 +558,16 @@
 
 .widget-deck-card-title {
   font-weight: 500;
-  font-size: 0.8125rem;
+  font-size: var(--cs-text-menu, 0.8125rem);
   line-height: 1.2;
   color: var(--color-text-primary, #1a1a1c);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+:root:not([data-card-style]) .widget-deck-card-title {
+  font-weight: 700;
 }
 
 .widget-deck-card-snippet {

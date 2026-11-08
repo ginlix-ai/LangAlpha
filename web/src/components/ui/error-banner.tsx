@@ -7,6 +7,7 @@ import { parseErrorMessage } from '@/pages/ChatAgent/utils/parseErrorMessage';
 import { usePlanClock } from '@/hooks/useClaudeCodePlan';
 import type { PlanRefusal } from '@/api/model';
 import { planRefusalText } from '@/lib/claudeCodePlan';
+import { cn } from '@/lib/utils';
 
 interface ErrorBannerProps {
   error: string | StructuredError | null | undefined;
@@ -88,7 +89,9 @@ export function ErrorBanner({ error, className, style }: ErrorBannerProps): Reac
     return <NoticeLine message={error.message} className={`px-3 py-1.5 ${className ?? ''}`} style={style} />;
   }
 
-  const baseClass = `flex items-start gap-2 px-3 py-2 rounded-md text-sm ${className ?? ''}`;
+  // In the composer stack the corner and the text's inset are the stack's
+  // (ChatView); anywhere else, these.
+  const baseClass = cn('flex items-start gap-2 py-2 pr-3 pl-[var(--stack-row-pad,0.75rem)] rounded-[var(--stack-row-radius,var(--radius-md))] text-sm', className);
   // Opaque: the tint is layered over the page surface, so the answer's text
   // scrolling under the banner above the composer does not read through it.
   const baseStyle: React.CSSProperties = {

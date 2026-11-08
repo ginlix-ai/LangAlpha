@@ -2,20 +2,28 @@
    same hairline that separates the rows. The select triggers carry both
    already, as the shared primitive draws them. */
 .automation-form :is(input, textarea, select, .automation-moment-field) {
-  background-color: var(--color-bg-input);
-  border-color: var(--color-border-muted);
+  background-color: var(--color-shell-fill, var(--color-bg-input));
+  border-color: var(--color-shell-edge, var(--color-border-muted));
+}
+
+/* The moment field squares off with the fields in Terminal. */
+.automation-form .automation-moment-field {
+  border-radius: var(--cs-radius-small, calc(var(--radius) - 2px));
+}
+
+/* What the automation is told to do is typed prose: it keeps the text face
+   in Terminal's mono form. */
+:root:not([data-card-style]) .automation-form textarea {
+  font-family: var(--font-content);
 }
 
 /* The Settings shape: one hairline stack, a setting's name on the left in
    the column the starting points draw their cadence in, its field on the
    right. No card around it, so the form reads as the page it opened on. */
-.automation-form-rows {
-  border-top: 1px solid var(--color-border-muted);
-  border-bottom: 1px solid var(--color-border-muted);
-}
-
+/* Its rows parted by a card's divider (rule-t, rule-b on the stack): dashed
+   in Terminal, a hairline in Soft. */
 .automation-form-rows > * + * {
-  border-top: 1px solid var(--color-border-muted);
+  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
 }
 
 .automation-form-row {
@@ -49,7 +57,7 @@
    hovered. */
 .automation-trigger-option,
 .automation-day {
-  border: 1px solid var(--color-border-muted);
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
   transition: background-color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
 }
 
@@ -59,12 +67,14 @@
   background-color: var(--color-bg-subtle);
 }
 
+/* The open styles press it in full ink with no wash, as a chosen option. */
 .automation-trigger-option[aria-pressed='true'],
 .automation-day[aria-pressed='true'] {
   --automation-meter-wash: var(--color-bg-hover);
-  border-color: var(--color-text-secondary);
-  background-color: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  border-color: var(--color-shell-ink, var(--color-text-secondary));
+  background-color: var(--color-shell-fill, var(--color-bg-hover));
+  color: var(--color-shell-ink, var(--color-text-primary));
+  font-weight: var(--cs-weight-selected, 400);
 }
 
 /* The kinds of trigger, each drawn with its own cadence mark. */
@@ -85,7 +95,8 @@
   min-width: max-content;
   max-width: 184px;
   padding: 10px 12px;
-  border-radius: 8px;
+  /* Terminal's small corner, Soft's choice corner. */
+  border-radius: var(--cs-radius-small, var(--cs-radius-choice, 8px));
   text-align: left;
   color: var(--color-text-secondary);
 }
@@ -115,7 +126,8 @@
 .automation-day {
   width: 36px;
   height: 36px;
-  border-radius: 6px;
+  /* Terminal's small corner, Soft's pill. */
+  border-radius: var(--cs-radius-small, var(--cs-radius-pill, 6px));
   font-size: 0.75rem;
   color: var(--color-text-tertiary);
 }
@@ -202,8 +214,8 @@
   max-width: 100%;
   min-height: 28px;
   padding: 0 2px 0 8px;
-  border: 1px solid var(--color-border-muted);
-  border-radius: 6px;
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+  border-radius: var(--cs-radius-small, 6px);
   font-size: 0.8125rem;
   color: var(--color-text-primary);
 }

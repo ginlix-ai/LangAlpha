@@ -82,7 +82,7 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
   return (
     <div className={`preview-viewer${chrome ? '' : ' is-bare'}`} style={{ position: 'relative' }}>
       {chrome && (
-        <div className="preview-viewer-toolbar">
+        <div className="preview-viewer-toolbar rule-b">
           <div className="preview-viewer-title">
             <span>{displayTitle}</span>
             <span className="preview-viewer-port-badge">:{port}</span>

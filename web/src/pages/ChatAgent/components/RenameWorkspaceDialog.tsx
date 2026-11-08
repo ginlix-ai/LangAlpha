@@ -35,7 +35,7 @@ function RenameWorkspaceDialog({ target, onClose, onSubmit, busy }: RenameWorksp
 
   return (
     <Dialog open={!!target} onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
-      <DialogContent style={{ backgroundColor: 'var(--color-bg-page)', borderColor: 'var(--color-border-muted)' }}>
+      <DialogContent style={{ backgroundColor: 'var(--color-shell-float, var(--color-bg-page))', borderColor: 'var(--color-shell-edge, var(--color-border-muted))' }}>
         <DialogHeader>
           <DialogTitle>{t('workspace.rename')}</DialogTitle>
           <DialogDescription>{t('workspace.renameDescription')}</DialogDescription>

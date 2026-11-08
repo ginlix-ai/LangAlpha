@@ -16,11 +16,12 @@
 .discover-chips .surface-chip {
   height: 28px;
   padding: 0 12px;
-  border: 1px solid var(--color-border-muted);
-  color: var(--color-text-secondary);
+  /* Outlined in every style, Soft in a pill's ink. */
+  border: var(--cs-pill-border, 1px solid var(--color-border-muted));
+  color: var(--color-shell-meta, var(--color-text-secondary));
 }
-.discover-chips .surface-chip:hover { color: var(--color-text-primary); }
-.discover-chips .surface-chip.is-on { border-color: var(--color-border-default); color: var(--color-text-primary); }
+.discover-chips .surface-chip:hover { color: var(--color-shell-meta, var(--color-text-primary)); }
+.discover-chips .surface-chip.is-on { border-color: var(--color-border-default); color: var(--color-shell-ink, var(--color-text-primary)); }
 .discover-chips .surface-chip:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--color-focus-ring); }
 
 /* Featured entry, and what came from the catalog beside it */

@@ -11,6 +11,7 @@ import {
 } from '../utils/pluginSchemas';
 import { useCatalogOn } from '../hooks/useCatalogOn';
 import { RefusalBox } from './RefusalView';
+import { buttonSlot } from '@/components/ui/button-class';
 
 const DISCOVER_HREF = '/plugins?tab=plugins&view=discover';
 
@@ -252,6 +253,7 @@ export function PluginSourceStep({
       <div className="flex justify-end">
         <button
           type="button"
+          {...buttonSlot()}
           onClick={submit}
           disabled={!canSubmit}
           className="px-3 py-1.5 text-xs rounded-md disabled:opacity-50"

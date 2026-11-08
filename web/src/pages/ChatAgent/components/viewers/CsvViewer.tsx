@@ -94,7 +94,7 @@ export default function CsvViewer({ content }: CsvViewerProps) {
       </div>
 
       {truncated && (
-        <div className="excel-truncated">
+        <div className="excel-truncated rule-t open-style:control-voice">
           Showing first {MAX_PREVIEW_ROWS} of {rows.length - 1} rows
         </div>
       )}

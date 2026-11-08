@@ -12,6 +12,7 @@ import AuthConfirm from './pages/Login/AuthConfirm';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from './contexts/AuthContext';
 import { useIsMobile } from './hooks/useIsMobile';
+import { useSyncAppearance } from './hooks/useAppearance';
 import { useLocale } from './hooks/useLocale';
 import { useSetupGate } from './hooks/useSetupGate';
 import { isPlatformMode, APP_ENTRY_PATH } from './config/hostMode';
@@ -397,6 +398,15 @@ function AriaLocale({ children }: { children: React.ReactNode }) {
   return <I18nProvider locale={locale}>{children}</I18nProvider>;
 }
 
+/** The account's look, applied on every signed-in page: the setup wizard and
+ *  the welcome flow render outside Main, and a fresh browser has to show the
+ *  account's look there too. Mounted only while signed in, so a sign-out ends
+ *  it and the next account's sign-in starts it afresh. */
+function AppearanceSync() {
+  useSyncAppearance();
+  return null;
+}
+
 function App() {
   const { isLoggedIn, isInitialized } = useAuth();
 
@@ -432,6 +442,7 @@ function App() {
 
   return (
     <AriaLocale>
+    {isLoggedIn && <AppearanceSync />}
     <Routes>
       <Route path={APP_ENTRY_PATH} element={appEntryElement} />
       {isPlatformMode && APP_ENTRY_PATH === '/' && (

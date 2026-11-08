@@ -12,15 +12,18 @@
   background-image: radial-gradient(var(--color-border-muted) 1px, transparent 0);
   background-size: 18px 18px;
 }
+/* The title is the cards' empty note, in the voice. */
 .file-panel-empty-tab-title {
   max-width: 100%;
-  font-size: 0.875rem;
+  font-size: var(--cs-text-menu, 0.875rem);
   font-weight: 500;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
   color: var(--color-text-secondary);
 }
 .file-panel-empty-tab-hint {
   max-width: min(22rem, 100%);
-  font-size: 0.75rem;
+  font-size: var(--cs-text-label, 0.75rem);
   line-height: 1.5;
   color: var(--color-text-tertiary);
 }

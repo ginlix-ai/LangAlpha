@@ -23,6 +23,7 @@ function DropdownMenuContent({
   return (
     <DropdownMenuPrimitive.Portal container={container ?? undefined}>
       <DropdownMenuPrimitive.Content
+        data-slot="menu"
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
         onCloseAutoFocus={closeAutoFocus(onCloseAutoFocus)}
@@ -68,6 +69,7 @@ function DropdownMenuItem({
 }) {
   return (
     <DropdownMenuPrimitive.Item
+      data-slot="menu-item"
       className={cn(ITEM_BOX, itemVariants[variant], className)}
       {...props}
     />
@@ -111,6 +113,7 @@ function DropdownMenuLabel({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Label>) {
   return (
     <DropdownMenuPrimitive.Label
+      data-slot="menu-label"
       className={cn("px-2.5 py-1.5 text-sm font-medium", className)}
       {...props}
     />
@@ -123,7 +126,8 @@ function DropdownMenuSeparator({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Separator>) {
   return (
     <DropdownMenuPrimitive.Separator
-      className={cn("-mx-1 my-1 h-px bg-border", className)}
+      data-slot="menu-separator"
+      className={cn("-mx-1 my-1 h-px bg-[var(--color-shell-divider,hsl(var(--border)))]", className)}
       {...props}
     />
   )

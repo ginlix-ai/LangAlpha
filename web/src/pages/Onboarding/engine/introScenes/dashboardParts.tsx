@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import {
   GripVertical,
   HelpCircle,
@@ -8,7 +8,7 @@ import {
   Search,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getCardStyle, type CardStyle } from '@/lib/cardStyle';
+import { useCardStyle, type CardStyle } from '@/lib/cardStyle';
 import { cn } from '@/lib/utils';
 // The dashboard's own card stylesheets, so the drawing's widgets are its
 // cards (TermCard brings the chat's two with it).
@@ -366,21 +366,18 @@ export function Real({ className, children }: { className?: string; children: Re
 }
 
 /** How far a row under a widget's tabs sits from where the default card
-    style puts it, in page px: Quiet sets the title inside the card, over
+    style puts it, in page px: Balanced sets the title inside the card, over
     the body, and Terminal's tabs are a line of text rather than pills.
     Pointer targets on a row add it. */
-const ROW_SHIFT: Record<CardStyle, number> = { balanced: 0, terminal: -2, quiet: 9.5 };
+const ROW_SHIFT: Record<CardStyle, number> = { soft: 0, terminal: -2, balanced: 9.5 };
 
-/** The reader's card style, read once: it is set in Settings, never while
-    an intro plays. */
 export function useRowShift(): number {
-  const [style] = useState(getCardStyle);
-  return ROW_SHIFT[style];
+  return ROW_SHIFT[useCardStyle()];
 }
 
 /**
  * A widget on the grid, drawn as `WidgetFrame` draws it: the chat's data
- * card, its title set into the top edge (inside it, in Quiet), the widget's
+ * card, its title set into the top edge (inside it, in Balanced), the widget's
  * `sub` beside the title and its `meta` at the edge's far end. In edit mode
  * the edge goes dashed in the accent, the drag grip comes before the title
  * and the widget's actions after it. The cell's size is the caller's: the

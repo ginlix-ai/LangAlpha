@@ -1,7 +1,8 @@
 /* The Plugins page shell: a rail of sections beside one scrolling content
-   column. The scroll port is the column rather than the root, so the desktop
-   shell's drag strip can sit above both and stay put while the page scrolls,
-   and the rail keeps its place. Off the shell the strip collapses to nothing. */
+   column (styles/pageRail.css). The scroll port is the column rather than
+   the root, so the desktop shell's drag strip can sit above both and stay
+   put while the page scrolls, and the rail keeps its place. Off the shell the
+   strip collapses to nothing. */
 .plugins-page {
   height: 100%;
   display: flex;
@@ -16,66 +17,21 @@
 }
 
 /* ---------- Rail ---------- */
-.plugins-rail {
-  width: 240px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 14px 10px 16px;
-  overflow-y: auto;
-  border-right: 1px solid var(--color-border-subtle);
-  scrollbar-width: thin;
-}
+.plugins-rail > .page-rail-label:first-child { margin-top: 6px; }
 
-.plugins-rail-label {
-  margin: 18px 8px 4px;
-  font-size: 0.71875rem;
-  font-weight: 500;
-  color: var(--color-text-quaternary);
-}
-.plugins-rail > .plugins-rail-label:first-child { margin-top: 6px; }
-
-.plugins-rail-link {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  font-size: 0.8125rem;
-  text-align: left;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
-}
-.plugins-rail-link:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
-.plugins-rail-link.is-active { background: var(--color-bg-hover); color: var(--color-text-primary); }
-.plugins-rail-link:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
-
-.plugins-rail-icon { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.85; }
-.plugins-rail-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.plugins-rail-link .surface-dot { margin-left: auto; }
+.page-rail-link .surface-dot { margin-left: auto; }
 .plugins-rail-count {
   margin-left: auto;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   color: var(--color-text-quaternary);
 }
-.plugins-rail-link .surface-dot + .sr-only + .plugins-rail-count,
-.plugins-rail-link .surface-dot + .plugins-rail-count { margin-left: 8px; }
+.page-rail-link .surface-dot + .sr-only + .plugins-rail-count,
+.page-rail-link .surface-dot + .plugins-rail-count { margin-left: 8px; }
 
 /* A switched-off plugin reads as one: its mark dims and its name quiets. */
-.plugins-rail-link.is-off .plugins-rail-mark { opacity: 0.45; }
-.plugins-rail-link.is-off:not(.is-active) .plugins-rail-name { color: var(--color-text-quaternary); }
+.page-rail-link.is-off .plugins-rail-mark { opacity: 0.45; }
+.page-rail-link.is-off:not(.is-active) .page-rail-name { color: var(--color-text-quaternary); }
 
 .plugins-rail-fold { margin-top: 2px; width: 100%; }
 .plugins-rail-chevron {
@@ -133,16 +89,6 @@
   align-items: center;
   gap: 14px;
   min-width: 0;
-}
-.plugins-head-title {
-  margin: 0;
-  font-family: var(--font-ui);
-  font-size: 1.375rem;
-  font-weight: 600;
-  line-height: 30px;
-  letter-spacing: -0.015em;
-  color: var(--color-text-primary);
-  white-space: nowrap;
 }
 /* What the section holds, once, under its name. */
 .plugins-head-def {
@@ -220,7 +166,7 @@
   padding: 2px;
   border-radius: 8px;
   border: 1px solid var(--color-border-muted);
-  background: var(--color-bg-subtle);
+  background: var(--color-shell-fill, var(--color-bg-subtle));
 }
 .plugins-view button {
   padding: 3px 12px;
@@ -235,13 +181,12 @@
 }
 .plugins-view button:hover { color: var(--color-text-primary); }
 .plugins-view button[aria-pressed='true'] {
-  background: var(--color-bg-elevated);
+  background: var(--color-shell-fill, var(--color-bg-elevated));
   color: var(--color-text-primary);
 }
 .plugins-view button:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
 
 /* Search */
-.plugins-search { position: relative; display: flex; align-items: center; }
 .plugins-search-icon {
   position: absolute;
   left: 10px;
@@ -253,20 +198,8 @@
 .plugins-search input {
   width: 240px;
   height: 30px;
-  padding: 0 28px 0 30px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-input);
-  color: var(--color-text-primary);
-  font: inherit;
+  border-radius: var(--cs-radius-control, 8px);
   font-size: 0.78125rem;
-  outline: none;
-}
-.plugins-search input::placeholder { color: var(--color-text-quaternary); }
-.plugins-search input::-webkit-search-cancel-button { display: none; }
-.plugins-search input:focus-visible {
-  border-color: var(--color-border-elevated);
-  box-shadow: 0 0 0 1px var(--color-focus-ring);
 }
 .plugins-search-clear {
   position: absolute;
@@ -291,41 +224,25 @@
 /* ---------- Phone: the rail becomes a row of pills over the content ---------- */
 @media (max-width: 767px) {
   .plugins-body { flex-direction: column; }
-  .plugins-rail {
-    width: auto;
+  .page-rail.plugins-rail {
     flex-direction: row;
     align-items: center;
     gap: 6px;
     padding: 10px 16px;
     overflow-x: auto;
     overflow-y: hidden;
-    border-right: 0;
-    border-bottom: 1px solid var(--color-border-subtle);
     scrollbar-width: none;
     /* The current pill, scrolled into view, keeps the gutter beside it
        rather than landing flush on the screen's edge. */
     scroll-padding-inline: 16px;
   }
   .plugins-rail::-webkit-scrollbar { display: none; }
-  .plugins-rail-label,
-  .plugins-rail-plugins,
-  .plugins-rail-icon { display: none; }
-  .plugins-rail-link {
-    flex-shrink: 0;
-    gap: 6px;
-    padding: 0 12px;
-    border: 1px solid var(--color-border-muted);
-    border-radius: 15px;
-  }
-  .plugins-rail-link.is-active {
-    background: var(--color-bg-elevated);
-    border-color: var(--color-border-default);
-  }
-  .plugins-rail-name { overflow: visible; }
+  .plugins-rail-plugins { display: none; }
+  .plugins-rail .page-rail-link { gap: 6px; padding: 0 12px; }
   .plugins-rail-count,
-  .plugins-rail-link .surface-dot { margin-left: 0; }
-  .plugins-rail-link .surface-dot + .sr-only + .plugins-rail-count,
-  .plugins-rail-link .surface-dot + .plugins-rail-count { margin-left: 0; }
+  .page-rail-link .surface-dot { margin-left: 0; }
+  .page-rail-link .surface-dot + .sr-only + .plugins-rail-count,
+  .page-rail-link .surface-dot + .plugins-rail-count { margin-left: 0; }
 
   .plugins-column { padding: 16px 16px 48px; }
   .plugins-head { flex-wrap: wrap; gap: 12px; margin-bottom: 22px; }

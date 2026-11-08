@@ -4,6 +4,7 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { aboveDialogs } from "@/hooks/useDialogA11y"
+import { buttonSlot } from "./button-class"
 
 const ToastProvider = ToastPrimitives.Provider
 
@@ -34,12 +35,13 @@ function ToastViewport({
 // One quiet surface for every tone (DESIGN.md): an elevated card, a uniform
 // neutral border, the card shadow. A failure is said by its leading glyph, not
 // by repainting the card red, so the toasts read as one family and a red slab
-// no longer shouts over the work. Positioning goes through `transform`
-// because the enter and exit keyframes animate `transform`, which would stack
-// on the separate `translate` property that translate-x-* sets instead of
-// replacing it.
+// no longer shouts over the work. The open card styles draw it as an open
+// panel on the page's ground, Terminal without the shadow. Positioning goes
+// through `transform` because the enter and exit keyframes animate
+// `transform`, which would stack on the separate `translate` property that
+// translate-x-* sets instead of replacing it.
 const toastClassName =
-  "group pointer-events-auto relative flex w-full items-center gap-3 overflow-hidden rounded-lg border border-(--color-border-elevated) bg-(--color-bg-elevated) py-3 pl-3.5 pr-2.5 text-(--color-text-primary) shadow-(--shadow-card) transition-all data-[swipe=cancel]:[transform:translateX(0)] data-[swipe=end]:[transform:translateX(var(--radix-toast-swipe-end-x))] data-[swipe=move]:[transform:translateX(var(--radix-toast-swipe-move-x))] data-[swipe=move]:transition-none toast-slide"
+  "group pointer-events-auto relative flex w-full items-center gap-3 overflow-hidden rounded-[var(--cs-radius-choice,0.5rem)] border border-[var(--color-shell-edge,var(--color-border-elevated))] bg-[var(--color-shell-float,var(--color-bg-elevated))] py-3 pl-3.5 pr-2.5 text-(--color-text-primary) [box-shadow:var(--cs-float-shadow,var(--shadow-card))] transition-all data-[swipe=cancel]:[transform:translateX(0)] data-[swipe=end]:[transform:translateX(var(--radix-toast-swipe-end-x))] data-[swipe=move]:[transform:translateX(var(--radix-toast-swipe-move-x))] data-[swipe=move]:transition-none toast-slide"
 
 function Toast({
   className,
@@ -47,6 +49,7 @@ function Toast({
 }: React.ComponentProps<typeof ToastPrimitives.Root>) {
   return (
     <ToastPrimitives.Root
+      data-slot="toast"
       className={cn(toastClassName, className)}
       {...props}
     />
@@ -61,6 +64,7 @@ function ToastAction({
 }: React.ComponentProps<typeof ToastPrimitives.Action>) {
   return (
     <ToastPrimitives.Action
+      {...buttonSlot()}
       className={cn(
         "press inline-flex h-7 shrink-0 items-center justify-center rounded-md bg-(--color-btn-primary-bg) px-2.5 text-[13px] font-medium text-(--color-btn-primary-text) hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-(--color-bg-elevated) disabled:pointer-events-none disabled:opacity-50",
         className
@@ -97,7 +101,8 @@ function ToastTitle({
 }: React.ComponentProps<typeof ToastPrimitives.Title>) {
   return (
     <ToastPrimitives.Title
-      className={cn("text-sm font-medium leading-5", className)}
+      data-slot="toast-title"
+      className={cn("text-[length:var(--cs-text-menu,0.875rem)] font-medium leading-5 tracking-[calc(0.02em*var(--term-track))]", className)}
       {...props}
     />
   )

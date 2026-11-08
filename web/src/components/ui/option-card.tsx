@@ -96,14 +96,16 @@ export function OptionCard<V extends string>({
   return (
     <label
       data-testid={testId}
+      data-slot="option-card"
       data-state={checked ? 'checked' : 'unchecked'}
       className={cn(
-        'rings-within relative flex items-start gap-3 rounded-lg border px-4 py-3.5',
+        'rings-within relative flex items-start gap-3 rounded-[var(--cs-radius-choice,0.5rem)] border px-4 py-3.5',
         // Ink, as the app's other choice rows are: amber annotates, it does
-        // not select (DESIGN.md, accent discipline).
+        // not select (DESIGN.md, accent discipline). The open card styles
+        // draw an open box, its edge still on hover, the picked one inked.
         checked
-          ? 'border-(--color-text-primary) bg-(--color-bg-tag)'
-          : 'border-(--color-border-muted) bg-(--color-bg-card) hover:border-(--color-border-default)',
+          ? 'border-[var(--color-shell-ink,var(--color-text-primary))] bg-[var(--color-shell-fill,var(--color-bg-tag))]'
+          : 'border-[var(--color-shell-edge,var(--color-border-muted))] bg-[var(--color-shell-fill,var(--color-bg-card))] hover:border-[var(--color-shell-edge,var(--color-border-default))]',
         // A press gives a little, so a pick is felt as the check fills.
         'cursor-pointer press',
       )}
@@ -140,6 +142,7 @@ export function OptionCard<V extends string>({
         // A well, as a quote list sets its charts in.
         <span
           aria-hidden="true"
+          data-slot="option-media"
           className="flex shrink-0 rounded-md bg-(--color-bg-page) shadow-[inset_0_0_0_1px_var(--color-border-muted)] transition-colors"
           style={{ color: checked ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
         >
@@ -150,7 +153,8 @@ export function OptionCard<V extends string>({
       )}
       <span className="min-w-0 flex-1">
         <span
-          className="block text-sm font-medium leading-5"
+          data-slot="option-title"
+          className="block text-[length:var(--cs-text-field,0.875rem)] font-medium leading-5"
           style={{ color: 'var(--color-text-primary)' }}
         >
           {title}
@@ -177,6 +181,7 @@ function CheckMark({ checked }: { checked: boolean }) {
   return (
     <span
       aria-hidden="true"
+      data-slot="option-check"
       className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors"
       style={
         checked

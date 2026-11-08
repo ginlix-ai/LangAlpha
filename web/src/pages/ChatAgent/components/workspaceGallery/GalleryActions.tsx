@@ -2,6 +2,7 @@ import { Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
+import { buttonSlot } from '@/components/ui/button-class';
 
 interface GalleryActionsProps {
   onNewWorkspace: () => void;
@@ -18,6 +19,7 @@ export function GalleryActions({ onNewWorkspace, stacked = false }: GalleryActio
   const { t } = useTranslation();
   return (
     <button
+      {...buttonSlot()}
       onClick={onNewWorkspace}
       className={cn(
         'flex items-center gap-1.5 py-2 h-9 rounded-lg press hover:opacity-90',

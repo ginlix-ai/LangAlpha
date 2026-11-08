@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { appearancePatch, readAccountCardStyle, readAccountTheme } from '../lib/appearancePreference';
 import { MOVED_MODEL_KEYS, threadsMoved } from '../lib/modelPreferences';
 import { queryKeys } from '../lib/queryKeys';
 import { clearPreferences, updatePreferences } from '../pages/Dashboard/utils/api';
@@ -153,7 +154,22 @@ export function useUpdatePreferences() {
 /** Deletes the preferences row once every write issued before it has landed.
  *  Sent past them, a write the server takes after the delete inserts a fresh
  *  row holding its keys, and the reset leaves that value stored. It carries no
- *  key, so it never counts as one of the writes a save status watches. */
+ *  key, so it never counts as one of the writes a save status watches.
+ *
+ *  The look (style and theme) lives in the same row but is not part of what a
+ *  reset clears, so it is saved back before the reset settles, and the refetch
+ *  after it finds the look still there. A failed save back leaves the reset
+ *  done and the look at its defaults. */
 export function useClearPreferences() {
-  return useMutation({ scope: PREFERENCE_SCOPE, mutationFn: clearPreferences });
+  const queryClient = useQueryClient();
+  return useMutation({
+    scope: PREFERENCE_SCOPE,
+    mutationFn: async () => {
+      const row = queryClient.getQueryData<UserPreferences>(queryKeys.user.preferences());
+      const keep = appearancePatch({ cardStyle: readAccountCardStyle(row), theme: readAccountTheme(row) });
+      const cleared = await clearPreferences();
+      if (keep) await updatePreferences(keep).catch(() => {});
+      return cleared;
+    },
+  });
 }

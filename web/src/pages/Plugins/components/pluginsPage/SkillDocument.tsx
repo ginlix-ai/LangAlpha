@@ -192,7 +192,7 @@ export function SkillDocument({
         </nav>
       )}
       <div className="pp-doc">
-        <div className="pp-doc-bar">
+        <div className="pp-doc-bar rule-b">
           {markdown ? (
             <FileText className="h-3.5 w-3.5" aria-hidden />
           ) : (
@@ -203,7 +203,7 @@ export function SkillDocument({
             <span className="pp-doc-lines">{t('plugins.skillsPage.lines', { count: lineCount })}</span>
           )}
           {markdown && (
-            <div className="pp-seg" role="group">
+            <div className="pp-seg" role="group" data-slot="segmented">
               <button type="button" aria-pressed={mode === 'preview'} onClick={() => setMode('preview')}>
                 {t('plugins.skillsPage.preview')}
               </button>

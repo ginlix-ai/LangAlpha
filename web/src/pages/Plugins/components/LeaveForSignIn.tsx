@@ -4,6 +4,7 @@ import { ModalShell } from '@/components/ui/ModalShell';
 import { isDesktopShell } from '@/lib/desktop';
 import { pendingIntent } from '@/pages/ChatAgent/utils/api/mcpOauth';
 import type { ResolvedConnect } from '../hooks/useMcpOauthActions';
+import { buttonSlot } from '@/components/ui/button-class';
 
 /**
  * Where the vendor's sign-in will happen, as the user will see it in the
@@ -65,6 +66,7 @@ export function LeaveForSignIn({
           the lifecycle stops the start rather than the page leaving. */}
       <button
         type="button"
+        {...buttonSlot('ghost')}
         onClick={onCancel}
         className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
         style={{ color: 'var(--color-text-tertiary)' }}
@@ -73,6 +75,7 @@ export function LeaveForSignIn({
       </button>
       <button
         type="button"
+        {...buttonSlot()}
         onClick={onConfirm}
         disabled={pending}
         className="px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"

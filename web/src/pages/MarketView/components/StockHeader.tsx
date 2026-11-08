@@ -109,7 +109,7 @@ const StockHeader = ({ symbol, quote: q, chartMeta: _chartMeta, onToggleOverview
   ) : null;
 
   return (
-    <div className={`stock-header${isMobile && metricsCollapsed ? ' stock-header--compact' : ''}`}>
+    <div className={`stock-header rule-b${isMobile && metricsCollapsed ? ' stock-header--compact' : ''}`}>
       <div className="stock-header-top">
         <div className="stock-header-identity">
           <div className="stock-title">
@@ -195,7 +195,7 @@ const StockHeader = ({ symbol, quote: q, chartMeta: _chartMeta, onToggleOverview
       <div
         className={`stock-metrics-wrapper${isMobile && metricsCollapsed ? ' stock-metrics-wrapper--collapsed' : ''}`}
       >
-        <div className="stock-metrics">
+        <div className="stock-metrics rule-t">
           <div className="metric-item">
             <span className="metric-label">{t('marketView.header.prevClose')}</span>
             <span className="metric-value">{fmt(previousClose)}</span>

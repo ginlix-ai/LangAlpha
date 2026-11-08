@@ -59,7 +59,10 @@
 
 /* A click fades the selection from one row to the other. */
 .automations-list-row[aria-current='true'] {
-  background-color: var(--color-bg-hover);
+  background-color: var(--color-shell-fill, var(--color-bg-hover));
+  /* The open styles mark it as the rails do: an edge, no wash. */
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
+  border-radius: var(--cs-radius-small, 8px);
 }
 
 /* Stepping with the arrow keys hands the fill to a layer under the row's

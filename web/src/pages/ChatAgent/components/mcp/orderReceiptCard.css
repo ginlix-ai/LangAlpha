@@ -120,20 +120,9 @@
 }
 
 /* The vendor's own client is the action on a staged order, so it reads as
-   one, [ OPEN IN MOOMOO ], in the primary ink rather than a button's fill. */
+   one, [ OPEN IN MOOMOO ] (its brackets are data-bracket), in the primary
+   ink rather than a button's fill. */
 .order-term-action {
   font-weight: 600;
   color: var(--color-term-text);
-}
-.order-term-action::before {
-  content: var(--term-open);
-  margin-right: 0.5ch;
-  font-weight: 400;
-  color: var(--color-term-text-tertiary);
-}
-.order-term-action::after {
-  content: var(--term-close);
-  margin-left: 0.5ch;
-  font-weight: 400;
-  color: var(--color-term-text-tertiary);
 }

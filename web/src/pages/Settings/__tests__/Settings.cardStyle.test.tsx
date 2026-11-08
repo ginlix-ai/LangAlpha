@@ -1,8 +1,7 @@
 /**
- * The card style row on the account tab picks how the chat's data cards are
- * drawn. It is per device, like the theme and the font size: a choice stamps
- * the page at once and is kept in this browser, and the account is not
- * written.
+ * The style tiles under Appearance > Theme pick how the app is drawn. A choice
+ * stamps the page at once, is kept in this browser for the next first paint,
+ * and is saved to the account so other devices follow.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
@@ -121,21 +120,21 @@ beforeEach(() => {
   document.documentElement.removeAttribute('data-card-style');
 });
 
-describe('Settings: card style', () => {
-  it('starts on Quiet', async () => {
+describe('Settings: style', () => {
+  it('starts on Balanced', async () => {
     renderAccountTab();
-    const row = await screen.findByRole('group', { name: 'Card style' });
-    expect(within(row).getByRole('button', { name: 'Quiet' })).toHaveAttribute('aria-pressed', 'true');
+    const group = await screen.findByRole('radiogroup', { name: 'Style' });
+    expect(within(group).getByRole('radio', { name: /^Balanced/ })).toBeChecked();
   });
 
-  it('restyles the page at once and keeps the choice on this device only', async () => {
+  it('restyles the page at once, keeps a copy here and saves it to the account', async () => {
     renderAccountTab();
-    const row = await screen.findByRole('group', { name: 'Card style' });
-    fireEvent.click(within(row).getByRole('button', { name: 'Terminal' }));
+    const group = await screen.findByRole('radiogroup', { name: 'Style' });
+    fireEvent.click(within(group).getByRole('radio', { name: /^Terminal/ }));
 
     expect(document.documentElement).not.toHaveAttribute('data-card-style');
-    expect(localStorage.getItem('cardStyle')).toBe('terminal');
-    expect(within(row).getByRole('button', { name: 'Terminal' })).toHaveAttribute('aria-pressed', 'true');
-    expect(h.mutateAsync).not.toHaveBeenCalled();
+    expect(localStorage.getItem('cardStyle.v2')).toBe('terminal');
+    expect(within(group).getByRole('radio', { name: /^Terminal/ })).toBeChecked();
+    expect(h.mutateAsync).toHaveBeenCalledWith({ other_preference: { card_style: 'terminal' } });
   });
 });

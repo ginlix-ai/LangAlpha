@@ -30,9 +30,9 @@
   gap: 10px;
   margin-bottom: 18px;
   padding: 10px 12px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 8px;
-  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-shell-edge, var(--color-border-default));
+  border-radius: var(--cs-radius-box, 8px);
+  background: var(--color-shell-fill, var(--color-bg-subtle));
   font-size: 0.78125rem;
   line-height: 1.5;
   color: var(--color-text-secondary);
@@ -88,9 +88,9 @@
   display: block;
   width: 100%;
   padding: 9px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-muted);
-  background: var(--color-bg-input);
+  border-radius: var(--cs-radius-field, 8px);
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+  background: var(--color-shell-fill, var(--color-bg-input));
   color: var(--color-text-primary);
   font-family: var(--font-content);
   font-size: 0.84375rem;
@@ -115,8 +115,8 @@
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-muted);
+  border-radius: var(--cs-radius-box, 8px);
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
   font-size: 0.78125rem;
   line-height: 1.5;
   color: var(--color-text-secondary);
@@ -257,18 +257,19 @@
   gap: 12px;
   min-width: 0;
   padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-muted);
+  border-radius: var(--cs-radius-box, 8px);
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
   background: transparent;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
-.sa-start-card:hover { background: var(--color-bg-subtle); }
+.sa-start-card:hover { background: var(--color-shell-fill, var(--color-bg-subtle)); }
+/* The chosen starting point outlined in full ink, as a chosen option is. */
 .sa-start-card[aria-checked="true"] {
-  border-color: var(--color-text-tertiary);
-  background: var(--color-bg-subtle);
+  border-color: var(--color-shell-ink, var(--color-text-tertiary));
+  background: var(--color-shell-fill, var(--color-bg-subtle));
 }
 .sa-start-text { flex: 1; min-width: 0; }
 .sa-start-l1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
@@ -305,4 +306,13 @@
 @media (max-width: 640px) {
   .sa-field-head { flex-wrap: wrap; }
   .sa-field-aside { text-align: left; }
+}
+
+/* On a subagent's page the side column's titles are the form's field labels,
+   which stay in sentence case beside the main column's, as a field is set. */
+.detail-page:has(.sa-input) .detail-aside-block h3 {
+  font-size: var(--cs-text-field, 0.78125rem);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--color-text-primary);
 }

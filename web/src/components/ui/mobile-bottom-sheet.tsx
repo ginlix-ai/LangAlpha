@@ -44,16 +44,20 @@ function SheetPanel({
       {/* Sheet */}
       <motion.div
         data-sheet
+        data-slot="sheet"
         initial={{ y: '100%' }}
         animate={{ y: 0 }}
         // Arrives on the drag spring, the one a released swipe settles on;
         // leaves on a tween, since an exit never springs.
         exit={{ y: '100%', transition: TWEEN.exit }}
         transition={SPRING_DRAG}
+        // The open card styles lay it on the page's ground inside their edge,
+        // as their dialogs are; it keeps its rounded top, which says it
+        // slides. Framer moves only `y`, so the var() colors are inert to it.
         style={{
           y: dragY,
-          backgroundColor: 'var(--color-bg-card)',
-          borderColor: 'var(--color-border-muted)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-card))',
+          borderColor: 'var(--color-shell-edge, var(--color-border-muted))',
           ...(sizing === 'fixed' ? { height } : { maxHeight: height }),
         }}
         className={`fixed bottom-0 left-0 right-0 z-1020 rounded-t-3xl border-t${sizing === 'fixed' ? ' flex flex-col' : ''}`}
@@ -61,12 +65,16 @@ function SheetPanel({
         {/* Drag handle */}
         <div
           ref={handleRef}
+          data-slot="sheet-handle"
           className="flex justify-center pt-3 pb-2 cursor-grab active:cursor-grabbing"
           style={{ touchAction: 'none' }}
         >
+          {/* The open card styles draw the bar in their edge's ink, Terminal
+              at half its marks' corner (1px); elsewhere the halved fallback
+              still rounds the 4px bar fully. */}
           <div
-            className="w-10 h-1 rounded-full"
-            style={{ backgroundColor: 'var(--color-border-default)' }}
+            className="w-10 h-1 rounded-[calc(var(--cs-radius-mark,9999px)/2)]"
+            style={{ backgroundColor: 'var(--color-shell-edge, var(--color-border-default))' }}
           />
         </div>
         <div

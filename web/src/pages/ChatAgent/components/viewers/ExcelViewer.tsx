@@ -363,7 +363,7 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
   return (
     <div className="excel-viewer clips-focus-ring">
       {!isEmpty && (
-        <div className="excel-fbar">
+        <div className="excel-fbar rule-b">
           <div className="excel-namebox" title={t('excelViewer.selection')}>{sel ? formatRange(sel.box) : ''}</div>
           <div className="excel-fx">
             {active?.formula ? (
@@ -474,7 +474,7 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
         </div>
       )}
 
-      <div className="excel-footer">
+      <div className="excel-footer rule-t">
         {sheets.length > 1 && (
           <div className="excel-sheet-tabs">
             {sheets.map((s, idx) => (
@@ -493,7 +493,7 @@ export default function ExcelViewer({ data, filePath, focusCell, focusSeq, onAdd
             ))}
           </div>
         )}
-        {note && <div className="excel-footer-note">{note}</div>}
+        {note && <div className="excel-footer-note open-style:control-voice">{note}</div>}
       </div>
     </div>
   );

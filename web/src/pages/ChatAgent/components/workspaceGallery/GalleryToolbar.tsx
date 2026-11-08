@@ -35,6 +35,7 @@ import { prefetchComputerProviders } from '../../hooks/useComputers';
 import { prefetchTierQuota } from '../../hooks/useTierQuota';
 import { ComputerChip } from './ComputerChip';
 import { DiskPercent } from './DiskPercent';
+import { buttonSlot } from '@/components/ui/button-class';
 
 export type GallerySort = 'activity' | 'name' | 'custom';
 
@@ -44,8 +45,10 @@ export const GALLERY_SORTS: readonly GallerySort[] = ['activity', 'name', 'custo
 /** The filter's value for every computer. */
 export const ALL_COMPUTERS = 'all';
 
-const CONTROL = 'flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm transition-colors hover:bg-foreground/5';
-const CONTROL_STYLE = { borderColor: 'var(--color-border-muted)', color: 'var(--color-text-secondary)' };
+// The edge is a class, not inline, so the card styles' button rule
+// (styles/cardStyle.css) can redraw the sort control as their buttons.
+const CONTROL = 'flex h-9 items-center gap-1.5 rounded-lg border border-(--color-border-muted) px-2.5 text-sm transition-colors hover:bg-foreground/5';
+const CONTROL_STYLE = { color: 'var(--color-text-secondary)' };
 
 export interface ComputerControlProps {
   /** The machines: none is a New computer button, one a chip, more a filter. */
@@ -82,10 +85,12 @@ export function GalleryToolbar({ search, onSearchChange, computerControl, sortBy
     <div className="flex flex-wrap items-center gap-2 md:flex-nowrap" data-testid="gallery-toolbar">
       {/* The pill rings for the field inside it: a ring drawn on the field
           alone would cut this border and leave the icon outside the
-          indicator. `rings-within` in tokens.css owns the rule. */}
+          indicator. `rings-within` in tokens.css owns the rule. Its fill and
+          edge are classes, so the card styles' field rule draws it as their
+          other fields (styles/cardStyle.css). */}
       <div
-        className="rings-within owns-its-edge flex h-9 min-w-0 basis-full items-center gap-2 rounded-lg border px-3 transition-colors md:max-w-md md:flex-1 md:basis-auto"
-        style={{ backgroundColor: 'var(--color-bg-input)', borderColor: 'var(--color-border-muted)' }}
+        data-slot="input"
+        className="rings-within owns-its-edge flex h-9 min-w-0 basis-full items-center gap-2 rounded-lg border border-(--color-border-muted) bg-(--color-bg-input) px-3 transition-colors md:max-w-md md:flex-1 md:basis-auto"
       >
         <Search className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
         <input
@@ -109,6 +114,7 @@ export function GalleryToolbar({ search, onSearchChange, computerControl, sortBy
         <DropdownMenuTrigger asChild>
           <button
             type="button"
+            {...buttonSlot('outline')}
             className={cn(CONTROL, 'shrink-0')}
             style={CONTROL_STYLE}
             aria-label={`${t('workspace.sortBy')}: ${sortLabels[sortBy]}`}

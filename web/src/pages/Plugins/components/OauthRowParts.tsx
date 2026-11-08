@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Link2, Link2Off, Monitor, RefreshCw } from 'lucide-react';
 
 import { Loader } from '@/components/ui/loader';
+import { buttonSlot } from '@/components/ui/button-class';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { MetaText } from '@/components/mcp/McpPrimitives';
 import { canDisconnectOauth, isOauthBroken } from '@/pages/ChatAgent/components/mcp/mcpState';
@@ -134,8 +135,9 @@ export function ConnectButton({
   /** `loud` is for the one row whose whole point is that it is not connected. */
   emphasis?: 'quiet' | 'loud';
   /** `md` is a page's button (a detail callout); `sm` sits in a row; `cell`
-   *  is the trailing action of a surface cell, drawn as one. */
-  size?: 'sm' | 'md' | 'cell';
+   *  is the trailing action of a surface cell, drawn as one; `card` is `md`
+   *  drawn as the page's buttons are, as the brokerage card's Connect is. */
+  size?: 'sm' | 'md' | 'cell' | 'card';
   /** The registry was asked and did not answer, so the list is carrying the
    *  note this button points at. False while it is merely still in flight. */
   registryUnavailable?: boolean;
@@ -178,16 +180,17 @@ export function ConnectButton({
       aria-disabled={blocked || undefined}
       aria-describedby={noteId}
       data-testid={testid}
+      {...(size === 'cell' || size === 'card' ? buttonSlot('outline') : {})}
       // `px-2 py-1` matches ScopeControl's badge and trigger, which sit
       // immediately beside this at the same size.
       className={
         size === 'cell'
           ? 'surface-cell-action connect-cell-action'
           : `inline-flex shrink-0 items-center whitespace-nowrap disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed ${
-              size === 'md'
-                ? 'h-[30px] gap-1.5 px-3 text-[0.78125rem] rounded-lg'
-                : 'gap-1 px-2 py-1 text-[0.6875rem] rounded-md'
-            } ${hover}`
+              size === 'sm'
+                ? 'gap-1 px-2 py-1 text-[0.6875rem] rounded-md'
+                : 'h-[30px] gap-1.5 px-3 text-[0.78125rem] rounded-lg'
+            } ${size === 'card' ? 'border border-(--color-border-muted)' : ''} ${hover}`
       }
       style={
         // The same pair the page's own primary CTA uses. Emphasis here is ink
@@ -203,16 +206,16 @@ export function ConnectButton({
                 color: 'var(--color-btn-primary-text)',
                 backgroundColor: 'var(--color-btn-primary-bg)',
               }
-            : {
-                color: 'var(--color-text-primary)',
-                border: '1px solid var(--color-border-muted)',
-              }
+            : size === 'card'
+              ? // Its edge is a class, so the button hooks can shed it.
+                { color: 'var(--color-text-primary)' }
+              : { color: 'var(--color-text-primary)', border: '1px solid var(--color-border-muted)' }
       }
     >
       {connecting ? (
         <Loader size={12} className="text-current" />
       ) : size === 'cell' ? null : (
-        <Link2 className={size === 'md' ? 'h-3.5 w-3.5' : 'h-3 w-3'} />
+        <Link2 className={size === 'sm' ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
       )}
       {label ?? (status ? t('plugins.oauth.reconnect') : t('plugins.oauth.connect'))}
     </button>

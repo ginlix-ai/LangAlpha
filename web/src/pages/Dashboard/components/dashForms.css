@@ -11,7 +11,7 @@
   background-color: var(--color-bg-page);
   border-color: var(--color-border-default);
 }
-/* A card's title cuts its edge in the fill behind it. Quiet fills its cards
+/* A card's title cuts its edge in the fill behind it. Balanced fills its cards
    and sets its own, which outranks this. */
 .dash-form .term-card {
   --term-ground: var(--color-bg-page);
@@ -34,7 +34,7 @@
   line-height: 1.3;
   color: var(--color-term-text-secondary);
 }
-:root:is([data-card-style='balanced'], [data-card-style='quiet']) .dash-form-label {
+:root:is([data-card-style='soft'], [data-card-style='balanced']) .dash-form-label {
   font-size: 0.8125rem;
 }
 .dash-form-required {
@@ -65,7 +65,7 @@ input.dash-form-input {
   white-space: nowrap;
   color: var(--color-term-text-secondary);
 }
-:root:is([data-card-style='balanced'], [data-card-style='quiet']) .dash-form-name {
+:root:is([data-card-style='soft'], [data-card-style='balanced']) .dash-form-name {
   font-size: 0.8125rem;
 }
 
@@ -86,7 +86,7 @@ input.dash-form-input {
 .dash-form-hits > li + li {
   border-top: 1px dotted var(--color-term-rule);
 }
-:root:is([data-card-style='balanced'], [data-card-style='quiet']) .dash-form-hits > li + li {
+:root:is([data-card-style='soft'], [data-card-style='balanced']) .dash-form-hits > li + li {
   border-top-style: solid;
 }
 .dash-form-hit {
@@ -116,7 +116,7 @@ input.dash-form-input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-:root:is([data-card-style='balanced'], [data-card-style='quiet']) .dash-form-hit-name {
+:root:is([data-card-style='soft'], [data-card-style='balanced']) .dash-form-hit-name {
   font-size: 1.0435em;
 }
 .dash-form-hit-exchange {

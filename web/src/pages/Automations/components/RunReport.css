@@ -24,7 +24,7 @@
 
 .automation-run-excerpt {
   margin-top: 8px;
-  font-size: 0.875rem;
+  font-size: var(--cs-text-row, 0.875rem);
   line-height: 1.55;
   -webkit-line-clamp: 3;
 }

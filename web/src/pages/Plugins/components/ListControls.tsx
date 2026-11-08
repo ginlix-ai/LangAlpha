@@ -79,7 +79,8 @@ export function ListControls({
             key={pill.key}
             type="button"
             aria-pressed={stateFilter === pill.key}
-            className={cn('surface-chip', stateFilter === pill.key && 'is-on')}
+            className={cn('surface-chip open-style:control-voice', stateFilter === pill.key && 'is-on')}
+            data-bracket="chip"
             onClick={() => onStateFilterChange(pill.key)}
           >
             {pill.label}

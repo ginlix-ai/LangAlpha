@@ -26,7 +26,7 @@ function ArchiveThreadConfirmDialog({ open, onCancel, onConfirm }: ArchiveThread
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) onCancel(); }}>
-      <DialogContent style={{ backgroundColor: 'var(--color-bg-page)', borderColor: 'var(--color-border-muted)' }}>
+      <DialogContent style={{ backgroundColor: 'var(--color-shell-float, var(--color-bg-page))', borderColor: 'var(--color-shell-edge, var(--color-border-muted))' }}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Archive aria-hidden className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />

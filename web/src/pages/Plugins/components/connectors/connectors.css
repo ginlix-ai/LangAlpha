@@ -58,9 +58,9 @@
   gap: 10px;
   height: 30px;
   padding: 0 10px 0 12px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-default);
-  font-size: 0.78125rem;
+  border-radius: var(--cs-radius-control, 8px);
+  border: 1px solid var(--color-shell-edge, var(--color-border-default));
+  font-size: var(--cs-text-label, 0.78125rem);
   color: var(--color-text-secondary);
 }
 .connector-onoff.is-blocked { color: var(--color-text-quaternary); }
@@ -87,9 +87,9 @@
   align-items: center;
   gap: 10px;
   padding: 14px 16px;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 8px;
-  background: var(--color-bg-card);
+  border: 1px solid var(--color-shell-edge, var(--color-border-subtle));
+  border-radius: var(--cs-radius-box, 8px);
+  background: var(--color-shell-fill, var(--color-bg-card));
   font-size: 0.78125rem;
   color: var(--color-text-tertiary);
 }
@@ -120,6 +120,8 @@
 }
 .connector-mono { font-family: var(--font-mono); font-size: 0.71875rem; }
 
+/* Carries the button hooks, which draw it in the open card styles
+   (styles/cardStyle.css); these are its size and its Balanced look. */
 .connector-btn {
   height: 30px;
   padding: 0 12px;
@@ -144,7 +146,7 @@
   color: var(--color-btn-primary-text);
 }
 .connector-btn.is-primary:hover { opacity: 0.9; }
-.connector-btn.is-danger { color: var(--color-loss); }
+.connector-btn[data-tone='danger'] { color: var(--color-loss); }
 .connector-btn.is-full { width: 100%; }
 .connector-verbs-row { display: flex; gap: 8px; }
 .connector-verbs-row > .connector-btn { flex: 1; }
@@ -164,7 +166,7 @@
    takes and returns. The rows bleed 10px past the column so their hover
    reaches the edge while the names stay on the section title's line. */
 .tool-rows { display: flex; flex-direction: column; margin: -4px -10px 0; }
-.tool-row + .tool-row { border-top: 1px solid var(--color-border-subtle); }
+.tool-row + .tool-row { border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-subtle)); }
 .tool-row-head {
   display: flex;
   align-items: flex-start;
@@ -243,9 +245,9 @@
   display: grid;
   grid-template-columns: fit-content(200px) minmax(0, 1fr);
   margin: 0;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 8px;
-  background: var(--color-bg-card);
+  border: 1px solid var(--color-shell-edge, var(--color-border-subtle));
+  border-radius: var(--cs-radius-box, 8px);
+  background: var(--color-shell-fill, var(--color-bg-card));
 }
 .tool-param {
   display: grid;
@@ -255,7 +257,7 @@
   column-gap: 20px;
   padding: 9px 12px;
 }
-.tool-param + .tool-param { border-top: 1px solid var(--color-border-subtle); }
+.tool-param + .tool-param { border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-subtle)); }
 .tool-param dt code {
   font-family: var(--font-mono);
   font-size: 0.75rem;

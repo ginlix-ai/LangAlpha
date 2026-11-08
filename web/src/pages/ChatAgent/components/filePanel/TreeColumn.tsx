@@ -18,6 +18,7 @@ import type { FileSelection } from './useFileSelection';
 import type { FileBackup } from './useFileBackup';
 import type { PreviewEntry } from './usePreviews';
 import './TreeColumn.css';
+import './portChip.css';
 
 export interface TreeColumnProps {
   /** The three models the column is a view of. */
@@ -134,7 +135,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
           {selection.selectMode ? (
             <>
               <span className="file-panel-tree-count">{selection.selectedPaths.size}</span>
-              <button className="file-panel-chip" onClick={selection.toggleSelectAll}>
+              <button data-bracket="chip" className="file-panel-chip open-style:control-voice" onClick={selection.toggleSelectAll}>
                 {selection.selectedPaths.size === filter.filteredSortedFiles.length
                   ? t('filePanel.deselectAll')
                   : t('filePanel.selectAllVisible')}
@@ -242,7 +243,8 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
               <span className="file-panel-crumb-spacer" />
               {props.onToggleSystemFiles && (
                 <button
-                  className={`file-panel-chip ${props.showSystemFiles ? 'active' : ''}`}
+                  data-bracket="chip"
+                  className={`file-panel-chip open-style:control-voice ${props.showSystemFiles ? 'active' : ''}`}
                   onClick={props.onToggleSystemFiles}
                   title={t('filePanel.systemDirsHint')}
                 >
@@ -268,8 +270,8 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
             live in tokens.css. */}
         <div className="file-panel-tree-filter">
           <div
-            className="rings-within owns-its-edge flex items-center gap-1.5 h-8 px-2 rounded-md border"
-            style={{ backgroundColor: 'var(--color-bg-input)', borderColor: 'var(--color-border-muted)' }}
+            className="file-panel-tree-search rings-within owns-its-edge flex items-center gap-1.5 h-8 px-2 rounded-[var(--cs-radius-control,var(--radius-md))] border"
+            style={{ backgroundColor: 'var(--color-shell-fill, var(--color-bg-input))', borderColor: 'var(--color-shell-edge, var(--color-border-muted))' }}
           >
             <Search className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
             <input
@@ -332,13 +334,14 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
 
         {filter.availableTypes.length > 1 && !selection.selectMode && (
           <div className="file-panel-tree-chips">
-            <button className={`file-panel-chip ${filter.filterType === 'All' ? 'active' : ''}`} onClick={() => filter.setFilterType('All')}>
+            <button data-bracket="chip" className={`file-panel-chip open-style:control-voice ${filter.filterType === 'All' ? 'active' : ''}`} onClick={() => filter.setFilterType('All')}>
               {t('filePanel.filterAll')}
             </button>
             {filter.availableTypes.map((type) => (
               <button
                 key={type}
-                className={`file-panel-chip ${filter.filterType === type ? 'active' : ''}`}
+                data-bracket="chip"
+                className={`file-panel-chip open-style:control-voice ${filter.filterType === type ? 'active' : ''}`}
                 onClick={() => filter.setFilterType(filter.filterType === type ? 'All' : type)}
               >
                 {type}
@@ -351,7 +354,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
             the tree for the same reason the running apps are: they are not
             files, and a `role="tree"` cannot hold rows that are not treeitems. */}
         {(props.onOpenMemory || props.onOpenMemo || props.onOpenChart) && (
-          <div className="file-panel-store-group">
+          <div className="file-panel-store-group rule-b">
             {props.onOpenMemory && (
               <button type="button" className="file-panel-item file-panel-store-row" onClick={props.onOpenMemory}>
                 <BookMarked className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
@@ -383,7 +386,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
             files, and a `role="tree"` cannot hold rows that are not treeitems.
             Staying out of the scroller also keeps them reachable from a long list. */}
         {props.previews.length > 0 && (
-          <div className="file-panel-preview-group">
+          <div className="file-panel-preview-group rule-b">
             <div className="file-panel-preview-group-header">
               <LayoutDashboard className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
               <span className="text-xs font-medium truncate" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -434,11 +437,11 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
               </div>
             ))
           ) : props.filesError ? (
-            <p className="px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{props.filesError}</p>
+            <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{props.filesError}</p>
           ) : filter.listedFiles.length === 0 && !trimmed ? (
-            <p className="px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.noFilesYet')}</p>
+            <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.noFilesYet')}</p>
           ) : showList && filter.filteredSortedFiles.length === 0 ? (
-            <p className="px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
               {trimmed ? t('filePanel.noSearchMatches') : t('filePanel.noTypeMatches', { type: filter.filterType.toLowerCase() })}
             </p>
           ) : (

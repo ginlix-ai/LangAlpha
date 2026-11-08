@@ -1,0 +1,16 @@
+/* The reader's message in the open card styles: an open box, its first line
+   a prompt in Terminal, as the open row of a rail has (.rail-prompt). The
+   bubble reads its own fill; the edge stays a rule here, since a border would
+   take a pixel of room in Quiet's borderless bubble. Its text is the shared
+   Markdown root, so its face is set from the bubble. */
+:root:not([data-card-style='balanced']) .pf-bubble {
+  border: 1px solid var(--color-shell-edge);
+}
+:root:not([data-card-style]) .pf-bubble .font-content {
+  font-family: var(--font-mono);
+  font-size: var(--cs-text-field);
+}
+:root:not([data-card-style]) .pf-bubble .font-content > p:first-child::before {
+  content: '> ';
+  color: var(--color-term-text-tertiary);
+}

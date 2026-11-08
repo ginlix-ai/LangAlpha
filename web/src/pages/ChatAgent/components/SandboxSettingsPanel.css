@@ -1,0 +1,22 @@
+/* The computer's section tabs take the tab hooks; the accent underline gives
+   way to the style's own mark: Terminal's brackets over a dashed rule,
+   Soft's pills with no rule. */
+:root:not([data-card-style]) .pf-sbx-tabs {
+  border-bottom-style: dashed;
+  gap: 0.125rem;
+}
+:root:not([data-card-style='balanced']) .pf-sbx-tabs > [data-slot='tab'] { border-bottom-color: transparent; }
+:root[data-card-style='soft'] .pf-sbx-tabs {
+  border-bottom: 0;
+  padding-bottom: 0.5rem;
+}
+:root[data-card-style='soft'] .pf-sbx-tabs > [data-slot='tab'] {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding-block: 0.25rem;
+}
+:root[data-card-style='soft'] .pf-sbx-tabs > [data-slot='tab'][data-active] {
+  border-color: var(--color-term-text);
+}
+/* Terminal's auto-stop chip (sandbox/OverviewTab.tsx) is a word, not a box. */
+:root:not([data-card-style]) .pf-sbx-chip { padding-inline: 0; }

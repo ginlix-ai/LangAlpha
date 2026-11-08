@@ -46,8 +46,9 @@
   flex-shrink: 0;
   height: 30px;
   overflow: hidden;
-  border-bottom: 1px solid var(--color-border-muted);
-  background: var(--color-bg-card);
+  /* On the page's ground in the open card styles, parted by their divider
+     (rule-b on the bar). */
+  background: var(--color-shell-fill, var(--color-bg-card));
   font-family: var(--font-mono);
   font-size: 0.6875rem;
 }
@@ -60,7 +61,7 @@
   flex: 0 1 86px;
   min-width: 52px;
   padding: 0 10px;
-  border-right: 1px solid var(--color-border-muted);
+  border-right: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
   color: var(--color-text-primary);
   font-weight: 500;
   white-space: nowrap;
@@ -124,7 +125,7 @@
   justify-content: center;
   flex: 0 0 30px;
   border: 0;
-  border-left: 1px solid var(--color-border-muted);
+  border-left: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-muted));
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
@@ -135,9 +136,11 @@
   background: var(--color-bg-hover);
 }
 
+/* On: an open box in the open card styles, not a wash. */
 .excel-fx-toggle.is-on {
   color: var(--color-text-primary);
-  background: var(--color-bg-surface);
+  background: var(--color-shell-fill, var(--color-bg-surface));
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
 }
 
 /* ====== Table ====== */
@@ -379,7 +382,6 @@
   flex-shrink: 0;
   min-height: 30px;
   padding: 4px 10px;
-  border-top: 1px solid var(--color-border-muted);
 }
 
 .excel-footer:empty {
@@ -399,9 +401,10 @@
   overflow-x: auto;
 }
 
+/* Drawn as the file panel's own tabs in the open card styles. */
 .excel-sheet-tab {
   padding: 3px 10px;
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: var(--cs-radius-control, calc(var(--radius) - 2px));
   font-size: 0.6875rem;
   color: var(--color-text-tertiary);
   background: transparent;
@@ -419,16 +422,19 @@
 /* The open sheet is a neutral raised tab, told apart by fill and ink alone. */
 .excel-sheet-tab.active {
   color: var(--color-text-primary);
-  background: var(--color-bg-elevated);
-  border-color: var(--color-border-default);
+  background: var(--color-shell-fill, var(--color-bg-elevated));
+  border-color: var(--color-shell-front, var(--color-border-default));
+  /* Terminal's open one is heavier. */
+  font-weight: var(--cs-weight-picked, inherit);
 }
+/* The open styles' tabs rest without an edge. */
+:root:not([data-card-style='balanced']) .excel-sheet-tab:not(.active) { border-color: transparent; }
 
-/* Truncated notice, CsvViewer's footer */
+/* Truncated notice, CsvViewer's footer too */
 .excel-truncated {
   padding: 8px 12px;
   text-align: center;
   font-size: 0.6875rem;
   color: var(--color-text-tertiary);
-  border-top: 1px solid var(--color-border-muted);
   flex-shrink: 0;
 }

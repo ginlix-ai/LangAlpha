@@ -480,14 +480,14 @@ export default function PdfViewer({ data, onFileChanged, focusPage = null, focus
   return (
     <div className="pdf-viewer">
       {/* Controls */}
-      <div className="pdf-controls">
+      <div className="pdf-controls rule-b">
         <div className="pdf-nav">
           <button
             type="button"
             onClick={() => setRailOpen((open) => !open)}
             disabled={!railDoc}
             aria-pressed={railOpen}
-            className="pdf-btn pdf-btn-icon"
+            className="pdf-btn pdf-btn-icon open-style:control-voice"
             aria-label={railLabel}
             title={railLabel}
           >
@@ -497,7 +497,7 @@ export default function PdfViewer({ data, onFileChanged, focusPage = null, focus
             type="button"
             onClick={() => scrollToPage(currentPage - 2)}
             disabled={!numPages || currentPage <= 1}
-            className="pdf-btn"
+            className="pdf-btn open-style:control-voice"
           >
             {t('pdfViewer.prev')}
           </button>
@@ -544,7 +544,7 @@ export default function PdfViewer({ data, onFileChanged, focusPage = null, focus
             type="button"
             onClick={() => scrollToPage(currentPage)}
             disabled={!numPages || currentPage >= numPages}
-            className="pdf-btn"
+            className="pdf-btn open-style:control-voice"
           >
             {t('pdfViewer.next')}
           </button>
@@ -554,7 +554,7 @@ export default function PdfViewer({ data, onFileChanged, focusPage = null, focus
             type="button"
             onClick={() => zoomOutTo && setZoom(zoomOutTo)}
             disabled={zoomOutTo === null}
-            className="pdf-btn"
+            className="pdf-btn open-style:control-voice"
             aria-label={t('pdfViewer.zoomOut')}
             title={t('pdfViewer.zoomOut')}
           >
@@ -565,7 +565,7 @@ export default function PdfViewer({ data, onFileChanged, focusPage = null, focus
             type="button"
             onClick={() => zoomInTo && setZoom(zoomInTo)}
             disabled={zoomInTo === null}
-            className="pdf-btn"
+            className="pdf-btn open-style:control-voice"
             aria-label={t('pdfViewer.zoomIn')}
             title={t('pdfViewer.zoomIn')}
           >
@@ -575,7 +575,7 @@ export default function PdfViewer({ data, onFileChanged, focusPage = null, focus
             type="button"
             onClick={() => setZoom('fit')}
             aria-pressed={zoom === 'fit'}
-            className="pdf-btn"
+            className="pdf-btn open-style:control-voice"
             title={t('pdfViewer.fitWidth')}
           >
             {t('pdfViewer.fit')}

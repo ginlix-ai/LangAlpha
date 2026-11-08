@@ -14,6 +14,7 @@ import { SceneStage } from './introScenes/SceneStage';
 import { useIntro } from './loadIntro';
 import type { PageIntroDef } from '../registry';
 import './pageIntro.css';
+import { buttonSlot } from '@/components/ui/button-class';
 
 // The intro is a story told a page at a time, so a page turns out and then in
 // rather than crossfading: what arrives waits for what leaves to be gone, and
@@ -95,12 +96,13 @@ export function PageIntroModal({
         >
           {/* Copy + step navigation */}
           <div className={cn('flex flex-col gap-4 p-6 sm:p-9', visualFirst && 'sm:order-2')}>
+            {/* The tint is a class, so Terminal can draw the badge as a
+                bracketed word without it (styles/cardStyle.css). */}
             <span
-              className="w-fit rounded-full px-2.5 py-0.5 text-xs font-medium"
-              style={{
-                backgroundColor: 'color-mix(in srgb, var(--color-accent-primary) 12%, transparent)',
-                color: 'var(--color-accent-primary)',
-              }}
+              data-slot="badge"
+              data-bracket="word"
+              className="w-fit rounded-full bg-[color-mix(in_srgb,var(--color-accent-primary)_12%,transparent)] px-2.5 py-0.5 text-xs font-medium"
+              style={{ color: 'var(--color-accent-primary)' }}
             >
               {t('onboarding.badge', 'Quick tour')}
             </span>
@@ -152,6 +154,7 @@ export function PageIntroModal({
                   <button
                     type="button"
                     onClick={() => goTo(stepIdx - 1)}
+                    {...buttonSlot('ghost')}
                     className="rounded-lg px-3.5 py-2 text-sm font-medium transition-colors hover:bg-(--color-bg-subtle) focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     style={{ color: 'var(--color-text-secondary)' }}
                   >
@@ -161,11 +164,15 @@ export function PageIntroModal({
                 <button
                   ref={primaryRef}
                   type="button"
+                  {...buttonSlot()}
                   onClick={() => (isLast ? onClose() : goTo(stepIdx + 1))}
                   className="rounded-lg px-5 py-2 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  // The neutral primary pair, as every button takes: amber
+                  // annotates and never fills a button (DESIGN.md). The panel
+                  // beside it is the illustration, which may carry it.
                   style={{
-                    background: 'var(--color-accent-primary)',
-                    color: 'var(--color-text-on-accent)',
+                    background: 'var(--color-btn-primary-bg)',
+                    color: 'var(--color-btn-primary-text)',
                   }}
                 >
                   {isLast

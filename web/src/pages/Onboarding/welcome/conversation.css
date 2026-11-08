@@ -40,3 +40,19 @@
 .welcome-chat__composer--cue .chat-input-container:not(:focus-within, .recording) {
   border-color: color-mix(in srgb, var(--color-accent-primary) 70%, var(--color-border-input));
 }
+
+/* Terminal: the agent's lines stay in the reply's face, as replies do
+   everywhere; the controls answering them, and the reader's own answers, take
+   the shell's mono, the answers after a prompt (.rail-prompt). Scoped here
+   rather than set in the shared bubble and option card, which the chat draws
+   otherwise. */
+:root:not([data-card-style]) .welcome-chat :is([data-slot='option-card'], [data-slot='chip-group']) {
+  font-family: var(--font-mono);
+}
+:root:not([data-card-style]) .welcome-chat [data-slot='option-title'] + span {
+  font-size: var(--cs-text-menu);
+}
+:root:not([data-card-style]) .welcome-chat .pf-bubble p {
+  font-family: var(--font-mono);
+  font-size: var(--cs-text-field);
+}

@@ -89,7 +89,9 @@
    edge. Only where a pointer hovers, so a tap
    leaves nothing stuck raised. Reduced motion keeps the shadow and the edge and
    drops the rise. The edge is read through --lift-edge, so a card that draws
-   its border inline writes `border: 1px solid var(--lift-edge, <its colour>)`. */
+   its border inline writes `border: 1px solid var(--lift-edge, <its colour>)`.
+   The open card styles (cardStyle.css) firm it to their own hover edge and
+   lay the card flat. */
 .hover-lift {
   transition-property: transform, scale, box-shadow, border-color;
   transition-duration: var(--motion-quick);
@@ -97,8 +99,8 @@
 }
 @media (hover: hover) {
   .hover-lift:hover {
-    --lift-edge: var(--color-border-strong);
-    box-shadow: var(--shadow-card);
+    --lift-edge: var(--color-shell-edge-hover, var(--color-border-strong));
+    box-shadow: var(--cs-frame-shadow, var(--shadow-card));
   }
 }
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {

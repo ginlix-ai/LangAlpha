@@ -46,8 +46,8 @@ function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenami
       <DialogContent
         aria-describedby={undefined}
         style={{
-          backgroundColor: 'var(--color-bg-page)',
-          borderColor: 'var(--color-border-muted)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-page))',
+          borderColor: 'var(--color-shell-edge, var(--color-border-muted))',
         }}
       >
         {/* Header */}
@@ -78,8 +78,8 @@ function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenami
               disabled={isRenaming}
               className="w-full"
               style={{
-                backgroundColor: 'var(--color-border-muted)',
-                border: '1px solid var(--color-border-muted)',
+                backgroundColor: 'var(--color-shell-fill, var(--color-border-muted))',
+                border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
                 color: 'var(--color-text-primary)',
               }}
               autoFocus

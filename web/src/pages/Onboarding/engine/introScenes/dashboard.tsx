@@ -48,7 +48,7 @@ import {
 /* ── dashboard · step 1: the page, live ────────────────────────────────── */
 
 /** The page's size in page px, as the default card style lays it out (the
-    page takes its content's height; Quiet's titles inside the cards make it
+    page takes its content's height; Balanced's titles inside the cards make it
     taller), and the middle of the brief's column. */
 const GRID_PAGE = { width: PAGE_W, height: 304 };
 const BRIEF_X = 135;

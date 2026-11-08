@@ -24,7 +24,7 @@ export function TradingPermissionSection() {
     <section aria-labelledby={headingId} className="space-y-2">
       <div className="mx-0.5">
         <div className="flex items-baseline justify-between gap-3">
-          <h2 id={headingId} className="settings-group-title">
+          <h2 id={headingId} className="settings-group-title open-style:label-voice">
             {t('settings.tradingPermission.title')}
           </h2>
           {pendingLevel && (
@@ -117,11 +117,17 @@ function LevelCard({
       aria-labelledby={labelId}
       aria-describedby={descId}
       markClassName="mt-0.5"
+      // The open card styles draw each level as an open box and the chosen
+      // one by its edge in full ink, with no wash.
       className={cn(
-        'items-start gap-3 rounded-lg px-3 py-2.5 transition-colors',
-        checked ? 'bg-(--color-bg-tag)' : 'bg-(--color-bg-card) hover:bg-(--color-bg-hover)',
+        'items-start gap-3 rounded-[var(--cs-radius-choice,0.5rem)] px-3 py-2.5 transition-colors',
+        checked
+          ? 'bg-[var(--color-shell-fill,var(--color-bg-tag))]'
+          : 'bg-[var(--color-shell-fill,var(--color-bg-card))] hover:bg-[var(--color-shell-fill,var(--color-bg-hover))]',
       )}
-      style={{ border: `1px solid ${checked ? 'var(--color-text-primary)' : 'var(--color-border-muted)'}` }}
+      style={{
+        border: `1px solid ${checked ? 'var(--color-shell-ink, var(--color-text-primary))' : 'var(--color-shell-edge, var(--color-border-muted))'}`,
+      }}
     >
       <span className="min-w-0 flex-1">
         {/* No glyph per level here, so the warning is drawn on the name. */}

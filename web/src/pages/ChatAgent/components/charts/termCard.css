@@ -4,16 +4,9 @@
    box, so the title cuts the edge with the ground's own fill: a surface that
    puts the cards on another fill sets --term-ground. */
 
-/* The voice, Terminal's: the words' case and tracking (a multiplier on each
-   rule's own), their face, and the brackets around a tag, a state or a door.
-   The other card styles flip these (termCardStyles.css). */
-:root {
-  --term-case: uppercase;
-  --term-track: 1;
-  --term-words: var(--font-mono);
-  --term-open: '[';
-  --term-close: ']';
-}
+/* The voice (--term-case, --term-track, --term-words, --term-open/close) is
+   the app's, declared per card style in styles/cardStyle.css, which loads
+   with the app; this sheet loads with the cards. */
 
 .term-card,
 .term-pill {

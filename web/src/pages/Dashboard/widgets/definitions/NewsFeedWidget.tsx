@@ -306,7 +306,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
               <button
                 key={dr.key}
                 type="button"
-                className="dash-range"
+                className="dash-range open-style:control-voice"
                 aria-pressed={dateRange === dr.key}
                 onClick={() => setDateRange(dr.key)}
               >
@@ -335,7 +335,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
           {hasFilters ? (
             <button
               type="button"
-              className="dash-range"
+              className="dash-range open-style:control-voice"
               onClick={() => {
                 setTickerFilter('');
                 setDateRange('all');

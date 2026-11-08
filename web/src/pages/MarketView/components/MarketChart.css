@@ -20,7 +20,7 @@
   gap: 4px 12px;
   min-height: 30px;
   padding: 3px 10px;
-  border-bottom: 1px solid var(--color-border-default);
+  --rule-ink: var(--color-shell-divider, var(--color-border-default));
   flex-shrink: 0;
 }
 
@@ -44,38 +44,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Beside a ticker legend (`chart--with-lead`) the intervals are text, not a
-   segmented control: the legend already reads at toolbar weight, and a filled
-   track and pill made the picker the heaviest thing in the row. Without the
-   track the choice still has to read as one, so a divider sets the group
-   apart from the readouts, the selected interval is underlined like a tab,
-   and hover brings back a light fill. Only the intervals group changes: the
-   Light / Advanced switch shares `.interval-selector` and keeps its track. */
-.chart--with-lead .interval-selector--intervals {
-  background: none;
-  padding: 0 0 0 8px;
-  margin-left: 4px;
-  gap: 2px;
-  border-left: 1px solid var(--color-border-default);
-  border-radius: 0;
-}
-
-.chart--with-lead .interval-selector--intervals .interval-btn,
-.chart--with-lead .interval-selector--intervals .interval-btn-active {
-  background: none;
-  padding: 4px 6px;
-}
-
-.chart--with-lead .interval-selector--intervals .interval-btn:hover {
-  background: var(--color-bg-hover);
-}
-
-.chart--with-lead .interval-selector--intervals .interval-btn-active {
-  text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 5px;
 }
 
 @keyframes chart-reveal {
@@ -137,7 +105,7 @@
   align-items: center;
   column-gap: 8px;
   row-gap: 4px;
-  border-bottom: 1px solid var(--color-border-default);
+  --rule-ink: var(--color-shell-divider, var(--color-border-default));
   flex-shrink: 0;
   position: relative;
   z-index: 10;
@@ -163,6 +131,13 @@
   margin-right: 4px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+/* The open card styles' label voice (styles/cardStyle.css). */
+:where(:root:not([data-card-style='balanced'])) .indicator-toggles-label {
+  font-family: var(--term-words);
+  font-weight: var(--cs-weight-label, 500);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
 }
 
 .indicator-toggle-btn {
@@ -201,20 +176,85 @@
   font-family: 'SF Mono', 'Fira Code', monospace;
   color: var(--color-text-secondary);
   background: transparent;
-  border: none;
-  border-radius: 4px;
+  /* Soft's pills. */
+  border: var(--cs-pill-border, none);
+  border-radius: var(--cs-radius-pill, 4px);
   cursor: pointer;
   transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
   display: inline-flex;
   align-items: center;
 }
 
-/* Quiet segmented control: the selected chip is a plain card surface lifted out
+/* Balanced segmented control: the selected chip is a plain card surface lifted out
    of the track, not an accent fill — the amber is reserved for annotations. */
 .interval-btn:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
-.interval-btn-active { color: var(--color-text-primary); background: var(--color-bg-card); font-weight: 600; }
+.interval-btn-active { color: var(--color-text-primary); background: var(--color-bg-card); font-weight: var(--cs-weight-picked, 600); }
 .interval-btn-active:hover { color: var(--color-text-primary); background: var(--color-bg-card); }
 .interval-btn-disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Intervals and Light / Advanced in the open card styles: Terminal's
+   bracketed words with the picked one in full ink, Soft's pills; the
+   filled track goes in both. Beside a legend (below), its hover wash
+   outranks their unwashed buttons and its padding Soft's, while
+   Terminal's words keep their own padding there. */
+:root:not([data-card-style='balanced']) .interval-selector {
+  background: transparent;
+  padding: 0;
+}
+:root:not([data-card-style]) .interval-selector { gap: 0.125rem; }
+:root:not([data-card-style]) .interval-selector .interval-btn { padding-inline: 0.25rem; }
+:root:not([data-card-style]) .interval-btn {
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-term-text-tertiary);
+}
+/* The "More" opener keeps its chevron inside the bracket (data-bracket). */
+.interval-btn::after { order: 2; }
+:root:not([data-card-style]) .interval-btn > svg { order: 1; }
+:root:not([data-card-style]) .interval-btn-active { color: var(--color-term-text); }
+:root:not([data-card-style]) .interval-btn:hover { color: var(--color-term-text); }
+:root[data-card-style='soft'] .interval-selector { gap: 0.25rem; }
+:root[data-card-style='soft'] :where(.interval-btn) { padding-block: 2px; }
+:root[data-card-style='soft'] .interval-btn-active { background: transparent; }
+:root[data-card-style='soft'] .interval-btn.interval-btn-active { border-color: var(--color-term-text); }
+
+/* Beside a ticker legend (`chart--with-lead`) the intervals are text, not a
+   segmented control: the legend already reads at toolbar weight, and a filled
+   track and pill made the picker the heaviest thing in the row. Without the
+   track the choice still has to read as one, so a divider sets the group
+   apart from the readouts, the selected interval is underlined like a tab,
+   and hover brings back a light fill. Only the intervals group changes: the
+   Light / Advanced switch shares `.interval-selector` and keeps its track. */
+.chart--with-lead .interval-selector--intervals {
+  background: none;
+  padding: 0 0 0 8px;
+  margin-left: 4px;
+  gap: 2px;
+  /* The open card styles keep the hairline here, Terminal too. */
+  border-left: 1px solid var(--color-shell-rule, var(--color-border-default));
+  border-radius: 0;
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn,
+.chart--with-lead .interval-selector--intervals .interval-btn-active {
+  background: none;
+  padding: 4px 6px;
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn-active {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
+}
+
+/* Beside a legend the open styles keep their own mark in place of the
+   underline. */
+:root:not([data-card-style='balanced']) .chart--with-lead .interval-selector--intervals .interval-btn-active { text-decoration: none; }
 
 .interval-disabled-tooltip {
   position: absolute;
@@ -252,9 +292,10 @@
   min-width: 28px;
   height: 28px;
   padding: 0 6px;
-  background-color: var(--color-bg-surface);
-  border: 1px solid var(--color-border-elevated);
-  border-radius: 4px;
+  /* Open boxes in the open card styles, under the pointer too. */
+  background-color: var(--color-shell-fill, var(--color-bg-surface));
+  border: 1px solid var(--color-shell-edge, var(--color-border-elevated));
+  border-radius: var(--cs-radius-control, 4px);
   color: var(--color-text-secondary);
   cursor: pointer;
   display: flex;
@@ -268,17 +309,20 @@
 }
 
 .chart-tool-btn:hover {
-  background-color: var(--color-bg-hover);
+  background-color: var(--color-shell-fill, var(--color-bg-hover));
   color: var(--color-text-primary);
-  border-color: var(--color-border-input);
+  border-color: var(--color-shell-edge, var(--color-border-input));
 }
 
 /* An armed tool is marked by an accent hairline, never an accent wash. */
 .chart-tool-btn-active {
-  background-color: var(--color-bg-hover);
+  background-color: var(--color-shell-fill, var(--color-bg-hover));
   color: var(--color-text-primary);
   border-color: var(--color-accent-primary);
 }
+/* It keeps the hairline under the pointer in the open styles, where Balanced's
+   hover edge replaces it. */
+:root:not([data-card-style='balanced']) .chart-tool-btn-active { border-color: var(--color-accent-primary); }
 
 /* "Clear annotations" toolbar button — a chart-tool-btn that carries an icon
    plus a label, shown in the tools row only while agent annotations are drawn. */
@@ -371,17 +415,18 @@
   flex-shrink: 0;
 }
 
+/* The menus' surface in the open card styles. */
 .toolbar-dropdown-panel {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
   z-index: 50;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-elevated);
-  border-radius: 8px;
+  background: var(--color-shell-float, var(--color-bg-elevated));
+  border: 1px solid var(--color-shell-edge, var(--color-border-elevated));
+  border-radius: var(--cs-radius-float, 8px);
   padding: 12px;
   min-width: 220px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--cs-float-shadow, 0 8px 24px rgba(0, 0, 0, 0.25));
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -421,6 +466,7 @@
   font-size: 0.75rem;
   font-weight: 500;
   font-family: 'SF Mono', 'Fira Code', monospace;
+  text-transform: var(--term-case);
   color: var(--color-text-secondary);
   background: transparent;
   border: none;
@@ -436,14 +482,16 @@
   background: var(--color-bg-hover);
 }
 
+/* The picked one: an open box in the open card styles, under the pointer too. */
 .interval-dropdown-item-active {
   color: var(--color-text-primary);
-  background: var(--color-bg-surface);
+  background: var(--color-shell-fill, var(--color-bg-surface));
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
   font-weight: 600;
 }
 
 .interval-dropdown-item-active:hover {
-  background: var(--color-bg-surface);
+  background: var(--color-shell-fill, var(--color-bg-surface));
 }
 
 /* ===== Responsive toolbar: progressive collapse by toolbar width =====
@@ -488,6 +536,13 @@
   letter-spacing: 0.5px;
   color: var(--color-text-tertiary);
 }
+/* The open card styles' label voice (styles/cardStyle.css). */
+:where(:root:not([data-card-style='balanced'])) .compact-menu-section-label {
+  font-family: var(--term-words);
+  font-weight: var(--cs-weight-label, 500);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+}
 
 /* Tracking spaces Latin capitals; it only pulls Chinese characters apart. */
 :lang(zh) .indicator-toggles-label,
@@ -498,6 +553,12 @@
   height: 1px;
   background: var(--color-border-default);
   margin: 2px 0;
+}
+/* Terminal's is dashed, as the cards' dividers. */
+:root:not([data-card-style]) .compact-menu-divider {
+  height: 0;
+  background: none;
+  border-top: 1px dashed var(--color-shell-edge);
 }
 .compact-menu-view-grid { grid-template-columns: repeat(3, 1fr); }
 
@@ -515,7 +576,7 @@
     width: 100%;
     padding: 8px 12px;
     gap: 6px;
-    border-radius: 0 0 8px 8px;
+    border-radius: var(--cs-radius-float, 0 0 8px 8px);
   }
   .compact-menu-panel .dropdown-tool-grid {
     grid-template-columns: repeat(4, 1fr);
@@ -547,7 +608,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 2px 10px;
-  border-top: 1px solid var(--color-border-default);
+  --rule-ink: var(--color-shell-divider, var(--color-border-default));
   background-color: var(--color-bg-card);
   flex-shrink: 0;
   user-select: none;
@@ -578,6 +639,20 @@
 .range-btn:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 .range-btn-active { color: var(--color-text-primary); font-weight: 700; }
 .range-btn-active:hover { background: transparent; color: var(--color-text-primary); }
+/* The picked window bracketed in Terminal (the brackets are always there,
+   so nothing moves), outlined in Soft. */
+.range-btn::before { content: var(--term-open); margin-right: 0.3ch; opacity: 0; }
+.range-btn::after { content: var(--term-close); margin-left: 0.3ch; opacity: 0; }
+.range-btn-active::before,
+.range-btn-active::after { opacity: 0.6; }
+:root:not([data-card-style]) .range-btn {
+  padding-inline: 0.25rem;
+  text-transform: uppercase;
+  color: var(--color-term-text-tertiary);
+}
+:root:not([data-card-style]) .range-btn-active { color: var(--color-term-text); }
+:root[data-card-style='soft'] .range-btn { border: 1px solid transparent; border-radius: 999px; }
+:root[data-card-style='soft'] .range-btn-active { border-color: var(--color-term-text); }
 
 .venue-clock {
   display: inline-flex;
@@ -586,6 +661,7 @@
   font-size: 0.6875rem;
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-variant-numeric: tabular-nums;
+  letter-spacing: calc(0.02em * var(--term-track));
   color: var(--color-text-secondary);
   white-space: nowrap;
 }

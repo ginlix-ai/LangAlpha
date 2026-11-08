@@ -41,12 +41,13 @@ const ROW_STYLE: React.CSSProperties = {
   paddingTop: '5px',
   paddingBottom: '5px',
   marginBottom: '0.5rem',
-  borderBottom: '1px solid var(--color-border-muted)',
-  fontSize: '0.8125rem',
+  // Terminal's label size (its case and tracking, and the card's divider
+  // under it, are the row's classes).
+  fontSize: 'var(--cs-text-label, 0.8125rem)',
   color: 'var(--Labels-Tertiary)',
 };
 
-const CONTROL_STYLE: React.CSSProperties = { color: 'inherit', font: 'inherit' };
+const CONTROL_STYLE: React.CSSProperties = { color: 'inherit', font: 'inherit', textTransform: 'inherit' };
 
 /**
  * The header that stands in for a turn's process: a running clock while the
@@ -67,7 +68,7 @@ export const TurnFold = memo(function TurnFold({ state, startedAt, completedAt, 
     : t('chat.workedFor', { duration: formatWorkedFor(completedAt - startedAt, t) });
 
   return (
-    <div ref={rowRef} style={ROW_STYLE} data-turn-fold={state}>
+    <div ref={rowRef} className="rule-b [text-transform:var(--term-case)] tracking-[calc(0.08em*var(--term-track))]" style={ROW_STYLE} data-turn-fold={state}>
       <SwapCell
         swapKey={state === 'live' ? 'live' : 'settled'}
         layerClassName="inline-flex"

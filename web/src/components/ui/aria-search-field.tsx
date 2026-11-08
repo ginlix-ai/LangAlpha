@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils"
 interface SearchFieldProps extends AriaSearchFieldProps {
   placeholder?: string
   inputRef?: Ref<HTMLInputElement>
+  /** False where the row it sits in draws the rule across the whole row. */
+  ruled?: boolean
 }
 
 /**
@@ -24,15 +26,16 @@ interface SearchFieldProps extends AriaSearchFieldProps {
  *
  * It filters a list rather than taking free text, so it turns off what an
  * `Autocomplete` turns off on its input, for a list filtered without one.
+ *
+ * The rule is the card styles' divider (`rule-b`, styles/cardStyle.css):
+ * dashed in the edge's ink in Terminal, the hairline in Soft.
  */
-function SearchField({ className, placeholder, inputRef, ...props }: SearchFieldProps) {
+function SearchField({ className, placeholder, inputRef, ruled = true, ...props }: SearchFieldProps) {
   return (
     <AriaSearchField
+      data-slot="search"
       className={composeRenderProps(className, (className) =>
-        cn(
-          "flex shrink-0 items-center gap-2 border-b border-(--color-border-muted) px-3",
-          className
-        )
+        cn("flex shrink-0 items-center gap-2 px-3", ruled && "rule-b", className)
       )}
       {...props}
     >
@@ -48,7 +51,7 @@ function SearchField({ className, placeholder, inputRef, ...props }: SearchField
         spellCheck="false"
         enterKeyHint="go"
         className={cn(
-          "owns-its-edge h-10 min-w-0 flex-1 border-0 bg-transparent text-sm text-(--color-text-primary) outline-hidden",
+          "owns-its-edge h-10 min-w-0 flex-1 border-0 bg-transparent text-[length:var(--cs-text-field,0.875rem)] leading-5 text-(--color-text-primary) outline-hidden",
           "placeholder:text-(--color-text-tertiary) [&::-webkit-search-cancel-button]:hidden"
         )}
       />

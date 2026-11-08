@@ -1,5 +1,5 @@
 import { Search, HelpCircle, Mail, Pencil } from 'lucide-react';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
@@ -126,16 +126,25 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }
           <div className="dashboard-search-wrapper" ref={dropdownRef}>
             <form
               onSubmit={handleSubmit}
-              className="dashboard-search-form owns-its-edge relative group flex items-center gap-2 h-10 px-3 rounded-xl border transition-all"
+              className="dashboard-search-form owns-its-edge relative group flex items-center gap-2 h-10 px-3 rounded-[var(--cs-radius-control,0.75rem)] border transition-all"
+              // The open card styles draw it as their other fields, open and
+              // flat, and focus darkens its edge to ink rather than lighting
+              // it amber (the focus edge is the shared rule's, tokens.css).
               style={{
-                backgroundColor: 'var(--color-bg-input)',
-                borderColor: searchFocused ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',
-                boxShadow: searchFocused ? '0 0 0 1px var(--color-accent-soft)' : 'none',
-              }}
+                '--focus-edge': 'var(--color-shell-ink, var(--color-accent-primary))',
+                '--focus-halo': 'var(--cs-frame-shadow, 0 0 0 1px var(--color-accent-soft))',
+                backgroundColor: 'var(--color-shell-fill, var(--color-bg-input))',
+                borderColor: searchFocused
+                  ? 'var(--color-shell-ink, var(--color-accent-primary))'
+                  : 'var(--color-shell-edge, var(--color-border-muted))',
+                boxShadow: searchFocused ? 'var(--cs-frame-shadow, 0 0 0 1px var(--color-accent-soft))' : 'none',
+              } as CSSProperties}
             >
               <Search
                 className="dashboard-search-icon transition-colors"
-                style={{ color: searchFocused ? 'var(--color-accent-primary)' : 'var(--color-icon-muted)' }}
+                style={{
+                  color: searchFocused ? 'var(--color-shell-ink, var(--color-accent-primary))' : 'var(--color-icon-muted)',
+                }}
               />
               <input
                 ref={searchInputRef}
@@ -171,7 +180,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }
               )}
             </form>
             {showDropdown && searchValue.trim() && (
-              <div className="dashboard-search-dropdown">
+              <div data-slot="menu" className="dashboard-search-dropdown">
                 {searchLoading && searchResults.length === 0 ? (
                   <div className="dashboard-search-dropdown-item dashboard-search-dropdown-loading">
                     {t('dashboard.searching')}
@@ -190,6 +199,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }
                       <button
                         key={`${stock.symbol}-${index}`}
                         type="button"
+                        data-slot="menu-item"
                         className="dashboard-search-dropdown-item"
                         onClick={() => handleSelectStock(stock)}
                       >

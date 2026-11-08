@@ -389,8 +389,8 @@ export function MemoDiffModal({
           padding: 0,
           display: 'flex',
           flexDirection: 'column',
-          backgroundColor: 'var(--color-bg-page)',
-          borderColor: 'var(--color-border-muted)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-page))',
+          borderColor: 'var(--color-shell-edge, var(--color-border-muted))',
         }}
       >
         <div

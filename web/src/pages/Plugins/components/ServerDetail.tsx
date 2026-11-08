@@ -1,4 +1,5 @@
 import { Fragment, useId, type ReactNode } from 'react';
+import { buttonSlot } from '@/components/ui/button-class';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Pencil } from 'lucide-react';
 import { EnabledToggle } from '@/components/mcp/McpPrimitives';
@@ -195,6 +196,7 @@ export function ServerDetail({
     onEdit && (
       <button
         type="button"
+        {...buttonSlot(primary ? 'default' : 'outline')}
         className={primary ? 'connector-btn is-primary' : 'connector-btn'}
         onClick={onEdit}
       >
@@ -352,7 +354,7 @@ export function ServerDetail({
               // connected, and the reason sits under the switch, where a held
               // switch is the first thing tried.
               <span className="flex flex-col items-end gap-1.5">
-                <span className={held ? 'connector-onoff is-blocked' : 'connector-onoff'}>
+                <span className={held ? 'connector-onoff open-style:control-voice is-blocked' : 'connector-onoff open-style:control-voice'}>
                   {enabled ? t('plugins.surface.on') : t('plugins.surface.off')}
                   <EnabledToggle
                     enabled={enabled}

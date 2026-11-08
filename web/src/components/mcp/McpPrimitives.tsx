@@ -6,6 +6,7 @@ import { PresenceFold } from '@/components/ui/Disclosure';
 import { Loader } from '@/components/ui/loader';
 import { SPRING_INDICATOR, TWEEN } from '@/lib/motion';
 import { cn } from '@/lib/utils';
+import { buttonSlot } from '@/components/ui/button-class';
 
 /**
  * Shared building blocks for the list surfaces: the Plugins page, the
@@ -124,10 +125,14 @@ export function TagBadge({
   title,
   soft = false,
   tone = 'muted',
+  bracket,
   children,
 }: {
   title?: string;
   soft?: boolean;
+  /** Terminal's brackets around it (cardStyle.css `data-bracket`), for a host
+   *  that sets the badge as a bracketed word rather than a tag. */
+  bracket?: 'chip' | 'word' | 'tag' | 'title';
   /** `warning` borrows the pill's colour and not its fill, the same rule
    *  `RowNote` follows: a tinted background here would make this the pill it
    *  is deliberately not. For a badge naming something that moves real money. */
@@ -144,7 +149,8 @@ export function TagBadge({
       }
       style={{
         color: warn ? 'var(--color-warning)' : 'var(--color-text-tertiary)',
-        backgroundColor: 'var(--color-bg-tag)',
+        // A host can unfill it (the Secrets page's plugin badge, vault.css).
+        backgroundColor: 'var(--tag-badge-fill, var(--color-bg-tag))',
         ...(soft
           ? {}
           : {
@@ -154,6 +160,7 @@ export function TagBadge({
             }),
       }}
       title={title}
+      data-bracket={bracket}
     >
       {children}
     </span>
@@ -342,6 +349,7 @@ export function HeaderButton({
   return (
     <button
       type="button"
+      {...buttonSlot(variant === 'primary' ? 'default' : variant === 'secondary' ? 'outline' : 'ghost')}
       className={cn(
         // Every variant takes the secondary's 1px edge, unpainted where it
         // draws none, so mixed variants in one row stand the same height.

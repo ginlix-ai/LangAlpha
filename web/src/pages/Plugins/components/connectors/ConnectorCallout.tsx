@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, CheckCircle2, LogIn } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { buttonSlot } from '@/components/ui/button-class';
 import { verdictDetail, verdictMessageKey } from '@/pages/ChatAgent/components/mcp/mcpProbeVerdict';
 import { probeRowState } from '@/pages/ChatAgent/components/mcp/mcpState';
 import type { CatalogServer, McpProbeResult } from '@/pages/ChatAgent/utils/api';
@@ -150,7 +151,7 @@ export function ConnectorCallout({
       const retry =
         keys.length > 0 ? null : (
           <span className="connector-verbs-row">
-            <button type="button" className="connector-btn" onClick={() => void fix.recheck()}>
+            <button type="button" {...buttonSlot('outline')} className="connector-btn" onClick={() => void fix.recheck()}>
               {t('plugins.connectorsPage.callout.checkAgain')}
             </button>
             {edit}

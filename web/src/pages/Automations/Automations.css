@@ -48,7 +48,8 @@
 }
 
 .automations-title {
-  font-size: 1.5rem;
+  font-size: var(--cs-text-title, 1.5rem);
+  letter-spacing: var(--cs-title-track, -0.01em);
   font-weight: 600;
   line-height: 1.2;
   color: var(--color-text-primary);
@@ -83,6 +84,14 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--color-text-tertiary);
+}
+/* The open card styles' label voice (styles/cardStyle.css), at the label's
+   size. */
+:where(:root:not([data-card-style='balanced'])) .automations-kicker {
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.75rem);
+  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: var(--term-case);
 }
 
 /* Tracking spaces Latin capitals; it only pulls Chinese characters apart. */

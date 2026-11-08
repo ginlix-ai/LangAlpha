@@ -10,11 +10,13 @@ import { describe, expect, it } from 'vitest';
  */
 
 const SRC = resolve(__dirname, '../..');
-const TOKENS = join(SRC, 'styles/tokens.css');
+// The themes, and the card styles' own color roles (each declared only under
+// the styles that set it; styleVariables.test.ts holds their reads to that).
+const DECLARING = [join(SRC, 'styles/tokens.css'), join(SRC, 'styles/cardStyle.css')];
 
 /**
  * `--color-*` names stamped from JS or by a library rather than declared in
- * tokens.css. Empty today: the other JS-stamped custom properties in the app
+ * a stylesheet. Empty today: the other JS-stamped custom properties in the app
  * (`--app-font-scale` from index.html, `--sidebar-width`, Radix's
  * `--radix-*`) are not `--color-*` and so fall outside the scan already.
  */
@@ -41,7 +43,7 @@ function isAllowlisted(name: string): boolean {
 
 describe('color token references', () => {
   const declared = new Set(
-    [...readFileSync(TOKENS, 'utf8').matchAll(/(--color-[\w-]+)\s*:/g)].map((m) => m[1]),
+    DECLARING.flatMap((file) => [...readFileSync(file, 'utf8').matchAll(/(--color-[\w-]+)\s*:/g)].map((m) => m[1])),
   );
 
   it('declares tokens in both themes', () => {
@@ -50,12 +52,13 @@ describe('color token references', () => {
     expect(declared.size).toBeGreaterThan(50);
     expect(declared.has('--color-bg-page')).toBe(true);
     expect(declared.has('--color-bg-popover')).toBe(true);
+    expect(declared.has('--color-shell-edge')).toBe(true);
   });
 
   it('has no reference to an undeclared --color-* token', () => {
     const orphans: string[] = [];
     for (const file of walk(SRC)) {
-      if (file === TOKENS) continue;
+      if (file === DECLARING[0]) continue;
       const lines = readFileSync(file, 'utf8').split('\n');
       lines.forEach((line, i) => {
         // A `var()` reference, or the bare parenthesised name a Tailwind

@@ -1,0 +1,158 @@
+/* A page drawn as a rail of sections beside one scrolling column, its head
+   titled with the open section: Settings and Plugins. Each page imports this
+   beside its own sheet and adds what only it has (the search's place and
+   size, the phone row's layout and the pills' size).
+
+   The pages are lazy, so the order their sheets land in is not fixed. The
+   rules here are one class deep and a page's own sizes are written a class
+   deeper (`.settings-rail .page-rail-link`), so a page wins wherever its
+   sheet loads. */
+
+/* ---------- Rail ---------- */
+.page-rail {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px 16px;
+  overflow-y: auto;
+  /* The open card styles set it beside the page on their edge, as the sidebar. */
+  border-right: 1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-subtle));
+  scrollbar-width: thin;
+}
+
+/* The rail's labels are the page's kickers: in the open card styles' label
+   voice (open-style:label-voice, styles/cardStyle.css), and Terminal's label
+   ink. */
+.page-rail-label {
+  margin: 18px 8px 4px;
+  font-size: var(--cs-text-label, 0.71875rem);
+  font-weight: 500;
+  color: var(--color-shell-label, var(--color-text-quaternary));
+}
+
+.page-rail-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: var(--cs-text-row, 0.8125rem);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.page-rail-link:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
+/* The open card styles mark the open section as the sidebar marks its row:
+   no wash, hovered too, full ink, and an edge on a desktop rail. Terminal's
+   prompt before its name is the rail-prompt class (styles/cardStyle.css). */
+.page-rail-link.is-active {
+  background: var(--color-shell-fill, var(--color-bg-hover));
+  color: var(--color-text-primary);
+  font-weight: var(--cs-weight-selected, 400);
+}
+@media (min-width: 768px) {
+  .page-rail-link.is-active {
+    border-radius: var(--cs-radius-small, 6px);
+    box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
+  }
+}
+.page-rail-link:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+
+.page-rail-icon { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.85; }
+.page-rail-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Head ---------- */
+.page-head-title {
+  margin: 0;
+  font-family: var(--cs-face, var(--font-ui));
+  font-size: var(--cs-text-title, 1.375rem);
+  font-weight: 600;
+  line-height: 30px;
+  letter-spacing: var(--cs-title-track, -0.015em);
+  color: var(--color-text-primary);
+}
+
+/* ---------- Search ---------- */
+.page-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+/* An open field in the open card styles, the shape of their buttons. The
+   page gives it its size and corner. */
+.page-search-input {
+  padding: 0 28px 0 30px;
+  border: 1px solid var(--color-shell-edge, var(--color-border-default));
+  background: var(--color-shell-fill, var(--color-bg-input));
+  color: var(--color-text-primary);
+  font: inherit;
+  font-family: var(--cs-face, var(--font-ui));
+  outline: none;
+}
+.page-search-input::placeholder { color: var(--color-text-quaternary); }
+.page-search-input::-webkit-search-cancel-button { display: none; }
+.page-search-input:focus-visible {
+  border-color: var(--color-border-elevated);
+  box-shadow: 0 0 0 1px var(--color-focus-ring);
+}
+
+/* ---------- Phone: the sections become a row of pills over the content ----------
+   When the page's own layout turns to a phone's: Settings by its own width
+   (beside the app sidebar a 768px window leaves it about 500px), Plugins by
+   the viewport's. The two blocks hold the same rules, but for the desktop
+   active edge the first also undoes. */
+@container settings-page (max-width: 767px) {
+  .page-rail {
+    width: auto;
+    border-right: 0;
+    border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-subtle));
+  }
+  .page-rail-label,
+  .page-rail-link .page-rail-icon { display: none; }
+  .page-rail-link {
+    flex-shrink: 0;
+    border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+    border-radius: var(--cs-radius-small, 999px);
+  }
+  /* The open one outlined in ink in the open card styles. The viewport can
+     still be a desktop's here, so its active corner and edge are undone. */
+  .page-rail-link.is-active {
+    background: var(--color-shell-fill, var(--color-bg-elevated));
+    border-color: var(--color-shell-ink, var(--color-border-default));
+    border-radius: var(--cs-radius-small, 999px);
+  }
+  .page-rail-link.is-active:not(:focus-visible) { box-shadow: none; }
+  .page-rail-name { overflow: visible; }
+}
+@media (max-width: 767px) {
+  .page-rail {
+    width: auto;
+    border-right: 0;
+    border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-edge, var(--color-border-subtle));
+  }
+  .page-rail-label,
+  .page-rail-link .page-rail-icon { display: none; }
+  .page-rail-link {
+    flex-shrink: 0;
+    border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+    border-radius: var(--cs-radius-small, 999px);
+  }
+  /* The open one outlined in ink in the open card styles. */
+  .page-rail-link.is-active {
+    background: var(--color-shell-fill, var(--color-bg-elevated));
+    border-color: var(--color-shell-ink, var(--color-border-default));
+  }
+  .page-rail-name { overflow: visible; }
+}

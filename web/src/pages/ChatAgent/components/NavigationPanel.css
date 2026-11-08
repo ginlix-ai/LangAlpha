@@ -27,13 +27,25 @@
   background-color: var(--color-border-muted);
 }
 
-.nav-panel-row-active {
-  background-color: var(--color-border-muted);
-  border-radius: 8px;
+/* The open card styles mark the open thread with an edge and full ink, not
+   a wash, under the pointer and its menu too. */
+.nav-panel-row-active,
+.nav-panel-row-active:hover,
+.nav-panel-row-active.is-menu-open {
+  background-color: var(--color-shell-fill, var(--color-border-muted));
 }
 
-.nav-panel-row-active:hover {
-  background-color: var(--color-border-muted);
+.nav-panel-row-active {
+  border-radius: var(--cs-radius-small, 8px);
+  box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
+  font-weight: var(--cs-weight-selected, 400);
+}
+/* Terminal marks the open thread with a prompt too: its title carries
+   rail-prompt (styles/cardStyle.css). */
+
+/* Terminal sets the sidebar's rows a size down. */
+.sidebar .nav-panel-row .text-sm {
+  font-size: var(--cs-text-row, 0.875rem);
 }
 
 /* Hover action overlay (pin/archive) — floats over the title's tail so

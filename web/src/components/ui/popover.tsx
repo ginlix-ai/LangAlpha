@@ -22,6 +22,7 @@ function PopoverContent({
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Content
+        data-slot="popover"
         align={align}
         sideOffset={sideOffset}
         onCloseAutoFocus={closeAutoFocus(onCloseAutoFocus)}

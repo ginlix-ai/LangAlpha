@@ -234,7 +234,7 @@ export function WidgetFrame({
   // reason: a click under 3px of movement stays a click.
   //
   // The card is the chat's term card: its title set into the top edge (inside
-  // it, in the Quiet style), the widget's sub and meta beside and opposite it.
+  // it, in the Balanced style), the widget's sub and meta beside and opposite it.
   // The actions follow the title rather than the meta, so the paperclip that
   // a hover reveals takes room nothing else is using and the meta never moves.
   return (

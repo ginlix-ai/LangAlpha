@@ -185,7 +185,7 @@ export function DetailSection({
   return (
     <section className="detail-section">
       <div className="surface-section-head">
-        <h2>{title}</h2>
+        <h2 className="open-style:label-voice">{title}</h2>
         {typeof count === 'number' && <span className="surface-count">{count}</span>}
         {action && <div className="surface-section-side">{action}</div>}
       </div>

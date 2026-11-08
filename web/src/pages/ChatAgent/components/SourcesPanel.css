@@ -69,3 +69,14 @@
     animation: none;
   }
 }
+
+/* A source group's head runs out into a rule, as a card's divider does;
+   its count is a bracketed figure (Terminal) or an outlined tag (Soft). */
+:root:not([data-card-style='balanced']) .pf-sources-group-head::after {
+  content: '';
+  flex: 1;
+  border-top: 1px var(--cs-rule-style) var(--color-shell-divider);
+}
+:root:not([data-card-style='balanced']) .pf-sources-count { font-family: var(--font-mono); }
+:root:not([data-card-style]) .pf-sources-count { padding-inline: 0; }
+.pf-sources-count { border: var(--cs-pill-border, 0); }

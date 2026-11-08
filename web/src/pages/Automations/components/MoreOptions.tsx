@@ -115,7 +115,7 @@ export default function MoreOptions({
         {!open && <span className="automation-form-summary">{summary}</span>}
       </button>
 
-      <Disclosure open={open} id={ids.panel} className="automation-form-rows automation-form-rows-nested">
+      <Disclosure open={open} id={ids.panel} className="automation-form-rows automation-form-rows-nested rule-t rule-b">
         <FormRow label={t('thread.workspace')}>
           <Select
             aria-label={t('thread.workspace')}

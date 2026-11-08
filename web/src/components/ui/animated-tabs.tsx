@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "@/lib/framer";
 import { SPRING_INDICATOR } from "@/lib/motion";
+import { useStyleLength } from "@/lib/cardStyle";
 
 interface Tab {
   id: string;
@@ -27,15 +28,22 @@ export function AnimatedTabs({
   const prevValue = useRef(value);
   const valueChanged = prevValue.current !== value;
   useEffect(() => { prevValue.current = value; });
+  // A number, not a var(): framer corrects a px radius while the indicator
+  // slides and leaves a string it cannot parse uncorrected. Soft draws
+  // it as a pill, as its other choices are; Terminal hides it
+  // (styles/cardStyle.css).
+  const indicatorRadius = useStyleLength("--cs-radius-pill", 6);
 
   return (
-    <div className="flex space-x-1">
+    <div data-slot="tabs" className="flex space-x-1">
       {tabs.map((tab) => {
         const isActive = value === tab.id;
         return (
           <button
             key={tab.id}
             type="button"
+            data-slot="tab"
+            data-active={isActive || undefined}
             onClick={() => onChange(tab.id)}
             className={`
               relative rounded-md px-3 py-1.5 text-sm font-medium
@@ -53,13 +61,15 @@ export function AnimatedTabs({
             {isActive && (
               <motion.span
                 layoutId={layoutId}
+                data-slot="tab-indicator"
                 className="absolute inset-0"
                 style={{
-                  borderRadius: '6px',
-                  backgroundColor: 'var(--color-bg-elevated)',
+                  borderRadius: indicatorRadius,
+                  backgroundColor: 'var(--color-shell-fill, var(--color-bg-elevated))',
                   // The elevated fill alone is nearly invisible on a white page,
                   // so a hairline edge keeps the pill legible on both themes.
-                  boxShadow: 'inset 0 0 0 1px var(--color-border-default)',
+                  // The open styles leave it unfilled and edged in ink.
+                  boxShadow: 'inset 0 0 0 1px var(--color-shell-ink, var(--color-border-default))',
                 }}
                 transition={valueChanged ? SPRING_INDICATOR : { duration: 0 }}
               />

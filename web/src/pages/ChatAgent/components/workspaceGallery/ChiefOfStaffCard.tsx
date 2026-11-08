@@ -35,6 +35,8 @@ import { threadGalleryQuery } from '../../utils/threadGalleryQuery';
 import { Kicker } from './Kicker';
 import { MachineSummary } from './MachineSummary';
 import type { WorkspaceRecord } from './types';
+import './WorkspaceCard.css';
+import { buttonSlot, doorSlot } from '@/components/ui/button-class';
 
 const RECENT_COUNT = 3;
 const STARTERS = ['workspace.cosStarter1', 'workspace.cosStarter2', 'workspace.cosStarter3'] as const;
@@ -121,25 +123,26 @@ export function ChiefOfStaffCard({
       onMouseEnter={!isMobile && homeId ? () => prefetchThreads?.(homeId) : undefined}
     >
       <div
-        className="grid grid-cols-1 gap-5 rounded-xl px-5 py-5 md:grid-cols-[1fr_1.15fr] md:gap-8 md:px-[22px]"
+        className="pf-card pf-card--feature grid grid-cols-1 gap-5 rounded-[var(--cs-radius-card,0.75rem)] px-5 py-5 md:grid-cols-[1fr_1.15fr] md:gap-8 md:px-[22px]"
         style={{
           // Solid, as every card is: the agent stands out by what it holds,
-          // not by a tint or a glow.
-          backgroundColor: 'var(--color-bg-card)',
-          border: '1px solid var(--color-border-default)',
+          // not by a tint or a glow. The card styles draw it as the
+          // workspace cards (WorkspaceCard.tsx).
+          backgroundColor: 'var(--color-shell-fill, var(--color-bg-card))',
+          border: '1px solid var(--color-shell-edge, var(--color-term-edge))',
         }}
       >
         {/* Who it is, then the actions, held to the bottom so they sit level
             with the last row on the right. */}
         <div className="flex min-w-0 flex-col">
-          <div className="flex items-center gap-3">
+          <div className="pf-card-head flex items-center gap-3">
             <span
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-lg"
+              className="pf-card-icon grid h-10 w-10 shrink-0 place-items-center rounded-lg"
               style={{ backgroundColor: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)' }}
             >
               <HomeRowIcon className="h-5 w-5" style={{ color: 'var(--color-accent-primary)' }} aria-hidden="true" />
             </span>
-            <h2 className="title-font text-[17px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+            <h2 data-bracket="title" className="pf-card-title title-font text-[17px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>
               {text.name}
             </h2>
           </div>
@@ -154,6 +157,7 @@ export function ChiefOfStaffCard({
               data-testid="chief-of-staff-new-thread"
               disabled={!homeId}
               onClick={() => newThread()}
+              {...buttonSlot()}
               className="flex h-8 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium press hover:opacity-90 disabled:cursor-progress"
               style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
             >
@@ -167,6 +171,7 @@ export function ChiefOfStaffCard({
                 type="button"
                 data-testid="chief-of-staff-threads"
                 onClick={openThreads}
+                {...doorSlot()}
                 className="group flex items-center gap-1 text-sm text-(--color-text-secondary) transition-colors hover:text-(--color-text-primary)"
               >
                 {t('workspace.cosAllThreads')}

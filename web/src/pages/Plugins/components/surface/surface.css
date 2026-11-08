@@ -12,13 +12,20 @@
   min-height: 30px;
   padding-bottom: 8px;
   margin-bottom: 8px;
-  border-bottom: 1px solid var(--color-border-subtle);
+  /* A card's divider: dashed in Terminal, a hairline in Soft. */
+  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-subtle));
 }
+/* The section's label, in the open card styles' voice (open-style:label-voice). */
 .surface-section-head h2 {
   margin: 0;
-  font-size: 0.84375rem;
-  font-weight: 600;
-  color: var(--color-text-primary);
+  font-size: var(--cs-text-label, 0.84375rem);
+  font-weight: var(--cs-weight-label, 600);
+  color: var(--color-shell-label, var(--color-text-primary));
+}
+/* A group titled by a plugin's name keeps the name as written. */
+.surface-section-head h2:is(.pf-named *, :has(.pp-group-title)) {
+  text-transform: none;
+  letter-spacing: 0;
 }
 .surface-count {
   font-family: var(--font-mono);
@@ -43,23 +50,32 @@
 .surface-section-link:disabled { opacity: 0.6; cursor: default; }
 .surface-section-link:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--color-focus-ring); border-radius: 4px; }
 
-/* Filter chips in a section head ("All 29 / On / Off") */
+/* Filter chips in a section head ("All 29 / On / Off"): a bracketed word in
+   Terminal (data-bracket="chip"), the picked one in full ink and weight; a
+   pill in Soft, the picked one outlined in ink. */
 .surface-chip {
   height: 26px;
   padding: 0 10px;
-  border-radius: 13px;
-  border: 0;
+  border-radius: var(--cs-radius-pill, 13px);
+  border: var(--cs-pill-border, 0);
   background: transparent;
-  color: var(--color-text-tertiary);
-  font-size: 0.78125rem;
+  color: var(--color-shell-meta, var(--color-text-tertiary));
+  font-family: var(--cs-face, var(--font-ui));
+  font-size: var(--cs-text-label, 0.78125rem);
   display: inline-flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
 }
-.surface-chip:hover { color: var(--color-text-primary); }
-.surface-chip.is-on { background: var(--color-bg-elevated); color: var(--color-text-primary); }
+.surface-chip:hover { color: var(--color-shell-meta, var(--color-text-primary)); }
+.surface-chip.is-on {
+  background: var(--color-shell-fill, var(--color-bg-elevated));
+  color: var(--color-shell-ink, var(--color-text-primary));
+  font-weight: var(--cs-weight-picked, inherit);
+}
 .surface-chip .surface-count { font-size: 0.6875rem; }
+:root:not([data-card-style]) .surface-chip { padding-inline: 0.25rem; }
+:root[data-card-style='soft'] .surface-chip.is-on { border-color: var(--color-term-text); }
 
 /* The grid: as many ~340px columns as fit. The negative margin lets a cell's
    hover fill reach past the column edge while its content lines up with the
@@ -245,8 +261,16 @@
 
 /* Trailing state */
 .surface-state-on { display: inline-flex; color: var(--color-text-tertiary); }
-.surface-state-off { font-size: 0.75rem; color: var(--color-text-quaternary); }
+.surface-state-off {
+  font-size: var(--cs-text-label, 0.75rem);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+  color: var(--color-text-quaternary);
+}
 .surface-state-warn { display: inline-flex; color: var(--color-warning); }
+/* A cell's trailing action carries the button hooks, which draw it in the
+   open card styles (styles/cardStyle.css); these are its size and its Balanced
+   look. */
 .surface-cell-action {
   height: 28px;
   padding: 0 11px;
@@ -324,17 +348,22 @@
   font-size: 0.6875rem;
   color: var(--color-text-quaternary);
 }
+/* A bracketed word with no box (Terminal, data-bracket="tag"), an outlined
+   pill (Soft). */
 .surface-tag {
   display: inline-flex;
   align-items: center;
   height: 18px;
   padding: 0 7px;
-  border-radius: 9px;
-  background: var(--color-bg-tag);
+  border-radius: var(--cs-radius-pill, 9px);
+  border: var(--cs-pill-border, 0);
+  background: var(--color-shell-fill, var(--color-bg-tag));
   color: var(--color-text-secondary);
-  font-size: 0.65625rem;
+  font-family: var(--cs-face, var(--font-ui));
+  font-size: var(--cs-text-label, 0.65625rem);
   white-space: nowrap;
 }
+:root:not([data-card-style]) .surface-tag { padding-inline: 0; border-radius: 0; }
 
 /* Detail pages (DetailPage, under the page's DetailPageProvider) */
 .detail-page { min-width: 0; container-type: inline-size; }
@@ -365,7 +394,7 @@
 .detail-page-head {
   padding-bottom: 26px;
   margin-bottom: 28px;
-  border-bottom: 1px solid var(--color-border-subtle);
+  border-bottom: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-subtle));
 }
 .detail-head { display: flex; align-items: flex-start; gap: 18px; }
 .detail-head-text { flex: 1; min-width: 0; }
@@ -376,10 +405,11 @@
 .detail-head-title { flex: 1 1 16rem; min-width: 0; }
 .detail-head h1 {
   margin: 0;
-  font-size: 1.625rem;
+  font-family: var(--cs-face, var(--font-ui));
+  font-size: var(--cs-text-title, 1.625rem);
   font-weight: 600;
   line-height: 32px;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--cs-title-track, -0.02em);
   color: var(--color-text-primary);
   overflow-wrap: anywhere;
 }
@@ -422,9 +452,15 @@
 .detail-page-aside { display: flex; flex-direction: column; gap: 26px; min-width: 0; }
 .detail-aside-block h3 {
   margin: 0 0 10px;
-  font-size: 0.78125rem;
-  font-weight: 600;
-  color: var(--color-text-primary);
+  font-size: var(--cs-text-label, 0.78125rem);
+  font-weight: var(--cs-weight-label, 600);
+  color: var(--color-shell-label, var(--color-text-primary));
+}
+/* The open card styles' label voice (styles/cardStyle.css). */
+:where(:root:not([data-card-style='balanced'])) .detail-aside-block h3 {
+  font-family: var(--term-words);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
 }
 .detail-aside-block h3.has-side {
   display: flex;
@@ -446,7 +482,7 @@
   flex-direction: column;
   gap: 8px;
   padding-top: 18px;
-  border-top: 1px solid var(--color-border-subtle);
+  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-divider, var(--color-border-subtle));
 }
 .accounts-main { min-width: 0; }
 .accounts-aside { display: flex; flex-direction: column; gap: 26px; min-width: 0; }
@@ -549,9 +585,9 @@
   align-items: center;
   gap: 14px;
   padding: 14px 14px 14px 16px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 8px;
-  background: var(--color-bg-card);
+  border: 1px solid var(--color-shell-edge, var(--color-border-default));
+  border-radius: var(--cs-radius-box, 8px);
+  background: var(--color-shell-fill, var(--color-bg-card));
 }
 .detail-callout-icon { flex-shrink: 0; display: flex; color: var(--color-warning); }
 .detail-callout-icon.is-quiet { color: var(--color-text-tertiary); }
@@ -568,7 +604,13 @@
   margin: 0;
   font-size: 0.78125rem;
 }
-.detail-facts dt { color: var(--color-text-tertiary); }
+.detail-facts dt {
+  font-size: var(--cs-text-label, 0.78125rem);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+  color: var(--color-shell-meta, var(--color-text-tertiary));
+}
+:root:not([data-card-style]) .detail-facts :is(dt, dd) { align-self: baseline; }
 .detail-facts dd {
   margin: 0;
   min-width: 0;
@@ -774,6 +816,17 @@
   .list-controls .surface-chip::after,
   .list-controls-btn::after,
   .surface-more::after { content: ''; position: absolute; inset: -9px 0; }
+  /* Terminal's closing bracket is drawn in the same ::after, so it keeps the
+     target: the bracket stays in the line, and its padding, cancelled by
+     margins of the same size, reaches the 44px the box above reaches (styles/
+     cardStyle.css draws a button's the same way). */
+  :root:not([data-card-style]) .list-controls .surface-chip::after {
+    content: ']';
+    position: static;
+    display: inline-block;
+    padding-block: calc(22px - 0.5lh);
+    margin-block: calc(0.5lh - 22px);
+  }
 
   /* Above the tab bar, edge to edge inside the gutters; the count and the
      exit share the first line and the actions wrap under them. */

@@ -1,7 +1,7 @@
 .stock-header {
   padding: 12px 20px;
   background-color: var(--color-bg-card);
-  border-bottom: 1px solid var(--color-border-default);
+  --rule-ink: var(--color-shell-divider, var(--color-border-default));
   flex-shrink: 0;
 }
 
@@ -243,7 +243,7 @@
   grid-template-columns: repeat(5, 1fr);
   gap: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--color-border-default);
+  --rule-ink: var(--color-shell-divider, var(--color-border-default));
 }
 
 .metric-item {
@@ -257,11 +257,32 @@
   color: var(--color-text-secondary);
   text-transform: uppercase;
 }
+/* Terminal's in its label ink, tracked wider. */
+:root:not([data-card-style]) .metric-label {
+  font-weight: inherit;
+  letter-spacing: 0.06em;
+  color: var(--color-term-text-tertiary);
+}
 
 .metric-value {
   font-size: 0.875rem;
   color: var(--color-text-primary);
   font-weight: 500;
+}
+
+/* The open card styles set the stats as the data cards do: labels in the
+   words' face, figures in mono. The labels keep their capitals: the copy
+   under them is cased unevenly ("Prev Close", "52 wk high"), which sentence
+   case would show. */
+:where(:root:not([data-card-style='balanced'])) :is(.stock-price, .stock-change, .metric-value) {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+:where(:root:not([data-card-style='balanced'])) .metric-label {
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.71875rem);
+  font-weight: 500;
+  letter-spacing: 0.04em;
 }
 
 .metrics-discrepancy-hint {

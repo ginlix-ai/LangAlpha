@@ -215,6 +215,7 @@ export function ModalShell({
       <motion.div
         ref={setPanelRef}
         role="dialog"
+        data-slot="dialog"
         aria-modal="true"
         aria-labelledby={labelId}
         tabIndex={-1}
@@ -226,10 +227,13 @@ export function ModalShell({
           WIDTH[width],
           isMobile ? 'rounded-t-3xl' : 'rounded-lg',
         )}
+        // The open card styles float it on the page's ground inside their
+        // edge, Terminal without the shadow. Neither is a value framer
+        // animates, so a var() is safe here.
         style={{
-          backgroundColor: 'var(--color-bg-elevated)',
-          border: '1px solid var(--color-border-muted)',
-          boxShadow: 'var(--shadow-card)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-elevated))',
+          border: '1px solid var(--color-shell-edge, var(--color-border-muted))',
+          boxShadow: 'var(--cs-float-shadow, var(--shadow-card))',
           height,
         }}
         {...panelMotion}
@@ -269,18 +273,18 @@ export function ModalShell({
             </button>
           )}
           {header ? (
-            <div className={cn('shrink-0 pt-5 pb-4', space.x)} style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
+            <div data-slot="dialog-header" className={cn('rule-b shrink-0 pt-5 pb-4', space.x)}>
               {header}
             </div>
           ) : (
             // The close button's room is set after the density's padding,
             // which would otherwise win over it and run a long title under it.
-            <div className={cn('shrink-0 pt-5 pb-3', space.x, 'pr-12')}>
-              <h3 id={labelId} className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+            <div data-slot="dialog-header" className={cn('shrink-0 pt-5 pb-3', space.x, 'pr-12')}>
+              <h3 id={labelId} data-slot="dialog-title" data-bracket="title" className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
                 {title}
               </h3>
               {subtitle && (
-                <p className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                <p data-slot="dialog-desc" className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
                   {subtitle}
                 </p>
               )}
@@ -295,8 +299,8 @@ export function ModalShell({
           </div>
           {footer && (
             <div
-              className={cn('shrink-0', space.x, space.footer)}
-              style={{ borderTop: '1px solid var(--color-border-muted)' }}
+              data-slot="dialog-footer"
+              className={cn('rule-t shrink-0', space.x, space.footer)}
             >
               {footer}
             </div>

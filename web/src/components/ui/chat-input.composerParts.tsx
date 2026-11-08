@@ -311,8 +311,15 @@ export function SendStopButton({
       }}
       disabled={stopMode ? isStopping : !canSend}
       data-mode={stopMode ? 'stop' : 'send'}
+      // Set 8px into the composer's corner, measured against the action
+      // row's px-3 pb-2 and the composer's 1px edge: the button drops to the
+      // row's foot, 9px up, rather than centring on the 33.5px model picker,
+      // and the translate takes it 5px right and 1px down. Both move the
+      // button alone, where padding would move the text and the other
+      // controls too; change that row padding and remeasure. The open styles
+      // keep it centred.
       className={cn(
-        'send-button press grid place-items-center h-8 w-8 flex-none rounded-xl',
+        'send-button press grid place-items-center h-8 w-8 flex-none rounded-[var(--cs-composer-send-radius,0.5rem)] [align-self:var(--cs-composer-send-align,end)] [translate:var(--cs-composer-send-shift,5px_1px)]',
         stopMode ? 'disabled:cursor-not-allowed' : 'disabled:cursor-default',
       )}
       title={stopMode ? stopLabel : undefined}
@@ -342,7 +349,7 @@ export function DropOverlay({ active }: { active: boolean }) {
   return (
     <div
       className={cn(
-        'absolute inset-0 z-50 flex flex-col items-center justify-center rounded-[22px] border-2 border-dashed border-(--color-border-strong) bg-(--color-bg-card) pointer-events-none transition-[opacity,visibility]',
+        'absolute inset-0 z-50 flex flex-col items-center justify-center rounded-[var(--cs-composer-radius,16px)] border-2 border-dashed border-(--color-border-strong) bg-(--color-bg-card) pointer-events-none transition-[opacity,visibility]',
         active ? 'opacity-100' : 'invisible opacity-0 duration-exit',
       )}
     >

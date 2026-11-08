@@ -180,7 +180,7 @@ describe('useClearPreferences', () => {
 
     let cleared!: Promise<unknown>;
     await act(async () => {
-      result.current.update.mutate({ other_preference: { theme: 'dark' } });
+      result.current.update.mutate({ other_preference: { risk_tolerance: 'high' } });
       cleared = result.current.clear.mutateAsync();
     });
     expect(mockUpdate).toHaveBeenCalledTimes(1);
@@ -191,5 +191,46 @@ describe('useClearPreferences', () => {
       await cleared;
     });
     expect(mockClear).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves the look back after the reset, since a reset does not clear it', async () => {
+    mockClear.mockResolvedValue({ success: true });
+    mockUpdate.mockResolvedValue({});
+    const queryClient = seeded({
+      other_preference: { card_style: 'terminal', theme: 'dark', risk_tolerance: 'high' },
+    });
+    const { result } = renderHookWithProviders(() => useClearPreferences(), { queryClient });
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+    expect(mockClear).toHaveBeenCalledTimes(1);
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(mockUpdate).toHaveBeenCalledWith({
+      other_preference: { card_style: 'terminal', theme: 'dark' },
+    });
+    expect(mockClear.mock.invocationCallOrder[0]).toBeLessThan(mockUpdate.mock.invocationCallOrder[0]);
+  });
+
+  it('sends nothing back when the account held no look', async () => {
+    mockClear.mockResolvedValue({ success: true });
+    const queryClient = seeded({ other_preference: { risk_tolerance: 'high' } });
+    const { result } = renderHookWithProviders(() => useClearPreferences(), { queryClient });
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still counts the reset done when saving the look back fails', async () => {
+    mockClear.mockResolvedValue({ success: true });
+    mockUpdate.mockRejectedValue(new Error('offline'));
+    const queryClient = seeded({ other_preference: { card_style: 'soft' } });
+    const { result } = renderHookWithProviders(() => useClearPreferences(), { queryClient });
+
+    await act(async () => {
+      await expect(result.current.mutateAsync()).resolves.toEqual({ success: true });
+    });
   });
 });

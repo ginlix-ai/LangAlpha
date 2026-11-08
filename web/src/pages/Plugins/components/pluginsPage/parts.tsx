@@ -1,6 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { EnabledToggle } from '@/components/mcp/McpPrimitives';
+import { buttonSlot } from '@/components/ui/button-class';
 import { cn } from '@/lib/utils';
 import './pluginsPage.css';
 
@@ -21,7 +22,7 @@ export function OnOffControl({
 }) {
   const { t } = useTranslation();
   return (
-    <div className={cn('pp-onoff', disabled && 'is-disabled')} title={title}>
+    <div className={cn('pp-onoff open-style:control-voice', disabled && 'is-disabled')} title={title}>
       <span>{enabled ? t('plugins.surface.on') : t('plugins.surface.off')}</span>
       <EnabledToggle enabled={enabled} name={name} disabled={disabled} onToggle={onToggle} />
     </div>
@@ -44,12 +45,8 @@ export function PageButton({
   return (
     <button
       type="button"
-      className={cn(
-        'pp-btn',
-        variant === 'primary' && 'is-primary',
-        variant === 'danger' && 'is-danger',
-        className,
-      )}
+      {...buttonSlot(variant === 'primary' ? 'default' : 'outline', variant === 'danger' ? 'danger' : undefined)}
+      className={cn('pp-btn', variant === 'primary' && 'is-primary', className)}
       {...props}
     >
       {icon}

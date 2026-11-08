@@ -159,16 +159,10 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
     <div>
       <WizardStepHeader titleId={headingId} title={t('setup.chooseYourModels')} helper={copy.chooseDesc} />
       <div className="flex flex-col gap-4 sm:gap-6">
-      {/* Model access reminder */}
-      <div
-        className="flex items-start gap-2.5 rounded-lg px-3.5 py-3"
-        // A neutral panel with the accent on its icon alone: amber annotates,
-        // it does not wash or ring (DESIGN.md, accent discipline).
-        style={{
-          background: 'var(--color-bg-card)',
-          border: '1px solid var(--color-border-muted)',
-        }}
-      >
+      {/* Model access reminder: a neutral panel with the accent on its icon
+          alone; amber annotates, it does not wash or ring (DESIGN.md, accent
+          discipline). */}
+      <div className="shell-box flex items-start gap-2.5 px-3.5 py-3">
         <Info
           className="h-4 w-4 shrink-0 mt-0.5"
           style={{ color: 'var(--color-accent-primary)' }}

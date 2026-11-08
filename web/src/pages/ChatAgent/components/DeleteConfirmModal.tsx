@@ -58,8 +58,8 @@ function DeleteConfirmModal({
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onCancel(); }}>
       <DialogContent
         style={{
-          backgroundColor: 'var(--color-bg-page)',
-          borderColor: 'var(--color-border-muted)',
+          backgroundColor: 'var(--color-shell-float, var(--color-bg-page))',
+          borderColor: 'var(--color-shell-edge, var(--color-border-muted))',
         }}
       >
         {/* Warning icon + title */}

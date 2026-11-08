@@ -18,10 +18,12 @@
   overflow-y: auto;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
-  border-radius: 16px 16px 0 0;
+  /* The open card styles float it on the page's ground inside their edge;
+     Terminal squares its corners on a phone too. */
+  border-radius: var(--cs-radius-overlay, 16px 16px 0 0);
   padding: 24px;
-  background-color: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-muted);
+  background-color: var(--color-shell-float, var(--color-bg-elevated));
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
 }
 
 @media (min-width: 640px) {
@@ -30,7 +32,7 @@
   }
 
   .cwm-modal {
-    border-radius: 12px;
+    border-radius: var(--cs-radius-overlay, 12px);
     max-height: 85vh;
   }
 }
@@ -42,9 +44,15 @@
   justify-content: space-between;
   margin-bottom: 20px;
 }
+/* The open card styles rule it off as a card's divider. */
+:root:not([data-card-style='balanced']) .cwm-header {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px var(--cs-rule-style) var(--color-shell-divider);
+}
 
 .cwm-title {
-  font-size: 1.125rem;
+  font-size: var(--cs-text-heading, 1.125rem);
+  letter-spacing: calc(0.02em * var(--term-track));
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0;
@@ -72,11 +80,14 @@
   margin-bottom: 16px;
 }
 
+/* The field labels in the voice (Terminal's in its label size and ink). */
 .cwm-label {
   display: block;
-  font-size: 0.8125rem;
+  font-size: var(--cs-text-label, 0.8125rem);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--color-shell-label, var(--color-text-primary));
   margin-bottom: 6px;
 }
 
@@ -86,7 +97,7 @@
 
 .cwm-label-optional {
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--cs-text-label, 0.75rem);
   font-weight: 400;
 }
 
@@ -132,14 +143,16 @@
 }
 
 .cwm-dropzone-label {
-  font-size: 0.8125rem;
+  font-size: var(--cs-text-label, 0.8125rem);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--color-shell-label, var(--color-text-primary));
   margin-bottom: 6px;
 }
 
 .cwm-dropzone-sublabel {
-  font-size: 0.6875rem;
+  font-size: var(--cs-text-label, 0.6875rem);
   color: var(--color-text-secondary);
   margin-bottom: 8px;
 }
@@ -151,14 +164,18 @@
   justify-content: center;
   gap: 8px;
   padding: 24px 16px;
-  border: 1.5px dashed var(--color-border-muted);
-  border-radius: 8px;
+  /* The open card styles draw it a hairline in their edge, solid in Soft. */
+  border: 1.5px dashed var(--color-shell-edge, var(--color-border-muted));
+  border-radius: var(--cs-radius-small, 8px);
   cursor: pointer;
   transition: border-color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
 }
 
+:root:not([data-card-style='balanced']) .cwm-dropzone { border-width: 1px; }
+:root[data-card-style='soft'] .cwm-dropzone { border-style: solid; }
+
 .cwm-dropzone:hover {
-  border-color: var(--color-border-muted);
+  border-color: var(--color-shell-edge, var(--color-border-muted));
   background-color: var(--color-border-muted);
 }
 
@@ -172,7 +189,7 @@
 }
 
 .cwm-dropzone-text {
-  font-size: 0.8125rem;
+  font-size: var(--cs-text-label, 0.8125rem);
   color: var(--color-text-secondary);
 }
 

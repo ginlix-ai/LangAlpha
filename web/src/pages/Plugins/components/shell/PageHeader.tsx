@@ -67,7 +67,7 @@ export function PageHeader({
     <header className="plugins-head">
       <div className="plugins-head-text">
         <div className="plugins-head-row">
-          <h1 className="plugins-head-title">{t(SECTION_LABEL_KEYS[section])}</h1>
+          <h1 className="page-head-title whitespace-nowrap">{t(SECTION_LABEL_KEYS[section])}</h1>
           {catalog && <ViewSwitch value={view} onChange={onViewChange} />}
         </div>
         <p className="plugins-head-def">{t(SECTION_DEFINITION_KEYS[section])}</p>
@@ -147,7 +147,7 @@ function ViewSwitch({
     { value: 'discover', label: t('plugins.shell.view.discover') },
   ];
   return (
-    <div role="group" aria-label={t('plugins.shell.view.label')} className="plugins-view">
+    <div role="group" aria-label={t('plugins.shell.view.label')} data-slot="segmented" className="plugins-view">
       {options.map((option) => (
         <button
           key={option.value}
@@ -192,10 +192,11 @@ function SearchField({
   };
 
   return (
-    <div className="plugins-search">
+    <div className="page-search plugins-search">
       <Search className="plugins-search-icon" aria-hidden />
       <input
         type="search"
+        className="page-search-input"
         value={shown}
         placeholder={placeholder}
         aria-label={placeholder}

@@ -8,7 +8,9 @@ html.desktop-mac .wizard-topbar {
 }
 
 /* The home indicator on a phone sits over the bottom edge; the footer's
-   buttons stay above it. */
+   buttons stay above it. The footer's rule and the type of what the flow
+   draws read the card-style variables (wizard.tsx); the shell's face is set
+   with the app's (styles/cardStyle.css). */
 .wizard-footer {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -34,4 +36,9 @@ html.desktop-mac .wizard-topbar {
 
 .wizard-mark-in {
   animation: wizard-mark-in var(--motion-fold) var(--ease-out) calc(var(--motion-stagger) * 2) backwards;
+}
+
+/* Terminal's step title holds one size at every width, in mono. */
+:root:not([data-card-style]) .wizard-title {
+  font-size: 1.5rem;
 }

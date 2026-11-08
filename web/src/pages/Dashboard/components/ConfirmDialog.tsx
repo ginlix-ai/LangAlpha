@@ -37,7 +37,7 @@ function ConfirmDialog({ open, title, message, confirmLabel, onConfirm, onOpenCh
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn('sm:max-w-sm border', surface === 'page' && 'dash-form')}
-        style={surface === 'page' ? undefined : { backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}
+        style={surface === 'page' ? undefined : { backgroundColor: 'var(--color-shell-float, var(--color-bg-elevated))', borderColor: 'var(--color-shell-edge, var(--color-border-elevated))' }}
         onOpenAutoFocus={(e) => {
           returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
           if (!focusConfirm) return;

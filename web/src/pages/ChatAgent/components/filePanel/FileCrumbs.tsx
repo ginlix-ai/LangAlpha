@@ -26,7 +26,7 @@ interface FileCrumbsProps {
 export function FileCrumbs({ path, onOpenDir, meta, chip, artifact, tools, actions, unsaved }: FileCrumbsProps): React.ReactElement {
   const segments = path.split('/').filter(Boolean);
   return (
-    <div className="file-panel-crumbs">
+    <div className="file-panel-crumbs rule-b">
       <nav className="file-panel-crumb-trail" aria-label={path}>
         {segments.map((segment, i) => {
           const last = i === segments.length - 1;
@@ -51,7 +51,7 @@ export function FileCrumbs({ path, onOpenDir, meta, chip, artifact, tools, actio
       {artifact}
       {chip}
       <span className="file-panel-crumb-spacer" />
-      {meta && <span className="file-panel-crumb-meta">{meta}</span>}
+      {meta && <span className="file-panel-crumb-meta open-style:control-voice">{meta}</span>}
       {tools}
       {actions}
     </div>

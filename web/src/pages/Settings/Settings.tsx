@@ -20,6 +20,7 @@ import { PlanPanel } from './panels/PlanPanel';
 import { IntegrationsPanel } from './panels/IntegrationsPanel';
 import { SettingsRail } from './components/SettingsRail';
 import { readSection, SECTIONS, type Section } from './sections';
+import '@/styles/pageRail.css';
 import './Settings.css';
 
 /** A section's rows while the account is read on a cold load: a name and a
@@ -132,7 +133,7 @@ function Settings() {
         <div ref={pageRef} className="settings-scroll">
           <div className="settings-column">
             <header className="settings-head">
-              <h1 className="settings-head-title">{t(SECTIONS[section].labelKey)}</h1>
+              <h1 className="page-head-title">{t(SECTIONS[section].labelKey)}</h1>
               <p className="settings-head-def">{t(SECTIONS[section].descKey)}</p>
             </header>
             {/* Only a cold load waits here: the app shell has usually read

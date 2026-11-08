@@ -50,7 +50,8 @@ export function KeyFilter({ filter }: { filter: KeyFilterState }) {
         <button
           type="button"
           aria-pressed={unreadOnly}
-          className={cn('surface-chip', unreadOnly && 'is-on')}
+          className={cn('surface-chip open-style:control-voice', unreadOnly && 'is-on')}
+          data-bracket="chip"
           onClick={() => setUnreadOnly(!unreadOnly)}
         >
           {t('vault.filter.unread')}

@@ -24,6 +24,7 @@ function ListBox<T extends object>({
 }: AriaListBoxProps<T>) {
   return (
     <AriaListBox
+      data-slot="listbox"
       className={composeRenderProps(className, (className) =>
         cn(
           className,
@@ -44,6 +45,7 @@ const ListBoxItem = <T extends object>({
 }: AriaListBoxItemProps<T>) => {
   return (
     <AriaListBoxItem
+      data-slot="menu-item"
       textValue={
         props.textValue || (typeof children === "string" ? children : undefined)
       }
@@ -87,6 +89,7 @@ function ListBoxHeader({
 }: React.ComponentProps<typeof AriaHeader>) {
   return (
     <AriaHeader
+      data-slot="menu-label"
       className={cn("py-1.5 pl-8 pr-2 text-sm font-semibold", className)}
       {...props}
     />

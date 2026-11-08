@@ -2,9 +2,10 @@
   position: absolute;
   pointer-events: none;
   z-index: 20;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-elevated);
-  border-radius: 6px;
+  /* Drawn as a tooltip is in the open card styles. */
+  background: var(--color-shell-float, var(--color-bg-elevated));
+  border: 1px solid var(--color-shell-edge, var(--color-border-elevated));
+  border-radius: var(--cs-radius-small, 6px);
   padding: 8px 10px;
   font-size: 0.6875rem;
   font-family: var(--font-mono);

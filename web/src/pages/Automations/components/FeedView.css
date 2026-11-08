@@ -15,16 +15,15 @@
   margin-top: 28px;
 }
 
+/* Days and runs are parted by a card's divider (rule-b) in the card styles. */
 .automations-day-heading {
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--color-border-muted);
 }
 
 .automation-run {
   display: flex;
   gap: 16px;
   padding: 16px 0;
-  border-bottom: 1px solid var(--color-border-muted);
 }
 
 .automation-run-time {
@@ -52,9 +51,10 @@
 
 .automation-run-name {
   flex: 1;
-  font-size: 0.9375rem;
+  font-size: var(--cs-text-field, 0.9375rem);
   font-weight: 500;
 }
+:root:not([data-card-style]) .automation-run-name { font-weight: 700; }
 
 @media (max-width: 1023px) {
   .automations-feed {

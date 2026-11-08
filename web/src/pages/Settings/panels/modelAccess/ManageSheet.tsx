@@ -68,7 +68,7 @@ export function ManageSheet({
         <SubscriptionFlow provider={subscription} onConnected={done} onCancel={needsReauth ? undefined : done} />
         {needsReauth && (
           <div className="border-t pt-4" style={{ borderColor: 'var(--color-border-muted)' }}>
-            <Button type="button" variant="ghost" size="sm" onClick={onRemove} style={{ color: 'var(--color-loss)' }}>
+            <Button type="button" variant="ghost" size="sm" tone="danger" onClick={onRemove} style={{ color: 'var(--color-loss)' }}>
               {t('modelAccess.remove.disconnect')}
             </Button>
           </div>
@@ -84,7 +84,7 @@ export function ManageSheet({
       ) : option && editingKey ? (
         <KeySheet option={option} configured={configured} onSaved={() => setEditingKey(false)} onCancel={() => setEditingKey(false)} />
       ) : (
-        <div className="flex items-center justify-between gap-3 rounded-lg p-4" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
+        <div className="shell-box flex items-center justify-between gap-3 p-4">
           <div className="flex min-w-0 flex-col gap-0.5">
             <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
               {local ? t('setup.baseUrlLabel') : t('modelAccess.apiKey.savedKey')}
@@ -115,7 +115,7 @@ export function ManageSheet({
 
       <div className="flex flex-wrap items-center gap-2 border-t pt-4" style={{ borderColor: 'var(--color-border-muted)' }}>
         {removable && (
-          <Button type="button" variant="ghost" size="sm" onClick={onRemove} style={{ color: 'var(--color-loss)' }}>
+          <Button type="button" variant="ghost" size="sm" tone="danger" onClick={onRemove} style={{ color: 'var(--color-loss)' }}>
             {subscription ? t('modelAccess.remove.disconnect') : t('modelAccess.remove.remove')}
           </Button>
         )}

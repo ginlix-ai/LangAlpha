@@ -2,6 +2,7 @@ import { cn } from "../../lib/utils"
 
 export type ButtonVariant = "default" | "destructive" | "outline" | "secondary" | "ghost" | "link"
 export type ButtonSize = "default" | "sm" | "lg" | "icon"
+export type ButtonTone = "danger"
 
 // Accent discipline (DESIGN.md): the amber is annotation-only — never a
 // button fill, hover wash, or focus ring. Primary is the neutral
@@ -38,4 +39,22 @@ export function buttonClass({
     sizes[size],
     className
   )
+}
+
+/**
+ * The hooks the card styles draw a button by (styles/cardStyle.css), for an
+ * element that keeps its own classes but should look like the buttons beside
+ * it: Terminal's bracketed words, Soft's pills, a destructive one's box.
+ */
+export function buttonSlot(variant: ButtonVariant = "default", tone?: ButtonTone) {
+  return { "data-slot": "button", "data-variant": variant, "data-tone": tone } as const
+}
+
+/**
+ * A door: a button that leads somewhere, its own arrow or chevron giving way
+ * to Terminal's brackets. With a variant it takes that button's shape too;
+ * without one it is words alone.
+ */
+export function doorSlot(variant?: ButtonVariant) {
+  return { "data-slot": "door", "data-variant": variant } as const
 }

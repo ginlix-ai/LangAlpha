@@ -67,7 +67,7 @@ export default function FeedView({ automations, readings, onOpenAutomation, onOp
           <>
             {days.map((day) => (
               <div key={day.key} className="automations-day">
-                <h2 className="automations-kicker automations-day-heading">{dayLabel(day.key, day.date)}</h2>
+                <h2 className="automations-kicker automations-day-heading rule-b">{dayLabel(day.key, day.date)}</h2>
                 {day.runs.map((run) => (
                   <RunEntry
                     key={run.automation_execution_id}
@@ -134,11 +134,11 @@ function FeedDaySkeleton() {
   return (
     <div className="automations-day">
       <span className="sr-only">{t('common.loading')}</span>
-      <div className="automations-kicker automations-day-heading" aria-hidden="true" data-testid="feed-skeleton-heading">
+      <div className="automations-kicker automations-day-heading rule-b" aria-hidden="true" data-testid="feed-skeleton-heading">
         <SkeletonBar className="w-12" />
       </div>
       {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="automation-run" aria-hidden="true" data-testid="feed-skeleton-run">
+        <div key={i} className="automation-run rule-b" aria-hidden="true" data-testid="feed-skeleton-run">
           <div className="automation-mono automation-run-time"><SkeletonBar className="w-14" /></div>
           <div className="min-w-0 flex-1">
             <div className="automation-run-head">
@@ -198,7 +198,7 @@ function RunEntry({
   const remedy = ui.danger && automation ? automationActions(automation).remedy : null;
 
   return (
-    <article className="automation-run">
+    <article className="automation-run rule-b">
       <div className="automation-mono automation-run-time">{formatClock(runTime(run), locale)}</div>
       <div className="min-w-0 flex-1">
         <div className="automation-run-head">

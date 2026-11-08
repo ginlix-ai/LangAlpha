@@ -85,6 +85,8 @@ function DialogContent({
       <DialogPortal>
         <DialogOverlay />
         <DialogPrimitive.Content
+          data-slot="dialog"
+          data-sheet=""
           aria-describedby={undefined}
           ref={containerRefCb}
           className={cn(DIALOG_MOBILE_SHEET_CLASSES, className)}
@@ -94,12 +96,14 @@ function DialogContent({
           {/* Drag handle */}
           <div
             ref={setHandleNode}
+            data-slot="sheet-handle"
             className="flex justify-center pt-3 pb-1 shrink-0 cursor-grab active:cursor-grabbing"
             style={{ touchAction: 'none' }}
           >
+            {/* Drawn as MobileBottomSheet's bar is. */}
             <div
-              className="w-10 h-1 rounded-full"
-              style={{ backgroundColor: 'var(--color-border-default)' }}
+              className="w-10 h-1 rounded-[calc(var(--cs-radius-mark,9999px)/2)]"
+              style={{ backgroundColor: 'var(--color-shell-edge, var(--color-border-default))' }}
             />
           </div>
           {/* Scrollable content — mirrors MobileBottomSheet inner div */}
@@ -131,6 +135,7 @@ function DialogContent({
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
+        data-slot="dialog"
         aria-describedby={undefined}
         ref={ref}
         className={cn(
@@ -176,6 +181,8 @@ function DialogTitle({
 }: React.ComponentProps<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
+      data-slot="dialog-title"
+      data-bracket="title"
       className={cn("text-lg font-semibold leading-none tracking-tight", className)}
       {...props} />
   )
@@ -187,6 +194,7 @@ function DialogDescription({
 }: React.ComponentProps<typeof DialogPrimitive.Description>) {
   return (
     <DialogPrimitive.Description
+      data-slot="dialog-desc"
       className={cn("text-sm text-muted-foreground", className)}
       {...props} />
   )

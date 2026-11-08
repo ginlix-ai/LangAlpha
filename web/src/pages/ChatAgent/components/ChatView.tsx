@@ -1480,7 +1480,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 <Menu className="h-5 w-5" />
               </button>
             )}
-            <h1 className="text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
+            <h1 className="title-font text-[length:var(--cs-text-heading,1rem)] leading-6 font-semibold tracking-[var(--cs-title-track,-0.01em)] whitespace-nowrap truncate" style={{ color: 'var(--color-text-primary)' }}>
               {/* The bar's tap is a pointer's shortcut, and a bar holding buttons
                   cannot be one. The title is the same action as a real control,
                   named by the words on it, with what it does as its description. */}
@@ -1731,8 +1731,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   reads it. */}
               {/* The stack moves to the foot of a file tab while the chat is
                   out of view (chatView/useComposerDock), as the same elements. */}
+              {/* The rows here that draw a surface (the error, the restore
+                  offer, the disk warning) take the composer's corner, 16 unless
+                  the card style says otherwise (--cs-composer-*,
+                  styles/cardStyle.css), and set their text in where Soft's
+                  rounder corner needs it. The same rows elsewhere keep their own. */}
               <DockableComposer home={composerDock.home} host={composerDock.host}>
-              <div className="w-full max-w-3xl sibling-space-y-3 relative pointer-events-auto [--composer-h:initial]">
+              <div className="w-full max-w-3xl sibling-space-y-3 relative pointer-events-auto [--composer-h:initial] [--stack-row-radius:var(--cs-composer-stack-radius,16px)] [--stack-row-pad:var(--cs-composer-row-pad)]">
                 {activeAgentId === 'main' ? (
                   <>
                     {/* Only rows with a surface of their own sit here: the

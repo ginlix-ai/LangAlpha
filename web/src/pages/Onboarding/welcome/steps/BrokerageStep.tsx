@@ -21,6 +21,7 @@ import { useBrokerageConnect } from '@/pages/Plugins/hooks/useBrokerageConnect';
 import { spendConnectLanding, useWelcomeLanding } from '@/pages/Plugins/hooks/useConnectLanding';
 import { welcomeUrl } from '../paths';
 import { useBrokers, type ResolvedBroker } from '../useBrokers';
+import { doorSlot } from '@/components/ui/button-class';
 
 /**
  * Connect a brokerage, or pass. Each broker is the Brokerages tab's own card,
@@ -166,6 +167,7 @@ function ElsewhereRow({ onClick }: { onClick: () => void }) {
         type="button"
         onClick={onClick}
         data-testid="welcome-elsewhere"
+        {...doorSlot()}
         className="group inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md border border-(--color-border-default) px-4 text-sm font-medium text-(--color-text-primary) press hover:bg-(--color-bg-hover)"
       >
         <span>{t('onboarding.welcome.brokerage.elsewhereAction')}</span>

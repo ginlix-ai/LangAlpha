@@ -114,7 +114,7 @@ export function InvestingProfilePanel() {
           prefSections.map(({ label, entries }, index) => (
             <SettingsCardBody key={label} id={index === 0 ? SETTINGS.investingAnswers.anchor : undefined}>
               <h3 className="settings-row-label mb-2">{label}</h3>
-              <dl className="grid grid-cols-[minmax(0,38%)_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[0.8125rem] sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)] sm:gap-x-4">
+              <dl className="settings-facts grid grid-cols-[minmax(0,38%)_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[0.8125rem] sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)] sm:gap-x-4">
                 {entries.map(([key, value]) => (
                   <div key={key} className="contents">
                     <dt style={{ color: 'var(--color-text-tertiary)' }}>
@@ -159,6 +159,7 @@ export function InvestingProfilePanel() {
             variant="outline"
             size="sm"
             className="h-8 gap-1.5"
+            tone="danger"
             style={{ color: 'var(--color-loss)' }}
             onClick={() => setShowResetConfirm(true)}
           >

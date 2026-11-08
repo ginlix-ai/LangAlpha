@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { desktop } from '../lib/desktop';
 
-type ThemePreference = 'light' | 'dark' | 'auto';
+export type ThemePreference = 'light' | 'dark' | 'auto';
 export type ResolvedTheme = 'light' | 'dark';
 
 export interface ThemeContextValue {
@@ -33,6 +33,19 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const handler = (e: MediaQueryListEvent) => setSystemTheme(e.matches ? 'light' : 'dark');
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  // Another tab of this browser picked or followed a theme: shown here too.
+  // Storing it again below is the same value, which raises no event, so the
+  // tabs do not echo it back and forth. Removed means the default.
+  useEffect(() => {
+    const handler = (e: StorageEvent) => {
+      if (e.key !== 'theme' && e.key !== null) return;
+      const next = e.newValue;
+      setPreference(next === 'light' || next === 'dark' ? next : 'auto');
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
   }, []);
 
   // Resolved theme: what actually gets applied

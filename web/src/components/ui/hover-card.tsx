@@ -40,6 +40,7 @@ function HoverCardContent({
   return (
     <HoverCardPrimitive.Portal>
       <HoverCardPrimitive.Content
+        data-slot="popover"
         align={align}
         sideOffset={sideOffset}
         className={cn(

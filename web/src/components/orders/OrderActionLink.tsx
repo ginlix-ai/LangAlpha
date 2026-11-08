@@ -40,6 +40,7 @@ export function OrderActionLink({
   vendorLabel,
   status,
   className,
+  bracketed = false,
 }: {
   href: string | null | undefined;
   vendorLabel: string;
@@ -47,6 +48,9 @@ export function OrderActionLink({
   /** The surface's own look in place of the button's, for a card drawn in
    *  its own type. */
   className?: string;
+  /** Terminal's brackets around it, as a card in its own type names its
+   *  action (styles/cardStyle.css, data-bracket). */
+  bracketed?: boolean;
 }) {
   const { t } = useTranslation();
   const safe = safeExternalHref(href);
@@ -58,6 +62,7 @@ export function OrderActionLink({
       rel="noopener noreferrer"
       onClick={(e) => e.stopPropagation()}
       data-testid="order-action-link"
+      data-bracket={bracketed ? 'title' : undefined}
       className={
         className ??
         'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md font-medium transition-colors hover:brightness-110 whitespace-nowrap bg-(--color-btn-primary-bg) text-(--color-btn-primary-text)'

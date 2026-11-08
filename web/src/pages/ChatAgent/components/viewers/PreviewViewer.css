@@ -16,7 +16,6 @@
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border-muted);
   flex-shrink: 0;
 }
 
@@ -38,12 +37,13 @@
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--cs-radius-pill, 4px);
   font-size: 0.625rem;
   font-weight: 600;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   color: var(--color-text-tertiary);
-  background: var(--color-accent-soft);
+  /* A card's tag in the open card styles. */
+  background: var(--color-shell-fill, var(--color-accent-soft));
   border: 1px solid var(--color-border-muted);
   flex-shrink: 0;
 }

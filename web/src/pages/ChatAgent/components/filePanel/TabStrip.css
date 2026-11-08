@@ -42,10 +42,10 @@
   max-width: 11rem;
   padding: 0 4px 0 8px;
   border: 1px solid transparent;
-  border-radius: var(--radius);
+  border-radius: var(--cs-radius-control, var(--radius));
   background: transparent;
   color: var(--color-text-tertiary);
-  font-size: 0.75rem;
+  font-size: var(--cs-text-control, 0.75rem);
   cursor: pointer;
   user-select: none;
   transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
@@ -54,11 +54,17 @@
   background-color: var(--color-bg-hover);
   color: var(--color-text-secondary);
 }
+/* The open card styles draw the tab in front as an open box rather than a
+   raised fill, as the sidebar's open thread is. */
 .file-panel-tab[aria-selected='true'] {
-  background-color: var(--color-bg-elevated);
-  border-color: var(--color-border-muted);
+  background-color: var(--color-shell-fill, var(--color-bg-elevated));
+  border-color: var(--color-shell-front, var(--color-border-muted));
   color: var(--color-text-primary);
+  /* Terminal's open tab is heavier. */
+  font-weight: var(--cs-weight-picked, inherit);
 }
+/* Soft's pill is wider at its start. */
+:root[data-card-style='soft'] .file-panel-tab { padding-left: 10px; }
 /* Arrow keys rove onto tabs with tabIndex -1, which the focus layer keeps
    quiet by default; this unlayered rule draws the ring anyway, inset because
    the strip scrolls and clips anything outside the pill. */

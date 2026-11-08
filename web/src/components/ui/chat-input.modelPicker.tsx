@@ -224,7 +224,7 @@ function ModelList({
 
   return (
     <>
-      <div className="flex flex-none items-center border-b border-(--color-border-muted) pr-2">
+      <div className="rule-b flex flex-none items-center pr-2">
         {/* A grid takes no virtual focus from a search field, so the field
             hands over itself: Down moves into the list, and Enter picks the
             top row. Any other key goes on, so Escape still closes. */}
@@ -247,7 +247,8 @@ function ModelList({
             }
           }}
           autoFocus
-          className="min-w-0 flex-1 border-b-0"
+          ruled={false}
+          className="min-w-0 flex-1"
         />
         <Button
           aria-label={t('chat.modelSelector.manageModels')}
@@ -265,7 +266,7 @@ function ModelList({
       <div className="flex h-[11.5rem] min-h-0">
         {/* Out of the flow, so a long rail scrolls rather than sets the
             height; a curated list keeps the picker short. */}
-        <div className="relative w-11 flex-none border-r border-(--color-border-muted)">
+        <div className="relative w-11 flex-none border-r border-[color:var(--color-shell-divider,var(--color-border-muted))]">
           {/* The toggle group takes no ref, so a box of its own scrolls it. */}
           <div
             ref={attachRail}
@@ -299,7 +300,7 @@ function ModelList({
         <div className="flex min-w-0 flex-1 flex-col">
           {header && (
             <div className="flex flex-none items-center justify-between gap-2 px-3 pb-1 pt-2 text-xs text-(--color-text-tertiary)">
-              {meter ? <PickerPlanMeter meter={meter} /> : <span className="truncate">{header}</span>}
+              {meter ? <PickerPlanMeter meter={meter} /> : <span data-slot="menu-label" className="truncate">{header}</span>}
               {view.kind === 'brand' && view.group.connections.length > 1 ? (
                 <ToggleButtonGroup
                   aria-label={t('chat.modelSelector.paidBy')}
@@ -310,7 +311,10 @@ function ModelList({
                     const [next] = keys;
                     if (next !== undefined) setConnectionTab(String(next));
                   }}
-                  className="flex flex-none gap-0.5 rounded-md bg-(--color-bg-tag) p-0.5"
+                  // One of the segmented controls, which the open card
+                  // styles draw without a track (styles/cardStyle.css).
+                  data-slot="segmented"
+                  className="flex flex-none gap-0.5 rounded-md bg-[var(--color-shell-fill,var(--color-bg-tag))] p-0.5"
                 >
                   {view.group.connections.map((c) => (
                     <ToggleButton
@@ -318,7 +322,7 @@ function ModelList({
                       id={c.id}
                       className={cn(
                         'rounded px-1.5 py-px text-[0.625rem] font-medium leading-normal text-(--color-text-tertiary) outline-hidden',
-                        'data-hovered:text-(--color-text-secondary) data-selected:bg-(--color-bg-elevated) data-selected:text-(--color-text-primary)',
+                        'data-hovered:text-(--color-text-secondary) data-selected:bg-[var(--color-shell-fill,var(--color-bg-elevated))] data-selected:text-(--color-text-primary)',
                         'data-focus-visible:outline-current',
                       )}
                     >
@@ -347,7 +351,7 @@ function ModelList({
             {view.rows.map(row)}
             {inThread.length > 0 && (
               <GridListSection>
-                <GridListHeader className="px-2 pb-1 pt-2.5 text-xs text-(--color-text-tertiary)">
+                <GridListHeader data-slot="menu-label" className="px-2 pb-1 pt-2.5 text-xs text-(--color-text-tertiary)">
                   {t('chat.modelSelector.inThread')}
                 </GridListHeader>
                 {inThread.map(row)}
@@ -404,8 +408,10 @@ function RailTab({ id, label, dot = false, children }: {
       id={id}
       aria-label={label}
       className={cn(
-        'relative flex h-8 w-8 flex-none items-center justify-center rounded-lg outline-hidden',
-        'data-hovered:bg-(--color-bg-hover) data-selected:bg-(--color-bg-tag)',
+        'relative flex h-8 w-8 flex-none items-center justify-center rounded-[var(--cs-radius-control,var(--radius-lg))] outline-hidden',
+        // The open card styles pick a provider with the front tab's edge, not a fill.
+        'data-hovered:bg-(--color-bg-hover) data-selected:bg-[color:var(--color-shell-fill,var(--color-bg-tag))]',
+        'data-selected:shadow-[inset_0_0_0_1px_var(--color-shell-front,transparent)]',
         'data-focus-visible:outline-current',
       )}
     >
@@ -456,6 +462,7 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
       // screen reader reads of a row.
       textValue={reason ? `${name}, ${reason}` : name}
       isDisabled={reason !== undefined && !actionable}
+      data-slot="menu-item"
       className={cn('group', MENU_ROW, 'data-disabled:text-(--color-text-tertiary)', actionable && 'text-(--color-text-tertiary)')}
     >
       {/* One line holds the name and everything after it, so the check and

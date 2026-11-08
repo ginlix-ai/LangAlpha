@@ -1,3 +1,7 @@
+/* The header's door carries the button hooks (HeaderPill.tsx), which draw it
+   in the open card styles (styles/cardStyle.css): Terminal's bracketed word,
+   its icon given way, and Soft's pill. These are its size and its Balanced
+   look. */
 .stock-overview-toggle {
   display: inline-flex;
   align-items: center;

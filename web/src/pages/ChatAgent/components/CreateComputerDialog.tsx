@@ -296,7 +296,7 @@ function CreateComputerDialog({
               </>
             )}
           </label>
-          <NameRefusal refusal={nameError} edge="var(--color-border-muted)">
+          <NameRefusal refusal={nameError} edge="var(--color-shell-edge, var(--color-border-muted))">
             {(field, borderColor) => (
               <Input
                 ref={nameRef}
@@ -322,7 +322,7 @@ function CreateComputerDialog({
                 // Cleared, it still says what the computer will be called; a machine
                 // the user brings says so before it has answered with its name.
                 placeholder={suggested ?? (own ? t('computer.nameFromMachine', "Defaults to the machine's name") : undefined)}
-                style={{ backgroundColor: 'var(--color-bg-input)', borderColor, color: 'var(--color-text-primary)' }}
+                style={{ backgroundColor: 'var(--color-shell-fill, var(--color-bg-input))', borderColor, color: 'var(--color-text-primary)' }}
               />
             )}
           </NameRefusal>

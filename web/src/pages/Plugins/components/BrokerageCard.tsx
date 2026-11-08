@@ -147,7 +147,7 @@ export function BrokerageCard({
         connecting={connecting}
         vendor={vendor}
         rowKey={rowKey}
-        size="md"
+        size="card"
         // The same outline on every card, a full-width bar of one weight in
         // each: which broker is waiting on the user is the corner's dot to say,
         // and a filled bar on one card tipped the whole grid towards it.
@@ -164,7 +164,7 @@ export function BrokerageCard({
         connecting={toggling}
         vendor={vendor}
         rowKey={rowKey}
-        size="md"
+        size="card"
         label={t('plugins.shell.brokerage.switchOn')}
         testid={`brokerage-switch-on-${brokerage.name}`}
         onClick={() => onToggle(true)}
@@ -431,6 +431,7 @@ function CapabilityChip({
         // Amber only where it is both real and granted, as on the detail page.
         settled && on && money && 'is-live',
       )}
+      data-bracket="tag"
     >
       {settled ? (
         <Icon className="broker-cap-glyph" role="img" aria-label={state} />

@@ -22,7 +22,7 @@
   flex: 1;
   height: 100%;
   padding: 0;
-  font-size: 0.875rem;
+  font-size: var(--cs-text-field, 0.875rem);
   background: transparent;
 }
 
@@ -32,6 +32,9 @@
 
 .dashboard-search-input::placeholder {
   color: var(--color-text-tertiary);
+  font-size: var(--cs-text-menu, 1em);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.04em * var(--term-track));
 }
 
 .dashboard-search-dropdown {
@@ -76,6 +79,7 @@
 
 .dashboard-search-dropdown-name {
   color: var(--color-text-secondary);
+  font-size: var(--cs-text-menu, 1em);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -97,6 +101,12 @@
 .dashboard-search-dropdown-loading:hover,
 .dashboard-search-dropdown-empty:hover {
   background-color: transparent;
+}
+
+/* Terminal sets the results as a menu's rows, the loading and empty lines
+   included. */
+:root:not([data-card-style]) .dashboard-search-dropdown-item {
+  padding-block: 8px;
 }
 
 @media (max-width: 767px) {

@@ -9,11 +9,12 @@
   position: fixed;
   left: 0;
   top: 0;
-  background: hsl(var(--sidebar-bg));
+  /* The open card styles lay it on the page's ground beside their edge. */
+  background: var(--color-shell-float, hsl(var(--sidebar-bg)));
   display: flex;
   flex-direction: column;
   align-items: center;
-  border-right: 1px solid hsl(var(--sidebar-border));
+  border-right: 1px solid var(--color-shell-edge, hsl(var(--sidebar-border)));
   z-index: 1000;
   transition: width var(--motion-fold) var(--ease-out);
 }
@@ -239,7 +240,7 @@ html.desktop-mac .sidebar-history {
   border-radius: 6px;
   background: transparent;
   color: hsl(var(--sidebar-icon));
-  font-size: 0.8438rem;
+  font-size: var(--cs-text-row, 0.8438rem);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -250,9 +251,12 @@ html.desktop-mac .sidebar-history {
   background: hsl(var(--sidebar-hover));
 }
 
+/* The open card styles keep the rail and drop the wash: full ink says it,
+   hovered too. */
 .sidebar-panel-item.active {
-  background: hsl(var(--sidebar-hover));
+  background: var(--color-shell-fill, hsl(var(--sidebar-hover)));
   color: hsl(var(--sidebar-icon-selected));
+  font-weight: var(--cs-weight-selected, 500);
 }
 
 /* Accent bar hugging the panel edge (-10px = .sidebar-panel-nav padding) */
@@ -296,6 +300,15 @@ html.desktop-mac .sidebar-history {
   color: var(--color-text-quaternary);
   cursor: pointer;
   transition: color var(--motion-quick) var(--ease-out);
+}
+/* The open card styles' label voice (styles/cardStyle.css); Terminal sets it
+   heavier. */
+:where(:root:not([data-card-style='balanced'])) .sidebar-section-title {
+  font-family: var(--term-words);
+  font-size: var(--cs-text-label, 0.75rem);
+  font-weight: 500;
+  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: var(--term-case);
 }
 
 .sidebar-section-title:hover {
@@ -343,7 +356,7 @@ html.desktop-mac .sidebar-history {
 .sidebar-panel-bottom {
   margin-top: auto;
   padding: 8px 10px 10px;
-  border-top: 1px solid hsl(var(--sidebar-border));
+  border-top: 1px var(--cs-rule-style, solid) var(--color-shell-rule, hsl(var(--sidebar-border)));
   flex-shrink: 0;
 }
 
@@ -387,7 +400,7 @@ html.desktop-mac .sidebar-history {
 }
 
 .sidebar-account-row-name {
-  font-size: 0.8125rem;
+  font-size: var(--cs-text-row, 0.8125rem);
   font-weight: 500;
   color: var(--color-text-primary);
   overflow: hidden;

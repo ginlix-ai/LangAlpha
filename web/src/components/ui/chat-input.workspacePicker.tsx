@@ -145,7 +145,7 @@ function WorkspaceList({ workspaces, selectedKey, emptyHint, onPick }: {
 
 function Row({ id, icon: Icon, label, hint }: { id: string; icon: LucideIcon; label: string; hint?: string }) {
   return (
-    <MenuItem id={id} textValue={label} className={MENU_ROW}>
+    <MenuItem id={id} textValue={label} data-slot="menu-item" className={MENU_ROW}>
       {({ isSelected }) => (
         <>
           <Icon aria-hidden className="h-4 w-4 flex-none text-(--color-text-tertiary)" />

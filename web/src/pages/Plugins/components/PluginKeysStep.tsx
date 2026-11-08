@@ -12,6 +12,7 @@ import type { KeysAsk, UndeclaredKey } from '../utils/installRefusal';
 import { keyMismatch, type KeyMismatch } from '../utils/pluginSchemas';
 import { FailureLine, RefusalBox } from './RefusalView';
 import { SecretValueInput } from './secrets/SecretValueInput';
+import { buttonSlot } from '@/components/ui/button-class';
 
 /**
  * The keys a plugin declares, asked for before it is installed.
@@ -307,6 +308,7 @@ export function PluginKeysStep({
           <button
             type="button"
             onClick={onBack}
+            {...buttonSlot('ghost')}
             disabled={busy}
             className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-colors hover:bg-foreground/5 disabled:opacity-50"
             style={{ color: 'var(--color-text-secondary)' }}
@@ -317,6 +319,7 @@ export function PluginKeysStep({
         ) : (
           <button
             type="button"
+            {...buttonSlot('ghost')}
             onClick={onCancel}
             // Held while the keys are out being checked, as the dialog's own
             // close is: the answer to that attempt is said in this form.
@@ -329,6 +332,7 @@ export function PluginKeysStep({
         )}
         <button
           type="submit"
+          {...buttonSlot()}
           disabled={!complete || busy}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md disabled:opacity-50"
           style={{

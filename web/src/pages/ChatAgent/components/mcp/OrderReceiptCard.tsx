@@ -354,6 +354,7 @@ function ReceiptOutcome({ receipt }: { receipt: OrderReceiptView }): React.React
               vendorLabel={vendorLabel}
               status={status}
               className="order-term-link order-term-action"
+              bracketed
             />
             {attemptId && <OrdersPageLink attemptId={attemptId} className="order-term-link" />}
           </span>
