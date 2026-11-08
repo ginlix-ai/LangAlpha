@@ -41,10 +41,11 @@ from .availability import (
 from . import logger
 
 from .capabilities import PlanTier, gate_capabilities
-from .claude_code import drop_claude_code_roles, require_runnable
+from .claude_code import claude_code_placement, drop_claude_code_roles, require_runnable
 from .clients import resolve_clients
 from .subagents import (
     demote_clientless,
+    pins_claude_code,
     read_user_subagents,
     resolve_user_subagents,
     subagent_models,
@@ -607,11 +608,18 @@ async def resolve_llm_config(
         # After the gate, whose tier check the merge reuses, and before the
         # clients, which read the merged definitions for their roles.
         if reads is not None:
+            subagent_reads = await reads
+            # A Claude Code pin on a turn of another model runs on Claude
+            # Code where the workspace has it now, else on the turn's model.
+            if not config.claude_code and pins_claude_code(subagent_reads):
+                config.claude_code_pins = await claude_code_placement(
+                    config, role, user_id=user_id, workspace_id=workspace_id,
+                )
             config.subagents.resolved = await resolve_user_subagents(
-                user_id, await reads, model_pref=model_pref, permits=permits,
+                user_id, subagent_reads, model_pref=model_pref, permits=permits,
                 is_byok=is_byok, search_api=config.search_api,
                 search_depth=config.search_depth, requested=enabled_subagents,
-                claude_code_turn=config.claude_code,
+                claude_code=config.claude_code or config.claude_code_pins is not None,
             )
     finally:
         # A stage above that raises must not leave the reads running, or let

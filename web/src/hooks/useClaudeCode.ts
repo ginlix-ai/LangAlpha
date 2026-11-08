@@ -176,7 +176,7 @@ export function useClaudeCodeSetup() {
     retry: 1,
     refetchInterval: (query) => {
       const setup = query.state.data;
-      if (setup?.state === 'checking') return CHECKING_POLL_MS;
+      if (setup?.state === 'checking' || setup?.pin_state === 'checking') return CHECKING_POLL_MS;
       if (setup?.state !== 'connected') return false;
       // Read again as the next working token expires, which may be the one it is connected by.
       const waits = [{ state: saved.state, expires_at: saved.expiresAt }, ...setup.computers]

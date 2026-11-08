@@ -39,6 +39,10 @@ export interface ModelSelectorProps {
   missingLabel?: (value: string) => string
   /** How an option prints its model; the manifest's name, else the key. */
   nameOf?: (model: string) => string
+  /** Why a listed model is held back, printed after its name; one the user
+   *  can fix stays a pick, and the fix is the surrounding block's to offer,
+   *  since an option holds text only. */
+  heldBy?: (model: string) => { reason: string; pickable: boolean } | null
 }
 
 export function ModelSelector({
@@ -57,6 +61,7 @@ export function ModelSelector({
   disabledModels,
   missingLabel,
   nameOf,
+  heldBy,
 }: ModelSelectorProps) {
   const { t } = useTranslation()
   const payerLabel = usePayerLabel()
@@ -156,9 +161,10 @@ export function ModelSelector({
               <optgroup key={provider} label={display}>
                 {modelList.map((m) => {
                   const payer = payers?.[m]
-                  const suffix = payer ? ` · ${payerLabel(payer)}` : ""
+                  const held = heldBy?.(m)
+                  const suffix = [payer && payerLabel(payer), held?.reason].filter(Boolean).map((s) => ` · ${s}`).join("")
                   return (
-                    <option key={m} value={m}>
+                    <option key={m} value={m} disabled={held ? !held.pickable : undefined}>
                       {name(m)}{suffix}
                     </option>
                   )

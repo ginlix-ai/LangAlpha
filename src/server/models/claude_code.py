@@ -143,7 +143,10 @@ class ClaudeCodeSetup(BaseModel):
     a cloud computer runs Claude Code inside that computer's sandbox, not on
     this server (``hosted.in_sandbox``). ``too_small``: their cloud
     computers that refuse it whatever the credential
-    (``hosted.cloud_refusals``), so the entry names what to resize."""
+    (``hosted.cloud_refusals``), so the entry names what to resize.
+    ``pin_state``: the same answer for a subagent's Claude Code pin on a
+    thread of another model, which never signs in with the setup token the
+    user stored (``llm.claude_code.claude_code_placement``)."""
 
     state: SetupState
     on: bool
@@ -152,6 +155,7 @@ class ClaudeCodeSetup(BaseModel):
     cloud: bool = False
     cli_in_sandbox: bool = False
     too_small: list[ClaudeCodeCloudComputer] = Field(default_factory=list)
+    pin_state: SetupState | None = None
 
 
 #: The credentials a user may choose for their turns on a cloud computer.

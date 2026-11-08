@@ -134,6 +134,7 @@ class ReportInbox(Protocol):
         job_ids: list[str],
         *,
         counted: bool = True,
+        final: bool = False,
     ) -> None: ...
 
 
@@ -330,16 +331,25 @@ class SteeringMiddleware(AgentMiddleware):
             current_steer_resume.reset(token)
             if "held_jobs" not in resume:
                 await self._settle_resume(
-                    held, result, counted=not resume.get("busy")
+                    held,
+                    result,
+                    counted=not resume.get("busy"),
+                    final=bool(resume.get("final")),
                 )
         return result
 
     async def _settle_resume(
-        self, held: dict[str, Any], result: Any, *, counted: bool = True
+        self,
+        held: dict[str, Any],
+        result: Any,
+        *,
+        counted: bool = True,
+        final: bool = False,
     ) -> None:
         """Give the rows back on a refused resume (one that raised too: the
         run did not start), counting the refusal unless it lifts by itself
-        (``counted``: the computer was busy). A resume that started without
+        (``counted``: the computer was busy), or settle them when it lasts
+        as long as the task (``final``). A resume that started without
         handing them to a run of its own (no run ledger) confirms them here
         instead."""
         artifact = (
@@ -364,6 +374,7 @@ class SteeringMiddleware(AgentMiddleware):
                     held["task_id"],
                     list(held["job_ids"]),
                     counted=counted,
+                    final=final,
                 )
         except Exception as e:
             logger.warning(f"[Steering] Settling resume of {held['task_id']} failed: {e}")

@@ -22,6 +22,7 @@ from ptc_agent.agent.subagents.merge import (
 )
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.config.agent import SubagentModel, SubagentsConfig
+from src.llms.claude_code import is_claude_code_model
 from src.llms.preferences import resolve_tuning
 
 from . import logger, user_models
@@ -34,7 +35,7 @@ from .clients import LLMRole
 SubagentReads = tuple[list[dict[str, Any]], dict[str, BaseSubagent], tuple[str, ...]]
 
 
-async def read_user_subagents(user_id: str, subagents: SubagentsConfig) -> SubagentReads:
+async def read_user_subagents(user_id: str, subagents: SubagentsConfig | None) -> SubagentReads:
     """What the merge reads, from one snapshot.
 
     An uninstall or update changes a plugin's subagents and the user's
@@ -53,6 +54,26 @@ async def read_user_subagents(user_id: str, subagents: SubagentsConfig) -> Subag
     return rows, bases, offered
 
 
+def pins_claude_code(reads: SubagentReads) -> bool:
+    """Whether any of the user's subagents may pin a Claude Code row, read
+    off the rows and bases before the merge, so that only a turn with such a
+    pin asks where Claude Code runs."""
+    rows, bases, _ = reads
+    pins = [(row.get("fields") or {}).get("model") for row in rows]
+    pins += [base.definition.model for base in bases.values()]
+    return any(is_claude_code_model(pin) for pin in pins)
+
+
+async def pinned_to_claude_code(user_id: str, name: str, role: AgentRole) -> bool:
+    """Whether a ``role`` turn compiles the user's subagent ``name`` now with
+    a Claude Code pin, read as a turn's merge reads it, for a caller that
+    holds no turn: a pin the user changed, removed or moved off ``role`` since
+    a run counts as gone."""
+    rows, bases, offered = await read_user_subagents(user_id, None)
+    resolved = merge_subagents(bases, offered, rows)
+    return any(d.name == name and is_claude_code_model(d.model) for d in resolved.for_role(role))
+
+
 async def resolve_user_subagents(
     user_id: str,
     reads: SubagentReads,
@@ -63,13 +84,14 @@ async def resolve_user_subagents(
     search_api: str,
     search_depth: str,
     requested: list[str] | None = None,
-    claude_code_turn: bool = False,
+    claude_code: bool = False,
 ) -> ResolvedSubagents:
     """The roster this user's turn compiles, before any client is built.
 
     ``search_api`` and ``search_depth`` are the user's own pair, already
     gated, which a subagent's search settings inherit and fall back to.
-    ``claude_code_turn`` keeps a Claude Code pin, which runs only on such a turn.
+    ``claude_code`` keeps a Claude Code pin, which runs only where Claude
+    Code runs the turn's subagents.
 
     A failed read of the rows raises rather than resolving without them: a
     user's off-switch is a restriction, and a turn that silently drops it
@@ -94,7 +116,7 @@ async def resolve_user_subagents(
         )
     resolved = await _demote_unservable(
         user_id, resolved, bases, model_pref=model_pref, permits=permits, is_byok=is_byok,
-        claude_code_turn=claude_code_turn,
+        claude_code=claude_code,
     )
     return await _gate_search(
         user_id, resolved, search_api=search_api, search_depth=search_depth, permits=permits,
@@ -156,13 +178,13 @@ async def _demote_unservable(
     model_pref: dict,
     permits: TierPermits,
     is_byok: bool,
-    claude_code_turn: bool = False,
+    claude_code: bool = False,
 ) -> ResolvedSubagents:
     """Pinned models this turn cannot run, as Inherit.
 
     By name for every pin, since a name the manifest lacks fails the build,
-    and so does a Claude Code row anywhere but a Claude Code turn
-    (``claude_code_turn``), whose subagents run on the runtime too.
+    and so does a Claude Code row where Claude Code does not run the turn's
+    subagents (``claude_code``).
     By plan only for a model the user chose, a plugin's pin included since
     the user installed it: a deployment's own pin is the operator's call, and
     gating it would change the turn of a user who never touched their
@@ -175,7 +197,7 @@ async def _demote_unservable(
         defn = definitions[name]
         if not defn.model:
             continue
-        if role_resolves(model_pref, defn.model, claude_code_turn=claude_code_turn) and (
+        if role_resolves(model_pref, defn.model, claude_code=claude_code) and (
             not plan_gated(defn, bases.get(name))
             or await model_on_plan(
                 user_id, defn.model, model_pref=model_pref, permits=permits,

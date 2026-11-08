@@ -6453,6 +6453,7 @@
       "modelAria": "Model for {{name}}",
       "modelHint": "Leave it on Thread's model to follow whatever the thread runs.",
       "modelUnavailableHint": "The saved model isn't available to you now, so it runs on the thread's model. Pick another to clear this.",
+      "claudeCodePinHint": "Runs on your Claude plan where the thread's workspace runs Claude Code, and on the thread's model elsewhere.",
       "modelUnavailableOption": "{{model}} (unavailable)",
       "unavailableOption": "{{name}} (unavailable)",
       "effort": "Effort",

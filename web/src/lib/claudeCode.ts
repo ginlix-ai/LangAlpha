@@ -1,8 +1,9 @@
-import type { ClaudeCodeCustodyMode, ClaudeCodeSetupState, PlanRefusal } from '@/api/model';
+import type { ClaudeCodeCustodyMode, ClaudeCodeSetup, ClaudeCodeSetupState, PlanRefusal } from '@/api/model';
 import type { RowStatus } from '@/components/modelAccess/parts';
 import { PLAN_URL } from '@/config/supportLinks';
 import { readPlanRefusal } from '@/lib/claudeCodePlan';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
+import type { WorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import type { ErrorLinkSpec } from '@/utils/rateLimitError';
 
 /** The provider and sdk of the models a turn runs on Claude Code. */
@@ -114,6 +115,57 @@ const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
 };
 
 const CLAUDE_CODE_CHOICE_LINK: ErrorLinkSpec = { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' };
+
+/** Why a Claude Code model is no pick, as its picker row says, and the link
+ *  that fixes it where the user can. */
+export interface ClaudeCodeHold {
+  messageKey: string;
+  link: ErrorLinkSpec | null;
+}
+
+/** What holds a Claude Code model back where its turns stand in `state`;
+ *  null where it runs, a token that could not be checked included, as
+ *  admission runs it, and an own computer out of reach, which may be back
+ *  by the time a turn starts. */
+export function claudeCodeHold(state: WorkspaceClaudeCode['state'], workspaceId?: string | null): ClaudeCodeHold | null {
+  switch (state) {
+    case 'checking': return { messageKey: 'modelAccess.status.working', link: null };
+    case 'no_token': return { messageKey: 'chat.modelSelector.claudeCodeSignedOut', link: claudeCodeTokenLink(workspaceId) };
+    case 'rejected': return { messageKey: 'chat.modelSelector.claudeCodeRejected', link: claudeCodeTokenLink(workspaceId) };
+    case 'needs_own_computer': return { messageKey: 'chat.modelSelector.claudeCodeNeedsOwnComputer', link: null };
+    case 'hosted_off': return { messageKey: 'chat.modelSelector.claudeCodeHostedOff', link: CLAUDE_CODE_CHOICE_LINK };
+    case 'needs_bigger_computer': {
+      const { rowKey, link } = biggerComputer();
+      return { messageKey: rowKey, link };
+    }
+    case 'policy_blocked': return { messageKey: 'chat.modelSelector.claudeCodePolicyBlocked', link: null };
+    case 'needs_perl': return { messageKey: 'modelAccess.claudeCode.fail.needs_perl', link: null };
+    case 'computer_unsupported': return { messageKey: 'modelAccess.claudeCode.fail.computer_unsupported', link: null };
+    default: return null;
+  }
+}
+
+/** A held pin's fix: Model access itself, where each computer's own token
+ *  sits beside the saved one, since only some of those sign a pin in. */
+const CLAUDE_CODE_PIN_TOKEN_LINK: ErrorLinkSpec = { ...claudeCodeTokenLink(), url: MODEL_ACCESS_URL };
+
+/** What holds a subagent's Claude Code pin back. A pin applies in every
+ *  workspace, so it reads the user's Claude Code as a whole, as a pin can
+ *  sign in (`pin_state`, else `state` from an older server), whose first
+ *  state that holds is a token working somewhere: it is held only where
+ *  none works anywhere, worded as the composer words the same state. Unread
+ *  waits as on a check, as the composer's rows do. */
+export function accountClaudeCodeHold(setup: ClaudeCodeSetup | null): ClaudeCodeHold | null {
+  switch (setup?.pin_state ?? setup?.state) {
+    case 'connected':
+    case 'offline': return null;
+    case 'refused': return { messageKey: 'chat.modelSelector.claudeCodeRejected', link: CLAUDE_CODE_PIN_TOKEN_LINK };
+    case 'not_connected': return { messageKey: 'chat.modelSelector.claudeCodeSignedOut', link: CLAUDE_CODE_PIN_TOKEN_LINK };
+    case 'no_computer': return claudeCodeHold('needs_own_computer');
+    case 'unsupported': return { messageKey: 'modelAccess.claudeCode.setup.unsupported.title', link: null };
+    default: return claudeCodeHold('checking');
+  }
+}
 
 /** The links that fix a cloud computer's refusal: choosing how Claude Code
  *  runs there. */

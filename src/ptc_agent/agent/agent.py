@@ -342,19 +342,28 @@ class PTCAgent:
             computers: The user's other computers, which the Chief of Staff's
                 own Bash, ExecuteCode and file tools take a ``computer`` to run
                 on. None leaves every tool on this computer.
-            claude_code_launcher: Where a Claude Code turn's CLI runs, given
-                the sandbox, the credential admission let a turn on a cloud
-                computer run on (``claude_code_hosted``) and the saved setup
-                token it let the turn sign in with (``claude_code_saved``); the
-                server picks it, and the token it signs in with.
+            claude_code_launcher: Where a Claude Code CLI runs, given the
+                sandbox, the credential admission let it run on a cloud
+                computer (``claude_code_hosted``) and the saved setup token
+                it let it sign in with (``claude_code_saved``), or the pair
+                its subagents' Claude Code pins were let on a turn of another
+                model (``claude_code_pins``); the server picks it, and the
+                token it signs in with.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent.
         """
         turn = turn_model(self.config, llm, self.llm, background=False)
         claude_code = isinstance(turn.client, ClaudeCodeTarget)
-        if claude_code and claude_code_launcher is None:
-            raise RuntimeError("a Claude Code turn needs a claude_code_launcher")
+        # What a Claude Code CLI here signs in with: the turn's own, else its
+        # subagents' Claude Code pins' on a turn of another model.
+        claude_code_cli = (
+            (self.config.claude_code_hosted, self.config.claude_code_saved)
+            if claude_code
+            else self.config.claude_code_pins
+        )
+        if claude_code_cli is not None and claude_code_launcher is None:
+            raise RuntimeError("a Claude Code CLI needs a claude_code_launcher")
 
         # Freeze current time for this request (refreshes on each new query)
         request_time = datetime.now(tz=UTC)
@@ -1035,13 +1044,13 @@ class PTCAgent:
         # above) makes a notification turn structurally unable to spawn
         # subagents, and RunWorkflow drops with it below.
         # A subagent on a Claude Code row runs each of its runs in a Claude
-        # Code CLI of its own, where the thread's turn runs its CLI. As the
-        # thread's turn does, it takes its prompt, tools and stack from its
-        # compiled agent, opens with the hooks that write its rows, and takes
-        # in what is sent into its task between calls.
+        # Code CLI of its own, where a Claude Code turn runs its CLI. As that
+        # turn does, it takes its prompt, tools and stack from its compiled
+        # agent, opens with the hooks that write its rows, and takes in what
+        # is sent into its task between calls.
         claude_code_launcher_for = (
-            partial(claude_code_launcher, sandbox, self.config.claude_code_hosted, self.config.claude_code_saved)
-            if claude_code and claude_code_launcher is not None
+            partial(claude_code_launcher, sandbox, *claude_code_cli)
+            if claude_code_cli is not None and claude_code_launcher is not None
             else None
         )
 
@@ -1052,7 +1061,7 @@ class PTCAgent:
             from ptc_agent.agent.claude_code.ssh_launcher import SUBAGENT_CLI_SLOT_WAIT_S
 
             background_middleware.claude_code_types |= {spec["name"]}
-            background_middleware.claude_code_stored = bool(self.config.claude_code_saved)
+            background_middleware.claude_code_stored = bool(claude_code_cli[1])
             background_middleware.claude_code_models[spec["name"]] = target.model
             own = list(spec.get("middleware") or [])
             baseline = next((m for m in own if isinstance(m, BaselineContextMiddleware)), None)
