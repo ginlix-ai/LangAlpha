@@ -41,8 +41,8 @@ class ClaudeTurnFailed(RuntimeError):
     for; ``PlanStopped`` names one), ``interrupted``, ``api_error``,
     ``no_result``, ``nothing_to_resume``, ``policy_blocked``, ``needs_perl``,
     ``computer_unsupported``, ``token_refused`` (Claude refused the saved
-    setup token, which its store reports in place of ``auth_failed``),
-    ``api_key_refused``, one of the reasons a cloud computer's run is refused
+    setup token, which its store reports in place of ``auth_failed``), one of
+    the reasons a cloud computer's run is refused
     as it starts (``hosted.hosted``, ``hosted.tier_refusal``), or one of
     ``TEMPLATES``, which words it.
     """

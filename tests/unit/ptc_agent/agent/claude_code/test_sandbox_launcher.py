@@ -46,7 +46,6 @@ pytestmark = [
 ]
 
 SPEC = spec("claude-haiku-5-5")
-KEY = "sk-ant-api03-" + "4" * 80
 BUNDLED = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
 PLATFORM = {"x86_64": "linux-x64", "aarch64": "linux-arm64"}.get(platform.machine(), "")
 
@@ -62,7 +61,7 @@ class Store:
         return self.credential
 
     async def refused(self) -> None:
-        self.refusals.append(self.credential.kind)
+        self.refusals.append(self.credential.secret)
 
 
 def _box(runtime: LocalSandboxRuntime) -> SimpleNamespace:
@@ -271,13 +270,13 @@ def _left(runtime: LocalSandboxRuntime) -> tuple[list, list]:
 
 
 @pytest.mark.parametrize("eof", [True, False], ids=["closes-stdin", "cannot-close-stdin"])
-async def test_a_turn_runs_on_the_relayed_api_key_held_nowhere_and_the_next_resumes_from_the_checkpoint(
+async def test_a_turn_runs_on_the_relayed_token_held_nowhere_and_the_next_resumes_from_the_checkpoint(
     runtime, placed, eof,
 ):
     runtime.eof = eof
-    store = Store(Credential(KEY, kind="api_key"))
+    store = Store(Credential(TOKEN))
     graph = new_graph()
-    async with FakeMessagesAPI() as api:
+    async with FakeMessagesAPI(first_party=True) as api:
         launcher = _launcher(runtime, api, store)
         first = await run_turn(SPEC, launcher, graph, "t-cloud", [HumanMessage("FACT: the code word is heron. RUN_TOOL please")])
         assert launcher.source == "relay"
@@ -288,10 +287,10 @@ async def test_a_turn_runs_on_the_relayed_api_key_held_nowhere_and_the_next_resu
         second = await run_turn(SPEC, _launcher(runtime, api, store), graph, "t-cloud", [HumanMessage("RECALL it")])
         assert second["claude_session"]["session_id"] == first["claude_session"]["session_id"]
         assert "FACT: the code word is heron" in second["messages"][-1].text
-        assert set(api.api_keys) == {KEY} and store.reads == 2
+        assert set(api.credentials) == {TOKEN} and store.reads == 2
     assert _left(runtime) == ([], [])
-    assert _files_holding(runtime.root.parent, KEY) == []
-    assert all(KEY.encode() not in s.encode() for s in runtime.scripts)
+    assert _files_holding(runtime.root.parent, TOKEN) == []
+    assert all(TOKEN.encode() not in s.encode() for s in runtime.scripts)
 
 
 async def test_a_token_file_in_the_sandbox_is_never_read(runtime, placed):
@@ -309,13 +308,13 @@ async def test_a_token_file_in_the_sandbox_is_never_read(runtime, placed):
         assert (launcher.source, set(api.credentials)) == ("relay", {TOKEN})
 
 
-async def test_a_refused_setup_token_is_reported_to_its_store_by_kind(runtime, placed):
+async def test_a_refused_setup_token_is_reported_to_its_store(runtime, placed):
     revoked = "sk-ant-oat01-revoked"
     store = Store(Credential(revoked))
     async with FakeMessagesAPI(first_party=True, refused=frozenset({revoked})) as api:
         with pytest.raises(ClaudeTurnFailed):
             await run_turn(SPEC, _launcher(runtime, api, store), new_graph(), "t-refused", [HumanMessage("ECHO hi")])
-    assert store.refusals == ["setup_token"]
+    assert store.refusals == [revoked]
 
 
 async def test_no_credential_runs_signed_out(runtime, placed):

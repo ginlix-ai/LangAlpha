@@ -175,8 +175,8 @@ class SSHLauncher:
     env: dict[str, str] = field(default_factory=dict, repr=False)
     plan: PlanLog | None = None
     source: TokenOrigin | None = field(default=None, init=False)
-    #: What the last run was relayed: a setup token or an API key.
-    relayed: Literal["setup_token", "api_key"] | None = field(default=None, init=False)
+    #: Whether the last run was relayed the saved setup token.
+    relayed: bool = field(default=False, init=False)
     _link: ShellLink | None = field(default=None, init=False, repr=False)
     _cli: str | None = field(default=None, init=False)
     _root: str | None = field(default=None, init=False)
@@ -189,7 +189,7 @@ class SSHLauncher:
     def signed_in(self) -> SignedIn | None:
         if self.source == "file":
             return "machine"
-        return "saved" if self.source == "relay" and self.relayed == "setup_token" else None
+        return "saved" if self.source == "relay" and self.relayed else None
 
     @property
     def base(self) -> str:
@@ -368,9 +368,9 @@ class SSHLauncher:
             + " ".join(map(word, argv))
         )
 
-    async def started(self, source: TokenOrigin, relayed: Literal["setup_token", "api_key"] | None = None) -> None:
+    async def started(self, source: TokenOrigin, relayed: bool = False) -> None:
         """The run's CLI started on a token from ``source``, as the shim
-        announced it, and of the kind ``relayed`` where it was relayed one."""
+        announced it, ``relayed`` the saved one where it was relayed one."""
         self.source, self.relayed = source, relayed
         if self.on_announced is None:
             return
@@ -421,7 +421,7 @@ class SSHTransport(Transport):
             if isinstance(e, SlotWaitTimeout):
                 raise CLIConnectionError(CLI_SLOTS_FULL if e.which == "cli" else COMMAND_SLOTS_FULL) from None
             raise
-        relayed: Literal["setup_token", "api_key"] | None = None
+        relayed = False
         try:
             async with asyncio.timeout(START_TIMEOUT_S):
                 if self._launcher.plan is not None:
@@ -436,11 +436,11 @@ class SSHTransport(Transport):
                     credential = await store.read() if store is not None else None
                     if credential is not None and not is_token_text(credential.secret):
                         raise CLIConnectionError("The stored credential is not one line of text, so it was not sent")
-                    line = f"{credential.kind} {credential.secret}" if credential is not None else ""
+                    line = credential.secret if credential is not None else ""
                     self._process.stdin.write(line.encode() + b"\n")
-                    relayed = credential.kind if credential is not None else None
+                    relayed = credential is not None
                     await self._process.stdin.drain()
-                    if relayed == "setup_token" and self._launcher.plan is not None:
+                    if relayed and self._launcher.plan is not None:
                         await self._launcher.plan.took(credential.secret)
         except BaseException as e:
             await self.close()

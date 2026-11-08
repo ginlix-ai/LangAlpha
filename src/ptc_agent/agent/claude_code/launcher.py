@@ -40,7 +40,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 import anyio
 from anyio.streams.text import TextReceiveStream, TextSendStream
@@ -57,7 +57,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
     logger,
 )
 
-from ptc_agent.agent.claude_code.machine_token import _FD_ENV
+from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.plan import PlanLog, SignedIn
 from ptc_agent.core.claude_code_managed import local_managed
 from src.llms.claude_code import ClaudeTurnFailed
@@ -115,11 +115,10 @@ def device_id(identity: str) -> str:
 
 @dataclass(frozen=True)
 class Credential:
-    """What a turn's CLI signs in with: a setup token or an Anthropic API
-    key, each handed over on a descriptor of its own (``_FD_ENV``)."""
+    """The setup token a turn's CLI signs in with, handed over on a
+    descriptor of its own (``TOKEN_FD_ENV``)."""
 
     secret: str = field(repr=False)
-    kind: Literal["setup_token", "api_key"] = "setup_token"
 
 
 def _token_socket(secret: str) -> socket.socket:
@@ -338,7 +337,7 @@ class ScopedEnvTransport(SubprocessCLITransport):
 
             held = _token_socket(self._credential.secret) if self._credential else None
             if held is not None:
-                process_env[_FD_ENV[self._credential.kind]] = str(held.fileno())
+                process_env[TOKEN_FD_ENV] = str(held.fileno())
             try:
                 self._process = await anyio.open_process(
                     cmd,
@@ -413,7 +412,7 @@ class LocalLauncher:
 
     @property
     def signed_in(self) -> SignedIn | None:
-        return "saved" if self._used is not None and self._used.kind == "setup_token" else None
+        return "saved" if self._used is not None else None
 
     async def _ready(self) -> None:
         """Take the run's credential, then refuse the run, before the CLI

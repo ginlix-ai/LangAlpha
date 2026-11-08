@@ -9,7 +9,6 @@ import { ModalShell } from '@/components/ui/ModalShell';
 import type { ClaudeCodeComputer, ClaudeCodePlan, ClaudeCodeSetup } from '@/api/model';
 import { DESKTOP_DOWNLOAD_URL } from '@/config/supportLinks';
 import { isPlatformMode } from '@/config/hostMode';
-import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import { useFeatures, useSetFeatureOverride } from '@/hooks/useFeatures';
 import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useNow } from '@/hooks/useNow';
@@ -21,11 +20,9 @@ import { UsageTableContext, VIEW_WIDTHS, useUsageSteps } from '@/components/mode
 import { usePlanCheck, type CheckTarget } from '@/components/modelAccess/usePlanCheck';
 import { usePlanClock } from '@/hooks/useClaudeCodePlan';
 import { credentialKey, planWindows } from '@/lib/claudeCodePlan';
-import { ProviderTitle } from '@/components/modelAccess/KeyProviderPicker';
 import { QuietNote, ROW_BUTTON, StatusLabel, type RowStatus } from '@/components/modelAccess/parts';
 import type { TokenAction, TokenRow } from '@/components/modelAccess/tokenLine';
 import { SAVED_TOKEN, computerTokenTarget, type SheetAction, type TokenTarget } from '@/components/modelAccess/tokenTarget';
-import type { KeyOption, ProviderGroup } from '@/components/modelAccess/providerOptions';
 import { canRemoteControl } from '@/lib/desktop';
 import { cn } from '@/lib/utils';
 import { CLAUDE_CODE_DOCS_URL, CLAUDE_CODE_FEATURE, CLAUDE_CODE_REQUIREMENTS_URL, biggerComputer } from '@/lib/claudeCode';
@@ -36,7 +33,6 @@ import { Group } from './AccessRows';
 import { ClaudeCodeHostedChoice } from './ClaudeCodeHostedChoice';
 import { ClaudeCodePlanOutChoice } from './ClaudeCodePlanOutChoice';
 import { claudeCodeHeadline } from './claudeCodeHeadline';
-import { KeySheet } from './KeySheet';
 
 const S = 'modelAccess.claudeCode.setup';
 
@@ -159,23 +155,19 @@ const ROWS = 'grid grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-3 gap-y-5';
  * Where the server no longer offers Claude Code at all (`setup` null), only
  * tokens left behind show, each offered for removal.
  *
- * The Anthropic key, a token's sheet and the turn-off question each open
- * over the view, which stays mounted under them, so a choice that waits on
- * the key carries on once it is saved. `onCover` says whether something is
- * open over it; what opens is portaled out of its panel, which goes inert
- * and fades while covered.
+ * A token's sheet and the turn-off question each open over the view, which
+ * stays mounted under them. `onCover` says whether something is open over
+ * it; what opens is portaled out of its panel, which goes inert and fades
+ * while covered.
  */
-export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, onRemoveToken, onCover }: {
+export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
   setup: ClaudeCodeSetup | null;
   tokenRows: TokenRow[];
-  anthropicKey: { group: ProviderGroup; option: KeyOption } | null;
-  configured: ConfiguredProvider[];
   onRemoveToken: (target: TokenTarget) => void;
   onCover: (covered: boolean) => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const keyTitleId = useId();
   const offTitleId = useId();
   const toggle = useSetFeatureOverride();
   const { custody, isLoading: custodyLoading } = useClaudeCodeCustody();
@@ -191,11 +183,10 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
   const gate = useFeatures().data?.find((f) => f.key === CLAUDE_CODE_FEATURE)?.gate;
   const toggleable = gate === 'opt_in' || gate === 'opt_out';
   const toastSaveFailed = useSaveFailedToast();
-  const [keyThen, setKeyThen] = useState<(() => void) | null>(null);
   const [token, setToken] = useState<{ target: TokenTarget; action: SheetAction } | null>(null);
   const [asking, setAsking] = useState(false);
   const [turningOff, setTurningOff] = useState(false);
-  const covered = keyThen !== null || token !== null || asking || turningOff;
+  const covered = token !== null || asking || turningOff;
   useEffect(() => {
     onCover(covered);
     return () => onCover(false);
@@ -410,7 +401,6 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
 
       {on && (
         <ClaudeCodeHostedChoice
-          onAddApiKey={(then) => (anthropicKey ? setKeyThen(() => then) : then())}
           onAddToken={() => setToken({ target: SAVED_TOKEN, action: 'add' })}
           onAsking={setAsking}
         />
@@ -480,33 +470,6 @@ export function ClaudeCodeSheet({ setup, tokenRows, anthropicKey, configured, on
         </Button>
       )}
 
-      {keyThen && anthropicKey && createPortal(
-        <ModalShell
-          labelId={keyTitleId}
-          title={(
-            <ProviderTitle
-              name={anthropicKey.group.name}
-              markProvider={anthropicKey.group.markProvider}
-              title={t('setup.connectTitle', { provider: anthropicKey.group.name })}
-            />
-          )}
-          onClose={() => setKeyThen(null)}
-          width="wide"
-          stacked
-        >
-          <KeySheet
-            option={anthropicKey.option}
-            group={anthropicKey.group}
-            configured={configured}
-            onSaved={() => {
-              keyThen();
-              setKeyThen(null);
-            }}
-            onCancel={() => setKeyThen(null)}
-          />
-        </ModalShell>,
-        document.body,
-      )}
       {token && createPortal(
         <ClaudeCodeTokenModal target={token.target} action={token.action} onClose={() => setToken(null)} />,
         document.body,

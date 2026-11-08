@@ -134,37 +134,6 @@ async def get_key_for_provider(user_id: str, provider: str) -> Optional[str]:
             return row["api_key"] if row else None
 
 
-async def get_key_with_base_url(user_id: str, provider: str) -> dict | None:
-    """The decrypted key for ``provider`` with its ``base_url``, read from one
-    row, or None, as with the user's own keys turned off: a caller that checks
-    where the key may be sent then sends the key it checked, never one saved
-    for another endpoint in between."""
-    enc_key = _get_encryption_key()
-    async with get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "SELECT pgp_sym_decrypt(k.api_key, %s) AS api_key, k.base_url FROM user_api_keys k "
-                "JOIN users u ON u.user_id = k.user_id "
-                "WHERE k.user_id = %s AND k.provider = %s AND u.byok_enabled",
-                (enc_key, user_id, provider),
-            )
-            return await cur.fetchone()
-
-
-async def saved_key(user_id: str, provider: str, conn=None) -> dict | None:
-    """The saved key for ``provider`` without its secret (its ``base_url``), or
-    None when none is saved or the user turned their own keys off; read
-    without decrypting it."""
-    async with get_db_connection(conn) as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "SELECT k.base_url FROM user_api_keys k JOIN users u ON u.user_id = k.user_id "
-                "WHERE k.user_id = %s AND k.provider = %s AND u.byok_enabled",
-                (user_id, provider),
-            )
-            return await cur.fetchone()
-
-
 _BYOK_ACTIVE_TTL = 86400  # 24h — freshness via explicit invalidation
 
 async def is_byok_active(user_id: str) -> bool:

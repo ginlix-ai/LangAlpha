@@ -13,7 +13,7 @@ import { useNow } from '@/hooks/useNow';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import {
-  ANTHROPIC, CLAUDE_CODE, CLAUDE_CODE_CHOICE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_MODE_LABELS, CLAUDE_CODE_SETUP_STATUS,
+  CLAUDE_CODE, CLAUDE_CODE_CHOICE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_MODE_LABELS, CLAUDE_CODE_SETUP_STATUS,
   CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM,
 } from '@/lib/claudeCode';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
@@ -70,9 +70,7 @@ type Sheet =
   | { kind: 'connect-subscription'; provider: SubscriptionProvider }
   | { kind: 'pick-key' }
   | { kind: 'pick-local' }
-  /** `origin` null: the Anthropic key's sheet on its own, which Cancel
-   *  closes. */
-  | { kind: 'key'; group: ProviderGroup; option: KeyOption; origin: KeyOrigin | null }
+  | { kind: 'key'; group: ProviderGroup; option: KeyOption; origin: KeyOrigin }
   | { kind: 'local-key'; entry: ProviderCatalogEntry }
   | { kind: 'claude-code-token'; target: TokenTarget; action: SheetAction }
   /** Claude Code itself: where it stands, what sets it apart, and each
@@ -104,7 +102,7 @@ function sheetWidth(sheet: Sheet): 'standard' | 'wide' | 'table' {
 function backFrom(sheet: Sheet): Sheet | null {
   switch (sheet.kind) {
     case 'connect-subscription': return { kind: 'pick-subscription' };
-    case 'key': return sheet.origin && { kind: sheet.origin };
+    case 'key': return { kind: sheet.origin };
     case 'local-key': return { kind: 'pick-local' };
     default: return null;
   }
@@ -149,15 +147,9 @@ export function ModelAccessSection() {
     ? tokenRows.find(({ target }) => (target.kind === 'computer' ? target.computerId === linked.computerId : !linked.computerId))
     : undefined;
   const linkedAction = linkedRow && linkedSheetAction(linkedRow.line);
-  // A link to the Anthropic key (the picker's, a refused turn's) opens its
-  // sheet, and drops once the key is saved or the sheet closed.
-  const anthropicGroup = keyGroups.find((g) => g.group === ANTHROPIC);
-  const anthropicKey = anthropicGroup ? { group: anthropicGroup, option: startingOption(anthropicGroup, configuredSet) } : null;
-  const anthropicKeySheet = (): Sheet | null => anthropicKey && { kind: 'key', ...anthropicKey, origin: null };
   const linkedSheet: Sheet | null = linkedRow && linkedAction
     ? { kind: 'claude-code-token', target: linkedRow.target, action: linkedAction }
-    : searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === ANTHROPIC ? anthropicKeySheet()
-      : searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === CLAUDE_CODE_CHOICE && (setup || setupUnread) ? { kind: 'claude-code' } : null;
+    : searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === CLAUDE_CODE_CHOICE && (setup || setupUnread) ? { kind: 'claude-code' } : null;
   const sheet: Sheet | null = opened ?? linkedSheet;
   const dropLink = () => {
     if (searchParams.has(CLAUDE_CODE_TOKEN_PARAM)) setSearchParams((params) => {
@@ -239,7 +231,7 @@ export function ModelAccessSection() {
     const working = setup.computers.filter((c) => computerTokenWorks(c, now)).map((c) => c.name);
     if (working.length > 0) return t('modelAccess.claudeCode.setup.listSummary', { names: formatUnitList(working, locale) });
     if (custody?.runs_on) return t(CLAUDE_CODE_MODE_LABELS[custody.mode]);
-    // Until the choice is read, it may be the API key that connects it.
+    // Until the choice is read, it may be the stored token that connects it.
     if (custodyLoading || custodyUnread) return null;
     return t('modelAccess.claudeCode.detail');
   };
@@ -415,8 +407,7 @@ export function ModelAccessSection() {
                 dropLink();
                 setSheet({ kind: 'manage', provider, from: 'key-flow', justConnected: fresh });
               }}
-              onBack={sheet.origin ? back(sheet) : undefined}
-              onCancel={sheet.origin ? undefined : closeSheet}
+              onBack={back(sheet)}
             />
           )}
           {sheet.kind === 'local-key' && (
@@ -444,8 +435,6 @@ export function ModelAccessSection() {
             <ClaudeCodeSheet
               setup={setup}
               tokenRows={tokenRows}
-              anthropicKey={anthropicKey}
-              configured={providers}
               onRemoveToken={setRemovingToken}
               onCover={setChoiceCovered}
             />

@@ -62,15 +62,13 @@ def no_stored_task_runs():
 
 
 @pytest.mark.asyncio
-async def test_with_only_its_switch_on_storing_is_the_one_choice_offered(client):
-    with platform(switch=False, stored=True, key=True), patch(ROWS_ON, AsyncMock(return_value=True)):
+async def test_with_its_switch_on_storing_is_the_one_choice_offered(client):
+    with platform(stored=True), patch(ROWS_ON, AsyncMock(return_value=True)):
         got = await client.get("/api/v1/claude-code/custody")
-        api_key = await client.put("/api/v1/claude-code/custody", json={"mode": "api_key"})
     assert got.json() == {
-        "mode": "local", "api_key_saved": True, "offered": ["stored"], "blocked": False, "runs_on": None,
+        "mode": "local", "offered": ["stored"], "blocked": False, "runs_on": None,
         "refusal": "hosted_off", "disclosure": DISCLOSURE,
     }
-    assert api_key.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -92,8 +90,8 @@ async def test_a_blocked_user_is_not_offered_storing_and_cannot_choose_it(client
         got = await client.get("/api/v1/claude-code/custody")
         stored = await client.put("/api/v1/claude-code/custody", json={"mode": "stored", "disclosure": DISCLOSURE})
     assert got.json() == {
-        "mode": "local", "api_key_saved": True, "offered": ["api_key"], "blocked": True, "runs_on": None,
-        "refusal": "hosted_off", "disclosure": DISCLOSURE,
+        "mode": "local", "offered": [], "blocked": True, "runs_on": None,
+        "refusal": "stored_blocked", "disclosure": DISCLOSURE,
     }
     assert stored.status_code == 403
 
@@ -103,10 +101,8 @@ async def test_a_blocked_user_is_not_offered_storing_and_cannot_choose_it(client
     ("given", "expected"),
     [
         ({"stored": True, "mode": "stored"}, Hosted("stored_token")),
-        ({"stored": False, "mode": "stored"}, Hosted(refusal="hosted_paused")),
-        ({"switch": False, "stored": True, "mode": "api_key"}, Hosted(refusal="hosted_paused")),
-        ({"switch": False, "stored": True, "mode": "local", "blocked": True}, Hosted(refusal="stored_blocked")),
-        ({"stored": True, "mode": "local", "blocked": True}, Hosted(refusal="hosted_off")),
+        ({"stored": False, "mode": "stored"}, None),
+        ({"stored": True, "mode": "local", "blocked": True}, Hosted(refusal="stored_blocked")),
         ({"stored": True, "mode": "stored", "blocked": True}, Hosted(refusal="stored_blocked")),
         ({"stored": True, "mode": "local"}, Hosted(refusal="hosted_off")),
     ],
@@ -130,9 +126,11 @@ async def test_a_turn_on_the_stored_token_runs_while_it_is_usable_up_to_the_user
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["hosted_paused", "stored_blocked"])
-async def test_a_paused_or_blocked_choice_refuses_the_turn_in_its_own_words(reason):
-    given = {"stored": False, "mode": "stored"} if reason == "hosted_paused" else {"switch": False, "stored": True, "blocked": True}
+@pytest.mark.parametrize(
+    ("given", "reason"),
+    [({"stored": False, "mode": "stored"}, "needs_own_computer"), ({"stored": True, "blocked": True}, "stored_blocked")],
+)
+async def test_a_choice_switched_off_or_blocked_refuses_the_turn_in_its_own_words(given, reason):
     with platform(**given):
         assert await _admit() == {
             "message": CLAUDE_CODE_OFF[reason], "type": "claude_code_off", "model": CODE, "reason": reason,
@@ -142,9 +140,9 @@ async def test_a_paused_or_blocked_choice_refuses_the_turn_in_its_own_words(reas
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("given", "reason"),
-    [({"stored": False, "mode": "stored"}, "hosted_paused"), ({"switch": False, "stored": True, "blocked": True}, "stored_blocked")],
+    [({"stored": False, "mode": "stored"}, "needs_own_computer"), ({"stored": True, "blocked": True}, "stored_blocked")],
 )
-async def test_a_run_paused_or_blocked_since_admission_never_starts_and_says_why(given, reason):
+async def test_a_run_switched_off_or_blocked_since_admission_never_starts_and_says_why(given, reason):
     with platform(**given), pytest.raises(ClaudeTurnFailed) as refused:
         await HostedCredential("user-1", "stored_token", "c-2").read()
     assert claude_code_refusal(refused.value, CODE)["reason"] == reason
@@ -160,7 +158,7 @@ async def test_the_run_reads_the_stored_token_as_it_starts_for_the_token_descrip
 @pytest.mark.asyncio
 async def test_a_run_admitted_on_one_credential_never_starts_on_another_its_row_was_not_stamped_for():
     with platform(stored=True, mode="stored"), pytest.raises(ClaudeTurnFailed) as refused:
-        await HostedCredential("user-1", "api_key", "c-2").read()
+        await HostedCredential("user-1", "saved_token", "c-2").read()
     assert claude_code_refusal(refused.value, CODE) == {
         "message": "How Claude Code runs on cloud computers changed as this turn started. Send your message again.",
         "type": "claude_code_off", "model": CODE, "reason": "choice_changed",
@@ -172,7 +170,6 @@ async def test_a_run_admitted_on_one_credential_never_starts_on_another_its_row_
     ("given", "computer", "answer", "stamp"),
     [
         ({"stored": True, "mode": "stored"}, CLOUD, None, {**CLOUD_TURN, **STORED_TURN}),
-        ({"stored": True, "mode": "api_key"}, CLOUD, None, CLOUD_TURN),
         ({"stored": True, "mode": "stored"}, OWN, None, STORED_TURN),
         ({"stored": True, "mode": "stored"}, OWN, SimpleNamespace(relays=True, fresh=False), STORED_TURN),
         ({"stored": True, "mode": "stored"}, OWN, SimpleNamespace(relays=False, fresh=False), {}),
@@ -232,7 +229,7 @@ def test_a_turn_nobody_started_never_runs_on_the_stored_token(request_fields, no
             assert refused.value.detail["reason"] == "stored_unattended"
         else:
             require_attended(stored, request)
-    for hosted, saved in (("api_key", None), (None, None), ("saved_token", "saved_token"), (None, "saved_token")):
+    for hosted, saved in ((None, None), ("saved_token", "saved_token"), (None, "saved_token")):
         require_attended(config(hosted, saved), request)
 
 
@@ -306,7 +303,7 @@ async def test_an_own_computer_without_a_token_is_relayed_the_stored_one_only_wh
         with platform(stored=True, mode="local"):
             assert await ComputerToken("user-1", "c-1").read() is None
     assert row.await_count == 1
-    with platform(switch=True, stored=False):
+    with platform(stored=False):
         assert not hosted_module.relay_offered()
 
 
@@ -315,7 +312,7 @@ async def test_a_token_is_pasted_on_the_platform_only_while_the_user_stores_it()
     enabled = AsyncMock(return_value=True)
     with platform(stored=True, mode="stored"), patch("src.server.services.claude_code.flow.user_feature_enabled", enabled):
         assert await backend_on("user-1")
-    with platform(stored=True, mode="api_key"), patch("src.server.services.claude_code.flow.user_feature_enabled", enabled):
+    with platform(stored=True, mode="local"), patch("src.server.services.claude_code.flow.user_feature_enabled", enabled):
         assert not await backend_on("user-1")
 
 
@@ -376,10 +373,9 @@ async def test_any_choice_but_storing_takes_the_token_with_it():
         platform(stored=True, mode="stored"), patch(f"{HOSTED}.drop_stored", drop),
         patch(f"{HOSTED}.write_custody", saved),
     ):
-        await hosted_module.choose("user-1", "api_key")
         await hosted_module.choose("user-1", "local")
         await hosted_module.choose("user-1", "stored", DISCLOSURE)
-    assert drop.await_args_list == [call("user-1", "api_key"), call("user-1", "local")]
+    assert drop.await_args_list == [call("user-1", "local")]
     saved.assert_awaited_once_with("user-1", "stored", disclosure=DISCLOSURE)
 
 
@@ -428,7 +424,7 @@ async def test_turning_claude_code_off_on_the_platform_drops_the_stored_token():
         await opted_out("user-1")
     drop.assert_awaited_once_with("user-1")
     with (
-        platform(stored=True, mode="api_key"), patch(f"{HOSTED}.drop_stored", AsyncMock()) as drop,
+        platform(stored=True, mode="local"), patch(f"{HOSTED}.drop_stored", AsyncMock()) as drop,
         patch(f"{HOSTED}.stop_stored_turns", AsyncMock(return_value=0)) as stop,
     ):
         await opted_out("user-1")
@@ -598,8 +594,8 @@ async def test_removing_the_token_whose_turn_did_not_stop_says_so_not_that_remov
 
 
 @pytest.mark.asyncio
-async def test_with_both_switches_off_no_choice_is_read_anywhere():
-    with platform(switch=False, stored=False, computer=OWN) as reads:
+async def test_with_the_switch_off_no_choice_is_read_anywhere():
+    with platform(stored=False, computer=OWN) as reads:
         assert not await hosted_module.saved_token_runs("user-1")
         assert not hosted_module.relay_offered()
         assert await _stamp() == {}

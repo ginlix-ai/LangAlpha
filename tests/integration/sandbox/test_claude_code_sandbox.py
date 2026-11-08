@@ -1,10 +1,9 @@
 """A Claude Code turn on a cloud computer, live: the CLI in the provider's sandbox, the tools and session in this process.
 
 Runs the real runtime (``ClaudeTurn``) through ``sandbox_launcher`` on each
-requested provider (see this folder's conftest), against a live Messages API
-the sandbox can reach: ``CLAUDE_CODE_LIVE_API_KEY``, with
-``CLAUDE_CODE_LIVE_BASE_URL`` for an Anthropic-compatible endpoint other than
-Anthropic's and ``CLAUDE_CODE_LIVE_MODEL`` for the model. The first turn
+requested provider (see this folder's conftest), on a real Claude plan: a
+setup token made for LangAlpha in ``CLAUDE_CODE_LIVE_TOKEN``, and
+``CLAUDE_CODE_LIVE_MODEL`` for the model. The first turn
 installs the pinned CLI in a fresh sandbox; the second resumes the session
 from the checkpoint in a new CLI.
 """
@@ -24,12 +23,11 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio,
     pytest.mark.skipif(importlib.util.find_spec("claude_agent_sdk") is None, reason="needs the claude-code extra"),
-    pytest.mark.skipif(not os.environ.get("CLAUDE_CODE_LIVE_API_KEY"), reason="needs CLAUDE_CODE_LIVE_API_KEY"),
+    pytest.mark.skipif(not os.environ.get("CLAUDE_CODE_LIVE_TOKEN"), reason="needs CLAUDE_CODE_LIVE_TOKEN"),
 ]
 
-KEY = os.environ.get("CLAUDE_CODE_LIVE_API_KEY", "")
+TOKEN = os.environ.get("CLAUDE_CODE_LIVE_TOKEN", "")
 MODEL = os.environ.get("CLAUDE_CODE_LIVE_MODEL", "claude-haiku-5-5")
-ENV = {"ANTHROPIC_BASE_URL": url} if (url := os.environ.get("CLAUDE_CODE_LIVE_BASE_URL")) else {}
 
 
 class Store:
@@ -40,8 +38,8 @@ class Store:
         self.reads += 1
         return self.credential
 
-    async def refused(self) -> None:  # pragma: no cover - a live key is served
-        raise AssertionError("the live key was refused")
+    async def refused(self) -> None:  # pragma: no cover - a live token is served
+        raise AssertionError("the live token was refused")
 
 
 @pytest_asyncio.fixture(scope="class", loop_scope="class")
@@ -62,9 +60,9 @@ class TestClaudeCodeInTheSandbox:
         from ptc_agent.agent.claude_code.sandbox_launcher import sandbox_launcher
         from tests.unit.ptc_agent.agent.claude_code.harness import new_graph, run_turn, spec
 
-        store = Store(Credential(KEY, kind="api_key"))
+        store = Store(Credential(TOKEN))
         graph, thread, sp = new_graph(), "t" + uuid.uuid4().hex[:8], spec(MODEL)
-        launch = lambda: sandbox_launcher(cloud_computer, identity="test-user", credential=store, env=ENV)  # noqa: E731
+        launch = lambda: sandbox_launcher(cloud_computer, identity="test-user", credential=store, env={})  # noqa: E731
         async with timed("claude_code", "first_turn_with_install"):
             first = await run_turn(sp, launch(), graph, thread, [HumanMessage(
                 "FACT: the code word is heron. Use the Bash tool to run: echo spike-42 . Then reply with its output only.")])
@@ -77,7 +75,7 @@ class TestClaudeCodeInTheSandbox:
         assert "heron" in second["messages"][-1].text.lower()
         assert store.reads == 2
         root = cloud_computer.working_dir
-        tail = KEY[-24:]
+        tail = TOKEN[-24:]
         left = await cloud_computer.runtime.exec(
             f"pgrep -x claude | wc -l; ls {root}/_internal/claude-code/config | wc -l; "
             f"grep -rlF -- {tail} \"$HOME\" {root} /tmp 2>/dev/null | wc -l; "
