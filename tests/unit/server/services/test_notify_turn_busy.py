@@ -177,3 +177,55 @@ async def test_a_definite_refusal_is_not_reported():
         None,
     )
     unanswered.assert_not_awaited()
+
+
+_PLAN_LIMITED = {"detail": {
+    "type": "claude_code_off", "reason": "plan_limited", "window": "five_hour",
+    "until": "2026-11-06T20:40:00+00:00", "held_until": "2026-11-06T20:40:00+00:00", "message": "used up",
+}}
+
+
+@pytest.mark.asyncio
+async def test_a_turn_the_claude_plan_refused_returns_at_once_with_its_detail_when_asked():
+    session = _Session([_Resp(400, _PLAN_LIMITED)])
+    held = AsyncMock()
+
+    assert await _post(session, refusal_fails_fast=True, on_plan_limited=held) == ("plan_limited", None)
+    held.assert_awaited_once_with(_PLAN_LIMITED["detail"])
+    assert session.posts == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detail", [
+    {"type": "claude_code_off", "reason": "signed_out"},
+    {k: v for k, v in _PLAN_LIMITED["detail"].items() if k != "held_until"},
+])
+async def test_any_other_refusal_drops_as_before(detail):
+    session = _Session([_Resp(400, {"detail": detail})])
+    held = AsyncMock()
+
+    assert await _post(session, refusal_fails_fast=True, on_plan_limited=held) == ("drop", None)
+    held.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_caller_that_holds_nothing_drops_a_plan_refusal():
+    assert await _post(_Session([_Resp(400, _PLAN_LIMITED)]), refusal_fails_fast=True) == ("drop", None)
+
+
+@pytest.mark.asyncio
+async def test_too_many_claude_code_turns_at_once_waits_for_one_to_end():
+    busy = {"detail": {"type": "claude_code_off", "reason": "too_many_turns", "message": "limit"}}
+    session = _Session([_Resp(400, busy), _Resp(200, {"run_id": "r-1"})])
+
+    assert await _post(session, refusal_fails_fast=True, on_plan_limited=AsyncMock()) == ("dispatched", "r-1")
+    assert session.posts == 2
+
+
+@pytest.mark.asyncio
+async def test_a_caller_that_asks_again_by_the_clock_hears_at_once_there_is_no_room():
+    busy = {"detail": {"type": "claude_code_off", "reason": "too_many_turns", "message": "limit"}}
+    session = _Session([_Resp(400, busy), _Resp(200, {"run_id": "r-1"})])
+
+    assert await _post(session, refusal_fails_fast=True, room_fails_fast=True) == ("full", None)
+    assert session.posts == 1

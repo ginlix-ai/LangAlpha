@@ -70,6 +70,7 @@ EXPECTED = {
     Outcome.FAILED: ("failed", _ANY, "count", REARMS, "automation.failed", None, None, "failure"),
     Outcome.KEY_REJECTED: ("failed", _ANY, "fuse", REARMS, "automation.failed", None, "provider_auth", "failure"),
     Outcome.LIMITED: ("failed", _ANY, None, CLOSES_ALERT, "automation.failed", None, "usage_limit", "limited"),
+    Outcome.PLAN_LIMITED: ("failed", _ANY, None, CLOSES_ALERT, "automation.failed", None, "claude_plan", "limited"),
     Outcome.FAILED_OURS: ("failed", _ANY, None, REARMS, "automation.failed", None, "server_error", "failure"),
     Outcome.INTERRUPTED: ("failed", ("pending", "running"), None, REARMS, "automation.failed", None, "interrupted", "interrupted"),
     Outcome.STOPPED: ("skipped", ("running",), None, CLOSES, "automation.failed", "user", None, "stopped"),
@@ -241,6 +242,7 @@ FINISHES = {
     Outcome.FAILED: "failed",
     Outcome.KEY_REJECTED: "failed",
     Outcome.LIMITED: "failed",
+    Outcome.PLAN_LIMITED: "failed",
     Outcome.FAILED_OURS: "failed",
     Outcome.INTERRUPTED: "failed",
     Outcome.STOPPED: "stopped",
@@ -1008,6 +1010,9 @@ def _failed_call(status_code, *, owned, **metadata):
         ({"status": "interrupted", "metadata": {}}, Outcome.FAILED),
         ({"status": "interrupted", "metadata": {}, "interrupt_reason": "hitl"}, Outcome.FAILED),
         ({"status": "interrupted", "metadata": {}, "interrupt_reason": "credit_pause"}, Outcome.LIMITED),
+        # The Claude plan stopped it: a limit, the plan's own.
+        ({"status": "error", "metadata": {"claude_plan": {"reason": "plan_stopped"}}}, Outcome.PLAN_LIMITED),
+        ({"status": "error", "metadata": {"claude_plan": {"reason": "plan_stopped"}, "recovery": "scanner"}}, Outcome.INTERRUPTED),
         # A model call refused the credential: the user's key (only a 401
         # rejects it), or ours.
         (_failed_call(401, owned=True), Outcome.KEY_REJECTED),
@@ -1471,3 +1476,41 @@ async def test_sweep_that_loses_the_row_reports_nothing():
     with _sweep({"status": "completed"}) as fx:
         fx.settle.return_value = False
         assert await settle_abandoned(_automation(), _abandoned(), 300) is None
+
+
+def test_what_a_plan_stopped_run_records_decides_the_outcome():
+    """Its ledger stamp and settlement's reading, pinned together."""
+    from datetime import UTC, datetime
+
+    from src.llms.claude_code import PlanStopped
+    from src.server.services.runs import stream_errors
+
+    try:
+        raise RuntimeError("the run failed") from PlanStopped("five_hour", datetime(2030, 1, 3, 20, 40, tzinfo=UTC))
+    except RuntimeError as e:
+        metadata = stream_errors.plan_stop_metadata(e)
+    assert ledger_outcome({"status": "error", "metadata": metadata}) is Outcome.PLAN_LIMITED
+    assert stream_errors.plan_stop_metadata(RuntimeError("another failure")) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_claude_plan_stopped_settles_with_no_strike_in_its_owners_time():
+    stamp = {"type": "claude_code_off", "reason": "plan_stopped", "window": "five_hour",
+             "until": "2030-01-03T20:40:00+00:00", "credits_billed": False}
+    run = _ended("error", ["Your Claude plan's 5-hour limit is used up, so this turn stopped. It resets at "
+                           "Jan 3, 20:40 UTC. Nothing ran on another model."], claude_plan=stamp)
+    with (
+        _finished(run, _automation("cron")) as fx,
+        patch("src.server.database.automation.get_user_timezone", new=AsyncMock(return_value="America/New_York")),
+    ):
+        await _settle_finished_run(_finalize_job())
+
+    written = fx.db.settle_execution.await_args.kwargs
+    words = (
+        "Your Claude plan's 5-hour limit is used up, so this turn stopped. It resets at Thu Jan 3, 3:40 PM EST. "
+        "Nothing ran on another model."
+    )
+    assert (written["to"], written["strike"], written["failure_reason"]) == ("failed", None, "claude_plan")
+    assert written["error_message"] == words
+    assert fx.fire.await_args.kwargs["error"] == words
+

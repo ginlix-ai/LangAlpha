@@ -25,6 +25,7 @@ from src.server.services.market_targets.delivery import (
     execute_market_target,
     request_key,
 )
+from src.server.services.report_back.notify_turn import TURN_ROOM_WAIT_S
 from tests.unit.server.handlers.chat.redis_fakes import FakeCache
 
 MT_DB = "src.server.database.market_targets"
@@ -349,6 +350,19 @@ async def test_refusals_past_the_cap_with_retries_left_nack_into_backoff():
 
     env.mark.assert_not_awaited()
     env.exhaust.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_room_for_another_claude_code_turn_asks_again_by_the_clock_unspent():
+    env = Env(target=_target(), post_outcomes=[("full", None)])
+    room = AsyncMock(return_value=True)
+    with _env(env), patch("src.server.database.runs.outbox.wait_for_room", new=room):
+        await execute_market_target(_job(attempts=MAX_ATTEMPTS))
+
+    assert env.post.await_args.kwargs["room_fails_fast"]
+    room.assert_awaited_once_with("job-1", attempts=MAX_ATTEMPTS, wait_s=TURN_ROOM_WAIT_S)
+    env.exhaust.assert_not_awaited()
+    env.mark.assert_not_awaited()
 
 
 def _held_for_the_next_turn(env: Env, attempts: int) -> None:

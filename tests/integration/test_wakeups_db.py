@@ -342,6 +342,145 @@ async def test_the_close_sweep_leaves_an_owed_wakeup_notice_to_its_executor(
     assert (row["status"], row["cancelled_by"]) == ("cancelled", gone)
 
 
+async def test_a_wake_the_claude_plan_refused_waits_for_the_reset_then_comes_due(thread, db_conn):
+    # Held until a minute past the reset with its rider, each carrying the
+    # hold: no turn's ending makes it due before then, a live turn may still
+    # take it in, and the listing reads when the plan resets.
+    from src.server.database.runs import outbox
+    from src.server.database.wakeups.fire import fire_due_slots
+    from src.server.database.wakeups.read import list_thread_wakeups
+    from src.server.database.wakeups.riders import gather_wakeup_riders
+
+    for _ in range(2):
+        await _arm(thread, kind="at", timezone="UTC", schedule=_slots(1))
+    await fire_due_slots()
+    [head] = [
+        r
+        for r in await outbox.claim_outbox_jobs(limit=50, max_attempts=5)
+        if str(r["conversation_thread_id"]) == thread.id
+    ]
+    head_id, attempts = str(head["hook_outbox_id"]), head["attempts"]
+    assert len(await gather_wakeup_riders(head_id, attempts=attempts)) == 1
+    reset = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(microsecond=0)
+    hold = {"reset_at": reset.isoformat(), "window": "five_hour"}
+
+    assert not await outbox.hold_alert_for_plan(head_id, attempts=attempts + 1, plan_hold=hold)
+    assert await outbox.hold_alert_for_plan(head_id, attempts=attempts, plan_hold=hold)
+
+    async def jobs():
+        cur = await db_conn.execute(
+            "SELECT hook_outbox_id, status, next_retry_at, payload FROM hook_outbox"
+            " WHERE conversation_thread_id = %s ORDER BY created_at",
+            (thread.id,),
+        )
+        return await cur.fetchall()
+
+    held = await jobs()
+    assert [(j["status"], j["next_retry_at"]) for j in held] == [("pending", reset + timedelta(minutes=1))] * 2
+    assert all(j["payload"]["plan_hold"] == hold and j["payload"]["exhausted"] for j in held)
+    assert not [
+        r
+        for r in await outbox.claim_outbox_jobs(limit=50, max_attempts=5)
+        if str(r["conversation_thread_id"]) == thread.id
+    ]
+    await outbox.release_deferred_notifications(db_conn, thread.id)
+    assert [j["next_retry_at"] for j in await jobs()] == [reset + timedelta(minutes=1)] * 2
+    steerable = await outbox.list_steerable_report_jobs(thread.id)
+    assert {str(j["hook_outbox_id"]) for j in steerable} == {str(j["hook_outbox_id"]) for j in held}
+    listed = await list_thread_wakeups(thread.id, ended_since=datetime.now(timezone.utc) - timedelta(days=1))
+    assert [(w["notice_waiting"], w["notice_plan_hold"]) for w in listed] == [(True, hold)] * 2
+
+    await db_conn.execute(
+        "UPDATE hook_outbox SET next_retry_at = NOW() - interval '1 second'"
+        " WHERE conversation_thread_id = %s",
+        (thread.id,),
+    )
+    [due] = [
+        r
+        for r in await outbox.claim_outbox_jobs(limit=50, max_attempts=5)
+        if str(r["conversation_thread_id"]) == thread.id
+    ]
+    assert str(due["hook_outbox_id"]) == head_id
+    assert due["payload"]["plan_hold"] == hold
+    # The claim ends the hold: an ordinary job from here, the hold kept for
+    # the wake to name, and the listing no longer says it waits.
+    assert not await outbox.end_plan_hold(head_id, attempts=due["attempts"] + 1)
+    assert await outbox.end_plan_hold(head_id, attempts=due["attempts"])
+    [ended] = [j for j in await jobs() if str(j["hook_outbox_id"]) == head_id]
+    assert ("plan_hold" in ended["payload"], "exhausted" in ended["payload"], ended["payload"]["plan_waited"]) == (
+        False, False, hold,
+    )
+    listed = await list_thread_wakeups(thread.id, ended_since=datetime.now(timezone.utc) - timedelta(days=1))
+    assert [w["notice_plan_hold"] for w in listed] == [None, None]
+    # Its claims before the hold stop counting: a refusal at the ceiling they
+    # reached backs off rather than holding it for the thread's next turn.
+    assert await outbox.nack_outbox_job(head_id, attempts=due["attempts"], max_attempts=due["attempts"]) == "pending"
+
+
+async def test_a_wake_with_no_room_for_a_claude_code_turn_asks_again_by_the_clock_unspent(thread, db_conn):
+    from src.server.database.runs import outbox
+    from src.server.database.wakeups.fire import fire_due_slots
+
+    await _arm(thread, kind="at", timezone="UTC", schedule=_slots(1))
+    await fire_due_slots()
+
+    async def claim():
+        [job] = [
+            r
+            for r in await outbox.claim_outbox_jobs(limit=50, max_attempts=5)
+            if str(r["conversation_thread_id"]) == thread.id
+        ]
+        return str(job["hook_outbox_id"]), job["attempts"]
+
+    head_id, attempts = await claim()
+    assert not await outbox.wait_for_room(head_id, attempts=attempts + 1, wait_s=60)
+    assert await outbox.wait_for_room(head_id, attempts=attempts, wait_s=60)
+    cur = await db_conn.execute(
+        "SELECT status, next_retry_at - NOW() AS wait, payload FROM hook_outbox WHERE hook_outbox_id = %s",
+        (head_id,),
+    )
+    row = await cur.fetchone()
+    assert (row["status"], row["payload"]["waited"], "exhausted" in row["payload"]) == ("pending", 1, False)
+    assert timedelta(seconds=30) < row["wait"] <= timedelta(seconds=60)
+
+    await db_conn.execute(
+        "UPDATE hook_outbox SET next_retry_at = NOW() - interval '1 second' WHERE hook_outbox_id = %s",
+        (head_id,),
+    )
+    _, attempts = await claim()
+    # The claim it waited out does not count toward the ceiling.
+    assert await outbox.nack_outbox_job(head_id, attempts=attempts, max_attempts=attempts) == "pending"
+
+
+async def test_the_close_sweep_makes_a_wake_held_for_the_plan_due_on_an_archived_thread(thread, db_conn):
+    # Its executor ends the wakeup now, rather than at a reset days away.
+    from src.server.database.runs import outbox
+    from src.server.database.wakeups.fire import fire_due_slots
+
+    await _arm(thread, kind="at", timezone="UTC", schedule=_slots(1))
+    await fire_due_slots()
+    [head] = [
+        r
+        for r in await outbox.claim_outbox_jobs(limit=50, max_attempts=5)
+        if str(r["conversation_thread_id"]) == thread.id
+    ]
+    reset = datetime.now(timezone.utc) + timedelta(days=3)
+    hold = {"reset_at": reset.isoformat(), "window": "seven_day", "known": True}
+    assert await outbox.hold_alert_for_plan(str(head["hook_outbox_id"]), attempts=head["attempts"], plan_hold=hold)
+    await db_conn.execute(
+        "UPDATE conversation_threads SET archived_at = NOW() WHERE conversation_thread_id = %s",
+        (thread.id,),
+    )
+
+    await outbox.close_unowed_waiting_alerts()
+
+    [due] = [
+        r
+        for r in await outbox.claim_outbox_jobs(limit=50, max_attempts=5)
+        if str(r["conversation_thread_id"]) == thread.id
+    ]
+    assert due["hook_outbox_id"] == head["hook_outbox_id"]
+
 async def test_cancel_open_takes_exactly_one_scope(thread):
     from src.server.database.wakeups.cancel import cancel_open
 

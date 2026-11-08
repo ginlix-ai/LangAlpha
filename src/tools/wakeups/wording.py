@@ -60,6 +60,7 @@ WAKE_LINES = {
     "order_partial": "Your order partly filled: {order} (order {order_id}), {filled} of {qty} at an average {avg} so far, and the rest is still working. Set an order wakeup again to hear when it finishes.",
     "order_cancelled": "Your order ended unfilled: {order} (order {order_id}) was cancelled at {fire_time}.",
     "order_rejected": "Your order ended unfilled: {order} (order {order_id}) was rejected by the brokerage: {reason}.",
+    "plan_waited": "This wakeup was due at {due}. It ran at {ran}, after the Claude plan's {window} limit reset.",
 }
 
 BUILD_WAKE_LINES = {
@@ -70,6 +71,7 @@ BUILD_WAKE_LINES = {
     "order_partial_expired": "Your order ended partly filled: {order} (order {order_id}), {filled} of {qty} at an average {avg}, then expired at {fire_time}.",
     "order_expired": "Your order ended unfilled: {order} (order {order_id}) expired at {fire_time}.",
     "order_confirmed": "Your order was confirmed at the brokerage and sent there as a live order: {order} (order {order_id}), at {fire_time}. Its fills show in the brokerage's own orders.",
+    "plan_waited_unnamed": "This wakeup was due at {due}. It ran at {ran}, after the Claude plan's limit reset.",
     "order_handed_off": "Your staged order left the brokerage's instruction list: {order} (order {order_id}) was sent, deleted or expired there by {fire_time}, and the brokerage does not say which.",
 }
 

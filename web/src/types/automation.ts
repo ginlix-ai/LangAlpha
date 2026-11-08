@@ -37,7 +37,7 @@ export type SkipReason = 'user' | 'thread_busy' | 'interrupted';
  *  own words), the model provider rejected the user's own key, the run failed
  *  on the server's side, or the server cut it off. Only the first two are the
  *  reader's to act on. */
-export type FailureReason = 'usage_limit' | 'provider_auth' | 'server_error' | 'interrupted';
+export type FailureReason = 'usage_limit' | 'claude_plan' | 'provider_auth' | 'server_error' | 'interrupted';
 
 /** Why the server switched an automation off. Cleared by a resume. */
 export type DisableReason = 'provider_auth' | 'max_failures';

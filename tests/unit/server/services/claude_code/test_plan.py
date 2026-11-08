@@ -144,6 +144,7 @@ def rows(monkeypatch):
     monkeypatch.setattr(admission, "plan_out", plan_out)
     monkeypatch.setattr("src.server.services.claude_code.plan.plan_out", plan_out)
     monkeypatch.setattr("src.server.services.claude_code.checks.plan_out", plan_out)
+    monkeypatch.setattr("src.server.database.automation.get_user_timezone", AsyncMock(return_value=None))
     return state
 
 
@@ -287,6 +288,41 @@ async def test_admission_on_an_own_computer_reads_the_row_its_turn_signs_in_on(r
     config = SimpleNamespace(feature_enabled=lambda feature: True)
     await admission.require_runnable(config, "claude-haiku-5-5-code", "analyst", user_id="u", workspace_id="w")
     assert rows["reads"] == ([read] if read else [])
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("own", [False, True])
+async def test_a_turn_nobody_started_on_the_stored_token_is_refused_for_that_before_its_plan(rows, monkeypatch, own):
+    # No reset would let it run, so a wake is not held for one, nor an
+    # automation told to wait for it.
+    hosted = SimpleNamespace(runs_on="stored_token", token_signs_in=True)
+
+    async def placement(*_args, **_kwargs):
+        if own:
+            return SimpleNamespace(own_computer={"computer_id": "c-1"})
+        return SimpleNamespace(own_computer=None, refusal=None, hosted=hosted)
+
+    async def read_answer(computer_id):
+        return SimpleNamespace(relays=True, fresh=True)
+
+    async def signed_in(model, user_id, given):
+        return "stored_token"
+
+    monkeypatch.setattr(admission, "placement", placement)
+    monkeypatch.setattr(admission, "read_answer", read_answer)
+    monkeypatch.setattr(admission, "require_computer_signed_in", signed_in)
+    monkeypatch.setattr(admission, "rows_available", lambda: True)
+    rows["rows"] = {c: _held(PlanLimit("five_hour", datetime.now(UTC) + timedelta(hours=1))) for c in ("saved", "computer:c-1")}
+    config = SimpleNamespace(feature_enabled=lambda feature: True)
+
+    async def reason(**kw) -> str:
+        with pytest.raises(HTTPException) as refused:
+            await admission.require_runnable(config, "claude-haiku-5-5-code", "analyst", user_id="u", workspace_id="w", **kw)
+        return refused.value.detail["reason"]
+
+    assert await reason(unattended=True) == "stored_unattended"
+    assert await reason() == "plan_limited"
 
 
 def test_a_turn_the_plan_stopped_ends_on_a_refusal_naming_its_window_reset_and_billing():
@@ -583,3 +619,121 @@ async def test_a_turn_that_launches_after_a_token_was_placed_on_its_computer_kee
     plan.record("machine", _reading(NOW))
     await plan.written()
     assert rows["writes"] == [("computer:c-1", 4)]
+
+
+# --- unattended turns: automations, wakeups and subagents at the limit ---------
+
+
+@pytest.mark.asyncio
+async def test_a_refused_turn_names_when_the_hold_lifts_with_a_reset_or_without(rows):
+    """A wake held for the reset waits until ``held_until``: the reset Claude
+    gave, or the hold's own bound where it gave none."""
+    hour = datetime.now(UTC) + timedelta(hours=1)
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", hour))}
+    detail = await _refused("claude-haiku-5-5-code")
+    assert (detail["held_until"], detail["held_known"]) == (hour.isoformat(), True)
+    seen = datetime.now(UTC)
+    rows["rows"] = {"saved": _row(_state(_no_reset(seen)))}
+    detail = await _refused("claude-haiku-5-5-code")
+    assert ("until" in detail, detail["held_until"], detail["held_known"]) == (
+        False, (seen + timedelta(hours=5)).isoformat(), False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_turn_names_the_credential_and_model_the_plan_held(rows):
+    hour = datetime.now(UTC) + timedelta(hours=1)
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", hour))}
+    detail = await _refused("claude-haiku-5-5-code")
+    assert detail["held_credential"] == "saved"
+    assert detail["held_model"] and "haiku" in detail["held_model"]
+
+
+@pytest.mark.asyncio
+async def test_the_plan_still_holds_a_model_until_its_limit_lifts_whatever_the_credits_choice(rows):
+    from src.server.services.llm.claude_code import plan_still_holds
+
+    hour = datetime.now(UTC) + timedelta(hours=1)
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", hour))}
+    assert await plan_still_holds("claude-haiku-5-5", "u", "saved")
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", hour), credits="on")}
+    assert await plan_still_holds("claude-haiku-5-5", "u", "saved")
+    rows["rows"] = {"saved": _row({})}
+    assert not await plan_still_holds("claude-haiku-5-5", "u", "saved")
+
+
+def test_an_automations_report_words_the_reset_on_its_owners_clock():
+    from src.server.services.llm.claude_code import plan_words, reword_plan
+
+    until = datetime(2030, 1, 3, 20, 40, tzinfo=UTC)
+    assert plan_words("plan_limited", "five_hour", until, zone="America/New_York") == (
+        "Your Claude plan's 5-hour limit is used up until Thu Jan 3, 3:40 PM EST. Pick another model, or send this "
+        "again after it resets."
+    )
+    stopped = claude_code_refusal(PlanStopped("seven_day", until, credits_billed=True), "m")
+    assert reword_plan(stopped, "Asia/Shanghai") == (
+        "Your Claude plan's weekly limit is used up, so this turn stopped. It resets at Fri Jan 4, 4:40 AM CST. "
+        "Nothing ran on another model. Requests already under way were billed to your usage credits."
+    )
+    assert reword_plan(claude_code_refusal(PlanStopped(), "m"), "UTC") == (
+        "Your Claude plan's limit is used up, so this turn stopped. Nothing ran on another model."
+    )
+
+
+_OWN = {"computer_id": "c-1", "user_id": "u", "kind": "ssh"}
+_CLOUD = {"computer_id": "c-2", "user_id": "u", "kind": "docker"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("computer", "fresh", "relays", "saved", "credential"), [
+    (_OWN, True, True, True, "saved"),
+    (_OWN, True, True, False, "computer:c-1"),
+    # A token of the machine's own, found since the turn began, is the one its CLI runs.
+    (_OWN, True, False, True, "computer:c-1"),
+    (_OWN, False, True, True, None),
+    (_OWN, None, True, False, None),
+    (_CLOUD, None, True, True, "saved"),
+    (_CLOUD, None, True, False, None),
+])
+async def test_a_claude_code_subagent_reads_the_row_its_cli_signs_in_with(
+    rows, monkeypatch, computer, fresh, relays, saved, credential,
+):
+    async def read_answer(computer_id):
+        return None if fresh is None else SimpleNamespace(fresh=fresh, relays=relays)
+
+    monkeypatch.setattr(admission, "read_answer", read_answer)
+    hour = datetime.now(UTC) + timedelta(hours=1)
+    rows["rows"] = {c: _held(PlanLimit("five_hour", hour)) for c in ("saved", "computer:c-1")}
+    refusal = await admission.subagent_plan_refusal(computer, SONNET, saved)
+    assert rows["reads"] == ([[credential]] if credential else [])
+    assert (refusal is not None) is (credential is not None)
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_subagent_at_the_limit_is_refused_saying_until_when(rows, monkeypatch):
+    from src.server.database import automation as automation_db
+
+    zone = AsyncMock(return_value="America/New_York")
+    monkeypatch.setattr(automation_db, "get_user_timezone", zone)
+    until = datetime(2030, 1, 3, 20, 40, tzinfo=UTC)
+    rows["rows"] = {"saved": _held(PlanLimit("five_hour", until))}
+    assert await admission.subagent_plan_refusal(_CLOUD, SONNET, True) == (
+        "Not started: the Claude plan's 5-hour limit is used up until Thu Jan 3, 3:40 PM EST, so Claude Code "
+        "subagents can't run before then."
+    )
+    zone.assert_awaited_once_with("u")
+    zone.return_value = None
+    assert await admission.subagent_plan_refusal(_CLOUD, SONNET, True) == (
+        "Not started: the Claude plan's 5-hour limit is used up until Jan 3, 20:40 UTC, so Claude Code subagents "
+        "can't run before then."
+    )
+    rows["rows"] = {"saved": _held(PlanLimit("seven_day_opus", until))}
+    assert await admission.subagent_plan_refusal(_CLOUD, SONNET, True) is None, "a family limit holds only its family"
+    rows["rows"] = {"saved": _row(_state(_no_reset(datetime.now(UTC))))}
+    assert await admission.subagent_plan_refusal(_CLOUD, SONNET, True) == (
+        "Not started: the Claude plan's limit is used up, and Claude didn't say when it resets, so Claude Code "
+        "subagents can't run before then."
+    )
+    rows["out"] = "credits"
+    assert await admission.subagent_plan_refusal(_CLOUD, SONNET, True) is None, "under usage credits they run"
+

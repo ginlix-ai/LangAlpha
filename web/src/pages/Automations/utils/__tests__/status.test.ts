@@ -143,6 +143,8 @@ describe('why an automation needs attention', () => {
     ['paused', null, 'usage_limit', null, 'statePaused'],
     // A one-shot price alert a limit ended: the report is still owed.
     ['completed', null, 'usage_limit', 'usage_limit', 'stateUsageLimit'],
+    // The Claude plan's limit leaves the schedule on too, and says whose limit it was.
+    ['active', null, 'claude_plan', 'claude_plan', 'stateClaudePlan'],
   ];
 
   it.each(cases)('%s, switched off for %s, failed with %s', (status, disable, reason, kind, label) => {

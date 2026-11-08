@@ -563,7 +563,8 @@ async def _handle_resume(
             if refusal.busy:
                 steer_resume_busy(task.task_id)
             return ToolMessage(
-                content=f"Error: could not start {task.display_id} — {refusal.reason}.",
+                content=refusal.reason if refusal.whole
+                else f"Error: could not start {task.display_id} — {refusal.reason}.",
                 tool_call_id=tool_call_id,
                 name="Task",
                 status="error",
@@ -732,7 +733,8 @@ async def _handle_init(
         # collector claims it and no scanner retries it.
         task.mark_never_started(refusal.settle_reason)
         return ToolMessage(
-            content=f"Error: could not start {task.display_id} — {refusal.reason}.",
+            content=refusal.reason if refusal.whole
+            else f"Error: could not start {task.display_id} — {refusal.reason}.",
             tool_call_id=tool_call_id,
             name="Task",
             status="error",

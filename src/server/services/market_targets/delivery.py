@@ -151,6 +151,7 @@ async def execute_market_target(job: dict) -> None:
         render_notice,
     )
     from src.server.services.report_back.notify_turn import (
+        TURN_ROOM_WAIT_S,
         earlier_wake,
         park_while_thread_busy,
         post_notification_turn,
@@ -246,7 +247,7 @@ async def execute_market_target(job: dict) -> None:
     # Out of retries: this claim is the one more look a held job's release
     # bought it, or the last of its backoff, so a refusal holds it again
     # rather than starting another round.
-    spent = bool(payload.get("exhausted")) or attempts >= MAX_ATTEMPTS
+    spent = bool(payload.get("exhausted")) or attempts - int(payload.get("waited") or 0) >= MAX_ATTEMPTS
 
     for _ in range(_MAX_ROUNDS):
         if not await _fence():
@@ -276,6 +277,7 @@ async def execute_market_target(job: dict) -> None:
             still_due=_still_due,
             busy_fails_fast=True,
             refusal_fails_fast=True,
+            room_fails_fast=True,
         )
         if outcome == "dispatched":
             if run_id is None:
@@ -292,6 +294,9 @@ async def execute_market_target(job: dict) -> None:
             await asyncio.sleep(_BUSY_RETRY_DELAY)
             continue
         if outcome == "lost":
+            return
+        if outcome == "full":
+            await outbox_db.wait_for_room(job_id, attempts=attempts, wait_s=TURN_ROOM_WAIT_S)
             return
         if outcome == "cap" and not spent:
             logger.warning(

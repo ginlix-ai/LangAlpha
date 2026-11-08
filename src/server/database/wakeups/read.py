@@ -36,14 +36,29 @@ async def get_wakeup(wakeup_id: str) -> Optional[Dict[str, Any]]:
             return normalize(await cur.fetchone())
 
 
+def _plan_hold_sql(w: str) -> str:
+    """The hold of an unread fire of ``w``'s still waiting for the Claude
+    plan to reset (``plan_hold``), the latest where several are, aliased
+    ``notice_plan_hold``; NULL for none. A hold that came due is over:
+    its job is an ordinary one again, whatever it waits on next."""
+    return (
+        "(SELECT o.payload->'plan_hold' FROM hook_outbox o"
+        f" WHERE {jobs_of_sql('o', w)} AND o.status = 'pending' AND o.payload ? 'plan_hold'"
+        " AND o.next_retry_at > NOW()"
+        f" AND {unread_fire_sql('o', w)}"
+        " ORDER BY (o.payload->'plan_hold'->>'reset_at')::timestamptz DESC LIMIT 1) AS notice_plan_hold"
+    )
+
+
 async def get_thread_wakeup(thread_id: str, short_id: str) -> Optional[Dict[str, Any]]:
-    """The thread's wakeup by its short id, as ``get_wakeup`` reads one."""
+    """The thread's wakeup by its short id, as ``get_wakeup`` reads one,
+    with the Claude plan's hold on its notice (``notice_plan_hold``)."""
     if not is_uuid(thread_id):
         return None
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                f"SELECT {cols('w')}, {attempt_sql('w')} FROM wakeups w"
+                f"SELECT {cols('w')}, {attempt_sql('w')}, {_plan_hold_sql('w')} FROM wakeups w"
                 " WHERE w.conversation_thread_id = %s AND w.short_id = %s",
                 (str(thread_id), short_id),
             )
@@ -75,8 +90,9 @@ async def list_thread_wakeups(
     is past a cancel's reach (``notice_too_late``, as ``TOO_LATE_SQL`` reads
     it) and whether one is held after its wake was refused
     (``notice_waiting``), which is what tells a notice waiting on usage from
-    one waiting on the next turn. An order's row carries ``attempt``, the
-    order it watches.
+    one waiting on the next turn, and the Claude plan's hold on one that
+    waits for the plan to reset (``notice_plan_hold``). An order's row carries ``attempt``,
+    the order it watches.
     """
     open_w = open_sql("w")
     async with get_db_connection() as conn:
@@ -98,7 +114,7 @@ async def list_thread_wakeups(
                 SELECT {cols("w")}, picked.is_open,
                        COALESCE(j.notice_too_late, false) AS notice_too_late,
                        COALESCE(j.notice_waiting, false) AS notice_waiting,
-                       {attempt_sql("w")}
+                       {attempt_sql("w")}, {_plan_hold_sql("w")}
                 FROM picked
                 JOIN wakeups w ON w.wakeup_id = picked.wakeup_id
                 LEFT JOIN LATERAL (

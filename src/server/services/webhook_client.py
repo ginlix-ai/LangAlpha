@@ -64,10 +64,11 @@ class WebhookClient:
 
         ``failure_reason`` sets apart a failed run that was not the
         automation's own failure: ``usage_limit`` (``error`` is then the quota
-        service's own message), ``provider_auth`` (their key was rejected and
-        the automation is now disabled), ``server_error`` (the service failed
-        it) or ``interrupted`` (the server cut its run off). None for any other
-        event or failure.
+        service's own message), ``claude_plan`` (the user's Claude plan was used
+        up until it resets; ``error`` says when), ``provider_auth`` (their key
+        was rejected and the automation is now disabled), ``server_error`` (the
+        service failed it) or ``interrupted`` (the server cut its run off).
+        None for any other event or failure.
 
         Returns a list of per-method results, or None if no delivery configured.
         Each result: {"method": str, "success": bool}

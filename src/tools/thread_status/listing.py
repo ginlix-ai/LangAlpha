@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal, get_args
 
-from src.server.database.wakeups.contract import as_datetime
+from src.server.database.wakeups.contract import as_datetime, plan_reset_of
 from src.server.services.commands.notice import killed_by
 from src.tools.wakeups.clock import user_zone_of, zone_of
 from src.tools.wakeups.describe import pending_line, schedule_of, short_desc
@@ -250,16 +250,28 @@ def _wakeup_when(row: Mapping[str, Any], now: datetime, user_tz: str) -> str:
     return short_desc({**row, "label": None})
 
 
+def _plan_wait(row: Mapping[str, Any], now: datetime, user_tz: str) -> str | None:
+    """That a fire of the wakeup waits for the Claude plan to reset, which
+    then delivers it; None where none does."""
+    hold = row.get("notice_plan_hold")
+    if not hold or int(row.get("last_fired_seq") or 0) <= int(row.get("delivered_seq") or 0):
+        return None
+    if (reset := plan_reset_of(hold)) is None:
+        return "waiting for the Claude plan to reset"
+    return f"waiting for the Claude plan to reset at {_when(reset, now, user_tz)}"
+
+
 def wakeup_item(row: Mapping[str, Any], now: datetime, user_tz: str) -> Item:
     ended = _wakeup_ended(row, now)
     label = _one_line(row.get("label"))
+    held = _plan_wait(row, now, user_tz)
     if ended is None:
         nxt = as_datetime(row.get("next_fire_at")) or (schedule_of(row) or [None])[0]
         return Item(
             id=str(row.get("short_id")),
             type="wakeup",
             status="pending",
-            text=_parts(label, _wakeup_when(row, now, user_tz)),
+            text=_parts(label, _wakeup_when(row, now, user_tz), held),
             at=nxt or now,
         )
     at = as_datetime(
@@ -270,7 +282,7 @@ def wakeup_item(row: Mapping[str, Any], now: datetime, user_tz: str) -> Item:
         id=str(row.get("short_id")),
         type="wakeup",
         status="stopped" if ended == "cancelled" else "completed",
-        text=_parts(label or _wakeup_when(row, now, user_tz), how),
+        text=_parts(label or _wakeup_when(row, now, user_tz), how, held),
         at=at,
     )
 
@@ -278,7 +290,7 @@ def wakeup_item(row: Mapping[str, Any], now: datetime, user_tz: str) -> Item:
 def wakeup_detail(item: Item, row: Mapping[str, Any], now: datetime, user_tz: str) -> str:
     """``item`` is ``wakeup_item`` of the same row."""
     if item.status == "pending":
-        return pending_line(row, now, user_tz).removeprefix("- ")
+        return _parts(pending_line(row, now, user_tz).removeprefix("- "), _plan_wait(row, now, user_tz))
     return f"{item.id}  wakeup · {item.text}"
 
 

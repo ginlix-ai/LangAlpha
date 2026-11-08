@@ -1053,6 +1053,7 @@ class PTCAgent:
 
             background_middleware.claude_code_types |= {spec["name"]}
             background_middleware.claude_code_stored = bool(self.config.claude_code_saved)
+            background_middleware.claude_code_models[spec["name"]] = target.model
             own = list(spec.get("middleware") or [])
             baseline = next((m for m in own if isinstance(m, BaselineContextMiddleware)), None)
             return claude_code_graph(

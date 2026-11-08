@@ -35,7 +35,8 @@ logger = structlog.get_logger(__name__)
 class TaskRunRefused(Exception):
     """Admission refused: nothing is held and no run is live.
 
-    ``reason`` completes the agent-facing ``could not start <task> — <reason>.``
+    ``reason`` completes the agent-facing "could not start" line, unless it
+    is the whole answer (``whole``).
     The settle stays with the caller because it differs by cause — a refused
     launch goes inert, a refused resume has to stay resumable.
     """
@@ -45,11 +46,13 @@ class TaskRunRefused(Exception):
     # not answering; None when admission turned the run down on its merits.
     failure: str | None = None
 
-    def __init__(self, reason: str, *, busy: bool = False) -> None:
+    def __init__(self, reason: str, *, busy: bool = False, whole: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
         #: Refused only until the computer has room again (``TaskRunRejected.busy``).
         self.busy = busy
+        #: ``reason`` is the whole answer, in place of that line (``TaskRunRejected.whole``).
+        self.whole = whole
 
 
 class NamespaceUnfenced(TaskRunRefused):

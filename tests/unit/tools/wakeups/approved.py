@@ -117,6 +117,9 @@ WAKE_LINES = {
     "{fire_time}.",
     "order_rejected": "Your order ended unfilled: {order} (order {order_id}) was rejected by the "
     "brokerage: {reason}.",
+    # A wake held for the Claude plan to reset.
+    "plan_waited": "This wakeup was due at {due}. It ran at {ran}, after the Claude plan's {window} "
+    "limit reset.",
 }
 
 BUILD_WAKE_LINES = {
@@ -137,6 +140,9 @@ BUILD_WAKE_LINES = {
     # line drops "Last price" when no price is known; the wording is that line.
     "price_expiring_unpriced": "Your trigger on {symbol} ({phrase}) has not hit and lapses at "
     "{expires_at}. Set it again to keep it; otherwise let it lapse.",
+    # The same where the limit named no window.
+    "plan_waited_unnamed": "This wakeup was due at {due}. It ran at {ran}, after the Claude plan's "
+    "limit reset.",
 }
 
 WAKE_QUIET_HINT = (

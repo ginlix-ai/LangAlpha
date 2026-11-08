@@ -580,7 +580,7 @@ async def _handle_send_message(
 
         # Resolve LLM config eagerly — credit check must happen before SSE stream starts
         from src.server.services.llm import thread_model
-        from src.server.services.llm.claude_code import require_attended, require_claude_code_continues
+        from src.server.services.llm.claude_code import require_attended, require_claude_code_continues, unattended
         from src.server.services.thread_agent import thread_resolver
         from src.server.dependencies.usage_limits import enforce_credit_limit
         from ptc_agent.config.agent import CredentialSource
@@ -607,6 +607,7 @@ async def _handle_send_message(
             reasoning_effort=getattr(request, "reasoning_effort", None),
             fast_mode=getattr(request, "fast_mode", None),
             enabled_subagents=request.subagents_enabled,
+            unattended=unattended(request),
         )
 
         # A report-back or a channel message has nobody at a client to

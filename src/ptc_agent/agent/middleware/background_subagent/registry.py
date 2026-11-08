@@ -89,7 +89,8 @@ class TaskRunRejected(Exception):
     ``existing`` carries the conflicting run row when the rejection is a
     duplicate/slot conflict rather than an infra failure. ``busy`` marks a
     refusal that lifts by itself, the computer running as many Claude Code
-    CLIs as it may.
+    CLIs as it may. ``whole``: ``reason`` is the agent's whole answer, not
+    the end of a "could not start" line.
     """
 
     def __init__(
@@ -98,10 +99,12 @@ class TaskRunRejected(Exception):
         existing: dict[str, Any] | None = None,
         *,
         busy: bool = False,
+        whole: bool = False,
     ):
         self.reason = reason
         self.existing = existing
         self.busy = busy
+        self.whole = whole
         super().__init__(reason)
 
 
