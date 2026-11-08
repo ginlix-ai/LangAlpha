@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyCardStyle, getCardStyle, setCardStyle } from '../cardStyle';
+import { applyCardStyle, getCardStyle, restoreCardStyle, setCardStyle, storedCardStyle } from '../cardStyle';
 
 beforeEach(() => {
   localStorage.clear();
@@ -26,6 +26,43 @@ describe('card style', () => {
   });
 });
 
+describe('putting the page back', () => {
+  it('shows a style without storing one when the browser held none', () => {
+    setCardStyle('terminal');
+    restoreCardStyle('soft', null);
+    expect(getCardStyle()).toBe('soft');
+    expect(document.documentElement.dataset.cardStyle).toBe('soft');
+    expect(localStorage.getItem('cardStyle.v2')).toBeNull();
+    expect(storedCardStyle()).toBeNull();
+  });
+});
+
+describe('another tab of this browser', () => {
+  function fromOtherTab(newValue: string | null, key: string | null = 'cardStyle.v2') {
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue }));
+  }
+
+  it('restyles this one, without writing back what it heard', () => {
+    restoreCardStyle('balanced', null);
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    fromOtherTab('terminal');
+    expect(getCardStyle()).toBe('terminal');
+    expect(storedCardStyle()).toBe('terminal');
+    expect(document.documentElement.hasAttribute('data-card-style')).toBe(false);
+    expect(setItem).not.toHaveBeenCalled();
+    setItem.mockRestore();
+  });
+
+  it('puts the default back when the style is removed there, and ignores other keys', () => {
+    setCardStyle('soft');
+    fromOtherTab('terminal', 'theme');
+    expect(getCardStyle()).toBe('soft');
+    fromOtherTab(null);
+    expect(getCardStyle()).toBe('balanced');
+    expect(storedCardStyle()).toBeNull();
+  });
+});
+
 describe('a choice stored under the old ids', () => {
   async function fresh() {
     vi.resetModules();
@@ -40,7 +77,7 @@ describe('a choice stored under the old ids', () => {
     localStorage.setItem('cardStyle', old);
     const m = await fresh();
     expect(m.getCardStyle()).toBe(now);
-    expect(m.hasStoredCardStyle()).toBe(true);
+    expect(m.storedCardStyle()).toBe(now);
     expect(localStorage.getItem('cardStyle.v2')).toBe(now);
     expect(localStorage.getItem('cardStyle')).toBeNull();
   });
@@ -57,6 +94,6 @@ describe('a choice stored under the old ids', () => {
     localStorage.setItem('cardStyle', 'constructor');
     const m = await fresh();
     expect(m.getCardStyle()).toBe('balanced');
-    expect(m.hasStoredCardStyle()).toBe(false);
+    expect(m.storedCardStyle()).toBeNull();
   });
 });

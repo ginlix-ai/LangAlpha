@@ -16,7 +16,7 @@ export interface Appearance {
   theme?: ThemePreference;
 }
 
-function isThemePreference(value: unknown): value is ThemePreference {
+export function isThemePreference(value: unknown): value is ThemePreference {
   return value === 'light' || value === 'dark' || value === 'auto';
 }
 
@@ -58,11 +58,12 @@ export function withAccountLook(row: UserPreferences, look: Appearance): UserPre
  * Which of this browser's stored values an account put there. The stored copy
  * is written the same way whether someone picked it here or the page followed
  * an account, and signing out keeps it, so without this mark the next account
- * signed in here would be given the last one's look as if picked here.
+ * signed in here would be given the last one's look as if picked here. Kept in
+ * localStorage beside the values, so every tab of this browser reads the same.
  */
 const FROM_ACCOUNT_KEY = 'appearanceFromAccount';
 
-function keysFromAccount(): Set<keyof Appearance> {
+export function keysFromAccount(): Set<keyof Appearance> {
   try {
     const parsed: unknown = JSON.parse(safeLocalStorage.getItem(FROM_ACCOUNT_KEY) ?? '[]');
     return new Set(
@@ -80,6 +81,12 @@ export function markFromAccount(look: Appearance): void {
   if (look.cardStyle) keys.add('cardStyle');
   if (look.theme) keys.add('theme');
   if (keys.size !== before) safeLocalStorage.setItem(FROM_ACCOUNT_KEY, JSON.stringify([...keys]));
+}
+
+/** Records that a key no longer holds an account's value here. */
+export function unmarkFromAccount(key: keyof Appearance): void {
+  const keys = keysFromAccount();
+  if (keys.delete(key)) safeLocalStorage.setItem(FROM_ACCOUNT_KEY, JSON.stringify([...keys]));
 }
 
 /** The values given, less any an account put in this browser. */

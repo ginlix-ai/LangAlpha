@@ -46,14 +46,30 @@ function readStored(): CardStyle | null {
 // Read on first use rather than at import, so a module that only imports this
 // one (the chart tokens) touches no storage; storage a browser refuses
 // (blocked site data) falls back to the default rather than stopping the boot.
-let picked: CardStyle | null | undefined;
+// `stored` mirrors what this browser holds under KEY, `current` what is shown.
+let stored: CardStyle | null | undefined;
 let current: CardStyle = 'balanced';
 const listeners = new Set<() => void>();
 
+function show(style: CardStyle): void {
+  current = style;
+  applyCardStyle(style);
+  listeners.forEach((listener) => listener());
+}
+
+// Another tab of this browser picked or followed a style: shown here too, and
+// not written back, which would only echo it. Removed means the default.
+function onStorage(event: StorageEvent): void {
+  if (event.key !== KEY && event.key !== null) return;
+  stored = isCardStyle(event.newValue) ? event.newValue : null;
+  show(stored ?? 'balanced');
+}
+
 function load(): void {
-  if (picked !== undefined) return;
-  picked = readStored();
-  current = picked ?? 'balanced';
+  if (stored !== undefined) return;
+  stored = readStored();
+  current = stored ?? 'balanced';
+  if (typeof window !== 'undefined') window.addEventListener('storage', onStorage);
 }
 
 export function getCardStyle(): CardStyle {
@@ -61,11 +77,11 @@ export function getCardStyle(): CardStyle {
   return current;
 }
 
-/** Whether this browser has a style of its own to offer an account that has
- *  none yet, rather than the default. */
-export function hasStoredCardStyle(): boolean {
+/** The style this browser holds for itself, or null for none, in which case
+ *  it has nothing to offer an account but the default. */
+export function storedCardStyle(): CardStyle | null {
   load();
-  return picked !== null;
+  return stored ?? null;
 }
 
 export function applyCardStyle(style: CardStyle): void {
@@ -75,10 +91,20 @@ export function applyCardStyle(style: CardStyle): void {
 
 export function setCardStyle(style: CardStyle): void {
   load();
-  current = style;
-  applyCardStyle(style);
+  stored = style;
   safeLocalStorage.setItem(KEY, style);
-  listeners.forEach((listener) => listener());
+  show(style);
+}
+
+/** Shows a style with the given one stored, or none: for putting the page back
+ *  as it was without leaving behind a stored style, which would read as one
+ *  picked here. */
+export function restoreCardStyle(shown: CardStyle, storedStyle: CardStyle | null): void {
+  load();
+  stored = storedStyle;
+  if (storedStyle) safeLocalStorage.setItem(KEY, storedStyle);
+  else safeLocalStorage.removeItem(KEY);
+  show(shown);
 }
 
 function subscribe(listener: () => void): () => void {
