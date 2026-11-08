@@ -250,13 +250,15 @@
 /* Terminal's brackets around a word (data-bracket on the element), by what
    the word is: a chip or a count, close and faint; a word, faint; a tag, in
    the muted ink; a title, in the muted ink and light beside a heavy name.
-   The brackets are `none` in Soft and Balanced, so the rules need no style
-   scope; an element whose ::after is also its touch target (.tap-target,
-   base.css) draws its own instead, since this would take that box away. */
+   The brackets are `none` in Soft and Balanced, so their content needs no
+   style scope; their gaps are Terminal's, since an element's ::after may also
+   be its touch target (.tap-target, base.css), which a gap would move.
+   Terminal keeps that target with its closing bracket (Controls, below). */
 [data-bracket]::before { content: var(--term-open); margin-right: 0.5ch; }
-[data-bracket]::after { content: var(--term-close); margin-left: 0.5ch; }
+[data-bracket]::after { content: var(--term-close); }
+:where(:root:not([data-card-style])) [data-bracket]::after { margin-left: 0.5ch; }
 [data-bracket='chip']::before { margin-right: 0.4ch; }
-[data-bracket='chip']::after { margin-left: 0.4ch; }
+:where(:root:not([data-card-style])) [data-bracket='chip']::after { margin-left: 0.4ch; }
 :is([data-bracket='chip'], [data-bracket='word'])::before,
 :is([data-bracket='chip'], [data-bracket='word'])::after { opacity: 0.6; }
 :is([data-bracket='tag'], [data-bracket='title'])::before,
@@ -339,8 +341,7 @@
 }
 /* Scoped, unlike the other brackets: `.tap-target` (base.css) widens a
    button's touch target with the same ::after, which a bracket rule in every
-   style would take away. In Terminal the closing bracket stays in the line
-   and the button keeps its own size as its target. */
+   style would take away. */
 :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'])::before {
   content: '[';
   margin-right: 0.5ch;
@@ -353,13 +354,27 @@
   font-weight: 400;
   opacity: 0.55;
 }
+/* A touch target (.tap-target, base.css) is its ::after, a 44px box over
+   the control, and so is Terminal's closing bracket. Here the bracket keeps
+   the target: it stays in the line, and its padding, cancelled by margins of
+   the same size so that nothing moves, reaches back across the control and
+   out to the target's size around it. */
 @media (pointer: coarse) {
-  :root:not([data-card-style]) [data-slot='button'].tap-target::after {
+  :root:not([data-card-style]) :is([data-slot='button'], [data-slot='door'], [data-bracket]).tap-target:not(:disabled)::after {
+    --tap-reach-x: max(0px, (var(--tap-target-w, 44px) - 100%) / 2);
+    --tap-reach-y: max(0px, (var(--tap-target-h, 44px) - 1lh) / 2);
+    content: ']';
     position: static;
+    display: inline-block;
     width: auto;
     height: auto;
     transform: none;
+    padding: var(--tap-reach-y) var(--tap-reach-x) var(--tap-reach-y) calc(100% + var(--tap-reach-x));
+    margin-block: calc(-1 * var(--tap-reach-y));
+    margin-right: calc(-1 * var(--tap-reach-x));
+    margin-left: calc(var(--bracket-gap, 0.5ch) - 100% - var(--tap-reach-x));
   }
+  :root:not([data-card-style]) [data-bracket='chip'].tap-target { --bracket-gap: 0.4ch; }
 }
 /* A door's own arrow or chevron gives way to the brackets. */
 :root:not([data-card-style]) [data-slot='door'] > svg { display: none; }
