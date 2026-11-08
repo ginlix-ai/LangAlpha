@@ -121,6 +121,9 @@ export function createTurnPin(): TurnPin {
     if (!floorEl) return;
     const px = Math.max(floor.pin, floor.hold);
     floorEl.style.minHeight = px > 0 ? `${px}px` : '';
+    // Read by ChatView, which puts a bottom-aligned transcript back on top of
+    // the room, so the room stays under the send.
+    floorEl.toggleAttribute('data-pinned', px > 0);
   };
   const releaseHold = (c: HTMLElement) => {
     if (floor.hold <= 0) return;

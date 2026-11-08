@@ -13,6 +13,7 @@ import { ownerOfToolCall } from '../toolCallOwner';
 import type { SubagentTerminalStatus } from '../subagents/subagentStatus';
 import type { HistoryRuntime } from '../runtime';
 import { loadConversationHistory } from './replayHistory';
+import type { PageBudget } from './pageBudget';
 import { applyHistoryToolResult, markSteeredResumeCards, settleResumedInterrupts } from './resumeSettlement';
 
 /** Where a replayed page starts, and whether older turns remain. A page
@@ -103,7 +104,7 @@ function mergeSubagentHistory(older: SubagentHistoryData, newer: SubagentHistory
  */
 export async function loadOlderHistoryPage(
   rt: HistoryRuntime,
-  request: { threadId: string; beforeTurn: number; limit: number; signal: AbortSignal },
+  request: { threadId: string; beforeTurn: number; page: PageBudget; signal: AbortSignal },
   carry: HistoryCarry,
 ): Promise<OlderHistoryPage | null> {
   let local: ChatMessage[] = [];
@@ -168,7 +169,7 @@ export async function loadOlderHistoryPage(
       loadFeedback: async () => {},
       projectSubagentHistory: noop,
       beforeTurn: request.beforeTurn,
-      limit: request.limit,
+      page: request.page,
       signal: request.signal,
       onPage: (page) => {
         loaded.page = page;
@@ -266,6 +267,18 @@ function settleClosedTaskChips(
   });
 }
 
+/** What committing an older page reads of the live session. */
+export interface OlderPageCommitDeps {
+  projectSubagentHistory: (byTaskId: Map<string, SubagentHistoryData>) => void;
+  /** Puts a task's runs ahead of what its live stream wrote. */
+  prependSubagentRuns: (agentId: string, runs: SubagentHistoryData) => void;
+  /** Tasks a live stream is still writing, whose state is the stream's. */
+  isTaskLive: (agentId: string) => boolean;
+  /** The outcome a task's live stream closed with since the history was last
+   *  reset. The page and its carry may hold the task from before it. */
+  liveOutcome: (agentId: string) => SubagentTerminalStatus | undefined;
+}
+
 /**
  * Put an older page above the transcript. Everything on screen keeps its
  * place in the array relative to everything else, and the splice point for
@@ -273,16 +286,7 @@ function settleClosedTaskChips(
  */
 export function commitOlderHistoryPage(
   rt: HistoryRuntime,
-  deps: {
-    projectSubagentHistory: (byTaskId: Map<string, SubagentHistoryData>) => void;
-    /** Puts a task's runs ahead of what its live stream wrote. */
-    prependSubagentRuns: (agentId: string, runs: SubagentHistoryData) => void;
-    /** Tasks a live stream is still writing, whose state is the stream's. */
-    isTaskLive: (agentId: string) => boolean;
-    /** The outcome a task's live stream closed with since the history was last
-     *  reset. The page and its carry may hold the task from before it. */
-    liveOutcome: (agentId: string) => SubagentTerminalStatus | undefined;
-  },
+  deps: OlderPageCommitDeps,
   older: OlderHistoryPage,
 ): void {
   const steered = older.page.carry.steeredAgentIds;

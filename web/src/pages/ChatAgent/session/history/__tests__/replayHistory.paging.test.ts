@@ -28,7 +28,9 @@ import {
   type LoadedHistoryPage,
   type OlderHistoryPage,
 } from '../olderPages';
-import { HISTORY_PAGE_TURNS } from '../historyWindow';
+import { HISTORY_PAGE_TURNS, type PageBudget } from '../pageBudget';
+
+const PAGE: PageBudget = { limit: HISTORY_PAGE_TURNS, minTurns: 5, maxBytes: 3_000_000 };
 import { buildRuntime, makeDeps, replayOf } from './replayHarness';
 import type { HistoryRuntime } from '../../runtime';
 import type { TokenUsage } from '../../types';
@@ -72,7 +74,7 @@ async function loadNewest(rt: ReturnType<typeof buildRuntime>['rt'], items: Item
   const reported: { page?: LoadedHistoryPage | null } = {};
   await loadConversationHistory(rt, {
     ...makeDeps(),
-    limit,
+    page: { ...PAGE, limit },
     onPage: (p) => {
       reported.page = p;
     },
@@ -81,7 +83,7 @@ async function loadNewest(rt: ReturnType<typeof buildRuntime>['rt'], items: Item
 }
 
 function olderRequest(beforeTurn: number, signal = new AbortController().signal) {
-  return { threadId: 'thread-1', beforeTurn, limit: HISTORY_PAGE_TURNS, signal };
+  return { threadId: 'thread-1', beforeTurn, page: PAGE, signal };
 }
 
 /** One main-agent model call's usage, as replay sends it. */
@@ -112,13 +114,13 @@ const commitDeps = () => ({
 beforeEach(() => vi.clearAllMocks());
 
 describe('history replay: the newest page', () => {
-  it('asks for the page it was given a limit for', async () => {
+  it('asks for the page it was given a budget for', async () => {
     const { rt } = buildRuntime();
     await loadNewest(rt, [header(73, true), ...turns(73, 75), DONE], 25);
-    expect(api.replayThreadHistory).toHaveBeenCalledWith('thread-1', expect.any(Function), { limit: 25 });
+    expect(api.replayThreadHistory).toHaveBeenCalledWith('thread-1', expect.any(Function), { page: { ...PAGE, limit: 25 } });
   });
 
-  it('replays the whole thread when no limit is given', async () => {
+  it('replays the whole thread when no budget is given', async () => {
     const { rt } = buildRuntime();
     api.replayThreadHistory.mockImplementationOnce(replayOf([...turns(0, 1), DONE]));
     await loadConversationHistory(rt, makeDeps());
@@ -182,7 +184,7 @@ describe('history replay: the newest page', () => {
     const { rt } = buildRuntime();
     api.replayThreadHistory.mockRejectedValueOnce(new Error('HTTP 500'));
     const onPage = vi.fn();
-    await loadConversationHistory(rt, { ...makeDeps(), limit: HISTORY_PAGE_TURNS, onPage });
+    await loadConversationHistory(rt, { ...makeDeps(), page: PAGE, onPage });
     expect(onPage).not.toHaveBeenCalled();
   });
 });
@@ -199,7 +201,7 @@ describe('history replay: an older page', () => {
     expect(api.replayThreadHistory).toHaveBeenLastCalledWith(
       'thread-1',
       expect.any(Function),
-      { beforeTurn: 73, limit: HISTORY_PAGE_TURNS, signal },
+      { beforeTurn: 73, page: PAGE, signal },
     );
   });
 

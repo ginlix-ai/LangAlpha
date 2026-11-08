@@ -1042,6 +1042,24 @@ async def replay_thread_messages(
             "previous page's ``history_page.first_turn_index``."
         ),
     ),
+    max_bytes: int | None = Query(
+        None,
+        ge=1,
+        description=(
+            "Paged replay: stop short of ``limit`` once the page's turns pass "
+            "this many bytes of lines (whole turns, at least ``min_turns``). "
+            "Ignored without ``limit``."
+        ),
+    ),
+    min_turns: int = Query(
+        1,
+        ge=1,
+        description=(
+            "With ``max_bytes``: the fewest turns the page carries, however "
+            "large, and the fewest a cut may leave for the next page (fewer "
+            "are taken into this one)."
+        ),
+    ),
 ):
     """Replay a thread as SSE.
 
@@ -1065,13 +1083,23 @@ async def replay_thread_messages(
 
         from src.server.services.history.replay import (
             CheckpointReplayUnavailable,
+            PageBudget,
             finish_lines,
             read_replay_page,
         )
 
+        budget = (
+            PageBudget(min_turns=min_turns, max_bytes=max_bytes)
+            if max_bytes is not None and limit is not None
+            else None
+        )
         try:
             page, resolved_source = await read_replay_page(
-                rows, source=source, before_turn=before_turn, limit=limit
+                rows,
+                source=source,
+                before_turn=before_turn,
+                limit=limit,
+                budget=budget,
             )
         except CheckpointReplayUnavailable as e:
             raise HTTPException(

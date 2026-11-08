@@ -100,7 +100,7 @@ vi.mock('../../hooks/useChatMessages', async (importOriginal) => ({
     setIsCompacting: vi.fn(),
     queuedSend: null,
     isLoadingHistory: false,
-    olderHistory: { status: 'end', load: vi.fn() },
+    olderHistory: { snapshot: { status: 'end', aligned: false, hasAhead: false }, load: vi.fn(), backfill: vi.fn() },
     isReconnecting: false,
     modelStatus: null,
     fallbackSuggestion: null,

@@ -94,7 +94,7 @@ describe('history replay: each launch\'s run', () => {
     ]);
     await loadOlderHistoryPage(
       rt,
-      { threadId: 'thread-1', beforeTurn: 1, limit: 1, signal: new AbortController().signal },
+      { threadId: 'thread-1', beforeTurn: 1, page: { limit: 1, minTurns: 1, maxBytes: 3_000_000 }, signal: new AbortController().signal },
       { events: [], subagents: new Map(), steeredAgentIds: new Set() },
     );
     expect(rt.subagentHistory.get().runs.get('run-1')).toEqual({

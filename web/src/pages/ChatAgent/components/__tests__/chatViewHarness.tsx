@@ -89,7 +89,7 @@ const baseChatState = () => ({
   setIsCompacting: vi.fn(),
   queuedSend: null,
   isLoadingHistory: false,
-  olderHistory: { status: 'end' as const, load: vi.fn() },
+  olderHistory: { snapshot: { status: 'end' as const, aligned: false, hasAhead: false }, load: vi.fn(), backfill: vi.fn() },
   isReconnecting: false,
   modelStatus: null as Record<string, unknown> | null,
   fallbackSuggestion: null,

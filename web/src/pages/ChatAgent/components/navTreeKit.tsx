@@ -32,6 +32,7 @@ import {
 } from 'react';
 import { flushSync } from 'react-dom';
 import type { DragEndEvent, DragStartEvent, Modifier } from '@dnd-kit/core';
+import { whenIdle } from '@/lib/whenIdle';
 
 /** dnd-kit's gate: `true` disables both aspects, the object form keeps a row droppable. */
 export type DragGate = boolean | { draggable: boolean; droppable: boolean };
@@ -178,15 +179,6 @@ const IDLE_TIMEOUT_MS = 2000;
 // Where requestIdleCallback is missing, long enough to clear the first render.
 const IDLE_FALLBACK_MS = 300;
 const RETRY_MS = 250;
-
-function whenIdle(run: () => void): () => void {
-  if (typeof window.requestIdleCallback === 'function') {
-    const id = window.requestIdleCallback(run, { timeout: IDLE_TIMEOUT_MS });
-    return () => window.cancelIdleCallback(id);
-  }
-  const id = window.setTimeout(run, IDLE_FALLBACK_MS);
-  return () => window.clearTimeout(id);
-}
 
 /** CSS animations and transitions running on the rows, in document order. */
 function rowAnimations(root: HTMLElement): Animation[] {
@@ -452,7 +444,7 @@ export function useNavTreeKit(rootRef: RefObject<HTMLElement | null>): NavTreeVa
     doc.addEventListener('pointercancel', onPointerEnd, true);
     doc.addEventListener('visibilitychange', onAbandon);
     window.addEventListener('blur', onAbandon);
-    const cancelIdle = loadedKit ? () => {} : whenIdle(load);
+    const cancelIdle = loadedKit ? () => {} : whenIdle(load, { timeout: IDLE_TIMEOUT_MS, fallbackMs: IDLE_FALLBACK_MS });
     // Not from here: a swap flushes synchronously, which React refuses to do
     // from inside an effect.
     if (loadedKit) retry = window.setTimeout(step, 0);

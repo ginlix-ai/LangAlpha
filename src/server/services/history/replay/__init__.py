@@ -61,8 +61,10 @@ key (``keys.projection_sources``).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from src.server.database import conversation as conversation_db
@@ -93,6 +95,7 @@ from src.server.utils.checkpoint_helpers import CheckpointBranchTipNotFound
 __all__ = [
     "CheckpointReplayUnavailable",
     "ClaimsPassNeeded",
+    "PageBudget",
     "ReplayPage",
     "build_replay_page",
     "ThreadRows",
@@ -107,6 +110,20 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PageBudget:
+    """How much of the thread a page may carry: the newest turns until their
+    lines pass ``max_bytes``, never fewer than ``min_turns``.
+
+    Turns vary from kilobytes to megabytes (a subagent's internals ride its
+    parent turn), so a page counted only in turns can carry tens of megabytes.
+    The floor is the client's: the turns that fill its screen, or on a reload
+    every turn back to where the reader had paged."""
+
+    min_turns: int
+    max_bytes: int
 
 
 @dataclass
@@ -133,6 +150,7 @@ async def build_replay_page(
     *,
     before_turn: Any | None = None,
     limit: int | None = None,
+    budget: PageBudget | None = None,
     turn_fallback: bool = False,
 ) -> ReplayPage:
     """Replay lines for one page of the thread: with ``limit``, the newest N
@@ -150,6 +168,9 @@ async def build_replay_page(
     steering-*backfilled* turn) raises too, unless ``turn_fallback``, which
     replays that turn alone as its stub.
 
+    With ``budget``, the page stops short of ``limit`` once its lines pass
+    the budget (``_fill_page``), stubs counted with projected turns.
+
     Lines are wire-ready but not final: task cards and offloaded widget data
     are stamped on the way out (``finish_lines``). ``turn_fallback``: see
     ``cold.project_stale``.
@@ -159,47 +180,58 @@ async def build_replay_page(
     if branch is None:
         raise CheckpointReplayUnavailable("no checkpoint turns found")
     inputs, anchored, tip_id = branch
-    page, has_more = _select_page(anchored, inputs, before_turn, limit)
-    for turn_index, anchor in page:
-        # A completed turn persists its boundary, so checkpoints cannot cover
-        # one without it. The pairing that placed every other turn held, so
-        # under ``turn_fallback`` only that turn is a stub.
-        response = inputs.responses_by_turn.get(turn_index) or {}
-        if anchor is None and response.get("status") == "completed" and not turn_fallback:
-            raise CheckpointReplayUnavailable(
-                f"persisted turn {turn_index} completed but has no checkpoint boundary"
-            )
+    policy = cold.Policy(turn_fallback=turn_fallback)
 
-    lines = _turn_lines(
-        reader,
-        inputs,
-        anchored,
-        [(ti, a) for ti, a in page if a is not None],
-        cold.Policy(turn_fallback=turn_fallback),
-    )
+    lost: list[Any] = []
+
+    async def read(turns: list[tuple[Any, TurnAnchor | None]]) -> dict[Any, list[Line]]:
+        """Projected lines for anchored turns, stubs for the rest, so the
+        budget counts every turn the page sends."""
+        projected = [(ti, a) for ti, a in turns if a is not None]
+        stubbed = [ti for ti, a in turns if a is None]
+        if not stubbed:
+            return await _turn_lines(reader, inputs, anchored, projected, policy)
+        lines, (stubs, gone) = await asyncio.gather(
+            _turn_lines(reader, inputs, anchored, projected, policy),
+            stub_lines(
+                rows.thread_id,
+                stubbed,
+                inputs.queries_by_turn,
+                inputs.responses_by_turn,
+                rows.open_runs,
+            ),
+        )
+        lost.extend(gone)
+        return lines | stubs
+
+    async def page_lines() -> tuple[
+        list[tuple[Any, TurnAnchor | None]], bool, dict[Any, list[Line]]
+    ]:
+        candidates, has_more = _select_page(anchored, inputs, before_turn, limit)
+        page, lines_by_turn = await _fill_page(
+            read, candidates, budget, whole=not has_more
+        )
+        _check_unanchored(inputs, page, turn_fallback)
+        return page, has_more or len(page) < len(candidates), lines_by_turn
+
     tip_interrupts: list[dict[str, Any]] = []
     if before_turn is None:
         # The newest page ends with the tip's pending interrupts, a checkpoint
         # read the lines never wait on. Both settle before either error is
         # raised, the lines' first, so a failed page leaves no read behind.
         results = await asyncio.gather(
-            lines,
+            page_lines(),
             reader.aget_tip_interrupts(rows.thread_id, tip_id),
             return_exceptions=True,
         )
         for result in results:
             if isinstance(result, BaseException):
                 raise result
-        lines_by_turn, tip_interrupts = results
+        (page, has_more, lines_by_turn), tip_interrupts = results
     else:
-        lines_by_turn = await lines
-    stubs, lost = await stub_lines(
-        rows.thread_id,
-        [turn_index for turn_index, anchor in page if anchor is None],
-        inputs.queries_by_turn,
-        inputs.responses_by_turn,
-        rows.open_runs,
-    )
+        page, has_more, lines_by_turn = await page_lines()
+    on_page = {turn_index for turn_index, _ in page}
+    lost = [turn_index for turn_index in lost if turn_index in on_page]
     if lost:
         logger.error(
             "[REPLAY] turns %s of %s have no checkpoint boundary and archived "
@@ -207,9 +239,7 @@ async def build_replay_page(
             lost,
             rows.thread_id,
         )
-    out: list[Line] = []
-    for turn_index, anchor in page:
-        out.extend(stubs[turn_index] if anchor is None else lines_by_turn[turn_index])
+    out = [line for turn_index, _ in page for line in lines_by_turn[turn_index]]
     for interrupt in tip_interrupts:
         out.append(line_of(items._interrupt_item(rows.thread_id, interrupt)))
     return ReplayPage(
@@ -225,6 +255,7 @@ async def read_replay_page(
     source: Literal["auto", "checkpoint"] = "auto",
     before_turn: Any | None = None,
     limit: int | None = None,
+    budget: PageBudget | None = None,
 ) -> tuple[ReplayPage, str]:
     """The page a thread replays as, and its source (``checkpoint`` or ``stub``).
 
@@ -249,6 +280,7 @@ async def read_replay_page(
             rows.thread.get("latest_checkpoint_id"),
             before_turn=before_turn,
             limit=limit,
+            budget=budget,
             turn_fallback=source == "auto",
         )
         return page, "checkpoint"
@@ -275,18 +307,20 @@ async def read_replay_page(
             rows.thread_id,
             exc_info=True,
         )
-    return await stub_page(rows, before_turn, limit, cause=cause), "stub"
+    return await stub_page(rows, before_turn, limit, budget, cause=cause), "stub"
 
 
 async def stub_page(
     rows: ThreadRows,
     before_turn: Any | None = None,
     limit: int | None = None,
+    budget: PageBudget | None = None,
     *,
     cause: BaseException | None = None,
 ) -> ReplayPage:
     """A page of stubs (``stubs.stub_lines``), over the same window the
-    checkpoint path pages by, counted in persisted turns.
+    checkpoint path pages by, counted in persisted turns and held to the same
+    budget.
 
     Turns that answered and archived nothing are logged as an error with
     ``cause``, the failure that sent the read here: a thread whose turns
@@ -297,14 +331,26 @@ async def stub_page(
         for ti in queries_by_turn
         if ti is not None and (before_turn is None or ti < before_turn)
     )
-    page_turns = turns[-limit:] if limit is not None else turns
-    lines, lost = await stub_lines(
-        rows.thread_id,
-        page_turns,
-        queries_by_turn,
-        rows.responses_by_turn,
-        rows.open_runs,
+    candidates = [(ti, None) for ti in (turns[-limit:] if limit is not None else turns)]
+    lost: list[Any] = []
+
+    async def read(selected: list[tuple[Any, None]]) -> dict[Any, list[Line]]:
+        lines, gone = await stub_lines(
+            rows.thread_id,
+            [ti for ti, _ in selected],
+            queries_by_turn,
+            rows.responses_by_turn,
+            rows.open_runs,
+        )
+        lost.extend(gone)
+        return lines
+
+    page, lines = await _fill_page(
+        read, candidates, budget, whole=len(candidates) == len(turns)
     )
+    page_turns = [ti for ti, _ in page]
+    on_page = set(page_turns)
+    lost = [ti for ti in lost if ti in on_page]
     if lost:
         logger.error(
             "[REPLAY] %s replays as stubs, and turns %s archived no stream; "
@@ -466,6 +512,123 @@ def _select_page(
         chosen.append((ti, None))
     chosen.sort(key=lambda p: p[0])
     return chosen, has_more
+
+
+def _check_unanchored(
+    inputs: Inputs,
+    page: list[tuple[Any, TurnAnchor | None]],
+    turn_fallback: bool,
+) -> None:
+    """A completed turn persists its boundary, so checkpoints cannot cover
+    one without it. The pairing that placed every other turn held, so under
+    ``turn_fallback`` only that turn is a stub."""
+    for turn_index, anchor in page:
+        response = inputs.responses_by_turn.get(turn_index) or {}
+        if anchor is None and response.get("status") == "completed" and not turn_fallback:
+            raise CheckpointReplayUnavailable(
+                f"persisted turn {turn_index} completed but has no checkpoint boundary"
+            )
+
+
+def _wire_bytes(lines: list[Line]) -> int:
+    return sum(_line_bytes(ln) for ln in lines)
+
+
+def _line_bytes(line: Line) -> int:
+    """The line's bytes as sent: a widget whose data sits in object storage
+    goes out with it inlined (``finish_lines``), and that data is the large
+    part, so its stored size counts too."""
+    size = len(line.event) + len(line.data_json.encode())
+    if replay_lines.FLAG_WIDGET in line.flags:
+        ref = (json.loads(line.data_json).get("payload") or {}).get("data_ref") or {}
+        if isinstance(ref.get("size"), int):
+            size += ref["size"]
+    return size
+
+
+Candidate = tuple[Any, TurnAnchor | None]
+ReadLines = Callable[[list[Candidate]], Awaitable[dict[Any, list[Line]]]]
+
+
+async def _fill_page(
+    read: ReadLines,
+    candidates: list[Candidate],
+    budget: PageBudget | None,
+    *,
+    whole: bool,
+) -> tuple[list[Candidate], dict[Any, list[Line]]]:
+    """The page, the newest of ``candidates`` the budget holds (all of them
+    without one), and its lines. ``whole``: the candidates are every turn in
+    range, none older left behind."""
+    count, got = len(candidates), {}
+    if budget is not None and candidates:
+        count, got = await _budgeted_lines(read, candidates, budget, whole=whole)
+    page = candidates[len(candidates) - count :]
+    return page, got | await read([p for p in page if p[0] not in got])
+
+
+async def _budgeted_lines(
+    read: ReadLines,
+    candidates: list[Candidate],
+    budget: PageBudget,
+    *,
+    whole: bool,
+) -> tuple[int, dict[Any, list[Line]]]:
+    """How many of the newest candidates the page takes, and the lines read
+    on the way.
+
+    A turn's size is known only once its lines are read or projected, so
+    turns are read newest first in batches, each sized from the bytes per
+    turn of the batch before: a cold thread projects about the turns it
+    sends, not ``limit`` of them, and one heavy newest turn does not shrink
+    every later batch to a single turn. Whole turns only, at least
+    ``min_turns``. A cut that would leave fewer than ``min_turns`` behind
+    takes them too, unless they alone pass the budget: a straggler page too
+    short to fill the screen it lands on leaves a gap above the transcript,
+    but a second budget's worth on the first page costs every open of the
+    thread.
+    """
+    n = len(candidates)
+    floor = min(budget.min_turns, n)
+    got: dict[Any, list[Line]] = {}
+    taken = total = 0
+    want = floor
+    while taken < n:
+        batch = candidates[n - want : n - taken]
+        got |= await read(batch)
+        batch_bytes = 0
+        for ti, _ in reversed(batch):
+            size = _wire_bytes(got[ti])
+            if taken >= floor and total + size > budget.max_bytes:
+                return await _take_small_remainder(candidates, taken, budget, got, read, whole)
+            total += size
+            batch_bytes += size
+            taken += 1
+        room = budget.max_bytes - total
+        if taken < n and taken >= floor and room <= 0:
+            return await _take_small_remainder(candidates, taken, budget, got, read, whole)
+        want = min(n, taken + max(1, room // max(batch_bytes // len(batch), 1)))
+    return taken, got
+
+
+async def _take_small_remainder(
+    candidates: list[Candidate],
+    taken: int,
+    budget: PageBudget,
+    got: dict[Any, list[Line]],
+    read: ReadLines,
+    whole: bool,
+) -> tuple[int, dict[Any, list[Line]]]:
+    """The page cut at ``taken``, or every candidate when they are the whole
+    range and what the cut would leave behind is fewer than ``min_turns`` and
+    fits the budget on its own."""
+    left = candidates[: len(candidates) - taken]
+    if not whole or not 0 < len(left) < budget.min_turns:
+        return taken, got
+    got |= await read([p for p in left if p[0] not in got])
+    if sum(_wire_bytes(got[ti]) for ti, _ in left) > budget.max_bytes:
+        return taken, got
+    return len(candidates), got
 
 
 async def _branch(

@@ -8,6 +8,7 @@ import NetworkBanner from '@/components/NetworkBanner/NetworkBanner';
 import { StaleBuildBoundary } from '@/components/StaleBuildBoundary';
 import { lazyWithMotion, preloadableLazy } from '@/lib/lazyWithMotion';
 import type { AppSection } from '@/lib/appRoutes';
+import { whenIdle } from '@/lib/whenIdle';
 
 // Chunk thunks shared by the lazy components and preloadRouteChunk — import()
 // is deduped by the module system, so a preload and the lazy mount share one
@@ -78,23 +79,17 @@ function useWarmSections(): void {
   useEffect(() => {
     let cancelled = false;
     let cancelWait = () => {};
-    const whenIdle = (run: () => void) => {
-      if (typeof window.requestIdleCallback === 'function') {
-        const id = window.requestIdleCallback(run, { timeout: WARM_IDLE_TIMEOUT_MS });
-        cancelWait = () => window.cancelIdleCallback(id);
-      } else {
-        const id = window.setTimeout(run, WARM_IDLE_TIMEOUT_MS);
-        cancelWait = () => window.clearTimeout(id);
-      }
+    const idle = (run: () => void) => {
+      cancelWait = whenIdle(run, { timeout: WARM_IDLE_TIMEOUT_MS, fallbackMs: WARM_IDLE_TIMEOUT_MS });
     };
     const warm = (i: number) => {
       if (cancelled || i >= WARM_ORDER.length) return;
       // A failed warm is the mount's to retry (see preloadRouteChunk).
       void routePreloads[WARM_ORDER[i]]()
         .catch(() => {})
-        .then(() => whenIdle(() => warm(i + 1)));
+        .then(() => idle(() => warm(i + 1)));
     };
-    whenIdle(() => warm(0));
+    idle(() => warm(0));
     return () => {
       cancelled = true;
       cancelWait();
