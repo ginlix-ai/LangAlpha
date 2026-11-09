@@ -227,6 +227,16 @@ async def get_feedback_for_turn(
             return await cur.fetchone()
 
 
+async def get_feedback_by_id(conversation_feedback_id: str) -> dict | None:
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT * FROM conversation_feedback WHERE conversation_feedback_id = %s",
+                (conversation_feedback_id,),
+            )
+            return await cur.fetchone()
+
+
 # Each update below is guarded on the report id: a rating removed, or changed
 # to a thumbs-up, while its report was being sent no longer stands for that
 # report, and finds nothing to update.

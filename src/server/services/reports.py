@@ -25,6 +25,7 @@ from uuid import UUID, uuid5
 from pydantic import BaseModel, Field
 
 from src.config.settings import AUTH_SERVICE_URL, HOST_MODE
+from src.observability.langsmith_feedback import trace_url
 from src.server.models.report import (
     PlatformStatus,
     ReportClient,
@@ -110,41 +111,10 @@ async def _failed_run(thread_id: str, run_id: Optional[UUID]) -> Optional[dict[s
     return run if run and run.get("status") == "error" else None
 
 
-async def trace_url(run_id: Optional[str]) -> Optional[str]:
-    """The LangSmith page of a turn's trace. A turn's run id is its trace id.
-
-    None when tracing is off, since there is no trace to open, or when
-    LangSmith cannot be asked which project and organization it is in.
-    """
-    if not run_id:
-        return None
-    try:
-        from langsmith import utils as ls_utils
-
-        if not ls_utils.tracing_is_enabled():
-            return None
-        project, tenant, host = await asyncio.wait_for(
-            asyncio.to_thread(_trace_project), timeout=5
-        )
-        return f"{host}/o/{tenant}/projects/p/{project}/r/{run_id}?trace_id={run_id}"
-    except Exception:
-        logger.warning("No LangSmith trace link for run %s", run_id, exc_info=True)
-        return None
-
-
-def _trace_project() -> tuple[str, str, str]:
-    from langsmith import Client
-    from langsmith import utils as ls_utils
-
-    client = Client()
-    project = client.read_project(project_name=ls_utils.get_tracer_project())
-    return str(project.id), str(project.tenant_id), client._host_url
-
-
-async def forward_report(report: ReportCreate, *, user_id: str) -> PlatformResult:
-    """A report from the report dialog. The caller has checked that the user
-    owns ``report.thread_id``. A failed turn's report links its run's trace and
-    Sentry issues."""
+async def build_report(report: ReportCreate, *, user_id: str) -> PlatformReport:
+    """A report from the report dialog, as the platform takes it. The caller
+    has checked that the user owns ``report.thread_id``. A failed turn's
+    report links its run's trace and Sentry issues."""
     from src.observability.sentry import sentry_issues_url
 
     thread_id = str(report.thread_id) if report.thread_id else None
@@ -156,23 +126,21 @@ async def forward_report(report: ReportCreate, *, user_id: str) -> PlatformResul
     )
     run_id = str(run["conversation_response_id"]) if run else None
     error = report.error
-    return await _post_report(
-        PlatformReport(
-            report_id=str(report.report_id),
-            event=report.event,
-            source=report.source,
-            user_id=user_id,
-            client=report.client,
-            workspace_id=workspace_id,
-            thread_id=thread_id,
-            run_id=run_id,
-            turn_index=run.get("turn_index") if run else None,
-            category=report.category,
-            user_note=_scrub(report.user_note),
-            error=error.model_copy(update={"message": _scrub(error.message)}) if error else None,
-            trace_url=await trace_url(run_id),
-            sentry_url=sentry_issues_url(run_id),
-        )
+    return PlatformReport(
+        report_id=str(report.report_id),
+        event=report.event,
+        source=report.source,
+        user_id=user_id,
+        client=report.client,
+        workspace_id=workspace_id,
+        thread_id=thread_id,
+        run_id=run_id,
+        turn_index=run.get("turn_index") if run else None,
+        category=report.category,
+        user_note=_scrub(report.user_note),
+        error=error.model_copy(update={"message": _scrub(error.message)}) if error else None,
+        trace_url=await trace_url(run_id),
+        sentry_url=sentry_issues_url(run_id),
     )
 
 
@@ -245,7 +213,7 @@ async def _post_thumbs(
     human_review: bool,
     client: Optional[ReportClient],
 ) -> PlatformResult:
-    return await _post_report(
+    return await post_report(
         PlatformReport(
             report_id=report_id,
             event="refund_review" if human_review else "user_report",
@@ -299,7 +267,7 @@ async def _withdraw(report_id: str, user_id: str) -> PlatformResult:
 # ==================== Transport ====================
 
 
-async def _post_report(report: PlatformReport) -> PlatformResult:
+async def post_report(report: PlatformReport) -> PlatformResult:
     result = await _post("/api/auth/reports", report.model_dump(mode="json"), report.report_id)
     if result.status == "not_found":
         # Creating a report has nothing to find: the platform lacks the route.

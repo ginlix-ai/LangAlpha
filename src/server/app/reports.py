@@ -5,12 +5,18 @@ See ``src/server/services/reports.py`` for what a report carries.
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.server.models.report import ReportCreate
-from src.server.services.reports import PlatformResult, forward_report, reports_enabled
+from src.observability.langsmith_feedback import flag_report
+from src.server.services.reports import (
+    PlatformResult,
+    build_report,
+    post_report,
+    reports_enabled,
+)
 from src.server.utils import api as auth_api
 from src.server.utils.api import CurrentUserId
 
@@ -32,20 +38,32 @@ async def get_reports_config(_user_id: CurrentUserId):
 
 
 @router.post("", response_model=ReportAccepted, status_code=202)
-async def create_report(body: ReportCreate, user_id: CurrentUserId):
+async def create_report(
+    body: ReportCreate, user_id: CurrentUserId, background: BackgroundTasks
+):
     """Send a report. A retry with the same ``report_id`` is not posted twice.
 
     429 when the user has sent too many, 503 when it could not be posted now;
     both carry ``Retry-After`` when the platform gave one, and a retry keeps
-    the ``report_id``.
+    the ``report_id``. A failed turn's report also marks its run in
+    LangSmith once the team has it.
     """
     if not reports_enabled():
         raise HTTPException(status_code=404, detail="Reports are not enabled")
     if body.thread_id:
         await auth_api.require_thread_owner(str(body.thread_id), user_id)
 
-    result = await forward_report(body, user_id=user_id)
+    report = await build_report(body, user_id=user_id)
+    result = await post_report(report)
     if result.ok:
+        if report.run_id:
+            background.add_task(
+                flag_report,
+                report_id=report.report_id,
+                run_id=report.run_id,
+                error_type=report.error.type if report.error else None,
+                note=report.user_note,
+            )
         return ReportAccepted(report_id=str(body.report_id), status=result.status)
     return report_refusal(result)
 

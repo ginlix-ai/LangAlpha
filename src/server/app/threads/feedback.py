@@ -1,15 +1,19 @@
 """Per-turn user feedback: submit, list, remove, and the report a thumbs-down
 sends to the team, which lives as long as the thumbs-down (add to it while it
-stands; removing the rating, or changing it to a thumbs-up, withdraws it)."""
+stands; removing the rating, or changing it to a thumbs-up, withdraws it).
+Every rating is also kept as feedback on its run in LangSmith, after the
+response (``observability.langsmith_feedback``)."""
 
+import asyncio
 from typing import Any, Awaitable, Optional
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 
 # require_thread_owner is called through the module (auth_api.…) so a single
 # definition-site patch governs every route — a consumer-site patch that stops
 # intercepting after a move would silently bypass auth in tests.
+from src.observability.langsmith_feedback import mirror_rating, remove_rating, tracing_enabled
 from src.server.utils import api as auth_api
 from src.server.utils.api import (
     CurrentUserId,
@@ -37,6 +41,7 @@ from src.server.database.conversation import (
 )
 from src.server.database.conversation.feedback import (
     add_feedback_follow_up,
+    get_feedback_by_id,
     get_feedback_for_turn,
     mark_feedback_reported,
     request_feedback_review,
@@ -90,6 +95,19 @@ async def _send_report(
     return sent, marked
 
 
+async def _sync_langsmith(conversation_feedback_id: str) -> None:
+    """Write the rating as it now stands to LangSmith, or remove it there.
+    Read again after the response, so a request that lost a race with another
+    does not write its stale copy over the newer one."""
+    if not tracing_enabled():
+        return
+    row = await get_feedback_by_id(conversation_feedback_id)
+    if row is None:
+        await asyncio.to_thread(remove_rating, conversation_feedback_id)
+    else:
+        await asyncio.to_thread(mirror_rating, row)
+
+
 async def _kept(update: Awaitable[Optional[dict[str, Any]]], rating: ThumbsDown) -> dict[str, Any]:
     """Record what the platform just took on the rating. When the rating no
     longer stands for that report, take the report back and answer 409."""
@@ -124,6 +142,7 @@ async def submit_feedback(
     thread_id: str,
     request: FeedbackRequest,
     x_user_id: CurrentUserId,
+    background: BackgroundTasks,
 ):
     """Submit or update feedback (thumbs up/down) for a response. A
     thumbs-down is also sent to the team as a report; a thumbs-up over one
@@ -173,6 +192,7 @@ async def submit_feedback(
                         request_feedback_review(str(result["conversation_feedback_id"]), rating.report_id),
                         rating,
                     )
+        background.add_task(_sync_langsmith, str(result["conversation_feedback_id"]))
         return _response(result, request.turn_index, report_status)
     except HTTPException:
         raise
@@ -186,6 +206,7 @@ async def follow_up_feedback(
     thread_id: str,
     request: FeedbackFollowUpRequest,
     x_user_id: CurrentUserId,
+    background: BackgroundTasks,
 ):
     """Add to the report a thumbs-down sent: a human review asked for, a note
     posted under it, or with neither, the report sent again if the team never
@@ -225,6 +246,7 @@ async def follow_up_feedback(
             add_feedback_follow_up(feedback_id, rating.report_id, note_id, note), rating
         )
 
+    background.add_task(_sync_langsmith, feedback_id)
     return _response(row, request.turn_index, "accepted")
 
 
@@ -247,6 +269,7 @@ async def remove_feedback(
     thread_id: str,
     turn_index: int,
     x_user_id: CurrentUserId,
+    background: BackgroundTasks,
 ):
     """Remove feedback for a specific response. Query param: ?turn_index=N
 
@@ -261,6 +284,7 @@ async def remove_feedback(
         if refused := await _withdraw_report(row, thread_id, turn_index):
             return refused
         await delete_feedback(thread_id, turn_index, x_user_id)
+        background.add_task(_sync_langsmith, str(row["conversation_feedback_id"]))
         return {"status": "deleted"}
     except HTTPException:
         raise
