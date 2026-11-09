@@ -141,6 +141,20 @@ export function searchableSettings(desktop: boolean): SettingEntry[] {
   return ENTRIES.filter((entry) => (desktop || !entry.desktopOnly) && sectionShown(entry.section));
 }
 
+/**
+ * The words a setting is found by: its name, what it does, its aliases and the
+ * section it sits in. One list for every search over settings, so the page's
+ * rail and the command palette find the same setting for the same words.
+ */
+export function settingSearchText(entry: SettingEntry, t: (key: string) => string): string {
+  return [
+    t(entry.labelKey),
+    entry.descKey ? t(entry.descKey) : '',
+    ...(entry.alsoKeys ?? []).map((key) => t(key)),
+    t(SECTIONS[entry.section].labelKey),
+  ].join(' ');
+}
+
 function asSection(param: string | null): Section | null {
   // The page before the regroup called the profile tab `userInfo`.
   if (param === 'userInfo') return 'account';
