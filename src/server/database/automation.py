@@ -34,7 +34,7 @@ AUTOMATION_COLUMNS = """
     trigger_type, cron_expression, timezone, trigger_config,
     next_run_at, last_run_at,
     instruction, workspace_id, llm_model, additional_context,
-    thread_strategy, conversation_thread_id,
+    thread_strategy, conversation_thread_id, bot_id,
     status, max_failures, failure_count, disable_reason,
     delivery_config, metadata,
     created_at, updated_at
@@ -153,6 +153,7 @@ async def create_automation(
     additional_context: Optional[List[Dict[str, Any]]] = None,
     thread_strategy: str = "new",
     conversation_thread_id: Optional[str] = None,
+    bot_id: Optional[str] = None,
     max_failures: int = 3,
     delivery_config: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -181,7 +182,7 @@ async def create_automation(
                             trigger_type, cron_expression, timezone, trigger_config,
                             next_run_at,
                             instruction, workspace_id, llm_model, additional_context,
-                            thread_strategy, conversation_thread_id,
+                            thread_strategy, conversation_thread_id, bot_id,
                             status, max_failures, failure_count,
                             delivery_config, metadata,
                             created_at, updated_at
@@ -191,7 +192,7 @@ async def create_automation(
                             %s, %s, %s, %s,
                             %s,
                             %s, %s, %s, %s,
-                            %s, %s,
+                            %s, %s, %s,
                             'active', %s, 0,
                             %s, %s,
                             NOW(), NOW()
@@ -204,7 +205,7 @@ async def create_automation(
                         next_run_at,
                         instruction, workspace_id, llm_model,
                         Json(additional_context) if additional_context else None,
-                        thread_strategy, conversation_thread_id,
+                        thread_strategy, conversation_thread_id, bot_id,
                         max_failures,
                         Json(delivery_config or {}),
                         Json(metadata or {}),
@@ -417,7 +418,7 @@ async def update_automation(
     """
     nullable_fields = {
         "next_run_at", "last_run_at", "conversation_thread_id", "disable_reason",
-        "description", "llm_model",
+        "description", "llm_model", "bot_id",
     }
     builder = UpdateQueryBuilder()
 
@@ -425,7 +426,7 @@ async def update_automation(
     for field in [
         "name", "description", "cron_expression", "timezone",
         "instruction", "workspace_id", "llm_model",
-        "thread_strategy", "conversation_thread_id",
+        "thread_strategy", "conversation_thread_id", "bot_id",
         "status", "max_failures", "failure_count", "disable_reason",
         "next_run_at", "last_run_at",
     ]:

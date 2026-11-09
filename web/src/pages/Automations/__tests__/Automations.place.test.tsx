@@ -12,6 +12,11 @@ vi.mock('@/hooks/useWorkspaces', () => ({
   useWorkspaces: () => ({ data: { workspaces: [{ workspace_id: 'ws-1', name: 'Research' }] } }),
 }));
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
+// The more-options fold offers the chosen workspace's bots; these tests never
+// pick one.
+vi.mock('@/hooks/useBots', () => ({
+  useBots: () => ({ data: { bots: [], max_bots: 20 }, isLoading: false }),
+}));
 // Home's request, which every reader of Home's query shares.
 const home = vi.hoisted(() => ({ getHomeWorkspace: vi.fn() }));
 vi.mock('@/pages/ChatAgent/utils/api/workspaces', async (importOriginal) => ({
@@ -65,6 +70,7 @@ const IN_HOME: Automation = {
   llm_model: null,
   thread_strategy: 'new',
   conversation_thread_id: null,
+  bot_id: null,
   status: 'active',
   max_failures: 3,
   failure_count: 0,

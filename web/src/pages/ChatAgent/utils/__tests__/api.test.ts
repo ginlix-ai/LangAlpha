@@ -154,6 +154,16 @@ describe('ChatAgent API utilities', () => {
       expect(body).toEqual({ first_query: '', title: 'Getting started', workspace_id: 'ws-1' });
     });
 
+    it('binds the thread to a bot when one is named', async () => {
+      mockPost.mockResolvedValue({ data: { thread_id: 't-1' } });
+
+      await createThreadWithTitle({ workspaceId: 'ws-1', firstQuery: '', title: 'Scout', botId: 'bot-1' });
+      expect(mockPost.mock.calls[0][0]).toBe('/api/v1/threads');
+      expect(mockPost.mock.calls[0][1]).toEqual({
+        first_query: '', title: 'Scout', workspace_id: 'ws-1', bot_id: 'bot-1',
+      });
+    });
+
     it("stores the thread's own effort and fast mode only when picked", async () => {
       mockPost.mockResolvedValue({ data: { thread_id: 't-1' } });
 

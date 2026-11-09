@@ -512,10 +512,25 @@ class AutomationCreate(_ScheduleFields):
         None, description="Additional context items (skills, images, etc.)"
     )
 
+    # Identity the runs speak as. A bot-owned automation defaults to
+    # 'continue' in the bot's private thread; without one the legacy
+    # 'new'-per-run behavior stays.
+    bot_id: Optional[UUID] = Field(
+        None,
+        description=(
+            "The bot each run speaks as; must belong to the automation's "
+            "workspace. Omit for the workspace's default analyst."
+        ),
+    )
+
     # Thread strategy
     thread_strategy: Literal["new", "continue"] = Field(
         default="new",
-        description="'new' creates a fresh thread each run, 'continue' reuses a pinned thread",
+        description=(
+            "'new' creates a fresh thread each run, 'continue' reuses a pinned "
+            "thread. An omitted value on a bot-owned automation means "
+            "'continue' (the bot's own thread); naming 'new' keeps per-run."
+        ),
     )
     conversation_thread_id: Optional[UUID] = Field(
         None, description="Pinned thread ID for 'continue' strategy"
@@ -569,6 +584,9 @@ class AutomationUpdate(_ScheduleFields):
     workspace_id: Optional[UUID] = None
     llm_model: Optional[str] = Field(None, max_length=100)
     additional_context: Optional[List[Dict[str, Any]]] = None
+
+    # Identity the runs speak as.
+    bot_id: Optional[UUID] = None
 
     # Thread strategy
     thread_strategy: Optional[Literal["new", "continue"]] = None
@@ -672,6 +690,7 @@ class AutomationResponse(BaseModel):
 
     thread_strategy: str
     conversation_thread_id: Optional[UUID] = None
+    bot_id: Optional[UUID] = None
 
     status: str
     max_failures: int

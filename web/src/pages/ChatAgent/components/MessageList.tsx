@@ -9,8 +9,9 @@ import { MessageBubble } from './messageList/MessageBubble';
 import { TurnFold } from './messageList/TurnFold';
 import { projectMessageContent, visibleProjection } from './messageList/contentProjection';
 import { useMessageActions } from './messageList/MessageActionsContext';
-import { isReportRow, opensTurn } from './messageList/messagePredicates';
+import { isBotMessageRow, isReportRow, opensTurn } from './messageList/messagePredicates';
 import { ReportRow, type ReportProvenance } from './messageList/ReportRow';
+import { BotMessageRow, type BotMessageProvenance } from './messageList/BotMessageRow';
 import { HandoffPlacesContext, placeHandoffs, samePlaces } from './analystHandoff/reportLinks';
 import {
   computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, turnStartTimes, type ProjectedMessage,
@@ -384,6 +385,18 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
           return wakeup
             ? <WakeupRow key={message.id as string} wakeup={wakeup} />
             : <NotificationDivider key={message.id as string} message={message} />;
+        }
+        if (isBotMessageRow(message)) {
+          const prev = visible[i - 1]?.message;
+          return (
+            <BotMessageRow
+              key={message.id as string}
+              id={message.id as string}
+              provenance={message.provenance as BotMessageProvenance}
+              content={(message.content as string) ?? ''}
+              together={!!prev && isBotMessageRow(prev)}
+            />
+          );
         }
         if (isReportRow(message)) {
           const prev = visible[i - 1]?.message;

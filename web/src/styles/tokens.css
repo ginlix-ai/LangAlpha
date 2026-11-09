@@ -343,6 +343,24 @@ html {
   --sidebar-indicator: 28 78% 60%;
 }
 
+/* ---------- BotMark palette ----------
+   A bot's identity has to read as the same mark in both themes, so these
+   solids are declared once, outside the theme overrides. Each is dark enough
+   that the white glyph clears 4.5:1 on it at the 16–36px sizes the mark is
+   drawn at (verified: 4.99–7.58:1); the light theme deliberately does not
+   lighten them, since the point is the bot, not the theme's accent. */
+:root {
+  --color-bot-1: #B45309; /* amber */
+  --color-bot-2: #0F766E; /* teal */
+  --color-bot-3: #1D4ED8; /* blue */
+  --color-bot-4: #6D28D9; /* violet */
+  --color-bot-5: #BE123C; /* rose */
+  --color-bot-6: #4D7C0F; /* moss */
+  --color-bot-7: #9A3412; /* clay */
+  --color-bot-8: #475569; /* slate */
+  --color-bot-glyph: #FFFFFF;
+}
+
 /* ---------- Light theme overrides ---------- */
 /* Notion-paper: pure-white page, white cards separated by neutral hairline
    borders (not tonal fills), near-neutral grays for text. The amber darkens a

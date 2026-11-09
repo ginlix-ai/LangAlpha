@@ -65,6 +65,7 @@ function automation(trigger: TriggerType, status: AutomationStatus, last: Execut
     llm_model: null,
     thread_strategy: 'new',
     conversation_thread_id: null,
+    bot_id: null,
     status,
     max_failures: 3,
     failure_count: 0,

@@ -117,9 +117,30 @@ async def create_thread_endpoint(
             x_user_id, byok=is_byok or has_oauth, surface=request.platform
         )
 
+    # The bot the thread answers as: the caller's live bot of this place.
+    from src.server.database import bots as bot_db
+    from src.server.database.home_workspace import get_home_workspace_id
+
+    turn_bot = None
+    if request.bot_id:
+        turn_bot = await bot_db.get_bot_for_user(x_user_id, request.bot_id)
+        target_ws = (
+            str(workspace["workspace_id"])
+            if workspace is not None
+            else get_home_workspace_id(x_user_id)
+        )
+        if turn_bot is None or str(turn_bot["workspace_id"]) != target_ws:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        await assert_reaches(principal, workspace_id=target_ws)
+        if turn_bot.get("status") != "active":
+            raise HTTPException(
+                status_code=409,
+                detail="This bot is paused. Resume it in Bots before chatting.",
+            )
+
     # Decided where the message path decides it, so the thread is born in the
     # workspace its runs will actually use.
-    route = turn_route(x_user_id, workspace)
+    route = turn_route(x_user_id, workspace, turn_bot)
     await assert_reaches(principal, workspace_id=route.workspace_id)
     await route.bind(x_user_id, workspace)
     workspace_id = route.workspace_id
@@ -148,6 +169,11 @@ async def create_thread_endpoint(
         logger.exception(f"Error pre-creating thread: {e}")
         raise HTTPException(status_code=500, detail="Failed to create thread")
 
+    if turn_bot is not None:
+        # The thread is the bot's from birth; the resolver would otherwise
+        # answer the first turn as the place's default.
+        await bot_db.bind_thread_bot(thread_id, turn_bot["bot_id"], force=True)
+
     title_task = None if named_title is not None else schedule_title_generation(
         thread_id=thread_id,
         user_id=x_user_id,
@@ -158,6 +184,7 @@ async def create_thread_endpoint(
 
     payload = ThreadCreateResponse(
         thread_id=thread_id,
+        bot_id=str(turn_bot["bot_id"]) if turn_bot is not None else None,
         workspace_id=str(workspace_id),
         thread_index=row["thread_index"],
         title=title_stamp,

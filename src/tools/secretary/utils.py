@@ -741,3 +741,41 @@ async def _runs_to_read(thread_id: str, turns: int = 1) -> list[dict[str, Any]]:
         if run["main_text"]:
             return [run, newest]
     return [newest]
+
+
+async def latest_run_reply(
+    thread_id: str, *, run_id: str | None = None
+) -> dict[str, Any]:
+    """A settled run's reply text, without the run label block.
+
+    A room member's answer is what it wrote in its own thread; the room log
+    takes that text, not the labeled rendering ``extract_text_from_thread``
+    produces for reading threads. Empty text means the run produced none
+    (a tool-only turn), which the caller reads as a missed slot rather than
+    as an empty message. With ``run_id`` the text is read from that run's own
+    response (a later automation/wakeup on the same thread must not answer a
+    slot); a row that has rolled out of the recent window falls back to the
+    newest, which is what the room would have read before.
+    """
+    if run_id:
+        from src.server.database.conversation.responses import (
+            get_recent_responses_for_thread,
+        )
+
+        window = await _with_main_text(
+            thread_id, await get_recent_responses_for_thread(thread_id, limit=8)
+        )
+        for run in window:
+            if str(run.get("conversation_response_id")) == str(run_id):
+                return {
+                    "text": str(run.get("main_text") or ""),
+                    "status": str(run.get("status") or ""),
+                }
+    entry = await _runs_to_read(thread_id, 1)
+    if not entry:
+        return {"text": "", "status": "empty"}
+    newest = entry[-1]
+    return {
+        "text": str(newest.get("main_text") or ""),
+        "status": str(newest.get("status") or ""),
+    }

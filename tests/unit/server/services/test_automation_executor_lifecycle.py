@@ -909,3 +909,18 @@ async def test_a_chief_of_staff_automation_runs_in_home():
     assert turn["request"].workspace_id == _HOME
     assert turn["route"] == TurnRoute(_HOME, "chief_of_staff")
     manager.ensure_home_bound.assert_awaited_once_with(_USER)
+
+
+@pytest.mark.asyncio
+async def test_a_firing_whose_bot_is_unavailable_is_skipped_not_run_as_analyst():
+    """A paused/deleted/moved bot must not spend the user's credit as another
+    identity: the firing is skipped with a reason the history shows."""
+    automation = _automation(bot_id="b-1")
+    with _firing([_streams]) as fx, patch(
+        f"{_MOD}._automation_bot", AsyncMock(return_value=None)
+    ):
+        await AutomationExecutor().execute(automation, _EXEC)
+
+    assert fx.astream.call_count == 0
+    assert _settled(fx)["to"] == "skipped"
+    assert _settled(fx)["skip_reason"] == "bot_unavailable"

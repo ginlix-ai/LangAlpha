@@ -92,8 +92,9 @@ export function MessageProvenanceLabel({ provenance, readOnly, className }: Mess
     case 'analyst_report':
     case 'task_report':
     case 'command_report':
-      // The list draws a report as a line of its own (`ReportRow`), never as
-      // a caption over a bubble.
+    case 'bot_message':
+      // The list draws these as rows of their own (`ReportRow`,
+      // `BotMessageRow`), never as a caption over a bubble.
       return null;
   }
   // A long name truncates; the whole caption is a hover away.

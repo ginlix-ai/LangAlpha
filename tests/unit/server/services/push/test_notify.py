@@ -453,3 +453,11 @@ def test_the_executor_is_registered_for_push():
 
     notify.register_outbox_executors()
     assert hook_outbox._EXECUTORS["push"] is notify.execute_push
+
+
+def test_a_synthetic_turn_never_pushes():
+    """Room slots and bot-to-bot deliveries happen without the user; a round
+    of twelve members must not be twelve notifications."""
+    assert not notify.push_owed("completed", "thread-1", {"suppress_push": True})
+    assert not notify.push_owed("error", "thread-1", {"suppress_push": True})
+    assert not notify.push_owed("interrupted", "thread-1", {"suppress_push": True})

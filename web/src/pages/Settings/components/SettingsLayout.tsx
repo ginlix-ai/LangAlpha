@@ -11,11 +11,14 @@ import { cn } from '@/lib/utils';
  * than a page of differently drawn boxes.
  */
 export function SettingsGroup({
+  id,
   title,
   description,
   action,
   children,
 }: {
+  /** The anchor the settings search jumps to, when the group is the thing it names. */
+  id?: string;
   title?: string;
   description?: ReactNode;
   /** A control for the whole group, level with its title. */
@@ -24,7 +27,7 @@ export function SettingsGroup({
 }) {
   const titleId = useId();
   return (
-    <section className="settings-group" aria-labelledby={title ? titleId : undefined}>
+    <section id={id} className="settings-group" aria-labelledby={title ? titleId : undefined}>
       {(title || description || action) && (
         <div className="settings-group-head">
           <div className="min-w-0 flex-[1_1_220px]">

@@ -8,7 +8,7 @@ import { ownerOfToolCall } from '../toolCallOwner';
 import { isTaskAgentId } from '../../utils/agentId';
 import { opensTurn } from '../../components/messageList/messagePredicates';
 import { deriveTaskSegment, applyTaskSegment, applyLaunchReply } from '../subagents/taskSegmentBuilder';
-import { reportRow, senderProvenance, type SenderMetadata } from '../provenance';
+import { botMessageRow, botMessageSourceFromMetadata, parseSenderFrame, reportRow, senderProvenance, type SenderMetadata } from '../provenance';
 import { deliveredEntryRow, steeringDeliveredEntries } from '../stream/steeringDelivery';
 import type { ReportSource } from '@/types/api';
 import { isDeliveredNotice, isDeliveredSteer, type DeliveredSteer } from '@/types/sse';
@@ -31,6 +31,8 @@ interface HistoryEvent {
   metadata?: SenderMetadata & {
     /** On a report-back only: what it reports on. */
     report_source?: ReportSource;
+    /** On a delivered bot-to-bot message: who sent it and why. */
+    bot_message_source?: unknown;
     [key: string]: unknown;
   };
   messages?: Array<Record<string, unknown>>;
@@ -156,6 +158,24 @@ function turnOpenerRow(event: HistoryEvent, pairIndex: number, text: string): Me
     : null;
   if (wake) return { ...wake, isHistory: true };
   if (event.query_type === 'system') {
+    // A bot-to-bot message arrives as a system query too: its framed text is
+    // the sender's words the model reads, drawn as a "Message from …" row.
+    const botSource = botMessageSourceFromMetadata(event.metadata?.bot_message_source);
+    if (botSource) {
+      return botMessageRow(botSource, {
+        id, timestamp, isHistory: true, turnIndex: pairIndex,
+        ...(event.report_run_id ? { runId: event.report_run_id } : {}),
+      }, event.content ?? '') as MessageRecord;
+    }
+    // A row from before the source was stamped still names its sender in the
+    // frame's first line, which is enough to draw the same row.
+    const framed = event.content ? parseSenderFrame(event.content) : null;
+    if (framed) {
+      return botMessageRow(framed.source, {
+        id, timestamp, isHistory: true, turnIndex: pairIndex,
+        ...(event.report_run_id ? { runId: event.report_run_id } : {}),
+      }, event.content) as MessageRecord;
+    }
     const source = event.metadata?.report_source;
     return source ? reportRow(source, {
       id, timestamp, isHistory: true, turnIndex: pairIndex,

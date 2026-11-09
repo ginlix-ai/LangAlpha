@@ -190,6 +190,7 @@ async def astream_ptc_workflow(
     run_metadata: dict | None = None,
     extra_configurable: dict | None = None,
     named_model: NamedModel | None = None,
+    turn_bot: dict | None = None,
     setup_over: asyncio.Event | None = None,
 ):
     """Async generator that streams PTC agent workflow events.
@@ -369,6 +370,22 @@ async def astream_ptc_workflow(
                     initial_query=user_input,
                     row_ensured=comments.row_ensured,
                 )
+            # A thread is one bot's conversation from its first turn. The
+            # resolver stamps a thread it already reads, but a thread this send
+            # just made has no row to read yet, so stamp it here; a failure is
+            # provenance only and must not fail the turn.
+            if turn_bot and thread_id:
+                try:
+                    from src.server.database.bots import bind_thread_bot
+
+                    await bind_thread_bot(thread_id, turn_bot["bot_id"])
+                except Exception:
+                    logger.warning(
+                        "[BOTS] could not stamp new thread %s with bot %s",
+                        thread_id,
+                        turn_bot.get("bot_id"),
+                        exc_info=True,
+                    )
             # /retry builds its attempt with no surface: it runs where the
             # attempt it retries did, under the same rules.
             request, inherits_rules = await retried_on_its_surface(request)
@@ -507,6 +524,7 @@ async def astream_ptc_workflow(
                 is_checkpoint_replay=is_checkpoint_replay,
                 extra_run_metadata={
                     **origin_meta,
+                    **({"suppress_push": True} if request.suppress_push else {}),
                     **carried,
                     **surface_stamp(
                         request,
@@ -743,6 +761,7 @@ async def astream_ptc_workflow(
                 turn_index=run_handle.turn_index,
             ),
             turn_context=turn_context,
+            bot=turn_bot,
             # A port, not a value: the switch can flip mid-turn from any
             # worker, so the agent re-reads the row on every call.
             subagent_switch=partial(read_thread_subagents_allowed, thread_id),

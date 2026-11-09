@@ -21,7 +21,7 @@ _THREAD_COLUMN_NAMES = (
     "conversation_thread_id", "workspace_id", "current_status", "msg_type",
     "thread_index", "title", "platform", "metadata", "is_shared", "is_pinned",
     "archived_at", "llm_model", "subagents_allowed", "reasoning_effort",
-    "fast_mode", "created_at", "updated_at",
+    "fast_mode", "bot_id", "created_at", "updated_at",
 )
 _THREAD_COLUMNS = ", ".join(_THREAD_COLUMN_NAMES)
 # For a query that joins another table under the ``t`` alias.

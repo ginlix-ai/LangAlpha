@@ -82,6 +82,8 @@ def push_owed(status: str, thread_id: str, run_meta: Mapping[str, Any]) -> bool:
     watching thread is the one that pushes, though an analyst waiting on the
     user has no report coming and does push. Not a turn on a chat app, which
     answers the user there."""
+    if run_meta.get("suppress_push"):
+        return False
     if status == "completed" and is_unchanged_quiet(run_meta):
         return False
     dispatcher = run_meta.get(ORIGIN_THREAD_META)

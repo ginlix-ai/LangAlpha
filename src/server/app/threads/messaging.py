@@ -299,6 +299,7 @@ def _is_service_request(raw_request: Request | None) -> bool:
 # a native channel.
 _SERVER_ONLY_FIELDS = (
     "query_type",
+    "suppress_push",
     *ANNOUNCED_KEYS,
     "report_back_ptc_thread_id",
     ORIGIN_THREAD_META,
@@ -321,7 +322,13 @@ def _client_body(request: ChatRequest, raw_request: Request) -> ChatRequest:
     """
     if _is_service_request(raw_request):
         return request
-    cleared = {name: None for name in _SERVER_ONLY_FIELDS if getattr(request, name)}
+    cleared = {}
+    for name in _SERVER_ONLY_FIELDS:
+        value = getattr(request, name, None)
+        if value:
+            # A server-only flag is cleared to False, the type its field
+            # validates; the rest are optional and cleared to null.
+            cleared[name] = False if isinstance(value, bool) else None
     return request.model_copy(update=cleared) if cleared else request
 
 
@@ -557,7 +564,20 @@ async def _handle_send_message(
         # Home. The workspace guard comes first: it pairs with the thread
         # guard above. Home is bound once the admission gates below pass.
         workspace = await requested_workspace(user_id, workspace_id)
-        route = turn_route(user_id, workspace)
+        # The bot the turn runs as: the thread's own identity, else the
+        # place's default (the workspace's analyst, or Home's Chief of Staff).
+        # A legacy thread is stamped here, once, so the bot is a property of
+        # the thread from this turn on; a paused bot is refused here, before
+        # any durable work.
+        from src.server.services.bots.resolver import resolve_turn_bot
+
+        turn_bot = await resolve_turn_bot(
+            user_id,
+            thread_id=thread_id,
+            thread_meta=thread_meta,
+            workspace=workspace,
+        )
+        route = turn_route(user_id, workspace, turn_bot)
         workspace_id = route.workspace_id
 
         # Extract user input
@@ -618,7 +638,10 @@ async def _handle_send_message(
         config = await thread_model.resolve_turn_config(
             user_id,
             thread_id,
-            named=requested_model,
+            # A bot's model is fixed at creation; a client naming a model for
+            # this send still wins, and a backfilled bot has none (None keeps
+            # the thread's own model).
+            named=requested_model or (turn_bot or {}).get("model"),
             held=held_model,
             fall_back=from_service,
             resolve=resolve,
@@ -677,6 +700,7 @@ async def _handle_send_message(
         dispatched=is_dispatch,
         from_server=is_internal,
         named_model=named_model,
+        turn_bot=turn_bot,
         # A report-back summary owes its pair's watch clear, so its finalize
         # must see the pair.
         run_metadata=(

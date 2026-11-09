@@ -178,10 +178,14 @@ export function liveToolLabel(item: ToolActivityItem, t: TFn): string {
 
 /** Past tense, for a settled row: "Read memory", "Activated skill". */
 export function completedToolTitle(item: ToolActivityItem, t: TFn): string {
-  return getCompletedRowTitle(item.toolName || '', item.toolCall, t, { artifact: item.toolCallResult?.artifact, root: item.root });
+  return getCompletedRowTitle(item.toolName || '', item.toolCall, t, {
+    artifact: item.toolCallResult?.artifact,
+    root: item.root,
+    result: item.toolCallResult?.content,
+  });
 }
 
 /** The object a settled row names, rendered as its pill; null when there is none. */
 export function completedToolSummary(item: ToolActivityItem, t: TFn): string | null {
-  return getCompletedSummary(item.toolName || '', item.toolCall, t, item.root);
+  return getCompletedSummary(item.toolName || '', item.toolCall, t, item.root, item.toolCallResult?.content);
 }

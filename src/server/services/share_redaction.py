@@ -41,7 +41,7 @@ _PRIVATE_ARTIFACT_KEYS = (RECEIPT_KEY, "provenance")
 # must not read which of the owner's orders were approved. A report-back's
 # source names the dispatched thread and its workspace.
 _PRIVATE_QUERY_METADATA_KEYS = frozenset(
-    {"workspace_id", "order_decisions", "report_source"}
+    {"workspace_id", "order_decisions", "report_source", "bot_message_source"}
 )
 # A wakeup on an order names the order and, once it settles, the fill. A
 # share keeps each notice's label and kind, which name what fired, and drops

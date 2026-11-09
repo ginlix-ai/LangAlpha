@@ -4,7 +4,7 @@ import {
   FilePlus, FileText, FilePen, FolderSearch, SquareChevronRight, Wrench,
   Newspaper, Brain, User, FileBarChart, Clock, ClipboardList, Zap, Settings, Terminal,
   Sparkles, BookText, BookMarked, BookPlus, PenLine, Eye, Plug, Send, Contact, AlarmClock, Activity,
-  Layers, ArrowUpDown,
+  Layers, ArrowUpDown, Reply,
 } from 'lucide-react';
 import {
   classifyAgentPath, topicFromMemoryKey, type AgentPathInfo, type UserDataEntity,
@@ -115,6 +115,10 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   // Messaging
   send_message:             { displayName: 'Send Message',         i18nKey: 'sendMessage',         icon: Send },
   list_message_targets:     { displayName: 'Message Targets',      i18nKey: 'messageTargets',      icon: Contact },
+  // The bot's own collaboration surface: a message to another bot of its
+  // workspace, and closing an assignment it was given.
+  send_bot_message:         { displayName: 'Message Bot',          i18nKey: 'sendBotMessage',      icon: Send },
+  report_to:                { displayName: 'Report Back',          i18nKey: 'reportTo',            icon: Reply },
 };
 
 // Single source of truth for "what tool name indicates a file
@@ -136,11 +140,129 @@ function classifyFromArgs(toolName: string, args: ToolCallArgs | undefined, root
 
 /**
  * What a title reads beyond the call's own args: the result's artifact, which
- * carries a direct tool's vendor names, and the computer root its paths start with.
+ * carries a direct tool's vendor names, the computer root its paths start
+ * with, and the result's text, which a bot-message call reports its outcome in.
  */
 export interface ToolTitleContext {
   artifact?: unknown;
   root?: string | null;
+  result?: unknown;
+}
+
+/** The two tools a bot uses to write to another bot of its workspace. */
+const BOT_MESSAGE_TOOLS = new Set(['send_bot_message', 'report_to']);
+
+const BOT_MESSAGE_KINDS = new Set(['message', 'request', 'reply', 'report', 'question', 'notice']);
+
+/** A tool result's text, whatever shape the transport handed it over in. */
+function toolResultText(result: unknown): string {
+  if (typeof result === 'string') return result;
+  if (Array.isArray(result)) return result.map(toolResultText).filter(Boolean).join('\n');
+  if (result && typeof result === 'object') {
+    const content = (result as { content?: unknown }).content;
+    if (content !== undefined) return toolResultText(content);
+  }
+  return '';
+}
+
+/** The bot a call addressed, from its args: both tools name it `to` when the
+ *  model passes one (`report_to` names its requester only in its answer). */
+function botMessageTarget(toolName: string, args: ToolCallArgs | undefined, result: string): string {
+  const raw = args?.to ?? args?.assignee;
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  if (toolName !== 'report_to') return '';
+  const match = /^reported to (.+?)(?: \(|$)/i.exec(result.trim());
+  return match ? match[1].trim() : '';
+}
+
+/** The kind the reader is asked for, defaulting as the tool does. */
+function botMessageKind(toolName: string, args: ToolCallArgs | undefined): string {
+  if (toolName === 'report_to') return 'report';
+  const kind = typeof args?.kind === 'string' ? args.kind.trim().toLowerCase() : 'message';
+  return BOT_MESSAGE_KINDS.has(kind) ? kind : 'message';
+}
+
+/**
+ * What the call's own answer says became of it. A refusal names the specific
+ * reason when it can ("already", "failed", "missing"), and a report's own
+ * delivery status rides in its trailing parenthetical: delivered/queued when
+ * the report reached the requester, failed/missing/already when it did not.
+ */
+function botMessageStatus(toolName: string, result: string): string | null {
+  const text = result.trim().toLowerCase();
+  if (!text) return null;
+  if (text.startsWith('refused')) {
+    if (text.includes('already')) return 'already';
+    if (text.includes('no assignment') || text.includes('no longer exists')) return 'missing';
+    if (text.includes('outcome must be')) return 'failed';
+    return 'refused';
+  }
+  if (text.startsWith('queued')) return 'queued';
+  if (text.startsWith('delivered')) return 'delivered';
+  if (toolName === 'report_to' && text.startsWith('reported')) {
+    // "reported to Scout (delivered)" — the parenthetical is the delivery.
+    const status = /\(([a-z]+)\)/.exec(text)?.[1];
+    if (status === 'delivered' || status === 'queued' || status === 'failed'
+      || status === 'missing' || status === 'already' || status === 'refused') {
+      return status;
+    }
+    // "reported (no requester to notify)" / "(the requester bot is gone)":
+    // the report closed the assignment but reached nobody.
+    if (text.includes('no requester') || text.includes('requester bot is gone')
+      || text.includes('missing')) return 'missing';
+    // A report whose own message could not be sent says so after "reported".
+    if (text.includes('refused')) return 'refused';
+    return 'delivered';
+  }
+  return null;
+}
+
+interface BotMessageLabels {
+  /** Present tense, while the call runs. */
+  running: string;
+  /** Past tense, once it settled. */
+  title: string;
+  /** What became of it, as the row's pill; null when the answer did not say. */
+  summary: string | null;
+}
+
+/**
+ * A bot-to-bot call in the words ds-bot's activity row uses: "Messaging Scout ·
+ * request" while it runs, then "Messaged Scout" with what became of it. Null
+ * for every other tool.
+ */
+function botMessageLabels(
+  toolName: string,
+  args: ToolCallArgs | undefined,
+  t?: TFn,
+  result?: unknown,
+): BotMessageLabels | null {
+  if (!BOT_MESSAGE_TOOLS.has(toolName)) return null;
+  const raw = toolResultText(result);
+  const name = botMessageTarget(toolName, args, raw);
+  const kind = botMessageKind(toolName, args);
+  const kindLabel = t ? t(`toolArtifact.botMessage.kind.${kind}`) : kind;
+  // A report names its requester only in its answer, so while it runs it can
+  // say what it is, not who to.
+  const reporting = toolName === 'report_to' && !name;
+  const running = reporting
+    ? (t?.('toolArtifact.botMessage.reporting') ?? 'Reporting back · report')
+    : name
+      ? (t?.('toolArtifact.botMessage.messaging', { name, kind: kindLabel }) ?? `Messaging ${name} · ${kind}`)
+      : (t?.('toolArtifact.botMessage.messagingBot', { kind: kindLabel }) ?? `Messaging another bot · ${kind}`);
+  const title = toolName === 'report_to'
+    ? (name
+        ? (t?.('toolArtifact.botMessage.reported', { name }) ?? `Reported to ${name}`)
+        : (t?.('toolArtifact.botMessage.reportedBack') ?? 'Reported back'))
+    : (name
+        ? (t?.('toolArtifact.botMessage.messaged', { name }) ?? `Messaged ${name}`)
+        : (t?.('toolArtifact.botMessage.messagedBot') ?? 'Messaged another bot'));
+  const status = botMessageStatus(toolName, raw);
+  return {
+    running,
+    title,
+    summary: status ? (t?.(`toolArtifact.botMessage.${status}`) ?? status) : null,
+  };
 }
 
 export function getDisplayName(
@@ -429,13 +551,21 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
 }
 
 /**
- * `_t` (optional, currently unused) is accepted for parity with sibling
- * helpers — the summary is a bare noun (topic / slug / skill name) that
- * doesn't need localization today, but the param keeps call sites symmetric
- * and reserves space for future translated variants.
+ * The meaningful object a settled row names as its pill (a topic, slug, skill
+ * name, or what became of a bot message). `result` is the call's own answer,
+ * which a bot-message call reports its outcome in; every other summary comes
+ * from the args, and `t` localizes the bot-message pill.
  */
-export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, _t?: TFn, root?: string | null): string | null {
+export function getCompletedSummary(
+  toolName: string,
+  toolCall: ToolCall | undefined,
+  t?: TFn,
+  root?: string | null,
+  result?: unknown,
+): string | null {
   const args = toolCall?.args;
+  const botTalk = botMessageLabels(toolName, args, t, result);
+  if (botTalk) return botTalk.summary;
   if (!args) return null;
   // Path-aware summaries: emit just the meaningful object (skill name, topic,
   // memo slug). The verb is carried by getDisplayName / row label.
@@ -498,6 +628,8 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
  */
 export function getActiveLabel(toolName: string, toolCall: ToolCall | undefined, t?: TFn, root?: string | null): string {
   const args = toolCall?.args;
+  const botTalk = botMessageLabels(toolName, args, t);
+  if (botTalk) return botTalk.running;
   const info = classifyFromArgs(toolName, args, root);
   if (info && info.kind !== 'file') {
     // getInProgressText already produces the full phrase for path-aware paths.
@@ -524,6 +656,8 @@ export function getCompletedRowTitle(
   context: ToolTitleContext = {},
 ): string {
   const args = toolCall?.args;
+  const botTalk = botMessageLabels(toolName, args, t, context.result);
+  if (botTalk) return botTalk.title;
   const info = classifyFromArgs(toolName, args, context.root);
   if (info) {
     if (info.kind === 'skill' && toolName === 'Read') {

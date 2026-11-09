@@ -1,0 +1,570 @@
+/* Rooms: a list of rooms beside the open one, each room a member strip, a
+   transcript, the round's live line and the composer. The page fills its route
+   column (never a viewport unit) and only the log scrolls, so the composer
+   stays put while the discussion runs. */
+.rooms-page {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-page);
+  color: var(--color-text-primary);
+}
+
+.rooms-page__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px clamp(16px, 3vw, 28px);
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.rooms-page__title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  color: var(--color-text-primary);
+}
+
+.rooms-page__title h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rooms-page__subtitle {
+  font-size: 12.5px;
+  color: var(--color-text-tertiary);
+  min-width: 0;
+}
+
+.rooms-page__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rooms-page__workspace {
+  width: 180px;
+}
+
+.rooms-page__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ── List ─────────────────────────────────────────────────────────────── */
+
+.rooms-list {
+  flex: none;
+  width: 264px;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border-right: 1px solid var(--color-border-muted);
+}
+
+.rooms-list__row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+
+.rooms-list__row:hover {
+  background: var(--color-bg-card-hover);
+}
+
+.rooms-list__row.is-active {
+  background: var(--color-bg-card);
+  border-color: var(--color-border-muted);
+}
+
+.rooms-list__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.rooms-list__name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rooms-list__meta {
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+}
+
+.rooms-list__placeholder,
+.rooms-list__empty {
+  padding: 16px 8px;
+  font-size: 12.5px;
+  color: var(--color-text-tertiary);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rooms-list__empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.rooms-list__empty-body {
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Detail / panel ───────────────────────────────────────────────────── */
+
+.rooms-detail {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rooms-select {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.rooms-select__title {
+  margin: 6px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.rooms-select__body {
+  margin: 0;
+  font-size: 12.5px;
+  max-width: 360px;
+}
+
+.rooms-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rooms-panel__placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+}
+
+.rooms-panel__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.rooms-panel__back {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex: none;
+}
+
+.rooms-panel__back:hover {
+  background: var(--color-bg-card-hover);
+}
+
+.rooms-panel__heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rooms-panel__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rooms-panel__sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+}
+
+.rooms-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rooms-live__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+
+.rooms-live.is-live .rooms-live__dot {
+  background: var(--color-success);
+}
+
+.rooms-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.rooms-panel__responder {
+  width: 168px;
+}
+
+.rooms-panel__members {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.rooms-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-card);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.rooms-member[data-paused] {
+  opacity: 0.65;
+}
+
+.rooms-member__icon {
+  width: 12px;
+  height: 12px;
+  color: var(--color-text-tertiary);
+  flex: none;
+}
+
+.rooms-member__name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+
+.rooms-member__role {
+  font-size: 10.5px;
+  color: var(--color-text-tertiary);
+}
+
+.rooms-member__badge {
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--color-bg-card-hover);
+  color: var(--color-text-secondary);
+}
+
+.rooms-member__badge--paused {
+  color: var(--color-text-tertiary);
+}
+
+.rooms-member__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: 0 1px;
+}
+
+.rooms-member__remove:hover {
+  color: var(--color-text-primary);
+}
+
+.rooms-member-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rooms-member-add__select {
+  width: 160px;
+}
+
+.rooms-member-add__empty {
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+}
+
+.rooms-panel__bulletin {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--color-border-muted);
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.rooms-panel__bulletin-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rooms-panel__bulletin-edit {
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 11.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  flex: none;
+}
+
+.rooms-panel__bulletin--empty {
+  color: var(--color-text-tertiary);
+}
+
+.rooms-panel__bulletin--editing {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.rooms-panel__bulletin-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.rooms-panel__log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+.rooms-log__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: min(680px, 86%);
+}
+
+.rooms-log__row--user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.rooms-log__sender {
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+}
+
+.rooms-log__bubble {
+  padding: 7px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-card);
+  font-size: 13.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rooms-log__row--user .rooms-log__bubble {
+  background: var(--color-bg-tool-card);
+}
+
+/* The room talking about itself: a notice, not anybody's message. */
+.rooms-log__status {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 90%;
+  padding: 3px 10px;
+  border: 1px dashed var(--color-border-muted);
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.rooms-panel__round {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 16px;
+  border-top: 1px solid var(--color-border-muted);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.rooms-panel__round-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent-primary);
+  flex: none;
+}
+
+.rooms-panel__error {
+  margin: 0 16px 6px;
+}
+
+.rooms-panel__archived {
+  flex: none;
+  padding: 12px 16px;
+  font-size: 12.5px;
+  color: var(--color-text-tertiary);
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.rooms-panel__composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.rooms-panel__composer textarea {
+  max-height: 140px;
+  resize: none;
+}
+
+/* ── Phone: one pane at a time ────────────────────────────────────────── */
+
+@media (max-width: 767px) {
+  .rooms-page__header {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .rooms-page__subtitle {
+    display: none;
+  }
+
+  .rooms-page__workspace {
+    width: 140px;
+  }
+
+  .rooms-list {
+    width: 100%;
+    border-right: none;
+  }
+
+  .rooms-detail {
+    display: none;
+  }
+
+  .rooms-page--detail .rooms-list {
+    display: none;
+  }
+
+  .rooms-page--detail .rooms-detail {
+    display: flex;
+  }
+
+  .rooms-panel__back {
+    display: inline-flex;
+  }
+
+  .rooms-panel__responder {
+    width: 132px;
+  }
+
+  /* The member strip repeats what the log already shows by each reply, and
+     with several bots plus the add controls it is the densest row on a phone.
+     Members are managed on desktop; the room itself stays fully usable here. */
+  .rooms-panel__members {
+    display: none;
+  }
+
+  .rooms-panel__actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .rooms-log__row {
+    max-width: 92%;
+  }
+}

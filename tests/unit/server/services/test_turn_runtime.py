@@ -121,3 +121,32 @@ async def test_a_new_thread_naming_no_workspace_is_refused():
     assert refused.value.detail.startswith(
         "workspace_id is required to start a thread"
     )
+
+
+# --- Bots: the identity a turn runs as, on the same routing seam ----------
+
+ANALYST_BOT = {"bot_id": "b-1", "role": "analyst", "workspace_id": "proj-ws", "status": "active"}
+CHIEF_BOT = {"bot_id": "b-2", "role": "chief_of_staff", "workspace_id": HOME, "status": "active"}
+
+
+def test_an_analyst_bot_routes_to_its_workspace():
+    assert turn_route(USER, None, ANALYST_BOT) == TurnRoute("proj-ws", "analyst")
+
+
+def test_the_chief_of_staff_bot_routes_to_home():
+    assert turn_route(USER, PROJECT, CHIEF_BOT) == TurnRoute(HOME, "chief_of_staff")
+
+
+def test_a_bot_without_a_known_role_keeps_the_legacy_routing():
+    # A row the bot layer cannot classify must not strand the turn: the place
+    # decides, exactly as before the bot layer existed.
+    assert turn_route(USER, PROJECT, {"bot_id": "b-3", "role": "other"}) == TurnRoute(
+        "proj-ws", "analyst"
+    )
+    assert turn_route(USER, None, {"bot_id": "b-4"}) == TurnRoute(HOME, "chief_of_staff")
+
+
+def test_an_analyst_bot_without_a_workspace_falls_back_to_the_place():
+    assert turn_route(
+        USER, PROJECT, {"bot_id": "b-5", "role": "analyst", "workspace_id": None}
+    ) == TurnRoute("proj-ws", "analyst")

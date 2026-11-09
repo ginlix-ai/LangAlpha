@@ -60,6 +60,35 @@ def test_the_server_keeps_the_wakeup_it_posts():
         assert messaging._client_body(request, object()) is request
 
 
+def test_a_client_cannot_claim_a_bot_message_turn():
+    from src.server.models.chat import BotMessageSource
+
+    assert "bot_message_source" in messaging._SERVER_ONLY_FIELDS
+    request = ChatRequest(
+        bot_message_source=BotMessageSource(from_bot_id="b-1", from_name="Scout")
+    )
+    with patch.object(messaging, "_is_service_request", return_value=False):
+        cleared = messaging._client_body(request, object())
+    assert cleared.bot_message_source is None
+
+
+def test_the_server_keeps_the_bot_message_it_posts():
+    from src.server.models.chat import BotMessageSource
+
+    request = ChatRequest(
+        bot_message_source=BotMessageSource(from_bot_id="b-1", from_name="Scout")
+    )
+    with patch.object(messaging, "_is_service_request", return_value=True):
+        assert messaging._client_body(request, object()) is request
+
+
+def test_a_client_cannot_suppress_its_push():
+    request = ChatRequest(suppress_push=True)
+    with patch.object(messaging, "_is_service_request", return_value=False):
+        cleared = messaging._client_body(request, object())
+    assert cleared.suppress_push is False
+
+
 def test_the_wake_trigger_is_a_steering_trigger_so_compaction_drops_it():
     assert is_steering_trigger(WAKE_TRIGGER)
     assert WAKE_TRIGGER == "A wakeup arrived."
