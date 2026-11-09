@@ -100,6 +100,8 @@ export interface StructuredError {
   /** Every model the resilience middleware attempted this turn (primary +
    *  fallbacks). When more than one, the display shows an "Also tried" line. */
   attemptedModels?: Array<{ model: string; error?: string; statusCode?: number | null; attempts?: number }>;
+  /** The run that failed, when the frame names it, for a report to name. */
+  runId?: string;
 }
 
 /** The one 429 this service raises on its own: the concurrency gate in

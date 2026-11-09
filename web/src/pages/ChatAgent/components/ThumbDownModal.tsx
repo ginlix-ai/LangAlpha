@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Info } from 'lucide-react';
 import {
   Dialog,
@@ -8,17 +9,9 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
+import { ISSUE_CATEGORIES } from './thumbDownCategories';
+import { useReportsState } from '@/hooks/useReportsEnabled';
 
-const ISSUE_CATEGORIES = [
-  'Incorrect data or numbers',
-  'Wrong ticker or company',
-  'Outdated information',
-  'Flawed analysis',
-  'Missing risk factors',
-  'Code execution errors',
-  'Didn\'t follow instructions',
-  'Incomplete research',
-];
 
 interface ThumbDownModalProps {
   isOpen: boolean;
@@ -34,6 +27,11 @@ interface ThumbDownModalProps {
  * optionally consenting to anonymous human review for credit refund.
  */
 function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): React.ReactElement {
+  const { t } = useTranslation();
+  // The server sends a thumbs-down to the team whenever it takes reports, so
+  // the dialog says so unless this deployment is known not to. A review is
+  // offered only where it is known to reach someone.
+  const reports = useReportsState();
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [comment, setComment] = useState('');
   const [consentHumanReview, setConsentHumanReview] = useState(false);
@@ -52,7 +50,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
     onSubmit(
       Array.from(selectedCategories),
       comment.trim() || null,
-      consentHumanReview,
+      reports === true && consentHumanReview,
     );
   };
 
@@ -69,19 +67,19 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
       >
         <DialogHeader>
           <DialogTitle className="text-base" style={{ color: 'var(--color-text-primary)' }}>
-            Report an Issue
+            {t('report.thumbs.title')}
           </DialogTitle>
           <DialogDescription className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-            Help us improve the quality of responses
+            {t(reports === false ? 'report.thumbs.descriptionLocal' : 'report.thumbs.description')}
           </DialogDescription>
         </DialogHeader>
 
         {/* Issue categories */}
         <p className="text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          What went wrong?
+          {t('report.thumbs.whatWentWrong')}
         </p>
         <div className="flex flex-wrap gap-2 mb-2">
-          {ISSUE_CATEGORIES.map((cat) => {
+          {ISSUE_CATEGORIES.map(({ value: cat, key }) => {
             const selected = selectedCategories.has(cat);
             return (
               <button
@@ -94,7 +92,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
                   border: `1px solid ${selected ? 'var(--color-accent-primary)' : 'var(--color-border-muted)'}`,
                 }}
               >
-                {cat}
+                {t(`report.thumbs.categories.${key}`)}
               </button>
             );
           })}
@@ -102,12 +100,13 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
 
         {/* Comment */}
         <p className="text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          Additional comments (optional)
+          {t('report.thumbs.commentLabel')}
         </p>
         <textarea
           value={comment}
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setComment(e.target.value)}
-          placeholder="Tell us more about the issue..."
+          maxLength={4000}
+          placeholder={t('report.thumbs.commentPlaceholder')}
           rows={3}
           className="w-full rounded-lg px-3 py-2.5 text-sm resize-none mb-2"
           style={{
@@ -117,38 +116,41 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
           }}
         />
 
-        {/* Human review consent */}
-        <div
-          className="rounded-lg pl-2.5 pr-3 py-2.5 cursor-pointer"
-          style={{
-            backgroundColor: 'var(--color-bg-surface)',
-            border: `1px solid ${consentHumanReview ? 'var(--color-border-elevated)' : 'var(--color-border-muted)'}`,
-          }}
-          onClick={() => setConsentHumanReview(!consentHumanReview)}
-        >
-          <div className="flex items-center gap-2.5">
-            <div
-              className="w-4 h-4 rounded shrink-0 flex items-center justify-center"
-              style={{
-                border: `1.5px solid ${consentHumanReview ? 'var(--color-accent-primary)' : 'var(--color-border-muted)'}`,
-                backgroundColor: consentHumanReview ? 'var(--color-accent-primary)' : 'transparent',
-              }}
-            >
-              {consentHumanReview && (
-                <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
-                  <path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
+        {/* Human review consent, only where a report reaches the team: elsewhere
+            nobody would review it. */}
+        {reports === true && (
+          <div
+            className="rounded-lg pl-2.5 pr-3 py-2.5 cursor-pointer"
+            style={{
+              backgroundColor: 'var(--color-bg-surface)',
+              border: `1px solid ${consentHumanReview ? 'var(--color-border-elevated)' : 'var(--color-border-muted)'}`,
+            }}
+            onClick={() => setConsentHumanReview(!consentHumanReview)}
+          >
+            <div className="flex items-center gap-2.5">
+              <div
+                className="w-4 h-4 rounded shrink-0 flex items-center justify-center"
+                style={{
+                  border: `1.5px solid ${consentHumanReview ? 'var(--color-accent-primary)' : 'var(--color-border-muted)'}`,
+                  backgroundColor: consentHumanReview ? 'var(--color-accent-primary)' : 'transparent',
+                }}
+              >
+                {consentHumanReview && (
+                  <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                    <path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
               )}
             </div>
             <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-              Request human review
+              {t('report.thumbs.reviewTitle')}
             </span>
           </div>
           <p className="text-xs mt-1.5 flex items-start gap-1" style={{ color: 'var(--color-text-tertiary)' }}>
             <Info className="h-3 w-3 shrink-0 mt-0.5" />
-            Share this conversation with our engineering team. Credits will be refunded for confirmed issues.
+            {t('report.thumbs.reviewBody')}
           </p>
         </div>
+        )}
 
         {/* Action buttons */}
         <DialogFooter className="flex-row justify-end gap-3 sm:gap-3">
@@ -160,7 +162,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
               border: '1px solid var(--color-border-muted)',
             }}
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             onClick={handleSubmit}
@@ -171,7 +173,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): Re
               color: 'var(--color-text-on-accent)',
             }}
           >
-            Submit Report
+            {t('report.thumbs.submit')}
           </button>
         </DialogFooter>
       </DialogContent>

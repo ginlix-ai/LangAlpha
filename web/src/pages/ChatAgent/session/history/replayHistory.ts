@@ -923,12 +923,11 @@ export async function loadConversationHistory(
       lastTurnIndex: maxReplayedTurnIndex,
       carry: { events: carryEvents, subagents: subagentHistoryByTaskId, steeredAgentIds },
     });
+    // The thread's ratings (best-effort), started before the transcript shows
+    // so its turns read as loading rather than unrated.
+    const feedbackLoad = rt.threadId ? deps.loadFeedback(rt.threadId) : null;
     reveal(true);
-
-    // Fetch feedback state for the thread (best-effort)
-    if (rt.threadId) {
-      await deps.loadFeedback(rt.threadId);
-    }
+    await feedbackLoad;
     return true;
   } catch (error: unknown) {
     if (olderPage) throw error;

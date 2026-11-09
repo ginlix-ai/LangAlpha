@@ -57,5 +57,8 @@ export function readStreamFailure(
     // a model-aware headline and an "Also tried" line.
     model: typeof event.model === 'string' ? event.model : undefined,
     attemptedModels: attemptedModels && attemptedModels.length > 0 ? attemptedModels : undefined,
+    // A replayed frame names its run as `response_id`.
+    runId: typeof event.run_id === 'string' ? event.run_id
+      : typeof event.response_id === 'string' ? event.response_id : undefined,
   };
 }

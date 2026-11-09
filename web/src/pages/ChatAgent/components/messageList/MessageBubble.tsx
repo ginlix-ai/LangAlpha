@@ -1,7 +1,7 @@
 import React, { useContext, useState, useEffect, useLayoutEffect, useRef, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, FileSearch, Info, Pencil, RefreshCw, RotateCcw, StopCircle, ThumbsDown, ThumbsUp } from 'lucide-react';
-import ThumbDownModal from '../ThumbDownModal';
+import { ThumbDownDialog } from '../ThumbDownSentDialog';
 import FigureEightLoading, { FADE_MS } from '@/components/ui/figure-eight-loading';
 import { copyText } from '@/lib/clipboard';
 import { AnimatePresence, motion } from '@/lib/framer';
@@ -9,6 +9,7 @@ import { DURATION, EASE_COLLAPSE } from '@/lib/motion';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
 import { CitationMetadataProvider } from '../CitationMetadataContext';
 import TextMessageContent, { TurnErrorCard } from '../TextMessageContent';
+import { ReportFailure } from '@/components/ui/error-banner';
 import { SentMessageBody } from './SentMessageBody';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { countDedupedSources, type CreditPauseState, type MessageProvenance, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState } from '@/types/chat';
@@ -135,7 +136,7 @@ interface MessageBubbleProps {
  * chunk never re-renders settled bubbles through a handler identity.
  */
 export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext }: MessageBubbleProps): React.ReactElement | null {
-  const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onThumbUp, onThumbDown } = useMessageActions();
+  const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onThumbUp, onThumbDown, onThumbDownFollowUp, reportThreadId, feedbackLoading } = useMessageActions();
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
   const projection = contentProjection ?? projectMessageContent(message, isSubagentView, root);
@@ -564,6 +565,12 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
       {failure && (
         <div className={hasBody ? 'mt-3' : undefined}>
           <TurnErrorCard err={failure} />
+          {/* A plan's limit is the plan working, not a failure to report. */}
+          {reportThreadId && (failure.kind === 'upstream' || failure.kind === 'internal') && !failure.planRefusal && (
+            <div className="mt-1.5 flex">
+              <ReportFailure error={failure} threadId={reportThreadId} />
+            </div>
+          )}
         </div>
       )}
 
@@ -799,10 +806,18 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
 
         {/* ThumbDown feedback modal */}
         {showThumbDownModal && (
-          <ThumbDownModal
-            isOpen={showThumbDownModal}
+          <ThumbDownDialog
+            loading={feedbackLoading}
+            sent={feedbackRating === 'thumbs_down' ? feedback ?? null : null}
             onSubmit={handleThumbDownSubmit}
             onCancel={() => setShowThumbDownModal(false)}
+            onFollowUp={onThumbDownFollowUp && turnIndex !== null
+              ? (action) => onThumbDownFollowUp(turnIndex, action)
+              : undefined}
+            onWithdrawn={() => {
+              setFeedbackRating(null);
+              setShowThumbDownModal(false);
+            }}
           />
         )}
       </div>

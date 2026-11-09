@@ -15,6 +15,7 @@
  */
 import React from 'react';
 import type { FeedbackResult, SubagentInfo } from './types';
+import type { ThumbDownFollowUp, ThumbDownFollowUpOutcome } from '../../hooks/useChatFeedback';
 import type { PTCAgentProposalState, ToolApprovalPosition } from '@/types/chat';
 import type { OpenFileHandler } from '../../utils/fileLocation';
 import type { ChartTabSpec } from '../filePanel/types';
@@ -83,7 +84,14 @@ export interface MessageActions {
    *  continuation rates the turn it continues. MessageList supplies the index. */
   onThumbUp?: (turnIndex: number) => Promise<FeedbackResult | null>;
   onThumbDown?: (turnIndex: number, issueCategories: string[], comment: string | null, consentHumanReview: boolean) => Promise<FeedbackResult | null>;
+  /** Add to a sent thumbs-down's report, or withdraw it. */
+  onThumbDownFollowUp?: (turnIndex: number, action: ThumbDownFollowUp) => Promise<ThumbDownFollowUpOutcome>;
   onWidgetSendPrompt?: (text: string) => void;
+  /** The thread a failed turn's card offers to report, once the server has
+   *  named it. Absent where reporting is not offered (a shared view). */
+  reportThreadId?: string;
+  /** The thread's ratings are still loading, so a turn's rating is unknown. */
+  feedbackLoading?: boolean;
 }
 
 const EMPTY_ACTIONS: MessageActions = Object.freeze({});

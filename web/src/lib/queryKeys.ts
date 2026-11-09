@@ -24,6 +24,9 @@ export const queryKeys = {
   models: {
     all: ['models'],
   },
+  reports: {
+    config: ['reports', 'config'],
+  },
   features: {
     all:  ['features'],
     list: () => [...queryKeys.features.all, 'list'],
