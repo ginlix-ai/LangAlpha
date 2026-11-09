@@ -8,7 +8,7 @@ import type { ClaudeCodeCustodyMode } from '@/api/model';
 import { readOAuthError } from '@/api/oauth';
 import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
-import { CLAUDE_CODE_MODE_LABELS } from '@/lib/claudeCode';
+import { CLAUDE_CODE_DISCLOSURE, CLAUDE_CODE_MODE_LABELS } from '@/lib/claudeCode';
 import { useSaveFailedToast } from '../usePreferenceWrite';
 import { ModeCard } from './ModeCard';
 
@@ -78,7 +78,7 @@ export function ClaudeCodeHostedChoice({ onAddToken, onAsking }: {
   };
   const consent = async () => {
     setAsking(null);
-    if (await apply('stored', custody.disclosure ?? undefined) && !status.saved) onAddToken();
+    if (await apply('stored', CLAUDE_CODE_DISCLOSURE) && !status.saved) onAddToken();
   };
   const leave = async () => {
     await apply('local');

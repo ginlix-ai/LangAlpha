@@ -16,11 +16,10 @@ import { ModelBlock, type SubagentModels } from '../SubagentAside';
 
 const mocks = vi.hoisted(() => ({
   state: 'connected' as ClaudeCodeSetupState,
-  pinState: undefined as ClaudeCodeSetupState | undefined,
 }));
 
 vi.mock('@/hooks/useClaudeCode', () => ({
-  useClaudeCodeSetup: () => ({ setup: { state: mocks.state, pin_state: mocks.pinState, on: true, computers: [] } }),
+  useClaudeCodeSetup: () => ({ setup: { state: mocks.state, on: true, computers: [] } }),
 }));
 vi.mock('@/hooks/usePayerLabel', () => ({ usePayerLabel: () => () => '' }));
 
@@ -50,7 +49,6 @@ const PIN_HINT = "Runs on your Claude plan where the thread's workspace runs Cla
 describe('ModelBlock with Claude Code', () => {
   beforeEach(() => {
     mocks.state = 'connected';
-    mocks.pinState = undefined;
   });
 
   it('offers Claude Code models as a pick while a token works somewhere', () => {
@@ -71,13 +69,6 @@ describe('ModelBlock with Claude Code', () => {
 
   it('is no pick where nothing the user has runs Claude Code', () => {
     mocks.state = 'no_computer';
-    renderBlock(null);
-    expect(ccOption().textContent).toBe('Claude X · Runs only on workspaces on your own computers');
-    expect(ccOption()).toBeDisabled();
-  });
-
-  it('holds them where only a token a pin cannot sign in with works', () => {
-    mocks.pinState = 'no_computer';
     renderBlock(null);
     expect(ccOption().textContent).toBe('Claude X · Runs only on workspaces on your own computers');
     expect(ccOption()).toBeDisabled();

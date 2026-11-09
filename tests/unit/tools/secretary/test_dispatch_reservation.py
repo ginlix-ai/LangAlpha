@@ -107,6 +107,49 @@ async def test_a_full_cap_refuses_before_any_request(cache):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("detail", "error"),
+    [
+        (
+            {"message": "Turn on a computer of yours.", "type": "claude_code_off", "reason": "no_own_computer"},
+            "The analyst's thread refused this hand-off: Turn on a computer of yours.",
+        ),
+        ({"message": "Not enough credits."}, "The analyst's thread refused this hand-off: Not enough credits."),
+        ("Workspace not found", "dispatch_failed"),
+        ({"reason": "no_own_computer"}, "dispatch_failed"),
+    ],
+    ids=["claude-code", "any-refusal", "words-without-a-message", "no-words"],
+)
+async def test_a_refusal_s_words_reach_the_chief_of_staff(cache, detail, error):
+    with patch(
+        "src.tools.secretary.dispatch.hitl_confirm", return_value=(True, {})
+    ), patch(
+        "aiohttp.ClientSession", return_value=FakeSession(FakeResp(status=400, body={"detail": detail}))
+    ):
+        result = await delegate_to_analyst.ainvoke(_new_thread(), config=_config())
+
+    payload = _payload(result)
+    assert (payload["success"], payload["error"]) == (False, error)
+    assert _reservation(cache) is None
+
+
+@pytest.mark.asyncio
+async def test_a_server_failure_with_words_still_reads_as_a_failed_dispatch(cache):
+    """A 503 carries its own message too, but nothing refused the hand-off."""
+    body = {"detail": {"message": "Live updates are unavailable, retry shortly.", "type": "transport_unavailable"}}
+    with patch(
+        "src.tools.secretary.dispatch.hitl_confirm", return_value=(True, {})
+    ), patch(
+        "aiohttp.ClientSession", return_value=FakeSession(FakeResp(status=503, body=body))
+    ):
+        result = await delegate_to_analyst.ainvoke(_new_thread(), config=_config())
+
+    payload = _payload(result)
+    assert (payload["success"], payload["error"]) == (False, "dispatch_failed")
+    assert _reservation(cache) is None
+
+
+@pytest.mark.asyncio
 async def test_dispatch_error_status_rolls_back_the_reservation(cache):
     """A >=400 dispatch response (e.g. the credit gate) proves the run never
     started: the endpoint's error paths all precede its create_task."""

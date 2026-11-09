@@ -74,11 +74,6 @@ CLAUDE_CODE_OFF = {
         "You've reached the limit on Claude Code threads running at once on cloud computers ({limit}). Try again "
         "when one finishes."
     ),
-    "stored_unattended": (
-        "Automations, wakeups and work another agent starts on its own don't run on the setup token LangAlpha "
-        "stores for you. To run them on Claude Code, choose to run it on your own computers in Settings under "
-        "Model access."
-    ),
     "choice_changed": (
         "How Claude Code runs on cloud computers changed as this turn started. Send your message again."
     ),
@@ -274,7 +269,7 @@ def claude_code_refusal(exc: BaseException, model_name: str | None) -> dict[str,
 
 async def require_runnable(
     config, model: str, *, user_id: str, workspace_id: str | None, thread_id: str | None = None,
-    unattended: bool = False, where: Placement | None = None,
+    where: Placement | None = None,
 ) -> Admitted:
     """Refuse a turn on ``model``, a Claude Code row, that cannot run it
     where it would run.
@@ -290,10 +285,8 @@ async def require_runnable(
     own count of its CLIs, subagents' included, bounds them there
     (``hosted.cli_cap``). The cap is soft: two turns admitted at once may both
     pass. A turn whose credential's Claude plan is used up is refused until
-    it resets (``require_plan``). A turn nobody started (``unattended``) on
-    the setup token LangAlpha stores is refused for that first
-    (``require_attended``), since no reset lets it run. None of it waits on
-    Anthropic or dials a machine. ``where`` is the placement a caller read
+    it resets (``require_plan``). None of it waits on Anthropic or dials a
+    machine. ``where`` is the placement a caller read
     already, as ``cli_placement`` gives it with ``token``.
 
     Returns what the turn was admitted on, which the run's row is stamped
@@ -305,7 +298,7 @@ async def require_runnable(
         raise_claude_code_off(model, "account")
     if where is None:
         where = await cli_placement(user_id, workspace_id, token=True)
-    admitted = await _admitted(model, user_id, where, unattended=unattended, plan=True)
+    admitted = await _admitted(model, user_id, where, plan=True)
     if isinstance(where, OnOwn):
         return admitted
     limit = get_claude_code_config().hosted_turns_per_user
@@ -314,60 +307,47 @@ async def require_runnable(
     return admitted
 
 
-async def _admitted(
-    model: str | None, user_id: str, where: Placement, *, unattended: bool = False, plan: bool = False,
-) -> Admitted:
+async def _admitted(model: str | None, user_id: str, where: Placement, *, plan: bool = False) -> Admitted:
     """What a Claude Code CLI placed at ``where`` runs on, or the 400 that
-    refuses it there: its refusal, an own computer's answer that says it
-    cannot run (``require_computer_signed_in``), and with ``unattended`` the
-    setup token the user stored, which no turn nobody started signs in with.
-    With ``plan``, also the Claude plan behind that credential once it is
-    known (``require_plan``)."""
+    refuses it there: its refusal, or an own computer's answer that says it
+    cannot run (``require_computer_signed_in``). With ``plan``, also the
+    Claude plan behind that credential once it is known (``require_plan``)."""
     if isinstance(where, Refused):
         raise_claude_code_off(model, where.reason, **where.fields)
     if isinstance(where, OnOwn):
         computer_id = str(where.computer["computer_id"])
         answer = await read_answer(computer_id)
         saved = await require_computer_signed_in(model, user_id, answer)
-        if unattended and saved == "stored_token":
-            raise_claude_code_off(model, "stored_unattended")
         if plan and answer is not None and answer.fresh:
             await require_plan(model, user_id, plan_credential("saved" if saved else "machine", computer_id))
         return Admitted(saved=saved, cli_computer=computer_id if where.picked else None)
     state = where.hosted
-    if unattended and state.runs_on == "stored_token":
-        raise_claude_code_off(model, "stored_unattended")
     if plan and state.token_signs_in:
         await require_plan(model, user_id, SAVED)
     return Admitted(state.runs_on, state.runs_on if state.token_signs_in else None)
 
 
-async def runs_unattended(user_id: str, where: Placement) -> Admitted | None:
-    """What a Claude Code CLI placed at ``where`` runs on where it runs work
-    nobody may have started: admitted there (``_admitted``), and never on the
-    setup token the user stored, on a cloud computer or relayed to an own
-    computer, since only a turn's own admission tells whether the user
-    started it (``require_attended``). None elsewhere, and where it could not
-    be read."""
+async def admitted_there(user_id: str, where: Placement) -> Admitted | None:
+    """What a Claude Code CLI placed at ``where`` is admitted on
+    (``_admitted``), short of the plan; None where it is refused there, and
+    where that could not be read."""
     from fastapi import HTTPException
 
     try:
-        admitted = await _admitted(None, user_id, where)
+        return await _admitted(None, user_id, where)
     except HTTPException:
         return None
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[claude_code] could not read where Claude Code runs for user_id={user_id}: {type(e).__name__}")
         return None
-    return None if "stored_token" in admitted else admitted
 
 
 async def claude_code_placement(config, *, user_id: str, workspace_id: str | None) -> Admitted | None:
     """What a Claude Code CLI the user starts in ``workspace_id`` would run on,
     read as admission reads it (``require_runnable``): where ``cli_placement``
     puts it, an own computer the server picked included, on that computer's
-    answer. None where Claude Code runs nowhere there for them now, where it
-    would sign in with the setup token the user stored, and where it could
-    not be read (``runs_unattended``).
+    answer. None where Claude Code runs nowhere there for them now, and where
+    it could not be read (``admitted_there``).
 
     Asked at turn start for a subagent's Claude Code pin on a turn of another
     model, which runs on the turn's model where this is None. Neither the
@@ -382,16 +362,15 @@ async def claude_code_placement(config, *, user_id: str, workspace_id: str | Non
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[claude_code] could not read where Claude Code runs for user_id={user_id}: {type(e).__name__}")
         return None
-    return await runs_unattended(user_id, where)
+    return await admitted_there(user_id, where)
 
 
 async def default_runs(user_id: str, where: Placement) -> bool:
     """Whether the Chief of Staff runs a Claude Code Default the user saved
     where admission places its turn (``where``, read with the saved token):
-    its CLI runs there on a credential its wakeups and automations may run
-    on too (``runs_unattended``), the one rule for Home on a cloud computer
-    and on one of the user's own."""
-    return await runs_unattended(user_id, where) is not None
+    its CLI is admitted there (``admitted_there``), the one rule for Home on
+    a cloud computer and on one of the user's own."""
+    return await admitted_there(user_id, where) is not None
 
 
 async def chief_of_staff_default_runs(
@@ -404,9 +383,8 @@ async def chief_of_staff_default_runs(
     turn starts (``checkpoint_id`` for an edit or a regenerate, as
     ``require_claude_code_continues`` reads it, else its head), or by
     where admission would place it (``cli_placement`` with the token) its CLI
-    has nowhere to run, runs where the answer there says it cannot, or would
-    sign in with the setup token the user stored, which its wakeups and
-    automations never run on (``runs_unattended``). One rule wherever Home
+    has nowhere to run, or runs where the answer there says it cannot
+    (``admitted_there``). One rule wherever Home
     is, on a cloud computer or one of the user's own. Short of what only
     admission reads (the plan). The caller checks first that this server
     runs Claude Code and the user has it on."""
@@ -543,26 +521,6 @@ def run_stamp(config) -> dict[str, Any]:
         **(STORED_TURN if HOST_MODE == "platform" and admitted.saved else {}),
         **({CLI_COMPUTER: admitted.cli_computer} if admitted.cli_computer else {}),
     }
-
-
-def unattended(request) -> bool:
-    """Whether nobody started the turn ``request`` asks for, or the work it
-    carries on: a wakeup's or a price move's, an automation's firing, or one
-    another agent sends (a Chief of Staff hand-off, a computer's ``la`` CLI).
-    A report-back the server posts (``query_type`` ``system``: a command's
-    end, a subagent's result) carries on a turn the user started."""
-    return bool(request.wakeup or request.market_target) or (
-        request.origin is not None and request.origin.type in ("automation", "agent")
-    )
-
-
-def require_attended(config, request) -> None:
-    """Refuse a turn nobody started (``unattended``) that admission let sign in
-    with the setup token the user stored, on a cloud computer or relayed to
-    one of theirs: the server runs their Claude plan only for turns they
-    start. A computer's own token runs such turns."""
-    if config.claude_code_admitted and "stored_token" in config.claude_code_admitted and unattended(request):
-        raise_claude_code_off(config.llm.name, "stored_unattended")
 
 
 async def relayed_token(user_id: str, answer: MachineAnswer | None, *, conn=None) -> str | None:

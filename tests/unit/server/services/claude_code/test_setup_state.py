@@ -243,46 +243,6 @@ async def test_once_on_a_computer_that_went_out_of_reach_reads_offline_though_it
     assert (answer.state, answer.computers[0].state) == ("offline", "offline")
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("backend", "pin_state"), [(False, "no_computer"), (True, "connected")])
-async def test_a_subagent_pin_reads_only_what_can_sign_it_in(world, backend, pin_state):  # noqa: F811
-    """A pin on a thread of another model never signs in with the setup
-    token the user stored, so a token stored on the platform counts for
-    their turns but not for their pins; a server's own saved token signs
-    both in."""
-    world.opted_in = True
-    with (
-        patch(f"{SETUP}.saved.status", new_callable=AsyncMock, return_value=ClaudeCodeStatus(state="signed_in")),
-        patch(f"{SETUP}.list_computers", new_callable=AsyncMock, return_value=SimpleNamespace(computers=[])),
-    ):
-        answer = await _setup(world, backend=backend)
-    assert (answer.state, answer.pin_state) == ("connected", pin_state)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("source", "backend", "pin_state"),
-    [
-        pytest.param("saved", False, "not_connected", id="relayed-the-stored-token"),
-        pytest.param("machine", False, "connected", id="its-own-token"),
-        pytest.param("saved", True, "connected", id="relayed-a-servers-own-saved-token"),
-    ],
-)
-async def test_a_pin_counts_an_own_computer_only_by_a_token_that_signs_a_pin_in(
-    world, source, backend, pin_state,  # noqa: F811
-):
-    """An own computer with no token of its own runs turns on the one the
-    user stored, relayed to it, which never signs a pin in."""
-    world.opted_in = True
-    own = ClaudeCodeComputer(computer_id="c-1", name="Lab box", kind="ssh", state="signed_in", source=source)
-    with (
-        patch(f"{SETUP}.saved.status", new_callable=AsyncMock, return_value=ClaudeCodeStatus(state="signed_in")),
-        patch(f"{SETUP}.list_computers", new_callable=AsyncMock, return_value=SimpleNamespace(computers=[own])),
-    ):
-        answer = await _setup(world, backend=backend)
-    assert (answer.state, answer.pin_state) == ("connected", pin_state)
-
-
 # -- Where the Chief of Staff's Claude Code runs --
 
 HOME = get_home_workspace_id(USER)

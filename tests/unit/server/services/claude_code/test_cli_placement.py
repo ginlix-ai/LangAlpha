@@ -491,19 +491,14 @@ async def test_an_automation_with_no_own_computer_awake_now_is_saved_since_one_m
 
 
 @pytest.mark.asyncio
-async def test_an_automation_whose_cli_runs_on_an_own_computer_relayed_the_stored_token_is_refused():
-    """Judged on the computer that runs the CLI, as admission relays to it."""
-    from src.server.services.automations.lifecycle import AutomationRefusal, _check_claude_code_hosted
+async def test_an_automation_whose_cli_runs_on_an_own_computer_relayed_the_stored_token_is_saved():
+    from src.server.services.automations.lifecycle import _check_claude_code_hosted
 
     with (
         platform(mode="local", cli=(STUDIO, None)),
-        patch(f"{MACHINES}.read_answer", AsyncMock(return_value=MachineAnswer("none"))) as read,
-        patch("src.server.services.automations.lifecycle.relayed_token", AsyncMock(return_value="stored_token")),
-        pytest.raises(AutomationRefusal) as refused,
+        patch(f"{MACHINES}.read_answer", AsyncMock(return_value=MachineAnswer("none"))),
     ):
         await _check_claude_code_hosted("user-1", CODE, HOME)
-    read.assert_awaited_once_with("c-9")
-    assert str(refused.value) == CLAUDE_CODE_OFF["stored_unattended"]
 
 
 def _self_hosted_on_a_small_computer():
@@ -617,18 +612,15 @@ async def test_a_user_who_chose_to_store_their_token_where_cloud_computers_run_n
 
 
 @pytest.mark.asyncio
-async def test_the_chief_of_staff_runs_no_claude_code_default_on_the_stored_token():
-    """Its wakeups and automations never run on that token, so a Home row
-    naming no model runs the deployment's Default and is saved; one naming
-    Claude Code is refused."""
-    from src.server.services.automations.lifecycle import AutomationRefusal, _check_claude_code_hosted
+async def test_the_chief_of_staff_runs_a_claude_code_default_on_the_stored_token():
+    """Its wakeups and automations run on that token as its other turns do,
+    so a Home row naming Claude Code is saved."""
+    from src.server.services.automations.lifecycle import _check_claude_code_hosted
 
     with platform(mode="stored"):
-        assert not await chief_of_staff_default_runs("user-1", HOME)
+        assert await chief_of_staff_default_runs("user-1", HOME) == OnCloud(Hosted("stored_token"), CLOUD)
         await _check_claude_code_hosted("user-1", None, HOME, pref={"preferred_model": CODE})
-        with pytest.raises(AutomationRefusal) as refused:
-            await _check_claude_code_hosted("user-1", CODE, HOME)
-    assert str(refused.value) == CLAUDE_CODE_OFF["stored_unattended"]
+        await _check_claude_code_hosted("user-1", CODE, HOME)
     with platform(mode="local", cli=(STUDIO, None)):
         assert await chief_of_staff_default_runs("user-1", HOME) == OnOwn(STUDIO, picked=True)
 
@@ -659,26 +651,25 @@ async def test_the_chief_of_staff_default_runs_on_an_own_home_only_where_its_fre
 
 
 @pytest.mark.asyncio
-async def test_the_chief_of_staff_default_never_runs_on_an_own_home_relayed_the_stored_token():
-    """Its wakeups and automations never run on that token."""
+async def test_the_chief_of_staff_default_runs_on_an_own_home_relayed_the_stored_token():
     with platform(mode="stored", computer=OWN), patch(f"{SERVICE}.read_answer", AsyncMock(return_value=None)):
-        assert await chief_of_staff_default_runs("user-1", HOME) is None
+        assert await chief_of_staff_default_runs("user-1", HOME) == OnOwn(OWN)
     with platform(mode="stored", computer=OWN), patch(f"{SERVICE}.read_answer", AsyncMock(return_value=_fresh("works"))):
         assert await chief_of_staff_default_runs("user-1", HOME) == OnOwn(OWN)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("backend", "mode", "runs"), [(True, "local", True), (False, "stored", False)])
-async def test_the_chief_of_staff_default_runs_on_homes_cloud_computer_only_on_the_servers_own_saved_token(
-    backend, mode, runs,
+@pytest.mark.parametrize(
+    ("backend", "mode", "token"), [(True, "local", "saved_token"), (False, "stored", "stored_token")],
+)
+async def test_the_chief_of_staff_default_runs_on_homes_cloud_computer_on_the_token_its_turns_run_on(
+    backend, mode, token,
 ):
-    """The token the user stored on the platform runs no wakeup or automation."""
+    """A self-hosted server's own saved token, or the one the user stored on
+    the platform."""
     with platform(mode=mode, computer=CLOUD), patch(f"{HOSTED}.backend_available", lambda: backend):
         where = await chief_of_staff_default_runs("user-1", HOME)
-    if not runs:
-        assert where is None
-        return
-    assert isinstance(where, OnCloud) and where.hosted == Hosted("saved_token")
+    assert isinstance(where, OnCloud) and where.hosted == Hosted(token)
 
 
 @pytest.mark.asyncio
@@ -694,7 +685,6 @@ async def test_whether_claude_code_is_off_is_the_callers_to_check_before_the_chi
         platform(mode="local", cli=(STUDIO, None)), patch(f"{SERVICE}.rows_available", lambda: rows),
         patch("src.server.services.features.effective_flags_for_user", flags),
         patch(f"{MACHINES}.read_answer", AsyncMock(return_value=None)),
-        patch("src.server.services.automations.lifecycle.relayed_token", AsyncMock(return_value="stored_token")),
     ):
         assert await chief_of_staff_default_runs("user-1", HOME) == OnOwn(STUDIO, picked=True)
         await _check_claude_code_hosted("user-1", None, HOME, pref={"preferred_model": CODE})

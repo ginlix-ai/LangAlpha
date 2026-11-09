@@ -294,9 +294,9 @@ async def test_admission_on_an_own_computer_reads_the_row_its_turn_signs_in_on(r
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("own", [False, True])
-async def test_a_turn_nobody_started_on_the_stored_token_is_refused_for_that_before_its_plan(rows, monkeypatch, own):
-    # No reset would let it run, so a wake is not held for one, nor an
-    # automation told to wait for it.
+async def test_a_turn_on_the_stored_token_at_its_plans_limit_is_refused_for_the_plan(rows, monkeypatch, own):
+    # Whoever started it: a wake is held for the reset, and an automation
+    # told when it resets.
     async def placement(*_args, **_kwargs):
         if own:
             return OnOwn({"computer_id": "c-1"})
@@ -315,13 +315,9 @@ async def test_a_turn_nobody_started_on_the_stored_token_is_refused_for_that_bef
     rows["rows"] = {c: _held(PlanLimit("five_hour", datetime.now(UTC) + timedelta(hours=1))) for c in ("saved", "computer:c-1")}
     config = SimpleNamespace(feature_enabled=lambda feature: True)
 
-    async def reason(**kw) -> str:
-        with pytest.raises(HTTPException) as refused:
-            await admission.require_runnable(config, "claude-haiku-5-5-code", user_id="u", workspace_id="w", **kw)
-        return refused.value.detail["reason"]
-
-    assert await reason(unattended=True) == "stored_unattended"
-    assert await reason() == "plan_limited"
+    with pytest.raises(HTTPException) as refused:
+        await admission.require_runnable(config, "claude-haiku-5-5-code", user_id="u", workspace_id="w")
+    assert refused.value.detail["reason"] == "plan_limited"
 
 
 def test_a_turn_the_plan_stopped_ends_on_a_refusal_naming_its_window_reset_and_billing():

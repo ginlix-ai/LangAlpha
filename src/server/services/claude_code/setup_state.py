@@ -91,19 +91,12 @@ async def setup_state(user_id: str) -> ClaudeCodeSetup | None:
     # Before opt-in, whether the server would run turns on a saved token:
     # not where an organization's policy is installed on its machine.
     backend_runs = not on and backend_available() and not await local_managed()
-    now = datetime.now(timezone.utc)
-    state = summary(computers.computers, status, cloud_ready=_cloud_ready(custody) or backend_runs, now=now)
-    # A server's own saved token signs a pin in; the one the user stored on
-    # this server never does, nor a cloud computer that runs only on it, nor
-    # an own computer it is relayed to, which holds no token of its own.
-    pins_status, pins_computers = (status, computers.computers) if backend_available() else (
-        status.model_copy(update={"state": "off"}),
-        [c.model_copy(update={"state": "no_token"}) if c.source == "saved" else c for c in computers.computers],
+    state = summary(
+        computers.computers, status, cloud_ready=_cloud_ready(custody) or backend_runs, now=datetime.now(timezone.utc),
     )
     saved_token_runs = status.state != "off" if on else backend_runs
     return ClaudeCodeSetup(
         state=state, on=on, computers=computers.computers, saved_token_runs=saved_token_runs,
-        pin_state=summary(pins_computers, pins_status, cloud_ready=False, now=now),
         cloud=custody is not None and bool(custody.offered) and custody.refusal != "needs_own_computer",
         cli_in_sandbox=hosted.in_sandbox(),
         too_small=[

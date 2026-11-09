@@ -448,8 +448,7 @@ class AgentConfig(BaseModel):
     # let run on, and its CLI signs in with it.
     claude_code_admitted: Admitted | None = Field(default=None, exclude=True)
     # On a turn of another model, what admission let its subagents' Claude
-    # Code pins run on, never the stored setup token; None where they run the
-    # turn's model.
+    # Code pins run on; None where they run the turn's model.
     claude_code_pins: Admitted | None = Field(default=None, exclude=True)
     # None permits standalone name resolution; [] means resolution rejected all candidates.
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)

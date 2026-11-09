@@ -43,6 +43,12 @@ export const CLAUDE_CODE_SETUP_STATUS: Readonly<Record<ClaudeCodeSetupState, Row
   no_computer: 'needs_computer',
 };
 
+/** The version of the consent copy this bundle shows before a user stores
+ *  their setup token, which the store sends: a tab still showing an older
+ *  copy is refused rather than recorded as accepting the current one. The
+ *  server's `hosted.DISCLOSURE`, pinned equal by test_hosted. */
+export const CLAUDE_CODE_DISCLOSURE = '2026-11-v2';
+
 /** The states of a Claude Code token that works. */
 export const TOKEN_WORKS: ReadonlySet<string> = new Set(['signed_in', 'unverified']);
 
@@ -126,7 +132,6 @@ const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
   token_refused: 'chat.claudeCode.off.token_refused',
   no_own_computer: 'chat.claudeCode.off.no_own_computer',
   cli_computer_offline: 'chat.claudeCode.off.cli_computer_offline',
-  stored_unattended: 'chat.claudeCode.off.stored_unattended',
   choice_changed: 'chat.claudeCode.off.choice_changed',
   too_many_turns: 'chat.claudeCode.off.too_many_turns',
   needs_bigger_computer: 'chat.claudeCode.off.needs_bigger_computer',
@@ -175,13 +180,13 @@ export function claudeCodeHold(
 }
 
 /** A held pin's fix: Model access itself, where each computer's own token
- *  sits beside the saved one, since only some of those sign a pin in. */
+ *  sits beside the saved one. */
 const CLAUDE_CODE_PIN_TOKEN_LINK: ErrorLinkSpec = { ...claudeCodeTokenLink(), url: MODEL_ACCESS_URL };
 
 /** What holds a subagent's Claude Code pin back. A pin applies in every
  *  workspace, so it reads the user's Claude Code as a whole, as a pin can
- *  sign in (`pin_state`, else `state` from an older server), whose first
- *  state that holds is a token working somewhere: it is held only where
+ *  sign in (`pin_state` from a server that still says so, else `state`),
+ *  whose first state that holds is a token working somewhere: it is held only where
  *  none works anywhere, worded as the composer words the same state. Unread
  *  waits as on a check, as the composer's rows do. */
 export function accountClaudeCodeHold(setup: ClaudeCodeSetup | null): ClaudeCodeHold | null {
@@ -195,12 +200,6 @@ export function accountClaudeCodeHold(setup: ClaudeCodeSetup | null): ClaudeCode
     default: return claudeCodeHold('checking');
   }
 }
-
-/** The links that fix a cloud computer's refusal: choosing how Claude Code
- *  runs there. */
-const CLAUDE_CODE_CLOUD_LINKS: Readonly<Record<string, ErrorLinkSpec>> = {
-  stored_unattended: CLAUDE_CODE_CHOICE_LINK,
-};
 
 /** A cloud computer's refusals that say the user's choice for cloud
  *  computers, or which of their computers are too small, is not what the
@@ -219,10 +218,8 @@ const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set(['choice_changed
  * by no token. A turn whose CLI runs on an own computer the server picks
  * finds none with its own token online (`no_own_computer`), fixed in Claude
  * Code's view where those tokens are, or the picked one, `name`, offline
- * (`cli_computer_offline`), fixed there. On a cloud computer, the choice of
- * how it runs there fixes `stored_unattended` (automations and wakeups, which
- * a stored token does not run). A computer too small for Claude Code reads
- * as `biggerComputer` says for the workspace or Home (`home`). Too many
+ * (`cli_computer_offline`), fixed there. A computer too small for Claude
+ * Code reads as `biggerComputer` says for the workspace or Home (`home`). Too many
  * turns at once names the user's cap, `limit`, and keeps the server's words
  * without one. A Claude
  * plan's limit (`plan_stopped`, `plan_limited`) is news the plan the view
@@ -263,7 +260,7 @@ export function claudeCodeRefusal(frame: Record<string, unknown>, workspaceId: s
   if (reason === 'account' || reason === 'no_own_computer') return { reread: true, link: CLAUDE_CODE_CHOICE_LINK, messageKey };
   return {
     reread: CLAUDE_CODE_UNRUNNABLE.has(reason) || CLAUDE_CODE_CHOICE_CHANGED.has(reason),
-    link: CLAUDE_CODE_CLOUD_LINKS[reason] ?? null,
+    link: null,
     messageKey,
   };
 }

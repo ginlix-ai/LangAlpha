@@ -267,9 +267,9 @@ export interface ClaudeCodeSetup {
   /** The user's cloud computers too small for Claude Code, in their order.
    *  Absent from a server that predates it. */
   too_small?: { computer_id: string; name: string }[];
-  /** `state` for a subagent's Claude Code pin on a thread of another model,
-   *  which never signs in with the setup token the user stored. Absent from
-   *  a server that predates it. */
+  /** `state` for a subagent's Claude Code pin, from a server that still
+   *  keeps pins off the setup token the user stored; a newer one omits it,
+   *  since a pin there runs as the turn's own CLI does. */
   pin_state?: ClaudeCodeSetupState;
   /** Where the Chief of Staff's CLI runs, whenever Claude Code is on for the
    *  user. Null while it is off; absent from a server that predates it. */
@@ -319,7 +319,6 @@ export interface ClaudeCodeCustody {
   runs_on: 'stored_token' | null;
   refusal: string | null;
   /** The version of the consent text storing a token needs accepted now. */
-  disclosure: string | null;
 }
 
 /** Null where this server offers no choice for cloud computers (404): a
@@ -337,7 +336,7 @@ export async function getClaudeCodeCustody(): Promise<ClaudeCodeCustody | null> 
 
 /** A refusal carries the OAuth routes' `error` body (`readOAuthError`): a
  *  mode not offered now (`unavailable`), storing blocked for the user
- *  (`stored_blocked`), or `stored` without the current `disclosure`.
+ *  (`stored_blocked`), or `stored` without the current `disclosure`, the version of the consent copy the dialog showed.
  *  Leaving `stored` deletes the stored token before it answers. */
 export async function setClaudeCodeCustody(mode: ClaudeCodeCustodyMode, disclosure?: string): Promise<ClaudeCodeCustody> {
   const { data } = await api.put('/api/v1/claude-code/custody', disclosure ? { mode, disclosure } : { mode });

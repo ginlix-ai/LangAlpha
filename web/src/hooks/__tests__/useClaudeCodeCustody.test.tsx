@@ -17,7 +17,7 @@ import { api } from '@/api/client';
 import { useClaudeCodeCustody } from '../useClaudeCodeCustody';
 
 const OWN_ONLY: ClaudeCodeStatus = { enabled: true, state: 'off', email: null, expires_at: null, saved: false };
-const LOCAL: ClaudeCodeCustody = { mode: 'local', offered: ['stored'], blocked: false, runs_on: null, refusal: null, disclosure: '2026-11-v1' };
+const LOCAL: ClaudeCodeCustody = { mode: 'local', offered: ['stored'], blocked: false, runs_on: null, refusal: null };
 const notFound = () => Object.assign(new Error('Request failed with status code 404'), { response: { status: 404, data: {} } });
 
 /** The server's answers by route; \`custody\` a thunk so a 404 can be thrown. */

@@ -50,14 +50,6 @@ describe('claudeCodeRefusal', () => {
     });
   });
 
-  it('links automations on a stored token to Model access, reading nothing again', () => {
-    expect(claudeCodeRefusal({ reason: 'stored_unattended' }, 'ws-1')).toEqual({
-      reread: false,
-      link: { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' },
-      messageKey: 'chat.claudeCode.off.stored_unattended',
-    });
-  });
-
   it.each(['choice_changed', 'needs_bigger_computer'])('words %s in the app with nothing to fix, and reads the choice again', (reason) => {
     expect(claudeCodeRefusal({ reason }, 'ws-1')).toEqual({ reread: true, link: null, messageKey: `chat.claudeCode.off.${reason}` });
   });
