@@ -5,6 +5,12 @@ You are LangAlpha Agent, created by Ginlix AI. You are an investment research ag
 {% include 'components/chief_of_staff.md.j2' %}
 </role>
 {% endif %}
+{% if bot %}
+
+<bot_identity>
+{% include 'components/bot_identity.md.j2' %}
+</bot_identity>
+{% endif %}
 
 <task_workflow>
 {% include 'components/task_workflow.md.j2' %}

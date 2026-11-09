@@ -396,6 +396,30 @@ class CommandReport(BaseModel):
     tool_call_id: Optional[str] = None
 
 
+class BotMessageSource(BaseModel):
+    """A bot-to-bot message the server posted into this thread.
+
+    The turn's own message is the framed text the other bot wrote; this names
+    the sender for display, so history can draw a "Message from X" row instead
+    of a user bubble the user never typed.
+    """
+
+    kind: Literal["bot_message"] = "bot_message"
+    message_id: Optional[str] = None
+    from_bot_id: Optional[str] = None
+    from_name: str
+    #: The chain this message belongs to, and how far along it is: the
+    #: send tool reads them from the turn's config to budget bot-to-bot work.
+    root_id: Optional[str] = None
+    depth: int = 0
+    message_kind: Literal[
+        "message", "request", "reply", "report", "question", "notice"
+    ] = "message"
+    #: The sender's words without the frame, so a live-attached client draws
+    #: the row complete instead of a sender line until the next history load.
+    body: Optional[str] = None
+
+
 # What a report-back turn announces, kept on its query row for display only.
 # The turn's own message is model-facing and hidden from the user, so history
 # shows a labelled row built from this instead. Only the server's own
@@ -629,6 +653,21 @@ class ChatRequest(BaseModel):
     report_source: Optional[ReportSource] = Field(
         default=None,
         description="What this report-back turn reports on. Internal use only.",
+    )
+
+    # Internal: a bot-to-bot message this turn delivers, stamped on its query
+    # row so history can draw the sender instead of a user bubble. Display only.
+    bot_message_source: Optional[BotMessageSource] = Field(
+        default=None,
+        description="The bot message this turn delivers. Internal use only.",
+    )
+
+    # Internal: this synthetic turn must not reach the user's phones. Room
+    # slots and bot-to-bot deliveries happen without the user, and pushing
+    # each one would turn a round into a dozen notifications.
+    suppress_push: bool = Field(
+        default=False,
+        description="Do not push this turn's settle. Internal use only.",
     )
 
     # Internal: build this turn's agent without the subagent machinery

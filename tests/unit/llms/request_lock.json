@@ -59,6 +59,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -66,10 +68,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -192,6 +202,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -199,10 +211,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -335,6 +355,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -342,10 +364,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -468,6 +498,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -475,10 +507,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -551,6 +591,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -558,10 +600,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -694,6 +744,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -701,10 +753,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -827,6 +887,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -834,10 +896,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -910,6 +980,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -917,10 +989,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -1053,6 +1133,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -1060,10 +1142,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -1186,6 +1276,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -1193,10 +1285,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -1269,6 +1369,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -1276,10 +1378,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -1412,6 +1522,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -1419,10 +1531,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -1540,6 +1660,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -1547,10 +1669,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -1678,6 +1808,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -1685,10 +1817,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -1816,6 +1956,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -1823,10 +1965,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -1954,6 +2104,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -1961,10 +2113,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -2086,6 +2246,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -2093,10 +2255,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -2218,6 +2388,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -2225,10 +2397,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -2350,6 +2530,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -2357,10 +2539,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -2482,6 +2672,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -2489,10 +2681,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -2614,6 +2814,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -2621,10 +2823,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -2746,6 +2956,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -2753,10 +2965,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -2877,6 +3097,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -2884,10 +3106,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -3010,6 +3240,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -3017,10 +3249,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -3141,6 +3381,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -3148,10 +3390,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -3274,6 +3524,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -3281,10 +3533,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -3405,6 +3665,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -3412,10 +3674,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -3538,6 +3808,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -3545,10 +3817,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -3669,6 +3949,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -3676,10 +3958,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -3802,6 +4092,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -3809,10 +4101,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -3933,6 +4233,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -3940,10 +4242,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -4067,6 +4377,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -4074,10 +4386,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -4201,6 +4521,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -4208,10 +4530,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -4335,6 +4665,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -4342,10 +4674,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -4469,6 +4809,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -4476,10 +4818,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -4603,6 +4953,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -4610,10 +4962,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -4737,6 +5097,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -4744,10 +5106,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -4871,6 +5241,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -4878,10 +5250,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -5005,6 +5385,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -5012,10 +5394,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -5137,6 +5527,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -5144,10 +5536,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -5269,6 +5669,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -5276,10 +5678,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -5399,6 +5809,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -5406,10 +5818,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -5524,6 +5944,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -5531,10 +5953,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -5654,6 +6084,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -5661,10 +6093,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -5779,6 +6219,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -5786,10 +6228,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -5909,6 +6359,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -5916,10 +6368,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -6034,6 +6494,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -6041,10 +6503,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -6159,6 +6629,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -6166,10 +6638,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -6289,6 +6769,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -6296,10 +6778,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -6419,6 +6909,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -6426,10 +6918,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -6549,6 +7049,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -6556,10 +7058,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -6679,6 +7189,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -6686,10 +7198,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {
@@ -6809,6 +7329,8 @@
     "WebFetch",
     "WebSearch",
     "Write",
+    "create_bot",
+    "create_room",
     "draw_chart_annotation",
     "get_company_overview",
     "get_daily_prices",
@@ -6816,10 +7338,18 @@
     "get_options_chain",
     "get_quote",
     "get_sec_filing",
+    "list_assignments",
+    "list_bots",
+    "list_rooms",
     "manage_chart_annotations",
+    "post_to_room",
+    "read_own_chat",
+    "read_room",
     "reply_to_comment",
+    "report_to",
     "schedule_wakeup",
-    "screen_stocks"
+    "screen_stocks",
+    "send_bot_message"
    ]
   },
   "metadata": {

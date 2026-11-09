@@ -213,6 +213,7 @@ class PTCAgent:
         role: AgentRole = "analyst",
         channels_enabled: bool = False,
         claude_code: bool = False,
+        bot: dict | None = None,
     ) -> str:
         """Build the static system prompt (excludes time/profile for cacheability).
 
@@ -255,6 +256,7 @@ class PTCAgent:
             role=role,
             channels_enabled=channels_enabled,
             claude_code=claude_code,
+            bot=bot,
         )
 
     def _get_tool_summary(self, mcp_registry: MCPRegistry) -> str:
@@ -290,6 +292,7 @@ class PTCAgent:
         turn_context: TurnContext | None = None,
         project: ProjectContext | None = None,
         role: AgentRole = "analyst",
+        bot: dict | None = None,
         harness_blocks: Mapping[str, str | None] | None = None,
         subagent_switch: SubagentSwitchReader | None = None,
         window_coverage: WindowCoverage | None = None,
@@ -843,6 +846,7 @@ class PTCAgent:
             role=role,
             channels_enabled=gates.channels,
             claude_code=claude_code,
+            bot=bot,
         )
         # Read once: the baseline freezes this value per epoch, and the
         # prompt is sent with the frozen one (FrozenPromptMiddleware).
@@ -1245,8 +1249,18 @@ class PTCAgent:
             from src.tools.secretary.chief_of_staff import CHIEF_OF_STAFF_TOOLS
 
             tools = [*tools, *CHIEF_OF_STAFF_TOOLS]
+        # Collaboration: the main agent is the one with a bot identity to speak
+        # from, and a subagent stack must not start a conversation of its own.
+        from src.tools.bots.tool import BOT_TOOLS
+        from src.tools.rooms.tool import ROOM_TOOLS
+
+        tools = [*tools, *BOT_TOOLS, *ROOM_TOOLS]
         if direct_tools:
             tools = [*tools, *direct_tools]
+        # A bot may narrow its own surface; the build binds what is left.
+        from src.tools.bots.scope import narrow_tools
+
+        tools = narrow_tools(tools, bot)
 
         agent: Any = create_agent(
             turn.client,

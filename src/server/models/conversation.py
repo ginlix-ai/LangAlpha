@@ -56,6 +56,12 @@ class WorkspaceThreadListItem(BaseModel):
         description="The model this thread runs: the last one a client named "
         "for it. NULL = follows the account default for its mode.",
     )
+    bot_id: Optional[str] = Field(
+        None,
+        description="The bot identity the thread answers as (the client may "
+        "resolve its name/avatar from /api/v1/bots/{bot_id}). NULL on a row "
+        "the resolver has not stamped yet.",
+    )
     subagents_allowed: Optional[bool] = Field(
         None,
         description="Whether the thread's agent may start or direct subagents "
@@ -252,6 +258,11 @@ class ThreadCreateRequest(BaseModel):
     workspace_id: Optional[str] = Field(
         None, description="Target workspace; Home's id for the user's Home"
     )
+    bot_id: Optional[str] = Field(
+        default=None,
+        description="The bot this thread answers as; it must be the caller's "
+        "live bot of the thread's workspace (Home's Chief of Staff included).",
+    )
     first_query: str = Field(
         "",
         description="The user's first message; stamped as the initial title "
@@ -322,6 +333,9 @@ class ThreadCreateResponse(BaseModel):
     feed; it is never awaited here.
     """
     thread_id: str
+    bot_id: Optional[str] = Field(
+        None, description="The bot the new thread answers as, when one was named."
+    )
     workspace_id: str
     thread_index: int
     title: Optional[str] = None

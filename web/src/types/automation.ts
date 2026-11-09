@@ -137,6 +137,9 @@ export interface Automation {
   thread_strategy: 'new' | 'continue';
   conversation_thread_id: string | null;
 
+  /** The bot each run speaks as; null runs as the workspace's own analyst. */
+  bot_id: string | null;
+
   status: AutomationStatus;
   max_failures: number;
   failure_count: number;
@@ -163,6 +166,8 @@ export interface AutomationPayload {
   instruction: string;
   /** Home's id for the Chief of Staff, else the workspace's. */
   workspace_id: string;
+  /** The bot each run speaks as; null runs as the workspace's own analyst. */
+  bot_id: string | null;
   thread_strategy: Automation['thread_strategy'];
   max_failures: number;
   delivery_config: DeliveryConfig;

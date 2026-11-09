@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 import {
   Bot,
+  BotMessageSquare,
   CandlestickChart,
   CircleUser,
   Cpu,
@@ -40,6 +41,8 @@ export const SECTIONS = {
   // An HTML file's glyph everywhere else in the app (`fileKindIcon('page')`).
   artifacts: { labelKey: 'settings.section.artifacts', descKey: 'settings.definition.artifacts', icon: Globe },
   agent: { labelKey: 'settings.section.agent', descKey: 'settings.definition.agent', icon: Bot },
+  // A Bot by its own glyph: the Behavior section already owns the plain Bot.
+  bots: { labelKey: 'settings.section.bots', descKey: 'settings.definition.bots', icon: BotMessageSquare },
   model: { labelKey: 'settings.section.model', descKey: 'settings.definition.model', icon: Cpu },
   integrations: { labelKey: 'settings.section.integrations', descKey: 'settings.definition.integrations', icon: Plug, platformOnly: true },
   trading: { labelKey: 'settings.section.trading', descKey: 'settings.definition.trading', icon: CandlestickChart },
@@ -57,7 +60,7 @@ export function sectionShown(section: Section): boolean {
 export const GROUPS: readonly { labelKey: string; sections: readonly Section[] }[] = [
   { labelKey: 'settings.group.account', sections: ['account', 'preferences', 'plan'] },
   { labelKey: 'settings.group.app', sections: ['general', 'appearance', 'chat', 'artifacts'] },
-  { labelKey: 'settings.group.agent', sections: ['agent', 'model', 'integrations', 'trading'] },
+  { labelKey: 'settings.group.agent', sections: ['agent', 'bots', 'model', 'integrations', 'trading'] },
   { labelKey: 'settings.group.labs', sections: ['experiments'] },
 ];
 
@@ -114,6 +117,7 @@ export const SETTINGS = {
   approveHandoffs: { section: 'agent', anchor: 'approve-handoffs', labelKey: 'settings.autoApproveHandoffs', descKey: 'settings.autoApproveHandoffsDesc' },
   approveWorkspaces: { section: 'agent', anchor: 'approve-workspaces', labelKey: 'settings.autoApproveWorkspaceCreation', descKey: 'settings.autoApproveWorkspaceCreationDesc' },
   searchProvider: { section: 'agent', anchor: 'search-provider', labelKey: 'settings.searchProvider', descKey: 'settings.searchProviderDesc', alsoKeys: ['settings.searchDepth'] },
+  bots: { section: 'bots', anchor: 'bots', labelKey: 'settings.section.bots', descKey: 'settings.definition.bots' },
   modelAccess: { section: 'model', anchor: 'model-access', labelKey: 'modelAccess.title', descKey: 'modelAccess.description' },
   defaultModels: { section: 'model', anchor: 'default-models', labelKey: 'settings.defaultModels', descKey: 'settings.defaultModelsDesc' },
   defaultModelScope: { section: 'model', anchor: 'default-model-scope', labelKey: 'settings.defaultModelChange.scopeLabel', descKey: 'settings.defaultModelChange.scopeDesc' },

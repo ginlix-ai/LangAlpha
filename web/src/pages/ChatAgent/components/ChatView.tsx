@@ -75,6 +75,7 @@ import { RouteLeaveGuardContext } from '../contexts/RouteLeaveGuardContext';
 import SubagentStatusBar from './SubagentStatusBar';
 import TodoDrawer from './TodoDrawer';
 import { ComposerTray, ReconnectingChip, TrayDock } from './chatView/ComposerTray';
+import { ThreadBotChip } from './chatView/ThreadBotChip';
 import { useTrayContents } from './chatView/useTrayContents';
 import { useHistoryBackfill } from './chatView/useHistoryBackfill';
 import { OlderHistorySkeleton } from './chatView/OlderHistorySkeleton';
@@ -1505,6 +1506,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 </button>
               ) : (workspaceName || t('thread.workspace'))}
             </h1>
+            {/* The identity this thread answers as, once its row names one;
+                a thread with no bot keeps the header's generic shape. */}
+            <ThreadBotChip threadId={currentThreadId || threadId} />
             {isLoadingHistory ? (
               <span className="text-xs whitespace-nowrap" style={{ color: 'var(--color-text-tertiary)' }}>
                 {t('chat.loadingHistory')}

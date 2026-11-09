@@ -244,6 +244,26 @@ async def _claude_code_default_for(user_id: str, workspace_id: str, pref: dict[s
     return name if name and is_claude_code_model(name) else None
 
 
+async def _require_bot_in(
+    user_id: str, bot_id: str, workspace_id: str, conn
+) -> None:
+    """A bot the runs may speak as: the caller's, live, and of this workspace."""
+    from src.server.database import bots as bot_db
+
+    bot = await bot_db.get_bot_for_user(user_id, bot_id, conn=conn)
+    if bot is None or str(bot["workspace_id"]) != str(workspace_id):
+        raise TargetRefused(
+            HTTPException(status_code=404, detail="Bot not found"), field="bot_id"
+        )
+
+
+def _check_home_model(user_id: str, name: str | None, workspace_id: str | None) -> None:
+    """Refuse a Claude Code row in Home, whose Chief of Staff does not run on
+    it, so every firing would fail until the automation is disabled."""
+    if name and workspace_id and is_claude_code_model(name) and is_home_id(user_id, workspace_id):
+        raise AutomationRefusal(claude_code_off_message("chief_of_staff"), field="llm_model")
+
+
 async def _check_model(user_id: str, name: str, pref: dict[str, Any] | None) -> None:
     """Refuse a model the run would reject: an unknown name fails every
     firing until the automation is disabled."""
@@ -358,6 +378,20 @@ async def check_delivery(
     return list(dict.fromkeys(canonical.get(m, m) for m in methods))
 
 
+def effective_thread_strategy(data: "AutomationCreate") -> str:
+    """The strategy a create really asks for.
+
+    A bot speaks in one continuous thread unless the caller named a strategy;
+    naming 'new' keeps per-run threads, and an automation with no bot keeps
+    today's 'new' default. Read off ``model_fields_set`` because 'new' is also
+    the schema default: "did they name one?" is the only question that tells
+    the two apart.
+    """
+    if data.bot_id and "thread_strategy" not in data.model_fields_set:
+        return "continue"
+    return data.thread_strategy
+
+
 async def create_automation(
     user_id: str,
     data: AutomationCreate,
@@ -396,17 +430,21 @@ async def create_automation(
         await _require_pin_in(
             user_id, str(data.conversation_thread_id), workspace_id, conn
         )
+    if data.bot_id:
+        await _require_bot_in(user_id, str(data.bot_id), workspace_id, conn)
+    strategy = effective_thread_strategy(data)
+    _check_home_model(user_id, data.llm_model, workspace_id)
     await _check_claude_code_hosted(user_id, data.llm_model, workspace_id, conn, model_pref)
     if data.llm_model:
         await _check_model(user_id, data.llm_model, model_pref)
-        if data.thread_strategy == "continue" and data.conversation_thread_id:
+        if strategy == "continue" and data.conversation_thread_id:
             await _check_claude_code_continues(data.llm_model, str(data.conversation_thread_id))
     if data.delivery_config and not delivery_checked:
         methods = await check_delivery(user_id, data.delivery_config.methods)
         delivery = DeliveryConfig(methods=methods)
         data = data.model_copy(update={"delivery_config": delivery})
 
-    automation = await auto_db.create_automation(
+    create_kwargs = dict(
         user_id=user_id,
         name=data.name,
         file_name=file_name,
@@ -420,7 +458,7 @@ async def create_automation(
         workspace_id=workspace_id,
         llm_model=data.llm_model,
         additional_context=data.additional_context,
-        thread_strategy=data.thread_strategy,
+        thread_strategy=strategy,
         conversation_thread_id=(
             str(data.conversation_thread_id) if data.conversation_thread_id else None
         ),
@@ -431,6 +469,9 @@ async def create_automation(
         metadata=data.metadata,
         conn=conn,
     )
+    if data.bot_id:
+        create_kwargs["bot_id"] = str(data.bot_id)
+    automation = await auto_db.create_automation(**create_kwargs)
 
     logger.info(
         f"[AUTOMATION] Created automation {automation['automation_id']} "
@@ -490,7 +531,7 @@ async def update_automation(
         fields, context={"trigger_type": current["trigger_type"]}
     )
     update_kwargs = update.model_dump(exclude_unset=True, exclude={"trigger_type"})
-    for field in ("workspace_id", "conversation_thread_id"):
+    for field in ("workspace_id", "conversation_thread_id", "bot_id"):
         if update_kwargs.get(field) is not None:
             update_kwargs[field] = str(update_kwargs[field])
 
@@ -528,6 +569,18 @@ async def update_automation(
             if runs_in is None:
                 raise AutomationRefusal(_NO_WORKSPACE, field="workspace_id")
             await _require_pin_in(user_id, pin, runs_in, conn)
+    if update_kwargs.get("bot_id"):
+        runs_in = update_kwargs.get("workspace_id") or stored_in
+        if runs_in is None:
+            raise AutomationRefusal(_NO_WORKSPACE, field="bot_id")
+        await _require_bot_in(user_id, update_kwargs["bot_id"], runs_in, conn)
+    elif "workspace_id" in update.model_fields_set and current.get("bot_id"):
+        # Moving the automation without naming a bot leaves the stored one
+        # behind in the old workspace; validate it against the new place so
+        # the edit cannot silently fall back to a different identity.
+        await _require_bot_in(
+            user_id, str(current["bot_id"]), update_kwargs["workspace_id"], conn
+        )
     # Only a new name is checked: a stored one the user can no longer run
     # must not block an edit to anything else.
     if update.llm_model and update.llm_model != current.get("llm_model"):

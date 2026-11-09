@@ -53,6 +53,32 @@ credits = meter.create_observable_counter(
     unit="{credit}",
 )
 
+# Bots/rooms: the batch of synthetic turns the bots layer adds. Labels are
+# bounded (kind/status/state), never ids.
+bot_messages_counter = meter.create_counter(
+    "langalpha.bots.messages",
+    description="Bot-to-bot deliveries by outcome and message kind.",
+    unit="{message}",
+)
+
+room_rounds_counter = meter.create_counter(
+    "langalpha.rooms.rounds",
+    description="Room rounds by terminal status.",
+    unit="{round}",
+)
+
+room_round_slots_counter = meter.create_counter(
+    "langalpha.rooms.round.slots",
+    description="Room round slots by outcome (done|passed|missed|skipped|needs_input).",
+    unit="{slot}",
+)
+
+room_round_duration_ms = meter.create_histogram(
+    "langalpha.rooms.round.duration_ms",
+    description="Wall time from claiming a room round to finishing it.",
+    unit="ms",
+)
+
 workspace_created = meter.create_counter(
     "langalpha.workspace.created",
     description="Workspaces created.",

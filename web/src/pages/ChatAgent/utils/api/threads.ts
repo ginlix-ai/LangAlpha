@@ -13,6 +13,8 @@ export interface ThreadCreatedInfo {
   thread_index: number;
   title: string;
   msg_type: string;
+  /** The bot the thread is bound to; absent follows the workspace's default. */
+  bot_id?: string | null;
   /** The tuning overrides the create stored, echoed back; null follows Settings. */
   reasoning_effort?: string | null;
   fast_mode?: boolean | null;
@@ -40,6 +42,8 @@ export async function createThreadWithTitle(opts: {
   timezone?: string;
   /** Left out, the thread stores no value and follows the owner's default. */
   subagentsAllowed?: boolean;
+  /** The bot the thread answers as. Left out, the workspace's default bot. */
+  botId?: string;
   /** The thread's own effort and fast mode, picked before it existed. Left
    *  out, the thread follows Settings. */
   reasoningEffort?: string;
@@ -47,7 +51,8 @@ export async function createThreadWithTitle(opts: {
   timeoutMs?: number;
 }): Promise<ThreadCreatedInfo> {
   const {
-    workspaceId, firstQuery, title, platform, timezone, subagentsAllowed, reasoningEffort, fastMode, timeoutMs = 8000,
+    workspaceId, firstQuery, title, platform, timezone, subagentsAllowed, botId, reasoningEffort, fastMode,
+    timeoutMs = 8000,
   } = opts;
 
   const body: Record<string, unknown> = { first_query: firstQuery };
@@ -56,6 +61,7 @@ export async function createThreadWithTitle(opts: {
   if (platform) body.platform = platform;
   if (timezone) body.timezone = timezone;
   if (subagentsAllowed !== undefined) body.subagents_allowed = subagentsAllowed;
+  if (botId) body.bot_id = botId;
   if (reasoningEffort !== undefined) body.reasoning_effort = reasoningEffort;
   if (fastMode !== undefined) body.fast_mode = fastMode;
 

@@ -17,7 +17,7 @@ import { CREDIT_STOP_ERROR_TYPE, isDeliveredNotice, isDeliveredReport, isDeliver
 import { setStoredThreadId } from '../../hooks/utils/threadStorage';
 import { createAssistantMessage, updateMessage } from '../../hooks/utils/messageHelpers';
 import { turnOf } from '../../components/messageList/turnProjection';
-import { withLiveReportRow } from '../provenance';
+import { withLiveBotMessageRow, withLiveReportRow, botMessageSourceFromMetadata } from '../provenance';
 import { stampRunTurn } from './runTurn';
 import type { HtmlWidgetData } from '../../hooks/utils/types';
 import {
@@ -231,7 +231,18 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       if (event.run_id) {
         rt.currentRunIdRef.current = event.run_id;
         noteLiveRun(rt, event.run_id);
-        if (event.report_source) {
+        // A delivered bot-to-bot message: the frame names its sender, and no
+        // user message comes with a synthetic turn, so the row is drawn here
+        // and history replaces it by its run id on the next reload.
+        const botSource = botMessageSourceFromMetadata(event.bot_message_source);
+        if (botSource) {
+          const { run_id: runId, turn_index: turn } = event;
+          const beforeId = rt.currentMessageRef.current;
+          const content = typeof event.content === 'string'
+            ? event.content
+            : botSource.body ?? '';
+          rt.setMessages((prev) => withLiveBotMessageRow(prev, runId, botSource, beforeId, turn, content));
+        } else if (event.report_source) {
           const { run_id: runId, report_source: source, turn_index: turn } = event;
           const beforeId = rt.currentMessageRef.current;
           rt.setMessages((prev) => withLiveReportRow(prev, runId, source, beforeId, turn));

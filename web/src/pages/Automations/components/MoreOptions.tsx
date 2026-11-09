@@ -12,8 +12,10 @@ import {
 import { Disclosure } from '@/components/ui/Disclosure';
 import { Input } from '@/components/ui/input';
 import { SegmentedControl } from '@/components/ui/segmented-control';
+import { BotMark } from '@/components/bots/BotMark';
+import { useBots } from '@/hooks/useBots';
 import { cn } from '@/lib/utils';
-import type { DeliveryAttempt } from '@/types/automation';
+import type { Automation, DeliveryAttempt } from '@/types/automation';
 import { useAutomationPlace } from '../hooks/useAutomationPlace';
 import { useDeliveryOptions } from '../hooks/useDeliveryOptions';
 import { useWorkspaceOptions, workspaceNameOf } from '../hooks/useWorkspaceOptions';
@@ -25,6 +27,10 @@ import DeliveryPicker, { DeliveryProblems } from './DeliveryPicker';
 import FormRow from './FormRow';
 
 type DeliveryChoice = 'none' | 'slack' | 'discord';
+
+/** The bot option that means "the workspace's own analyst". Radix ids are
+ *  strings; it is not a bot id, so the two never collide. */
+const NO_BOT = '__workspace__';
 
 /** The one segment the delivery control can press, or null for a set it
  *  cannot show: several channels, or one the agent chose that the form does
@@ -40,6 +46,9 @@ interface MoreOptionsProps {
   patch: FormPatch;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The strategy the form sends: a bot-owned automation states continue
+   *  until the reader presses the control. Defaults to the form's value. */
+  threadStrategy?: Automation['thread_strategy'];
   /** The edited automation's last deliveries, which name chats the apps may
    *  no longer list. */
   deliveryAttempts?: DeliveryAttempt[] | null;
@@ -56,6 +65,7 @@ export default function MoreOptions({
   patch,
   open,
   onOpenChange,
+  threadStrategy,
   deliveryAttempts,
   deliveryProblems = NO_PROBLEMS,
 }: MoreOptionsProps) {
@@ -63,6 +73,7 @@ export default function MoreOptions({
   const uid = useId();
   const ids = {
     thread: `${uid}-thread`,
+    bot: `${uid}-bot`,
     delivery: `${uid}-delivery`,
     retrigger: `${uid}-retrigger`,
     cooldown: `${uid}-cooldown`,
@@ -76,6 +87,25 @@ export default function MoreOptions({
   const allWorkspaces = form.place === ALL_WORKSPACES;
   const workspaceName = workspaceNameOf(workspaces, form.place);
   const { homeId, label: placeLabel } = useAutomationPlace();
+  // A bot belongs to one workspace, so the list follows the place: Home's id
+  // stands for the Chief of Staff, and an unpicked place lists none.
+  const botWorkspaceId = allWorkspaces ? homeId : (form.place || undefined);
+  const botsQuery = useBots(botWorkspaceId ?? null, open && !!botWorkspaceId);
+  const bots = botsQuery.data?.bots ?? [];
+  const strategy = threadStrategy ?? form.thread_strategy;
+  const selectedBot = bots.find((bot) => bot.bot_id === form.bot_id);
+  // A bot the automation still names but the workspace no longer lists (a
+  // deleted bot, or one read before the list landed) stays selected: saving
+  // must not silently hand its runs to the workspace's analyst.
+  const staleBot = !!form.bot_id && !selectedBot && !botsQuery.isLoading;
+  const targetDescription = form.bot_id
+    ? t(
+        selectedBot
+          ? (strategy === 'continue' ? 'automation.botTargetContinueNamed' : 'automation.botTargetNewNamed')
+          : (strategy === 'continue' ? 'automation.botTargetContinue' : 'automation.botTargetNew'),
+        { name: selectedBot?.name ?? '' },
+      )
+    : null;
   // Chats are asked with the workspace the run lands in, which for All
   // workspaces is Home, once its id is known.
   const delivery = useDeliveryOptions({ workspaceId: allWorkspaces ? homeId : form.place });
@@ -92,7 +122,11 @@ export default function MoreOptions({
   // What the folded options are set to, so they can stay folded.
   const summary = [
     allWorkspaces ? t('agents.chiefOfStaff') : placeLabel({ workspace_id: form.place }, workspaceName),
-    t(form.thread_strategy === 'continue' ? 'automation.continueExisting' : 'automation.newThreadEachRun'),
+    // A bot-owned row says where its runs land, rather than repeating the
+    // strategy word: the two together are what the reader needs to know.
+    form.bot_id && targetDescription
+      ? targetDescription
+      : t(strategy === 'continue' ? 'automation.continueExisting' : 'automation.newThreadEachRun'),
     form.delivery_methods.length
       ? t('automation.deliversTo', { method: form.delivery_methods.map(entryName).join(', ') })
       : t('automation.noDelivery'),
@@ -120,7 +154,13 @@ export default function MoreOptions({
           <Select
             aria-label={t('thread.workspace')}
             selectedKey={form.place || null}
-            onSelectionChange={(key) => patch('place', key == null ? '' : String(key))}
+            onSelectionChange={(key) => {
+              const place = key == null ? '' : String(key);
+              // A bot belongs to one workspace: moving the automation must not
+              // carry the old one's bot along.
+              if (place !== form.place) patch('bot_id', '');
+              patch('place', place);
+            }}
             placeholder={t('automation.selectWorkspace')}
             className="max-w-sm"
           >
@@ -140,11 +180,45 @@ export default function MoreOptions({
           </Select>
         </FormRow>
 
+        <FormRow label={t('automation.bot')} labelId={ids.bot}>
+          <div className="flex min-w-0 items-center gap-2">
+            {/* The selected bot's face, as it is drawn everywhere else. */}
+            {selectedBot && <BotMark bot={selectedBot} size={16} decorative />}
+            <Select
+              aria-label={t('automation.bot')}
+              selectedKey={form.bot_id || NO_BOT}
+              onSelectionChange={(key) => {
+                patch('bot_id', key == null || key === NO_BOT ? '' : String(key));
+              }}
+              isDisabled={!botWorkspaceId || botsQuery.isLoading}
+              className="min-w-0 max-w-sm flex-1"
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopover>
+                <SelectListBox>
+                  <SelectItem id={NO_BOT}>{t('automation.workspaceAnalyst')}</SelectItem>
+                  {bots.map((bot) => (
+                    <SelectItem key={bot.bot_id} id={bot.bot_id}>
+                      {bot.name}
+                    </SelectItem>
+                  ))}
+                  {staleBot && (
+                    <SelectItem id={form.bot_id}>{t('automation.botUnavailable')}</SelectItem>
+                  )}
+                </SelectListBox>
+              </SelectPopover>
+            </Select>
+          </div>
+          {targetDescription && <p className="automation-form-readout">{targetDescription}</p>}
+        </FormRow>
+
         <FormRow label={t('automation.threadStrategy')} labelId={ids.thread}>
           <SegmentedControl
             labelledBy={ids.thread}
-            value={form.thread_strategy}
-            onChange={(strategy) => patch('thread_strategy', strategy)}
+            value={strategy}
+            onChange={(next) => patch('thread_strategy', next)}
             options={[
               { value: 'new', label: t('automation.newThreadEachRun') },
               { value: 'continue', label: t('automation.continueExisting') },

@@ -2,6 +2,7 @@
 export const APP_SECTIONS = [
   'dashboard',
   'chat',
+  'rooms',
   'market',
   'news',
   'automations',

@@ -20,6 +20,11 @@ vi.mock('@/hooks/useHomeWorkspace', async (importOriginal) => ({
   useHomeWorkspaceId: () => 'home-1',
 }));
 
+// The form lists the chosen workspace's bots; these tests never pick one.
+vi.mock('@/hooks/useBots', () => ({
+  useBots: () => ({ data: { bots: [], max_bots: 20 }, isLoading: false }),
+}));
+
 vi.mock('../../utils/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/api')>()),
   getDeliveryOptions: vi.fn(),

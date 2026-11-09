@@ -449,3 +449,25 @@ def test_leaves_another_tools_answer_as_it_reads():
         ]
     )
     assert _answers(shown) == [answer]
+
+
+def test_strips_a_bot_messages_sender_and_body():
+    """A shared thread must not expose the words a hidden bot message carried."""
+    content, metadata = ShareRedaction([]).query(
+        {
+            "type": "system",
+            "content": "[Message from Quant]\nprivate words",
+            "metadata": {
+                "msg_type": "ptc",
+                "bot_message_source": {
+                    "kind": "bot_message",
+                    "from_bot_id": "b-1",
+                    "from_name": "Quant",
+                    "message_kind": "message",
+                    "body": "private words",
+                },
+            },
+        }
+    )
+    assert content == ""
+    assert metadata == {"msg_type": "ptc"}

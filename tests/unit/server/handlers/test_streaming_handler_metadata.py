@@ -109,6 +109,23 @@ class TestMetadataFrameFirst:
         }
 
     @pytest.mark.asyncio
+    async def test_a_bot_message_names_its_sender_up_front(self):
+        """A bot-to-bot message arrives as a user row the user never typed; the
+        first frame names the sender so an attaching client can draw its row."""
+        source = {
+            "kind": "bot_message",
+            "from_bot_id": "b-1",
+            "from_name": "Scout",
+            "message_kind": "request",
+        }
+        handler = RunSSEProducer(
+            thread_id="t-1", run_id="r-abc", announced={"bot_message_source": source}
+        )
+        event_name, data = _parse_sse((await _collect_stream(handler))[0])
+        assert event_name == "metadata"
+        assert data == {"thread_id": "t-1", "run_id": "r-abc", "bot_message_source": source}
+
+    @pytest.mark.asyncio
     async def test_metadata_names_the_admitted_turn(self):
         """The client stamps a live turn's bubbles from this value: a view
         that missed turns added elsewhere would otherwise count to the wrong

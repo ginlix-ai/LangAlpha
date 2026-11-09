@@ -16,10 +16,13 @@ from typing import Any
 # A report-back posts as ``system``; a wake as its hook's type.
 NOTIFICATION_QUERY_TYPES = frozenset({"system", "market_target", "wakeup"})
 
+# ``bot_message_source`` names a bot-to-bot message the server posted, so a
+# thread can draw its sender; like the others it never reaches the model.
+
 # The one wake turn that may end without a reply.
 WAKE_QUERY_TYPE = "wakeup"
 
-ANNOUNCED_KEYS = ("report_source", "market_target", "wakeup")
+ANNOUNCED_KEYS = ("report_source", "market_target", "wakeup", "bot_message_source")
 
 
 def announced(metadata: Mapping[str, Any]) -> dict[str, Any]:

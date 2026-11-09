@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import i18n from '@/i18n';
 import {
   automationToFormState,
+  effectiveThreadStrategy,
   formStateToPayload,
   formStateToUpdatePayload,
   isFormChanged,
@@ -36,6 +37,7 @@ function makeAutomation(overrides: Partial<Automation> = {}): Automation {
     llm_model: null,
     thread_strategy: 'new',
     conversation_thread_id: null,
+    bot_id: null,
     status: 'active',
     max_failures: 3,
     failure_count: 0,
@@ -140,6 +142,7 @@ describe('formStateToPayload', () => {
 
   it('carries only the fields the server reads', () => {
     expect(Object.keys(formStateToPayload(PLACED, HOME)).sort()).toEqual([
+      'bot_id',
       'cron_expression',
       'delivery_config',
       'instruction',
@@ -150,6 +153,11 @@ describe('formStateToPayload', () => {
       'trigger_type',
       'workspace_id',
     ]);
+  });
+
+  it('states the bot a run speaks as, and null when it has none', () => {
+    expect(formStateToPayload(PLACED, HOME).bot_id).toBeNull();
+    expect(formStateToPayload({ ...PLACED, bot_id: 'bot-1' }, HOME).bot_id).toBe('bot-1');
   });
 
   it('replaces {symbol} placeholder in instruction with price_symbol', () => {
@@ -185,11 +193,17 @@ describe('automationToFormState', () => {
     expect(form.price_cooldown_minutes).toBe('480');
     expect(form.delivery_methods).toEqual(['slack']);
     expect(form.max_failures).toBe(5);
+    expect(form.bot_id).toBe('');
   });
 
   it('opens a workspace automation on its workspace, and one naming Home as the Chief of Staff', () => {
     expect(automationToFormState(makeAutomation({ workspace_id: 'ws-1' }), 'UTC', HOME).place).toBe('ws-1');
     expect(automationToFormState(makeAutomation({ workspace_id: HOME }), 'UTC', HOME).place).toBe(ALL_WORKSPACES);
+  });
+
+  it("opens on the automation's bot, and on the workspace's analyst when it has none", () => {
+    expect(automationToFormState(makeAutomation({ bot_id: 'bot-1' }), 'UTC', HOME).bot_id).toBe('bot-1');
+    expect(automationToFormState(makeAutomation({ bot_id: null }), 'UTC', HOME).bot_id).toBe('');
   });
 
   it('opens a row naming no workspace unplaced, so the form asks for one', () => {
@@ -444,6 +458,33 @@ describe('formStateToUpdatePayload', () => {
   });
 });
 
+describe('effectiveThreadStrategy', () => {
+  it("states continue for a bot chosen on create, whose control was not touched", () => {
+    // The server reads an unnamed strategy on a bot-owned automation as
+    // continue; this form always names one, so it must state that itself.
+    expect(effectiveThreadStrategy({ ...INITIAL_FORM, bot_id: 'bot-1', thread_strategy: 'new' }, false)).toBe('continue');
+    expect(effectiveThreadStrategy({ ...INITIAL_FORM, bot_id: 'bot-1', thread_strategy: 'new' }, true)).toBe('new');
+  });
+
+  it("keeps the form's own value when no bot is picked", () => {
+    expect(effectiveThreadStrategy({ ...INITIAL_FORM, bot_id: '', thread_strategy: 'new' }, false)).toBe('new');
+    expect(effectiveThreadStrategy({ ...INITIAL_FORM, bot_id: '', thread_strategy: 'continue' }, false)).toBe('continue');
+  });
+
+  it('an edit leaves the stored strategy alone until the reader changes it', () => {
+    const opened = { bot_id: 'bot-1', thread_strategy: 'new' as const };
+    expect(effectiveThreadStrategy({ ...INITIAL_FORM, bot_id: 'bot-1', thread_strategy: 'new' }, false, opened)).toBe('new');
+    const openedContinue = { bot_id: 'bot-1', thread_strategy: 'continue' as const };
+    expect(effectiveThreadStrategy({ ...INITIAL_FORM, bot_id: 'bot-1', thread_strategy: 'continue' }, false, openedContinue)).toBe('continue');
+  });
+
+  it('an edit that changes the bot starts from that bot default, and clearing it keeps the form', () => {
+    const opened = { bot_id: 'bot-1', thread_strategy: 'new' as const };
+    expect(effectiveThreadStrategy({ ...INITIAL_FORM, bot_id: 'bot-2', thread_strategy: 'new' }, false, opened)).toBe('continue');
+    expect(effectiveThreadStrategy({ ...INITIAL_FORM, bot_id: '', thread_strategy: 'new' }, false, opened)).toBe('new');
+  });
+});
+
 describe('an edit of each template', () => {
   // Each template filled in the way a reader would, saved, and reopened.
   const filled = (id: TemplateId): FormState => ({
@@ -478,7 +519,7 @@ describe('an edit of each template', () => {
   it.each(cases)('%s restates the settings a create states, and its trigger only once changed', (id, change, triggerKeys) => {
     const { automation, initial } = reopened(filled(id));
     const settings = pick(formStateToPayload(initial, initial.place), [
-      'name', 'workspace_id', 'instruction', 'thread_strategy', 'max_failures', 'delivery_config',
+      'name', 'workspace_id', 'bot_id', 'instruction', 'thread_strategy', 'max_failures', 'delivery_config',
     ]);
     const untouched = formStateToUpdatePayload(initial, initial, automation, initial.place);
     expect(untouched).toEqual({ ...settings, description: initial.description });

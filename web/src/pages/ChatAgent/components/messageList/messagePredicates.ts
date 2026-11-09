@@ -62,3 +62,13 @@ export function isReportRow(message: MessageLike & { provenance?: unknown }): bo
 export function isReportKind(kind: MessageProvenance['kind'] | undefined): boolean {
   return kind === 'analyst_report' || kind === 'task_report' || kind === 'command_report';
 }
+
+/**
+ * A delivered bot-to-bot message's row: drawn as the sender's line and words
+ * (see `BotMessageRow`), not as a user bubble, and with none of the user's
+ * own actions. It opens its turn like any user message: the agent answers it.
+ */
+export function isBotMessageRow(message: MessageLike & { provenance?: unknown }): boolean {
+  if (message.role !== 'user') return false;
+  return (message.provenance as MessageProvenance | undefined)?.kind === 'bot_message';
+}

@@ -14,6 +14,7 @@ import { mutationErrorMessage } from '../utils/errors';
 import { PANE_ENTER } from '../utils/motion';
 import {
   ALL_WORKSPACES,
+  effectiveThreadStrategy,
   type FormPatch,
   type FormState,
   formStateToPayload,
@@ -67,11 +68,17 @@ export default function AutomationInlineForm({
   // The delivery entries the last save was refused over, until the delivery
   // changes.
   const [refused, setRefused] = useState<DeliveryProblem[]>([]);
+  // Whether the reader has pressed the thread-strategy control. Until they do,
+  // a bot-owned automation states the server's own default (continue) rather
+  // than the value its row opened with.
+  const [strategyTouched, setStrategyTouched] = useState(false);
   const uid = useId();
   const ids = { name: `${uid}-name`, instruction: `${uid}-instruction` };
+  const threadStrategy = effectiveThreadStrategy(form, strategyTouched, opened.automation);
 
   const patch: FormPatch = (key, value) => {
     if (key === 'delivery_methods') setRefused([]);
+    if (key === 'thread_strategy') setStrategyTouched(true);
     setForm((f) => ({ ...f, [key]: value }));
   };
 
@@ -102,9 +109,16 @@ export default function AutomationInlineForm({
         setPlacing(false);
       }
     }
+    // The strategy the control was left on. An edit keeps the row's own value
+    // until the reader changes it or picks another bot; a create starts from
+    // the bot default.
+    const saveForm: FormState = {
+      ...form,
+      thread_strategy: effectiveThreadStrategy(form, strategyTouched, opened.automation),
+    };
     const submission: FormSubmission = opened.automation
-      ? { kind: 'edit', payload: formStateToUpdatePayload(form, opened.values, opened.automation, workspaceId) }
-      : { kind: 'create', payload: formStateToPayload(form, workspaceId) };
+      ? { kind: 'edit', payload: formStateToUpdatePayload(saveForm, opened.values, opened.automation, workspaceId) }
+      : { kind: 'create', payload: formStateToPayload(saveForm, workspaceId) };
     // The refusal itself was already announced; one naming delivery entries
     // is also shown beside them, unfolded.
     void Promise.resolve(onSubmit(submission)).catch((err: unknown) => {
@@ -153,6 +167,7 @@ export default function AutomationInlineForm({
             patch={patch}
             open={moreOpen}
             onOpenChange={setMoreOpen}
+            threadStrategy={threadStrategy}
             deliveryAttempts={opened.automation?.last_execution?.delivery_result}
             deliveryProblems={refused}
           />

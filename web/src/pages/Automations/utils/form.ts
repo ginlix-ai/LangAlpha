@@ -34,6 +34,8 @@ export interface FormState {
   /** Where it runs: ALL_WORKSPACES, a workspace's id, or empty until the
    *  reader picks one. */
   place: string;
+  /** The bot each run speaks as, or empty for the workspace's own analyst. */
+  bot_id: string;
   instruction: string;
   thread_strategy: Automation['thread_strategy'];
   max_failures: number;
@@ -60,6 +62,7 @@ export const INITIAL_FORM: FormState = {
   timezone: deviceTimezone(),
   next_run_at: '',
   place: '',
+  bot_id: '',
   instruction: '',
   thread_strategy: 'continue',
   max_failures: 3,
@@ -90,6 +93,7 @@ export function automationToFormState(automation: Automation, timezone = deviceT
     // read UTC digits back as local time and moved the run by the offset.
     next_run_at: automation.next_run_at ?? '',
     place: runsInHome(automation, homeId) ? ALL_WORKSPACES : automation.workspace_id ?? '',
+    bot_id: automation.bot_id ?? '',
     instruction: automation.instruction,
     thread_strategy: automation.thread_strategy,
     max_failures: automation.max_failures,
@@ -213,9 +217,37 @@ export function formToPriceConfig(form: FormState): PriceTriggerConfig {
 
 type Settings = Pick<
   AutomationPayload,
-  'name' | 'workspace_id' | 'instruction' | 'thread_strategy' | 'max_failures' | 'delivery_config'
+  'name' | 'workspace_id' | 'bot_id' | 'instruction' | 'thread_strategy' | 'max_failures' | 'delivery_config'
 >;
 type Trigger = Pick<AutomationUpdatePayload, 'cron_expression' | 'next_run_at' | 'timezone' | 'trigger_config'>;
+
+/**
+ * The strategy a save really sends.
+ *
+ * A bot speaks in one continuous thread unless the caller names a strategy,
+ * and the server reads an unnamed one on a bot-owned automation as
+ * `continue`. This form always names one, so an untouched control on a
+ * bot-owned row states that default itself instead of sending whatever the
+ * row happened to open with. Once the reader presses the control, their pick
+ * is sent as-is.
+ */
+export function effectiveThreadStrategy(
+  form: FormState,
+  strategyTouched: boolean,
+  opened?: Pick<Automation, 'bot_id' | 'thread_strategy'> | null,
+): Automation['thread_strategy'] {
+  if (strategyTouched) return form.thread_strategy;
+  // An edit keeps what the row already stores: reopening a bot-owned row and
+  // saving an unrelated field must not rewrite its session strategy. Only a
+  // bot the reader just picked (create, or an edit that changed the bot)
+  // starts from the server's bot default.
+  if (opened) {
+    const openedBot = opened.bot_id ?? '';
+    if (form.bot_id === openedBot) return opened.thread_strategy;
+    return form.bot_id ? 'continue' : form.thread_strategy;
+  }
+  return form.bot_id ? 'continue' : form.thread_strategy;
+}
 
 /** What every save states, whatever starts the automation. `workspaceId` is
  *  where it runs, Home's id for the Chief of Staff. */
@@ -223,6 +255,10 @@ function settingsPayload(form: FormState, workspaceId: string): Settings {
   return {
     name: form.name,
     workspace_id: workspaceId,
+    // Stated even when empty: a PATCH reads an explicit null as "no bot",
+    // which is how an edit hands a bot-owned automation back to the
+    // workspace's own analyst.
+    bot_id: form.bot_id || null,
     instruction: fillSymbol(form),
     thread_strategy: form.thread_strategy,
     max_failures: form.max_failures,

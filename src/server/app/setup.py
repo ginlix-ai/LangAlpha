@@ -150,6 +150,13 @@ _REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
     # Has a model describe MCP servers; a claim on each job's row under its
     # scope's advisory lock dedups it across workers.
     ("McpDescriptionWorker", "src.server.services.mcp_descriptions.worker"),
+    # Retries bot messages a busy target left queued; the claim marks each row
+    # before delivery, so a retry is one turn (the posted request key) and a
+    # worker dying mid-delivery only delays the next attempt.
+    ("BotMessageDelivery", "src.server.services.bot_messages.sweeper"),
+    # Resumes room rounds no worker is driving (queued, or a lapsed lease);
+    # the round's guarded claim is what keeps two workers off one slot.
+    ("RoomRoundSweeper", "src.server.services.rooms.sweeper"),
 )
 
 
@@ -1388,6 +1395,8 @@ from src.server.app.utilities import health_router
 from src.server.app.computers import router as computers_router
 from src.server.app.computers_ssh import router as computers_ssh_router
 from src.server.app.workspaces import router as workspaces_router
+from src.server.app.bots import router as bots_router
+from src.server.app.rooms import router as rooms_router
 from src.server.app.workspace_files import router as workspace_files_router
 from src.server.app.workspace_files import wsfiles_router
 from src.server.app.workspace_sandbox import router as workspace_sandbox_router
@@ -1463,6 +1472,8 @@ else:
 app.include_router(threads_router)  # /api/v1/threads/* - Thread CRUD, messages, control
 app.include_router(sessions_router)  # /api/v1/sessions - Active session stats
 app.include_router(workspaces_router)  # /api/v1/workspaces/* - Workspace CRUD
+app.include_router(bots_router)  # /api/v1/bots/* - Bot identity over threads
+app.include_router(rooms_router)  # /api/v1/rooms/* - Rooms (shared log, group rounds)
 app.include_router(
     computers_ssh_router
 )  # /api/v1/computers/ssh/* - Adding an SSH machine, ahead of /{computer_id}

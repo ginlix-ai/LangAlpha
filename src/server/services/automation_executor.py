@@ -88,6 +88,10 @@ class _Firing:
     # The starts made, and the entries the last one was made for.
     delivery_starts: int = 0
     delivery_entries: Optional[list[str]] = None
+    # The bot the run speaks as (None for a row with no bot, or one that was
+    # deleted/moved/paused): the turn runs with its persona, model and tool
+    # surface, and a thread it creates is stamped with it.
+    bot: Optional[Dict[str, Any]] = None
 
     @property
     def held(self) -> bool:
@@ -265,11 +269,12 @@ def _pinned_thread(automation: Dict[str, Any]) -> Optional[str]:
 
 @dataclass(frozen=True)
 class _Place:
-    """Where a firing runs: the workspace row its turn names, and the pinned
-    thread it continues (None starts one)."""
+    """Where a firing runs: the workspace row its turn names, the pinned
+    thread it continues (None starts one), and the bot it speaks as."""
 
     workspace: Dict[str, Any]
     thread_id: Optional[str]
+    bot: Optional[Dict[str, Any]] = None
 
 
 async def _turn_place(automation: Dict[str, Any]) -> _Place:
@@ -298,7 +303,48 @@ async def _turn_place(automation: Dict[str, Any]) -> _Place:
                 f"automation_id={automation.get('automation_id')} thread_id={thread_id}"
             )
             thread_id = None
-    return _Place(workspace, thread_id)
+    bot = await _automation_bot(automation, workspace)
+    if thread_id is None and bot is not None and automation.get("thread_strategy") == "continue":
+        # A bot's scheduled work lands in its own continuous thread, created
+        # on first need; the next run keeps reading it.
+        from src.server.services.bot_messages.delivery import ensure_private_thread
+
+        thread_id = await ensure_private_thread(bot)
+    return _Place(workspace, thread_id, bot)
+
+
+async def _automation_bot(
+    automation: Dict[str, Any], workspace: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """The bot the automation speaks as, when it names one of this workspace.
+
+    A bot that was deleted, moved, or paused stops identifying the runs: the
+    automation keeps running as the place's own analyst rather than failing a
+    schedule the user did not ask to lose.
+    """
+    bot_id = automation.get("bot_id")
+    if not bot_id:
+        return None
+    from src.server.database import bots as bot_db
+
+    bot = await bot_db.get_bot(str(bot_id))
+    if bot is None or str(bot["workspace_id"]) != str(workspace["workspace_id"]):
+        logger.info(
+            "[AUTOMATION_EXEC] Automation %s names bot %s, which this workspace "
+            "no longer holds; running as its analyst",
+            automation.get("automation_id"),
+            bot_id,
+        )
+        return None
+    if bot.get("status") != "active":
+        logger.info(
+            "[AUTOMATION_EXEC] Automation %s names paused bot %s; running as "
+            "its analyst",
+            automation.get("automation_id"),
+            bot_id,
+        )
+        return None
+    return bot
 
 
 async def _stored_workspace(automation: Dict[str, Any]) -> Dict[str, Any]:
@@ -398,6 +444,20 @@ class AutomationExecutor:
                 conversation_thread_id=thread_id,
             )
         await self._precreate_titled_thread(automation, thread_id, workspace_id)
+        if place.bot:
+            # The run's own thread answers as its bot from the first turn; a
+            # failure here is provenance only and must not fail the run.
+            try:
+                from src.server.database import bots as bot_db
+
+                await bot_db.bind_thread_bot(thread_id, place.bot["bot_id"])
+            except Exception as exc:
+                logger.warning(
+                    "[AUTOMATION_EXEC] could not stamp thread %s with bot %s: %s",
+                    thread_id,
+                    place.bot.get("bot_id"),
+                    exc,
+                )
         return thread_id
 
     async def _wait_for_thread(
@@ -709,6 +769,11 @@ class AutomationExecutor:
             automation = firing.automation
             user_id = automation["user_id"]
             instruction = automation["instruction"]
+            task_name = (automation.get("name") or "").strip()
+            if automation.get("bot_id") and task_name:
+                # The bot's thread carries its scheduled turns beside its own;
+                # the frame is what tells the model which one this is.
+                instruction = f"[Scheduled task: {task_name}]\n{instruction}"
             additional_context = automation.get("additional_context")
             run_metadata = {
                 "automation_execution_id": execution_id,
@@ -729,7 +794,10 @@ class AutomationExecutor:
             request = ChatRequest(
                 workspace_id=firing.workspace_id,
                 messages=[ChatMessage(role="user", content=instruction)],
-                llm_model=automation.get("llm_model"),
+                # A bot-owned automation runs on the bot's model unless the
+                # row names one itself, exactly like the bot's chat turns.
+                llm_model=automation.get("llm_model")
+                or (firing.bot or {}).get("model"),
                 additional_context=additional_context,
                 origin=ThreadOrigin(
                     type="automation",
@@ -752,6 +820,7 @@ class AutomationExecutor:
                 is_byok=has_byok,
                 from_server=True,
                 steerable=False,
+                turn_bot=firing.bot,
                 # Stamped on the run at START, so its finalize settles this
                 # firing whichever worker is left to drain the job, and
                 # delivers the way its start chose.
@@ -864,7 +933,26 @@ class AutomationExecutor:
 
             # ─── Resolve workspace + thread ───────────────────────
             place = await _turn_place(firing.automation)
-            route = turn_route(user_id, place.workspace)
+            firing.bot = place.bot
+            if firing.automation.get("bot_id") and place.bot is None:
+                # The named bot is paused, deleted, or no longer of this
+                # workspace. Running as the analyst instead would spend the
+                # user's credit as an identity they did not choose; skip the
+                # firing and let the history say why.
+                logger.warning(
+                    "[AUTOMATION_EXEC] Skipping execution %s: bot %s is not "
+                    "available to run it",
+                    execution_id,
+                    firing.automation.get("bot_id"),
+                )
+                await settle(
+                    firing.automation,
+                    execution_id,
+                    Outcome.SKIPPED,
+                    skip_reason="bot_unavailable",
+                )
+                return
+            route = turn_route(user_id, place.workspace, place.bot)
             await route.bind(user_id, place.workspace)
             firing.route = route
             firing.thread_id = await self._resolve_thread(

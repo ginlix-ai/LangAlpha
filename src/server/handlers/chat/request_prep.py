@@ -951,6 +951,12 @@ def build_graph_config(
         # server-only, so no client can claim it.
         "wake_turn": request.query_type == WAKE_QUERY_TYPE,
     }
+    # A bot-message turn carries its chain position into the graph config, so
+    # the send tool can budget a loop without reading the frame text.
+    bot_source = request.bot_message_source
+    if bot_source is not None and bot_source.root_id:
+        configurable["bot_message_root_id"] = bot_source.root_id
+        configurable["bot_message_depth"] = int(bot_source.depth or 0)
     # A command's report-back turn names the command, so the call that reads
     # its notice brings the command's data sources with it. Its own field
     # (``report_source``) is server-only; the trace stays on the command's row.

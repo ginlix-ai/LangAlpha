@@ -38,14 +38,27 @@ class TurnRoute:
             await ensure_home(user_id, workspace)
 
 
-def turn_route(user_id: str, workspace: Optional[Dict[str, Any]]) -> TurnRoute:
+def turn_route(
+    user_id: str,
+    workspace: Optional[Dict[str, Any]],
+    bot: Optional[Dict[str, Any]] = None,
+) -> TurnRoute:
     """Where a turn runs, decided by the row it names alone.
 
     ``workspace`` is the caller's read of that row, None when the turn names
-    none. Nothing is bound here: the caller binds the route
-    (:meth:`TurnRoute.bind`) once its own gates pass, so a turn refused there
-    leaves the user's computer as it was.
+    none. ``bot`` is the identity the turn runs as (``services.bots.resolver``
+    resolves it, and stamps a legacy thread on first use); its role decides the
+    route, so a workspace's analyst and the user's Chief of Staff are two bots
+    on one code path. None keeps the pre-bot routing, which is what a caller
+    that never asked for a bot expects. Nothing is bound here: the caller binds
+    the route (:meth:`TurnRoute.bind`) once its own gates pass, so a turn
+    refused there leaves the user's computer as it was.
     """
+    role = (bot or {}).get("role")
+    if role == "chief_of_staff":
+        return TurnRoute(get_home_workspace_id(user_id), "chief_of_staff")
+    if role == "analyst" and bot.get("workspace_id"):
+        return TurnRoute(str(bot["workspace_id"]), "analyst")
     if workspace is not None and not is_home_row(workspace):
         return TurnRoute(str(workspace["workspace_id"]), "analyst")
     return TurnRoute(get_home_workspace_id(user_id), "chief_of_staff")

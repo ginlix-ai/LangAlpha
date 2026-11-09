@@ -686,9 +686,29 @@ export type ReportSource =
       tool_call_id?: string | null;
     };
 
+/** Why one bot writes to another. Mirrors the kinds the delivery frames name. */
+export type BotMessageKind = 'message' | 'request' | 'reply' | 'report' | 'question' | 'notice';
+
+/**
+ * A bot-to-bot message the server posted into this thread, stamped on the
+ * turn's query row and announced on its stream's metadata frame. The turn's
+ * own message is the framed text the sender wrote, so the chat draws a
+ * "Message from …" row from this instead of a bubble the user never typed.
+ * Mirrors `BotMessageSource` in src/server/models/chat.py.
+ */
+export interface BotMessageSource {
+  kind: 'bot_message';
+  message_id?: string | null;
+  /** Null when the sender was not a bot (the user or the system wrote it). */
+  from_bot_id?: string | null;
+  from_name: string;
+  message_kind: BotMessageKind;
+  /** The sender's words without the frame; lets a live row draw complete. */
+  body?: string | null;
+}
+
 export interface ThreadMetadata {
-  origin?: ThreadOrigin;
-  [key: string]: unknown;
+  origin?: ThreadOrigin;  [key: string]: unknown;
 }
 
 export interface Thread {
@@ -702,6 +722,10 @@ export interface Thread {
   archived_at?: string | null;
   /** The model this thread runs on; null follows the account default for its mode. */
   llm_model?: string | null;
+  /** The bot identity this thread answers as; null (or absent, from an older
+   *  server) is a row the resolver has not stamped, so the header keeps its
+   *  generic shape. */
+  bot_id?: string | null;
   /** Whether the agent may hand work to subagents; null (or absent, from an older
    *  server) follows the user's subagents default. */
   subagents_allowed?: boolean | null;

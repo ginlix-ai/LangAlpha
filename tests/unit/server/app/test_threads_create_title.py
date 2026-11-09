@@ -97,3 +97,42 @@ def test_a_named_title_is_capped_like_a_rename():
 def test_a_reply_after_a_long_quote_survives_the_clip():
     message = '<quote source="Analyst">' + "word " * 1000 + "</quote>\n<reply>why?</reply>"
     assert ThreadCreateRequest(first_query=message).first_query == message
+
+
+@pytest.mark.asyncio
+async def test_a_named_bot_is_bound_to_the_new_thread():
+    bot = {
+        "bot_id": "b-1",
+        "workspace_id": "ws-1",
+        "status": "active",
+        "role": "analyst",
+    }
+    body = {"workspace_id": "ws-1", "bot_id": "b-1", "title": "T"}
+    with patch(
+        "src.server.database.bots.get_bot_for_user", AsyncMock(return_value=bot)
+    ), patch(
+        "src.server.database.bots.bind_thread_bot", AsyncMock()
+    ) as bind:
+        resp, create, _ = await _create(body)
+    assert resp.status_code == 201
+    assert resp.json()["bot_id"] == "b-1"
+    create.assert_awaited_once()
+    bind.assert_awaited_once()
+    assert bind.await_args.kwargs["force"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_paused_bot_cannot_be_named_for_a_new_thread():
+    bot = {
+        "bot_id": "b-1",
+        "workspace_id": "ws-1",
+        "status": "paused",
+        "role": "analyst",
+    }
+    body = {"workspace_id": "ws-1", "bot_id": "b-1", "title": "T"}
+    with patch(
+        "src.server.database.bots.get_bot_for_user", AsyncMock(return_value=bot)
+    ):
+        resp, create, _ = await _create(body)
+    assert resp.status_code == 409
+    create.assert_not_awaited()
