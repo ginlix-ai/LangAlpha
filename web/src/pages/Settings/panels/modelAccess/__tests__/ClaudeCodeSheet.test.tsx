@@ -21,6 +21,9 @@ const h = vi.hoisted(() => ({
   planUrl: null as string | null,
   platform: false,
   cliComputer: null as ClaudeCodeCliPlacement | null,
+  computers: [] as ClaudeCodeComputer[],
+  clisMax: null as number | null,
+  setClis: vi.fn(),
 }));
 
 vi.mock('@/hooks/useFeatures', () => ({
@@ -29,7 +32,8 @@ vi.mock('@/hooks/useFeatures', () => ({
 }));
 vi.mock('@/hooks/useClaudeCode', () => ({
   useClaudeCodeStatus: () => ({ enabled: h.statusOn }),
-  useClaudeCodeComputers: () => ({ cliComputer: h.cliComputer }),
+  useClaudeCodeComputers: () => ({ cliComputer: h.cliComputer, computers: h.computers, clisMax: h.clisMax }),
+  useSetComputerClis: (computerId: string) => ({ mutate: (clis: number) => h.setClis(computerId, clis), isPending: false }),
 }));
 vi.mock('@/hooks/useClaudeCodeCustody', () => ({ useClaudeCodeCustody: () => ({ custody: h.custody }) }));
 vi.mock('../ClaudeCodeHostedChoice', () => ({ ClaudeCodeHostedChoice: () => null }));
@@ -90,6 +94,9 @@ describe('ClaudeCodeSheet', () => {
     h.spec = [];
     h.planUrl = null;
     h.cliComputer = null;
+    h.computers = [];
+    h.clisMax = null;
+    h.setClis.mockReset();
   });
 
   const macRow = (line: TokenRow['line']): TokenRow => ({
@@ -104,6 +111,37 @@ describe('ClaudeCodeSheet', () => {
     expect(within(row).queryByRole('button', { name: 'replace' })).toBeNull();
     fireEvent.click(within(row).getByRole('button'));
     expect(h.opened).toEqual([{ view: 'details', computerId: 'mac' }]);
+  });
+
+  it('once on, sets on a computer\'s row how many agents it runs at once, from 1 to the most the server allows', async () => {
+    h.computers = [mac('signed_in', { clis: 4 })];
+    h.clisMax = 8;
+    show(setupOf({ state: 'connected', on: true, computers: h.computers }), [macRow({ status: 'connected', detail: 'Its own token', actions: ['replace'] })]);
+    const row = screen.getByText('MacBook Pro', { selector: 'span' }).closest('li') as HTMLElement;
+    const select = within(row).getByLabelText('Claude Code agents at once') as HTMLSelectElement;
+    expect(select.value).toBe('4');
+    expect(Array.from(select.options, (o) => o.value)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
+    expect(select).toHaveAccessibleDescription(/Above 4, LangAlpha opens a second connection/);
+    expect(screen.getByText('MacBook Pro', { selector: 'span' }).parentElement).not.toContainElement(select);
+    fireEvent.change(select, { target: { value: '6' } });
+    expect(h.setClis).toHaveBeenCalledWith('mac', 6);
+  });
+
+  it('offers no count on a computer whose entry carries none, from a server that predates it', () => {
+    h.computers = [mac('signed_in')];
+    h.clisMax = 8;
+    show(setupOf({ state: 'connected', on: true, computers: h.computers }), [macRow({ status: 'connected', detail: 'Its own token', actions: ['replace'] })]);
+    expect(screen.queryByLabelText('Claude Code agents at once')).toBeNull();
+  });
+
+  it.each([
+    ['before Claude Code is on', false, 8],
+    ['on a server that predates it', true, null],
+  ])('offers no count %s', (_, on, max) => {
+    h.computers = [mac('signed_in', { clis: 4 })];
+    h.clisMax = max;
+    show(setupOf({ state: 'connected', on, computers: h.computers }), [macRow({ status: 'connected', detail: 'Its own token', actions: ['replace'] })]);
+    expect(screen.queryByLabelText('Claude Code agents at once')).toBeNull();
   });
 
   it('with the setup unread, takes whether it is on from the status read, so adding a token turns nothing on', async () => {
