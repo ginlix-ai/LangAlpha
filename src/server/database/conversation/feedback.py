@@ -9,6 +9,13 @@ from src.server.database.conversation import _sql
 
 logger = logging.getLogger(__name__)
 
+_ANY = object()
+
+
+class RatingChanged(Exception):
+    """The rating no longer has the report it was read with: another request
+    changed it in between."""
+
 
 async def upsert_feedback(
     conversation_thread_id: str,
@@ -19,12 +26,18 @@ async def upsert_feedback(
     comment: str | None = None,
     consent_human_review: bool = False,
     conn=None,
+    report_id_read: object = _ANY,
 ) -> dict:
     """Upsert a feedback rating for a conversation response.
 
     Resolves conversation_response_id from (thread_id, turn_index).
     Uses ON CONFLICT to update if feedback already exists for this response+user.
+    With ``report_id_read`` (None for no rating or none with a report), an
+    existing rating is changed only while its report is still that one, and
+    ``RatingChanged`` is raised otherwise: a rating that left a thumbs-down
+    must be one whose report was withdrawn.
     """
+    guarded = report_id_read is not _ANY
 
     async def _execute(conn):
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -95,8 +108,13 @@ async def upsert_feedback(
                         ELSE '[]'::jsonb
                     END,
                     updated_at = NOW()
-                RETURNING *
-            """,
+            """
+                + (
+                    " WHERE conversation_feedback.report_id IS NOT DISTINCT FROM %s::uuid"
+                    if guarded
+                    else ""
+                )
+                + " RETURNING *",
                 (
                     response_id,
                     user_id,
@@ -106,9 +124,12 @@ async def upsert_feedback(
                     consent_human_review,
                     review_status,
                     rating,
+                    *((report_id_read,) if guarded else ()),
                 ),
             )
             result = await cur.fetchone()
+            if result is None:
+                raise RatingChanged
             return {
                 **result,
                 "turn_index": turn_index,
@@ -237,14 +258,16 @@ async def get_feedback_by_id(conversation_feedback_id: str) -> dict | None:
             return await cur.fetchone()
 
 
-async def delete_feedback_by_id(conversation_feedback_id: str) -> bool:
+async def delete_feedback_by_id(conversation_feedback_id: str, report_id: str | None) -> bool:
     """Delete the rating read earlier in the request, not whichever attempt
-    the turn resolves to now: a retry settling meanwhile moves the turn."""
+    the turn resolves to now: a retry settling meanwhile moves the turn. Only
+    while it still has the report it was read with, the one just withdrawn."""
     async with pool.get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "DELETE FROM conversation_feedback WHERE conversation_feedback_id = %s",
-                (conversation_feedback_id,),
+                "DELETE FROM conversation_feedback WHERE conversation_feedback_id = %s "
+                "AND report_id IS NOT DISTINCT FROM %s::uuid",
+                (conversation_feedback_id, report_id),
             )
             return cur.rowcount > 0
 
