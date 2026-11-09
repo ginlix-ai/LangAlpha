@@ -53,7 +53,8 @@ from ptc_agent.core.sandbox.providers._ssh_shell import (
     root_dir_script,
     stop_script,
 )
-from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Link, Machine, pool
+from ptc_agent.core.sandbox.providers._ssh_pool import pool
+from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Link, Machine
 from ptc_agent.core.sandbox.providers.ssh_errors import (
     MACHINE_ID_PATTERN,
     SSHConnectError,

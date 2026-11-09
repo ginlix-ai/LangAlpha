@@ -28,7 +28,7 @@ import logging
 import math
 import posixpath
 import shlex
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,7 +37,7 @@ from ptc_agent.agent.claude_code.launcher import TokenStore
 from ptc_agent.agent.claude_code.plan import PlanLog
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
 from ptc_agent.core.sandbox.leased_stream import LEASE_S, RENEW_S, keep_leased, leased_command, new_lease
-from ptc_agent.core.sandbox.providers._ssh_transport import Machine, ScriptResult, temp_sibling
+from ptc_agent.core.sandbox.providers._ssh_transport import CliHold, Machine, ScriptResult, temp_sibling
 
 if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
@@ -179,8 +179,8 @@ class SandboxLink:
         return ScriptResult(result.exit_code, stdout, err.encode(), stdout_bytes=len(stdout))
 
     @contextlib.asynccontextmanager
-    async def cli_hold(self, wait_s: float) -> AsyncIterator[Callable[[str], Awaitable[_Channel]]]:
-        yield self._start
+    async def cli_hold(self, wait_s: float) -> AsyncIterator[CliHold]:
+        yield CliHold(self, self._start)
 
     async def _start(self, command: str) -> _Channel:
         """``command`` streaming on a lease; it keeps the pid it starts with, as an ``exec`` does."""

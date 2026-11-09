@@ -59,6 +59,7 @@ from ptc_agent.core.sandbox.providers._ssh_shell import (
     root_dir_script,
     stop_script,
 )
+from ptc_agent.core.sandbox.providers._ssh_pool import pool
 from ptc_agent.core.sandbox.providers._ssh_transport import (
     OUTPUT_CAP,
     TRANSPORT_ERRORS,
@@ -66,7 +67,6 @@ from ptc_agent.core.sandbox.providers._ssh_transport import (
     Link,
     ScriptLost,
     ScriptResult,
-    pool,
     run_framed,
     write_atomic,
 )

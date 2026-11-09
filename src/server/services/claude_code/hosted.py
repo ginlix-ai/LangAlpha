@@ -236,12 +236,12 @@ def cli_cap(computer: Mapping[str, Any]) -> int | None:
     backend instead (``cloud_runs_in`` ``worker``), the computer's size
     is not theirs, so it runs as many as one at ``SANDBOX_MIN_TIER``. None
     where a size is unknown; one that runs Claude Code at all runs at least one."""
-    from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS
+    from ptc_agent.core.sandbox.providers._ssh_transport import CLI_SLOTS
     from src.server.services.computer_manager import ComputerManager
     from src.server.services.ssh_computers import is_own_computer
 
     if is_own_computer(computer):
-        return _CLI_SLOTS
+        return CLI_SLOTS
     sizes = _sizes(computer) if in_sandbox() else [ComputerManager.get_instance().tier_size(computer, SANDBOX_MIN_TIER)]
     if any(size is None for size in sizes):
         return None

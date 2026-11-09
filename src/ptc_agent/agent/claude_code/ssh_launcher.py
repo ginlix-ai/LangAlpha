@@ -78,7 +78,8 @@ from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.providers._ssh_shell import check_env
 from ptc_agent.agent.claude_code.plan import PlanLog, SignedIn
 from ptc_agent.agent.claude_code.shell_link import ShellLink, ShellProcess
-from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS, TRANSPORT_ERRORS, Machine, SlotWaitTimeout
+from ptc_agent.core.claude_code_clis import agents
+from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Machine, SlotWaitTimeout
 from ptc_agent.core.sandbox.providers.ssh import IS_MUSL_SH, MUSL_UNSUPPORTED
 from src.llms.claude_code import ClaudeTurnFailed, is_token_text
 
@@ -97,7 +98,6 @@ CLI_SLOT_WAIT_S = 600
 #: computer's count of its CLIs (``hosted.cli_cap``), so a wait means a
 #: count that raced or another worker's link, and the run fails past it.
 SUBAGENT_CLI_SLOT_WAIT_S = 30
-CLI_SLOTS_FULL = f"Claude Code is already running {_CLI_SLOTS} agents on this computer. Try again when one finishes."
 COMMAND_SLOTS_FULL = "This computer is busy running other commands. Try again when one finishes."
 #: A turn's config dir left this long is one a lost connection orphaned.
 _STALE_MINUTES = 2 * 24 * 60
@@ -105,6 +105,11 @@ _SCRIPT_S = 30
 _PID_MARK = "__langalpha__ pid "
 _ANNOUNCE = re.compile(rb"langalpha-token (file|relay|none)")
 _NOISE_MAX = 64 * 1024
+
+
+def cli_slots_full(n: int) -> str:
+    """Why a CLI did not start: ``n`` already run where it waited."""
+    return f"Claude Code is already running {agents(n)} on this computer. Try again when {'it' if n == 1 else 'one'} finishes."
 
 
 def kill_if_cli(pid: int, cli: str, sig: str) -> str:
@@ -388,14 +393,16 @@ class SSHTransport(Transport):
     ends the CLI: its input is closed, then it is signalled by pid until it
     goes, then the channel is closed.
 
-    The CLI holds one of the link's CLI slots and keeps the link in use from
-    its start to the end of its shutdown, so commands always find a slot and
+    The CLI holds a CLI slot on one of the login's connections, where it is
+    signalled, and keeps the link in use from its start to the end of its
+    shutdown, so commands always find a slot and
     a link shed from the pool closes only once the turn is over.
     """
 
     def __init__(self, launcher: SSHLauncher, link: ShellLink, options: ClaudeAgentOptions) -> None:
         self._launcher = launcher
         self._link = link
+        self._cli_link = link
         self._options = options
         self._process: ShellProcess | None = None
         self._ready = False
@@ -415,18 +422,19 @@ class SSHTransport(Transport):
             return
         script = self._launcher.command(self._options)
         try:
-            start = await self._holds.enter_async_context(self._link.cli_hold(self._launcher.slot_wait_s))
+            hold = await self._holds.enter_async_context(self._link.cli_hold(self._launcher.slot_wait_s))
         except BaseException as e:
             await self.close()
             if isinstance(e, SlotWaitTimeout):
-                raise CLIConnectionError(CLI_SLOTS_FULL if e.which == "cli" else COMMAND_SLOTS_FULL) from None
+                raise CLIConnectionError(cli_slots_full(e.n) if e.which == "cli" else COMMAND_SLOTS_FULL) from None
             raise
+        self._cli_link = hold.link
         relayed = False
         try:
             async with asyncio.timeout(START_TIMEOUT_S):
                 if self._launcher.plan is not None:
                     await self._launcher.plan.launching()
-                self._process = await start(STREAM_BOOT)
+                self._process = await hold.start(STREAM_BOOT)
                 self._stderr_task = asyncio.ensure_future(self._read_stderr())
                 self._process.stdin.write(script.encode() + b"\n")
                 await self._process.stdin.drain()
@@ -577,10 +585,10 @@ class SSHTransport(Transport):
             if self._pid is not None or self._stderr_task is None or self._stderr_task.done():
                 break
             await asyncio.sleep(0.1)
-        if self._pid is None or not self._link.usable:
+        if self._pid is None or not self._cli_link.usable:
             return
         with contextlib.suppress(Exception):
-            await self._link.run(kill_if_cli(self._pid, str(self._options.cli_path), sig), timeout=EXIT_GRACE_S + 10, kill=True)
+            await self._cli_link.run(kill_if_cli(self._pid, str(self._options.cli_path), sig), timeout=EXIT_GRACE_S + 10, kill=True)
 
     async def _shutdown(self) -> None:
         try:

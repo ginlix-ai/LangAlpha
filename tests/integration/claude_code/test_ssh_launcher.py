@@ -43,7 +43,8 @@ from ptc_agent.core.claude_code_managed import claude_code_managed_sh, parse_man
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.providers import _ssh_transport
 from ptc_agent.core.sandbox.providers._ssh_connect import SSHTarget
-from ptc_agent.core.sandbox.providers._ssh_transport import Link, pool
+from ptc_agent.core.sandbox.providers._ssh_pool import pool
+from ptc_agent.core.sandbox.providers._ssh_transport import Link
 from tests.unit.ptc_agent.agent.claude_code.fake_api import TOKEN, FakeMessagesAPI
 from tests.unit.ptc_agent.agent.claude_code.harness import run_turn, spec
 

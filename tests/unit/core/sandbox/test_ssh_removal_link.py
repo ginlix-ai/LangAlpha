@@ -12,7 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ptc_agent.config.core import SSHConfig
-from ptc_agent.core.sandbox.providers._ssh_transport import Link, pool
+from ptc_agent.core.sandbox.providers._ssh_pool import pool
+from ptc_agent.core.sandbox.providers._ssh_transport import Link
 from ptc_agent.core.sandbox.providers.ssh import removal_link, ssh_target
 from ptc_agent.core.sandbox.providers.ssh_runtime import SSHRuntime
 
