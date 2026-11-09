@@ -428,6 +428,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     // useTranscriptFollow below.
     handleThumbUp,
     handleThumbDown,
+    handleThumbDownFollowUp,
     feedbackByTurn,
     returnedSteering,
     clearReturnedSteering,
@@ -677,8 +678,11 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       clearReturnedEdit();
     }
   }, [returnedEdit, clearReturnedEdit]);
+  // A thread the server has named, so a failed turn's banner can offer "Report this".
+  const reportThreadId = threadId && threadId !== '__default__' ? threadId : undefined;
   const stableThumbUp = useStableHandler(handleThumbUp);
   const stableThumbDown = useStableHandler(handleThumbDown);
+  const stableThumbDownFollowUp = useStableHandler(handleThumbDownFollowUp);
   const stableWidgetSendPrompt = useStableHandler((text: string) => {
     handleSendMessage(text, null, null, {});
   });
@@ -706,9 +710,11 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     editDrafts,
     onThumbUp: stableThumbUp,
     onThumbDown: stableThumbDown,
+    onThumbDownFollowUp: stableThumbDownFollowUp,
     onWidgetSendPrompt: stableWidgetSendPrompt,
     onRevealMessage: follow.reveal,
     onPublishFile,
+    reportThreadId,
   }), [
     stableOpenSubagentTask, stableToolCallDetail,
     stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
@@ -716,7 +722,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
     stableRejectSecretaryAction, stableResumeCreditPause, stableApproveToolCall, stableRejectToolCall,
     stableEditMessage, stableRegenerate, stableRetry, editDrafts,
-    stableThumbUp, stableThumbDown, stableWidgetSendPrompt, follow.reveal, onPublishFile,
+    stableThumbUp, stableThumbDown, stableThumbDownFollowUp, stableWidgetSendPrompt, follow.reveal, onPublishFile, reportThreadId,
   ]);
 
   // In the Chief of Staff, carry the source thread/workspace into a PTC-agent
@@ -846,7 +852,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
             </p>
             {messageError && (
               <div style={{ margin: '16px 24px 0', maxWidth: '100%', width: '100%' }}>
-                <ErrorBanner error={messageError} />
+                <ErrorBanner error={messageError} reportThreadId={reportThreadId} />
               </div>
             )}
           </div>
@@ -870,7 +876,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
             </ChartSurfaceContext>
             {messageError && (
               <div style={{ margin: '8px 0' }}>
-                <ErrorBanner error={messageError} />
+                <ErrorBanner error={messageError} reportThreadId={reportThreadId} />
               </div>
             )}
           </div>

@@ -260,7 +260,7 @@ describe('useChatMessages: the turn shows one failure across a reconnect', () =>
     expect(thoughts[0]).toMatchObject({ isReasoning: false, reasoningComplete: true });
     expect(failed(hook)).toEqual([turn]);
     expect(emptyBubbles(hook)).toEqual([]);
-    expect(hook.result.current.messageError).toEqual({ message: '', kind: 'internal' });
+    expect(hook.result.current.messageError).toEqual({ message: '', kind: 'internal', runId: 'run-1' });
     expect(hook.result.current.fallbackSuggestion).toBeNull();
   });
 });

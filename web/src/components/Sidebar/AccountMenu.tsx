@@ -1,4 +1,4 @@
-import { User, Settings, LogOut, CreditCard, ChevronRight, Plug } from 'lucide-react';
+import { User, Settings, LogOut, CreditCard, ChevronRight, Plug, MessageSquareWarning } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +14,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import { INTEGRATIONS_URL, PLATFORM_URL } from '@/config/supportLinks';
+import { ReportDialog, type ReportSubject } from '@/components/report/ReportDialog';
+import { useReportsEnabled } from '@/hooks/useReportsEnabled';
+
+const MENU_REPORT: ReportSubject = { event: 'user_report', source: 'button' };
 
 /** The account console's pages the menu opens; none on a self-hosted build. */
 const CONSOLE_ITEMS = [
@@ -35,6 +39,8 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showReport, setShowReport] = useState(false);
+  const reportsEnabled = useReportsEnabled();
 
   const avatarUrl = useMemo(() => {
     const url = user?.avatar_url;
@@ -239,6 +245,13 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
             {t('sidebar.settings', 'Settings')}
           </DropdownMenuItem>
 
+          {reportsEnabled && (
+            <DropdownMenuItem onSelect={() => setShowReport(true)}>
+              <MessageSquareWarning className="h-4 w-4" />
+              {t('report.menuItem')}
+            </DropdownMenuItem>
+          )}
+
           <DropdownMenuSeparator />
 
           <DropdownMenuItem
@@ -262,6 +275,10 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
         }}
         onOpenChange={setShowLogoutConfirm}
       />
+
+      {reportsEnabled && (
+        <ReportDialog open={showReport} onOpenChange={setShowReport} subject={MENU_REPORT} />
+      )}
     </>
   );
 };

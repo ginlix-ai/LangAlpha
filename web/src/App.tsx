@@ -34,6 +34,7 @@ import { appSectionOf } from './lib/appRoutes';
 import { lazyWithMotion } from './lib/lazyWithMotion';
 import { CommandPaletteProvider } from './components/CommandPalette/CommandPaletteProvider';
 import { CreateWorkspaceHost } from './components/CreateWorkspaceHost';
+import { setSentryUser } from './lib/sentry';
 import './App.css';
 
 // Login carries the market-tape canvas subsystem (~2k lines that only a
@@ -412,7 +413,9 @@ function AppearanceSync() {
 }
 
 function App() {
-  const { isLoggedIn, isInitialized } = useAuth();
+  const { isLoggedIn, isInitialized, userId } = useAuth();
+
+  useEffect(() => setSentryUser(isLoggedIn ? userId : null), [isLoggedIn, userId]);
 
   // App, not AuthenticatedShell: this has to cover the logged-out routes too,
   // and a stale /login chunk is just as fatal as a stale /dashboard one. Mount

@@ -269,7 +269,7 @@ describe('useChatMessages: a hidden opener', () => {
     });
 
     expect(result.current.isLoading).toBe(false);
-    expect(result.current.messageError).toEqual({ message: '', kind: 'internal' });
+    expect(result.current.messageError).toEqual({ message: '', kind: 'internal', runId: 'run-1' });
     expect(users(result.current.messages)).toEqual([]);
     const [failed] = replies(result.current.messages);
     expect(failed).toMatchObject({ error: true, isStreaming: false, hiddenOpener: true });

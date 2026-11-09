@@ -116,6 +116,32 @@ def get_redactor() -> SecretRedactor:
     return _instance
 
 
+# Paths that are their own credential, as web/src/lib/sentry.ts names them: a
+# public share, a file or artifact grant, a share-link code, a helper's
+# pairing, and a share page (`/s/`, `/a/` at the root of a path).
+_CAPABILITY_PATH_RE = re.compile(
+    r"(/(?:api/v1/public/shared|wsfiles/g|artifacts/g|share-links|pairings)/)[^/?#\s\"'()<>]+"
+)
+_SHARE_PAGE_RE = re.compile(r"(^|[\s\"'(=])((?:https?://[^/\s\"']+)?/[sa]/)[^/?#\s\"'()<>]+")
+
+
+def redact_capability_paths(text: str) -> str:
+    """The credential segment of a capability URL out of text the service wrote
+    itself (an error's message), which a credential scrub does not recognize."""
+    text = _SHARE_PAGE_RE.sub(r"\1\2[redacted]", text)
+    return _CAPABILITY_PATH_RE.sub(r"\1[redacted]", text)
+
+
+def scrub_outbound_text(text: str, vault_secrets: dict[str, str] | None = None) -> str:
+    """Credential shapes, and the values of this deployment's own secrets, out
+    of text that leaves for a third party (Sentry, LangSmith, the team's
+    Slack). ``vault_secrets`` adds the values of the user the text is about
+    (``get_vault_secrets_for_redaction``), which no pattern recognizes."""
+    from src.server.utils.error_sanitization import sanitize_error_text
+
+    return get_redactor().redact(sanitize_error_text(text), vault_secrets=vault_secrets)
+
+
 async def get_vault_secrets_for_redaction(user_id: str) -> dict[str, str]:
     """The owner's redactable secret set: their whole vault plus
     credential-looking inline connector literals.

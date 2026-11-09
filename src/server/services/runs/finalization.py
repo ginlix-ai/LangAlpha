@@ -165,7 +165,8 @@ async def assemble_finalize_artifacts(
             )
         )
         if status == "error":
-            persist_metadata.update(failure_kind_metadata(exc))
+            kind = failure_kind_metadata(exc)
+            persist_metadata.update(kind)
             persist_metadata.update(plan_stop_metadata(exc))
     # The pause's own words, which settling the run's automation relays. A
     # pause without words is stamped null, so settling knows there is
@@ -334,7 +335,10 @@ async def drive_finalize_cas(
         return FinalizeVerdict(
             applied=False, status=status, survivor_status=survivor_status
         )
-    except Exception:
+    except Exception as e:
+        from src.observability.sentry import capture_finalize_failure
+
+        capture_finalize_failure(e, thread_id=key[0], run_id=key[1])
         logger.critical(
             f"[Finalize] FINALIZE FAILED for {key}: run row "
             f"remains in_progress for recovery",

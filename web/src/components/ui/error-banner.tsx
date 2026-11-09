@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Info } from 'lucide-react';
@@ -8,11 +8,16 @@ import { usePlanClock } from '@/hooks/useClaudeCodePlan';
 import type { PlanRefusal } from '@/api/model';
 import { planRefusalText } from '@/lib/claudeCodePlan';
 import { cn } from '@/lib/utils';
+import { ReportDialog } from '@/components/report/ReportDialog';
+import { useReportsEnabled } from '@/hooks/useReportsEnabled';
 
 interface ErrorBannerProps {
   error: string | StructuredError | null | undefined;
   className?: string;
   style?: React.CSSProperties;
+  /** The thread a failed turn belongs to. With it, a failure the server
+   *  classified offers "Report this", which sends the failure to the team. */
+  reportThreadId?: string;
 }
 
 export function ErrorLink({ url, label, labelKey, external }: ErrorLinkSpec): React.ReactElement {
@@ -80,7 +85,40 @@ function headlineOf(err: StructuredError, t: (key: string, opts?: Record<string,
   return err.statusCode ? t('chat.errorUpstreamHeadlineStatus', { status: err.statusCode }) : t('chat.errorUpstreamHeadline');
 }
 
-export function ErrorBanner({ error, className, style }: ErrorBannerProps): React.ReactElement | null {
+/** "Report this" and its dialog, for a turn that failed. */
+export function ReportFailure({ error, threadId }: { error: StructuredError; threadId: string }): React.ReactElement | null {
+  const { t } = useTranslation();
+  const enabled = useReportsEnabled();
+  const [open, setOpen] = useState(false);
+  if (!enabled) return null;
+  const type = error.kind === 'upstream'
+    ? `upstream_error${error.statusCode ? ` ${error.statusCode}` : ''}`
+    : 'internal_error';
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="tap-target self-start text-xs underline underline-offset-2 opacity-90 hover:opacity-100"
+      >
+        {t('report.bannerAction')}
+      </button>
+      <ReportDialog
+        open={open}
+        onOpenChange={setOpen}
+        subject={{
+          event: 'error_report',
+          source: 'error_banner',
+          threadId,
+          runId: error.runId,
+          error: { type, message: error.message },
+        }}
+      />
+    </>
+  );
+}
+
+export function ErrorBanner({ error, className, style, reportThreadId }: ErrorBannerProps): React.ReactElement | null {
   const { t } = useTranslation();
   if (!error) return null;
 
@@ -129,6 +167,10 @@ export function ErrorBanner({ error, className, style }: ErrorBannerProps): Reac
                 <li key={h}>{t(UPSTREAM_HINT_I18N_KEY[h] ?? h)}</li>
               ))}
             </ul>
+          )}
+          {/* A plan's limit is the plan working, not a failure to report. */}
+          {reportThreadId && (err.kind === 'upstream' || err.kind === 'internal') && !err.planRefusal && (
+            <ReportFailure error={err} threadId={reportThreadId} />
           )}
         </div>
       </div>

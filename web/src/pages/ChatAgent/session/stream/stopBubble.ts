@@ -94,16 +94,19 @@ export function settleStoppedBubble(at: { assistantMessageId: string; refs: Stre
  * with no Retry and no message to send again, so it fails with the card a
  * reload of the failed turn draws.
  */
-export function settleFailedBubble({ failure, internal = false, ...at }: {
+export function settleFailedBubble({ failure, internal = false, runId, ...at }: {
   assistantMessageId: string;
   refs: StreamRefs;
   setMessages: SetMessages;
   failure?: StructuredError;
   internal?: boolean;
+  /** The internal failure's run, which the hidden opener's card names for a
+   *  report once the banner is gone. */
+  runId?: string;
 }): void {
   settleTurnEnd(at, (msg) => {
     if (!internal || holdsContent(msg)) return failAssistantMessage(msg, failure);
-    if (msg.hiddenOpener === true) return failAssistantMessage(msg, { message: '', kind: 'internal' });
+    if (msg.hiddenOpener === true) return failAssistantMessage(msg, { message: '', kind: 'internal', runId });
     return finalizeAssistantMessage(msg, 'disconnected');
   });
 }

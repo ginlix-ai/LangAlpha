@@ -449,7 +449,7 @@ export function useChatMessages(
 
   const releaseStreamOwnership = () => releaseOwnership(runtime);
 
-  const { handleThumbUp, handleThumbDown, feedbackByTurn, loadFeedback } = useChatFeedback(threadId);
+  const { handleThumbUp, handleThumbDown, handleThumbDownFollowUp, feedbackByTurn, feedbackLoading, loadFeedback } = useChatFeedback(threadId);
 
   // Track if history replay found an unresolved interrupt (skip reconnection in that case)
   const historyHasUnresolvedInterruptRef = useRef(false);
@@ -3855,7 +3855,9 @@ export function useChatMessages(
     handleRetry,
     handleThumbUp,
     handleThumbDown,
+    handleThumbDownFollowUp,
     feedbackByTurn,
+    feedbackLoading,
     resolveSubagentIdToAgentId,
     getSubagentHistory,
     getTaskRuns,

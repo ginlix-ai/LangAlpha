@@ -5,9 +5,12 @@ This module defines response models for workspace thread endpoints that work wit
 the query-response schema (workspaces, thread, query, response).
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Annotated, Optional, List, Dict, Any
 from datetime import datetime
+from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from src.server.models.report import PlatformStatus, ReportClient, ReportFollowUp
 
 from src.llms.reasoning import ReasoningLevel
 from src.server.utils.thread_stamp import SCANNED_CHARS
@@ -475,9 +478,16 @@ class FeedbackRequest(BaseModel):
     """Request model for submitting feedback on a response."""
     turn_index: int = Field(..., description="Turn index of the response to rate")
     rating: str = Field(..., pattern=r"^(thumbs_up|thumbs_down)$", description="Rating: thumbs_up or thumbs_down")
-    issue_categories: Optional[List[str]] = Field(None, description="Issue categories for thumbs_down")
-    comment: Optional[str] = Field(None, description="Optional free-text comment")
+    # Bounded as the platform bounds a report's, which refuses a longer one on
+    # every retry.
+    issue_categories: Optional[List[Annotated[str, Field(max_length=64)]]] = Field(
+        None, max_length=20, description="Issue categories for thumbs_down"
+    )
+    comment: Optional[str] = Field(None, max_length=4000, description="Optional free-text comment")
     consent_human_review: bool = Field(False, description="Whether user consents to anonymous human review")
+    client: Optional[ReportClient] = Field(
+        None, description="The app the rating came from, for the report a thumbs-down sends"
+    )
 
 
 class FeedbackResponse(BaseModel):
@@ -490,4 +500,23 @@ class FeedbackResponse(BaseModel):
     consent_human_review: bool = False
     review_status: Optional[str] = None
     created_at: str
+    # The report a thumbs-down sends; null on a thumbs-up, and on a thumbs-down
+    # from before reports, which has none to add to.
+    report_id: Optional[str] = None
+    # When the team got the report this thumbs-down sent; null until it did.
+    reported_at: Optional[str] = None
+    # The notes the user added to that report since.
+    report_follow_ups: List[ReportFollowUp] = Field(default_factory=list)
+    # What became of the report this call sent; null when it sent none.
+    report_status: Optional[PlatformStatus] = None
+
+
+class FeedbackFollowUpRequest(BaseModel):
+    """More for the report a thumbs-down sent: a note, a human review, or both."""
+    turn_index: int
+    note: Optional[str] = Field(None, max_length=4000)
+    # Made by the client for the note and kept across its retries.
+    note_id: Optional[UUID] = None
+    human_review: bool = False
+    client: Optional[ReportClient] = None
 

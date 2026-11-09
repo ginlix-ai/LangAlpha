@@ -214,6 +214,10 @@ async def lifespan(app: FastAPI):
     # threads are owned by the worker process, not a dead pre-fork parent.
     init_otel_runtime()
 
+    from src.observability.sentry import init_sentry
+
+    init_sentry()
+
     from src.observability.langsmith_tracer import configure_trace_payloads
 
     configure_trace_payloads()
@@ -1396,6 +1400,7 @@ from src.server.app.market_data import router as market_data_router
 from src.server.app.bars import router as bars_router
 from src.server.app.user_events import router as user_events_router
 from src.server.app.users import router as users_router
+from src.server.app.reports import router as reports_router
 from src.server.app.trading_permission import router as trading_permission_router
 from src.server.app.push_devices import router as push_devices_router
 from src.server.app.features import router as features_router
@@ -1484,6 +1489,7 @@ app.include_router(
     bars_router
 )  # /api/v1/market-data/bars/* - Protocol-native progressive bars
 app.include_router(users_router)  # /api/v1/users/* - User management
+app.include_router(reports_router)  # /api/v1/reports - Reports forwarded to the platform
 app.include_router(
     trading_permission_router
 )  # /api/v1/users/me/trading-permission - Order approval level
