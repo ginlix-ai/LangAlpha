@@ -237,6 +237,18 @@ async def get_feedback_by_id(conversation_feedback_id: str) -> dict | None:
             return await cur.fetchone()
 
 
+async def delete_feedback_by_id(conversation_feedback_id: str) -> bool:
+    """Delete the rating read earlier in the request, not whichever attempt
+    the turn resolves to now: a retry settling meanwhile moves the turn."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM conversation_feedback WHERE conversation_feedback_id = %s",
+                (conversation_feedback_id,),
+            )
+            return cur.rowcount > 0
+
+
 # Each update below is guarded on the report id: a rating removed, or changed
 # to a thumbs-up, while its report was being sent no longer stands for that
 # report, and finds nothing to update.

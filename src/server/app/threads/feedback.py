@@ -37,10 +37,10 @@ from src.server.services.reports import (
 from src.server.database.conversation import (
     upsert_feedback,
     get_feedback_for_thread,
-    delete_feedback,
 )
 from src.server.database.conversation.feedback import (
     add_feedback_follow_up,
+    delete_feedback_by_id,
     get_feedback_by_id,
     get_feedback_for_turn,
     mark_feedback_reported,
@@ -283,7 +283,7 @@ async def remove_feedback(
             raise HTTPException(status_code=404, detail="Feedback not found")
         if refused := await _withdraw_report(row, thread_id, turn_index):
             return refused
-        await delete_feedback(thread_id, turn_index, x_user_id)
+        await delete_feedback_by_id(str(row["conversation_feedback_id"]))
         background.add_task(_sync_langsmith, str(row["conversation_feedback_id"]))
         return {"status": "deleted"}
     except HTTPException:
