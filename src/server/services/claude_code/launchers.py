@@ -9,6 +9,7 @@ for.
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from ptc_agent.agent.claude_code.launcher import Credential, Launcher, LocalLauncher
@@ -20,6 +21,7 @@ from ptc_agent.core.sandbox.providers._ssh_transport import Link, Machine
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from src.llms.claude_code import ClaudeTurnFailed
 
+from .cli_slots import computer_cli_slot
 from .hosted import OnOwn, Refused, cli_placement, cloud_runs_in
 from .machine import ComputerToken
 from .plan import UserPlan
@@ -91,15 +93,16 @@ def turn_launcher(
     machine, from its root, while its tools stay on ``sandbox``. Anywhere
     else it runs on the credential the user's turns on a cloud computer run
     on (``HostedCredential``), where ``cloud_runs_in`` says: inside the
-    computer's own sandbox, else in this worker. Where the user's choice
+    computer's own sandbox, holding one of the CLIs it runs at once as on an
+    own computer, else in this worker, whose memory is not the computer's. Where the user's choice
     changed since admission, the run is refused as it starts
     (``choice_changed``): by the credential's read on a cloud computer, by
     the first dial of a picked one; that is where a refusal reaches the turn
     as one.
     Either way the launcher keeps what the CLI reports of the Claude plan
     behind the credential it signed in with (``UserPlan``). ``slot_wait_s``
-    is how long the CLI on an own computer waits for a slot there, by default
-    a turn's.
+    is how long the CLI on a computer waits for a slot there, by default a
+    turn's.
     """
     if admitted.cli_computer is not None:
         picked = _PickedComputer(admitted.cli_computer, user_id, workspace_id)
@@ -111,7 +114,11 @@ def turn_launcher(
         plan = UserPlan(user_id)
         credential = HostedCredential(user_id, admitted.hosted, workspace_id)
         if cloud_runs_in() == "sandbox":
-            return sandbox_launcher(sandbox, identity=user_id, credential=credential, plan=plan)
+            return sandbox_launcher(
+                sandbox, identity=user_id, credential=credential, plan=plan,
+                cli_slot=partial(computer_cli_slot, computer_id) if computer_id is not None else None,
+                slot_wait_s=CLI_SLOT_WAIT_S if slot_wait_s is None else slot_wait_s,
+            )
         return LocalLauncher(saved=credential, plan=plan)
     if computer_id is None:
         raise RuntimeError("a turn on a computer of the user's own names that computer")
@@ -134,7 +141,7 @@ def _ssh_launcher(
     (``saved``), and telling the backend what it found of either."""
     token = ComputerToken(user_id, computer_id)
     return SSHLauncher(
-        machine, identity=user_id, token_file=token_name(computer_id),
+        machine, identity=user_id, token_file=token_name(computer_id), cli_slot=partial(computer_cli_slot, computer_id),
         credential=token if saved else None, on_announced=token.announced, on_file_refused=token.file_refused,
         on_blocked=token.blocked, on_no_perl=token.no_perl, on_unsupported=token.unsupported,
         plan=UserPlan(user_id, computer_id),

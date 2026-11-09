@@ -3,6 +3,8 @@ machine with the token kept there (or the saved one, relayed where the
 server may); anywhere else on the backend with the saved token. Picked by
 the server, which hands it to the agent build."""
 
+import contextlib
+import re
 from dataclasses import asdict, replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -343,6 +345,44 @@ async def test_a_cloud_computers_cli_runs_in_its_sandbox_only_where_the_switch_i
     assert isinstance(link, SandboxLink) and link.runtime is sandbox.runtime and await launcher.machine.link() is link
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slot_wait_s", [None, 30], ids=["turn", "subagent"])
+async def test_a_cloud_computers_cli_in_its_sandbox_holds_one_of_the_clis_that_computer_runs(monkeypatch, slot_wait_s):
+    """Turns as well as subagents, so the computer's size bounds its turns too;
+    one none frees for in time is refused before anything starts in the sandbox."""
+    from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError
+
+    from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S, SSHTransport, cli_slots_full
+    from ptc_agent.core.sandbox.providers._ssh_transport import SlotWaitTimeout
+    from src.server.services.claude_code import launchers
+
+    asked = []
+
+    @contextlib.asynccontextmanager
+    async def full(computer_id, wait_s):
+        asked.append((computer_id, wait_s))
+        raise SlotWaitTimeout("cli", 1)
+        yield
+
+    monkeypatch.setattr(launchers, "cloud_runs_in", lambda: "sandbox")
+    monkeypatch.setattr(launchers, "computer_cli_slot", full)
+    sandbox = SimpleNamespace(
+        provider=MagicMock(), wait_ready=AsyncMock(), runtime=SimpleNamespace(open_stream=AsyncMock()),
+        working_dir="/home/workspace",
+    )
+    launcher = turn_launcher(
+        sandbox, computer_id=CID, workspace_id="ws-1", user_id="user-1", admitted=Admitted(hosted="api_key"),
+        slot_wait_s=slot_wait_s,
+    )
+    link = await launcher.machine.link()
+    assert isinstance(link, SandboxLink)
+    transport = SSHTransport(launcher, link, ClaudeAgentOptions(cwd="/home/workspace", cli_path="/opt/claude"))
+    with pytest.raises(CLIConnectionError, match=f"^{re.escape(cli_slots_full(1))}$"):
+        await transport.connect()
+    assert asked == [(CID, CLI_SLOT_WAIT_S if slot_wait_s is None else 30)]
+    sandbox.runtime.open_stream.assert_not_awaited()
+
+
 def _picked(rows, *, awaited_wake, where=None):
     """A picked computer whose row reads as each of ``rows`` in turn (the last
     stands once they run out), placed where admission placed it unless
@@ -513,3 +553,17 @@ def test_a_turn_admitted_on_a_picked_computer_runs_its_cli_there_whatever_its_ow
     )
     assert isinstance(launcher, SSHLauncher) and launcher.token_file == token_name(CID)
     assert launcher.credential is not None and launcher.plan.computer_id == CID
+
+@pytest.mark.parametrize("picked", [False, True])
+def test_a_turns_cli_holds_one_of_the_computers_it_runs_on_and_a_checks_none(picked):
+    """A check reads a token, so it is no agent and takes none of the
+    computer's count, only a slot on its connection."""
+    from src.server.services.claude_code.cli_slots import computer_cli_slot
+    from src.server.services.claude_code.machine import check_launcher
+
+    admitted = Admitted(saved="saved_token", cli_computer=CID if picked else None)
+    sandbox = SimpleNamespace(provider=MagicMock()) if picked else _ssh_sandbox()
+    launcher = turn_launcher(sandbox, computer_id="c-2" if picked else CID, workspace_id="ws-1", user_id="user-1",
+                             admitted=admitted)
+    assert (launcher.cli_slot.func, launcher.cli_slot.args) == (computer_cli_slot, (CID,))
+    assert check_launcher(MagicMock(), "user-1", token_name(CID)).cli_slot is None

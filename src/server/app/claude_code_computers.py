@@ -7,6 +7,7 @@ turn can run there, and the setup token kept on its machine.
 - PUT    /api/v1/claude-code/computers/{computer_id}/token           Place a token the user made themselves
 - DELETE /api/v1/claude-code/computers/{computer_id}/token           Remove the machine's token
 - POST   /api/v1/claude-code/computers/{computer_id}/check           Check now: read its own token's Claude plan with one minimal request
+- PUT    /api/v1/claude-code/computers/{computer_id}/clis            How many Claude Code agents it runs at once
 
 The flow and the machine's token are ``services.claude_code`` (``flow``, ``machine``).
 """
@@ -15,11 +16,11 @@ import asyncio
 
 from fastapi import APIRouter, Response
 
-from src.server.models.claude_code import ClaudeCodeComputer, ClaudeCodeComputers, CodeBody, TokenBody
+from src.server.models.claude_code import ClaudeCodeComputer, ClaudeCodeComputers, ClisBody, CodeBody, TokenBody
 from src.server.services.claude_code import flow
 from src.server.services.claude_code.flow import pasted_code, pasted_token, require, rows_on
 from src.server.services.claude_code.hosted import cloud_view, picks_own, runs_on_view
-from src.server.services.claude_code.machine import MachineHome, check_now, list_computers
+from src.server.services.claude_code.machine import MachineHome, check_now, list_computers, set_clis
 from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/claude-code/computers", tags=["claude-code"])
@@ -61,6 +62,11 @@ async def remove_token(computer_id: str, x_user_id: CurrentUserId):
     """Remove the machine's token, whether or not Claude Code is still on for the user or the server."""
     await flow.remove(await MachineHome.of(x_user_id, computer_id))
     return Response(status_code=204)
+
+
+@router.put("/{computer_id}/clis", response_model=ClaudeCodeComputer)
+async def put_clis(computer_id: str, body: ClisBody, x_user_id: CurrentUserId):
+    return await set_clis(x_user_id, computer_id, body.clis)
 
 
 @router.post("/{computer_id}/check", status_code=204)

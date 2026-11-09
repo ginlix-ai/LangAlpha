@@ -147,7 +147,8 @@ class SSHLauncher:
     the computer's own, or a staged one a check is about; None reads none,
     so the run's credential is the relayed one or nothing. ``slot_wait_s`` is
     how long the CLI waits for a free CLI slot on the computer's connection;
-    a check passes a short one.
+    a check passes a short one. ``cli_slot(wait_s)`` holds one of the CLIs
+    the computer runs at once before that, within the same wait.
 
     ``credential``, given only where the deployment relays one, is read only
     once the machine has said it has no token of its own, and told if
@@ -171,6 +172,7 @@ class SSHLauncher:
     token_file: str | None
     install: bool = True
     slot_wait_s: float = CLI_SLOT_WAIT_S
+    cli_slot: Callable[[float], contextlib.AbstractAsyncContextManager[None]] | None = None
     credential: TokenStore | None = None
     on_announced: Callable[[TokenOrigin], Awaitable[None]] | None = None
     on_file_refused: Callable[[], Awaitable[None]] | None = None
@@ -393,9 +395,9 @@ class SSHTransport(Transport):
     ends the CLI: its input is closed, then it is signalled by pid until it
     goes, then the channel is closed.
 
-    The CLI holds a CLI slot on one of the login's connections, where it is
-    signalled, and keeps the link in use from its start to the end of its
-    shutdown, so commands always find a slot and
+    The CLI holds one of the computer's CLIs (``cli_slot``) and a CLI slot
+    on one of the login's connections, where it is signalled, and keeps the
+    link in use from its start to the end of its shutdown, so commands always find a slot and
     a link shed from the pool closes only once the turn is over.
     """
 
@@ -421,8 +423,12 @@ class SSHTransport(Transport):
         if self._process is not None:
             return
         script = self._launcher.command(self._options)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._launcher.slot_wait_s
         try:
-            hold = await self._holds.enter_async_context(self._link.cli_hold(self._launcher.slot_wait_s))
+            if self._launcher.cli_slot is not None:
+                await self._holds.enter_async_context(self._launcher.cli_slot(self._launcher.slot_wait_s))
+            hold = await self._holds.enter_async_context(self._link.cli_hold(max(0.0, deadline - loop.time())))
         except BaseException as e:
             await self.close()
             if isinstance(e, SlotWaitTimeout):

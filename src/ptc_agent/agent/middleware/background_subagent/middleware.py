@@ -256,7 +256,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 reason=e.reason,
             )
             await self._release_task_ns(task.task_id)
-            raise TaskRunRefused(e.reason, busy=e.busy, whole=e.whole) from e
+            raise TaskRunRefused(e.reason, busy=e.busy, whole=e.whole, final=e.final) from e
         except Exception as e:
             logger.error(
                 "task-run ledger unavailable; refusing spawn",

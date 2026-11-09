@@ -92,11 +92,19 @@ class PredecessorClaimedError(SubagentRunError):
 
 
 class ClaudeCodeCapError(SubagentRunError):
-    """The run's computer already runs as many Claude Code CLIs as it may."""
+    """The run's computer already runs as many Claude Code CLIs as it may,
+    the thread's own turn among them where ``own_turn``."""
 
-    def __init__(self, cap: int):
+    def __init__(self, cap: int, own_turn: bool = False):
         self.cap = cap
+        self.own_turn = own_turn
         super().__init__(f"the computer already runs {cap} Claude Code CLIs")
+
+    @property
+    def alone(self) -> bool:
+        """The thread's own turn is all the CLIs the computer runs, so none
+        ending makes room while it lasts."""
+        return self.own_turn and self.cap == 1
 
 
 class TaskRunNotFoundError(SubagentRunError):
@@ -186,7 +194,7 @@ async def start_task_run(
                         raise DuplicateLaunchError(existing)
 
                 if cli_cap is not None:
-                    await _require_cli_room(conn, *cli_cap)
+                    await _require_cli_room(conn, *cli_cap, thread_id)
 
                 async with conn.cursor() as cur:
                     await cur.execute(
@@ -306,14 +314,32 @@ async def _live_clis(cur, computer_id: str) -> int:
     return (await cur.fetchone())["live"]
 
 
-async def _require_cli_room(conn, computer_id: str, cap: int) -> None:
-    """Refuse a Claude Code run once the computer runs ``cap`` CLIs. The
+async def _require_cli_room(conn, computer_id: str, cap: int, thread_id: str) -> None:
+    """Refuse a Claude Code run once the computer runs ``cap`` CLIs, saying
+    whether the turn of ``thread_id`` launching it is one of them. The
     lock holds the next admission on the computer until this one's row
     commits."""
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute("SELECT pg_advisory_xact_lock(hashtext('claude_code_cli:' || %s))", (computer_id,))
         if await _live_clis(cur, computer_id) >= cap:
-            raise ClaudeCodeCapError(cap)
+            raise ClaudeCodeCapError(cap, own_turn=await _turn_counted(cur, thread_id, computer_id))
+
+
+async def _turn_counted(cur, thread_id: str, computer_id: str) -> bool:
+    """Whether the thread's turn in progress is one of the computer's CLIs,
+    as ``_live_clis`` counts it."""
+    await cur.execute(
+        """
+        SELECT EXISTS (
+          SELECT 1 FROM conversation_responses r
+          JOIN conversation_threads t ON t.conversation_thread_id = r.conversation_thread_id
+          JOIN workspaces w ON w.workspace_id = t.workspace_id
+          WHERE r.conversation_thread_id = %(thread)s AND r.status = 'in_progress' AND r.metadata @> %(turn)s
+            AND COALESCE(r.metadata ->> %(key)s, w.computer_id::text) = %(computer)s) AS counted
+        """,
+        {"thread": thread_id, "computer": computer_id, "key": CLI_COMPUTER, "turn": Jsonb(CLAUDE_CODE_TURN)},
+    )
+    return (await cur.fetchone())["counted"]
 
 
 async def live_clis(computer_id: str) -> int:

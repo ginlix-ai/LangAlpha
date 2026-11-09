@@ -9,6 +9,7 @@ sshd (``tests/integration/claude_code`` runs the same over SSH).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -28,7 +29,7 @@ from ptc_agent.agent.claude_code.launcher import _INHERITED, cli_env
 from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.machine_token import NO_PERL, STREAM_BOOT
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher, kill_if_cli, remote_session_path
-from ptc_agent.core.sandbox.providers._ssh_transport import _COMMAND_SLOTS, CLI_SLOTS, Machine
+from ptc_agent.core.sandbox.providers._ssh_transport import _COMMAND_SLOTS, CLI_SLOTS, Machine, SlotWaitTimeout
 from src.llms.claude_code import ClaudeTurnFailed
 from tests.unit.ptc_agent.agent.claude_code.bsd_userland import bsd_path, on_linux
 from tests.unit.ptc_agent.agent.claude_code.local_link import local_link
@@ -373,6 +374,34 @@ async def test_clis_past_one_connections_slots_run_on_the_second_and_are_signall
         await transport.close()
     await asyncio.sleep(0.1)
     assert (link.cli_slots._value, second.cli_slots._value) == (CLI_SLOTS, CLI_SLOTS)
+
+
+@pytest.mark.asyncio
+async def test_a_cli_holds_one_of_the_computers_clis_from_start_to_close_within_its_one_wait(tmp_path, monkeypatch):
+    """Taken before the link's slot, and given the whole wait, the link the
+    rest; one none frees in time refuses the CLI naming the computer's count."""
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
+    cli.chmod(0o755)
+    link, launcher = _local(tmp_path, monkeypatch, str(cli))
+    held = []
+
+    @contextlib.asynccontextmanager
+    async def slot(wait_s):
+        if held:
+            raise SlotWaitTimeout("cli", 3)
+        held.append(wait_s)
+        try:
+            yield
+        finally:
+            held.clear()
+
+    transport = await _started(launcher(cli_slot=slot, slot_wait_s=7))
+    assert held == [7] and link.cli_slots._value == CLI_SLOTS - 1
+    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(3))}$"):
+        await _started(launcher(cli_slot=slot))
+    await transport.close()
+    assert held == [] and link.cli_slots._value == CLI_SLOTS
 
 
 @pytest.mark.parametrize(("n", "said"), [(1, "1 agent on this computer. Try again when it finishes."),

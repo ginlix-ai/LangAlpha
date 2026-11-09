@@ -3,7 +3,9 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, StrictInt
+
+from ptc_agent.core.claude_code_clis import CLIS_MAX
 
 from src.llms.claude_code import PlanWindow
 
@@ -101,6 +103,9 @@ class ClaudeCodeComputer(BaseModel):
     check_in: int | None = None
     #: Whether a check would be billed (``ClaudeCodeStatus``).
     check_bills: bool = False
+    #: How many Claude Code CLIs it runs at once, turns' and subagents'
+    #: together (``hosted.own_clis``).
+    clis: int
 
 
 #: Why a cloud computer refuses a turn whatever its credential
@@ -153,6 +158,8 @@ class ClaudeCodeComputers(BaseModel):
     #: credential, by computer id (``hosted.cloud_refusals``). A turn there is
     #: told it only once its credential would run.
     cloud_refusals: dict[str, ComputerRefusal] = Field(default_factory=dict)
+    #: The most CLIs a computer of the user's own may be set to run at once.
+    clis_max: int = CLIS_MAX
 
 
 class ClaudeCodeCloudComputer(BaseModel):
@@ -229,6 +236,11 @@ class CustodyBody(BaseModel):
 
 class TokenBody(BaseModel):
     token: SecretStr
+
+
+class ClisBody(BaseModel):
+    #: How many Claude Code CLIs the computer runs at once, 1 to ``clis_max``.
+    clis: StrictInt = Field(ge=1, le=CLIS_MAX)
 
 
 class CodeBody(BaseModel):

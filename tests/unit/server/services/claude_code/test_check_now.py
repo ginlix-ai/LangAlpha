@@ -379,7 +379,7 @@ async def test_a_computer_whose_token_claude_refused_spent_its_check(computer, h
 
 def test_a_computer_shows_the_hold_of_the_credential_its_turns_sign_in_with():
     plans = {"saved": CredentialPlan(None, 100), "computer:c-1": CredentialPlan(None, 200)}
-    entry = ClaudeCodeComputer(computer_id="c-1", name="Studio Mac", kind="ssh", state="signed_in", source="saved")
+    entry = ClaudeCodeComputer(clis=4, computer_id="c-1", name="Studio Mac", kind="ssh", state="signed_in", source="saved")
     assert machine._with_plan(entry, plans).check_in == 100
     assert machine._with_plan(entry.model_copy(update={"source": "machine"}), plans).check_in == 200
 
@@ -401,7 +401,7 @@ async def test_a_sign_in_code_pasted_again_answers_with_the_plan_and_the_hold_as
         return SimpleNamespace(file="works")
 
     async def from_answer(user_id, computer, answer, relayed):
-        return ClaudeCodeComputer(computer_id="c-1", name="Studio Mac", kind="ssh", state="signed_in", source="machine")
+        return ClaudeCodeComputer(clis=4, computer_id="c-1", name="Studio Mac", kind="ssh", state="signed_in", source="machine")
 
     async def relayed(user_id):
         return None

@@ -33,7 +33,7 @@ def chief_of_staff_runs_nowhere_read():
 
 
 def _own(state, expires_at=None):
-    return ClaudeCodeComputer(computer_id=state, name=state, kind="ssh", state=state, expires_at=expires_at)
+    return ClaudeCodeComputer(clis=4, computer_id=state, name=state, kind="ssh", state=state, expires_at=expires_at)
 
 
 @pytest.mark.parametrize(

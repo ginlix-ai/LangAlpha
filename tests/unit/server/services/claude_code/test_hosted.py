@@ -350,10 +350,38 @@ def test_a_computer_runs_a_cli_per_800_mb_of_its_smallest_size_and_an_own_one_as
         assert hosted_module.cli_cap(computer) == cap
 
 
+@pytest.mark.parametrize(
+    ("config", "cap"),
+    [({"claude_code_clis": 6}, 6), ({"claude_code_clis": 8}, 8), ({"claude_code_clis": 1}, 1), ({}, 4), (None, 4),
+     ({"claude_code_clis": 9}, 4), ({"claude_code_clis": 0}, 4), ({"claude_code_clis": "6"}, 4),
+     ({"claude_code_clis": True}, 4)],
+)
+def test_an_own_computer_runs_as_many_clis_as_its_owner_set_for_it(config, cap):
+    """A count that is not one Settings could have saved reads as the default."""
+    with platform():
+        assert hosted_module.cli_cap({**OWN, "config": config}) == cap
+
+
 @pytest.mark.parametrize(("memory", "cap"), [(400, 10), (1600, 2), (8192, 1)], ids=["400", "1600", "past-its-memory"])
 def test_a_cloud_computer_runs_as_many_clis_as_the_memory_the_operator_counts_each_at_fits(memory, cap):
     with platform(memory=memory):
         assert hosted_module.cli_cap({**CLOUD, "resource_tier": "performance"}) == cap
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("computer", "clis"),
+    [
+        ({**CLOUD, "resource_tier": "performance"}, 5),
+        ({**OWN, "config": {"claude_code_clis": 6}}, 6),
+        ({**CLOUD, "resource_tier": "retired"}, 4),
+        (None, 4),
+    ],
+    ids=["cloud", "own", "size-unknown", "gone"],
+)
+async def test_a_cli_starting_on_a_computer_is_held_to_its_cap_and_one_unsized_or_gone_to_the_default(computer, clis):
+    with platform(computer=computer):
+        assert await hosted_module.computer_clis("c-x") == clis
 
 
 def test_the_memory_each_cloud_cli_is_counted_at_is_read_from_the_claude_code_config_section():

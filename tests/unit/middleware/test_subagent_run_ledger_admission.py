@@ -57,11 +57,13 @@ class FakeLedger:
         journal: list | None = None,
         busy: bool = False,
         whole: bool = False,
+        final: bool = False,
     ) -> None:
         self.admit = admit
         self.reject = reject
         self.busy = busy
         self.whole = whole
+        self.final = final
         self.infra_down = infra_down
         self.started: list[dict] = []
         self.finalized: list[tuple] = []
@@ -75,7 +77,7 @@ class FakeLedger:
     async def start_task_run(self, **kwargs) -> str:
         self.started.append(kwargs)
         if self.reject:
-            raise TaskRunRejected(self.reject, busy=self.busy, whole=self.whole)
+            raise TaskRunRejected(self.reject, busy=self.busy, whole=self.whole, final=self.final)
         if self.infra_down:
             raise RuntimeError("ledger db down")
         return self.admit
@@ -459,18 +461,19 @@ async def test_resume_rejected_before_reset_leaves_task_resumable():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("busy", [True, False])
+@pytest.mark.parametrize(("busy", "final"), [(True, False), (False, False), (False, True)])
 async def test_a_resume_refused_while_the_computer_is_busy_marks_its_steers_uncounted(
-    busy,
+    busy, final,
 ):
     """A refusal that lifts once a CLI on the computer ends: the steers the
-    resume opens with go back without using up their refusals."""
+    resume opens with go back without using up their refusals. One that
+    lasts as long as the task settles them."""
     from ptc_agent.agent.middleware.background_subagent.context import (
         current_steer_resume,
     )
 
     owner = FakeOwner()
-    ledger = FakeLedger(reject="the computer is full", busy=busy)
+    ledger = FakeLedger(reject="the computer is full", busy=busy, final=final)
     mw = _middleware(owner, ledger)
     task = await _register_settled_task(mw)
     mw._reset_task_for_resume = AsyncMock()
@@ -489,7 +492,7 @@ async def test_a_resume_refused_while_the_computer_is_busy_marks_its_steers_unco
         current_steer_resume.reset(token)
 
     assert "the computer is full" in result.content
-    assert resume.get("busy", False) is busy
+    assert (resume.get("busy", False), resume.get("final", False)) == (busy, final)
     assert task.completed and task.task_run_id == "run-uuid-prev"
 
 

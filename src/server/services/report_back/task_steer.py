@@ -456,8 +456,10 @@ async def _computer_full(thread_id: str, task_id: str, user_id: str, workspace_i
     Staff's, still compiles the task's subagent with a Claude Code pin and
     that pin runs on Claude Code now (``admitted_there``), and runs on the
     thread's model elsewhere. That lifts once a CLI there ends, so the steer
-    waits for it without spending one of its turns. A failed check posts the
-    turn, and so does a placement that refuses it, which the turn reports."""
+    waits for it without spending one of its turns. A computer that runs
+    fewer CLIs than the two would take never makes room, so a failed check,
+    a placement that refuses the turn and such a computer all post the turn,
+    which reports the refusal."""
     from src.server.database.conversation.threads_read import get_thread_auth_meta
     from src.server.database.home_workspace import is_home_id
     from src.server.database.runs import subagent_runs as sr_db
@@ -490,6 +492,8 @@ async def _computer_full(thread_id: str, task_id: str, user_id: str, workspace_i
         if cap is None:
             return False
         posted = 1 if other_model else 2
+        if posted > cap:
+            return False
         return await sr_db.live_clis(str(computer["computer_id"])) + posted > cap
     except Exception:
         logger.warning(f"{_LOG} Room check for Task-{task_id} failed", exc_info=True)

@@ -39,7 +39,7 @@ from src.llms.claude_code import ClaudeTurnFailed
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn
 from src.server.database import claude_code_plan
 from src.server.database.claude_code_plan import computer_credential, plan_credential
-from src.server.database.computer import get_computer, get_computer_roster
+from src.server.database.computer import get_computer, get_computer_roster, set_computer_setting
 from src.server.models.claude_code import ClaudeCodeComputer, ClaudeCodeComputers, ComputerState, Source, State
 from src.server.models.computer import ComputerStatus as Lifecycle
 from src.server.services.ssh_computers import is_own_computer, ssh_info, tunnel_of, tunnels_for
@@ -48,7 +48,7 @@ from src.utils.cache.redis_cache import get_cache_client
 from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, SHORT_TTL_S, Held, check_would_bill, in_background, run_check, ttl
 from .check_now import CHECK_UNAVAILABLE, PLAN_WRITTEN_S, computer_unreached, held_check, limit_held, not_checkable, unreached, unsaved
 from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, changing, require, rows_on
-from .hosted import saved_token_runs
+from .hosted import CLIS_KEY, own_clis, saved_token_runs
 from .plan import CheckReports, CredentialPlan, UserPlan, plan_views
 from .saved import refusal_stamp, refuse, stored_row, token_hash, token_state, usable
 
@@ -492,7 +492,7 @@ def _entry(
     """The computer's entry, saying, where its token is the one shown, what a sign-in told of it (``meta``)."""
     return ClaudeCodeComputer(
         computer_id=str(computer["computer_id"]), name=computer.get("name") or "", kind=_kind(computer),
-        state=state, source=source, own_file=own_file or source == "machine", **meta,
+        state=state, source=source, own_file=own_file or source == "machine", clis=own_clis(computer), **meta,
     )
 
 
@@ -585,6 +585,17 @@ def _with_plan(entry: ClaudeCodeComputer, plans: Mapping[str, CredentialPlan]) -
     key = plan_credential(entry.source, entry.computer_id) if entry.source else None
     found = plans.get(key) if key else None
     return entry.model_copy(update=found._asdict()) if found else entry
+
+
+async def set_clis(user_id: str, computer_id: str, clis: int) -> ClaudeCodeComputer:
+    """Set how many Claude Code CLIs the user's own computer runs at once,
+    from its next CLI on, and return its entry as it then stands."""
+    await MachineHome.of(user_id, computer_id)
+    if await set_computer_setting(computer_id, user_id, CLIS_KEY, clis):
+        for entry in (await list_computers(user_id)).computers:
+            if entry.computer_id == computer_id:
+                return entry
+    raise OAuthRefusal(404, "computer_not_found", "Computer not found")
 
 
 async def check_now(user_id: str, computer_id: str) -> None:
