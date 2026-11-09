@@ -1336,8 +1336,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     if ((!snaps?.length && !draft) || navState?.initialMessage) return;
     reseededKeyRef.current = location.key;
     snaps?.forEach((s) => chatInputRef.current?.addWidgetSnapshot(s));
-    if (draft) chatInputRef.current?.setValue(draft);
-    navigate(location.pathname, { replace: true, state: { ...navState, widgetSnapshots: undefined, draftMessage: undefined } });
+    if (draft) chatInputRef.current?.setValue(draft, navState?.draftCommands);
+    navigate(location.pathname, { replace: true, state: { ...navState, widgetSnapshots: undefined, draftMessage: undefined, draftCommands: undefined } });
   }, [isActive, location.key, location.state, location.pathname, navigate]);
 
 

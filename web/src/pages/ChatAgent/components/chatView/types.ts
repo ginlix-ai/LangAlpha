@@ -32,6 +32,13 @@ export interface LocationState {
    */
   draftMessage?: string;
   /**
+   * Slash commands to leave picked beside `draftMessage`, as the composer's
+   * own menu would have picked them: the command palette's "use this skill"
+   * hands over `/dcf-model ` with the skill as its pill, so the send carries
+   * the skill rather than leaning on the server reading the text.
+   */
+  draftCommands?: SlashCommand[];
+  /**
    * The first send opens its turn with no message of its own, its
    * `initialMessage` empty (`SendOptions.hiddenOpener`): the welcome flow
    * asking the agent where to start (pages/Onboarding/welcome/kickoff.ts).

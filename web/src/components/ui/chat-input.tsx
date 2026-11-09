@@ -81,7 +81,8 @@ export interface ChatInputHandle {
    * mounted chat input sees it.
    */
   addWidgetSnapshot: (snapshot: WidgetContextSnapshot) => void;
-  setValue: (text: string) => void;
+  /** Replaces the text: pills it no longer names drop, and `commands` are picked beside it. */
+  setValue: (text: string, commands?: SlashCommand[]) => void;
   /**
    * Puts back what was written elsewhere, or sent and handed back, without
    * losing what is typed here: the text into an empty box, else after it, a
@@ -472,9 +473,17 @@ function ChatInput({
         return [...prev, snapshot];
       });
     },
-    setValue(text) {
+    setValue(text, commands = []) {
+      // Dictation rewrites the draft from what it held when it started.
+      abandonListening();
       setMessage(text);
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      // Pills follow the text, as typing prunes them: one the new text no
+      // longer names would otherwise ride the next send unseen.
+      pruneDraft(text);
+      restoreSlash(commands);
+      // A draft handed in by another surface (a palette's Enter, a starter's
+      // click) carries on that action, so it draws no keyboard ring.
+      setTimeout(() => focusWithoutRing(textareaRef.current), 0);
     },
     giveBack(text, files = [], { mentions = [], commands = [], focus = true } = {}) {
       // Through a ref, for what else comes back in the same commit to number against.
@@ -492,7 +501,7 @@ function ChatInput({
     focus() {
       textareaRef.current?.focus();
     },
-  }), [sentModel, sentEffort, resolvedFastMode, effectiveMarketWatch, draftSubagents, ownOverrides, mentionedFiles, setMentionedFiles, addMention, addQuote, restoreFiles, restoreSlash, handleFiles, abandonListening]);
+  }), [sentModel, sentEffort, resolvedFastMode, effectiveMarketWatch, draftSubagents, ownOverrides, mentionedFiles, setMentionedFiles, addMention, addQuote, restoreFiles, restoreSlash, pruneDraft, handleFiles, abandonListening]);
 
   // Subscribe to ContextBus so this input mirrors the global widget-context
   // deck. Multiple chat inputs can be visible simultaneously (hero card +
