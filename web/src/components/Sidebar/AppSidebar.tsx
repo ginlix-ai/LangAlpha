@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, ArrowRight, LayoutGrid, PanelLeftClose, PanelLeftOpen, Plus, SquarePen } from 'lucide-react';
@@ -10,12 +10,11 @@ import { useNavItems } from '../nav/useNavItems';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import NavigationPanel from '@/pages/ChatAgent/components/NavigationPanel';
 import NavDisplayOptions from '@/pages/ChatAgent/components/NavDisplayOptions';
-import { useCreateWorkspace } from '@/pages/ChatAgent/hooks/useCreateWorkspace';
 import { useNavTreeProps } from '@/pages/ChatAgent/hooks/useNavTreeProps';
 import type { NavWorkspace } from '@/pages/ChatAgent/hooks/useNavigationData';
-import type { Workspace } from '@/types/api';
 import AccountMenu from './AccountMenu';
 import { useChatRoute } from './useChatRoute';
+import { useOpenCreateWorkspace } from '../CreateWorkspaceHost';
 import { useSidebarAgents } from '@/pages/ChatAgent/components/sidebarAgentsBridge';
 import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { GettingStartedGate } from '@/pages/Onboarding';
@@ -60,9 +59,6 @@ function HistoryButtons() {
     </div>
   );
 }
-
-// Off the entry chunk: the modal is only needed once the button is pressed.
-const CreateWorkspaceModal = lazy(() => import('@/pages/ChatAgent/components/CreateWorkspaceModal'));
 
 interface AppSidebarProps {
   collapsed: boolean;
@@ -175,11 +171,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
   const openGallery = useCallback(() => navigate('/chat'), [navigate]);
 
   // Same create flow as the gallery, without leaving the current page first.
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const createWorkspace = useCreateWorkspace();
-  const openCreatedWorkspace = useCallback((ws: Workspace) => {
-    navigate(`/chat/${ws.workspace_id}`, { state: { workspaceName: ws.name, workspaceStatus: null } });
-  }, [navigate]);
+  const openCreateWorkspace = useOpenCreateWorkspace();
 
   // One persistent <aside> so the width transition runs across mode flips;
   // the keyed fragments force each mode's content to cleanly remount (React
@@ -297,7 +289,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
         <div className="sidebar-section-actions">
           <button
             className="nav-panel-dismiss-btn sidebar-section-action-btn"
-            onClick={() => setIsCreateOpen(true)}
+            onClick={() => openCreateWorkspace?.()}
             aria-label={t('workspace.newWorkspace')}
             title={t('workspace.newWorkspace')}
           >
@@ -324,17 +316,6 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
       <div className="sidebar-panel-bottom">
         <AccountMenu variant="row" />
       </div>
-
-      {isCreateOpen && (
-        <Suspense fallback={null}>
-          <CreateWorkspaceModal
-            isOpen
-            onClose={() => setIsCreateOpen(false)}
-            onCreate={createWorkspace}
-            onComplete={openCreatedWorkspace}
-          />
-        </Suspense>
-      )}
 
       {/* Edge drag = resize (double-click resets to the default width). */}
       <div

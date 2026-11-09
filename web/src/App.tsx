@@ -32,6 +32,7 @@ import { forgetHostedSignIn, hostedSignInReturn, landAfterSignIn } from './lib/h
 import { markBooted, reloadIfStale, watchStaleBuild } from './lib/staleBuild';
 import { appSectionOf } from './lib/appRoutes';
 import { lazyWithMotion } from './lib/lazyWithMotion';
+import { CreateWorkspaceHost } from './components/CreateWorkspaceHost';
 import './App.css';
 
 // Login carries the market-tape canvas subsystem (~2k lines that only a
@@ -366,7 +367,7 @@ function AuthenticatedShell() {
           </StaleBuildBoundary>
         </Suspense>
       ) : (
-        <>
+        <CreateWorkspaceHost>
           <div className="app-layout">
             {!isMobile && (
               <AppSidebar
@@ -382,7 +383,7 @@ function AuthenticatedShell() {
             </main>
           </div>
           <OnboardingHostGate />
-        </>
+        </CreateWorkspaceHost>
       )}
       <ConnectConsentHost />
       <ConnectLandingHost />
