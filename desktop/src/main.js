@@ -433,30 +433,44 @@ function watchLoads(win) {
 }
 
 /**
- * What a window tells its page about itself.
+ * What a window tells its page about itself, by the window's WebContents.
  *
- * `window-chrome` is the authoritative answer to "did this shell hide the
+ * `windowChrome` is the authoritative answer to "did this shell hide the
  * titlebar", and it is the only input to whether the page reserves the button
  * strip. Per window rather than per platform: the console is framed in a window
  * of its own and hidden when it shares the main one, and the page has no way to
  * work that out for itself.
+ *
+ * Answered over IPC from the sender, never put on the renderer's command line.
+ * `additionalArguments` belong to the renderer *process*, and a window's page
+ * does not always land in a process launched with them: a page reached that way
+ * read every switch as absent, version 0.0.0 and titlebar `native`, and drew its
+ * logo under the window buttons of a window whose titlebar was hidden, with no
+ * drag region anywhere. The WebContents is the window's own, whatever process
+ * its page is in.
  */
-function shellArgs({ chromeHidden }) {
-  return [
-    // The sandboxed preload cannot read package.json, so the version travels
-    // as a switch. See the note in preload.js.
-    `--langalpha-shell-version=${app.getVersion()}`,
-    `--langalpha-window-chrome=${chromeHidden ? 'hidden' : 'native'}`,
+const windowFacts = new WeakMap()
+
+function recordWindowFacts(win, { chromeHidden }) {
+  windowFacts.set(win.webContents, {
+    // The sandboxed preload cannot read package.json. See the note in preload.js.
+    version: app.getVersion(),
+    windowChrome: chromeHidden ? 'hidden' : 'native',
     // Which scheme this edition answers on. The page cannot derive it: both
     // editions install side by side, and an email link marked for the wrong one
     // opens the other build, or nothing.
-    `--langalpha-shell-scheme=${config.scheme}`,
+    scheme: config.scheme,
     // Whether this build has a console to finish a return from the browser on:
     // an integration login or install, or a console page asked to be shown
     // again. An edition with no platform origin drops those links, so it must
     // not say it can.
-    `--langalpha-console-returns=${origins.platformOrigin() ? '1' : ''}`,
-  ]
+    consoleReturns: Boolean(origins.platformOrigin()),
+  })
+}
+
+/** Null for a WebContents the shell did not record, which the preload reads as framed. */
+function windowFactsOf(webContents) {
+  return windowFacts.get(webContents) ?? null
 }
 
 function createMainWindow(url) {
@@ -489,9 +503,9 @@ function createMainWindow(url) {
       // window for most of it; throttling would stall the SSE consumer.
       backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js'),
-      additionalArguments: shellArgs({ chromeHidden }),
     },
   })
+  recordWindowFacts(mainWindow, { chromeHidden })
 
   attachPolicy(mainWindow, { isMainWindow: true })
   watchLoads(mainWindow)
@@ -558,11 +572,11 @@ function openPlatformWindow(url) {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload.js'),
-      // This window keeps its titlebar unconditionally, so it says so, whatever
-      // the console's own flag happens to be.
-      additionalArguments: shellArgs({ chromeHidden: false }),
     },
   })
+  // This window keeps its titlebar unconditionally, so it says so, whatever the
+  // console's own flag happens to be.
+  recordWindowFacts(platformWindow, { chromeHidden: false })
   platformWindow.on('closed', () => { platformWindow = null })
   attachPolicy(platformWindow, { isMainWindow: false })
   // Watched here too, so the day the console reserves the strip is the day this
@@ -778,6 +792,13 @@ function openLaunchWindows() {
 
 function registerIpc() {
   ipcMain.handle('shell:open-external', openExternallyFrom)
+  // Synchronous because the preload needs the answer before the page's first
+  // script runs: index.html stamps the frame from it ahead of the bundle. A
+  // window the shell did not record gets null, which the preload reads as
+  // "framed", the answer that never hides a control under the window buttons.
+  ipcMain.on('shell:window-facts', (event) => {
+    event.returnValue = windowFactsOf(event.sender)
+  })
 
   oauth.registerIpc()
   theme.registerIpc()
@@ -931,7 +952,7 @@ app.on('web-contents-created', (_event, contents) => {
 // and the launch and the bridge's openExternal, since which window a link lands
 // in depends on what a launch opened, in which order, and which page sent the
 // user out.
-module.exports = { decide, noteAppReached, adoptServer, watchLoads, openLaunchWindows, openExternallyFrom }
+module.exports = { decide, noteAppReached, adoptServer, watchLoads, openLaunchWindows, openExternallyFrom, windowFactsOf }
 
 // Surfacing this as a dialog rather than a silent log: an unhandled rejection in
 // the main process leaves the window alive but the shell half-dead, which is

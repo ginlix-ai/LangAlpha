@@ -340,8 +340,8 @@ The registered scheme carries four kinds of link, told apart before any window i
   Pages detect it as `console-return`.
 
 Only an edition with a console advertises these three, and it advertises all of them
-or none (main passes `--langalpha-console-returns=1` when there is a console; the OSS
-edition has none, so it passes the switch empty and the list is empty).
+or none (main answers `consoleReturns: true` when there is a console; the OSS edition
+has none, so it answers false and the list is empty).
 
 A launch that a link started opens only that link's window. `attach` delivers the queued
 link before the entry opens, and opening the entry as well would cover it, or load
@@ -561,8 +561,15 @@ like.
 - **Nothing auth-related is exposed to the page.** The shell drives sign-in itself, so
   neither SPA needs, or gets, a way to.
 - **A sandboxed preload cannot require arbitrary files.** Its resolver is limited to a
-  few Electron built-ins, and a throw there takes the whole bridge down silently. The
-  shell version travels as a command-line switch for this reason.
+  few Electron built-ins, and a throw there takes the whole bridge down silently. So
+  the version comes from main, with the rest of what a window tells its page.
+- **What a window tells its page is asked of main, never put on the command line.**
+  The preload's `shell:window-facts` (sync IPC) is answered from the sender's
+  WebContents (`recordWindowFacts` in `main.js`): version, frame, scheme, console
+  returns. `additionalArguments` belong to the renderer process, and a page can land
+  in a process launched without its window's; shells through 0.3.0 read every switch
+  as absent there, so the page was told `native` in a frameless window and drew its
+  logo under the window buttons. `index.html` reads version `0.0.0` as that case.
 - **Packaging resources live in `resources/`, not `build/`.** The repo-root
   `.gitignore` has a Python `build/` rule that silently swallows it.
 
