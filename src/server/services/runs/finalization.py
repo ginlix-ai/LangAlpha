@@ -14,7 +14,6 @@ from typing import Literal, Optional
 
 from ptc_agent.agent.middleware.image_capture import CAPTURE_TIMEOUT_SECONDS
 from src.config.settings import get_checkpoint_flush_timeout
-from src.observability.sentry import capture_turn_failure
 from src.server.contracts.status import (
     INTERRUPT_REASON_CREDIT_PAUSE,
     classify_interrupts,
@@ -169,14 +168,6 @@ async def assemble_finalize_artifacts(
             kind = failure_kind_metadata(exc)
             persist_metadata.update(kind)
             persist_metadata.update(plan_stop_metadata(exc))
-            if kind.get("error_kind") == "internal":
-                capture_turn_failure(
-                    exc,
-                    thread_id=thread_id,
-                    run_id=key[1],
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                )
     # The pause's own words, which settling the run's automation relays. A
     # pause without words is stamped null, so settling knows there is
     # nothing to relay.
@@ -344,7 +335,10 @@ async def drive_finalize_cas(
         return FinalizeVerdict(
             applied=False, status=status, survivor_status=survivor_status
         )
-    except Exception:
+    except Exception as e:
+        from src.observability.sentry import capture_finalize_failure
+
+        capture_finalize_failure(e, thread_id=key[0], run_id=key[1])
         logger.critical(
             f"[Finalize] FINALIZE FAILED for {key}: run row "
             f"remains in_progress for recovery",

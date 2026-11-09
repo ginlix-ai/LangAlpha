@@ -61,12 +61,16 @@ async def trace_url(run_id: Optional[str]) -> Optional[str]:
     return f"{host}/o/{tenant}/projects/p/{project}/r/{run_id}?trace_id={run_id}"
 
 
-def mirror_rating(row: Mapping[str, Any]) -> None:
+def mirror_rating(row: Mapping[str, Any], vault_secrets: dict[str, str]) -> None:
     """Write a ``conversation_feedback`` row as feedback on the run it rates:
-    the rating, the issue categories, the comment and the notes added since."""
+    the rating, the issue categories, the comment and the notes added since,
+    scrubbed of the user's secrets (``vault_secrets``)."""
     if not tracing_enabled():
         return
+    from src.server.utils.secret_redactor import scrub_outbound_text
+
     notes = [f.get("note") for f in row.get("report_follow_ups") or () if f.get("note")]
+    categories = [scrub_outbound_text(c, vault_secrets) for c in row.get("issue_categories") or () if c]
     _create(
         _feedback_id("rating", row["conversation_feedback_id"]),
         run_id=str(row["conversation_response_id"]),
@@ -74,10 +78,11 @@ def mirror_rating(row: Mapping[str, Any]) -> None:
         score=1 if row["rating"] == "thumbs_up" else 0,
         value={
             "rating": row["rating"],
-            "issue_categories": list(row.get("issue_categories") or []),
+            "issue_categories": categories,
             "human_review": bool(row.get("consent_human_review")),
         },
         comment="\n\n".join(t for t in (row.get("comment"), *notes) if t) or None,
+        vault_secrets=vault_secrets,
     )
 
 
@@ -96,7 +101,8 @@ def remove_rating(conversation_feedback_id: str) -> None:
 
 
 def flag_report(*, report_id: str, run_id: str, error_type: Optional[str], note: Optional[str]) -> None:
-    """Mark the run a failed-turn report is about."""
+    """Mark the run a failed-turn report is about. ``note`` is the report's,
+    already scrubbed of the user's secrets."""
     if not tracing_enabled():
         return
     _create(
@@ -113,7 +119,16 @@ def _feedback_id(kind: str, source_id: Any) -> UUID:
     return uuid5(_FEEDBACK_NAMESPACE, f"{kind}:{source_id}")
 
 
-def _create(feedback_id: UUID, *, run_id: str, key: str, score: int, value: dict, comment: Optional[str]) -> None:
+def _create(
+    feedback_id: UUID,
+    *,
+    run_id: str,
+    key: str,
+    score: int,
+    value: dict,
+    comment: Optional[str],
+    vault_secrets: Optional[dict[str, str]] = None,
+) -> None:
     from langsmith.run_trees import get_cached_client
 
     from src.server.utils.secret_redactor import scrub_outbound_text
@@ -124,7 +139,7 @@ def _create(feedback_id: UUID, *, run_id: str, key: str, score: int, value: dict
             key,
             score=score,
             value=value,
-            comment=scrub_outbound_text(comment) if comment else None,
+            comment=scrub_outbound_text(comment, vault_secrets) if comment else None,
             feedback_id=feedback_id,
             session_id=_tracer_project()[0],
         )

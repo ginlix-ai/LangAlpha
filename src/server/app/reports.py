@@ -13,6 +13,7 @@ from src.server.models.report import ReportCreate
 from src.observability.langsmith_feedback import flag_report
 from src.server.services.reports import (
     PlatformResult,
+    ScrubUnavailable,
     build_report,
     post_report,
     reports_enabled,
@@ -53,7 +54,10 @@ async def create_report(
     if body.thread_id:
         await auth_api.require_thread_owner(str(body.thread_id), user_id)
 
-    report = await build_report(body, user_id=user_id)
+    try:
+        report = await build_report(body, user_id=user_id)
+    except ScrubUnavailable:
+        return report_refusal(PlatformResult("unavailable"))
     result = await post_report(report)
     if result.ok:
         if report.run_id:

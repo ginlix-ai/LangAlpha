@@ -27,11 +27,13 @@ from src.server.models.report import ReportClient
 from src.server.app.reports import report_refusal
 from src.server.services.reports import (
     PlatformResult,
+    ScrubUnavailable,
     ThumbsDown,
     reply_to_thumbs_down,
     reports_enabled,
     request_thumbs_review,
     send_thumbs_down,
+    user_vault,
     withdraw_thumbs_down,
 )
 from src.server.database.conversation import (
@@ -104,8 +106,12 @@ async def _sync_langsmith(conversation_feedback_id: str) -> None:
     row = await get_feedback_by_id(conversation_feedback_id)
     if row is None:
         await asyncio.to_thread(remove_rating, conversation_feedback_id)
-    else:
-        await asyncio.to_thread(mirror_rating, row)
+        return
+    try:
+        vault = await user_vault(str(row["user_id"]))
+    except ScrubUnavailable:
+        return
+    await asyncio.to_thread(mirror_rating, row, vault)
 
 
 async def _kept(update: Awaitable[Optional[dict[str, Any]]], rating: ThumbsDown) -> dict[str, Any]:

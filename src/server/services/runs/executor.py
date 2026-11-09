@@ -1261,6 +1261,11 @@ class LocalRunExecutor:
                     user_id=user_id,
                 )
                 task_info.persistence_complete.set()
+                # Recovery settled the row this run's own finalize could not:
+                # the failure is reported here, once, as the applied path does,
+                # after the run reads as settled, since the report can wait.
+                if row["status"] == "error" and exc is not None:
+                    await self._capture_internal_failure(exc, thread_id, run_id, user_id, workspace_id)
 
             task_info.finish_failed_finalize = finish
 
@@ -1295,6 +1300,28 @@ class LocalRunExecutor:
             task_info.persistence_complete.set()
             async with self.task_lock:
                 self._release_terminal_refs(thread_id, run_id)
+
+        # Only the finalize that wrote the failure reports it, once the run
+        # reads as settled: a loser of the race, or a run a cancel ended
+        # first, sends nothing.
+        if verdict.applied and verdict.status == "error" and exc is not None:
+            await self._capture_internal_failure(exc, thread_id, run_id, user_id, workspace_id)
+
+    @staticmethod
+    async def _capture_internal_failure(
+        exc: BaseException,
+        thread_id: str,
+        run_id: str,
+        user_id: Optional[str],
+        workspace_id: Optional[str],
+    ) -> None:
+        from src.observability.sentry import capture_turn_failure
+        from src.server.services.runs.stream_errors import failure_kind_metadata
+
+        if failure_kind_metadata(exc).get("error_kind") == "internal":
+            await capture_turn_failure(
+                exc, thread_id=thread_id, run_id=run_id, user_id=user_id, workspace_id=workspace_id
+            )
 
     async def _drain_run_subagent_writers(
         self, thread_id: str, run_id: str, guard
