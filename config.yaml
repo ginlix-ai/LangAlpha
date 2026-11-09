@@ -305,6 +305,13 @@ claude_code:
   stored_custody: false        # Run them on a setup token the user lets the server store
   sandbox_placement: false     # Run the CLI inside the cloud computer's own sandbox
   hosted_turns_per_user: 3     # Turns one user runs at once on cloud computers
+  # Memory (MB) each Claude Code CLI on a cloud computer is counted at; the
+  # computer's memory over this is how many CLIs it runs at once, its turns'
+  # and their subagents' together. A CLI peaks near 240 MB RSS, but the turns
+  # it runs share the sandbox with their own commands and code, so the default
+  # leaves room for them. A computer of the user's own counts its own number,
+  # set in Settings.
+  cli_memory_mb: 800
 
 
 # =============================================================================

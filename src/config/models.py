@@ -365,6 +365,12 @@ class ClaudeCodeConfig(BaseModel):
     hosted_turns_per_user: int = Field(
         default=3, ge=1, description="Claude Code turns one user runs at once on cloud computers"
     )
+    cli_memory_mb: int = Field(
+        default=800,
+        ge=256,
+        description="Memory each Claude Code CLI on a cloud computer is counted at: its size's memory over this "
+        "is how many it runs at once",
+    )
 
 
 class WorkflowOrchestrationConfig(BaseModel):

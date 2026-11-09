@@ -47,9 +47,6 @@ DISCLOSURE = "2026-11-v2"
 #: whose resource tier key this is.
 SANDBOX_MIN_TIER = "performance"
 
-#: The memory each Claude Code CLI on a cloud computer is counted at: its
-#: tier's memory over this is how many it runs at once.
-CLI_MEMORY_MB = 800
 #: Why a Task is refused once the computer runs that many, as the refusal
 #: reads after "could not start <task>".
 CLI_CAP_REFUSAL = (
@@ -234,11 +231,11 @@ def tier_refusal(computer: Mapping[str, Any]) -> ComputerRefusal | None:
 def cli_cap(computer: Mapping[str, Any]) -> int | None:
     """How many Claude Code CLIs ``computer`` runs at once, its turns' and
     their subagents' together: an own computer as many as its connection's
-    CLI slots, any other one per ``CLI_MEMORY_MB`` of the smallest size its
+    CLI slots, any other one per ``claude_code.cli_memory_mb`` of the smallest size its
     sandbox may run at (``tier_refusal``). Where the CLIs run in the
     backend instead (``cloud_runs_in`` ``worker``), the computer's size
     is not theirs, so it runs as many as one at ``SANDBOX_MIN_TIER``. None
-    where a size is unknown."""
+    where a size is unknown; one that runs Claude Code at all runs at least one."""
     from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS
     from src.server.services.computer_manager import ComputerManager
     from src.server.services.ssh_computers import is_own_computer
@@ -248,7 +245,7 @@ def cli_cap(computer: Mapping[str, Any]) -> int | None:
     sizes = _sizes(computer) if in_sandbox() else [ComputerManager.get_instance().tier_size(computer, SANDBOX_MIN_TIER)]
     if any(size is None for size in sizes):
         return None
-    return int(min(size[1] for size in sizes) * 1024 // CLI_MEMORY_MB)
+    return max(1, int(min(size[1] for size in sizes) * 1024 // get_claude_code_config().cli_memory_mb))
 
 
 def _sizes(computer: Mapping[str, Any]) -> list[tuple[float, float] | None]:
