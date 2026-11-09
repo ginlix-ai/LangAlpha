@@ -117,6 +117,10 @@ export interface DesktopBridge {
    * Per window, not per platform: the same install opens a frameless main
    * window and a framed account window, and a first launch is framed on macOS
    * too. Only the shell knows.
+   *
+   * Not to be trusted alongside `version` 0.0.0: a shell through 0.3.0 whose
+   * page landed in a renderer without its window's switches reports `native`
+   * whatever the frame (see the stamp in `index.html`).
    */
   readonly windowChrome?: 'hidden' | 'native';
   /**
