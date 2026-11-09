@@ -47,6 +47,11 @@ const DIALOG_MOBILE_SHEET_CLASSES =
 const DIALOG_CENTERED_CLASSES =
   "fixed left-[50%] top-[50%] z-1030 grid w-full max-w-lg gap-4 border bg-background p-6 shadow-lg [transform:translate(-50%,-50%)] rounded-lg max-h-[85vh] overflow-y-auto pop-in-center *:min-w-0";
 
+// Pinned near the top and centred by its margins, not a transform, so it can
+// grow downward without its first row moving: the command palette.
+const DIALOG_COMMAND_CLASSES =
+  "fixed inset-x-0 mx-auto top-[min(14vh,7.5rem)] z-1030 flex flex-col w-[calc(100vw-1.5rem)] max-w-[620px] max-h-[min(36rem,calc(100dvh-8rem))] overflow-hidden border bg-background shadow-lg rounded-xl pop-in-top *:min-w-0";
+
 function DialogContent({
   className,
   children,
@@ -55,8 +60,9 @@ function DialogContent({
   ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
-  /** 'default' = bottom-sheet on mobile, centered on desktop. 'centered' = always centered. */
-  variant?: 'default' | 'centered';
+  /** 'default' = bottom-sheet on mobile, centered on desktop. 'centered' = always centered.
+   *  'command' = pinned near the top on every screen, with no close button: Escape closes it. */
+  variant?: 'default' | 'centered' | 'command';
 }) {
   const isMobile = useIsMobile();
   const swipeEnabled = isMobile && variant === 'default';
@@ -130,7 +136,7 @@ function DialogContent({
     );
   }
 
-  // Desktop bottom-sheet or centered: single-element, native scroll
+  // Desktop bottom-sheet, centered or command: single-element, native scroll
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -139,17 +145,17 @@ function DialogContent({
         aria-describedby={undefined}
         ref={ref}
         className={cn(
-          DIALOG_CENTERED_CLASSES,
+          variant === 'command' ? DIALOG_COMMAND_CLASSES : DIALOG_CENTERED_CLASSES,
           className
         )}
         onCloseAutoFocus={closeAutoFocus(onCloseAutoFocus)}
         {...props}>
         {children}
-        <DialogPrimitive.Close
+        {variant !== 'command' && <DialogPrimitive.Close
           className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
-        </DialogPrimitive.Close>
+        </DialogPrimitive.Close>}
       </DialogPrimitive.Content>
     </DialogPortal>
   );

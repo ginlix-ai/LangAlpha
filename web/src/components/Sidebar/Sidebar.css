@@ -251,6 +251,15 @@ html.desktop-mac .sidebar-history {
   background: hsl(var(--sidebar-hover));
 }
 
+/* The search row's shortcut, flush with the row's right edge. */
+.sidebar-shortcut {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+}
+
 /* The open card styles keep the rail and drop the wash: full ink says it,
    hovered too. */
 .sidebar-panel-item.active {

@@ -7109,5 +7109,62 @@
       "computerUnreached": "Couldn't reach this computer to check usage. Try again later.",
       "unsaved": "Claude answered, but the usage couldn't be updated. Try again later."
     }
+  },
+  "palette": {
+    "copyFailed": "Couldn't copy to the clipboard",
+    "title": "Search and commands",
+    "label": "Search threads, tickers, skills, settings, or ask anything",
+    "placeholder": "Search threads, tickers, skills, settings, or ask anything",
+    "untitledThread": "Untitled thread",
+    "analystIn": "Analyst in {{workspace}}",
+    "askTitle": "Ask “{{query}}”",
+    "actionsFor": "Actions for {{name}}",
+    "group": {
+      "recent": "Recent",
+      "actions": "Actions",
+      "topHit": "Top hit",
+      "threads": "Threads",
+      "tickers": "Tickers",
+      "workspaces": "Workspaces",
+      "skills": "Skills",
+      "places": "Pages and settings",
+      "ask": "Ask"
+    },
+    "kind": {
+      "workspace": "Workspace",
+      "page": "Page",
+      "chart": "Chart"
+    },
+    "do": {
+      "open": "Open",
+      "openInNewTab": "Open in new tab",
+      "copyLink": "Copy link",
+      "openChart": "Open chart",
+      "newThreadAbout": "New thread about {{symbol}}",
+      "copySymbol": "Copy symbol",
+      "newThreadIn": "New thread in {{workspace}}",
+      "openInPlugins": "Open in Plugins",
+      "useSkill": "Use in new thread",
+      "run": "Run",
+      "ask": "Ask",
+      "back": "Back",
+      "move": "Move",
+      "close": "Close",
+      "actions": "Actions"
+    },
+    "action": {
+      "newThread": "New thread",
+      "newWorkspace": "New workspace",
+      "newAutomation": "New automation",
+      "lightTheme": "Switch to light theme",
+      "darkTheme": "Switch to dark theme"
+    },
+    "keywords": {
+      "newThread": "chat conversation start ask agent",
+      "newWorkspace": "create folder project",
+      "newAutomation": "schedule alert recurring briefing",
+      "theme": "appearance dark light mode color"
+    },
+    "search": "Search"
   }
 }

@@ -7021,5 +7021,62 @@
       "computerUnreached": "无法连接这台电脑查看用量，请稍后再试。",
       "unsaved": "Claude 已响应，但用量未能更新，请稍后再试。"
     }
+  },
+  "palette": {
+    "copyFailed": "无法复制到剪贴板",
+    "title": "搜索与命令",
+    "label": "搜索对话、股票代码、技能、设置，或直接提问",
+    "placeholder": "搜索对话、股票代码、技能、设置，或直接提问",
+    "untitledThread": "未命名对话",
+    "analystIn": "{{workspace}} 的分析师",
+    "askTitle": "提问“{{query}}”",
+    "actionsFor": "{{name}} 的操作",
+    "group": {
+      "recent": "最近",
+      "actions": "操作",
+      "topHit": "最佳匹配",
+      "threads": "对话",
+      "tickers": "股票代码",
+      "workspaces": "工作区",
+      "skills": "技能",
+      "places": "页面与设置",
+      "ask": "提问"
+    },
+    "kind": {
+      "workspace": "工作区",
+      "page": "页面",
+      "chart": "图表"
+    },
+    "do": {
+      "open": "打开",
+      "openInNewTab": "在新标签页打开",
+      "copyLink": "复制链接",
+      "openChart": "打开图表",
+      "newThreadAbout": "新建关于 {{symbol}} 的对话",
+      "copySymbol": "复制代码",
+      "newThreadIn": "在 {{workspace}} 新建对话",
+      "openInPlugins": "在插件中打开",
+      "useSkill": "在新对话中使用",
+      "run": "执行",
+      "ask": "提问",
+      "back": "返回",
+      "move": "移动",
+      "close": "关闭",
+      "actions": "操作"
+    },
+    "action": {
+      "newThread": "新建对话",
+      "newWorkspace": "新建工作区",
+      "newAutomation": "新建自动化",
+      "lightTheme": "切换到浅色主题",
+      "darkTheme": "切换到深色主题"
+    },
+    "keywords": {
+      "newThread": "对话 聊天 开始 提问 Agent chat new thread",
+      "newWorkspace": "创建 文件夹 项目 workspace",
+      "newAutomation": "定时 提醒 周期 简报 automation",
+      "theme": "外观 深色 浅色 模式 颜色 theme dark light"
+    },
+    "search": "搜索"
   }
 }
