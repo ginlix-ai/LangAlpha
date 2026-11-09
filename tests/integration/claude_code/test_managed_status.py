@@ -82,7 +82,7 @@ async def _admit(cache: Cache) -> None:
         patch("src.server.database.computer.get_computer_for_workspace", new_callable=AsyncMock, return_value=_computer()),
         patch(f"{machines.__name__}.machine_of", new=AsyncMock(side_effect=AssertionError("admission dialed the machine"))),
     ):
-        await require_runnable(config, "claude-haiku-5-5-code", "analyst", user_id=USER, workspace_id="ws-1")
+        await require_runnable(config, "claude-haiku-5-5-code", user_id=USER, workspace_id="ws-1")
 
 
 async def _probe(m: Machine) -> ssh_provider.SSHProbe:

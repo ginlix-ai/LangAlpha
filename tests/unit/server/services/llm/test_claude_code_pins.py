@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.llms.claude_code import ClaudeCodeTarget
+from src.server.database.home_workspace import get_home_workspace_id
 from src.server.services.claude_code.machine import answer_key
 from src.server.services.llm.claude_code import Admitted, claude_code_placement
 from tests.unit.server.services.claude_code.fakes import Cache, serving
@@ -18,7 +19,7 @@ CODE = "claude-haiku-5-5-code"
 HANDLER = "src.server.services.llm.config"
 
 
-async def _place(computer, *, role="analyst", opted_in=True, backend=True, saved="sk-ant-oat01-saved", kept=None):
+async def _place(computer, *, opted_in=True, backend=True, saved="sk-ant-oat01-saved", kept=None):
     cache = Cache()
     cache.values.update(kept or {})
     config = SimpleNamespace(feature_enabled=lambda _: opted_in)
@@ -31,7 +32,7 @@ async def _place(computer, *, role="analyst", opted_in=True, backend=True, saved
         patch("src.server.services.claude_code.saved.stored_row", new_callable=AsyncMock,
               return_value={"access_token": saved} if saved else None),
     ):
-        return await claude_code_placement(config, role, user_id="user-1", workspace_id="ws-1")
+        return await claude_code_placement(config, user_id="user-1", workspace_id="ws-1")
 
 
 @pytest.mark.asyncio
@@ -50,7 +51,6 @@ async def test_a_workspace_runs_claude_code_where_admission_would_let_a_turn_the
         (HOSTED, {"saved": None}),
         (OWN, {"kept": {answer_key("c-1"): _answer("refused")}}),
         (OWN, {"opted_in": False}),
-        (OWN, {"role": "chief_of_staff"}),
     ],
 )
 async def test_a_workspace_where_a_claude_code_turn_would_be_refused_runs_none(computer, kw):
@@ -60,7 +60,7 @@ async def test_a_workspace_where_a_claude_code_turn_would_be_refused_runs_none(c
 @pytest.mark.asyncio
 async def test_a_placement_that_cannot_be_read_runs_the_pin_on_the_turns_model():
     """The turn itself never fails for a pin's Claude Code state."""
-    with patch("src.server.services.llm.claude_code.placement", new_callable=AsyncMock, side_effect=OSError("db down")):
+    with patch("src.server.services.llm.claude_code.cli_placement", new_callable=AsyncMock, side_effect=OSError("db down")):
         assert await _place(HOSTED) is None
 
 
@@ -104,7 +104,7 @@ async def test_a_claude_code_pin_on_a_thread_of_another_model_keeps_its_pin_wher
         monkeypatch, {}, [_custom("desk", CODE)], placed=Admitted("saved_token", "saved_token"),
     )
     assert placement.await_args.kwargs == {"user_id": "user-1", "workspace_id": "ws-1"}
-    assert config.claude_code_pins == ("saved_token", "saved_token") and not config.claude_code
+    assert config.claude_code_pins == Admitted("saved_token", "saved_token") and not config.claude_code
     assert config.subagents.resolved.definitions["desk"].model == CODE
     assert isinstance(config.subsidiary_llm_clients["subagent:desk"], ClaudeCodeTarget)
     assert config.subagent_models["desk"]["id"] == CODE
@@ -148,18 +148,18 @@ async def test_a_pin_never_signs_in_with_the_stored_token(own, token, placed):
     """Nothing on a turn of another model tells whether the user started the
     work it carries on, so a pin runs on the plan only where a token the
     user's own computer holds, or the server's, signs it in."""
-    from src.server.services.claude_code.hosted import Hosted, Placement
+    from src.server.services.claude_code.hosted import Hosted, OnCloud, OnOwn
 
-    where = Placement(own_computer=OWN) if own else Placement(hosted=Hosted(runs_on=token))
+    where = OnOwn(OWN) if own else OnCloud(Hosted(runs_on=token))
     with (
         patch("src.server.services.llm.claude_code.rows_available", return_value=True),
-        patch("src.server.services.llm.claude_code.placement", new_callable=AsyncMock, return_value=where),
+        patch("src.server.services.llm.claude_code.cli_placement", new_callable=AsyncMock, return_value=where),
         patch("src.server.services.llm.claude_code.read_answer", new_callable=AsyncMock, return_value=None),
         patch("src.server.services.llm.claude_code.require_computer_signed_in", new_callable=AsyncMock,
               return_value=token),
     ):
         assert await claude_code_placement(
-            SimpleNamespace(feature_enabled=lambda _: True), "analyst", user_id="user-1", workspace_id="ws-1",
+            SimpleNamespace(feature_enabled=lambda _: True), user_id="user-1", workspace_id="ws-1",
         ) == placed
 
 
@@ -183,3 +183,19 @@ async def test_a_subagent_counts_as_pinned_only_by_the_pin_it_has_now(model, rol
     reads = AsyncMock(return_value=(rows, _bases(), OFFERED))
     with patch("src.server.services.llm.subagents.read_user_subagents", new=reads):
         assert await pinned_to_claude_code("user-1", "macro-desk", "analyst") is pinned
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace", ["ws-1", get_home_workspace_id("user-1")], ids=["workspace", "home"])
+async def test_a_pin_where_cloud_computers_run_none_runs_on_the_picked_own_computers_own_token(workspace):
+    """Its CLI goes where a Claude Code turn's there would, the computer
+    carried so its launcher, count and room follow it; the Chief of Staff's
+    pins too, since it runs Claude Code."""
+    from tests.unit.server.services.claude_code.test_hosted import STUDIO, platform
+
+    config = SimpleNamespace(feature_enabled=lambda _: True)
+    with platform(mode="local", cli=(STUDIO, None)):
+        placed = await claude_code_placement(config, user_id="user-1", workspace_id=workspace)
+    with platform(mode="local", cli=(None, "Studio")):
+        offline = await claude_code_placement(config, user_id="user-1", workspace_id=workspace)
+    assert (placed, offline) == (Admitted(cli_computer="c-9"), None)

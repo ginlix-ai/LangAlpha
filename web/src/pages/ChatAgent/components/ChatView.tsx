@@ -394,6 +394,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     threadId: currentThreadId,
     isLoading,
     initialModel: navModel,
+    chiefOfStaff: isHome,
   });
   const { pickModel: pickThreadModel } = threadModel;
   const threadSubagents = useThreadSubagents({
@@ -1798,7 +1799,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       onDismiss={clearFallbackSuggestion}
                     />
                     <ThreadOffers model={threadModel} subagents={threadSubagents} summary={summaryHint} />
-                    <ClaudeCodePlanRow workspaceId={workspaceId} model={threadModel.model} />
+                    <ClaudeCodePlanRow workspaceId={workspaceId} chiefOfStaff={isHome} model={threadModel.model} />
                     <SelectionChips chips={chartSelectionChips} />
                     {/* At a file's foot the transcript is out of view, so the
                         turn's progress comes along with the composer. */}
@@ -1823,6 +1824,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         tokenUsage={tokenUsage}
                         onAction={handleAction}
                         model={threadModel.model}
+                        sendModel={threadModel.sendModel}
                         onPickModel={pickThreadModel}
                         threadModels={threadModels}
                         subagentsAllowed={threadSubagents.allowed}

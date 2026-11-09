@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useLocation } from 'react-router';
 import { renderWithProviders } from '@/test/utils';
-import type { ClaudeCodeComputer, ClaudeCodeSetup } from '@/api/model';
+import type { ClaudeCodeChiefOfStaff, ClaudeCodeCliPlacement, ClaudeCodeComputer, ClaudeCodeSetup } from '@/api/model';
 import type { TokenRow } from '@/components/modelAccess/tokenLine';
 
 const h = vi.hoisted(() => ({
@@ -20,13 +20,17 @@ const h = vi.hoisted(() => ({
   spec: [] as string[],
   planUrl: null as string | null,
   platform: false,
+  cliComputer: null as ClaudeCodeCliPlacement | null,
 }));
 
 vi.mock('@/hooks/useFeatures', () => ({
   useFeatures: () => ({ data: [{ key: 'claude_code_runtime', gate: h.gate }] }),
   useSetFeatureOverride: () => ({ mutateAsync: h.toggle, isPending: false }),
 }));
-vi.mock('@/hooks/useClaudeCode', () => ({ useClaudeCodeStatus: () => ({ enabled: h.statusOn }) }));
+vi.mock('@/hooks/useClaudeCode', () => ({
+  useClaudeCodeStatus: () => ({ enabled: h.statusOn }),
+  useClaudeCodeComputers: () => ({ cliComputer: h.cliComputer }),
+}));
 vi.mock('@/hooks/useClaudeCodeCustody', () => ({ useClaudeCodeCustody: () => ({ custody: h.custody }) }));
 vi.mock('../ClaudeCodeHostedChoice', () => ({ ClaudeCodeHostedChoice: () => null }));
 vi.mock('../ClaudeCodePlanOutChoice', () => ({ ClaudeCodePlanOutChoice: () => null }));
@@ -85,6 +89,7 @@ describe('ClaudeCodeSheet', () => {
     h.statusOn = false;
     h.spec = [];
     h.planUrl = null;
+    h.cliComputer = null;
   });
 
   const macRow = (line: TokenRow['line']): TokenRow => ({
@@ -250,6 +255,38 @@ describe('ClaudeCodeSheet', () => {
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Turn off Claude Code?' })).getByRole('button', { name: 'Turn off' }));
     await waitFor(() => expect(h.toggle).toHaveBeenCalledWith({ key: 'claude_code_runtime', enabled: false }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Turn off Claude Code?' })).toBeNull());
+  });
+
+  // The line names the computer the cloud workspaces run on only where the
+  // Chief of Staff runs there too, which is what it says.
+  const cos = (over: Partial<ClaudeCodeChiefOfStaff>): ClaudeCodeChiefOfStaff => ({
+    kind: 'picked', computer_id: 'mac', name: 'MacBook Pro', refusal: null, default_runs: true, ...over,
+  });
+  const PICKED: ClaudeCodeCliPlacement = { kind: 'picked', computer_id: 'mac', name: 'MacBook Pro', refusal: null };
+  const lab = (state: ClaudeCodeComputer['state'], extra: Partial<ClaudeCodeComputer> = {}) =>
+    mac(state, { computer_id: 'lab', name: 'Lab box', source: 'machine', ...extra });
+  const HOME_LAB = cos({ kind: 'own', computer_id: 'lab', name: 'Lab box' });
+  const HOME_SAYS = "Your Chief of Staff runs Claude Code on Home's computer, Lab box.";
+  it.each([
+    ['both on the picked computer', cos({}), PICKED, [], 'Claude Code for your cloud workspaces and your Chief of Staff runs on MacBook Pro.'],
+    ["Home's own cloud computer", cos({ kind: 'home_cloud', computer_id: 'cmp-home', name: 'Home desk' }), null, [], "Your Chief of Staff runs Claude Code on Home's computer, Home desk."],
+    ["Home's own computer, the cloud workspaces on a picked one", HOME_LAB, PICKED, [lab('signed_in')], HOME_SAYS],
+    ["Home's own computer on a token not checked yet", HOME_LAB, PICKED, [lab('unverified')], HOME_SAYS],
+    ["Home's own computer with no token, another one connected", HOME_LAB, PICKED, [lab('no_token', { source: null })], null],
+    ["Home's own computer whose token is refused", HOME_LAB, PICKED, [lab('rejected')], null],
+    ["Home's own computer whose token has expired", HOME_LAB, PICKED, [lab('signed_in', { expires_at: '2000-01-01T00:00:00Z' })], null],
+    ["Home's own computer missing from the computers read", HOME_LAB, PICKED, [], null],
+    ['a picked computer the cloud workspaces do not run on', cos({ computer_id: 'lab', name: 'Lab box' }), PICKED, [], null],
+    ['a picked computer while the cloud workspaces run their own', cos({}), null, [], null],
+    ['a picked computer the cloud workspaces read as refused', cos({}), { ...PICKED, refusal: 'cli_computer_offline' as const }, [], null],
+    ['a refusal', cos({ refusal: 'cli_computer_offline' }), PICKED, [], null],
+    ["this server's workers", cos({ kind: 'server', computer_id: null, name: null }), null, [], null],
+    ['Claude Code off', null, null, [], null],
+  ])('once ready, says where the Chief of Staff runs Claude Code: %s', (_, chiefOfStaff, cliComputer, more, words) => {
+    h.cliComputer = cliComputer;
+    show(setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' }), ...more], chief_of_staff: chiefOfStaff }));
+    expect(screen.getByText('Claude Code is ready')).toBeInTheDocument();
+    expect(screen.queryByText(/Chief of Staff runs/)?.textContent ?? null).toBe(words);
   });
 
   it('while a token is checked, leads with a title and a sentence as every other state does', () => {

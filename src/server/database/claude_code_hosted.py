@@ -38,6 +38,11 @@ CLAUDE_CODE_TURN = {"claude_code": True}
 #: What it carries while its CLI runs on the setup token the user stored,
 #: whose turns ``live_stored_turns`` finds when the token goes.
 STORED_TURN = {"claude_code_stored": True}
+#: The key under which a turn's run row (its metadata) and a task run's row
+#: (its ``replay_facts``) name the own computer that runs their CLI for a
+#: workspace on another computer (``Admitted.cli_computer``), so that computer
+#: counts the CLI as its own and the workspace's computer does not.
+CLI_COMPUTER = "claude_code_computer"
 
 
 class StoringBlocked(Exception):

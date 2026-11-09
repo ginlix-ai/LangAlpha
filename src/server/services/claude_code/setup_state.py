@@ -11,7 +11,8 @@ from ptc_agent.core.claude_code_managed import local_managed
 from src.llms.claude_code import FEATURE, backend_available, rows_available
 from src.server.database.computer import get_computers_for_user
 from src.server.models.claude_code import (
-    ClaudeCodeCloudComputer, ClaudeCodeComputer, ClaudeCodeCustody, ClaudeCodeSetup, ClaudeCodeStatus, SetupState,
+    ClaudeCodeChiefOfStaff, ClaudeCodeCloudComputer, ClaudeCodeComputer, ClaudeCodeCustody, ClaudeCodeSetup,
+    ClaudeCodeStatus, SetupState,
 )
 from src.config.features import USER_CONTROLLABLE_GATES, system_flag
 from src.server.services.features import user_feature_enabled
@@ -56,6 +57,24 @@ def _cloud_ready(custody: ClaudeCodeCustody | None) -> bool:
     return custody is not None and (custody.runs_on is not None or custody.refusal == "hosted_off")
 
 
+async def chief_of_staff(user_id: str, *, thread_id: str | None = None) -> ClaudeCodeChiefOfStaff:
+    """Where the Chief of Staff's Claude Code runs, by the rule every turn
+    follows (``hosted.cli_placement`` for Home, the saved token's check
+    included), and whether it runs a Claude Code Default the user saved
+    (``default_runs``), as its turns are admitted. With ``thread_id``, on
+    that Home thread, which runs the deployment's Default once another model
+    replied on it last (``chief_of_staff_default_runs``); its checkpoint is
+    read only where the Default would run otherwise."""
+    from src.server.database.home_workspace import get_home_workspace_id
+    from src.server.services.llm.claude_code import another_model_replied, default_runs
+
+    where = await hosted.cli_placement(user_id, get_home_workspace_id(user_id), token=True)
+    runs = await default_runs(user_id, where)
+    if runs and thread_id:
+        runs = not await another_model_replied(thread_id)
+    return ClaudeCodeChiefOfStaff(**hosted.runs_on_view(where).model_dump(), default_runs=runs)
+
+
 async def setup_state(user_id: str) -> ClaudeCodeSetup | None:
     """None where this server offers no Claude Code at all, or offers it
     only to others: the operator's gate (a plan, or none) keeps it off for
@@ -65,8 +84,8 @@ async def setup_state(user_id: str) -> ClaudeCodeSetup | None:
     on = await user_feature_enabled(user_id, FEATURE)
     if not on and system_flag(FEATURE).gate not in USER_CONTROLLABLE_GATES:
         return None
-    computers, status, refusals = await asyncio.gather(
-        list_computers(user_id, mark_offline=True), saved.status(user_id), hosted.cloud_refusals(user_id),
+    computers, status, (refusals, _) = await asyncio.gather(
+        list_computers(user_id, mark_offline=True), saved.status(user_id), hosted.cloud_view(user_id),
     )
     custody = await hosted.custody(user_id)
     # Before opt-in, whether the server would run turns on a saved token:
@@ -92,4 +111,5 @@ async def setup_state(user_id: str) -> ClaudeCodeSetup | None:
             for c in (await get_computers_for_user(user_id) if refusals else [])
             if str(c["computer_id"]) in refusals
         ],
+        chief_of_staff=await chief_of_staff(user_id) if on else None,
     )

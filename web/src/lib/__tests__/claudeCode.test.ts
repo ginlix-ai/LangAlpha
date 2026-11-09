@@ -1,7 +1,8 @@
 /**
  * A Claude Code refusal says how it is fixed: a token Claude refused is fixed
  * with a new one in Settings, as no token is, and the app words it itself.
- * On a cloud computer, the choice of how it runs there fixes it.
+ * Where the CLI runs on an own computer, Claude Code's view fixes none being
+ * online, and the offline one is named.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CLAUDE_CODE_CHOICE_URL, claudeCodeRefusal, claudeCodeTokenUrl } from '../claudeCode';
@@ -26,12 +27,19 @@ describe('claudeCodeRefusal', () => {
     });
   });
 
-  it('links a cloud computer kept off to Model access, reading it again', () => {
-    expect(claudeCodeRefusal({ reason: 'hosted_off' }, 'ws-1')).toEqual({
+  it('links no own computer online with its own token to Claude Code under Model access, reading it again', () => {
+    expect(claudeCodeRefusal({ reason: 'no_own_computer' }, 'ws-1')).toEqual({
       reread: true,
       link: { url: CLAUDE_CODE_CHOICE_URL, label: 'Model access', labelKey: 'modelAccess.title' },
-      messageKey: 'chat.claudeCode.off.hosted_off',
+      messageKey: 'chat.claudeCode.off.no_own_computer',
     });
+  });
+
+  it('names the offline computer that runs Claude Code, reading the computers again, and keeps the server words without it', () => {
+    expect(claudeCodeRefusal({ reason: 'cli_computer_offline', name: 'Studio Mac' }, 'ws-1')).toEqual({
+      reread: true, link: null, messageKey: 'chat.claudeCode.off.cli_computer_offline', messageValues: { name: 'Studio Mac' },
+    });
+    expect(claudeCodeRefusal({ reason: 'cli_computer_offline' }, 'ws-1')).toEqual({ reread: true, link: null, messageKey: null });
   });
 
   it('links Claude Code off for the account to its view under Model access, reading the opt-in again', () => {
@@ -50,7 +58,7 @@ describe('claudeCodeRefusal', () => {
     });
   });
 
-  it.each(['stored_blocked', 'choice_changed', 'needs_bigger_computer'])('words %s in the app with nothing to fix, and reads the choice again', (reason) => {
+  it.each(['choice_changed', 'needs_bigger_computer'])('words %s in the app with nothing to fix, and reads the choice again', (reason) => {
     expect(claudeCodeRefusal({ reason }, 'ws-1')).toEqual({ reread: true, link: null, messageKey: `chat.claudeCode.off.${reason}` });
   });
 
@@ -61,6 +69,20 @@ describe('claudeCodeRefusal', () => {
       link: { url: '/account/plans', label: 'Upgrade plan', labelKey: 'computer.spec.upgradePlan', external: true },
       messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan',
     });
+  });
+
+  it("words Home's computer too small for Claude Code as Home's, with or without a plan page", () => {
+    expect(claudeCodeRefusal({ reason: 'needs_bigger_computer', home: true }, 'home-1').messageKey).toBe('chat.claudeCode.off.needs_bigger_computer_home');
+    build.planUrl = '/account/plans';
+    expect(claudeCodeRefusal({ reason: 'needs_bigger_computer', home: true }, 'home-1')).toMatchObject({
+      link: { url: '/account/plans' }, messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan_home',
+    });
+  });
+
+  it('keeps the server words for the refusals cloud computers no longer give', () => {
+    for (const reason of ['hosted_off', 'stored_blocked']) {
+      expect(claudeCodeRefusal({ reason }, 'ws-1')).toEqual({ reread: false, link: null, messageKey: null });
+    }
   });
 
   it("names the user's cap on turns at once, and keeps the server words without one", () => {

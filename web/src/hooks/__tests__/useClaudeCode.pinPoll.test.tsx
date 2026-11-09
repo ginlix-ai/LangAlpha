@@ -40,4 +40,13 @@ describe('the setup read while a pin waits on a check', () => {
     await vi.advanceTimersByTimeAsync(6_000);
     await waitFor(() => expect(result.current.setup?.pin_state).toBe('connected'));
   });
+
+  // A composer outside Home reads no setup (`enabled: false`); the pins
+  // surface beside it still polls.
+  it('is read again beside a reader that reads no setup', async () => {
+    const { result } = renderHook(() => ({ off: useClaudeCodeSetup({ enabled: false }), pins: useClaudeCodeSetup() }), { wrapper });
+    await waitFor(() => expect(result.current.pins.setup?.pin_state).toBe('checking'));
+    await vi.advanceTimersByTimeAsync(6_000);
+    await waitFor(() => expect(result.current.pins.setup?.pin_state).toBe('connected'));
+  });
 });

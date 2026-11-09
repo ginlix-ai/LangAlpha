@@ -152,6 +152,20 @@ async def test_a_task_is_admitted_with_the_credential_its_build_launches_it_on(s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("computer", ["c-9", None])
+async def test_a_task_is_admitted_on_the_own_computer_its_build_runs_the_cli_on(computer):
+    owner = FakeOwner()
+    ledger = FakeLedger(reject="stop here")
+    mw = _middleware(owner, ledger)
+    mw.claude_code_types = frozenset({"general-purpose"})
+    mw.cli_computer = computer
+
+    await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
+
+    assert ledger.started[0]["cli_computer"] == computer
+
+
+@pytest.mark.asyncio
 async def test_init_rejected_spawns_nothing_and_releases_fence():
     owner = FakeOwner()
     ledger = FakeLedger(reject="task already has a live run")

@@ -1,4 +1,4 @@
-import type { ClaudeCodeCustodyMode, ClaudeCodeSetup, ClaudeCodeSetupState, PlanRefusal } from '@/api/model';
+import type { ClaudeCodeComputer, ClaudeCodeCustodyMode, ClaudeCodeSetup, ClaudeCodeSetupState, PlanRefusal } from '@/api/model';
 import type { RowStatus } from '@/components/modelAccess/parts';
 import { PLAN_URL } from '@/config/supportLinks';
 import { readPlanRefusal } from '@/lib/claudeCodePlan';
@@ -13,7 +13,7 @@ export const CLAUDE_CODE = 'claude-code';
  *  first token under Model access. */
 export const CLAUDE_CODE_FEATURE = 'claude_code_runtime';
 
-/** A model a turn runs on Claude Code: an analyst's conversation only. */
+/** A model a turn runs on Claude Code. */
 export const isClaudeCodeModel = (meta?: { sdk?: string }) => meta?.sdk === CLAUDE_CODE;
 
 /** What the access filters count as connected while Claude Code is listed:
@@ -46,23 +46,41 @@ export const CLAUDE_CODE_SETUP_STATUS: Readonly<Record<ClaudeCodeSetupState, Row
 /** The states of a Claude Code token that works. */
 export const TOKEN_WORKS: ReadonlySet<string> = new Set(['signed_in', 'unverified']);
 
+/** Whether a computer's token works by its last check and has not passed
+ *  its expiry, as its own line reads it and as admission refuses one past it. */
+export function computerTokenWorks(c: ClaudeCodeComputer, now: number): boolean {
+  return TOKEN_WORKS.has(c.state) && !(c.expires_at && Date.parse(c.expires_at) <= now);
+}
+
 /** Settings → Model access. */
 export const MODEL_ACCESS_URL = '/settings?tab=model';
 
+/** `biggerComputer`'s wording, with a plan page or without, for a workspace
+ *  or Home. */
+const BIGGER_COMPUTER_KEYS = {
+  plan: {
+    workspace: { rowKey: 'chat.modelSelector.claudeCodeNeedsBiggerComputerPlan', messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan' },
+    home: { rowKey: 'chat.modelSelector.claudeCodeNeedsBiggerComputerPlan', messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan_home' },
+  },
+  spec: {
+    workspace: { rowKey: 'chat.modelSelector.claudeCodeNeedsBiggerComputer', messageKey: 'chat.claudeCode.off.needs_bigger_computer' },
+    home: { rowKey: 'chat.modelSelector.claudeCodeNeedsBiggerComputerHome', messageKey: 'chat.claudeCode.off.needs_bigger_computer_home' },
+  },
+} as const;
+
 /**
  * A cloud computer too small for Claude Code, as the picker row and the
- * refusal word it. Where the build names a plan page, a larger computer comes
- * with a plan: worded so, and linked where every Upgrade plan button goes.
- * Elsewhere its spec is changed where the computer is, so nothing links.
+ * refusal word it, the workspace's or Home's (`home`). Where the build names
+ * a plan page, a larger computer comes with a plan: worded so, and linked
+ * where every Upgrade plan button goes. Elsewhere its spec is changed where
+ * the computer is, so nothing links, and Home, which no move puts on a
+ * computer of the user's own, has only that.
  */
-export function biggerComputer(): { rowKey: string; messageKey: string; link: ErrorLinkSpec | null } {
+export function biggerComputer(home: boolean): { rowKey: string; messageKey: string; link: ErrorLinkSpec | null } {
+  const keys = BIGGER_COMPUTER_KEYS[PLAN_URL ? 'plan' : 'spec'][home ? 'home' : 'workspace'];
   return PLAN_URL
-    ? {
-      rowKey: 'chat.modelSelector.claudeCodeNeedsBiggerComputerPlan',
-      messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan',
-      link: { url: PLAN_URL, label: 'Upgrade plan', labelKey: 'computer.spec.upgradePlan', external: true },
-    }
-    : { rowKey: 'chat.modelSelector.claudeCodeNeedsBiggerComputer', messageKey: 'chat.claudeCode.off.needs_bigger_computer', link: null };
+    ? { ...keys, link: { url: PLAN_URL, label: 'Upgrade plan', labelKey: 'computer.spec.upgradePlan', external: true } }
+    : { ...keys, link: null };
 }
 
 /** Settings → Model access with the setup-token sheet open, the one place a
@@ -106,8 +124,8 @@ export const CLAUDE_CODE_UNRUNNABLE: ReadonlySet<string> = new Set(['policy_bloc
 const CLAUDE_CODE_OFF_KEYS: Readonly<Record<string, string>> = {
   account: 'chat.claudeCode.off.account',
   token_refused: 'chat.claudeCode.off.token_refused',
-  hosted_off: 'chat.claudeCode.off.hosted_off',
-  stored_blocked: 'chat.claudeCode.off.stored_blocked',
+  no_own_computer: 'chat.claudeCode.off.no_own_computer',
+  cli_computer_offline: 'chat.claudeCode.off.cli_computer_offline',
   stored_unattended: 'chat.claudeCode.off.stored_unattended',
   choice_changed: 'chat.claudeCode.off.choice_changed',
   too_many_turns: 'chat.claudeCode.off.too_many_turns',
@@ -120,22 +138,33 @@ const CLAUDE_CODE_CHOICE_LINK: ErrorLinkSpec = { url: CLAUDE_CODE_CHOICE_URL, la
  *  that fixes it where the user can. */
 export interface ClaudeCodeHold {
   messageKey: string;
+  messageValues?: Record<string, string>;
   link: ErrorLinkSpec | null;
 }
 
 /** What holds a Claude Code model back where its turns stand in `state`;
  *  null where it runs, a token that could not be checked included, as
- *  admission runs it, and an own computer out of reach, which may be back
- *  by the time a turn starts. */
-export function claudeCodeHold(state: WorkspaceClaudeCode['state'], workspaceId?: string | null): ClaudeCodeHold | null {
+ *  admission runs it, and the workspace's own computer out of reach, which
+ *  may be back by the time a turn starts. The own computer the server picked
+ *  to run the CLI is refused offline (`cli_computer_offline`), named by
+ *  `cliComputerName`, and a computer too small is worded for Home where the
+ *  turn is the Chief of Staff's (`home`). */
+export function claudeCodeHold(
+  state: WorkspaceClaudeCode['state'], workspaceId?: string | null,
+  { home = false, cliComputerName = null }: { home?: boolean; cliComputerName?: string | null } = {},
+): ClaudeCodeHold | null {
   switch (state) {
     case 'checking': return { messageKey: 'modelAccess.status.working', link: null };
     case 'no_token': return { messageKey: 'chat.modelSelector.claudeCodeSignedOut', link: claudeCodeTokenLink(workspaceId) };
     case 'rejected': return { messageKey: 'chat.modelSelector.claudeCodeRejected', link: claudeCodeTokenLink(workspaceId) };
     case 'needs_own_computer': return { messageKey: 'chat.modelSelector.claudeCodeNeedsOwnComputer', link: null };
     case 'hosted_off': return { messageKey: 'chat.modelSelector.claudeCodeHostedOff', link: CLAUDE_CODE_CHOICE_LINK };
+    case 'no_own_computer': return { messageKey: 'chat.modelSelector.claudeCodeNoOwnComputer', link: CLAUDE_CODE_CHOICE_LINK };
+    case 'cli_computer_offline': return {
+      messageKey: 'chat.modelSelector.claudeCodeCliComputerOffline', messageValues: { name: cliComputerName ?? '' }, link: null,
+    };
     case 'needs_bigger_computer': {
-      const { rowKey, link } = biggerComputer();
+      const { rowKey, link } = biggerComputer(home);
       return { messageKey: rowKey, link };
     }
     case 'policy_blocked': return { messageKey: 'chat.modelSelector.claudeCodePolicyBlocked', link: null };
@@ -170,16 +199,13 @@ export function accountClaudeCodeHold(setup: ClaudeCodeSetup | null): ClaudeCode
 /** The links that fix a cloud computer's refusal: choosing how Claude Code
  *  runs there. */
 const CLAUDE_CODE_CLOUD_LINKS: Readonly<Record<string, ErrorLinkSpec>> = {
-  hosted_off: CLAUDE_CODE_CHOICE_LINK,
   stored_unattended: CLAUDE_CODE_CHOICE_LINK,
 };
 
 /** A cloud computer's refusals that say the user's choice for cloud
- *  computers, what the server offers, or which of their computers are too
- *  small, is not what the view read. */
-const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set([
-  'hosted_off', 'stored_blocked', 'choice_changed', 'needs_bigger_computer',
-]);
+ *  computers, or which of their computers are too small, is not what the
+ *  view read. */
+const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set(['choice_changed', 'needs_bigger_computer']);
 
 /**
  * What a turn's `claude_code_off` refusal means, wherever it arrives:
@@ -190,12 +216,15 @@ const CLAUDE_CODE_CHOICE_CHANGED: ReadonlySet<string> = new Set([
  * back on in its view under Model access. No token (`signed_out`) or one Claude refused
  * (`token_refused`), stored or not, is fixed with a new one in Settings; a
  * computer where Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`) is fixed
- * by no token. On a cloud computer, the choice of how it runs there
- * (`hosted_off`, and `stored_unattended` for automations and wakeups, which
- * a stored token does not run) fixes it; a choice paused on the server or
- * storing blocked for the user has nothing to fix. A computer too small for Claude Code reads as
- * `biggerComputer` says. Too many turns at once names the
- * user's cap, `limit`, and keeps the server's words without one. A Claude
+ * by no token. A turn whose CLI runs on an own computer the server picks
+ * finds none with its own token online (`no_own_computer`), fixed in Claude
+ * Code's view where those tokens are, or the picked one, `name`, offline
+ * (`cli_computer_offline`), fixed there. On a cloud computer, the choice of
+ * how it runs there fixes `stored_unattended` (automations and wakeups, which
+ * a stored token does not run). A computer too small for Claude Code reads
+ * as `biggerComputer` says for the workspace or Home (`home`). Too many
+ * turns at once names the user's cap, `limit`, and keeps the server's words
+ * without one. A Claude
  * plan's limit (`plan_stopped`, `plan_limited`) is news the plan the view
  * read does not have yet, and carries its window and reset (`planRefusal`)
  * for the card to word in the reader's zone, or keeps the server's words
@@ -205,10 +234,10 @@ export function claudeCodeRefusal(frame: Record<string, unknown>, workspaceId: s
   reread: boolean;
   link: ErrorLinkSpec | null;
   messageKey: string | null;
-  messageValues?: { n: number };
+  messageValues?: Record<string, string | number>;
   planRefusal?: PlanRefusal;
 } {
-  const { reason, limit } = frame;
+  const { reason, limit, name } = frame;
   if (typeof reason !== 'string') return { reread: false, link: null, messageKey: null };
   if (reason === 'plan_stopped' || reason === 'plan_limited') {
     return { reread: true, link: null, messageKey: null, planRefusal: readPlanRefusal(frame) ?? undefined };
@@ -219,14 +248,19 @@ export function claudeCodeRefusal(frame: Record<string, unknown>, workspaceId: s
       : { reread: false, link: null, messageKey: null };
   }
   if (reason === 'needs_bigger_computer') {
-    const { link, messageKey } = biggerComputer();
+    const { link, messageKey } = biggerComputer(frame.home === true);
     return { reread: true, link, messageKey };
+  }
+  if (reason === 'cli_computer_offline') {
+    return typeof name === 'string'
+      ? { reread: true, link: null, messageKey: CLAUDE_CODE_OFF_KEYS[reason], messageValues: { name } }
+      : { reread: true, link: null, messageKey: null };
   }
   const messageKey = CLAUDE_CODE_OFF_KEYS[reason] ?? null;
   if (reason === 'signed_out' || reason === 'token_refused') {
     return { reread: true, link: claudeCodeTokenLink(workspaceId), messageKey };
   }
-  if (reason === 'account') return { reread: true, link: CLAUDE_CODE_CHOICE_LINK, messageKey };
+  if (reason === 'account' || reason === 'no_own_computer') return { reread: true, link: CLAUDE_CODE_CHOICE_LINK, messageKey };
   return {
     reread: CLAUDE_CODE_UNRUNNABLE.has(reason) || CLAUDE_CODE_CHOICE_CHANGED.has(reason),
     link: CLAUDE_CODE_CLOUD_LINKS[reason] ?? null,

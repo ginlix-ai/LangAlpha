@@ -186,9 +186,11 @@ function InlineBars({ plan }: { plan: ClaudeCodePlan }) {
 export type DetailTail = 'bars' | 'pending' | null;
 
 /**
- * A token's detail on one line in a usage table: what it is, which gives way
- * first, then its `tail`, which never does. A `whole` one (a limit line)
- * never gives way either: the table steps down for it instead. The text is cut in code to the
+ * A token's detail on one line in a usage table: what it is, then its
+ * `tail`. Bars never give way, so the text gives way to them; the pending
+ * note is only a sentence, so it gives way first and the text, which says
+ * whose token it is, stays whole. A `whole` one (a limit line) never gives way
+ * either: the table steps down for it instead. The text is cut in code to the
  * room left, so its ellipsis ends right before the " · "; CSS's own would
  * leave part of a glyph's width as a gap there. Its whole is in a hover title.
  */
@@ -204,19 +206,20 @@ export function UsageDetail({ text, plan, tail, whole = false }: {
   const [line, setLine] = useState<HTMLSpanElement | null>(null);
   const [full, setFull] = useState<HTMLSpanElement | null>(null);
   const [tailEl, setTailEl] = useState<HTMLSpanElement | null>(null);
-  const cut = useFittedText(line, full, tailEl);
-  const shown = tail === 'pending' ? t('claudeCodePlan.pending')
+  const yields = tail === 'pending';
+  const cut = useFittedText(line, full, yields ? null : tailEl);
+  const shown = yields ? t('claudeCodePlan.pending')
     : tail === 'bars' && plan && planWindows(plan, clock.now).length > 0 ? <InlineBars plan={plan} /> : null;
   if (whole) return <span data-usage-whole className="block truncate">{text}</span>;
   return (
     <span ref={setLine} data-usage-line className="flex min-w-0 items-center whitespace-nowrap">
       {/* The whole text, unseen, which the cut is measured from. */}
       <span ref={setFull} hidden>{text}</span>
-      {text && <span className="min-w-0 truncate" title={cut?.title}>{cut?.text ?? text}</span>}
+      {text && <span className={cn('min-w-0 truncate', yields && 'flex-none')} title={cut?.title}>{cut?.text ?? text}</span>}
       {shown && (
-        <span ref={setTailEl} className={cn('flex flex-none items-center', tail === 'bars' && steps?.inline)}>
+        <span ref={setTailEl} className={cn('flex items-center', yields ? 'min-w-0 overflow-hidden' : 'flex-none', tail === 'bars' && steps?.inline)}>
           {text && <span className="whitespace-pre">{' · '}</span>}
-          {shown}
+          {yields ? <span className="min-w-0 truncate" title={t('claudeCodePlan.pending')}>{shown}</span> : shown}
         </span>
       )}
     </span>

@@ -108,6 +108,9 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         self.claude_code_stored = False
         #: The model each of those types' CLIs runs, by type.
         self.claude_code_models: dict[str, str] = {}
+        #: The own computer those CLIs run on for a workspace on another
+        #: computer, whose count bounds them rather than the thread's.
+        self.cli_computer: str | None = None
         # Task ids with a resume mid-flight: the liveness check and the
         # writer spawn are separated by awaits, so two parallel resume calls
         # in one model step could otherwise both pass and double-spawn (the
@@ -243,6 +246,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 claude_code=task.subagent_type in self.claude_code_types,
                 stored_token=self.claude_code_stored,
                 claude_code_model=self.claude_code_models.get(task.subagent_type),
+                cli_computer=self.cli_computer,
             )
         except TaskRunRejected as e:
             logger.warning(

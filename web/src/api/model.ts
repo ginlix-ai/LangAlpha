@@ -156,10 +156,46 @@ export interface ClaudeCodeComputer {
  *  reason (`needs_bigger_computer`: below the size Claude Code runs at). */
 export type ClaudeCodeComputerRefusal = 'needs_bigger_computer';
 
+/** Where a turn's Claude Code CLI runs: the workspace's own computer
+ *  (`own`); for every cloud workspace and Home, the own computer the server
+ *  picked where the user's cloud computers run none (`picked`); inside Home's
+ *  cloud computer (`home_cloud`); or in this server's workers, on no computer
+ *  of the user's (`server`). */
+export type ClaudeCodeCliKind = 'own' | 'picked' | 'home_cloud' | 'server';
+
+/** Why a turn's Claude Code CLI can run nowhere. */
+export type ClaudeCodePlacementRefusal =
+  | 'no_own_computer' | 'cli_computer_offline' | 'needs_own_computer' | 'needs_bigger_computer'
+  | 'policy_blocked' | 'signed_out' | 'token_refused' | 'needs_perl' | 'computer_unsupported';
+
+/** Where a turn's Claude Code CLI runs (`kind`), on the computer `computer_id`
+ *  and `name` name, or the reason it can run nowhere (`refusal`), with
+ *  `name` the computer that names (the offline one on
+ *  `cli_computer_offline`). */
+export interface ClaudeCodeCliPlacement {
+  kind: ClaudeCodeCliKind;
+  computer_id: string | null;
+  name: string | null;
+  refusal: ClaudeCodePlacementRefusal | null;
+}
+
+export interface ClaudeCodeChiefOfStaff extends ClaudeCodeCliPlacement {
+  /** Whether the Chief of Staff runs the user's saved Claude Code Default:
+   *  false where its CLI has nowhere to run, where the token there is known
+   *  not to work, or where it would sign in with the setup token the user
+   *  stored. */
+  default_runs: boolean;
+}
+
 export interface ClaudeCodeComputers {
   computers: ClaudeCodeComputer[];
   /** Absent from a server that predates it. */
   cloud_refusals?: Record<string, ClaudeCodeComputerRefusal>;
+  /** Where the user's cloud computers run no CLI themselves, the own
+   *  computer, one of `computers`, that runs it for every cloud workspace
+   *  and Home (`picked`), or `no_own_computer` or `cli_computer_offline`.
+   *  Null where they do; absent from a server that predates it. */
+  cli_computer?: ClaudeCodeCliPlacement | null;
 }
 
 /** A server from before per-computer tokens has no such route, and runs
@@ -235,6 +271,9 @@ export interface ClaudeCodeSetup {
    *  which never signs in with the setup token the user stored. Absent from
    *  a server that predates it. */
   pin_state?: ClaudeCodeSetupState;
+  /** Where the Chief of Staff's CLI runs, whenever Claude Code is on for the
+   *  user. Null while it is off; absent from a server that predates it. */
+  chief_of_staff?: ClaudeCodeChiefOfStaff | null;
 }
 
 /** Null where this server offers no Claude Code (404), or one from before
@@ -247,6 +286,13 @@ export async function getClaudeCodeSetup(): Promise<ClaudeCodeSetup | null> {
     if (apiErrorStatus(err) === 404) return null;
     throw err;
   }
+}
+
+/** The Chief of Staff's answer for one Home thread, which starts on the
+ *  deployment's Default once another model last replied there. */
+export async function getClaudeCodeChiefOfStaff(threadId: string): Promise<ClaudeCodeChiefOfStaff> {
+  const { data } = await api.get('/api/v1/claude-code/chief-of-staff', { params: { thread_id: threadId } });
+  return data as ClaudeCodeChiefOfStaff;
 }
 
 export async function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {

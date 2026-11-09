@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from src.server.database import conversation as qr_db
 from src.server.database import order_attempts as oa_db
@@ -37,6 +38,7 @@ from src.server.database.runs.outbox import (
     steer_ordering_key,
 )
 from src.server.contracts.status import TERMINAL_STATUSES
+from src.server.database.claude_code_hosted import CLI_COMPUTER
 from src.server.database.provenance import MAIN_PROVENANCE_LANE
 from src.server.database.runs.hook_jobs import is_unchanged_quiet
 from src.server.utils.pg_sanitize import SafeJson, normalize_uuid
@@ -1133,7 +1135,8 @@ async def workspace_has_live_runs(cur, workspace_id: str) -> bool:
 
 
 async def computer_has_active_run(computer_id: str) -> bool:
-    """Any live root run on any workspace bound to the computer.
+    """Any live root run on any workspace bound to the computer, or whose
+    Claude Code CLI runs on it for a workspace on another (``CLI_COMPUTER``).
 
     The machine-scoped twin of ``workspace_has_active_run``, and a join rather
     than a counter column because a torn-down computer takes every project on it
@@ -1142,7 +1145,7 @@ async def computer_has_active_run(computer_id: str) -> bool:
     two functions return the same thing.
     """
     async with pool.get_db_connection() as conn:
-        async with conn.cursor() as cur:
+        async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
                 SELECT EXISTS(
@@ -1151,12 +1154,13 @@ async def computer_has_active_run(computer_id: str) -> bool:
                     JOIN conversation_threads t
                       ON t.conversation_thread_id = r.conversation_thread_id
                     JOIN workspaces w ON w.workspace_id = t.workspace_id
-                    WHERE w.computer_id = %s AND r.status = 'in_progress'
-                )
+                    WHERE r.status = 'in_progress'
+                      AND (w.computer_id = %s OR r.metadata @> %s)
+                ) AS active
                 """,
-                (computer_id,),
+                (computer_id, Jsonb({CLI_COMPUTER: computer_id})),
             )
-            return bool((await cur.fetchone())[0])
+            return (await cur.fetchone())["active"]
 
 
 async def get_latest_attempt(

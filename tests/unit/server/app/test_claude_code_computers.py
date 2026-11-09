@@ -179,10 +179,10 @@ def world():
         patch("src.server.services.claude_code.flow.rows_available", side_effect=lambda: w.rows),
         patch("src.server.services.claude_code.flow.user_feature_enabled", new_callable=AsyncMock, side_effect=lambda *_: w.opted_in),
         patch("src.server.services.claude_code.hosted.backend_available", side_effect=lambda: w.backend),
-        patch(f"{MACHINES}.get_computer", new_callable=AsyncMock, side_effect=lambda _: w.computer),
-        patch(f"{MACHINES}.get_computer_roster", new_callable=AsyncMock, side_effect=lambda _: [_roster_row(w.computer)]),
-        patch(f"{MACHINES}.tunnels_for", new_callable=AsyncMock, side_effect=lambda *_: {"tun-1": {"live": w.tunnel_live}}),
-        patch(f"{MACHINES}.stored_row", new_callable=AsyncMock, side_effect=lambda _: {"access_token": w.saved} if w.saved else None),
+        patch(f"{MACHINES}.get_computer", new_callable=AsyncMock, side_effect=lambda _, **__: w.computer),
+        patch(f"{MACHINES}.get_computer_roster", new_callable=AsyncMock, side_effect=lambda *_, **__: [_roster_row(w.computer)]),
+        patch(f"{MACHINES}.tunnels_for", new_callable=AsyncMock, side_effect=lambda *_, **__: {"tun-1": {"live": w.tunnel_live}}),
+        patch(f"{MACHINES}.stored_row", new_callable=AsyncMock, side_effect=lambda _, **__: {"access_token": w.saved} if w.saved else None),
         patch(f"{MACHINES}.machine_of", new=w.dial),
         patch(f"{TOKENS}.stage_machine_token", new=m.stage),
         patch(f"{TOKENS}.promote_machine_token", new=m.promote),
@@ -238,7 +238,7 @@ async def test_with_claude_code_off_a_computer_asleep_or_out_of_reach_reads_off_
 ):
     world.rows, world.opted_in = rows, opted_in
     world.computer, world.tunnel_live = _computer(status), live
-    assert await _read(client, "/api/v1/claude-code/computers") == {"computers": [_entry("off")], "cloud_refusals": {}}
+    assert await _read(client, "/api/v1/claude-code/computers") == {"computers": [_entry("off")], "cli_computer": None, "cloud_refusals": {}}
     assert world.dialed == [] and world.machine.calls == [] and not world.cache.locks
 
 

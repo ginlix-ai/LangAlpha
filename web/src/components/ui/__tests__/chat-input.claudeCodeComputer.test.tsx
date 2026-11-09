@@ -4,7 +4,9 @@
  * fix links Settings to the workspace, which opens that computer's sheet;
  * on a hosted computer where no saved token runs, nowhere, which the rows
  * say with nothing to fix, unless the user chose how it runs there: then
- * Settings fixes it.
+ * Settings fixes it. Where the CLI runs on an own computer the server picks,
+ * the rows say none is online, or name the one that is offline. The Chief
+ * of Staff's rows follow where the server places its CLI.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -32,7 +34,7 @@ vi.mock('@/config/supportLinks', async (original) => ({
 }));
 
 vi.mock('@/hooks/useWorkspaceClaudeCode', () => ({
-  useWorkspaceClaudeCode: (...args: unknown[]) => {
+  useTurnClaudeCode: (...args: unknown[]) => {
     mocks.asked = args;
     return mocks.where;
   },
@@ -101,13 +103,13 @@ function Where() {
   return <span>{`at:${pathname}${search}`}</span>;
 }
 
-function renderInput() {
+function renderInput(scope: ChatInputProps['scope'] = 'workspace') {
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <MemoryRouter>
         <ChatInput
           onSend={vi.fn()}
-          scope="workspace"
+          scope={scope}
           onScopeChange={vi.fn()}
           workspaces={[{ workspace_id: 'ws-1', name: 'Alpha desk' }] as ChatInputProps['workspaces']}
           selectedWorkspaceId="ws-1"
@@ -131,7 +133,7 @@ describe("ChatInput: Claude Code rows by the workspace's computer", () => {
 
   it('asks after the selected workspace', () => {
     renderInput();
-    expect(mocks.asked).toEqual(['ws-1']);
+    expect(mocks.asked).toEqual([false, 'ws-1']);
   });
 
   it.each([
@@ -190,6 +192,28 @@ describe("ChatInput: Claude Code rows by the workspace's computer", () => {
     fireEvent.click(screen.getByRole('button', { name: 'fix' }));
     expect(opened).toHaveBeenCalledWith('/account/plans', '_blank', 'noopener,noreferrer');
     opened.mockRestore();
+  });
+
+  it('holds them where no computer of the user\'s own with its own token is online, leading to Claude Code in Settings', () => {
+    mocks.where = { state: 'no_own_computer', computerId: null, known: true };
+    renderInput();
+    expect(codeRow()).toBe('claude-x-code:held:Needs a computer of yours with its own setup token online:fix');
+    fireEvent.click(screen.getByRole('button', { name: 'fix' }));
+    expect(screen.getByText(/^at:/).textContent).toBe(`at:${CLAUDE_CODE_CHOICE_URL}`);
+  });
+
+  it('holds them while the computer that runs Claude Code is offline, naming it, with nothing to fix', () => {
+    mocks.where = { state: 'cli_computer_offline', computerId: null, known: true, cliComputerName: 'Studio Mac' };
+    renderInput();
+    expect(codeRow()).toBe('claude-x-code:held:Studio Mac is offline');
+    expect(screen.queryByRole('button', { name: 'fix' })).toBeNull();
+  });
+
+  it("asks after the Chief of Staff's turn, and words Home's computer too small without a move to an own computer", () => {
+    mocks.where = { state: 'needs_bigger_computer', computerId: null, known: true };
+    renderInput('all');
+    expect(mocks.asked[0]).toBe(true);
+    expect(codeRow()).toBe('claude-x-code:held:Needs a Medium or larger cloud computer');
   });
 
   it("runs them on the user's own computer, where the subscription pays for them", () => {

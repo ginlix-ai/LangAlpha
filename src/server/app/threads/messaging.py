@@ -608,6 +608,7 @@ async def _handle_send_message(
             fast_mode=getattr(request, "fast_mode", None),
             enabled_subagents=request.subagents_enabled,
             unattended=unattended(request),
+            checkpoint_id=request.checkpoint_id,
         )
 
         # A report-back or a channel message has nobody at a client to

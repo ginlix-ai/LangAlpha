@@ -410,6 +410,7 @@ async def astream_ptc_workflow(
                     workspace_id=workspace_id,
                     role=route.role,
                     unattended=unattended(request),
+                    checkpoint_id=request.checkpoint_id,
                 )
 
             # Persist query start
@@ -760,7 +761,7 @@ async def astream_ptc_workflow(
         )
         cancelled_calls = []
         if (
-            (route.role == "chief_of_staff" or not is_claude_code_model(effective_model))
+            not is_claude_code_model(effective_model)
             and request.hitl_response
             and not request.checkpoint_id
         ):

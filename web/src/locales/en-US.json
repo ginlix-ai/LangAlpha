@@ -2570,7 +2570,10 @@
       "claudeCodeNeedsOwnComputer": "Runs only on workspaces on your own computers",
       "claudeCodePolicyBlocked": "Your organization's Claude Code policy keeps it from running on this computer",
       "claudeCodeHostedOff": "Choose in Settings how it runs on cloud computers",
+      "claudeCodeNoOwnComputer": "Needs a computer of yours with its own setup token online",
+      "claudeCodeCliComputerOffline": "{{name}} is offline",
       "claudeCodeNeedsBiggerComputer": "Needs a Medium or larger cloud computer, or a computer of your own",
+      "claudeCodeNeedsBiggerComputerHome": "Needs a Medium or larger cloud computer",
       "claudeCodeNeedsBiggerComputerPlan": "Needs a Medium or larger cloud computer: change its spec or upgrade your LangAlpha plan, or use a computer of your own"
     },
     "voice": {
@@ -2712,13 +2715,15 @@
       "off": {
         "account": "Claude Code is off for your account. Turn it on in Settings under Model access, or pick another model.",
         "token_refused": "Claude refused your setup token. It may have expired or been revoked. Add a new one in Settings under Model access to use this model.",
-        "hosted_off": "Claude Code runs only on your own computers for your account, so workspaces on cloud computers can't use Claude Code models. Choose where it runs in Settings under Model access, or move this workspace to one of your computers.",
+        "no_own_computer": "Claude Code runs on your own computers, and none of yours with its own setup token is online now. Turn one on, or add a token for one in Settings under Model access.",
+        "cli_computer_offline": "{{name}}, where Claude Code runs for you, is offline. Turn it on, or pick another model.",
         "too_many_turns": "You've reached the limit on Claude Code threads running at once on cloud computers ({{n}}). Try again when one finishes.",
-        "stored_blocked": "Storing a setup token isn't available for your account, so Claude Code runs only on your own computers. Pick another model, or move this workspace to one of them.",
         "stored_unattended": "Automations, wakeups and work another agent starts on its own don't run on the setup token LangAlpha stores for you. To run them on Claude Code, choose to run it on your own computers in Settings under Model access.",
         "choice_changed": "How Claude Code runs on cloud computers changed as this turn started. Send your message again.",
         "needs_bigger_computer": "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. Change its spec, or move this workspace to a computer of your own.",
-        "needs_bigger_computer_plan": "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. Change its spec or upgrade your LangAlpha plan, or move this workspace to a computer of your own."
+        "needs_bigger_computer_home": "Claude Code runs on Medium or larger cloud computers, and Home's computer is smaller. Change its spec.",
+        "needs_bigger_computer_plan": "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. Change its spec or upgrade your LangAlpha plan, or choose to run Claude Code on your own computers in Settings under Model access.",
+        "needs_bigger_computer_plan_home": "Claude Code runs on Medium or larger cloud computers, and Home's computer is smaller. Change its spec or upgrade your LangAlpha plan, or choose to run Claude Code on your own computers in Settings under Model access."
       }
     }
   },
@@ -6781,9 +6786,9 @@
       "savedTag": "Setup token",
       "hosted": {
         "heading": "Where Claude Code runs",
-        "local": "Only on your own computers",
-        "localDetail": "Claude Code runs on your own computers, each with its own setup token, and LangAlpha keeps no copy. Workspaces on cloud computers can't use Claude Code models.",
-        "stored": "Also for cloud computers, with your setup token stored by LangAlpha",
+        "local": "On your own computers",
+        "localDetail": "Claude Code runs on a computer of yours with its own setup token, for every workspace, including those on cloud computers. Their files and commands stay on the cloud computer, and LangAlpha keeps no copy of the token.",
+        "stored": "On cloud computers, with your setup token stored by LangAlpha",
         "storedDetail": "For workspaces on Medium or larger cloud computers, Claude Code runs on the cloud computer itself. Your own computers without a token of their own run Claude Code themselves too. For each turn, LangAlpha sends your setup token, kept encrypted, to the computer that runs it. Usage counts against your Claude plan.",
         "paused": "Claude Code on cloud computers is paused on this server. Your choice is kept, and Claude Code still runs on your own computers.",
         "blocked": "Storing a setup token isn't available for your account. Claude Code still runs on your own computers."
@@ -6855,8 +6860,9 @@
         },
         "connected": {
           "title": "Claude Code is ready",
-          "body": "Claude Code models are in your model picker for workspaces on these computers.",
-          "bodyAny": "Claude Code models are in your model picker."
+          "body": "Claude Code models are in your model picker.",
+          "cliOwn": "Claude Code for your cloud workspaces and your Chief of Staff runs on {{name}}.",
+          "cliHome": "Your Chief of Staff runs Claude Code on Home's computer, {{name}}."
         },
         "checking": {
           "title": "Checking your setup tokens",

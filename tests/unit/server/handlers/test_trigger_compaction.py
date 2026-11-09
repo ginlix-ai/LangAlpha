@@ -438,6 +438,7 @@ async def test_the_compact_resolves_as_the_threads_next_turn(base_config, thread
         workspace_id=workspace_id,
         role=role,
         unattended=False,
+        checkpoint_id=None,
     )
     assert stub_resolve.captured_role == role
 

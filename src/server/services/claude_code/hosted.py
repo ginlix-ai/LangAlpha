@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal
 
@@ -35,7 +35,9 @@ from src.server.database.claude_code_hosted import (
     live_stored_turns,
     write_custody,
 )
-from src.server.models.claude_code import ClaudeCodeCustody, ComputerRefusal, HostedMode
+from src.server.models.claude_code import (
+    ClaudeCodeCustody, ClaudeCodeRunsOn, ComputerRefusal, HostedMode, PlacementRefusal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,16 +85,49 @@ class Hosted:
 
 
 @dataclass(frozen=True)
-class Placement:
-    """Where a Claude Code turn in a workspace runs: on ``own_computer``, the
-    row of the user's own computer, else on the credential ``hosted`` names.
-    ``refusal`` is the first of every reason a turn on a cloud computer is
-    refused (``cloud_placement``), the credential's among them, so every
-    caller tells the user the same one."""
+class OnOwn:
+    """A Claude Code turn's CLI runs on ``computer``, the row of one of the
+    user's own computers: the workspace's own, or one the server picked
+    (``picked``) for a workspace on a cloud computer that runs none for them,
+    whose tools stay on that cloud computer."""
 
-    own_computer: dict | None = None
+    computer: dict
+    picked: bool = False
+
+
+@dataclass(frozen=True)
+class OnCloud:
+    """A Claude Code turn on the cloud computer ``computer`` (its row, None
+    where none is bound yet) runs on the credential ``hosted`` names, its CLI
+    where ``cloud_runs_in`` says."""
+
+    hosted: Hosted
+    computer: dict | None = None
+
+
+@dataclass(frozen=True)
+class Refused:
+    """No Claude Code turn runs there, for ``reason``, the first of every
+    reason, so every caller tells the user the same one; ``fields`` is what
+    its words name (the offline computer's ``name``, or for a computer too
+    small whether it is Home's, ``home``), and ``hosted`` the credential
+    that would run there where the refusal is not the credential's."""
+
+    reason: PlacementRefusal
+    fields: Mapping[str, Any] = field(default_factory=dict)
     hosted: Hosted | None = None
-    refusal: str | None = None
+
+
+#: Where a Claude Code turn in a workspace runs (``cli_placement``).
+Placement = OnOwn | OnCloud | Refused
+
+
+def picks_own(where: Placement) -> bool:
+    """Whether ``where`` is a cloud computer that runs none of the user's CLIs,
+    so an own computer the server picks runs them, or none is online."""
+    if isinstance(where, OnOwn):
+        return where.picked
+    return isinstance(where, Refused) and where.reason in ("no_own_computer", "cli_computer_offline")
 
 
 class TurnsNotStopped(Exception):
@@ -254,14 +289,24 @@ def check_sandbox_tiers(sandbox: Any) -> None:
             )
 
 
-async def cloud_refusals(user_id: str) -> dict[str, ComputerRefusal]:
+async def cloud_view(user_id: str) -> tuple[dict[str, ComputerRefusal], Placement]:
+    """Each of the user's cloud computers too small for Claude Code
+    (``cloud_refusals``), and where their cloud computers' turns run, judged
+    as one not bound yet is (``cloud_placement``), read once for both."""
+    where = await cloud_placement(user_id, None)
+    return await cloud_refusals(user_id, where), where
+
+
+async def cloud_refusals(user_id: str, where: Placement) -> dict[str, ComputerRefusal]:
     """Each of the user's cloud computers that refuses a turn whatever its
     credential (``tier_refusal``), by id; none where the CLI does not run in
-    their sandboxes."""
+    their sandboxes, or runs on their own computers instead, as ``where``,
+    their cloud computers' placement, says (``picks_own``), where a cloud
+    computer's size refuses nothing."""
     from src.server.database.computer import get_computers_for_user
     from src.server.services.ssh_computers import is_own_computer
 
-    if not in_sandbox():
+    if not in_sandbox() or picks_own(where):
         return {}
     refusals: dict[str, ComputerRefusal] = {}
     for computer in await get_computers_for_user(user_id):
@@ -277,52 +322,132 @@ async def cloud_refusals(user_id: str) -> dict[str, ComputerRefusal]:
     return refusals
 
 
-async def placement(user_id: str, workspace_id: str | None, *, conn=None, token: bool = False) -> Placement:
-    """Where the user's Claude Code turn in ``workspace_id`` runs, settled once
-    at admission: the own computer first, so a workspace on one never reads
-    the choice for cloud computers, else as ``cloud_placement`` says.
-    ``conn`` reads on a caller's connection, as an automation file save that
-    holds the user's locks passes it, so the check never waits on a second
-    pool slot."""
+async def home_computer(user_id: str, *, conn=None) -> dict | None:
+    """Home's computer: the one it is bound to, else the primary computer it
+    binds to on its first start or turn."""
+    from src.server.database.computer import get_computer_for_workspace, get_primary_computer
+    from src.server.database.home_workspace import get_home_workspace_id
+
+    return await get_computer_for_workspace(get_home_workspace_id(user_id), conn=conn) or await get_primary_computer(
+        user_id, conn=conn,
+    )
+
+
+async def cli_placement(user_id: str, workspace_id: str | None, *, conn=None, token: bool = False) -> Placement:
+    """Where the CLI of the user's Claude Code turn in ``workspace_id`` runs,
+    the one rule for analysts and the Chief of Staff alike: on the
+    workspace's computer where it is one of the user's own, so a workspace on
+    one never reads the choice for cloud computers, else as
+    ``cloud_placement`` says. Home not bound yet is judged on the primary
+    computer it binds to, and a refusal for a computer too small says whether
+    it is Home's. ``conn`` reads on a caller's connection, as an automation
+    file save that holds the user's locks passes it, so the check never
+    waits on a second pool slot."""
     from src.server.database.computer import get_computer_for_workspace
+    from src.server.database.home_workspace import is_home_id
     from src.server.services.ssh_computers import is_own_computer
 
-    computer = await get_computer_for_workspace(workspace_id, conn=conn) if workspace_id else None
+    home = bool(workspace_id) and is_home_id(user_id, workspace_id)
+    if home:
+        computer = await home_computer(user_id, conn=conn)
+    else:
+        computer = await get_computer_for_workspace(workspace_id, conn=conn) if workspace_id else None
     if is_own_computer(computer):
-        return Placement(own_computer=computer)
-    return await cloud_placement(user_id, computer, conn=conn, token=token)
+        return OnOwn(computer)
+    return await cloud_placement(user_id, computer, home=home, conn=conn, token=token)
+
+
+async def _runs_none(user_id: str, state: Hosted | None, *, conn=None) -> bool:
+    """Whether a cloud computer's verdict ``state`` (None where this server
+    runs none there) means the user's turns there run their CLI on a computer
+    of their own: they chose their own computers, storing their token is
+    blocked for them, or the server runs none on cloud computers, except for
+    a user who chose to store their token there, since nothing falls back
+    from that choice to theirs."""
+    if state is not None or not choice_offered():
+        return True
+    return _verdict(await get_custody(user_id, conn=conn)).runs_on is None
+
+
+async def own_cli_computer(user_id: str, *, conn=None) -> Placement:
+    """The computer of the user's own that runs the CLI of their turns in
+    workspaces on cloud computers (``machine.pick_cli_computer``): one
+    picked but offline is named (``cli_computer_offline``); with none to
+    pick, the user is told to sign one in (``no_own_computer``)."""
+    from .machine import pick_cli_computer
+
+    computer, offline = await pick_cli_computer(user_id, conn=conn)
+    if computer is not None:
+        return OnOwn(computer, picked=True)
+    return Refused("cli_computer_offline", {"name": offline}) if offline else Refused("no_own_computer")
 
 
 async def cloud_placement(
-    user_id: str, computer: Mapping[str, Any] | None, *, conn=None, token: bool = False,
+    user_id: str, computer: Mapping[str, Any] | None, *, home: bool = False, conn=None, token: bool = False,
 ) -> Placement:
     """Where the user's turn on the cloud computer ``computer`` (its row, or
-    None where none is bound yet) runs, and the first reason it is refused:
-    none run here (``needs_own_computer``), the credential (``hosted``), an
-    organization's policy on the worker that would run it, with ``token`` the
-    saved setup token known not to work (admission's, which reads the token
-    store), and only then the computer's size, so a user hears of the size
-    once the credential would run. A computer not bound yet is judged as the
-    run starts, where it always is."""
+    None where none is bound yet) runs. Where the cloud computer runs none
+    for them (``_runs_none``), on a computer of their own
+    (``own_cli_computer``). Else the first reason it is refused: none run here
+    (``needs_own_computer``), an organization's policy on the worker that
+    would run it, with ``token`` the saved setup token known not to work
+    (admission's, which reads the token store), and only then the
+    computer's size, so a user hears of the size once the credential would
+    run; ``home`` says the computer is Home's. A computer not bound yet is
+    judged as the run starts, where it always is."""
     runs_in = cloud_runs_in()
     state = await hosted(user_id, conn=conn) if runs_in is not None else None
-    if state is None:
-        return Placement(refusal="needs_own_computer")
-    if state.refusal is not None:
-        return Placement(hosted=state, refusal=state.refusal)
+    if state is None or state.refusal is not None:
+        if await _runs_none(user_id, state, conn=conn):
+            return await own_cli_computer(user_id, conn=conn)
+        return Refused("needs_own_computer")
     if runs_in == "worker":
         from ptc_agent.core.claude_code_managed import local_managed
 
         if await local_managed():
-            return Placement(hosted=state, refusal="policy_blocked")
+            return Refused("policy_blocked", hosted=state)
     if token and state.token_signs_in:
         from .saved import saved_refusal
 
-        if reason := await saved_refusal(user_id):
-            return Placement(hosted=state, refusal=reason)
+        if reason := await saved_refusal(user_id, conn=conn):
+            return Refused(reason, hosted=state)
     if runs_in == "sandbox" and computer is not None and (reason := tier_refusal(computer)):
-        return Placement(hosted=state, refusal=reason)
-    return Placement(hosted=state)
+        return Refused(reason, {"home": home}, hosted=state)
+    return OnCloud(state, dict(computer) if computer is not None else None)
+
+
+def runs_on_view(where: Placement) -> ClaudeCodeRunsOn:
+    """Where a turn's CLI runs by ``where``, as Settings and the composer
+    show it: on an own computer, the workspace's (``own``) or one the server
+    picked (``picked``), inside the cloud computer's sandbox
+    (``home_cloud``, read for Home), or in this server's workers
+    (``server``); or why it runs nowhere, there."""
+    if isinstance(where, OnOwn):
+        computer = where.computer
+        return ClaudeCodeRunsOn(
+            kind="picked" if where.picked else "own", computer_id=str(computer["computer_id"]), name=computer["name"],
+        )
+    cloud = "home_cloud" if in_sandbox() else "server"
+    if isinstance(where, Refused):
+        return ClaudeCodeRunsOn(
+            kind="picked" if picks_own(where) else cloud, name=where.fields.get("name"), refusal=where.reason,
+        )
+    if cloud == "server":
+        return ClaudeCodeRunsOn(kind="server")
+    computer = where.computer
+    return ClaudeCodeRunsOn(
+        kind="home_cloud", computer_id=str(computer["computer_id"]) if computer else None,
+        name=computer["name"] if computer else None,
+    )
+
+
+async def cli_host(thread_id: str, cli_computer: str | None) -> dict | None:
+    """The computer that runs the CLIs of a thread's Claude Code runs and
+    counts them (``cli_cap``): the own computer ``cli_computer`` admission
+    picked for its workspace, else the thread's."""
+    from src.server.database.computer import get_computer, get_computer_for_thread
+
+    return await (get_computer(cli_computer) if cli_computer else get_computer_for_thread(thread_id))
 
 
 def relay_offered() -> bool:

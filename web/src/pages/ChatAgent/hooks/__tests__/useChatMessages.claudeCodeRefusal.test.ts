@@ -88,10 +88,10 @@ describe('useChatMessages: a Claude Code refusal', () => {
     await waitFor(() => expect(result.current.messageError).toEqual({ message: 'chat.claudeCode.off.too_many_turns:{"n":3}' }));
   });
 
-  it('at admission links a cloud computer kept off to Model access, and reads the choice for it again', async () => {
-    const worded = "Claude Code doesn't run on cloud computers for your account yet.";
+  it('at admission links no own computer online to Model access, and reads the choice again', async () => {
+    const worded = 'No computer of yours with its own setup token is online.';
     mockSendStream.mockRejectedValue(
-      Object.assign(new Error(worded), { status: 400, errorInfo: { type: 'claude_code_off', message: worded, reason: 'hosted_off' } }),
+      Object.assign(new Error(worded), { status: 400, errorInfo: { type: 'claude_code_off', message: worded, reason: 'no_own_computer' } }),
     );
     const { result, queryClient } = renderHookWithProviders(() => useChatMessages('ws-test'));
     const reread = vi.spyOn(queryClient, 'invalidateQueries');
@@ -99,7 +99,7 @@ describe('useChatMessages: a Claude Code refusal', () => {
       await result.current.handleSendMessage('hello');
     });
     await waitFor(() => expect(result.current.messageError).toMatchObject({
-      message: 'chat.claudeCode.off.hosted_off',
+      message: 'chat.claudeCode.off.no_own_computer',
       links: [{ url: CLAUDE_CODE_CHOICE_URL, labelKey: 'modelAccess.title' }],
     }));
     expect(reread).toHaveBeenCalledWith({ queryKey: queryKeys.user.claudeCodeCustody() });

@@ -19,7 +19,7 @@ from fastapi import HTTPException
 if TYPE_CHECKING:
     from ptc_agent.agent.claude_code.launcher import Launcher
     from ptc_agent.agent.roles import AgentRole
-    from ptc_agent.config.agent import AgentConfig
+    from ptc_agent.config.agent import Admitted, AgentConfig
     from ptc_agent.core.project_context import ProjectContext
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
     from src.server.services.computer_manager._types import WorkspaceToolView
@@ -38,6 +38,7 @@ def thread_resolver(
     fast_mode: bool | None = None,
     enabled_subagents: list[str] | None = None,
     unattended: bool = False,
+    checkpoint_id: str | None = None,
 ) -> Callable[[str | None], Awaitable[AgentConfig]]:
     """Maps a model name (None for the account default) to the config a turn
     on the thread runs it under, in the route's workspace and role.
@@ -46,7 +47,8 @@ def thread_resolver(
     its row), picked in its composer, and with none of those the user's
     Settings. A client sends what its composer shows, so the row decides only
     for a turn no composer started: a report-back, a resume after a reload, a
-    call between turns.
+    call between turns. ``checkpoint_id`` is where an edit or a regenerate
+    starts the turn (``resolve_llm_config``).
     """
     from src.server.app import setup
     from src.server.services.llm.config import resolve_llm_config
@@ -68,6 +70,7 @@ def thread_resolver(
             workspace_id=route.workspace_id,
             role=route.role,
             unattended=unattended,
+            checkpoint_id=checkpoint_id,
         )
 
     return resolve
@@ -160,18 +163,16 @@ class AgentInputs:
         }
 
     def claude_code_launcher(
-        self, sandbox: PTCSandbox, admitted: str | None, saved: str | None, *, slot_wait_s: float | None = None,
+        self, sandbox: PTCSandbox, admitted: Admitted, *, slot_wait_s: float | None = None,
     ) -> Launcher:
-        """Where a Claude Code CLI runs, a turn's or a subagent's, on the token
-        it signs in with: on a cloud computer the credential admission let it
-        run on (``admitted``), and the setup token the user saved where
-        admission let it sign in with that (``saved``). ``slot_wait_s`` is how
-        long a CLI on an own computer waits for a slot there, a subagent's
-        shorter than a turn's. Imported here, never at the top: the SDK loads
-        only for such a CLI."""
+        """Where a Claude Code CLI runs, a turn's or a subagent's, and the token
+        it signs in with, by what admission let it run on (``admitted``).
+        ``slot_wait_s`` is how long a CLI on an own computer waits for a slot
+        there, a subagent's shorter than a turn's. Imported here, never at the
+        top: the SDK loads only for such a CLI."""
         from src.server.services.claude_code.launchers import turn_launcher
 
         return turn_launcher(
-            sandbox, computer_id=self.computer_id, user_id=self.user_id, admitted=admitted, saved=saved,
-            slot_wait_s=slot_wait_s,
+            sandbox, computer_id=self.computer_id, workspace_id=self.workspace_id, user_id=self.user_id,
+            admitted=admitted, slot_wait_s=slot_wait_s,
         )

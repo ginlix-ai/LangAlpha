@@ -440,8 +440,8 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   // contract as ChatAgent (no unseen dot for watched finishes, seen on open).
   useActiveThreadPublisher(threadId);
 
-  // The Chief of Staff runs the default model, as the full agent does in a workspace.
-  const threadModel = useThreadModel({ threadId, isLoading });
+  // The Chief of Staff's turn may start on another Default than the account's.
+  const threadModel = useThreadModel({ threadId, isLoading, chiefOfStaff: scope === 'all' });
   const threadSubagents = useThreadSubagents({ threadId });
   const { toSend: subagentsToSend } = threadSubagents;
   const threadTuning = useThreadTuning({ threadId });
@@ -954,6 +954,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         scope={scope}
         onScopeChange={onScopeChange}
         model={threadModel.model}
+        sendModel={threadModel.sendModel}
         onPickModel={threadModel.pickModel}
         subagentsAllowed={threadSubagents.allowed}
         onToggleSubagents={threadSubagents.setAllowed}

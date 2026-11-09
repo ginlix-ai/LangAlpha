@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.server.database.home_workspace import get_home_workspace_id
+from src.server.services.claude_code.hosted import OnCloud, OnOwn, Refused
 from src.server.services.llm.claude_code import Admitted
 from src.server.services.report_back import task_steer
 from src.server.services.report_back.notify_turn import TURN_ROOM_WAIT_S
@@ -336,6 +337,8 @@ async def test_the_wait_for_a_full_computer_doubles_on_tries_spent_not_on_claims
 
 
 _PIN_RUNS = Admitted(saved="saved")
+USER_MODELS = "src.server.services.llm.user_models"
+_HOME = get_home_workspace_id("user-1")
 
 
 @pytest.mark.asyncio
@@ -362,8 +365,8 @@ _PIN_RUNS = Admitted(saved="saved")
             id="a-subagent-whose-pin-was-changed-since",
         ),
         pytest.param(
-            True, 4, 4, False, "gpt-6.1-terra", _PIN_RUNS, True, True, get_home_workspace_id("user-1"),
-            id="the-chief-of-staff-whose-pins-run-on-its-model",
+            True, 4, 4, True, "gpt-6.1-terra", _PIN_RUNS, True, True, get_home_workspace_id("user-1"),
+            id="the-chief-of-staffs-pin-on-claude-code-takes-a-cli-too",
         ),
     ],
 )
@@ -373,12 +376,13 @@ async def test_a_computer_is_full_for_a_resume_without_room_for_the_turn_and_the
     """The posted turn takes a CLI of its own unless the thread names another
     model; a Claude Code pin's resume on a thread of another model takes one
     for the run alone, and none where the pin runs on the thread's model now.
-    A thread naming none runs the account default."""
+    A thread naming none runs the account default, a Claude Code one here."""
     runs = "src.server.database.runs.subagent_runs"
     with (
+        patch(f"{USER_MODELS}.get_model_preference", new=AsyncMock(return_value={"preferred_model": "claude-sonnet-5-5-code"})),
         patch("src.server.services.claude_code.flow.rows_on", new=AsyncMock(return_value=rows)),
-        patch("src.server.services.llm.claude_code.pin_admitted", new=AsyncMock(return_value=pin)),
-        patch("src.server.services.llm.subagents.pinned_to_claude_code", new=AsyncMock(return_value=pinned)),
+        patch("src.server.services.llm.claude_code.runs_unattended", new=AsyncMock(return_value=pin)),
+        patch("src.server.services.llm.subagents.pinned_to_claude_code", new=AsyncMock(return_value=pinned)) as compiled,
         patch(f"{runs}.get_task", new=AsyncMock(return_value={"subagent_type": "research"})),
         patch(
             "src.server.database.conversation.threads_read.get_thread_auth_meta",
@@ -387,12 +391,87 @@ async def test_a_computer_is_full_for_a_resume_without_room_for_the_turn_and_the
         patch(f"{runs}.ran_on_claude_code", new=AsyncMock(return_value=on_claude_code)),
         patch(f"{runs}.live_clis", new=AsyncMock(return_value=live)),
         patch(
-            "src.server.database.computer.get_computer_for_thread",
-            new=AsyncMock(return_value={"computer_id": "c-1"}),
+            "src.server.services.claude_code.hosted.cli_placement",
+            new=AsyncMock(return_value=OnCloud(None, {"computer_id": "c-1"})),
         ),
         patch("src.server.services.claude_code.hosted.cli_cap", lambda computer: cap),
     ):
         assert await task_steer._computer_full("t-1", "k7Xm2p", "user-1", workspace) is full
+    if compiled.await_count:
+        role = "analyst" if workspace == "ws-1" else "chief_of_staff"
+        compiled.assert_awaited_once_with("user-1", "research", role)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("held", "default", "workspace", "cos_runs", "full"),
+    [
+        pytest.param(None, "claude-sonnet-5-5-code", _HOME, None, False, id="home-on-a-claude-code-default-it-does-not-run"),
+        pytest.param(None, "claude-sonnet-5-5-code", _HOME, object(), True, id="home-on-a-claude-code-default-it-runs"),
+        pytest.param("model-gone", "claude-sonnet-5-5-code", _HOME, None, False, id="home-whose-model-left-the-catalog"),
+        pytest.param(None, "claude-sonnet-5-5-code", "ws-1", None, True, id="an-analyst-on-a-claude-code-default"),
+        pytest.param(None, "gpt-6.1-terra", "ws-1", None, False, id="an-analyst-on-another-default"),
+        pytest.param(None, "gpt-6.1-terra", _HOME, object(), False, id="home-on-another-default"),
+    ],
+)
+async def test_a_thread_naming_no_model_is_judged_on_the_default_its_posted_turn_starts_on(
+    held, default, workspace, cos_runs, full
+):
+    """The posted turn names no model, so it runs the account default, which
+    the Chief of Staff runs only where ``chief_of_staff_default_runs`` lets it
+    on that thread; elsewhere it starts on the deployment's, and only a
+    Claude Code pin's resume takes a CLI."""
+    runs = "src.server.database.runs.subagent_runs"
+    cos = AsyncMock(return_value=cos_runs)
+    with (
+        patch(f"{USER_MODELS}.get_model_preference", new=AsyncMock(return_value={"preferred_model": default})),
+        patch("src.server.services.llm.claude_code.chief_of_staff_default_runs", new=cos),
+        patch("src.server.services.claude_code.flow.rows_on", new=AsyncMock(return_value=True)),
+        patch("src.server.services.llm.claude_code.runs_unattended", new=AsyncMock(return_value=_PIN_RUNS)),
+        patch("src.server.services.llm.subagents.pinned_to_claude_code", new=AsyncMock(return_value=True)),
+        patch(f"{runs}.get_task", new=AsyncMock(return_value={"subagent_type": "research"})),
+        patch(
+            "src.server.database.conversation.threads_read.get_thread_auth_meta",
+            new=AsyncMock(return_value={"llm_model": held}),
+        ),
+        patch(f"{runs}.ran_on_claude_code", new=AsyncMock(return_value=True)),
+        patch(f"{runs}.live_clis", new=AsyncMock(return_value=3)),
+        patch(
+            "src.server.services.claude_code.hosted.cli_placement",
+            new=AsyncMock(return_value=OnCloud(None, {"computer_id": "c-1"})),
+        ),
+        patch("src.server.services.claude_code.hosted.cli_cap", lambda computer: 4),
+    ):
+        assert await task_steer._computer_full("t-1", "k7Xm2p", "user-1", workspace) is full
+    if workspace == _HOME and default.endswith("-code"):
+        cos.assert_awaited_once_with("user-1", workspace, thread_id="t-1")
+    else:
+        cos.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_resume_is_held_for_room_where_its_cli_would_run_now():
+    """Counted, and capped, on the computer admission places the resume's CLI
+    on today, the own computer it picks for the workspace, whatever computer
+    the task's last run used; a placement that refuses the turn posts it,
+    and the turn says why."""
+    runs = "src.server.database.runs.subagent_runs"
+    studio = {"computer_id": "c-9", "kind": "ssh"}
+    live = AsyncMock(return_value=1)
+    placement = AsyncMock(return_value=OnOwn(studio, picked=True))
+    with (
+        patch(f"{USER_MODELS}.get_model_preference", new=AsyncMock(return_value={"preferred_model": "claude-sonnet-5-5-code"})),
+        patch(f"{runs}.ran_on_claude_code", new=AsyncMock(return_value=True)),
+        patch(f"{runs}.live_clis", new=live),
+        patch("src.server.database.conversation.threads_read.get_thread_auth_meta", new=AsyncMock(return_value={})),
+        patch("src.server.services.claude_code.hosted.cli_placement", new=placement),
+        patch("src.server.services.claude_code.hosted.cli_cap", lambda computer: 2 if computer is studio else 8),
+    ):
+        assert await task_steer._computer_full("t-1", "k7Xm2p", "user-1", "ws-1") is True
+        live.assert_awaited_once_with("c-9")
+        placement.assert_awaited_once_with("user-1", "ws-1", token=True)
+        placement.return_value = Refused("cli_computer_offline", {"name": "Studio"})
+        assert await task_steer._computer_full("t-1", "k7Xm2p", "user-1", "ws-1") is False
 
 
 # Handing a resume's steers to the run it admitted

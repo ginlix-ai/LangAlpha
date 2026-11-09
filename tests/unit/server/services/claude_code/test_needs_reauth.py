@@ -7,6 +7,7 @@ on the token's hash and the save it was read from, is what admission,
 Settings and a relay read after it.
 """
 
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -15,12 +16,12 @@ import pytest
 from fastapi import HTTPException
 
 from src.server.services.claude_code import saved
-from src.server.services.claude_code.machine import ComputerToken
+from src.server.services.claude_code.machine import ComputerToken, MachineAnswer
 from ptc_agent.agent.claude_code.launcher import Credential
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.services.claude_code.launchers import HostedCredential
 from src.server.services.claude_code.saved import token_check_key, token_hash
-from src.server.services.claude_code.hosted import cloud_placement
+from src.server.services.claude_code.hosted import Refused, cloud_placement
 from src.server.services.llm.claude_code import (
     CLAUDE_CODE_OFF,
     _refusal,
@@ -60,7 +61,7 @@ async def _admission_reason(row, cache):
     """What admission refuses a self-hosted turn on a cloud computer for, as it reads the saved token."""
     with serving(cache), _store(row), patch("src.server.services.claude_code.hosted.backend_available", lambda: True):
         where = await cloud_placement("user-1", None, token=True)
-    return _refusal(CODE, where.refusal) if where.refusal else None
+    return _refusal(CODE, where.reason, **where.fields) if isinstance(where, Refused) else None
 
 
 async def _refused_turn(cache, row=None):
@@ -251,4 +252,19 @@ async def test_a_computer_that_signs_in_with_the_relayed_token_is_refused_once_c
         pytest.raises(HTTPException) as refused,
     ):
         await require_computer_signed_in(CODE, "user-1", answer)
+    assert refused.value.detail["reason"] == "token_refused"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ago", [10, 10**7], ids=["fresh", "lapsed"])
+@pytest.mark.parametrize("file", ["works", "unknown"])
+async def test_a_computer_whose_own_token_is_past_its_expiry_is_refused_however_old_the_answer(file, ago):
+    """Claude refuses such a token, so its turn would fail at the first request."""
+    def answer(expires_at):
+        return MachineAnswer(file, expires_at=expires_at.isoformat(), checked_at=time.time() - ago)
+
+    with serving(Cache()), patch("src.server.services.claude_code.hosted.backend_available", lambda: True):
+        assert await require_computer_signed_in(CODE, "user-1", answer(NOW + timedelta(days=30))) is None
+        with pytest.raises(HTTPException) as refused:
+            await require_computer_signed_in(CODE, "user-1", answer(NOW - timedelta(minutes=1)))
     assert refused.value.detail["reason"] == "token_refused"
