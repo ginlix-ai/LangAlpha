@@ -35,6 +35,7 @@ _THREAD_BUSY = (
     "sent. Tell the user it is busy: they can wait for that turn and ask "
     "again or stop it, or you can start a new thread with workspace_id."
 )
+_REFUSED = "The analyst's thread refused this hand-off: {message}"
 
 
 async def _confirm_dispatch_admission(
@@ -383,8 +384,23 @@ async def dispatch(
                             return error_command(
                                 _THREAD_BUSY, tool_call_id, **handed_to
                             )
+                        # A refusal's own words tell the Chief of Staff what
+                        # the user can do about it (add a token, pick another
+                        # model), which a bare failure never does; a 5xx is
+                        # the server failing, not the thread refusing.
+                        refusal = None
+                        if resp.status < 500:
+                            try:
+                                refusal = await resp.json()
+                            except (aiohttp.ClientError, ValueError, TimeoutError):
+                                refusal = None
+                        detail = refusal.get("detail") if isinstance(refusal, dict) else None
+                        message = detail.get("message") if isinstance(detail, dict) else None
                         return error_command(
-                            "dispatch_failed", tool_call_id, **handed_to
+                            _REFUSED.format(message=message) if isinstance(message, str) and message
+                            else "dispatch_failed",
+                            tool_call_id,
+                            **handed_to,
                         )
                     if resp.status != 200:
                         # Not the endpoint's reply (it answers exactly 200;
