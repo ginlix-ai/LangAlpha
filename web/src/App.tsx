@@ -32,6 +32,8 @@ import { forgetHostedSignIn, hostedSignInReturn, landAfterSignIn } from './lib/h
 import { markBooted, reloadIfStale, watchStaleBuild } from './lib/staleBuild';
 import { appSectionOf } from './lib/appRoutes';
 import { lazyWithMotion } from './lib/lazyWithMotion';
+import { CommandPaletteProvider } from './components/CommandPalette/CommandPaletteProvider';
+import { CreateWorkspaceHost } from './components/CreateWorkspaceHost';
 import './App.css';
 
 // Login carries the market-tape canvas subsystem (~2k lines that only a
@@ -366,23 +368,25 @@ function AuthenticatedShell() {
           </StaleBuildBoundary>
         </Suspense>
       ) : (
-        <>
-          <div className="app-layout">
-            {!isMobile && (
-              <AppSidebar
-                collapsed={sidebarCollapsed}
-                onToggleCollapse={toggleSidebar}
-                width={sidebarWidth}
-                onWidthChange={handleSidebarWidthChange}
-              />
-            )}
-            {isMobile && !hideTabBar && <BottomTabBar />}
-            <main ref={mainRef} className={`app-main${hideTabBar ? ' app-main--no-tab' : ''}`}>
-              <Main />
-            </main>
-          </div>
-          <OnboardingHostGate />
-        </>
+        <CreateWorkspaceHost>
+          <CommandPaletteProvider>
+            <div className="app-layout">
+              {!isMobile && (
+                <AppSidebar
+                  collapsed={sidebarCollapsed}
+                  onToggleCollapse={toggleSidebar}
+                  width={sidebarWidth}
+                  onWidthChange={handleSidebarWidthChange}
+                />
+              )}
+              {isMobile && !hideTabBar && <BottomTabBar />}
+              <main ref={mainRef} className={`app-main${hideTabBar ? ' app-main--no-tab' : ''}`}>
+                <Main />
+              </main>
+            </div>
+            <OnboardingHostGate />
+          </CommandPaletteProvider>
+        </CreateWorkspaceHost>
       )}
       <ConnectConsentHost />
       <ConnectLandingHost />

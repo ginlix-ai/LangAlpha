@@ -15,7 +15,12 @@ interface ChatRouteState {
  * route state > thread-detail lookup; the lookup shares ChatAgent's query key,
  * so at most one of the two ever fetches.
  */
-export function useChatRoute(): { currentWorkspaceId: string | null; currentThreadId: string | null } {
+export function useChatRoute(): {
+  currentWorkspaceId: string | null;
+  currentThreadId: string | null;
+  /** A thread is open whose workspace is still being looked up: null above means "not yet", not "none". */
+  resolvingWorkspace: boolean;
+} {
   const location = useLocation();
   const state = location.state as ChatRouteState | null;
 
@@ -28,7 +33,7 @@ export function useChatRoute(): { currentWorkspaceId: string | null; currentThre
   const stateWorkspaceId = state?.workspaceId && isValidUuid(state.workspaceId) ? state.workspaceId : null;
 
   const needsLookup = !!threadId && threadId !== '__default__' && !urlWorkspaceId && !stateWorkspaceId;
-  const { data: threadDetail } = useQuery({
+  const { data: threadDetail, isPending } = useQuery({
     ...threadDetailQuery(threadId!),
     enabled: needsLookup,
   });
@@ -37,5 +42,6 @@ export function useChatRoute(): { currentWorkspaceId: string | null; currentThre
   return {
     currentThreadId: threadId,
     currentWorkspaceId: urlWorkspaceId ?? stateWorkspaceId ?? (needsLookup ? lookedUpWorkspaceId : null),
+    resolvingWorkspace: needsLookup && isPending,
   };
 }

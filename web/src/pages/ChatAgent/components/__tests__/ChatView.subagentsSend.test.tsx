@@ -283,7 +283,7 @@ describe("ChatView: a draft from Subagents' Create with the agent", () => {
     await waitFor(() => expect(state?.draftMessage).toBeUndefined());
     expect(state?.workspaceId).toBe(WORKSPACE_ID);
     expect(mocks.setValue).toHaveBeenCalledTimes(1);
-    expect(mocks.setValue).toHaveBeenCalledWith('Set up a subagent that ');
+    expect(mocks.setValue).toHaveBeenCalledWith('Set up a subagent that ', undefined);
     expect(chatState.handleSendMessage).not.toHaveBeenCalled();
   });
 
@@ -314,11 +314,11 @@ describe("ChatView: a draft from Subagents' Create with the agent", () => {
     const { open, state } = mountDraftView(true);
 
     open('What moved in my watchlist today, and why?');
-    await waitFor(() => expect(mocks.setValue).toHaveBeenCalledWith('What moved in my watchlist today, and why?'));
+    await waitFor(() => expect(mocks.setValue).toHaveBeenCalledWith('What moved in my watchlist today, and why?', undefined));
     await waitFor(() => expect(state()?.draftMessage).toBeUndefined());
     open('Set up a workspace to track semiconductor breadth');
 
-    await waitFor(() => expect(mocks.setValue).toHaveBeenLastCalledWith('Set up a workspace to track semiconductor breadth'));
+    await waitFor(() => expect(mocks.setValue).toHaveBeenLastCalledWith('Set up a workspace to track semiconductor breadth', undefined));
     expect(mocks.setValue).toHaveBeenCalledTimes(2);
   });
 

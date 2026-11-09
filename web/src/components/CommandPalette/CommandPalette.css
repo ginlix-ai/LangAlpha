@@ -1,0 +1,204 @@
+/* The ⌘K palette. A field, a list that scrolls, and a footer naming the keys.
+   The dialog variant pins it near the top (components/ui/dialog.tsx), so the
+   list grows downward and the field never moves under the reader's eyes. */
+
+.command-palette {
+  padding: 0;
+  gap: 0;
+  color: var(--color-text-primary);
+}
+
+.command-palette-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border-muted);
+  flex-shrink: 0;
+  /* The field is focused for as long as the palette is open, so focus is
+     not news here: the row keeps its divider rather than lighting up. */
+  --focus-edge: var(--color-border-muted);
+  --focus-halo: none;
+  /* The dialog clips what passes its edge, so the keyboard ring is drawn
+     inside the row, following the dialog's top corners. */
+  outline-offset: -3px !important;
+  border-radius: 12px 12px 0 0;
+}
+.command-palette-field-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--color-icon-muted);
+}
+.command-palette-field input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font-size: 1rem;
+  line-height: 1.5rem;
+  color: var(--color-text-primary);
+}
+.command-palette-field input::placeholder { color: var(--color-text-tertiary); }
+
+/* The row whose actions are open, named at the field's end. */
+.command-palette-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  max-width: 40%;
+  padding: 3px 6px 3px 9px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 9999px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.command-palette-scope svg { width: 12px; height: 12px; flex-shrink: 0; }
+
+.command-palette-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 6px 6px;
+  /* Rows scrolled to by the keys keep a little of the list above and below. */
+  scroll-padding-block: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-elevated) transparent;
+}
+
+.command-palette-group {
+  padding: 12px 10px 4px;
+  font-family: var(--font-mono);
+  font-size: 0.65625rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.command-palette-list > :first-child .command-palette-group { padding-top: 6px; }
+
+.command-palette-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.command-palette-row.is-active { background: var(--color-bg-hover); }
+@media (pointer: coarse) {
+  /* A finger's worth of row (web/AGENTS.md, .tap-target): the rows touch, so
+     the row grows rather than its hit area spilling onto its neighbours. */
+  .command-palette-row { min-height: 44px; }
+}
+
+/* One leading column: every label starts at one x (DESIGN.md § Alignment). */
+.command-palette-row-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--color-icon-muted);
+}
+.command-palette-row-icon.is-accent { color: var(--color-accent-primary); }
+
+.command-palette-symbol {
+  flex-shrink: 0;
+  /* Room for the common symbols (NVDA.TO, 0700.HK), so the names after
+     them start at one x down a run of tickers. */
+  min-width: 8ch;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+/* A ticker leads with its symbol; the company name is its caption. */
+.command-palette-symbol + .command-palette-title { color: var(--color-text-secondary); }
+.command-palette-title {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.command-palette-title mark {
+  background: none;
+  color: inherit;
+  font-weight: 600;
+}
+.command-palette-meta {
+  /* A long title gives way first, so where a row was found stays readable;
+     only a meta longer than this (a skill's description) is cut. */
+  flex: 0 0 auto;
+  max-width: 45%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+
+/* What trails a row sits flush with its right edge. */
+.command-palette-trailing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.command-palette-quote {
+  display: flex;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+.command-palette-quote > :last-child {
+  /* Changes line up down the list whatever the price's width. */
+  min-width: 7ch;
+  text-align: right;
+}
+.command-palette-quote .is-up { color: var(--color-profit); }
+.command-palette-quote .is-down { color: var(--color-loss); }
+
+.command-palette kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--color-bg-hover);
+  box-shadow: inset 0 -1px 0 var(--color-border-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--color-text-secondary);
+}
+
+.command-palette-footer {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-shrink: 0;
+  padding: 9px 16px;
+  border-top: 1px solid var(--color-border-muted);
+  font-size: 0.71875rem;
+  color: var(--color-text-tertiary);
+}
+.command-palette-footer > span { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.command-palette-footer-end { margin-left: auto; }
+
+@media (max-width: 640px) {
+  /* A phone has no keys to name. */
+  .command-palette-footer { display: none; }
+}

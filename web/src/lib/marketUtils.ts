@@ -2,7 +2,7 @@
  * Shared market utilities used across Dashboard and MarketView.
  */
 import { api } from '@/api/client';
-import { displaySpelling } from '@/lib/bars/exchanges';
+import { displaySpelling, venueLabelForSymbol } from '@/lib/bars/exchanges';
 
 export interface MarketStatusData {
   market?: string;
@@ -191,6 +191,22 @@ export function normalizeSymbolInput(raw: string): string | null {
 export function readTypedTicker(raw: string): string | null {
   const sym = displaySpelling(raw);
   return TICKER_RE.test(sym) ? sym : null;
+}
+
+/** Bare exchange codes and the providers' instrument forms, none of which a word takes.
+ *  Four digits only with a leading zero (`0700`): any other four could be a year. */
+const MARKED_TICKER_RE = /^(?:\d{5,6}|0\d{3}|[A-Z0-9]{1,10}=[XF]|\^[A-Z0-9]{1,10}|[A-Z]:[A-Z0-9]{2,14})$/;
+
+/**
+ * A typed ticker in a form no word takes, so it is one even when no search
+ * confirms it: a known venue suffix (`600519.SH`, `0700.HK`), a bare exchange
+ * code (`600519`), or an instrument form (`EURUSD=X`, `ES=F`, `^GSPC`,
+ * `X:BTCUSD`). A plain one (`NVDA`, `DARK`) could as well be a word, and only
+ * a search hit says which.
+ */
+export function readMarkedTicker(raw: string): string | null {
+  const sym = readTypedTicker(raw);
+  return sym && (venueLabelForSymbol(sym) || MARKED_TICKER_RE.test(sym)) ? sym : null;
 }
 
 export async function searchStocks(

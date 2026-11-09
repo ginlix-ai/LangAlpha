@@ -3,7 +3,7 @@
  */
 import { api, type RequestConfig } from '@/api/client';
 import { authSessionCheck } from '@/lib/authResets';
-import type { Thread } from '@/types/api';
+import type { Thread, ThreadsResponse } from '@/types/api';
 import type { WakeupCancelResponse, WakeupsResponse } from '@/types/wakeups';
 import type { CommandStopResponse, CommandsResponse } from '@/types/commands';
 
@@ -158,7 +158,7 @@ export async function getWorkspaceThreads(
  * returns threads across every workspace the user owns, sorted by updated_at.
  */
 export async function getRecentThreads(limit: number = 20, offset: number = 0) {
-  const { data } = await api.get('/api/v1/threads', {
+  const { data } = await api.get<ThreadsResponse>('/api/v1/threads', {
     params: { limit, offset, sort_by: 'updated_at', sort_order: 'desc' },
   });
   return data;

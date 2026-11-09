@@ -33,6 +33,7 @@ import { MarketDataWSProvider, useMarketDataWSContext } from './contexts/MarketD
 import { displaySpelling, formatMoney } from '@/lib/bars';
 import { displayOverrideFromHit, type SymbolDisplayOverride } from '@/lib/displayName';
 import { loadPref, savePref } from './utils/prefs';
+import { recordRecentTicker } from '@/lib/recentTickers';
 import { useRestoredWorkspace } from './hooks/useRestoredWorkspace';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
@@ -201,6 +202,7 @@ function MarketViewInner() {
 
   // Persist user preferences to localStorage (dedicated effects — no other side effects)
   useEffect(() => { savePref('symbol', selectedStock); }, [selectedStock]);
+  useEffect(() => { recordRecentTicker(selectedStock); }, [selectedStock]);
   useEffect(() => { savePref('interval', selectedInterval); }, [selectedInterval]);
 
   useEffect(() => {

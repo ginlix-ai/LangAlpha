@@ -715,6 +715,8 @@ export interface Thread {
   summary_handoff?: boolean | null;
   /** Turn count (list responses only). */
   turn_count?: number;
+  /** The first message sent in the thread (list responses only), which names an untitled one. */
+  first_query_content?: string;
   created_at?: string;
   updated_at?: string;
   // Lifecycle enrichment (present on list responses for threads with runs).

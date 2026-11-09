@@ -5,7 +5,8 @@ import { Search, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isDesktopShell } from '@/lib/desktop';
 import { isImeComposing } from '@/lib/ime';
-import { GROUPS, SECTIONS, searchableSettings, sectionShown, type Section, type SettingEntry } from '../sections';
+import { matchesAllWords, queryWords } from '@/lib/textMatch';
+import { GROUPS, SECTIONS, searchableSettings, sectionShown, settingSearchText, type Section, type SettingEntry } from '../sections';
 
 /**
  * The page's navigation: a search over every setting, then the sections in
@@ -43,18 +44,10 @@ export function SettingsRail({ section }: { section: Section }) {
   }, []);
 
   const entries = useMemo(() => searchableSettings(isDesktopShell()), []);
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const words = queryWords(query);
   const matches = words.length === 0
     ? []
-    : entries.filter((entry) => {
-        const text = [
-          t(entry.labelKey),
-          entry.descKey ? t(entry.descKey) : '',
-          ...(entry.alsoKeys ?? []).map((key) => t(key)),
-          t(SECTIONS[entry.section].labelKey),
-        ].join(' ').toLowerCase();
-        return words.every((word) => text.includes(word));
-      });
+    : entries.filter((entry) => matchesAllWords(settingSearchText(entry, t), words));
   const searching = words.length > 0;
   const shownActive = Math.min(active, Math.max(matches.length - 1, 0));
 

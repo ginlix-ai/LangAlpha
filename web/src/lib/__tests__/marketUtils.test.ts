@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { searchStocks, fetchMarketStatus, normalizeSymbolInput, readTypedTicker, sessionQuote } from '../marketUtils';
+import { searchStocks, fetchMarketStatus, normalizeSymbolInput, readMarkedTicker, readTypedTicker, sessionQuote } from '../marketUtils';
 
 // Mock the api client
 vi.mock('@/api/client', () => ({
@@ -221,6 +221,15 @@ describe('symbol entry', () => {
 
   it('reads a code typed through a Chinese IME as a ticker', () => {
     expect(readTypedTicker('６００５１９。ＳＨ')).toBe('600519.SH');
+  });
+
+  it('marks as a ticker only a form no word takes', () => {
+    for (const typed of ['600519.ss', '0700.HK', '600519', '0700', 'EURUSD=X', 'es=f', '^GSPC', 'X:BTCUSD']) {
+      expect(readMarkedTicker(typed)).not.toBeNull();
+    }
+    for (const typed of ['nvda', 'dark', 'settings', 'q3', '1.5', 'brk.b', '2024']) {
+      expect(readMarkedTicker(typed)).toBeNull();
+    }
   });
 });
 

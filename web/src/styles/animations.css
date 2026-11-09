@@ -197,6 +197,18 @@
   animation: center-pop-out var(--motion-exit) var(--ease-out);
 }
 
+/* --- A surface pinned near the top and centred by its margins (the command
+       palette). It grows downward as results arrive, so its field stays put,
+       and it drops into place from just above. --- */
+.pop-in-top[data-state='open'] {
+  --pop-y: -0.5rem;
+  animation: pop-in var(--motion-enter) var(--ease-out);
+}
+
+.pop-in-top[data-state='closed'] {
+  animation: pop-out var(--motion-exit) var(--ease-out);
+}
+
 /* --- The mobile bottom sheet arrives from the edge it is pinned to. Swipe to
        dismiss drives the CSS `translate` property instead of `transform`, so
        a drag and this animation never fight over one declaration. --- */
