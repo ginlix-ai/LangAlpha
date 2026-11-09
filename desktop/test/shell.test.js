@@ -1848,7 +1848,7 @@ describe('captive portal detection', () => {
 // what matters is the value the page receives.
 describe('the bridge says what the shell can do', () => {
   test('a frozen list naming integration-login when the edition can finish it', () => {
-    const bridge = loadPreload(['--langalpha-console-returns=1']).langalphaDesktop
+    const bridge = loadPreload({ consoleReturns: true }).langalphaDesktop
     assert.ok(Array.isArray(bridge.capabilities))
     assert.ok(Object.isFrozen(bridge.capabilities))
     assert.ok(bridge.capabilities.includes('integration-login'))
@@ -1858,26 +1858,26 @@ describe('the bridge says what the shell can do', () => {
   // The install link is finished on the same console as the login link, so an
   // edition that can finish one can finish the other, and says both or neither.
   test('integration-install listed exactly when integration-login is', () => {
-    const on = loadPreload(['--langalpha-console-returns=1']).langalphaDesktop.capabilities
+    const on = loadPreload({ consoleReturns: true }).langalphaDesktop.capabilities
     assert.ok(on.includes('integration-install'))
     assert.ok(on.includes('integration-login'))
-    for (const value of ['', '0', 'true']) {
-      const off = loadPreload([`--langalpha-console-returns=${value}`]).langalphaDesktop.capabilities
-      assert.equal(off.includes('integration-install'), false, `switch '${value}'`)
-      assert.equal(off.includes('integration-login'), false, `switch '${value}'`)
+    for (const value of [false, undefined, 'true', 1]) {
+      const off = loadPreload({ consoleReturns: value }).langalphaDesktop.capabilities
+      assert.equal(off.includes('integration-install'), false, `consoleReturns ${value}`)
+      assert.equal(off.includes('integration-login'), false, `consoleReturns ${value}`)
     }
   })
 
   // A console page is opened on the same console as both integration returns,
   // so the one switch says all three or none.
   test('console-return listed exactly when the switch is on, alongside the integration returns', () => {
-    const on = loadPreload(['--langalpha-console-returns=1']).langalphaDesktop.capabilities
+    const on = loadPreload({ consoleReturns: true }).langalphaDesktop.capabilities
     assert.deepEqual([...on], ['integration-login', 'integration-install', 'console-return'])
     assert.ok(Object.isFrozen(on))
-    for (const value of ['', '0', 'true']) {
-      const off = loadPreload([`--langalpha-console-returns=${value}`]).langalphaDesktop.capabilities
-      assert.equal(off.includes('console-return'), false, `switch '${value}'`)
-      assert.ok(Object.isFrozen(off), `switch '${value}'`)
+    for (const value of [false, undefined, 'true', 1]) {
+      const off = loadPreload({ consoleReturns: value }).langalphaDesktop.capabilities
+      assert.equal(off.includes('console-return'), false, `consoleReturns ${value}`)
+      assert.ok(Object.isFrozen(off), `consoleReturns ${value}`)
     }
   })
 
@@ -1887,16 +1887,15 @@ describe('the bridge says what the shell can do', () => {
     assert.ok(Object.isFrozen(bridge.capabilities))
   })
 
-  test('each edition\'s windows carry the switch that matches its console', () => {
-    const argsOf = (opts) => {
+  test('each edition\'s windows answer with the console returns that match its console', () => {
+    const factsOf = (opts) => {
       const { main } = loadShell(opts)
       main.openLaunchWindows()
-      return windows[0].options.webPreferences.additionalArguments
+      return main.windowFactsOf(windows[0].webContents)
     }
-    assert.ok(argsOf({ edition: 'oss', serverUrl: 'http://localhost:5173' })
-      .includes('--langalpha-console-returns='))
+    assert.equal(factsOf({ edition: 'oss', serverUrl: 'http://localhost:5173' }).consoleReturns, false)
     cleanup()
-    assert.ok(argsOf({ edition: 'saas' }).includes('--langalpha-console-returns=1'))
+    assert.equal(factsOf({ edition: 'saas' }).consoleReturns, true)
   })
 
   // Nothing auth-related is exposed to the page, and a capability is a word
@@ -2169,8 +2168,8 @@ describe('the two editions can sit on one machine', () => {
 })
 
 // The window-chrome contract is four string literals spread across three files
-// and two processes, and every consumer only ever READS its half: main writes
-// an argv switch preload parses, and main queries a meta tag index.html ships.
+// and two processes, and every consumer only ever READS its half: main answers
+// a channel preload asks, and main queries a meta tag index.html ships.
 // Rename either on one side and nothing fails — not tsc, not the web suite, not
 // the tests above, not the packaged build. The strip simply stops being
 // reserved and the macOS window loses its drag region. This branch already
@@ -2179,12 +2178,58 @@ describe('the two editions can sit on one machine', () => {
 describe('the window-chrome contract holds across the two processes', () => {
   const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')
 
-  test('the switch main writes is the one preload parses', () => {
+  test('the channel main answers is the one preload asks', () => {
     const main = read('src/main.js')
     const preload = read('src/preload.js')
-    assert.match(main, /`--langalpha-window-chrome=\$\{chromeHidden \? 'hidden' : 'native'\}`/)
-    assert.match(preload, /const prefix = `--langalpha-\$\{name\}=`/)
-    assert.match(preload, /flag\('window-chrome'\) === 'hidden'/)
+    assert.match(main, /ipcMain\.on\('shell:window-facts'/)
+    assert.match(preload, /ipcRenderer\.sendSync\('shell:window-facts'\)/)
+    assert.match(main, /windowChrome: chromeHidden \? 'hidden' : 'native'/)
+    assert.match(preload, /facts\.windowChrome === 'hidden'/)
+  })
+
+  // The regression this exists for: switches on the renderer's command line
+  // belong to the process, and a page that landed in a process launched without
+  // them read version 0.0.0 and `native` in a window whose titlebar was hidden,
+  // so the app drew its logo under the window buttons and lost its drag region.
+  // Nothing about the window may travel that way again.
+  test('no window puts anything on its renderer\'s command line', () => {
+    const { main } = loadShell({ edition: 'saas' })
+    main.openLaunchWindows()
+    for (const win of windows) {
+      assert.equal(win.options.webPreferences.additionalArguments, undefined)
+    }
+    // Code lines only: the preload's own comment says why it no longer reads it.
+    assert.doesNotMatch(read('src/preload.js'), /^(?!\s*\/\/).*process\.argv/m)
+  })
+
+  test('each window answers for itself: the main window as it was built, the console window framed', () => {
+    const shell = loadShell({ edition: 'saas' })
+    shell.store.set('appChrome', true)
+    shell.store.set('platformChrome', false)
+    shell.main.openLaunchWindows()
+    const [console_] = windows
+    assert.ok(isAccount(console_))
+    navigateFrom(console_, 'https://app.example.com/')
+    const [, app] = windows
+    const hidden = process.platform === 'darwin'
+    assert.equal(app.options.titleBarStyle, hidden ? 'hiddenInset' : 'default')
+    const appFacts = shell.main.windowFactsOf(app.webContents)
+    assert.equal(appFacts.windowChrome, hidden ? 'hidden' : 'native', 'the page was told a frame its window does not have')
+    assert.equal(appFacts.version, '0.0.0-test')
+    assert.equal(shell.main.windowFactsOf(console_.webContents).windowChrome, 'native')
+    assert.equal(shell.main.windowFactsOf({}), null, 'a WebContents the shell never made got an answer')
+  })
+
+  test('the preload hands the page what main answered, and a framed old shell when it answered nothing', () => {
+    const told = loadPreload({ version: '1.2.3', windowChrome: 'hidden', scheme: 'langalpha', consoleReturns: true })
+    assert.equal(told.langalphaDesktop.version, '1.2.3')
+    assert.equal(told.langalphaDesktop.windowChrome, 'hidden')
+    assert.equal(told.langalphaDesktop.scheme, 'langalpha')
+    const silent = loadPreload(null).langalphaDesktop
+    assert.equal(silent.version, '0.0.0')
+    assert.equal(silent.windowChrome, 'native')
+    assert.equal(silent.scheme, '')
+    assert.deepEqual(silent.capabilities, [])
   })
 
   test('the meta main queries is the one the web build ships', () => {

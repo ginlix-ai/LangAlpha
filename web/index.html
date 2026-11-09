@@ -270,9 +270,17 @@
         // is what reserved a strip under a titlebar that was really there. An
         // older shell does not send it, and there the platform guess is still
         // the best available answer.
+        //
+        // Version 0.0.0 is a shell through 0.3.0 whose page landed in a renderer
+        // launched without the window's command-line switches. Every answer it
+        // read is then a default, `native` included, and believing it in a
+        // window whose titlebar is hidden leaves the logo under the window
+        // buttons and no drag region anywhere. The platform guess is right for
+        // the main window, the only one that loads this app.
         var shell = window.langalphaDesktop;
         if (!shell) return;
-        var hidden = shell.windowChrome
+        var known = shell.windowChrome && shell.version !== '0.0.0';
+        var hidden = known
           ? shell.windowChrome === 'hidden'
           : shell.platform === 'darwin';
         if (hidden) document.documentElement.classList.add('desktop-mac');

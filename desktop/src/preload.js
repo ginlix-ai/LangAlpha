@@ -11,18 +11,23 @@
 // local URL handed out rather than any credential taken in.
 const { contextBridge, ipcRenderer } = require('electron')
 
-// A sandboxed preload has a restricted module resolver: it can require a few
-// Electron built-ins and nothing else, so reading package.json here throws and
-// takes the whole bridge down with it. Main passes the version as a switch
-// instead (webPreferences.additionalArguments).
-const flag = (name) => {
-  const prefix = `--langalpha-${name}=`
-  const found = process.argv.find((a) => a.startsWith(prefix))
-  return found ? found.slice(prefix.length) : ''
-}
+// What main says about this window: version, frame, scheme, console returns.
+// Asked of main rather than read from `process.argv`, because switches belong to
+// the renderer process and this page is not always in one launched with this
+// window's (see `recordWindowFacts` in main.js). A sandboxed preload cannot read
+// package.json either, so the version comes the same way. Anything that goes
+// wrong reads as an old, framed shell that can do nothing extra, rather than
+// taking the whole bridge down with a throw.
+const facts = (() => {
+  try {
+    return ipcRenderer.sendSync('shell:window-facts') || {}
+  } catch {
+    return {}
+  }
+})()
 
 contextBridge.exposeInMainWorld('langalphaDesktop', {
-  version: flag('shell-version') || '0.0.0',
+  version: facts.version || '0.0.0',
   platform: process.platform,
 
   /**
@@ -34,7 +39,7 @@ contextBridge.exposeInMainWorld('langalphaDesktop', {
    * page guessing from macOS is what put a reserved strip under a titlebar that
    * was really there.
    */
-  windowChrome: flag('window-chrome') === 'hidden' ? 'hidden' : 'native',
+  windowChrome: facts.windowChrome === 'hidden' ? 'hidden' : 'native',
 
   /**
    * The custom scheme this edition registers, so a link that has to come back
@@ -45,7 +50,7 @@ contextBridge.exposeInMainWorld('langalphaDesktop', {
    * reverse. Empty on a shell too old to pass it, which reads as "no handoff"
    * rather than as a wrong one. Added in shell 0.2.1.
    */
-  scheme: flag('shell-scheme'),
+  scheme: typeof facts.scheme === 'string' ? facts.scheme : '',
 
   /**
    * What this shell does that a page cannot detect by looking for a method,
@@ -74,7 +79,7 @@ contextBridge.exposeInMainWorld('langalphaDesktop', {
    * on it hands the page a way to drive anything.
    */
   capabilities: Object.freeze(
-    flag('console-returns') === '1' ? ['integration-login', 'integration-install', 'console-return'] : [],
+    facts.consoleReturns === true ? ['integration-login', 'integration-install', 'console-return'] : [],
   ),
 
   /**

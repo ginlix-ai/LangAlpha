@@ -61,6 +61,9 @@ function resetLoginItems() {
 // What `ipcMain.handle` was given, by channel, so a test can call a handler the
 // way a renderer's invoke reaches it.
 const ipcHandlers = new Map()
+// What main answers the preload's `shell:window-facts` with while `loadPreload`
+// runs it.
+let preloadFacts = null
 
 // What Electron falls back to with no `productName`: the package.json `name`.
 // Nothing should ever run on it — main sets the edition's name before anything
@@ -184,10 +187,16 @@ const electronStub = {
   },
   BrowserWindow: FakeBrowserWindow,
   Menu: { buildFromTemplate: (t) => t, setApplicationMenu: () => {} },
-  ipcMain: { on: () => {}, handle: (channel, handler) => { ipcHandlers.set(channel, handler) } },
+  ipcMain: {
+    on: () => {},
+    handle: (channel, handler) => { ipcHandlers.set(channel, handler) },
+  },
   // The renderer half, for running the real preload rather than reading it.
   contextBridge: { exposeInMainWorld: (key, api) => { exposed[key] = api } },
-  ipcRenderer: { invoke: async () => undefined, sendSync: () => undefined },
+  ipcRenderer: {
+    invoke: async () => undefined,
+    sendSync: (channel) => (channel === 'shell:window-facts' ? preloadFacts : undefined),
+  },
 }
 
 const load = Module._load
@@ -308,23 +317,23 @@ function loadEntryWith(buildConfig) {
 }
 
 /**
- * Run the real remote-page preload and answer with what it exposed. It reads
- * `location` to decide whether it is on the outage page, so a remote page is
- * stood in for while it runs.
+ * Run the real remote-page preload and answer with what it exposed. `facts` is
+ * what main answers its `shell:window-facts` with. It reads `location` to decide
+ * whether it is on the outage page, so a remote page is stood in for while it
+ * runs.
  */
-function loadPreload(argv = []) {
+function loadPreload(facts = null) {
   const file = path.join(SRC, 'preload.js')
   delete require.cache[file]
   for (const key of Object.keys(exposed)) delete exposed[key]
   const had = Object.prototype.hasOwnProperty.call(globalThis, 'location')
   const saved = globalThis.location
   globalThis.location = { protocol: 'https:' }
-  const savedArgv = process.argv
-  process.argv = [...savedArgv, ...argv]
+  preloadFacts = facts
   try {
     require(file)
   } finally {
-    process.argv = savedArgv
+    preloadFacts = null
     if (had) globalThis.location = saved
     else delete globalThis.location
   }

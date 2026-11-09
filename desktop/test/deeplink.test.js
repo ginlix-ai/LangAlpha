@@ -784,14 +784,14 @@ describe('which window a link to the console lands in', () => {
 describe('the deep-link scheme contract holds across the two processes', () => {
   const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')
 
-  test('the switch main writes is the one preload parses', () => {
-    assert.match(read('src/main.js'), /`--langalpha-shell-scheme=\$\{config\.scheme\}`/)
-    assert.match(read('src/preload.js'), /scheme: flag\('shell-scheme'\)/)
+  test('the scheme main answers with is the one preload hands the page', () => {
+    assert.match(read('src/main.js'), /scheme: config\.scheme,/)
+    assert.match(read('src/preload.js'), /scheme: typeof facts\.scheme === 'string' \? facts\.scheme : ''/)
   })
 
-  test('the console-returns switch main writes is the one preload parses', () => {
-    assert.match(read('src/main.js'), /`--langalpha-console-returns=\$\{origins\.platformOrigin\(\) \? '1' : ''\}`/)
-    assert.match(read('src/preload.js'), /flag\('console-returns'\) === '1'/)
+  test('the console returns main answers with are the ones preload reads', () => {
+    assert.match(read('src/main.js'), /consoleReturns: Boolean\(origins\.platformOrigin\(\)\)/)
+    assert.match(read('src/preload.js'), /facts\.consoleReturns === true/)
   })
 
   test('the web app knows every scheme an edition can register', () => {
