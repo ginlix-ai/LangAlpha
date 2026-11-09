@@ -19,10 +19,10 @@ describe('screenPageBudget', () => {
     expect(screenPageBudget(false, 9000)).toMatchObject({ minTurns: 10 });
   });
 
-  it('gives a phone 1.5 MB and a floor between 2 and 10', () => {
-    expect(screenPageBudget(true, 700)).toEqual({ minTurns: 2, maxBytes: 1_500_000 });
+  it('gives a phone 1.5 MB and a floor between 3 and 10', () => {
+    expect(screenPageBudget(true, 700)).toEqual({ minTurns: 3, maxBytes: 1_500_000 });
     expect(screenPageBudget(true, 1201)).toEqual({ minTurns: 4, maxBytes: 1_500_000 });
-    expect(screenPageBudget(true, 0)).toMatchObject({ minTurns: 2 });
+    expect(screenPageBudget(true, 0)).toMatchObject({ minTurns: 3 });
     expect(screenPageBudget(true, 6000)).toMatchObject({ minTurns: 10 });
   });
 });
