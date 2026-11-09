@@ -214,25 +214,21 @@ class TestClaudeCodeOnAPinnedThread:
 
 class TestClaudeCodeCheckOnTheCallersConnection:
     """A file save holds the user's locks on its connection, so the placement
-    and the relayed-token reads of the Claude Code check borrow no second one."""
+    read of the Claude Code check borrows no second one."""
 
     @pytest.mark.asyncio
-    async def test_where_the_cli_runs_and_whether_the_token_is_relayed_are_read_on_the_callers_conn(self):
+    async def test_where_the_cli_runs_is_read_on_the_callers_conn(self):
         from src.server.services.claude_code.hosted import OnOwn
 
-        conn, answer = object(), object()
+        conn = object()
         placement = AsyncMock(return_value=OnOwn({"computer_id": "c-1", "name": "Studio", "kind": "ssh"}))
-        relayed = AsyncMock(return_value=None)
         with (
             patch("src.server.services.claude_code.hosted.checks_automations", return_value=True),
             patch("src.server.services.claude_code.hosted.cli_placement", placement),
-            patch("src.server.services.claude_code.machine.read_answer", AsyncMock(return_value=answer)),
-            patch(f"{_LIFECYCLE}.relayed_token", relayed),
         ):
             await lifecycle._check_claude_code_hosted(OWNER, "claude-haiku-5-5-code", "ws-1", conn)
 
         placement.assert_awaited_once_with(OWNER, "ws-1", conn=conn)
-        relayed.assert_awaited_once_with(OWNER, answer, conn=conn)
 
 
 class TestModelOnUpdate:

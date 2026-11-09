@@ -117,7 +117,7 @@ def _make_workspace_manager(
 
 
 async def _run_to_sentinel(
-    request, workspace_manager, stamps=None, *, named_model=None, begin_run_error=None, keep=None
+    request, workspace_manager, stamps=None, *, named_model=None, begin_run_error=None, keep=None, config=None
 ):
     """``stamps``, when given, gets each event's delay from the first pull.
 
@@ -174,7 +174,7 @@ async def _run_to_sentinel(
             user_id="u-1",
             route=TurnRoute("ws-1", "analyst"),
             is_byok=False,
-            config=_make_config(),
+            config=config or _make_config(),
             named_model=named_model,
         )
 
@@ -363,3 +363,28 @@ async def test_a_named_model_is_kept_only_once_the_turn_is_admitted(admitted):
         keep.assert_awaited_once_with("t-1", named)
     else:
         keep.assert_not_awaited()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "turn",
+    [{"origin": MagicMock(type="automation")}, {"wakeup": {"v": 1, "notices": []}}],
+    ids=["an-automation", "a-wakeup"],
+)
+async def test_a_turn_nobody_started_starts_on_the_setup_token_the_user_stored(turn):
+    from src.server.services.llm.claude_code import Admitted
+    from src.server.services.llm.thread_model import NamedModel
+
+    request = _make_request()
+    request.origin, request.wakeup, request.market_target = None, None, None
+    for field, value in turn.items():
+        setattr(request, field, value)
+    config = _make_config()
+    config.claude_code_admitted = Admitted("stored_token", "stored_token")
+    keep = AsyncMock()
+    named = NamedModel("m-a", seen="m-pin")
+    await _run_to_sentinel(
+        request, _make_workspace_manager(has_ready=True, observed_state=None),
+        named_model=named, keep=keep, config=config,
+    )
+
+    keep.assert_awaited_once_with("t-1", named)

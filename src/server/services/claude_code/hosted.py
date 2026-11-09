@@ -42,7 +42,7 @@ from src.server.models.claude_code import (
 logger = logging.getLogger(__name__)
 
 #: The version of the consent text a user accepts to store their setup token.
-DISCLOSURE = "2026-11-v1"
+DISCLOSURE = "2026-11-v2"
 #: The smallest computer that runs the CLI inside its own sandbox: Medium,
 #: whose resource tier key this is.
 SANDBOX_MIN_TIER = "performance"
@@ -177,9 +177,8 @@ def in_sandbox() -> bool:
 
 def checks_automations() -> bool:
     """Whether a Claude Code automation's save is checked against how its
-    turns would run: where users choose how it runs on cloud computers,
-    whose stored token automations never run on, here or relayed to their own
-    computers, and where a cloud computer's size can refuse it."""
+    turns would run: where users choose how it runs on cloud computers, and
+    where a cloud computer's size can refuse it."""
     return choice_offered() or in_sandbox()
 
 
@@ -476,7 +475,7 @@ async def custody(user_id: str) -> ClaudeCodeCustody | None:
     return ClaudeCodeCustody(
         mode=current.mode,
         offered=[mode for mode in _offered() if not (mode == "stored" and current.blocked)], blocked=current.blocked,
-        runs_on=verdict.runs_on, refusal=verdict.refusal, disclosure=DISCLOSURE,
+        runs_on=verdict.runs_on, refusal=verdict.refusal,
     )
 
 

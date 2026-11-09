@@ -454,7 +454,7 @@ async def _computer_full(thread_id: str, task_id: str, user_id: str, workspace_i
     own, else the Default it starts on). On such a thread the resume needs a
     CLI only where the thread's turn, an analyst's or in Home the Chief of
     Staff's, still compiles the task's subagent with a Claude Code pin and
-    that pin runs on Claude Code now (``runs_unattended``), and runs on the
+    that pin runs on Claude Code now (``admitted_there``), and runs on the
     thread's model elsewhere. That lifts once a CLI there ends, so the steer
     waits for it without spending one of its turns. A failed check posts the
     turn, and so does a placement that refuses it, which the turn reports."""
@@ -463,7 +463,7 @@ async def _computer_full(thread_id: str, task_id: str, user_id: str, workspace_i
     from src.server.database.runs import subagent_runs as sr_db
     from src.server.services.claude_code.flow import rows_on
     from src.server.services.claude_code.hosted import Refused, cli_cap, cli_placement
-    from src.server.services.llm.claude_code import runs_unattended
+    from src.server.services.llm.claude_code import admitted_there
     from src.server.services.llm.subagents import pinned_to_claude_code
 
     try:
@@ -483,7 +483,7 @@ async def _computer_full(thread_id: str, task_id: str, user_id: str, workspace_i
             ):
                 return False
         where = await cli_placement(user_id, workspace_id, token=True)
-        if isinstance(where, Refused) or (other_model and await runs_unattended(user_id, where) is None):
+        if isinstance(where, Refused) or (other_model and await admitted_there(user_id, where) is None):
             return False
         computer = where.computer
         cap = cli_cap(computer) if computer is not None else None

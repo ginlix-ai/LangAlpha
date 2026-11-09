@@ -314,20 +314,25 @@ async def test_keep_named_model_keeps_only_a_named_model(named_model, remembers)
         remember.assert_not_awaited()
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("wake", "asked"), [({"wakeup": {"v": 1, "notices": []}}, True), ({}, False)])
-async def test_a_wake_turn_asks_whether_it_may_run_unattended(wake, asked):
-    """A wakeup's turn never runs on a stored setup token (``require_attended``),
-    asked before the stream with the resolved turn and its request."""
-    from src.server.services.llm.claude_code import unattended
+@pytest.mark.parametrize(
+    "turn",
+    [
+        {"wakeup": {"v": 1, "notices": []}},
+        {"origin": {"type": "automation", "id": "a-1"}},
+        {"origin": {"type": "agent", "id": "cos-1", "agent": "chief_of_staff"}},
+        {"query_type": "system"},
+    ],
+    ids=["a-wakeup", "an-automation", "a-chief-of-staff-hand-off", "a-report-back"],
+)
+async def test_a_turn_nobody_started_runs_on_the_setup_token_the_user_stored(turn):
+    from src.server.services.llm.claude_code import Admitted
 
-    attended = MagicMock()
     with (
-        _send_stubs(owner_id=USER, stored_model="m-pin", turn_model="m-pin"),
+        _send_stubs(owner_id=USER, stored_model="m-pin", turn_model="m-pin") as m,
         patch(f"{THREADS_MOD}._get_service_token", return_value="svc-token"),
-        patch("src.server.services.llm.claude_code.require_attended", attended),
     ):
-        resp = await _send(headers={"X-Service-Token": "svc-token"}, tuning=wake)
+        m["resolve"].return_value.claude_code_admitted = Admitted("stored_token", "stored_token")
+        resp = await _send(headers={"X-Service-Token": "svc-token"}, tuning=turn)
 
     assert resp.status_code == 200
-    attended.assert_called_once()
-    assert unattended(attended.call_args.args[1]) is asked
+    m["astream"].assert_called_once()

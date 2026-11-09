@@ -138,16 +138,16 @@ async def test_a_pin_of_another_model_on_a_claude_code_thread_runs_as_before(mon
 @pytest.mark.parametrize(
     ("own", "token", "placed"),
     [
-        pytest.param(False, "stored_token", None, id="a-cloud-computer-on-the-stored-token"),
-        pytest.param(True, "stored_token", None, id="the-stored-token-relayed-to-an-own-computer"),
+        pytest.param(False, "stored_token", Admitted("stored_token", "stored_token"),
+                     id="a-cloud-computer-on-the-stored-token"),
+        pytest.param(True, "stored_token", Admitted(saved="stored_token"), id="the-stored-token-relayed-to-an-own-computer"),
         pytest.param(False, "saved_token", Admitted("saved_token", "saved_token"), id="the-servers-saved-token"),
         pytest.param(True, None, Admitted(), id="an-own-computers-own-token"),
     ],
 )
-async def test_a_pin_never_signs_in_with_the_stored_token(own, token, placed):
-    """Nothing on a turn of another model tells whether the user started the
-    work it carries on, so a pin runs on the plan only where a token the
-    user's own computer holds, or the server's, signs it in."""
+async def test_a_pin_signs_in_with_whatever_token_runs_the_workspaces_turns(own, token, placed):
+    """The stored setup token included, on a cloud computer or relayed to an
+    own computer, as for the turn's own CLI."""
     from src.server.services.claude_code.hosted import Hosted, OnCloud, OnOwn
 
     where = OnOwn(OWN) if own else OnCloud(Hosted(runs_on=token))

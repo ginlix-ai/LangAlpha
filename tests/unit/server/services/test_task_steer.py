@@ -381,7 +381,7 @@ async def test_a_computer_is_full_for_a_resume_without_room_for_the_turn_and_the
     with (
         patch(f"{USER_MODELS}.get_model_preference", new=AsyncMock(return_value={"preferred_model": "claude-sonnet-5-5-code"})),
         patch("src.server.services.claude_code.flow.rows_on", new=AsyncMock(return_value=rows)),
-        patch("src.server.services.llm.claude_code.runs_unattended", new=AsyncMock(return_value=pin)),
+        patch("src.server.services.llm.claude_code.admitted_there", new=AsyncMock(return_value=pin)),
         patch("src.server.services.llm.subagents.pinned_to_claude_code", new=AsyncMock(return_value=pinned)) as compiled,
         patch(f"{runs}.get_task", new=AsyncMock(return_value={"subagent_type": "research"})),
         patch(
@@ -427,7 +427,7 @@ async def test_a_thread_naming_no_model_is_judged_on_the_default_its_posted_turn
         patch(f"{USER_MODELS}.get_model_preference", new=AsyncMock(return_value={"preferred_model": default})),
         patch("src.server.services.llm.claude_code.chief_of_staff_default_runs", new=cos),
         patch("src.server.services.claude_code.flow.rows_on", new=AsyncMock(return_value=True)),
-        patch("src.server.services.llm.claude_code.runs_unattended", new=AsyncMock(return_value=_PIN_RUNS)),
+        patch("src.server.services.llm.claude_code.admitted_there", new=AsyncMock(return_value=_PIN_RUNS)),
         patch("src.server.services.llm.subagents.pinned_to_claude_code", new=AsyncMock(return_value=True)),
         patch(f"{runs}.get_task", new=AsyncMock(return_value={"subagent_type": "research"})),
         patch(

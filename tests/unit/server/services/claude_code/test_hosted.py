@@ -678,7 +678,7 @@ async def test_settings_reads_and_saves_the_choice(client):
         api_key = await client.put("/api/v1/claude-code/custody", json={"mode": "api_key"})
     assert got.json() == {
         "mode": "local", "offered": ["stored"], "blocked": False, "runs_on": None,
-        "refusal": "hosted_off", "disclosure": "2026-11-v1",
+        "refusal": "hosted_off",
     }
     assert put.status_code == 200
     saved.assert_awaited_once_with("test-user-123", "local", block_reason=None)
@@ -697,9 +697,11 @@ async def test_an_automation_on_a_cloud_computer_is_refused_where_its_turns_woul
             await _check_claude_code_hosted("user-1", CODE, "ws-1")
     with platform(mode="local", computer=OWN):
         await _check_claude_code_hosted("user-1", CODE, "ws-1")
+    with platform(mode="stored"):
+        await _check_claude_code_hosted("user-1", CODE, "ws-1")
     with platform(mode="stored", computer=SMALL), pytest.raises(AutomationRefusal) as refused:
         await _check_claude_code_hosted("user-1", CODE, "ws-1")
-    assert (str(refused.value), refused.value.field) == (CLAUDE_CODE_OFF["stored_unattended"], "llm_model")
+    assert (str(refused.value), refused.value.field) == (TOO_SMALL, "llm_model")
     with (
         platform(computer=SMALL), patch("src.config.settings.HOST_MODE", "oss"),
         patch(f"{HOSTED}.backend_available", lambda: True), pytest.raises(AutomationRefusal) as refused,
@@ -712,17 +714,14 @@ async def test_an_automation_on_a_cloud_computer_is_refused_where_its_turns_woul
 
 
 @pytest.mark.asyncio
-async def test_an_automation_relayed_a_stored_token_is_refused_with_the_cli_off_the_sandbox():
-    from src.server.services.automations.lifecycle import AutomationRefusal, _check_claude_code_hosted
+async def test_an_automation_relayed_a_stored_token_is_saved_with_the_cli_off_the_sandbox():
+    from src.server.services.automations.lifecycle import _check_claude_code_hosted
 
     with (
         platform(mode="stored", placement=False, computer=OWN),
-        patch("src.server.services.automations.lifecycle.relayed_token", AsyncMock(return_value="stored_token")),
         patch("src.server.services.claude_code.machine.read_answer", AsyncMock(return_value=None)),
-        pytest.raises(AutomationRefusal) as refused,
     ):
         await _check_claude_code_hosted("user-1", CODE, "ws-1")
-    assert str(refused.value) == CLAUDE_CODE_OFF["stored_unattended"]
 
 
 @pytest.mark.asyncio
@@ -734,9 +733,19 @@ async def test_an_automation_checked_inside_a_save_reads_on_the_saves_own_connec
     conn = object()
     with (
         platform(mode="stored") as reads,
-        patch("src.server.database.computer.get_computer_for_workspace", AsyncMock(return_value=CLOUD)) as computer,
+        patch("src.server.database.computer.get_computer_for_workspace", AsyncMock(return_value=SMALL)) as computer,
         pytest.raises(AutomationRefusal),
     ):
         await _check_claude_code_hosted("user-1", CODE, "ws-1", conn)
     computer.assert_awaited_once_with("ws-1", conn=conn)
     reads.mode.assert_awaited_once_with("user-1", conn=conn)
+
+
+def test_the_web_sends_the_disclosure_version_of_the_copy_it_shows():
+    """The consent dialog submits its own bundle's version, so the two move together."""
+    from pathlib import Path
+
+    from src.server.services.claude_code.hosted import DISCLOSURE
+
+    web = (Path(__file__).parents[5] / "web" / "src" / "lib" / "claudeCode.ts").read_text()
+    assert f"export const CLAUDE_CODE_DISCLOSURE = '{DISCLOSURE}';" in web

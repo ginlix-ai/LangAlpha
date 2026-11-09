@@ -221,13 +221,13 @@ class ClaudeCodeCustody(BaseModel):
     blocked: bool = False
     runs_on: Literal["stored_token"] | None = None
     refusal: str | None = None
-    #: The version of the consent text storing a token needs accepted now.
-    disclosure: str | None = None
 
 
 class CustodyBody(BaseModel):
     mode: Literal["local", "stored"]
-    #: The version of the consent text accepted, which storing a token needs.
+    #: The version of the consent text the client showed, which storing a
+    #: token needs to be the current one (``hosted.DISCLOSURE``). The view never
+    #: names it, so a tab showing older copy cannot echo it back.
     disclosure: str | None = Field(default=None, max_length=32)
 
 

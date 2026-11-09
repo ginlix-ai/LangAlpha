@@ -44,7 +44,6 @@ from src.server.services.automation_settlement import Outcome, settle
 from src.server.services.llm import user_models
 from src.server.services.llm.claude_code import (
     claude_code_off_message,
-    relayed_token,
     require_claude_code_continues,
 )
 from src.server.utils.api import (
@@ -208,18 +207,13 @@ async def _check_claude_code_hosted(
     user_id: str, name: str | None, workspace_id: str | None, conn=None, pref: dict[str, Any] | None = None,
 ) -> None:
     """Refuse a Claude Code row in a workspace on a cloud computer whose turns
-    admission refuses (``hosted.Refused``, in its order), or that run on
-    the setup token the user stored, which runs no automation
-    (``require_attended``) and is told ahead of the computer's size, as a
-    credential is, so every firing would fail; on an own computer, the
-    workspace's or the one its CLI runs on, where admission would relay that
-    token to it by its last answer. No computer of theirs signed in or awake
-    now refuses nothing, since one may be when the row fires. A row naming
+    admission refuses (``hosted.Refused``, in its order), so every firing
+    would fail. No computer of theirs signed in or awake now refuses nothing,
+    since one may be when the row fires. A row naming
     no model is judged on the Claude Code default its firing would run
     (``_claude_code_default_for``). Nothing is read where no such rule
     applies (``checks_automations``). Read on ``conn``, the caller's."""
-    from src.server.services.claude_code.hosted import OnCloud, OnOwn, checks_automations, cli_placement
-    from src.server.services.claude_code.machine import read_answer
+    from src.server.services.claude_code.hosted import Refused, checks_automations, cli_placement
 
     if not (workspace_id and checks_automations()):
         return
@@ -228,14 +222,7 @@ async def _check_claude_code_hosted(
     if not is_claude_code_model(name):
         return
     where = await cli_placement(user_id, workspace_id, conn=conn)
-    if isinstance(where, OnOwn):
-        answer = await read_answer(str(where.computer["computer_id"]))
-        if await relayed_token(user_id, answer, conn=conn) == "stored_token":
-            raise AutomationRefusal(claude_code_off_message("stored_unattended"), field="llm_model")
-        return
-    if where.hosted is not None and where.hosted.runs_on == "stored_token":
-        raise AutomationRefusal(claude_code_off_message("stored_unattended"), field="llm_model")
-    if isinstance(where, OnCloud) or where.reason in _MAY_RUN_LATER:
+    if not isinstance(where, Refused) or where.reason in _MAY_RUN_LATER:
         return
     raise AutomationRefusal(claude_code_off_message(where.reason, **where.fields), field="llm_model")
 

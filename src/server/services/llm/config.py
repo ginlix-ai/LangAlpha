@@ -518,7 +518,6 @@ async def resolve_llm_config(
     workspace_id: str | None = None,
     user_facing: bool = True,
     role: AgentRole = "analyst",
-    unattended: bool = False,
     checkpoint_id: str | None = None,
 ):
     """Resolve the final LLM config for one turn: which model runs, how it is
@@ -530,9 +529,7 @@ async def resolve_llm_config(
     them, and ``role`` is the agent the turn builds, whose subagents alone get
     clients. ``user_facing=False`` is a call no user is waiting on (a title, memo
     metadata): nobody would see the ``model_removed`` CTA, so its own saved
-    model is read like a role and nothing is scrubbed. ``unattended`` is a
-    turn nobody started (``claude_code.unattended``), which Claude Code
-    admission refuses on a stored token before its plan. ``checkpoint_id``
+    model is read like a role and nothing is scrubbed. ``checkpoint_id``
     is where an edit or a regenerate starts the turn on the thread, whose
     history there decides whether the Chief of Staff runs a Claude Code
     Default (``chief_of_staff_default_runs``).
@@ -601,7 +598,7 @@ async def resolve_llm_config(
         if is_claude_code_model(selection.effective_model):
             config.claude_code_admitted = await require_runnable(
                 config, selection.effective_model, user_id=user_id, workspace_id=workspace_id,
-                thread_id=thread_id, unattended=unattended, where=where,
+                thread_id=thread_id, where=where,
             )
             config.claude_code = True
             # A Claude Code turn stops when its plan runs out rather than move
