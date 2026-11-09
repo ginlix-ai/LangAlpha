@@ -32,7 +32,7 @@ import { getClaudeCodeCustody, setClaudeCodeCustody } from '@/api/model';
 import { ModelAccessSection } from '../ModelAccessSection';
 
 /** What the server offers, unless a test says otherwise. */
-const BASE: ClaudeCodeCustody = { mode: 'local', offered: ['stored'], blocked: false, runs_on: null, refusal: null, disclosure: '2026-11-v1' };
+const BASE: ClaudeCodeCustody = { mode: 'local', offered: ['stored'], blocked: false, runs_on: null, refusal: null };
 
 function render(custody: Partial<ClaudeCodeCustody> | null, route = '/settings?tab=model') {
   (getClaudeCodeCustody as Mock).mockResolvedValue(custody && { ...BASE, ...custody });
@@ -150,7 +150,8 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     expect(ownComputers()).toBeChecked();
     expect(setClaudeCodeCustody).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Store my token' }));
-    await waitFor(() => expect(setClaudeCodeCustody).toHaveBeenCalledWith('stored', '2026-11-v1'));
+    // The version of the copy this bundle showed, not the one the server reads out.
+    await waitFor(() => expect(setClaudeCodeCustody).toHaveBeenCalledWith('stored', '2026-11-v2'));
     expect(await screen.findByRole('dialog', { name: 'Add a setup token' })).toBeInTheDocument();
     expect(consentDialog()).toBeNull();
     expect(stored()).toBeChecked();

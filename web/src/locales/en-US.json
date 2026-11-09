@@ -2718,7 +2718,6 @@
         "no_own_computer": "Claude Code runs on your own computers, and none of yours with its own setup token is online now. Turn one on, or add a token for one in Settings under Model access.",
         "cli_computer_offline": "{{name}}, where Claude Code runs for you, is offline. Turn it on, or pick another model.",
         "too_many_turns": "You've reached the limit on Claude Code threads running at once on cloud computers ({{n}}). Try again when one finishes.",
-        "stored_unattended": "Automations, wakeups and work another agent starts on its own don't run on the setup token LangAlpha stores for you. To run them on Claude Code, choose to run it on your own computers in Settings under Model access.",
         "choice_changed": "How Claude Code runs on cloud computers changed as this turn started. Send your message again.",
         "needs_bigger_computer": "Claude Code runs on Medium or larger cloud computers, and this workspace's computer is smaller. Change its spec, or move this workspace to a computer of your own.",
         "needs_bigger_computer_home": "Claude Code runs on Medium or larger cloud computers, and Home's computer is smaller. Change its spec.",
@@ -6796,7 +6795,7 @@
       "consent": {
         "title": "Let LangAlpha store your setup token?",
         "encrypted": "LangAlpha keeps your token encrypted and uses it only to run Claude Code for your threads. For each turn, it sends the token to the computer that runs the turn. LangAlpha's servers also use the token to check that it still works.",
-        "unattended": "Usage counts against your Claude plan. Automations, wakeups and turns another agent sends don't use this token.",
+        "unattended": "Usage counts against your Claude plan, including automations, wakeups and turns another agent sends.",
         "terms": "Anthropic's terms for your Claude plan apply to this use, and you're responsible for following them. Anthropic may limit or suspend accounts that it finds break them.",
         "undo": "You can switch back at any time, and LangAlpha deletes the token right away.",
         "confirm": "Store my token",

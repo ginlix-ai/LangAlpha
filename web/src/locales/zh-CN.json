@@ -2743,7 +2743,6 @@
         "no_own_computer": "Claude Code 会在你自己的电脑上运行，但目前没有一台有独立 setup token 的电脑在线。请开启其中一台，或在设置的“模型接入”中为一台电脑添加 token。",
         "cli_computer_offline": "为你运行 Claude Code 的 {{name}} 目前离线。请开启它，或选择其他模型。",
         "too_many_turns": "你在云端计算机上同时运行的 Claude Code 对话已达上限（{{n}} 个），请等其中一个结束后再试。",
-        "stored_unattended": "自动化、唤醒以及其他 Agent 自行发起的工作不会使用 LangAlpha 为你保存的 setup token 运行。如需用 Claude Code 运行它们，请在设置的“模型接入”中改为在你自己的电脑上运行。",
         "choice_changed": "本轮开始时，云端计算机上 Claude Code 的运行方式发生了变化。请重新发送你的消息。",
         "needs_bigger_computer": "Claude Code 可在中型及以上规格的云端计算机上运行，而此工作区所在的计算机规格较小。你可以更改这台计算机的规格，或把此工作区移到你自己的电脑上。",
         "needs_bigger_computer_home": "Claude Code 可在中型及以上规格的云端计算机上运行，而 Home 所在的计算机规格较小。你可以更改这台计算机的规格。",
@@ -6708,7 +6707,7 @@
       "consent": {
         "title": "让 LangAlpha 保存你的 setup token？",
         "encrypted": "LangAlpha 会加密保存你的 token，只用于为你的对话运行 Claude Code。每轮对话，LangAlpha 会把 token 发给运行这轮对话的计算机。LangAlpha 的服务器也会用它检查 token 是否仍然可用。",
-        "unattended": "用量计入你的 Claude 套餐。自动化、唤醒以及其他 Agent 发来的对话不会使用此 token。",
+        "unattended": "用量计入你的 Claude 套餐，包括自动化、唤醒以及其他 Agent 发来的对话。",
         "terms": "这种使用方式适用 Anthropic 为你的 Claude 套餐制定的条款，你需要自行确保遵守。Anthropic 可能会限制或停用它认定违反条款的账户。",
         "undo": "你可以随时切换回来，LangAlpha 会立即删除此 token。",
         "confirm": "保存我的 token",
