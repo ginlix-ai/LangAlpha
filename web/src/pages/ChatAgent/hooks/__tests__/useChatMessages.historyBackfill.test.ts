@@ -116,19 +116,19 @@ describe('useChatMessages – filling in a newest page cut short on its bytes', 
   it('gives a phone one page, then holds the next one ready for the trigger', async () => {
     screen.phone = true;
     const { result } = await mount();
-    // 1.5 MB on a phone: its floor of 2 turns.
-    expect(result.current.messages[0].id).toBe('history-user-79');
+    // 1.5 MB on a phone: its floor of 3 turns.
+    expect(result.current.messages[0].id).toBe('history-user-78');
 
     await act(async () => {
       await result.current.olderHistory.backfill();
     });
-    expect(result.current.messages[0].id).toBe('history-user-77');
+    expect(result.current.messages[0].id).toBe('history-user-75');
     await act(async () => {
       await result.current.olderHistory.backfill();
     });
     // Replayed, not shown.
-    expect(olderCalls().map((req) => req.beforeTurn)).toEqual([79, 77]);
-    expect(result.current.messages[0].id).toBe('history-user-77');
+    expect(olderCalls().map((req) => req.beforeTurn)).toEqual([78, 75]);
+    expect(result.current.messages[0].id).toBe('history-user-75');
     expect(result.current.olderHistory.snapshot.status).toBe('idle');
     // Nothing more while one is held.
     await act(async () => {
@@ -144,14 +144,14 @@ describe('useChatMessages – filling in a newest page cut short on its bytes', 
     await act(async () => {
       await result.current.olderHistory.load(place);
     });
-    expect(place).toHaveBeenCalledWith(4, expect.any(Function));
-    expect(result.current.messages[0].id).toBe('history-user-75');
+    expect(place).toHaveBeenCalledWith(6, expect.any(Function));
+    expect(result.current.messages[0].id).toBe('history-user-72');
     expect(olderCalls()).toHaveLength(2);
     expect(result.current.olderHistory.snapshot.hasAhead).toBe(false);
     await act(async () => {
       await result.current.olderHistory.backfill();
     });
-    expect(olderCalls().map((req) => req.beforeTurn)).toEqual([79, 77, 75]);
+    expect(olderCalls().map((req) => req.beforeTurn)).toEqual([78, 75, 72]);
   });
 
   it('drops a page held ahead when the thread reloads', async () => {
@@ -200,6 +200,6 @@ describe('useChatMessages – filling in a newest page cut short on its bytes', 
       await result.current.olderHistory.load();
     });
     expect(olderCalls().length).toBe(before + 1);
-    expect(result.current.messages.every((m) => !m.id.endsWith('-75'))).toBe(true);
+    expect(result.current.messages.every((m) => !m.id.endsWith('-72'))).toBe(true);
   });
 });

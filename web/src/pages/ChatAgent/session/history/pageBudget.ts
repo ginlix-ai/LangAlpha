@@ -47,7 +47,9 @@ const PHONE_PAGE_BYTES = 1_500_000;
 // turns a page carries, however large, still fills the screen it opens on.
 const TURN_FLOOR_PX = 400;
 const DESKTOP_MIN_TURNS = 5;
-const PHONE_MIN_TURNS = 2;
+// Three, though two fill most phones: a transcript that opens with room above
+// it reads as broken, and a slower first open does not.
+const PHONE_MIN_TURNS = 3;
 const MAX_MIN_TURNS = 10;
 
 /** The bytes and the floor of turns a page takes on a screen this tall, on a
