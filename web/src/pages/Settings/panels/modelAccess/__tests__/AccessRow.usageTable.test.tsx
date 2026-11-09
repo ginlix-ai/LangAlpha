@@ -18,7 +18,7 @@ import { AccessRow } from '../AccessRows';
 
 const FULL: UsageSteps = {
   grid: '', window: 'flex', resets: 'block', header: 'grid', spanUsage: 'col-span-4', inline: 'hidden', row: 'grid grid-cols-subgrid',
-  tail: 'contents', columns: true,
+  tail: 'contents', below: 'col-[2/-1]', columns: true,
 };
 const PLAN = {
   five_hour: { used: 0.4, resets_at: '2099-01-01T00:00:00Z' }, seven_day: { used: 0.2, resets_at: '2099-01-01T00:00:00Z' },

@@ -28,16 +28,16 @@ import logging
 import math
 import posixpath
 import shlex
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ptc_agent.agent.claude_code import cli_install
 from ptc_agent.agent.claude_code.launcher import TokenStore
 from ptc_agent.agent.claude_code.plan import PlanLog
-from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
+from ptc_agent.agent.claude_code.ssh_launcher import CLI_SLOT_WAIT_S, SSHLauncher
 from ptc_agent.core.sandbox.leased_stream import LEASE_S, RENEW_S, keep_leased, leased_command, new_lease
-from ptc_agent.core.sandbox.providers._ssh_transport import Machine, ScriptResult, temp_sibling
+from ptc_agent.core.sandbox.providers._ssh_transport import CliHold, Machine, ScriptResult, temp_sibling
 
 if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
@@ -140,8 +140,8 @@ class SandboxLink:
     exec, with a script's stderr apart from its stdout, as the scripts'
     readers parse stdout alone, and the CLI on a stream leased for
     ``lease_s`` and renewed every ``renew_s`` (``leased_stream``). Exec opens
-    no channel, so there are no slots to hold: how many turns a user runs is
-    bounded at admission."""
+    no channel, so there are no slots to hold here: how many CLIs the
+    computer runs at once is held as each starts (``SSHLauncher.cli_slot``)."""
 
     host = CLOUD_COMPUTER
     usable = True
@@ -179,8 +179,8 @@ class SandboxLink:
         return ScriptResult(result.exit_code, stdout, err.encode(), stdout_bytes=len(stdout))
 
     @contextlib.asynccontextmanager
-    async def cli_hold(self, wait_s: float) -> AsyncIterator[Callable[[str], Awaitable[_Channel]]]:
-        yield self._start
+    async def cli_hold(self, wait_s: float) -> AsyncIterator[CliHold]:
+        yield CliHold(self, self._start)
 
     async def _start(self, command: str) -> _Channel:
         """``command`` streaming on a lease; it keeps the pid it starts with, as an ``exec`` does."""
@@ -245,11 +245,14 @@ class SandboxLink:
 def sandbox_launcher(
     sandbox: PTCSandbox, *, identity: str, credential: TokenStore, env: dict[str, str] | None = None,
     plan: PlanLog | None = None,
+    cli_slot: Callable[[float], contextlib.AbstractAsyncContextManager[None]] | None = None,
+    slot_wait_s: float = CLI_SLOT_WAIT_S,
 ) -> SSHLauncher:
     """The launcher of a turn in ``sandbox``, a cloud computer's, signed in with
     what ``credential`` holds as the run starts; it reads no token file
     there. ``env`` is for a test endpoint, and ``plan`` keeps the plan
-    behind a stored token (``SSHLauncher.plan``)."""
+    behind a stored token (``SSHLauncher.plan``). ``cli_slot`` holds one of
+    the CLIs the computer runs at once as each starts, within ``slot_wait_s``."""
     link: SandboxLink | None = None
 
     async def connect() -> SandboxLink:
@@ -261,5 +264,5 @@ def sandbox_launcher(
 
     return SSHLauncher(
         Machine(connect, lambda: sandbox.working_dir), identity=identity, token_file=None, credential=credential,
-        env=dict(env or {}), plan=plan,
+        env=dict(env or {}), plan=plan, cli_slot=cli_slot, slot_wait_s=slot_wait_s,
     )

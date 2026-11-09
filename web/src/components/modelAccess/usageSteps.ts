@@ -24,6 +24,8 @@ export interface UsageSteps {
   row: string;
   /** The status and actions: two cells, or one group on a line under the text. */
   tail: string;
+  /** A line under a row, from its text's start to its end. */
+  below: string;
   /** Whether the columns and header row, and with it its Check now, show. */
   columns: boolean;
 }
@@ -53,6 +55,7 @@ function stepsAt(level: number): UsageSteps {
     inline: level >= 2 ? 'hidden' : '',
     row: level >= 1 ? 'grid grid-cols-subgrid' : '',
     tail: level >= 1 ? 'contents' : '',
+    below: level >= 1 ? 'col-[2/-1]' : 'basis-full pl-10',
     columns: level >= 2,
   };
 }

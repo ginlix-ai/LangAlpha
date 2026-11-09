@@ -176,8 +176,9 @@ def _own_lease(monkeypatch, tmp_path) -> Path:
 
 
 async def _started(link: SandboxLink, command: str):
-    async with link.cli_hold(1) as start:
-        return await start(command)
+    async with link.cli_hold(1) as hold:
+        assert hold.link is link
+        return await hold.start(command)
 
 
 @pytest.mark.parametrize("eof", [True, False], ids=["closes-stdin", "cannot-close-stdin"])

@@ -149,7 +149,8 @@ def _computer(status="running", **kw):
 
 def _roster_row(computer):
     """The same computer as the roster reads it: no provider_ref, which dialing needs."""
-    return {k: computer[k] for k in ("computer_id", "name", "kind", "provider_config", "root_dir", "status")} | {"is_home": False}
+    keys = ("computer_id", "name", "kind", "provider_config", "root_dir", "status")
+    return {k: computer[k] for k in keys} | {"config": computer.get("config") or {}, "is_home": False}
 
 
 class _World:
@@ -211,11 +212,11 @@ def _kept(cache):
     return MachineAnswer(**raw) if raw else None
 
 
-def _entry(state, source=None, email=None, expires_at=None, own_file=None):
+def _entry(state, source=None, email=None, expires_at=None, own_file=None, clis=4):
     return {
         "computer_id": CID, "name": "Studio Mac", "kind": "helper", "state": state, "source": source,
         "own_file": source == "machine" if own_file is None else own_file, "email": email, "expires_at": expires_at,
-        "plan": None, "check_in": None, "check_bills": False,
+        "plan": None, "check_in": None, "check_bills": False, "clis": clis,
     }
 
 
@@ -238,7 +239,7 @@ async def test_with_claude_code_off_a_computer_asleep_or_out_of_reach_reads_off_
 ):
     world.rows, world.opted_in = rows, opted_in
     world.computer, world.tunnel_live = _computer(status), live
-    assert await _read(client, "/api/v1/claude-code/computers") == {"computers": [_entry("off")], "cli_computer": None, "cloud_refusals": {}}
+    assert await _read(client, "/api/v1/claude-code/computers") == {"computers": [_entry("off")], "cli_computer": None, "cloud_refusals": {}, "clis_max": 8}
     assert world.dialed == [] and world.machine.calls == [] and not world.cache.locks
 
 
@@ -909,3 +910,48 @@ async def test_a_token_reaches_no_log_response_error_or_cache(world, caplog, pat
     stored = json.dumps([world.cache.values, world.cache.locks], default=str)
     assert SENTINEL not in stored
     assert token_check_key(SENTINEL) not in world.cache.values, "a machine's token is not checked by the saved-token path"
+
+
+@pytest.mark.asyncio
+async def test_how_many_agents_a_computer_runs_at_once_is_kept_with_it_and_read_back(client, world):
+    from src.server.services.claude_code.hosted import CLIS_KEY
+
+    kept = []
+
+    async def keep(computer_id, user_id, key, value, **_):
+        kept.append((computer_id, user_id, key, value))
+        world.computer = {**world.computer, "config": {key: value}}
+        return True
+
+    with patch(f"{MACHINES}.set_computer_setting", new=keep):
+        response = await client.put(f"{BASE}/clis", json={"clis": 6})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["clis"] == 6 and kept == [(CID, USER, CLIS_KEY, 6)]
+    body = await _read(client, "/api/v1/claude-code/computers")
+    assert (body["computers"][0]["clis"], body["clis_max"]) == (6, 8)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clis", [0, 9, -1, "5", 5.5, True, None])
+async def test_a_count_that_is_not_a_whole_number_from_one_to_the_most_is_refused(client, world, clis):
+    keep = AsyncMock(return_value=True)
+    with patch(f"{MACHINES}.set_computer_setting", new=keep):
+        response = await client.put(f"{BASE}/clis", json={"clis": clis})
+    assert response.status_code == 422
+    keep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "computer",
+    [_computer(user_id="someone-else"), _computer(kind="daytona"), None],
+    ids=["another-users", "a-cloud-computer", "gone"],
+)
+async def test_only_the_users_own_computer_takes_a_count(client, world, computer):
+    world.computer = computer
+    keep = AsyncMock(return_value=True)
+    with patch(f"{MACHINES}.set_computer_setting", new=keep):
+        response = await client.put(f"{BASE}/clis", json={"clis": 6})
+    assert await _error(response) == (404, "computer_not_found")
+    keep.assert_not_awaited()

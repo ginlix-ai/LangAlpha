@@ -348,7 +348,8 @@ async def get_computer_roster(
     conn=None,
 ) -> List[Dict[str, Any]]:
     """The user's live computers by id and name, with the kind and provider
-    config (whether it is a machine of the user's own), root (where its
+    config (whether it is a machine of the user's own), its settings
+    (``config``: how many Claude Code CLIs it runs at once), root (where its
     workspace folders sit) and status, and ``is_home`` on the one the user's
     Home is on, read in the same snapshot as the names.
 
@@ -358,7 +359,7 @@ async def get_computer_roster(
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             f"""
-            SELECT c.computer_id, c.name, c.kind, c.provider_config, c.root_dir, c.status,
+            SELECT c.computer_id, c.name, c.kind, c.provider_config, c.config, c.root_dir, c.status,
                    c.computer_id IS NOT DISTINCT FROM (
                        SELECT h.computer_id FROM workspaces h
                        WHERE h.workspace_id = %(home_id)s AND h.{FENCE_NOT_DELETED}
@@ -509,6 +510,26 @@ async def clear_computer_retirement_pending(
                     @> '{{"retire_when_empty": true}}'::jsonb
             """,
             (computer_id,),
+        )
+        return cur.rowcount > 0
+
+
+async def set_computer_setting(
+    computer_id: str, user_id: str, key: str, value: Any, *, conn=None
+) -> bool:
+    """Set one of the user's computer's settings in its ``config``. False
+    where the computer is gone or not theirs."""
+    async with _computer_cursor(conn) as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET config = jsonb_set(COALESCE(config, '{{}}'::jsonb), %s, %s::jsonb),
+                updated_at = NOW()
+            WHERE computer_id = %s
+              AND user_id = %s
+              AND {FENCE_NOT_DELETED}
+            """,
+            ([key], Json(value), computer_id, user_id),
         )
         return cur.rowcount > 0
 

@@ -55,3 +55,13 @@ async def acquire_slot_member(
 
 async def release_slot_member(redis, key: str, slot_id: str) -> None:
     await redis.zrem(key, slot_id)
+
+
+async def renew_slot_member(redis, key: str, slot_id: str, *, stale_after: int) -> None:
+    """Keep a live holder's slot: its score moves to now and the key's TTL
+    restarts. It re-adds a member a reap or an expired key dropped, so a
+    holder that outlived a Redis outage is counted again."""
+    pipe = redis.pipeline()
+    pipe.zadd(key, {slot_id: time.time()})
+    pipe.expire(key, stale_after)
+    await pipe.execute()

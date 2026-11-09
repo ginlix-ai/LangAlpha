@@ -9,6 +9,7 @@ sshd (``tests/integration/claude_code`` runs the same over SSH).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -28,7 +29,7 @@ from ptc_agent.agent.claude_code.launcher import _INHERITED, cli_env
 from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.machine_token import NO_PERL, STREAM_BOOT
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher, kill_if_cli, remote_session_path
-from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS, _COMMAND_SLOTS, Machine
+from ptc_agent.core.sandbox.providers._ssh_transport import _COMMAND_SLOTS, CLI_SLOTS, Machine, SlotWaitTimeout
 from src.llms.claude_code import ClaudeTurnFailed
 from tests.unit.ptc_agent.agent.claude_code.bsd_userland import bsd_path, on_linux
 from tests.unit.ptc_agent.agent.claude_code.local_link import local_link
@@ -316,8 +317,8 @@ async def test_clis_at_their_cap_still_leave_commands_a_slot_and_keep_the_link_u
     cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
     cli.chmod(0o755)
     link, launcher = _local(tmp_path, monkeypatch, str(cli))
-    running = [await _started(launcher()) for _ in range(_CLI_SLOTS)]
-    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.CLI_SLOTS_FULL)}$"):
+    running = [await _started(launcher()) for _ in range(CLI_SLOTS)]
+    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(CLI_SLOTS))}$"):
         await _started(launcher(slot_wait_s=0.2))
     done = await link.run("echo free", timeout=10, slot=link.slots)
     assert done.stdout == b"free\n"
@@ -329,13 +330,94 @@ async def test_clis_at_their_cap_still_leave_commands_a_slot_and_keep_the_link_u
 
 
 @pytest.mark.asyncio
+async def test_clis_past_one_connections_slots_run_on_the_second_and_are_signalled_there(tmp_path, monkeypatch):
+    """The first connection keeps its two spare slots for commands; once
+    both connections' CLI slots are taken the next CLI is refused naming
+    them. A CLI on the second connection is signalled over it, so losing the
+    first never leaves it running."""
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
+    cli.chmod(0o755)
+    link, launcher = _local(tmp_path, monkeypatch, str(cli))
+    second = local_link(HOME=str(tmp_path))
+    dials = []
+
+    async def spill():
+        dials.append(1)
+        return second
+
+    link.spill = spill
+    running = [await _started(launcher(slot_wait_s=5)) for _ in range(2 * CLI_SLOTS)]
+    assert (link.cli_slots._value, second.cli_slots._value) == (0, 0)
+    assert len(dials) == CLI_SLOTS and link.slots._value == 2
+    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(2 * CLI_SLOTS))}$"):
+        await _started(launcher(slot_wait_s=0.2))
+    done = await link.run("echo free", timeout=10, slot=link.slots)
+    assert done.stdout == b"free\n"
+
+    spilled = running[-1]
+    kills = []
+    real_run = second.run
+
+    async def run(script, **kw):
+        if kw.get("kill"):
+            kills.append(script)
+        return await real_run(script, **kw)
+
+    monkeypatch.setattr(second, "run", run)
+    link.retired = True
+    spilled._pid = 4242
+    await spilled._signal("TERM")
+    assert len(kills) == 1 and "4242" in kills[0]
+    link.retired = False
+    for transport in running:
+        await transport.close()
+    await asyncio.sleep(0.1)
+    assert (link.cli_slots._value, second.cli_slots._value) == (CLI_SLOTS, CLI_SLOTS)
+
+
+@pytest.mark.asyncio
+async def test_a_cli_holds_one_of_the_computers_clis_from_start_to_close_within_its_one_wait(tmp_path, monkeypatch):
+    """Taken before the link's slot, and given the whole wait, the link the
+    rest; one none frees in time refuses the CLI naming the computer's count."""
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
+    cli.chmod(0o755)
+    link, launcher = _local(tmp_path, monkeypatch, str(cli))
+    held = []
+
+    @contextlib.asynccontextmanager
+    async def slot(wait_s):
+        if held:
+            raise SlotWaitTimeout("cli", 3)
+        held.append(wait_s)
+        try:
+            yield
+        finally:
+            held.clear()
+
+    transport = await _started(launcher(cli_slot=slot, slot_wait_s=7))
+    assert held == [7] and link.cli_slots._value == CLI_SLOTS - 1
+    with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.cli_slots_full(3))}$"):
+        await _started(launcher(cli_slot=slot))
+    await transport.close()
+    assert held == [] and link.cli_slots._value == CLI_SLOTS
+
+
+@pytest.mark.parametrize(("n", "said"), [(1, "1 agent on this computer. Try again when it finishes."),
+                                         (6, "6 agents on this computer. Try again when one finishes.")])
+def test_a_full_computer_names_its_agents_as_one_or_many(n, said):
+    assert ssh_launcher.cli_slots_full(n) == f"Claude Code is already running {said}"
+
+
+@pytest.mark.asyncio
 async def test_a_turn_waits_for_a_cli_slot_past_its_start_time_and_starts_once_one_frees(tmp_path, monkeypatch):
     cli = tmp_path / "claude"
     cli.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.read()\n")
     cli.chmod(0o755)
     link, launcher = _local(tmp_path, monkeypatch, str(cli))
     monkeypatch.setattr(ssh_launcher, "START_TIMEOUT_S", 0.5)
-    running = [await _started(launcher()) for _ in range(_CLI_SLOTS)]
+    running = [await _started(launcher()) for _ in range(CLI_SLOTS)]
     waiting = asyncio.ensure_future(_started(launcher()))
     await asyncio.sleep(1)
     assert not waiting.done(), "still waiting for a slot, past the start's own time"
@@ -361,7 +443,7 @@ async def test_a_turn_waits_out_commands_holding_every_command_slot_past_its_sta
 
     with pytest.raises(CLIConnectionError, match=f"^{re.escape(ssh_launcher.COMMAND_SLOTS_FULL)}$"):
         await _started(launcher(slot_wait_s=0.2))
-    assert link.cli_slots._value == _CLI_SLOTS - 1
+    assert link.cli_slots._value == CLI_SLOTS - 1
 
     waiting = asyncio.ensure_future(_started(launcher(slot_wait_s=10)))
     await asyncio.sleep(1)
@@ -370,7 +452,7 @@ async def test_a_turn_waits_out_commands_holding_every_command_slot_past_its_sta
     transport = await asyncio.wait_for(waiting, 10)
     await transport.close()
     await asyncio.sleep(0.1)
-    assert link.slots._value == 1 and link.cli_slots._value == _CLI_SLOTS - 1
+    assert link.slots._value == 1 and link.cli_slots._value == CLI_SLOTS - 1
     await first.close()
 
 

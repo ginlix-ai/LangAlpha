@@ -1,7 +1,8 @@
 """SSH channels for computers on machines their owners bring.
 
-One connection per machine per process, reused by every runtime that reaches
-the machine: OpenSSH 9.8 and later penalise a source that keeps opening
+One connection per machine per process (``_ssh_pool``), reused by every
+runtime that reaches the machine, and one more for Claude Code CLIs past its
+slots: OpenSSH 9.8 and later penalise a source that keeps opening
 connections and dropping them, and a fresh handshake per command costs more
 than the command. The pool is execution context only. Whether a computer runs
 is read from the machine on each call, so every worker agrees.
@@ -21,15 +22,14 @@ import functools
 import posixpath
 import time
 import uuid
-import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, NamedTuple, TypeVar
 
 import asyncssh
 import structlog
 
-from ptc_agent.core.sandbox.providers._ssh_connect import SSHTarget, connect
+from ptc_agent.core.sandbox.providers._ssh_connect import SSHTarget
 from ptc_agent.core.sandbox.providers._ssh_shell import (
     BOOT,
     FRAME_BEGIN,
@@ -51,9 +51,11 @@ logger = structlog.get_logger(__name__)
 # closed the channel.
 _COMMAND_SLOTS = 6
 # A Claude Code turn's CLI holds a command slot for the whole turn, so no more
-# than this many run at once, leaving two for the commands, installs and
-# checks those turns and their computers still need.
-_CLI_SLOTS = _COMMAND_SLOTS - 2
+# than this many run on a connection, leaving two for the commands, installs
+# and checks those turns and their computers still need. CLIs past them run on
+# one more connection to the login (``Link.spill``), which carries only
+# those CLIs and their kills.
+CLI_SLOTS = _COMMAND_SLOTS - 2
 # Kept from a command's output, so one runaway command cannot take the
 # server's memory. Past it the rest is read and dropped, so the command is
 # never blocked writing.
@@ -72,10 +74,6 @@ _GROUP_WAIT_S = 2.0
 # Opening the SFTP channel, so a machine whose sftp-server hangs (a home on
 # a stalled NFS mount, say) fails file calls rather than holding them.
 _SFTP_OPEN_S = 30
-# A connection nothing has used for this long is closed, unless a channel on
-# it is still open (a preview socket, say).
-_IDLE_CLOSE_S = 600
-_SWEEP_S = 60
 
 TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
     asyncssh.DisconnectError,
@@ -261,11 +259,21 @@ async def _exit_sftp(sftp: Any) -> None:
 
 
 class SlotWaitTimeout(TimeoutError):
-    """No slot of the kind ``which`` freed in the time a wait was given."""
+    """No slot of the kind ``which`` freed in the time a wait was given; for
+    a CLI, ``n`` is how many were running where it waited."""
 
-    def __init__(self, which: Literal["cli", "command"]) -> None:
+    def __init__(self, which: Literal["cli", "command"], n: int = 0) -> None:
         super().__init__(f"no {which} slot freed in time")
         self.which = which
+        self.n = n
+
+
+class CliHold(NamedTuple):
+    """The connection a CLI runs on, where it is signalled, and what starts
+    it there (``Link.cli_hold``)."""
+
+    link: Any
+    start: Callable[[str], Awaitable[Any]]
 
 
 class Link:
@@ -276,7 +284,7 @@ class Link:
         self.conn = conn
         self.facts: HostFacts | None = None
         self.slots = asyncio.Semaphore(_COMMAND_SLOTS)
-        self.cli_slots = asyncio.Semaphore(_CLI_SLOTS)
+        self.cli_slots = asyncio.Semaphore(CLI_SLOTS)
         self.control_slot = asyncio.Semaphore(1)
         self.kill_slot = asyncio.Semaphore(1)
         self.forwards: dict[int, Any] = {}
@@ -292,6 +300,13 @@ class Link:
         self._sftp_lock = asyncio.Lock()
         self._forward_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[Any]] = set()
+        # The login's other connection, for CLIs past this one's slots,
+        # dialed once needed; None on a one-off's, whose CLIs wait for this
+        # one's.
+        self.spill: Callable[[], Awaitable[Link]] | None = None
+        # Set as a CLI slot frees on any of the login's connections, which
+        # share it once pooled, so a CLI waits for whichever frees first.
+        self.cli_freed = asyncio.Event()
 
     @property
     def usable(self) -> bool:
@@ -501,44 +516,86 @@ class Link:
                 raise
 
     @contextlib.asynccontextmanager
-    async def cli_hold(self, wait_s: float) -> AsyncIterator[Callable[[str], Awaitable[Any]]]:
-        """Hold what a long-lived CLI needs here: the link kept in use, one of
-        its CLI slots, and the command slot its channel will take, all within
-        ``wait_s``, so commands filling every command slot are a wait like any
-        other. It yields what starts the CLI: its channel takes the command
-        slot over and gives it back as it closes; one never started gives it
-        back here.
+    async def cli_hold(self, wait_s: float) -> AsyncIterator[CliHold]:
+        """Hold what a long-lived CLI needs: a CLI slot on whichever of the
+        login's connections has one first, this one or, once its slots are
+        taken, the other (``spill``), and the command slot its channel will
+        take there, all within ``wait_s``, so commands filling every command
+        slot are a wait like any other. It yields the connection the CLI
+        runs on and what starts it there: its channel takes the command slot
+        over and gives it back as it closes; one never started gives it back
+        here.
 
         Raises:
             SlotWaitTimeout: A slot did not free in time, naming which.
         """
         async with self.in_use():
             deadline = asyncio.get_running_loop().time() + wait_s
+            link = await self._cli_slot(deadline)
             try:
-                async with asyncio.timeout_at(deadline):
-                    await self.cli_slots.acquire()
-            except TimeoutError:
-                raise SlotWaitTimeout("cli") from None
-            try:
+                async with link.in_use(), link._cli_start(deadline) as start:
+                    yield CliHold(link, start)
+            finally:
+                link.cli_slots.release()
+                link.cli_freed.set()
+
+    async def _cli_slot(self, deadline: float) -> Link:
+        """A CLI slot on one of the login's connections, taken by
+        ``deadline``: this one's while it has one free, else the other's,
+        dialed once needed, else the first either frees (``cli_freed``). A
+        slot is taken as it is seen free, with no wait between. A second
+        connection that cannot be dialed leaves the CLI to this one's until
+        it next wakes, when it looks for one again, so one another CLI dialed
+        meanwhile serves it too. This
+        one's slot is taken even once it is lost, so the CLI fails starting
+        as a lost connection rather than waiting out its time as a full one."""
+        loop = asyncio.get_running_loop()
+        other = None
+        while True:
+            if self.cli_slots.locked() and self.spill is not None:
                 try:
                     async with asyncio.timeout_at(deadline):
-                        await self.slots.acquire()
-                except TimeoutError:
-                    raise SlotWaitTimeout("command") from None
-                started = False
+                        other = await self.spill()
+                except Exception as e:
+                    if isinstance(e, TimeoutError) and loop.time() >= deadline:
+                        raise SlotWaitTimeout("cli", CLI_SLOTS if other is None else 2 * CLI_SLOTS) from None
+                    logger.warning(
+                        "SSH connection for more CLIs failed, waiting for one of the first's",
+                        target=self.target.label, error=str(e) or type(e).__name__,
+                    )
+                    other = None
+            for link in (self, other):
+                if link is not None and (link is self or link.usable) and not link.cli_slots.locked():
+                    await link.cli_slots.acquire()
+                    return link
+            self.cli_freed.clear()
+            try:
+                async with asyncio.timeout_at(deadline):
+                    await self.cli_freed.wait()
+            except TimeoutError:
+                raise SlotWaitTimeout("cli", CLI_SLOTS if other is None else 2 * CLI_SLOTS) from None
 
-                async def start(command: str) -> Any:
-                    nonlocal started
-                    started = True
-                    return await self.open_process(command, held=True)
+    @contextlib.asynccontextmanager
+    async def _cli_start(self, deadline: float) -> AsyncIterator[Callable[[str], Awaitable[Any]]]:
+        """The command slot a CLI's channel on this connection will take, by
+        ``deadline``, and what starts the CLI."""
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self.slots.acquire()
+        except TimeoutError:
+            raise SlotWaitTimeout("command") from None
+        started = False
 
-                try:
-                    yield start
-                finally:
-                    if not started:
-                        self.slots.release()
-            finally:
-                self.cli_slots.release()
+        async def start(command: str) -> Any:
+            nonlocal started
+            started = True
+            return await self.open_process(command, held=True)
+
+        try:
+            yield start
+        finally:
+            if not started:
+                self.slots.release()
 
     async def sftp(self) -> asyncssh.SFTPClient:
         """The connection's SFTP channel, opened once in the session kept for
@@ -612,117 +669,6 @@ class Link:
     def close(self) -> None:
         self.retired = True
         self.conn.abort()
-
-
-class SSHPool:
-    """Pooled connections of one event loop, keyed by target identity."""
-
-    def __init__(self) -> None:
-        self._links: dict[tuple[Any, ...], Link] = {}
-        self._dialing: dict[tuple[Any, ...], asyncio.Future[Link]] = {}
-        self._sweeper: asyncio.Task[None] | None = None
-
-    async def link(
-        self, target: SSHTarget, load_key: Callable[[], Awaitable[str]]
-    ) -> Link:
-        """The target's live connection, dialing it once however many ask.
-
-        Raises:
-            SSHConnectError: The machine could not be reached or refused us.
-        """
-        key = target.pool_key
-        link = self._links.get(key)
-        if link is not None and link.usable:
-            return link
-        pending = self._dialing.get(key)
-        if pending is None:
-            pending = asyncio.ensure_future(self._dial(target, load_key))
-            self._dialing[key] = pending
-            pending.add_done_callback(lambda _: self._dialing.pop(key, None))
-        return await asyncio.shield(pending)
-
-    async def _dial(
-        self, target: SSHTarget, load_key: Callable[[], Awaitable[str]]
-    ) -> Link:
-        conn = await connect(target, await load_key())
-        link = Link(target=target, conn=conn)
-        try:
-            await link.hello()
-        except BaseException:
-            link.close()
-            raise
-        old = self._links.get(target.pool_key)
-        if old is not None:
-            old.close()
-        self._links[target.pool_key] = link
-        self._start_sweeper()
-        logger.debug("SSH connection opened", target=target.label)
-        return link
-
-    def evict(self, link: Link) -> None:
-        """Drop *link* after a transport error, so the next call dials again."""
-        if self._links.get(link.target.pool_key) is link:
-            del self._links[link.target.pool_key]
-        link.close()
-
-    def shed(self, link: Link) -> None:
-        """Dial anew for the next call, closing *link* once its calls are done.
-
-        For a connection that works but will not open channels: closing it
-        at once would cut off the commands still running on it.
-        """
-        if self._links.get(link.target.pool_key) is link:
-            del self._links[link.target.pool_key]
-        link.drain()
-
-    def peek(self, target: SSHTarget) -> Link | None:
-        """The target's connection if one is open, without dialing."""
-        link = self._links.get(target.pool_key)
-        return link if link is not None and link.usable else None
-
-    def retire(self, target: SSHTarget, *, only_if_idle: bool = False) -> None:
-        """Close the target's connection, as a stop does.
-
-        Other computers on the same login share it, so ``only_if_idle`` leaves
-        one that is in use, or holds a forward, to the idle sweep.
-        """
-        link = self._links.get(target.pool_key)
-        # A forward is a preview another computer on the login may be showing
-        # between requests; the sweep closes it once nothing has used it.
-        if link is None or (only_if_idle and (not link.idle() or link.forwards)):
-            return
-        del self._links[target.pool_key]
-        link.close()
-
-    def _start_sweeper(self) -> None:
-        if self._sweeper is None or self._sweeper.done():
-            self._sweeper = asyncio.ensure_future(self._sweep())
-
-    async def _sweep(self) -> None:
-        while self._links:
-            await asyncio.sleep(_SWEEP_S)
-            cutoff = time.monotonic() - _IDLE_CLOSE_S
-            for key, link in list(self._links.items()):
-                if not link.usable:
-                    del self._links[key]
-                elif link.idle() and link.last_used <= cutoff:
-                    del self._links[key]
-                    link.close()
-                    logger.debug("Closed idle SSH connection", target=link.target.label)
-
-
-_pools: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, SSHPool] = (
-    weakref.WeakKeyDictionary()
-)
-
-
-def pool() -> SSHPool:
-    """The running loop's pool. Connections never cross event loops."""
-    loop = asyncio.get_running_loop()
-    found = _pools.get(loop)
-    if found is None:
-        found = _pools[loop] = SSHPool()
-    return found
 
 
 L = TypeVar("L")

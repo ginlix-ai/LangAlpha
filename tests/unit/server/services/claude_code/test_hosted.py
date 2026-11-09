@@ -67,18 +67,23 @@ def sizer(sandbox):
 
 
 @contextmanager
-def platform(*, stored=True, mode="local", blocked=False, live=0, computer=CLOUD, placement=True, cli=(None, None)):
+def platform(
+    *, stored=True, mode="local", blocked=False, live=0, computer=CLOUD, placement=True, cli=(None, None), memory=800,
+):
     """A platform deployment with the runtime on, the CLI placed in cloud
     computers' sandboxes (``placement``), storing a setup token offered as
     given (``stored``), a stored token known to work, and one user's choice,
     running turns and computer, which ``reads.computer`` hands the run's start.
+    ``memory`` is the operator's count of each cloud CLI's memory.
     ``cli`` is the own computer picked to run the CLI where cloud computers
     run none, and the offline one's name (``machine.cli_computer``)."""
     reads = SimpleNamespace(
         mode=AsyncMock(return_value=Custody(mode, blocked)), live=AsyncMock(return_value=live),
         computer=AsyncMock(return_value=computer),
     )
-    config = SimpleNamespace(stored_custody=stored, hosted_turns_per_user=3, sandbox_placement=placement)
+    config = SimpleNamespace(
+        stored_custody=stored, hosted_turns_per_user=3, sandbox_placement=placement, cli_memory_mb=memory,
+    )
     with ExitStack() as stack:
         for target, value in [
             ("src.config.settings.HOST_MODE", "platform"),
@@ -343,6 +348,49 @@ def test_a_computer_runs_a_cli_per_800_mb_of_its_smallest_size_and_an_own_one_as
     cannot tell caps nothing."""
     with platform():
         assert hosted_module.cli_cap(computer) == cap
+
+
+@pytest.mark.parametrize(
+    ("config", "cap"),
+    [({"claude_code_clis": 6}, 6), ({"claude_code_clis": 8}, 8), ({"claude_code_clis": 1}, 1), ({}, 4), (None, 4),
+     ({"claude_code_clis": 9}, 4), ({"claude_code_clis": 0}, 4), ({"claude_code_clis": "6"}, 4),
+     ({"claude_code_clis": True}, 4)],
+)
+def test_an_own_computer_runs_as_many_clis_as_its_owner_set_for_it(config, cap):
+    """A count that is not one Settings could have saved reads as the default."""
+    with platform():
+        assert hosted_module.cli_cap({**OWN, "config": config}) == cap
+
+
+@pytest.mark.parametrize(("memory", "cap"), [(400, 10), (1600, 2), (8192, 1)], ids=["400", "1600", "past-its-memory"])
+def test_a_cloud_computer_runs_as_many_clis_as_the_memory_the_operator_counts_each_at_fits(memory, cap):
+    with platform(memory=memory):
+        assert hosted_module.cli_cap({**CLOUD, "resource_tier": "performance"}) == cap
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("computer", "clis"),
+    [
+        ({**CLOUD, "resource_tier": "performance"}, 5),
+        ({**OWN, "config": {"claude_code_clis": 6}}, 6),
+        ({**CLOUD, "resource_tier": "retired"}, 4),
+        (None, 4),
+    ],
+    ids=["cloud", "own", "size-unknown", "gone"],
+)
+async def test_a_cli_starting_on_a_computer_is_held_to_its_cap_and_one_unsized_or_gone_to_the_default(computer, clis):
+    with platform(computer=computer):
+        assert await hosted_module.computer_clis("c-x") == clis
+
+
+def test_the_memory_each_cloud_cli_is_counted_at_is_read_from_the_claude_code_config_section():
+    from src.config.models import ClaudeCodeConfig
+
+    assert ClaudeCodeConfig().cli_memory_mb == 800
+    assert ClaudeCodeConfig(cli_memory_mb=512).cli_memory_mb == 512
+    with pytest.raises(ValueError):
+        ClaudeCodeConfig(cli_memory_mb=64)
 
 
 @pytest.mark.parametrize("tier", ["standard", "max", "retired"])

@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
-import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import {
-  getClaudeCodeComputers, getClaudeCodeSetup, getClaudeCodeStatus, type ClaudeCodeComputer, type ClaudeCodeComputers, type ClaudeCodeState,
-  type ClaudeCodeStatus,
+  getClaudeCodeComputers, getClaudeCodeSetup, getClaudeCodeStatus, setClaudeCodeComputerClis, type ClaudeCodeComputer,
+  type ClaudeCodeComputers, type ClaudeCodeState, type ClaudeCodeStatus,
 } from '@/api/model';
 import { TOKEN_WORKS } from '@/lib/claudeCode';
 import { queryKeys } from '@/lib/queryKeys';
@@ -77,6 +77,28 @@ export function updateComputers(
       return next.check_in ? { ...next, check_in: next.check_in + since } : next;
     }),
   }), { updatedAt: listAt });
+}
+
+/**
+ * Saves how many Claude Code agents the user's own computer `computerId`
+ * runs at once. A list read already in flight is cancelled first, so it
+ * cannot land after the save and put the old number back; the entry the
+ * server answers replaces the computer's in the list, and the list and setup
+ * are read again, so every reader shows the new number.
+ */
+export function useSetComputerClis(computerId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (clis: number) => setClaudeCodeComputerClis(computerId, clis),
+    onMutate: () => queryClient.cancelQueries({ queryKey: queryKeys.features.claudeCodeComputers() }),
+    onSuccess: (entry) => {
+      updateComputers(queryClient, (c) => c.computer_id === entry.computer_id, () => entry);
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeSetup() });
+    },
+  });
 }
 
 /** `whenOff`: read even while the user's flag is off, for a token left in
@@ -165,6 +187,7 @@ export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
   // A failed read again keeps the list it had, which still says whose they are.
   return {
     computers: data?.computers ?? [], cloudRefusals: data?.cloud_refusals ?? {}, cliComputer: data?.cli_computer ?? null,
+    clisMax: data?.clis_max ?? null,
     isLoading: featuresLoading || isLoading,
     unread: isError && !data,
     /** When the list arrived, by this clock: the time a token's expiry is judged at. */

@@ -353,6 +353,10 @@ _HOME = get_home_workspace_id("user-1")
         pytest.param(False, 4, 4, False, "claude-sonnet-5-5-code", _PIN_RUNS, True, True, "ws-1", id="not-claude-code"),
         pytest.param(True, 4, None, False, "claude-sonnet-5-5-code", _PIN_RUNS, True, True, "ws-1", id="size-unknown"),
         pytest.param(
+            True, 0, 1, False, "claude-sonnet-5-5-code", _PIN_RUNS, True, True, "ws-1",
+            id="a-computer-that-never-fits-the-turn-and-the-run-posts-it",
+        ),
+        pytest.param(
             True, 4, 4, False, "gpt-6.1-terra", None, True, True, "ws-1",
             id="a-pin-that-runs-on-the-thread-model-now",
         ),

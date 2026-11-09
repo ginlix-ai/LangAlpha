@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal
 
+from ptc_agent.core.claude_code_clis import CLIS_DEFAULT, CLIS_MAX, agents
 from src.config.settings import get_claude_code_config
 from src.llms.claude_code import backend_available, rows_available
 from src.server.database.claude_code_hosted import (
@@ -47,15 +48,9 @@ DISCLOSURE = "2026-11-v2"
 #: whose resource tier key this is.
 SANDBOX_MIN_TIER = "performance"
 
-#: The memory each Claude Code CLI on a cloud computer is counted at: its
-#: tier's memory over this is how many it runs at once.
-CLI_MEMORY_MB = 800
-#: Why a Task is refused once the computer runs that many, as the refusal
-#: reads after "could not start <task>".
-CLI_CAP_REFUSAL = (
-    "Claude Code is already running {n} agents on this computer, the most it runs at once. "
-    "Wait for one of your subagents to finish, then launch this one again"
-)
+#: Where a computer of the user's own keeps, in its settings, how many Claude
+#: Code CLIs it runs at once (``own_clis``).
+CLIS_KEY = "claude_code_clis"
 
 RunsOn = Literal["saved_token", "stored_token"]
 #: Where a turn's CLI runs on a cloud computer: inside the computer's own
@@ -231,24 +226,56 @@ def tier_refusal(computer: Mapping[str, Any]) -> ComputerRefusal | None:
     return None
 
 
+def own_clis(computer: Mapping[str, Any]) -> int:
+    """How many Claude Code CLIs the user's own ``computer`` runs at once:
+    the number they set for it (``CLIS_KEY``), else ``CLIS_DEFAULT``."""
+    clis = (computer.get("config") or {}).get(CLIS_KEY)
+    return clis if type(clis) is int and 1 <= clis <= CLIS_MAX else CLIS_DEFAULT
+
+
+async def computer_clis(computer_id: str) -> int:
+    """``cli_cap`` of the computer ``computer_id`` as it stands now, for a
+    CLI starting there; one gone, or of a size not known, runs ``CLIS_DEFAULT``."""
+    from src.server.database.computer import get_computer
+
+    computer = await get_computer(computer_id)
+    cap = cli_cap(computer) if computer is not None else None
+    return CLIS_DEFAULT if cap is None else cap
+
+
+def cli_cap_refusal(cap: int, *, alone: bool) -> str:
+    """Why a Task is refused once its computer runs ``cap`` CLIs, as the
+    refusal reads after "could not start <task>". Where the turn launching
+    it is the one CLI the computer runs (``alone``), no CLI that ends makes
+    room, so it is not told to wait."""
+    if alone:
+        return (
+            "Claude Code runs only 1 agent at once on this computer, and this turn is that agent, "
+            "so this subagent can't run on Claude Code beside it"
+        )
+    return (
+        f"Claude Code is already running {agents(cap)} on this computer, the most it runs at once. "
+        "Wait for one of your subagents to finish, then launch this one again"
+    )
+
+
 def cli_cap(computer: Mapping[str, Any]) -> int | None:
     """How many Claude Code CLIs ``computer`` runs at once, its turns' and
-    their subagents' together: an own computer as many as its connection's
-    CLI slots, any other one per ``CLI_MEMORY_MB`` of the smallest size its
+    their subagents' together: an own computer as many as its owner set
+    (``own_clis``), any other one per ``claude_code.cli_memory_mb`` of the smallest size its
     sandbox may run at (``tier_refusal``). Where the CLIs run in the
     backend instead (``cloud_runs_in`` ``worker``), the computer's size
     is not theirs, so it runs as many as one at ``SANDBOX_MIN_TIER``. None
-    where a size is unknown."""
-    from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS
+    where a size is unknown; one that runs Claude Code at all runs at least one."""
     from src.server.services.computer_manager import ComputerManager
     from src.server.services.ssh_computers import is_own_computer
 
     if is_own_computer(computer):
-        return _CLI_SLOTS
+        return own_clis(computer)
     sizes = _sizes(computer) if in_sandbox() else [ComputerManager.get_instance().tier_size(computer, SANDBOX_MIN_TIER)]
     if any(size is None for size in sizes):
         return None
-    return int(min(size[1] for size in sizes) * 1024 // CLI_MEMORY_MB)
+    return max(1, int(min(size[1] for size in sizes) * 1024 // get_claude_code_config().cli_memory_mb))
 
 
 def _sizes(computer: Mapping[str, Any]) -> list[tuple[float, float] | None]:

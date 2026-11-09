@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Coroutine
 from typing import Any, Protocol
 
-from ptc_agent.core.sandbox.providers._ssh_transport import ScriptResult
+from ptc_agent.core.sandbox.providers._ssh_transport import CliHold, ScriptResult
 
 
 class ShellProcess(Protocol):
@@ -39,9 +39,10 @@ class ShellProcess(Protocol):
 class ShellLink(Protocol):
     """A machine's scripts and long-lived processes, named ``host`` in what a
     failure says. ``cli_hold`` holds what a CLI needs there for a turn and
-    yields what starts it. Where the link has slots, ``kill`` runs a script
-    that signals one even when every other slot is taken, and ``long`` one
-    that may take minutes, so it holds no slot a short script waits on."""
+    yields where it runs and what starts it (``CliHold``). Where the link
+    has slots, ``kill`` runs a script that signals one even when every other
+    slot is taken, and ``long`` one that may take minutes, so it holds no
+    slot a short script waits on."""
 
     host: str
 
@@ -52,7 +53,7 @@ class ShellLink(Protocol):
 
     async def run(self, script: str, *, timeout: float, kill: bool = False, long: bool = False) -> ScriptResult: ...
 
-    def cli_hold(self, wait_s: float) -> contextlib.AbstractAsyncContextManager[Callable[[str], Awaitable[ShellProcess]]]: ...
+    def cli_hold(self, wait_s: float) -> contextlib.AbstractAsyncContextManager[CliHold]: ...
 
     async def upload(self, local: str, remote: str, *, timeout: float) -> None: ...
 

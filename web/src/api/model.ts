@@ -149,6 +149,9 @@ export interface ClaudeCodeComputer {
   check_in?: number | null;
   /** Whether a check of that token would be billed (`ClaudeCodeStatus.check_bills`). */
   check_bills?: boolean;
+  /** How many Claude Code agents it runs at once, subagents included.
+   *  Absent from a server that predates the setting. */
+  clis?: number;
 }
 
 /** The user's own computers, and each cloud computer of theirs that refuses
@@ -196,6 +199,9 @@ export interface ClaudeCodeComputers {
    *  and Home (`picked`), or `no_own_computer` or `cli_computer_offline`.
    *  Null where they do; absent from a server that predates it. */
   cli_computer?: ClaudeCodeCliPlacement | null;
+  /** The most a computer may be set to run at once (`clis`). Absent from a
+   *  server that predates the setting, which offers none. */
+  clis_max?: number;
 }
 
 /** A server from before per-computer tokens has no such route, and runs
@@ -235,6 +241,13 @@ export async function startClaudeCodeComputerSignIn(computerId: string): Promise
 
 export async function submitClaudeCodeComputerSignInCode(computerId: string, code: string): Promise<ClaudeCodeComputer> {
   const { data } = await api.post(`${computerPath(computerId)}/sign-in/code`, { code });
+  return data as ClaudeCodeComputer;
+}
+
+/** `PUT .../computers/{id}/clis`: how many Claude Code agents the computer
+ *  runs at once, from its next one on. Answers the computer's entry. */
+export async function setClaudeCodeComputerClis(computerId: string, clis: number): Promise<ClaudeCodeComputer> {
+  const { data } = await api.put(`${computerPath(computerId)}/clis`, { clis });
   return data as ClaudeCodeComputer;
 }
 

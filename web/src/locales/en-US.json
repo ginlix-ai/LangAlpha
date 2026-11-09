@@ -6776,7 +6776,9 @@
         "savedRejected": "Claude refused your saved token. It may have expired or been revoked.",
         "offline": "This computer isn't running, so its token can't be checked.",
         "addOwn": "Add its own token",
-        "checking": "Asking Claude whether its token works"
+        "checking": "Asking Claude whether its token works",
+        "clis": "Claude Code agents at once",
+        "clisHelp": "How many Claude Code agents this computer runs at the same time, subagents included. Above 4, LangAlpha opens a second connection to it."
       },
       "optOut": {
         "saved": "Claude Code is off, but your setup token is still saved.",

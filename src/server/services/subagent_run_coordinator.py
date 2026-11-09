@@ -169,9 +169,9 @@ class SubagentRunCoordinator:
                 cli_computer=cli_computer if claude_code else None,
             )
         except sr_db.ClaudeCodeCapError as e:
-            from src.server.services.claude_code.hosted import CLI_CAP_REFUSAL
+            from src.server.services.claude_code.hosted import cli_cap_refusal
 
-            raise TaskRunRejected(CLI_CAP_REFUSAL.format(n=e.cap), busy=True) from e
+            raise TaskRunRejected(cli_cap_refusal(e.cap, alone=e.alone), busy=not e.alone, final=e.alone) from e
         except sr_db.DuplicateLaunchError as e:
             raise TaskRunRejected(
                 f"this Task call already spawned run "
