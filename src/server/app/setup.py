@@ -214,6 +214,10 @@ async def lifespan(app: FastAPI):
     # threads are owned by the worker process, not a dead pre-fork parent.
     init_otel_runtime()
 
+    from src.observability.sentry import init_sentry
+
+    init_sentry()
+
     from src.observability.langsmith_tracer import configure_trace_payloads
 
     configure_trace_payloads()

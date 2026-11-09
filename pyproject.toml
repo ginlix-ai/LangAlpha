@@ -132,6 +132,10 @@ dependencies = [
     # Past threads are searched on the server with the agent's own pattern;
     # RE2 matches in linear time, so no pattern can hold a worker's loop.
     "google-re2>=1.1.20251105",
+    # Error tracking, off unless SENTRY_DSN is set. A base dependency rather
+    # than part of `observability`, so setting the DSN never meets an image
+    # built without the SDK.
+    "sentry-sdk[fastapi]>=2.44",
 ]
 
 [tool.uv.sources]

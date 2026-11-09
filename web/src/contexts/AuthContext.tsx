@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { publishSession, sessionAdopter, clearAuthToken, authGeneration } from '../lib/authToken';
+import { setSentryUser } from '../lib/sentry';
 import { trackRequest } from '../lib/reloadHolds';
 import { queryKeys } from '../lib/queryKeys';
 import { AUTH_BROADCAST_CHANNEL, OAUTH_POPUP_WINDOW_NAME, OAUTH_POPUP_FEATURES } from '../lib/oauthPopup';
@@ -194,6 +195,9 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
       // auth-js's own background timer. This callback must stay non-async: it
       // runs under an exclusive lock and an async one can deadlock across tabs.
       publishSession(sess);
+      // Before the next render, so an error in the next account's first render,
+      // or the signed-out one's, is not filed under the account that left.
+      setSentryUser(sess?.user?.id ?? null);
       // Switching accounts without a sign-out in between must not render the
       // new user against the old user's cached data.
       if (sess?.user && lastUserIdRef.current && sess.user.id !== lastUserIdRef.current) {

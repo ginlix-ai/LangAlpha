@@ -14,6 +14,7 @@ import { applyCardStyle, getCardStyle } from './lib/cardStyle'
 import { trackVisualViewport } from './lib/visualViewport'
 import { Toaster } from './components/ui/toaster'
 import { StaleBuildBoundary } from './components/StaleBuildBoundary'
+import { captureException, initSentry } from './lib/sentry'
 
 // Initialize a global QueryClient for data fetching and caching
 const queryClient = new QueryClient({
@@ -28,6 +29,7 @@ const queryClient = new QueryClient({
 
 applyCardStyle(getCardStyle())
 trackVisualViewport()
+initSentry()
 
 // Nothing renders until the active locale's catalog is in, or the first paint
 // shows raw keys. A catalog that fails leaves #root to index.html's pre-boot
@@ -35,7 +37,14 @@ trackVisualViewport()
 // its listeners miss some failures, such as a catalog on another origin.
 // Rendering anyway would run markBooted(), which resets that recovery's
 // attempt count and turns its bounded reload into a loop.
-void initI18n().then(() => ReactDOM.createRoot(document.getElementById('root')!).render(
+// A render error a boundary caught never reaches the global handlers, so the
+// root hands it to Sentry itself, and still logs it as React would.
+void initI18n().then(() => ReactDOM.createRoot(document.getElementById('root')!, {
+  onCaughtError: (error, info) => {
+    console.error(error, info.componentStack)
+    captureException(error)
+  },
+}).render(
   <QueryClientProvider client={queryClient}>
     <BrowserRouter>
       <ThemeProvider>

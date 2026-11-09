@@ -116,6 +116,14 @@ def get_redactor() -> SecretRedactor:
     return _instance
 
 
+def scrub_outbound_text(text: str) -> str:
+    """Credential shapes, and the values of this deployment's own secrets, out
+    of text that leaves for a third party (Sentry, the team's Slack)."""
+    from src.server.utils.error_sanitization import sanitize_error_text
+
+    return get_redactor().redact(sanitize_error_text(text))
+
+
 async def get_vault_secrets_for_redaction(user_id: str) -> dict[str, str]:
     """The owner's redactable secret set: their whole vault plus
     credential-looking inline connector literals.
