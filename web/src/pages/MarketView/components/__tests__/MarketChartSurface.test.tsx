@@ -1,11 +1,10 @@
 /**
  * Render + wiring tests for ``MarketChartSurface`` — the self-contained replica
- * of the MarketView chart panel. The heavy children (lightweight-charts
- * MarketChart, StockHeader, CompanyOverviewPanel) and the market-data
- * websocket / REST hooks are mocked so we assert the surface's own behaviour:
- * prop wiring to children, the interval-switch state, the overview toggle, the
- * WS-over-REST price preference, the subscribe/unsubscribe lifecycle, and the
- * 1s → 1min auto-downgrade for non-US symbols.
+ * of the MarketView chart panel. The heavy child (lightweight-charts
+ * MarketChart) and the market-data websocket / REST hooks are mocked so we
+ * assert the surface's own behaviour: prop wiring to the chart and its legend
+ * slots, the interval-switch state, the WS-over-REST price preference, and the
+ * subscribe/unsubscribe lifecycle.
  */
 
 import { render, screen, fireEvent, act } from '@testing-library/react';
@@ -35,13 +34,9 @@ const sd = vi.hoisted(() => ({
   marketStatus: 'open' as unknown,
 }));
 
-// Captured props handed to each mocked child.
-const header = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
+// Captured props handed to the mocked chart, and the inputs of the legend slots.
+const legend = vi.hoisted(() => ({ args: null as Record<string, unknown> | null }));
 const chart = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
-const overview = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
-
-// Spy for the annotation-sync side effect (args we want to assert on).
-const syncSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../contexts/MarketDataWSContext', () => ({
   // Provider is a transparent pass-through here — the surface only needs the
@@ -58,28 +53,17 @@ vi.mock('../../hooks/useStockData', () => ({
   },
 }));
 
-vi.mock('../../hooks/useChartAnnotationSync', () => ({
-  useChartAnnotationSync: (...args: unknown[]) => syncSpy(...args),
-}));
-
-vi.mock('../StockHeader', () => ({
-  default: (props: Record<string, unknown>) => {
-    header.props = props;
-    return (
-      <>
-        <button data-testid="stock-header" onClick={props.onToggleOverview as () => void}>
-          header
-        </button>
-        <button
-          data-testid="stock-header-pick"
-          onClick={() => (props.onSwitchSymbol as ((s: string, hit?: unknown) => void) | undefined)?.('GOOGL', { symbol: 'GOOGL', name: 'Alphabet Inc.' })}
-        >
-          pick
-        </button>
-      </>
-    );
-  },
-}));
+// The real slots, with their inputs recorded.
+vi.mock('../../hooks/useChartLegendSlots', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../hooks/useChartLegendSlots')>();
+  return {
+    ...orig,
+    useChartLegendSlots: (args: Parameters<typeof orig.useChartLegendSlots>[0]) => {
+      legend.args = args as unknown as Record<string, unknown>;
+      return orig.useChartLegendSlots(args);
+    },
+  };
+});
 
 vi.mock('../MarketChart', () => ({
   default: (props: Record<string, unknown>) => {
@@ -99,18 +83,11 @@ vi.mock('../MarketChart', () => ({
   },
 }));
 
-vi.mock('../CompanyOverviewPanel', () => ({
-  default: (props: Record<string, unknown>) => {
-    overview.props = props;
-    return (
-      <button data-testid="overview-panel" onClick={props.onClose as () => void}>
-        overview
-      </button>
-    );
-  },
-}));
-
 import { MarketChartSurface } from '../MarketChartSurface';
+
+/** A pick in the legend's ticker switcher. */
+const pick = (symbol: string, hit?: unknown) =>
+  (legend.args!.onSwitchSymbol as (s: string, hit?: unknown) => void)(symbol, hit);
 
 beforeEach(() => {
   ws.prices = new Map();
@@ -124,20 +101,18 @@ beforeEach(() => {
   sd.overviewLoading = false;
   sd.overlayData = null;
   sd.marketStatus = 'open';
-  header.props = null;
+  legend.args = null;
   chart.props = null;
-  overview.props = null;
 });
 
 afterEach(() => vi.clearAllMocks());
 
 describe('MarketChartSurface', () => {
-  it('renders the header + chart and forwards the symbol to both', () => {
+  it('renders the chart with its legend and forwards the symbol to both', () => {
     render(<MarketChartSurface symbol="AAPL" />);
 
-    expect(screen.getByTestId('stock-header')).toBeInTheDocument();
     expect(screen.getByTestId('market-chart')).toBeInTheDocument();
-    expect(header.props!.symbol).toBe('AAPL');
+    expect(legend.args!.symbol).toBe('AAPL');
     expect(chart.props!.symbol).toBe('AAPL');
   });
 
@@ -159,12 +134,12 @@ describe('MarketChartSurface', () => {
     expect(chart.props!.interval).toBe('5min');
   });
 
-  it('relays a header pick and a toolbar interval switch to the host unchanged', () => {
+  it('relays a legend pick and a toolbar interval switch to the host unchanged', () => {
     const onSwitchSymbol = vi.fn();
     const onIntervalChange = vi.fn();
     render(<MarketChartSurface symbol="AAPL" timeframe="1day" onSwitchSymbol={onSwitchSymbol} onIntervalChange={onIntervalChange} />);
 
-    act(() => fireEvent.click(screen.getByTestId('stock-header-pick')));
+    act(() => pick('GOOGL', { symbol: 'GOOGL', name: 'Alphabet Inc.' }));
     expect(onSwitchSymbol).toHaveBeenCalledWith('GOOGL', expect.objectContaining({ name: 'Alphabet Inc.' }));
 
     act(() => fireEvent.click(screen.getByTestId('market-chart'))); // → '5min'
@@ -178,7 +153,7 @@ describe('MarketChartSurface', () => {
     sd.snapshotData = null;
     render(<MarketChartSurface symbol="GOOGL" />);
 
-    const quote = header.props!.quote as Record<string, unknown>;
+    const quote = legend.args!.quote as Record<string, unknown>;
     expect(quote.price).toBeNull();
     expect(quote.previousClose).toBeNull();
     // No name yet: the symbol stands in, never the previous company's name.
@@ -193,7 +168,7 @@ describe('MarketChartSurface', () => {
     sd.snapshotData = { symbol: 'GSPC', requested: ['GSPC'], asset_class: 'index', price: 5000, as_of: 1_800_000_000_000 };
     render(<MarketChartSurface symbol="^GSPC" />);
 
-    const quote = header.props!.quote as Record<string, unknown>;
+    const quote = legend.args!.quote as Record<string, unknown>;
     expect(chart.props!.snapshot).toBe(sd.snapshotData);
     expect(quote.asOf).toBe(1_800_000_000_000);
     expect(quote.currency).toBeNull();
@@ -202,10 +177,10 @@ describe('MarketChartSurface', () => {
   it('names the picked company from the search hit until its own quote lands', () => {
     const onSwitchSymbol = vi.fn();
     const { rerender } = render(<MarketChartSurface symbol="AAPL" onSwitchSymbol={onSwitchSymbol} />);
-    const displayName = () => (header.props!.quote as Record<string, unknown>).displayName;
+    const displayName = () => (legend.args!.quote as Record<string, unknown>).displayName;
     expect(displayName()).toBe('AAPL');
 
-    act(() => fireEvent.click(screen.getByTestId('stock-header-pick')));
+    act(() => pick('GOOGL', { symbol: 'GOOGL', name: 'Alphabet Inc.' }));
     rerender(<MarketChartSurface symbol="GOOGL" onSwitchSymbol={onSwitchSymbol} />);
     expect(displayName()).toBe('Alphabet Inc.');
 
@@ -223,17 +198,6 @@ describe('MarketChartSurface', () => {
     expect(chart.props!.interval).toBe('1min');
   });
 
-  it('hides the overview panel until toggled, then shows + closes it', () => {
-    render(<MarketChartSurface symbol="AAPL" />);
-    expect(screen.queryByTestId('overview-panel')).not.toBeInTheDocument();
-
-    act(() => fireEvent.click(screen.getByTestId('stock-header'))); // onToggleOverview
-    expect(screen.getByTestId('overview-panel')).toBeInTheDocument();
-
-    act(() => fireEvent.click(screen.getByTestId('overview-panel'))); // onClose
-    expect(screen.queryByTestId('overview-panel')).not.toBeInTheDocument();
-  });
-
   it('subscribes to the symbol feed on mount and unsubscribes on unmount', () => {
     const { unmount } = render(<MarketChartSurface symbol="AAPL" />);
     expect(ws.subscribe).toHaveBeenCalledWith(['AAPL']);
@@ -242,27 +206,24 @@ describe('MarketChartSurface', () => {
     expect(ws.unsubscribe).toHaveBeenCalledWith(['AAPL']);
   });
 
-  it('loads this symbol\'s annotations via useChartAnnotationSync(workspaceId, symbol)', () => {
+  it('hands the chart the workspace whose layers it reads', () => {
     render(<MarketChartSurface symbol="AAPL" workspaceId="ws-7" />);
-    expect(syncSpy).toHaveBeenCalledWith('ws-7', 'AAPL');
-    // workspaceId is forwarded to the chart too.
     expect(chart.props!.workspaceId).toBe('ws-7');
   });
 
-  it('passes a null workspaceId to sync + chart when none is provided', () => {
+  it('hands the chart no workspace when none is provided', () => {
     render(<MarketChartSurface symbol="AAPL" />);
-    expect(syncSpy).toHaveBeenCalledWith(null, 'AAPL');
     expect(chart.props!.workspaceId).toBeNull();
   });
 
-  it('prefers the live WS price over the REST realTimePrice for the header', () => {
+  it('prefers the live WS price over the REST realTimePrice for the legend', () => {
     const wsPrice = { symbol: 'AAPL', price: 200, barData: { close: 200 } };
     ws.prices = new Map([['AAPL', wsPrice]]);
     sd.realTimePrice = { symbol: 'AAPL', price: 111 };
 
     render(<MarketChartSurface symbol="AAPL" />);
-    expect((header.props!.quote as Record<string, unknown>).price).toBe(200);
-    expect(header.props!.wsHasData).toBe(true);
+    expect((legend.args!.quote as Record<string, unknown>).price).toBe(200);
+    expect((legend.args!.source as Record<string, unknown>).wsHasData).toBe(true);
     // liveTick is sourced from the WS bar payload.
     expect(chart.props!.liveTick).toEqual(wsPrice.barData);
   });
@@ -271,7 +232,7 @@ describe('MarketChartSurface', () => {
     const rest = { symbol: 'AAPL', price: 123 };
     sd.realTimePrice = rest;
     render(<MarketChartSurface symbol="AAPL" />);
-    expect((header.props!.quote as Record<string, unknown>).price).toBe(123);
+    expect((legend.args!.quote as Record<string, unknown>).price).toBe(123);
   });
 
   it('threads quote + overlay + earnings overview data into the chart', () => {
@@ -285,36 +246,21 @@ describe('MarketChartSurface', () => {
     expect(chart.props!.quoteData).toEqual({ last: 150, previousClose: 149 });
     expect(chart.props!.earningsData).toEqual([{ q: 1 }]);
     expect(chart.props!.overlayData).toEqual({ grades: [] });
-    // The header's model is derived from the same quote.
-    expect((header.props!.quote as Record<string, unknown>).previousClose).toBe(149);
+    // The legend's model is derived from the same quote.
+    expect((legend.args!.quote as Record<string, unknown>).previousClose).toBe(149);
   });
 
-  it('forwards overview loading + data to the panel when open', () => {
-    sd.overviewData = { quote: { last: 1 } };
-    sd.overviewLoading = true;
-    render(<MarketChartSurface symbol="AAPL" />);
-
-    act(() => fireEvent.click(screen.getByTestId('stock-header')));
-    expect(overview.props!.loading).toBe(true);
-    expect(overview.props!.data).toEqual({ quote: { last: 1 } });
-    expect(overview.props!.symbol).toBe('AAPL');
-  });
-
-  it('forwards WS connection state to header and chart (+ ginlix flag to header)', () => {
+  it('forwards WS connection state to the legend and chart', () => {
     ws.connectionStatus = 'connecting';
     ws.dataLevel = 'delayed';
-    ws.ginlixDataEnabled = false;
 
     render(<MarketChartSurface symbol="AAPL" />);
-    expect(header.props!.wsStatus).toBe('connecting');
-    expect(header.props!.wsDataLevel).toBe('delayed');
-    expect(header.props!.ginlixDataEnabled).toBe(false);
+    expect(legend.args!.source).toMatchObject({ wsStatus: 'connecting', wsDataLevel: 'delayed' });
     expect(chart.props!.wsStatus).toBe('connecting');
   });
 
-  it('compact: the legend strips replace the header and read the phase the chart reports', () => {
-    render(<MarketChartSurface symbol="AAPL" variant="compact" />);
-    expect(screen.queryByTestId('stock-header')).toBeNull();
+  it('puts the legend strips in the toolbar, reading the phase the chart reports', () => {
+    render(<MarketChartSurface symbol="AAPL" />);
     // Connected without data for this symbol: not live, phase unknown.
     expect(chart.props!.toolbarLead).toBeTruthy();
     expect(screen.getByText('Delayed')).toBeInTheDocument();

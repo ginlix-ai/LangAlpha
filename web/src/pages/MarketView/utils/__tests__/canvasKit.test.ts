@@ -1,14 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  __testing,
-  shouldSkipOffscreenSpan,
-  type VisibleTimeRange,
-} from '../agentAnnotationsPrimitive';
+import { __testing, measureText, withAlpha } from '../canvasKit';
 
-const { chipWidth, withAlpha, textWidthCache, resetColorResolver, namedColorCache } = __testing;
+const { textWidthCache, resetColorResolver, namedColorCache } = __testing;
 
-// Minimal CanvasRenderingContext2D stub: only the members chipWidth touches.
+// Minimal CanvasRenderingContext2D stub: only the members measureText touches.
 function makeCtx(measure: (text: string) => number): {
   ctx: CanvasRenderingContext2D;
   measureText: ReturnType<typeof vi.fn>;
@@ -94,60 +90,30 @@ describe('withAlpha', () => {
   });
 });
 
-describe('chipWidth measureText cache', () => {
+describe('measureText cache', () => {
+  const FONT = '600 11px sans-serif';
+
   beforeEach(() => {
     textWidthCache.clear();
   });
 
   it('measures a given text once and reuses the cached width', () => {
-    const { ctx, measureText } = makeCtx((t) => t.length * 10);
-    const first = chipWidth(ctx, 'Earnings');
-    const second = chipWidth(ctx, 'Earnings');
-    expect(first).toBe(second);
-    expect(measureText).toHaveBeenCalledTimes(1);
+    const { ctx, measureText: measure } = makeCtx((t) => t.length * 10);
+    const first = measureText(ctx, FONT, 'Earnings');
+    const second = measureText(ctx, FONT, 'Earnings');
+    expect(first).toBe(80);
+    expect(second).toBe(first);
+    expect(measure).toHaveBeenCalledTimes(1);
   });
 
-  it('measures distinct texts independently', () => {
-    const { ctx, measureText } = makeCtx((t) => t.length * 10);
-    chipWidth(ctx, 'A');
-    chipWidth(ctx, 'BB');
-    chipWidth(ctx, 'A'); // cached
-    expect(measureText).toHaveBeenCalledTimes(2);
-    expect(measureText).toHaveBeenNthCalledWith(1, 'A');
-    expect(measureText).toHaveBeenNthCalledWith(2, 'BB');
-  });
-
-  it('includes padding/dot geometry in the returned width', () => {
-    const { ctx } = makeCtx(() => 100);
-    // CHIP_PAD_X*2 (14) + DOT_R*2 (6) + DOT_GAP (6) + measured (100) = 126
-    expect(chipWidth(ctx, 'x')).toBe(126);
-  });
-});
-
-describe('shouldSkipOffscreenSpan', () => {
-  const range: VisibleTimeRange = { from: 1000, to: 2000 };
-
-  it('does not skip when at least one anchor is on-screen', () => {
-    // coordA non-null = on-screen, even if the other is off-screen.
-    expect(shouldSkipOffscreenSpan(range, 50, 1500, null, 3000)).toBe(false);
-    expect(shouldSkipOffscreenSpan(range, null, 500, 80, 1500)).toBe(false);
-  });
-
-  it('skips when both anchors are off-screen on the left (phantom)', () => {
-    expect(shouldSkipOffscreenSpan(range, null, 200, null, 500)).toBe(true);
-  });
-
-  it('skips when both anchors are off-screen on the right (phantom)', () => {
-    expect(shouldSkipOffscreenSpan(range, null, 2500, null, 3000)).toBe(true);
-  });
-
-  it('does NOT skip an opposite-side straddle (shape genuinely spans the pane)', () => {
-    expect(shouldSkipOffscreenSpan(range, null, 200, null, 3000)).toBe(false);
-  });
-
-  it('does not skip when both anchors are inside the range but un-coordinated', () => {
-    // Defensive: both null yet times inside the viewport → classify as inside,
-    // not a same-side phantom, so we draw rather than drop a valid shape.
-    expect(shouldSkipOffscreenSpan(range, null, 1200, null, 1800)).toBe(false);
+  it('measures distinct texts and fonts independently', () => {
+    const { ctx, measureText: measure } = makeCtx((t) => t.length * 10);
+    measureText(ctx, FONT, 'A');
+    measureText(ctx, FONT, 'BB');
+    measureText(ctx, FONT, 'A'); // cached
+    measureText(ctx, '500 10px sans-serif', 'A');
+    expect(measure).toHaveBeenCalledTimes(3);
+    expect(measure).toHaveBeenNthCalledWith(1, 'A');
+    expect(measure).toHaveBeenNthCalledWith(2, 'BB');
   });
 });

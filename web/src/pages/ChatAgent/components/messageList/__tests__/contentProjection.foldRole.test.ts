@@ -10,7 +10,7 @@ import { projectMessageContent } from '../contentProjection';
 import { INLINE_ARTIFACT_MAP } from '../../charts/InlineArtifactCards';
 import type { MessageRecord } from '../types';
 
-const RETAINED = ['preview_url', 'chart_annotation', 'order_receipt', 'message_delivery', 'artifact_comment'];
+const RETAINED = ['preview_url', 'order_receipt', 'message_delivery', 'artifact_comment'];
 
 /** What a type's card needs to draw at all: a reply names its comment. */
 const FIELDS: Record<string, Record<string, unknown>> = {

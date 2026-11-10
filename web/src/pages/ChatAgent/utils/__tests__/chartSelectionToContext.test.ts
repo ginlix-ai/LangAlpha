@@ -103,7 +103,7 @@ describe('describeSelectionImage', () => {
   it('renders the full caption with price range and time span for a region', () => {
     expect(describeSelectionImage(region())).toBe(
       'Cropped chart image of NVDA 1day (price $180.00 - $195.00, ' +
-        '2024-01-03T00:00:00.000Z → 2024-02-15T00:00:00.000Z)',
+        '2024-01-03 → 2024-02-15)',
     );
   });
 
@@ -113,8 +113,18 @@ describe('describeSelectionImage', () => {
     const cap = describeSelectionImage(region({ priceLow: 1.084537, priceHigh: 1.086219, decimals: 4 }));
     expect(cap).toBe(
       'Cropped chart image of NVDA 1day (price $1.0845 - $1.0862, ' +
-        '2024-01-03T00:00:00.000Z → 2024-02-15T00:00:00.000Z)',
+        '2024-01-03 → 2024-02-15)',
     );
+  });
+
+  it('prints intraday bounds to the minute, with no zone', () => {
+    // The chart stamps the exchange's wall clock as UTC; a `Z` in the caption
+    // would disagree with the zone-less times in the structured block.
+    const cap = describeSelectionImage(
+      region({ timeframe: '5min', timeStart: '2024-01-03T10:30:00.000Z', timeEnd: '2024-01-03T14:05:00.000Z' }),
+    );
+    expect(cap).toContain('2024-01-03 10:30 → 2024-01-03 14:05');
+    expect(cap).not.toContain('Z');
   });
 
   it('omits the time span for a price level (no time bounds)', () => {

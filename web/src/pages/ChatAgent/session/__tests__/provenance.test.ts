@@ -116,6 +116,18 @@ describe('reportRowProvenance', () => {
     });
   });
 
+  it('carries the chart layers a background command published', () => {
+    const layer = {
+      workspace_id: 'ws-1', chart_id: 'NVDA:1day', symbol: 'NVDA', timeframe: '1day',
+      layer_id: 'channel', title: 'Rising channel', summary: null, as_of: null,
+    };
+    const base = { kind: 'command_report', command_id: 'bg-1', tool: 'ExecuteCode', status: 'completed' } as const;
+    expect(reportRowProvenance({ ...base, chart_layers: [layer] })).toMatchObject({ chartLayers: [layer] });
+    // None published reads as a report without the key.
+    expect(reportRowProvenance({ ...base, chart_layers: [] })).not.toHaveProperty('chartLayers');
+    expect(reportRowProvenance({ ...base, chart_layers: null })).not.toHaveProperty('chartLayers');
+  });
+
   it('keeps a report-back without a source hidden', () => {
     // A share's replay drops the source; older rows never had one.
     expect(reportRowProvenance(undefined)).toBeNull();
