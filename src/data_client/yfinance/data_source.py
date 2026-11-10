@@ -241,6 +241,15 @@ def _sessions(
     return session, max((d for d in dates if d < session), default=None)
 
 
+def _quoted_info_previous_close(ticker: Any) -> float | None:
+    try:
+        value = _finite((ticker.info or {}).get("regularMarketPreviousClose"))
+        return _quoted(value) if value is not None else None
+    except Exception:  # noqa: BLE001 - no previous close beats losing the quote
+        logger.warning("yfinance.snapshot.no_previous_close | symbol=%s", ticker.ticker, exc_info=True)
+        return None
+
+
 def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
     """Fetch snapshot for a single symbol. Returns None on failure.
 
@@ -290,7 +299,17 @@ def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
             session, prior = _sessions(ref, printed, meta.get("exchangeTimezoneName"), list(by_date))
             bar = by_date.get(session)
             prev = _bar_field(by_date.get(prior), "Close")
-            if prev is None:
+            if (
+                ref is not None
+                and ref.mic == FUTURES_MIC
+                and prior is not None
+                and prior == max(by_date, default=None)
+            ):
+                # After the evening reopen Yahoo adds a partial bar and yfinance
+                # folds it into the last daily bar, so that bar's Close is the
+                # live price: only the quote's own field keeps the settlement.
+                prev = _quoted_info_previous_close(ticker)
+            elif prev is None:
                 ticker.history(period="1d", interval="1d", auto_adjust=False)
                 prev = _finite(ticker.history_metadata.get("chartPreviousClose"))
         volume = _finite(bar["Volume"]) if bar is not None and not a_share_index else None

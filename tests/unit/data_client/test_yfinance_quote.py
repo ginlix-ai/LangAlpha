@@ -13,7 +13,9 @@ import pytest
 from src.data_client.yfinance.data_source import _fetch_single_snapshot, _normalize_bar, _quoted
 
 
-def _snapshot(sym: str, tz: str, closes: dict[str, float], meta: dict, volume: int = 1000) -> dict:
+def _snapshot(
+    sym: str, tz: str, closes: dict[str, float], meta: dict, volume: int = 1000, info: dict | Exception | None = None
+) -> dict:
     """Snapshot of *sym* over a daily series of *closes* (date -> close)."""
     zone = ZoneInfo(tz)
     days = pd.DataFrame(
@@ -23,6 +25,10 @@ def _snapshot(sym: str, tz: str, closes: dict[str, float], meta: dict, volume: i
     ticker = MagicMock()
     ticker.history.return_value = days
     ticker.history_metadata = {"exchangeTimezoneName": tz, **meta}
+    if isinstance(info, Exception):
+        type(ticker).info = property(lambda _: (_ for _ in ()).throw(info))
+    else:
+        ticker.info = info or {}
     with patch("src.data_client.yfinance.yahoo.yf.Ticker", return_value=ticker):
         snap = _fetch_single_snapshot(sym)
     assert snap is not None
@@ -68,6 +74,43 @@ def test_a_futures_evening_measures_from_todays_settlement():
         {"regularMarketPrice": 96.5, "chartPreviousClose": 104.12, "regularMarketTime": _at("2026-11-03 18:30", "America/New_York")},
     )
     assert snap["previous_close"] == 96.09
+
+
+_ES_EVENING = {
+    "regularMarketPrice": 7579.75, "chartPreviousClose": 7720.5,
+    "regularMarketTime": _at("2026-11-09 23:45", "America/New_York"),
+}
+_ES_SERIES = {"2026-11-05": 7383.0, "2026-11-06": 7402.0, "2026-11-09": 7579.75}
+
+
+def test_a_futures_evening_reads_the_settlement_when_yahoo_has_not_rolled_the_day():
+    """Yahoo folds the evening print into the last daily bar, whose Close is then
+    the live price: the settlement comes from the quote's own field."""
+    snap = _snapshot("ES=F", "America/New_York", _ES_SERIES, _ES_EVENING, info={"regularMarketPreviousClose": 7574.25})
+    assert (snap["price"], snap["previous_close"], snap["change"]) == (7579.75, 7574.25, 5.5)
+
+
+def test_a_futures_evening_without_the_settlement_has_no_change_rather_than_a_wrong_one():
+    snap = _snapshot("ES=F", "America/New_York", _ES_SERIES, _ES_EVENING, info=RuntimeError("crumb"))
+    assert (snap["price"], snap["previous_close"], snap["change"]) == (7579.75, None, None)
+
+
+def test_a_settled_prior_bar_is_kept_off_the_futures_venue():
+    """A stock whose session bar Yahoo has not created yet keeps the prior bar's close."""
+    snap = _snapshot(
+        "AAPL", "America/New_York", {"2026-11-03": 101.0},
+        {"regularMarketPrice": 103.0, "chartPreviousClose": 99.0, "regularMarketTime": _at("2026-11-04 10:00", "America/New_York")},
+        info=RuntimeError("crumb"),
+    )
+    assert (snap["previous_close"], snap["change"]) == (101.0, 2.0)
+
+
+def test_an_empty_daily_series_still_quotes_from_the_chart_close():
+    snap = _snapshot(
+        "AAPL", "America/New_York", {},
+        {"regularMarketPrice": 50.0, "chartPreviousClose": 49.0, "regularMarketTime": _at("2026-11-04 10:00", "America/New_York")},
+    )
+    assert (snap["price"], snap["previous_close"]) == (50.0, 49.0)
 
 
 def test_a_venue_without_a_calendar_reads_its_own_dates():
