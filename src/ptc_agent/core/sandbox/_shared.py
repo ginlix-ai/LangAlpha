@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import posixpath
 import secrets
 import shlex
@@ -48,7 +49,19 @@ _MCP_SHARED_RUNTIME_FILES: tuple[str, ...] = (
 _SANDBOX_INTERNAL_PACKAGES: dict[str, str] = {
     "data_client": "src.data_client",
     "market_protocol": "market_protocol",
+    # The chart layer library agent code imports. Its render page
+    # (``chartkit/render/``, built from web/ by ``pnpm build:chart-render``)
+    # ships with it; a checkout that never built it gets snapshots that say
+    # they are unavailable.
+    "chartkit": "chartkit",
 }
+
+
+#: The chart render page the image built, kept outside ``libs/chartkit`` so the
+#: dev stack's source mount cannot hide it. Used only when the chartkit being
+#: shipped has no render page of its own (a checkout that never ran
+#: ``pnpm build:chart-render``); a host build, when present, wins.
+_CHART_RENDER_FALLBACK = os.environ.get("CHARTKIT_RENDER_DIR", "")
 
 
 def _internal_package_dir(module: str) -> Path | None:
@@ -289,6 +302,12 @@ def _internal_package_uploads(
             if not file_path.is_file() or "__pycache__" in file_path.parts:
                 continue
             files.append((file_path, Path(pkg) / file_path.relative_to(pkg_dir), None))
+        if pkg == "chartkit" and not (pkg_dir / "render" / "chart-render.html").is_file():
+            fallback = Path(_CHART_RENDER_FALLBACK) if _CHART_RENDER_FALLBACK else None
+            if fallback is not None and (fallback / "chart-render.html").is_file():
+                for file_path in sorted(fallback.rglob("*")):
+                    if file_path.is_file():
+                        files.append((file_path, Path(pkg, "render") / file_path.relative_to(fallback), None))
     return files
 
 
