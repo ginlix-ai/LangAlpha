@@ -65,7 +65,7 @@ const ActivityBlock = memo(function ActivityBlock({
     // A user-data README read never arrives here: the projection that built
     // these items drops it, under the root it stamped on them.
     for (const item of items) {
-      if (item.type === 'tool_call' && item._liveState === 'completed' && !item._annotationStep
+      if (item.type === 'tool_call' && item._liveState === 'completed'
         && isInlineArtifactReady(item.toolName, item.toolCallResult?.artifact)) {
         charts.push(item);
       } else {

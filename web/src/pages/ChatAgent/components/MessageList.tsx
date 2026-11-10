@@ -11,6 +11,7 @@ import { projectMessageContent, visibleProjection } from './messageList/contentP
 import { useMessageActions } from './messageList/MessageActionsContext';
 import { isReportRow, opensTurn } from './messageList/messagePredicates';
 import { ReportRow, type ReportProvenance } from './messageList/ReportRow';
+import { planReportChartCards } from './chartLayerGrouping';
 import { HandoffPlacesContext, placeHandoffs, samePlaces } from './analystHandoff/reportLinks';
 import {
   computeTurnTails, hasTurn, hiddenOpenerTurns, liveTurns, messageTimeMs, projectTurns, turnStartTimes, type ProjectedMessage,
@@ -169,9 +170,18 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   // tail then run over the VISIBLE list, so a hidden bubble never steals an
   // affordance from a painted one.
   const projected = React.useMemo(() => projectTurns(messages), [messages]);
+  // A chart a report row cards is carded there for its whole turn, so every
+  // projection of that turn's messages leaves it out, with the same set, or
+  // the projection cache would answer one reader with another's build.
+  const reportCharts = React.useMemo(() => planReportChartCards(projected), [projected]);
+  const rootDir = folders?.rootDir;
+  const project = React.useCallback(
+    (message: MessageRecord) => projectMessageContent(message, isSubagentView, rootDir, reportCharts.omitByMessage.get(message)),
+    [isSubagentView, rootDir, reportCharts],
+  );
   const visible = React.useMemo(
-    () => visibleProjection(projected, isSubagentView, folders?.rootDir),
-    [projected, isSubagentView, folders?.rootDir],
+    () => visibleProjection(projected, isSubagentView, rootDir, (message) => reportCharts.omitByMessage.get(message)),
+    [projected, isSubagentView, rootDir, reportCharts],
   );
   const turnTails = React.useMemo(() => computeTurnTails(visible), [visible]);
   // The bubbles of the server's turns. A send it never stored is painted
@@ -216,8 +226,8 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
   }, [turned]);
 
   const live = React.useMemo(
-    () => liveTurns(turned, newestTurn, !!isLoading, (message) => projectMessageContent(message, isSubagentView, folders?.rootDir).hasPinnedLive),
-    [turned, newestTurn, isLoading, isSubagentView, folders?.rootDir],
+    () => liveTurns(turned, newestTurn, !!isLoading, (message) => project(message).hasPinnedLive),
+    [turned, newestTurn, isLoading, project],
   );
 
   const [typing] = React.useState(() => new ProseTyping());
@@ -277,7 +287,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       if (!turnTails[i]) continue;
       const { message, turnIndex } = visible[i];
       if (turnIndex === null) continue;
-      const contents = (assistantBubbles.get(turnIndex) ?? []).map((bubble) => projectMessageContent(bubble, isSubagentView, folders?.rootDir));
+      const contents = (assistantBubbles.get(turnIndex) ?? []).map(project);
       const isLive = running.has(turnIndex);
       // A pinned call outlives the stream that launched it, so the stream-close
       // stamp was taken before the turn's work was done and a fold reading it
@@ -314,7 +324,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
       });
     }
     return { turnFolds: folds, turnEnds: ends };
-  }, [visible, turned, turnTails, live, running, ranHere, isSubagentView, folders?.rootDir, filesByTurn, onOpenFile, readOnly, allowFiles]);
+  }, [visible, turned, turnTails, live, running, ranHere, project, filesByTurn, onOpenFile, readOnly, allowFiles]);
 
   const items = React.useMemo(
     () => planQuietChecks(visible, turned, live, isSubagentView),
@@ -395,6 +405,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
               together={!!prev && isReportRow(prev)}
               readOnly={readOnly}
               dispatcherContext={dispatcherContext}
+              chartCards={reportCharts.byReport.get(message.id as string)}
             />
           );
         }
@@ -412,7 +423,7 @@ function MessageList({ messages: latest, isLoading, isLoadingHistory, isSubagent
               : turnIndex !== null && expandedTurns.has(turnIndex) ? 'expanded' : info.noAnswer ? 'process' : 'collapsed';
         const bubbleProps = {
           message,
-          contentProjection: projectMessageContent(message, isSubagentView, folders?.rootDir),
+          contentProjection: project(message),
           turnIndex,
           isTurnTail: turnTails[i],
           canRegenerate: turnIndex === null || !hiddenTurns.has(turnIndex),

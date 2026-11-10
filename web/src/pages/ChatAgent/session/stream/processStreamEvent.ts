@@ -11,8 +11,8 @@ import { readRetryNotice } from './autoRetry';
 import { noteLiveRun } from '../latestRun';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { claudeCodeRefusal } from '@/lib/claudeCode';
-import { applyAnnotationArtifact } from '@/pages/MarketView/stores/chartAnnotationStore';
 import type { AssistantMessage, ChatMessage } from '@/types/chat';
+import { invalidateReportedLayers } from '@/pages/MarketView/utils/chartLayerCache';
 import { CREDIT_STOP_ERROR_TYPE, isDeliveredNotice, isDeliveredReport, isDeliveredSteer } from '@/types/sse';
 import { setStoredThreadId } from '../../hooks/utils/threadStorage';
 import { createAssistantMessage, updateMessage } from '../../hooks/utils/messageHelpers';
@@ -53,6 +53,7 @@ import { projectLiveInterrupt } from '../interrupts/fromLiveEvent';
 import type { StreamRuntime } from '../runtime';
 import { preapprovedReportBack } from '../../utils/preapprovedCards';
 import { dispatchResultFields } from '../../utils/dispatchResult';
+import { applySideChannelArtifact } from './sideChannelArtifact';
 
 type RefreshOnResult = 'refreshMarketWatch' | 'refreshWakeups' | 'refreshCommands';
 
@@ -236,7 +237,11 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
           const beforeId = rt.currentMessageRef.current;
           rt.setMessages((prev) => withLiveReportRow(prev, runId, source, beforeId, turn));
           // The command it reports on has ended, which its tool card shows.
-          if (source.kind === 'command_report') deps.refreshCommands();
+          if (source.kind === 'command_report') {
+            deps.refreshCommands();
+            // Layers it published after the hand-off came with no stream.
+            invalidateReportedLayers(rt.queryClient, source.chart_layers);
+          }
         } else {
           // A wake, attached live, draws its opener row from this frame,
           // keyed on the turn as replay keys it, so a later load replaces it
@@ -380,8 +385,12 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // chip and the Status panel show.
       if (entries.some(isDeliveredNotice)) deps.refreshWakeups();
       // A command's report taken into the turn: the command has ended.
-      if (entries.some((entry) => isDeliveredReport(entry) && entry.report_source.kind === 'command_report')) {
+      const commandReports = entries.flatMap((entry) =>
+        isDeliveredReport(entry) && entry.report_source.kind === 'command_report' ? [entry.report_source] : [],
+      );
+      if (commandReports.length > 0) {
         deps.refreshCommands();
+        for (const source of commandReports) invalidateReportedLayers(rt.queryClient, source.chart_layers);
       }
 
       // 1. Roll back old assistant message to the snapshot taken at steering_accepted
@@ -715,25 +724,11 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
             updateSubagentCard: rt.updateSubagentCard,
           });
         } else if (eventType === 'artifact') {
-          // Task-lane artifacts don't render in the main chat view — but
-          // thread-scoped side-channel pings stay honored regardless of
-          // lane: a subagent's file writes / preview servers change the
-          // same workspace the panels show. Everything else (todo_update,
-          // widgets) is task-internal until the detail view renders them.
-          const taskArtifactType = event.artifact_type as string;
-          if (taskArtifactType === 'file_operation' && rt.onFileArtifact) {
-            rt.onFileArtifact(event);
-          } else if (taskArtifactType === 'preview_url' && rt.onPreviewUrl) {
-            const payload = (event.payload || {}) as Record<string, unknown>;
-            rt.onPreviewUrl({
-              url: '',  // resolved by ChatView via authenticated endpoint
-              port: payload.port as number,
-              title: payload.title as string | undefined,
-              command: payload.command as string | undefined,
-              path: payload.path as string | undefined,
-              loading: true,
-            });
-          }
+          // Task-lane artifacts don't render in the main chat view, but the
+          // ones about the workspace apply from either lane. Everything else
+          // (todo_update, widgets) is task-internal until the detail view
+          // renders them.
+          applySideChannelArtifact(event, rt, refs);
         } else if (eventType === 'workflow_lifecycle') {
           handleWorkflowLifecycle({
             taskId,
@@ -935,6 +930,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       });
       return;
     } else if (eventType === 'artifact') {
+      if (applySideChannelArtifact(event, rt, refs)) return;
       const artifactType = event.artifact_type as string;
       if (artifactType === 'todo_update') {
         handleTodoUpdate({
@@ -955,20 +951,6 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
           refs,
           setMessages: setMessagesForHandlers,
           eventId: event._eventId as number,
-        });
-      } else if (artifactType === 'chart_annotation') {
-        applyAnnotationArtifact(artifactType, (event.payload || {}) as Record<string, unknown>);
-      } else if (artifactType === 'file_operation' && rt.onFileArtifact) {
-        rt.onFileArtifact(event);
-      } else if (artifactType === 'preview_url' && rt.onPreviewUrl) {
-        const payload = (event.payload || {}) as Record<string, unknown>;
-        rt.onPreviewUrl({
-          url: '',  // resolved by ChatView via authenticated endpoint
-          port: payload.port as number,
-          title: payload.title as string | undefined,
-          command: payload.command as string | undefined,
-          path: payload.path as string | undefined,
-          loading: true,
         });
       } else if (artifactType === 'task') {
         const payload = (event.payload || {}) as Record<string, unknown>;

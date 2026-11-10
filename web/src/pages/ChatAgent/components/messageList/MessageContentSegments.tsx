@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import ActivityBlock from '../ActivityBlock';
 import type { ActivityItem } from './activityTypes';
 import { INLINE_ARTIFACT_MAP, openCardTarget } from '../charts/InlineArtifactCards';
+import { InlineChartLayerCard } from '../charts/InlineChartLayerCard';
 import { PILL_ROW_CLASS } from '../charts/pillArtifacts';
 import type { OpenFileHandler } from '../../utils/fileLocation';
 import UserQuestionCard from '../UserQuestionCard';
@@ -109,7 +110,7 @@ interface TextBlockProps {
  *  did. Nothing is held past the turn either: the hold only applies while the
  *  message streams, so a settle or an error releases it. */
 const HOLDS_FOR_PROSE = new Set<RenderBlock['type']>([
-  'activity', 'subagent_task', 'html_widget', 'compact_artifact', 'notification',
+  'activity', 'subagent_task', 'html_widget', 'compact_artifact', 'chart_layers', 'notification',
 ]);
 
 type RunKind = 'pill' | 'line' | 'subagent' | 'analyst';
@@ -211,7 +212,10 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
 
   const projection = useMemo(() => {
     if (contentProjection && (contentProjection.nextExpiry === null || contentProjection.nextExpiry > now)) return contentProjection;
-    return projectContent({ segments, reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, now, root }, contentProjection);
+    return projectContent({
+      segments, reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, now, root,
+      cardedCharts: contentProjection?.cardedCharts,
+    }, contentProjection);
   }, [contentProjection, segments, reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, now, root]);
   const { blocks: renderBlocks, preparingToolCall, nextExpiry } = projection;
 
@@ -397,6 +401,14 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
                 toolArgs={block.proc.toolCall?.args}
                 onClick={() => openCardTarget(artifact, onOpenChart, () => onToolCallDetailClick?.(toolCallId))}
               />
+            </div>
+          );
+        }
+
+        if (block.type === 'chart_layers') {
+          return (
+            <div key={block.key}>
+              <InlineChartLayerCard card={block.card} />
             </div>
           );
         }

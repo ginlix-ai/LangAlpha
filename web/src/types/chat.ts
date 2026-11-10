@@ -12,6 +12,7 @@ import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
 import type { PlanBilled } from '@/api/model';
 import type { DispatchingAgent, ReportOutcome } from './api';
 import type { CommandFailureReason, CommandTool } from './commands';
+import type { PublishedLayer } from '@/pages/MarketView/types/chartLayer';
 
 // --- Content Segments (discriminated union) ---
 
@@ -500,6 +501,9 @@ export type MessageProvenance =
       kind: 'command_report'; tool: CommandTool; description: string | null; status: 'completed' | 'failed' | 'stopped';
       failureReason: CommandFailureReason | null;
       toolCallId: string | null;
+      /** The chart layers it published in the background, drawn under its
+       *  line as the cards an inline call's are. Absent when none. */
+      chartLayers?: PublishedLayer[];
     };
 
 export type UserMessage = {

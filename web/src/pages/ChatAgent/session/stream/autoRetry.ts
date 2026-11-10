@@ -13,6 +13,7 @@ import { isOnline, waitForOnline } from '@/lib/network';
 import { holdReload } from '@/lib/reloadHolds';
 import { failAssistantMessage } from './finalizeMessage';
 import { updateMessage } from '../../hooks/utils/messageHelpers';
+import type { ChartView } from '@/pages/MarketView/types/chartView';
 import type { CommentSend } from '@/types/api';
 import type { ChatMessage } from '@/types/chat';
 import type { SSEEvent, SetMessages } from '../types';
@@ -67,18 +68,24 @@ export interface TurnRequest {
   /** The file comments the send carries, which a resend carries again,
    * and where the person read as they sent them. */
   artifactComments?: CommentSend;
+  /** What the charts beside the composer showed at the send, which a
+   * resend or a Retry of it carries again. */
+  chartViews?: ChartView[];
 }
 
 /** What a turn carries besides what it sends and where it runs from. */
 type TurnFlags = Pick<TurnRequest, 'keepFullContext'>;
+/** What a send carries that its Retry carries again. */
+type ResentFlags = TurnFlags & Pick<TurnRequest, 'chartViews'>;
 
 export const sendRequest = (
   message: string,
   additionalContext: Record<string, unknown>[] | null,
-  { artifactComments, ...flags }: TurnFlags & Pick<TurnRequest, 'subagentsAllowed' | 'artifactComments'> = {},
+  { artifactComments, chartViews, ...flags }: ResentFlags & Pick<TurnRequest, 'subagentsAllowed' | 'artifactComments'> = {},
 ): TurnRequest => ({
   message, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: null, ...flags,
   ...(artifactComments?.ids.length ? { artifactComments } : {}),
+  ...(chartViews?.length ? { chartViews } : {}),
 });
 
 export const forkRequest = (
@@ -92,8 +99,11 @@ export const forkRequest = (
 export const retryRequest = (
   runId: string | null,
   additionalContext: Record<string, unknown>[] | null,
-  flags: TurnFlags = {},
-): TurnRequest => ({ message: null, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: { runId }, ...flags });
+  { chartViews, ...flags }: ResentFlags = {},
+): TurnRequest => ({
+  message: null, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: { runId }, ...flags,
+  ...(chartViews?.length ? { chartViews } : {}),
+});
 
 /** The Retry a reply gets when nothing better is known: the thread's latest
  * failed run, from where its checkpoint left off. */
@@ -112,7 +122,10 @@ export function recoveryRequest(
   failedRunId: string | null,
 ): TurnRequest | null {
   if (notice.recovery === 'resend') return request;
-  return retryRequest(failedRunId, request?.additionalContext ?? null, { keepFullContext: request?.keepFullContext });
+  return retryRequest(failedRunId, request?.additionalContext ?? null, {
+    keepFullContext: request?.keepFullContext,
+    chartViews: request?.chartViews,
+  });
 }
 
 /** The Retry a failed reply holds, kept for the bubble it would replace. */
