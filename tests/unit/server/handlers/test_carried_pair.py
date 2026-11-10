@@ -42,6 +42,19 @@ async def test_the_turn_after_an_interrupted_summary_takes_its_pair():
 
 
 @pytest.mark.asyncio
+async def test_the_turn_after_a_summary_a_restart_stopped_takes_its_pair():
+    """The restart left the summary unfinished; the turn that resumes it owes
+    the release. A user's stop, which leaves no restart stamp, ended it, and
+    it released its own."""
+    stopped = _attempt("cancelled", interrupted_by_restart=True, **_SUMMARY_PAIR)
+    with patch(_LATEST, AsyncMock(return_value=stopped)):
+        assert await carried_pair(_request(), "cos-1") == _SUMMARY_PAIR
+    user_stop = _attempt("cancelled", cancelled_by_user=True, **_SUMMARY_PAIR)
+    with patch(_LATEST, AsyncMock(return_value=user_stop)):
+        assert await carried_pair(_request(), "cos-1") == {}
+
+
+@pytest.mark.asyncio
 async def test_a_summary_names_its_own_pair_and_reads_nothing():
     latest = AsyncMock(return_value=_attempt("interrupted", **_SUMMARY_PAIR))
     with patch(_LATEST, latest):

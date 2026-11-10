@@ -20,6 +20,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
 )
 from ptc_agent.agent.middleware.background_subagent.outcomes import (
     CREDIT_STOP_ERROR_TYPE,
+    Outcome,
     SubagentTimeLimitError,
 )
 from ptc_agent.agent.middleware.background_subagent.tools import (
@@ -312,6 +313,23 @@ async def test_a_credit_stopped_task_reads_as_resumable_from_the_ledger():
 
     assert "ran out of credits" in result
     assert 'Task(action="resume"' in result
+    assert "cannot be resumed" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_task_a_restart_stopped_reads_as_resumable_from_the_ledger():
+    """The process that stopped it is gone, so the ledger is the only answer."""
+    run = {
+        "status": "cancelled",
+        "task_run_id": "run-1",
+        "failure": Outcome.restart_stop().as_failure(),
+    }
+    tool = create_task_output_tool(_ledger_middleware(run))
+
+    result, _ = await tool.coroutine(task_id="k7Xm2p")
+
+    assert "paused by a routine deployment" in result
+    assert 'Task(action="resume", task_id="k7Xm2p")' in result
     assert "cannot be resumed" not in result
 
 

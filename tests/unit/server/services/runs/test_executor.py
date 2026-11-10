@@ -208,6 +208,44 @@ class TestCancelWorkflowForceCancelsInner:
         assert task_info.explicit_cancel is True
         assert task_info.user_stop is False
 
+    @pytest.mark.asyncio
+    async def test_restart_cancel_marks_the_run_for_resume(self):
+        btm = _make_btm()
+        task_info = _make_task_info(status=LocalRunStatus.RUNNING)
+        btm.executions[("thread-1", "run-1")] = task_info
+
+        assert await btm.signal_cancel(
+            "thread-1", "run-1", user_initiated=False, restart=True
+        ) is True
+        assert task_info.restart is True
+        assert task_info.user_stop is False
+
+    @pytest.mark.asyncio
+    async def test_restart_cancel_after_a_user_stop_stays_the_users(self):
+        """Nothing resumes a turn the user stopped, whichever cancel came
+        first to the still-RUNNING task."""
+        btm = _make_btm()
+        task_info = _make_task_info(status=LocalRunStatus.RUNNING)
+        btm.executions[("thread-1", "run-1")] = task_info
+
+        assert await btm.signal_cancel("thread-1", user_initiated=True) is True
+        assert await btm.signal_cancel(
+            "thread-1", "run-1", user_initiated=False, restart=True
+        ) is True
+        assert task_info.user_stop is True
+        assert task_info.restart is False
+
+    @pytest.mark.asyncio
+    async def test_a_user_stop_after_the_restart_cancel_unmarks_the_run(self):
+        btm = _make_btm()
+        task_info = _make_task_info(status=LocalRunStatus.RUNNING)
+        btm.executions[("thread-1", "run-1")] = task_info
+
+        await btm.signal_cancel("thread-1", "run-1", user_initiated=False, restart=True)
+        await btm.signal_cancel("thread-1", user_initiated=True)
+        assert task_info.user_stop is True
+        assert task_info.restart is False
+
 
 # ---------------------------------------------------------------------------
 # cancel_stale_workflow — COMPLETED (no-op)
