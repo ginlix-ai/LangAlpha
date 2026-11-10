@@ -871,11 +871,14 @@ class FMPClient:
     # =====================================================================
 
     async def search_stocks(self, query: str, limit: int = 50) -> List[Dict]:
-        """Search across symbols AND company names.
+        """Search across symbols AND company names, up to *limit* from each.
 
         v3 ``search`` matched both. Stable splits this into ``search-symbol``
         (symbol prefix match) and ``search-name`` (company name match);
-        we call both in parallel and merge by symbol.
+        we call both in parallel and merge by symbol. The union is not cut
+        back to *limit*: ``search-symbol`` fills it on a short prefix in its
+        own order (``nv`` leaves out NVDA), and the name matches are what
+        bring the listing back for the caller to rank.
         """
         sym_task = self._make_request(
             "search-symbol", params={"query": query, "limit": limit}
@@ -895,7 +898,7 @@ class FMPClient:
                 sym = row.get("symbol")
                 if sym and sym not in merged:
                     merged[sym] = row
-        return list(merged.values())[:limit]
+        return list(merged.values())
 
     # =====================================================================
     # Macro & Economic Data
