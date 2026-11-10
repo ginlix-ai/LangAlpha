@@ -84,7 +84,7 @@ async def _latest_shared_version(artifact: Artifact | None) -> tuple[Artifact, V
     """
     if artifact is None or not artifact.shared:
         raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
-    if artifact.latest_seq == 0:
+    if artifact.shared_seq == 0:
         try:
             artifact = await legacy_snapshot(artifact)
         except LegacyRefused:
@@ -98,15 +98,16 @@ async def _latest_shared_version(artifact: Artifact | None) -> tuple[Artifact, V
         if not artifact.shared:
             raise HTTPException(status_code=404, detail=LINK_NOT_FOUND)
     # The revision and the seq come from one read of the row, so the grant
-    # minted from them names a version the row named at that revision.
-    latest = await artifacts_db.get_version(artifact.artifact_id, artifact.latest_seq)
-    if latest is None:
+    # minted from them names a version the row named at that revision. Never
+    # ``latest_seq``: a kept record's turns cut versions for its owner alone.
+    shared = await artifacts_db.get_version(artifact.artifact_id, artifact.shared_seq)
+    if shared is None:
         raise HTTPException(status_code=503, detail="File unavailable")
-    return artifact, latest
+    return artifact, shared
 
 
 async def _file_metadata(access: LinkAccess) -> dict[str, Any]:
-    """A file link: the live file to its owner, the latest version to anyone
+    """A file link: the live file to its owner, the shared version to anyone
     else.
 
     The owner reads and comments on the file as it is now, framed through the
@@ -126,6 +127,7 @@ async def _file_metadata(access: LinkAccess) -> dict[str, Any]:
             "path": link.path,
             "shared": link.shared,
             "latest_seq": link.artifact.latest_seq if link.artifact else 0,
+            "shared_seq": link.artifact.shared_seq if link.artifact else 0,
             "frame_base": grant_prefix(grant),
             "expires_in": seconds_left(grant.expires_at),
         }

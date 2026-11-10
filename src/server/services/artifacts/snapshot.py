@@ -22,6 +22,7 @@ import html
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.server.services.artifacts.manifest import (
@@ -36,6 +37,7 @@ from src.server.services.artifacts.manifest import (
     ManifestTooLarge,
     walk_manifest,
 )
+from src.server.services.artifacts import dashboards
 from src.server.services.artifacts.references import REASON_LINK
 from src.server.services.artifacts.reader import (
     NoLiveSession,
@@ -47,7 +49,12 @@ from src.server.services.artifacts.reader import (
 from src.server.database import artifacts as artifacts_db
 from src.server.database.blob_keys import BlobError
 from src.server.database.artifacts import Artifact, VersionFile, clip_title
-from src.server.database.artifacts.versions import LeftOutChanged
+from src.server.database.artifacts.versions import (
+    LeftOutChanged,
+    ReadBasis,
+    SharingChanged,
+    VersionMoved,
+)
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.database.workspace_file_blobs import store_unregistered_blobs
 from src.server.services.artifacts.events import publish_artifact_change
@@ -121,6 +128,8 @@ class Snapshot:
     #: What the files load from the origin's root, which no view serves
     #: (``Manifest.root_refs``).
     root_refs: list[str] = field(default_factory=list)
+    #: What the files name that is not there (``Manifest.absent``).
+    absent: frozenset[str] = frozenset()
 
     @property
     def total(self) -> int:
@@ -196,7 +205,8 @@ class Status:
     #: None only ``over_cap``.
     snapshot: Snapshot | None
     latest_seq: int
-    #: None before the first version.
+    #: Against the shared version when shared, else the latest; None before
+    #: there is one.
     changed: bool | None
     #: None unless ``changed``.
     drift: Drift | None
@@ -421,6 +431,7 @@ async def _capture(
         blobs=blobs,
         title=title,
         root_refs=manifest.root_refs,
+        absent=manifest.absent,
     )
 
 
@@ -502,52 +513,29 @@ def _html_title(data: bytes) -> str | None:
     return clip_title(html.unescape(text))
 
 
-async def _cut(
-    artifact: Artifact,
-    snapshot: Snapshot,
-    *,
-    user_id: str,
-    origin: artifacts_db.Origin,
-    label: str | None = None,
-    keep_updated: bool | None = None,
-    based_on: int | None = None,
-    revision: int | None = None,
-    loaded_files: list[str] | None = None,
-    left_out_read: tuple[str, ...] | None = None,
-    left_out_files: list[str] | None = None,
-) -> artifacts_db.PublishResult:
-    # The blobs are claimed and registered before the rows that name them, as
-    # transcripts store theirs, so the sweep's grace covers the gap.
+async def _store_blobs(user_id: str, snapshot: Snapshot) -> None:
+    """Claim and register the blobs before the rows that name them, as
+    transcripts store theirs, so the sweep's grace covers the gap."""
     try:
         await store_unregistered_blobs(user_id, snapshot.blobs)
     except BlobError as e:
         raise SnapshotUnavailable(str(e)) from e
-    result = await artifacts_db.publish_version(
-        user_id=user_id,
-        artifact_id=artifact.artifact_id,
-        origin=origin,
-        files=snapshot.files,
-        title=snapshot.title,
-        label=label,
-        keep_updated=keep_updated,
-        based_on=based_on,
-        revision=revision,
-        loaded_files=loaded_files,
-        left_out_read=left_out_read,
-        left_out_files=left_out_files,
+
+
+async def _announce(
+    user_id: str, snapshot: Snapshot, result: artifacts_db.PublishResult
+) -> None:
+    if not result.changed:
+        return
+    logger.info(
+        "Artifact %s at v%d (%d files, %d bytes, cut=%s)",
+        result.artifact.artifact_id,
+        result.seq,
+        len(snapshot.files),
+        snapshot.total,
+        result.cut,
     )
-    if result.changed:
-        logger.info(
-            "Artifact %s at v%d (%s, %d files, %d bytes, cut=%s)",
-            artifact.artifact_id,
-            result.seq,
-            origin,
-            len(snapshot.files),
-            snapshot.total,
-            result.cut,
-        )
-        await publish_artifact_change(user_id, result.artifact)
-    return result
+    await publish_artifact_change(user_id, result.artifact)
 
 
 def _drift(snapshot: Snapshot, before: dict[str, str]) -> Drift:
@@ -566,11 +554,12 @@ async def status(
     loaded: tuple[str, ...],
     earlier: tuple[str, ...] = (),
 ) -> Status:
-    """The live file against the latest version, and what a publish now
-    would carry. Past a cap, what the walk listed with ``over_cap`` rather
-    than a refusal: a file the owner may leave out is what puts it over as
-    often as not, and its box is the way back under. Raises
-    ``SnapshotRefused`` or ``SnapshotUnavailable``."""
+    """The live file against what a publish now would replace, and what it
+    would carry: the shared version for a shared record, since a newer one
+    kept for the owner is not what visitors see, else the latest. Past a cap,
+    what the walk listed with ``over_cap`` rather than a refusal: a file the
+    owner may leave out is what puts it over as often as not, and its box is
+    the way back under. Raises ``SnapshotRefused`` or ``SnapshotUnavailable``."""
     try:
         snapshot = await _capture(
             artifact,
@@ -583,12 +572,11 @@ async def status(
             raise
         over = OverCap(e.code, e.limit or 0, e.files, e.left_out or [])
         return Status(None, artifact.latest_seq, None, None, over)
-    if not artifact.latest_seq:
-        return Status(snapshot, 0, None, None)
-    latest = await artifacts_db.get_version_hashes(
-        artifact.artifact_id, artifact.latest_seq
-    )
-    drift = _drift(snapshot, latest)
+    against = artifact.shared_seq if artifact.shared else artifact.latest_seq
+    if not against:
+        return Status(snapshot, artifact.latest_seq, None, None)
+    before = await artifacts_db.get_version_hashes(artifact.artifact_id, against)
+    drift = _drift(snapshot, before)
     return Status(snapshot, artifact.latest_seq, bool(drift), drift or None)
 
 
@@ -620,26 +608,66 @@ async def publish(
     )
     if reviewed_page is not None and snapshot.page_sha256 != reviewed_page:
         raise SnapshotRefused("files_changed", files=snapshot.entries)
+    await _store_blobs(user_id, snapshot)
     try:
-        return await _cut(
-            artifact,
-            snapshot,
+        result = await artifacts_db.publish_version(
             user_id=user_id,
-            origin="owner",
+            artifact_id=artifact.artifact_id,
+            read=ReadBasis.of(artifact),
+            files=snapshot.files,
+            title=snapshot.title,
             label=label,
             keep_updated=keep_updated,
-            based_on=artifact.latest_seq,
-            revision=artifact.revision,
             loaded_files=[
                 e.path for e in snapshot.entries if e.reason == REASON_LOADED
             ],
-            left_out_read=artifact.left_out_files,
             left_out_files=[e.path for e in snapshot.left_out],
         )
     except LeftOutChanged:
         # The list a walk with the new choice finds is unknown without reading
         # again, which the owner's review does once it hears of the change.
         raise SnapshotRefused("files_changed", files=snapshot.entries) from None
+    await _announce(user_id, snapshot, result)
+    return result
+
+
+async def keep(
+    artifact: Artifact,
+    *,
+    user_id: str,
+    loaded: tuple[str, ...] = (),
+    earlier: tuple[str, ...] = (),
+) -> Artifact:
+    """Keep a record for its owner, with a version cut now from the files its
+    page names and the ones it reported loading, as a publish takes them, so
+    the turns after find them too. It reads as the owner's views read (a
+    stopped computer is started). The record is kept in the write that cuts it, so a refused read
+    leaves it as it was. A shared record's visitors stay on their version.
+    Raises ``SnapshotRefused``, ``SnapshotUnavailable`` or, for a share or a
+    version landing during the read, ``SharingChanged`` or ``VersionMoved``."""
+    snapshot = await _capture(
+        artifact,
+        user_id=user_id,
+        mode=ReadMode.OWNER,
+        source=_Walked(loaded=loaded, earlier=earlier),
+    )
+    await _store_blobs(user_id, snapshot)
+    try:
+        result = await artifacts_db.keep_version(
+            user_id=user_id,
+            artifact_id=artifact.artifact_id,
+            read=ReadBasis.of(artifact),
+            files=snapshot.files,
+            title=snapshot.title,
+            loaded_files=[
+                e.path for e in snapshot.entries if e.reason == REASON_LOADED
+            ],
+        )
+    except LeftOutChanged:
+        # As for a publish: the list with the new choice is unknown unread.
+        raise SnapshotRefused("files_changed", files=snapshot.entries) from None
+    await _announce(user_id, snapshot, result)
+    return result.artifact
 
 
 # Every link shared before versions comes here on its first anonymous view, and
@@ -696,17 +724,18 @@ async def _read_legacy(artifact: Artifact) -> Artifact:
             mode=ReadMode.WARM_OR_STORED,
             source=_Listed(_frozen_list(artifact), caps=_LEGACY_CAPS),
         )
-        result = await _cut(
-            artifact,
-            snapshot,
+        await _store_blobs(user_id, snapshot)
+        result = await artifacts_db.legacy_version(
             user_id=user_id,
-            origin="legacy",
-            left_out_read=artifact.left_out_files,
+            artifact_id=artifact.artifact_id,
+            read=ReadBasis.of(artifact),
+            files=snapshot.files,
+            title=snapshot.title,
         )
-    except LeftOutChanged:
-        # The owner took a file off while this read: the visitor's next view
-        # reads the list as it is now.
-        raise SnapshotUnavailable("the list changed during the read") from None
+    except (LeftOutChanged, VersionMoved, SharingChanged):
+        # The record moved during the read (a file taken off, a version kept
+        # for the owner): the visitor's next view reads it as it is now.
+        raise SnapshotUnavailable("the record changed during the read") from None
     except SnapshotRefused as e:
         if e.code == "file_missing":
             # Not remembered: the file may come back, and asking is cheap.
@@ -722,12 +751,13 @@ async def _read_legacy(artifact: Artifact) -> Artifact:
             )
             await publish_artifact_change(user_id, refused)
         raise LegacyRefused(e.code) from None
+    await _announce(user_id, snapshot, result)
     return result.artifact
 
 
 async def keep_updated_after_turn(*, workspace_id: str, user_id: str) -> None:
-    """Cut a version of each shared artifact kept updated in the workspace
-    whose files changed. Never raises.
+    """Cut a version of each artifact in the workspace that follows turns
+    (``Artifact.follows_turns``) whose files changed. Never raises.
 
     Reads only a session this worker holds: a stored copy can lag the
     computer, and a version cut from it could undo the one before. No warm
@@ -735,6 +765,9 @@ async def keep_updated_after_turn(*, workspace_id: str, user_id: str) -> None:
     """
     try:
         kept = await artifacts_db.list_kept_updated(workspace_id)
+        if not kept:
+            return
+        kept = await _release_unlisted(kept, workspace_id=workspace_id, user_id=user_id)
         if not kept:
             return
         workspace = await db_get_workspace(workspace_id)
@@ -750,40 +783,187 @@ async def keep_updated_after_turn(*, workspace_id: str, user_id: str) -> None:
         )
 
 
+#: How long a keep, and the owner's last write to their preferences, is left
+#: alone before a record kept off the Dashboard list is let go: far past the
+#: moment between a pin's keep and its listing, and the removal's undo window.
+KEPT_RELEASE_GRACE = timedelta(minutes=10)
+
+
+async def _release_unlisted(
+    kept: list[Artifact], *, workspace_id: str, user_id: str
+) -> list[Artifact]:
+    """Let go of the records kept for a Dashboard the owner no longer lists,
+    here, where keeping them costs a read and a version: the web's release
+    after a removal is lost with a tab closed inside its undo window or a
+    request that failed. A list that cannot be read lets go of nothing.
+    Returns the records that still follow turns."""
+    cutoff = datetime.now(UTC) - KEPT_RELEASE_GRACE
+    if not any(a.kept_at is not None and a.kept_at < cutoff for a in kept):
+        return kept
+    listed = await dashboards.listed_pages(user_id)
+    if listed is None:
+        return kept
+    if all(a.artifact_id in listed for a in kept if a.kept):
+        return kept
+    released = await artifacts_db.release_unlisted(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        listed=listed,
+        grace=KEPT_RELEASE_GRACE,
+    )
+    if not released:
+        return kept
+    now = {a.artifact_id: a for a in released}
+    for artifact in released:
+        logger.info(
+            "Artifact %s no longer kept: not on its owner's Dashboard list",
+            artifact.artifact_id,
+        )
+        await publish_artifact_change(user_id, artifact)
+    after = (now.get(a.artifact_id, a) for a in kept)
+    return [a for a in after if a.follows_turns]
+
+
+#: A burst of saves (an editor autosaving) waits this long and is read once.
+_CHANGE_SETTLE_S = 5.0
+
+
+def _change_pass_key(workspace_id: str) -> str:
+    return f"artifacts:keep-pass:{workspace_id}"
+
+
+def keep_updated_after_change(*, workspace_id: str, user_id: str) -> None:
+    """Run the turn's-end pass after the owner changed the workspace's files
+    outside a turn (the file panel's write, upload, delete), in the background,
+    so a Dashboard follows an edit now rather than at the next turn's end."""
+    from src.server.services.runs.coordinator import spawn_protected
+
+    spawn_protected(
+        _after_change(workspace_id, user_id),
+        f"artifacts-keep-updated-change-{workspace_id}",
+    )
+
+
+async def _after_change(workspace_id: str, user_id: str) -> None:
+    try:
+        if not await artifacts_db.list_kept_updated(workspace_id):
+            return
+        if not await _claim_change_pass(workspace_id):
+            return
+    except Exception:
+        logger.warning(
+            "Scheduling a keep-updated pass in workspace %s failed",
+            workspace_id,
+            exc_info=True,
+        )
+        return
+    # Past the claim's expiry, so a save landing once this pass may already be
+    # reading claims a pass of its own.
+    await asyncio.sleep(_CHANGE_SETTLE_S + 0.1)
+    await keep_updated_after_turn(workspace_id=workspace_id, user_id=user_id)
+
+
+async def _claim_change_pass(workspace_id: str) -> bool:
+    """Whether this change starts a pass: the first in the workspace's window,
+    on any worker, claims it, and the others' changes are read by that pass,
+    which reads after the window ends. The pass runs on the worker that took
+    the first change, which holds the warm session the read needs. Without
+    Redis every change runs its own pass, which costs reads, never a wrong
+    version: each cut is checked under the record's row lock."""
+    from src.utils.cache.redis_cache import get_cache_client
+
+    cache = get_cache_client()
+    if not (cache.enabled and cache.client):
+        return True
+    try:
+        return bool(
+            await cache.client.set(
+                _change_pass_key(workspace_id),
+                1,
+                nx=True,
+                px=int(_CHANGE_SETTLE_S * 1000),
+            )
+        )
+    except Exception:
+        logger.debug("Claiming a keep-updated pass failed", exc_info=True)
+        return True
+
+
 async def _keep_one(artifact: Artifact, user_id: str) -> None:
+    try:
+        await _cut_after_turn(artifact, user_id)
+        return
+    except VersionMoved:
+        # The version that landed during the read may hold files read before
+        # these (another turn's end that began earlier and finished first), so
+        # it is looked at once more, on the record as it now stands.
+        fresh = await artifacts_db.get_artifact(artifact.artifact_id, user_id=user_id)
+    if not fresh or not fresh.follows_turns:
+        return
+    try:
+        await _cut_after_turn(fresh, user_id)
+    except VersionMoved:
+        logger.info("Not refreshing artifact %s: VersionMoved", artifact.artifact_id)
+
+
+async def _cut_after_turn(artifact: Artifact, user_id: str) -> None:
+    """One read and cut. ``VersionMoved`` is the caller's to act on."""
     listed = _frozen_list(artifact)
+    # A kept record is walked again, since the owner's Dashboard follows the
+    # newest copy: a data file the page starts reading joins the next version
+    # without a review, and visitors follow only a version of the list they
+    # were given (``visitors_follow_turn``). A shared one not kept keeps to
+    # its list.
+    walk = artifact.kept
     try:
         snapshot = await _capture(
             artifact,
             user_id=user_id,
             mode=ReadMode.WARM_ONLY,
-            source=_Listed(listed),
+            source=_Walked() if walk else _Listed(listed),
         )
     except (SnapshotRefused, SnapshotUnavailable) as e:
         logger.info("Not refreshing artifact %s: %s", artifact.artifact_id, e)
         return
+    carried = {f.path for f in snapshot.files}
+    left_out = [e.path for e in snapshot.left_out]
     # A listed file gone, maybe only while a rebuild runs: a version without it
     # would stay without it, since the list never widens on its own. The link
     # keeps its last version until the file is back or the owner's Update.
-    if set(listed) - {f.path for f in snapshot.files} - {e.path for e in snapshot.left_out}:
+    if not walk and set(listed) - carried - set(left_out):
         logger.info(
             "Not refreshing artifact %s: a listed file is gone", artifact.artifact_id
         )
         return
-    # Compared against the version the record named before the read: one cut
-    # meanwhile (an Update, another turn's end) is newer than these bytes. So
-    # is a file the owner took off meanwhile, and the next turn's end looks again.
-    try:
-        await _cut(
-            artifact,
-            snapshot,
-            user_id=user_id,
-            origin="keep_updated",
-            based_on=artifact.latest_seq,
-            left_out_read=artifact.left_out_files,
-        )
-    except LeftOutChanged:
+    # A file the last version held that the page still names and is not there,
+    # maybe only while a rebuild runs or a failed turn left it half written:
+    # the walk drops it without a word, and the Dashboard would show the page
+    # without it. A file the page stopped naming may go.
+    if walk and snapshot.absent & set(
+        await artifacts_db.get_version_hashes(artifact.artifact_id, artifact.latest_seq)
+    ):
         logger.info(
-            "Not refreshing artifact %s: the owner left a file out during the read",
+            "Not refreshing artifact %s: a file its last version held is gone",
             artifact.artifact_id,
         )
+        return
+    # A share or unshare, or a file left out during the read, changes what
+    # these bytes may give visitors; the next turn's end looks again.
+    try:
+        await _store_blobs(user_id, snapshot)
+        result = await artifacts_db.turn_version(
+            user_id=user_id,
+            artifact_id=artifact.artifact_id,
+            read=ReadBasis.of(artifact),
+            files=snapshot.files,
+            title=snapshot.title,
+            left_out=left_out,
+        )
+    except (SnapshotUnavailable, LeftOutChanged, SharingChanged) as e:
+        logger.info(
+            "Not refreshing artifact %s: %s",
+            artifact.artifact_id,
+            type(e).__name__,
+        )
+        return
+    await _announce(user_id, snapshot, result)

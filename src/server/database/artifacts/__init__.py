@@ -9,8 +9,9 @@ joins the workspace and checks its user.
 
 A version is cut in one transaction under the record's row lock, which also
 numbers comments, so two publishes never take one ``seq`` and two comments
-never take one pin. A shared record's ``files`` is always its latest
-version's paths, which 049's check and a previous build's serving both read.
+never take one pin. A shared record's ``files`` is always its shared
+version's paths (``shared_seq``, which a kept record's turns can leave
+behind the latest), which 049's check reads.
 
 Every change to a comment's messages locks the comment row first, so its
 ``delivery`` stays true to them across workers: ``sent`` exactly when none of
@@ -84,14 +85,18 @@ from src.server.database.artifacts.records import (
     list_kept_updated,
     one_line,
     record_creator,
+    release_unlisted,
     set_keep_updated,
     set_left_out,
+    stop_keeping,
     unshare,
 )
 from src.server.database.artifacts.versions import (
     KEEP_UPDATED_VERSIONS,
+    LeftOutChanged,
     Origin,
     PublishResult,
+    ReadBasis,
     SharingChanged,
     VersionMoved,
     StoredVersionFile,
@@ -102,8 +107,12 @@ from src.server.database.artifacts.versions import (
     get_version_file,
     get_version_hashes,
     list_versions,
+    keep_version,
+    legacy_version,
     publish_version,
     refuse_legacy,
+    turn_version,
+    visitors_follow_turn,
 )
 
 __all__ = [
@@ -124,8 +133,10 @@ __all__ = [
     "DestinationThread",
     "DestinationUnavailable",
     "Destinations",
+    "LeftOutChanged",
     "Origin",
     "PublishResult",
+    "ReadBasis",
     "SharingChanged",
     "VersionMoved",
     "Status",
@@ -157,15 +168,21 @@ __all__ = [
     "mark_artifact_read",
     "mark_comment_read",
     "one_line",
+    "keep_version",
+    "legacy_version",
     "publish_version",
     "record_creator",
+    "release_unlisted",
     "refuse_legacy",
+    "turn_version",
+    "visitors_follow_turn",
     "list_abandoned_claims",
     "release_claim",
     "release_unread",
     "release_unread_send",
     "set_keep_updated",
     "set_left_out",
+    "stop_keeping",
     "unbind",
     "unshare",
     "update_comment",

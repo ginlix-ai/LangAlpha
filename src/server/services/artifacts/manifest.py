@@ -125,6 +125,10 @@ class Manifest:
     #: built app's default), which no view of a workspace file serves: listed
     #: for the review to warn about, as written, never as files to carry.
     root_refs: list[str] = field(default_factory=list)
+    #: What the files load, or a script of theirs may, and the walk found no
+    #: file at. Whether a file a version held is gone or only no longer used
+    #: turns on this.
+    absent: frozenset[str] = frozenset()
 
 
 def resolve_ref(
@@ -267,6 +271,13 @@ class _Pending:
         return self.reason == REASON_LINK or self.guess or self.remembered
 
     @property
+    def used(self) -> bool:
+        """The files themselves have the page read it, or a script of theirs
+        may. Not a link's target, which the page draws without, nor a load only
+        an earlier report named, which nothing says the page still makes."""
+        return not (self.reason == REASON_LINK or self.remembered)
+
+    @property
     def rank(self) -> int:
         """Who decides a path several name at once: what it loads, then what it
         links to, then what merely looks like a path."""
@@ -297,6 +308,9 @@ class _Walk:
         self._scanned: set[tuple[str, str]] = set()
         self._rescans: list[_Pending] = []
         self.root_refs: dict[str, None] = {}
+        self.absent: set[str] = set()
+        #: Probed and not there, whoever named it.
+        self._missing: set[str] = set()
 
     async def follow(self, level: list[_Pending]) -> None:
         while level:
@@ -306,6 +320,9 @@ class _Walk:
             level = []
             for path, pending in batch.items():
                 if path not in found:
+                    self._missing.add(path)
+                    if pending.used:
+                        self.absent.add(path)
                     continue
                 client_path, size = found[path]
                 if not may_be_artifact(client_path):
@@ -369,6 +386,9 @@ class _Walk:
                     self._rescans.append(pending)
                 continue
             if path in self._probed and (path not in self.left_out or pending.optional):
+                # Found missing as a link, and loaded further on.
+                if pending.used and path in self._missing:
+                    self.absent.add(path)
                 continue
             if pending.guess:
                 if self._guessed >= _MAX_GUESSES:
@@ -511,4 +531,5 @@ async def walk_manifest(
         walk.total,
         {p: data for p, data in walk.contents.items() if p in listed},
         list(walk.root_refs),
+        frozenset(walk.absent - listed),
     )

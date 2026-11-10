@@ -4,6 +4,7 @@ versions, where its comments go, and the comments themselves.
 Endpoints, owner-only (contract: the artifacts API build note):
 - GET|POST /api/v1/workspaces/{workspace_id}/artifacts   - find by path, or ensure
 - GET|PATCH /api/v1/artifacts/{artifact_id}               - the record; keep updated
+- PUT  /api/v1/artifacts/{artifact_id}/kept          - keep for the owner (dashboard)
 - POST /api/v1/artifacts/{artifact_id}/left-out           - take a file off a publish, or back
 - PUT|DELETE /api/v1/artifacts/{artifact_id}/binding      - bind or unbind a thread
 - GET  /api/v1/artifacts/{artifact_id}/destinations       - where a comment goes

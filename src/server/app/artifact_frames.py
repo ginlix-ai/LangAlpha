@@ -41,7 +41,7 @@ async def serve_artifact_file(
 ) -> Response:
     """A version's file, sandboxed to an opaque origin. Uniform 404 for a bad
     or expired grant, an unshared link, a version that is no longer the
-    latest for a visitor, a missing version and a missing file."""
+    shared one for a visitor, a missing version and a missing file."""
     if preview_base() is not None:
         raise HTTPException(status_code=404, detail="Not found")
     try:

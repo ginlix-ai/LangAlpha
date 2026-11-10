@@ -53,5 +53,6 @@ async def publish_artifact_change(user_id: str, artifact: Artifact) -> None:
             "path": artifact.path,
             "shared": artifact.shared,
             "latest_seq": artifact.latest_seq,
+            "shared_seq": artifact.shared_seq,
         },
     )

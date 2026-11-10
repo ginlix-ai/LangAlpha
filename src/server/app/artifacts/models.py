@@ -52,7 +52,13 @@ class ArtifactResponse(BaseModel):
     shared: bool
     shared_at: datetime | None
     keep_updated: bool
+    #: Kept for the owner (their dashboard): versions without sharing.
+    kept: bool = False
+    #: The newest version, what the owner's views open.
     latest_seq: int
+    #: The version visitors see, which a kept record's turns can leave behind
+    #: ``latest_seq``; 0 when none is shared.
+    shared_seq: int = 0
     bound_thread_id: str | None
     open_comments: int
     unread: int
@@ -180,6 +186,14 @@ class StatusRequest(BaseModel):
     #: What an earlier document of the page loaded in this tab and the one now
     #: has not: kept, as a load the record remembers is, and the owner's to
     #: leave out.
+    earlier: list[LoadedPath] = Field(default_factory=list, max_length=_MAX_LOADED)
+
+
+class KeptRequest(BaseModel):
+    kept: bool
+    #: What the open page reported loading, as a publish sends it: a file it
+    #: fetches by a path built in code is named by nothing else.
+    loaded: list[LoadedPath] = Field(default_factory=list, max_length=_MAX_LOADED)
     earlier: list[LoadedPath] = Field(default_factory=list, max_length=_MAX_LOADED)
 
 
