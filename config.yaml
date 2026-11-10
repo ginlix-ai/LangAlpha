@@ -184,15 +184,10 @@ redis:
       "4hour": 16200
       "1day": 86400
 
-  # Cache Invalidation
-  cache_invalidate_on_write: true  # Invalidate cache on writes
-
   # Stale-While-Revalidate (SWR) Configuration
   # SWR returns stale data immediately while refreshing in background
   swr:
-    enabled: true  # Enable SWR for cache reads
     soft_ttl_ratio: 0.6  # Used by OHLCV cache envelope _needs_refresh()
-    warm_after_invalidation: true  # Pre-populate cache after invalidation
 
 
 # =============================================================================
