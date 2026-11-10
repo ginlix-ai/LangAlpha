@@ -364,6 +364,9 @@ importers:
       '@types/dom-speech-recognition':
         specifier: ^0.0.12
         version: 0.0.12
+      '@types/hast':
+        specifier: ^3.0.5
+        version: 3.0.5
       '@types/node':
         specifier: ^24.19.0
         version: 24.19.0

@@ -598,15 +598,18 @@ type MarkdownVariant = 'chat' | 'panel' | 'compact';
 const REMARK_PLUGINS: React.ComponentProps<typeof ReactMarkdown>['remarkPlugins'] = [
   [remarkGfm, { singleTilde: false }], remarkCjkFriendly, remarkMath,
 ];
-type RehypePlugins = NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']>;
+export type RehypePlugins = NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']>;
 const REHYPE_PLUGINS: RehypePlugins = [
   [rehypeKatex, { strict: false }], rehypeRaw, [rehypeSanitize, sanitizeSchema],
 ];
 
-// The fade pass runs after the sanitizer: it only wraps text the sanitizer
-// already passed, in spans carrying a mark id.
-const withFreshText = (fresh: string): RehypePlugins =>
-  fresh ? [...REHYPE_PLUGINS, [rehypeFreshText, fresh] as RehypePlugins[number]] : REHYPE_PLUGINS;
+// The rehype passes, then those that run after the sanitizer: the caller's
+// and the fade's. They only rework what the sanitizer already passed (the
+// fade wraps text in spans carrying a mark id).
+const withPostSanitizePasses = (fresh: string, after: RehypePlugins | undefined): RehypePlugins => {
+  const base = after?.length ? [...REHYPE_PLUGINS, ...after] : REHYPE_PLUGINS;
+  return fresh ? [...base, [rehypeFreshText, fresh] as RehypePlugins[number]] : base;
+};
 
 interface MarkdownBlockProps {
   source: string;
@@ -615,6 +618,7 @@ interface MarkdownBlockProps {
   live: boolean;
   /** The reveals still fading in over this block (`blockFreshKeys`), '' for none. */
   fresh: string;
+  rehypeAfter: RehypePlugins | undefined;
 }
 
 // One parsed block. Memoized on its source and its fresh key, so a streaming
@@ -629,9 +633,9 @@ interface MarkdownBlockProps {
 // rebuild every highlighted token on each new line. Closing the fence counts
 // its lines at once, one remount per fence. While the block is live, that
 // fence highlights only its typing line per tick (CodeBlock).
-const MarkdownBlock = React.memo(function MarkdownBlock({ source, components, live, fresh }: MarkdownBlockProps) {
+const MarkdownBlock = React.memo(function MarkdownBlock({ source, components, live, fresh, rehypeAfter }: MarkdownBlockProps) {
   const { lineKey, openFence } = useMemo(() => scanStreamingBlock(source), [source]);
-  const rehypePlugins = useMemo(() => withFreshText(fresh), [fresh]);
+  const rehypePlugins = useMemo(() => withPostSanitizePasses(fresh, rehypeAfter), [fresh, rehypeAfter]);
   return (
     <LiveFence.Provider value={live ? openFence : -1}>
       <ReactMarkdown key={lineKey} remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={components}>
@@ -654,9 +658,14 @@ interface MarkdownProps {
   codeTheme?: 'light' | 'dark';
   /** The content is still arriving, so a fence open at its end is still being written. */
   streaming?: boolean;
+  /**
+   * Rehype passes run after the sanitizer, over the tree it passed. Hoist or
+   * memoize the array: it is part of every block's memo.
+   */
+  rehypeAfter?: RehypePlugins;
 }
 
-function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, onAnchorLink, codeTheme, streaming = false }: MarkdownProps): React.ReactElement {
+function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, onAnchorLink, codeTheme, streaming = false, rehypeAfter }: MarkdownProps): React.ReactElement {
   const config = VARIANTS[variant];
   const folders = useWorkspaceFolders();
   const rootDir = folders?.rootDir;
@@ -792,7 +801,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
           {/* mdast-to-hast puts a newline text node between top-level siblings;
               keep the DOM identical to a whole-document render. */}
           {i > 0 && '\n'}
-          <MarkdownBlock source={block} components={components} live={streaming && i === blocks.length - 1} fresh={freshKeys[i]} />
+          <MarkdownBlock source={block} components={components} live={streaming && i === blocks.length - 1} fresh={freshKeys[i]} rehypeAfter={rehypeAfter} />
         </React.Fragment>
       ))}
     </div>
