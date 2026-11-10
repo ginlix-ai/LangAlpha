@@ -443,7 +443,9 @@ async def search_stocks(
     Search for stocks by keyword.
     
     Searches both ticker symbols and company names. Returns matching stocks
-    with their symbols, names, and exchange information.
+    with their symbols, names, and exchange information, the closest matches
+    first and the most traded first among equally close ones
+    (:mod:`src.server.services.symbol_search`).
     
     Example queries:
     - "AAPL" - Find by symbol
@@ -454,36 +456,15 @@ async def search_stocks(
         raise HTTPException(status_code=422, detail="Query parameter is required and cannot be empty")
 
     try:
-        from src.utils.cache.redis_cache import get_cache_client
-        from src.data_client import get_financial_data_provider
-        from src.data_client.financial_data_provider import PartialSearch
+        from src.server.services.symbol_search import NoSearchSource, search_symbols
 
-        cache = get_cache_client()
-        cache_key = f"search:{query.strip().lower()}:{limit}"
-
-        cached = await cache.get(cache_key)
-        if cached is not None:
-            results = [StockSearchResult(**r) for r in cached["results"]]
-            if exchange:
-                exchange_set = {e.upper() for e in exchange}
-                results = [r for r in results if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set]
-            return StockSearchResponse(query=query.strip(), results=results, count=len(results))
-
-        provider = await get_financial_data_provider()
-        if provider.financial is None:
+        try:
+            rows = await search_symbols(query, limit, user_id)
+        except NoSearchSource:
             raise HTTPException(status_code=503, detail="No financial data provider available")
 
-        complete = True
-        try:
-            raw_results = await provider.financial.search_stocks(query=query.strip(), limit=limit)
-        except PartialSearch as partial:
-            # A directory failed: answer with what the others found, uncached,
-            # so the next search asks it again.
-            raw_results, complete = partial.rows, False
-
-        results = []
-        for item in raw_results:
-            result = StockSearchResult(
+        results = [
+            StockSearchResult(
                 symbol=item.get("symbol", ""),
                 name=item.get("name", ""),
                 nameLocal=item.get("nameLocal"),
@@ -491,16 +472,14 @@ async def search_stocks(
                 currency=item.get("currency"),
                 stockExchange=item.get("stockExchange"),
                 exchangeShortName=item.get("exchangeShortName"),
+                match=item.get("match"),
             )
-            results.append(result)
-
-        # Cache unfiltered results
-        if complete:
-            await cache.set(cache_key, {"results": [r.model_dump() for r in results]}, ttl=300)
-
+            for item in rows
+        ]
         if exchange:
             exchange_set = {e.upper() for e in exchange}
             results = [r for r in results if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set]
+        results = results[:limit]
 
         return StockSearchResponse(query=query.strip(), results=results, count=len(results))
 
