@@ -28,6 +28,15 @@ def _names_its_unit(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _search_row(row: dict[str, Any]) -> dict[str, Any]:
+    named = dict(row)
+    if row.get("exchange") and not row.get("exchangeShortName"):
+        named["exchangeShortName"] = row["exchange"]
+    if row.get("exchangeFullName") and not row.get("stockExchange"):
+        named["stockExchange"] = row["exchangeFullName"]
+    return named
+
+
 class FMPFinancialSource:
     """FMP implementation of FinancialDataSource.
 
@@ -119,7 +128,14 @@ class FMPFinancialSource:
     async def search_stocks(
         self, query: str, limit: int = 50
     ) -> list[dict[str, Any]]:
-        return await self._client.search_stocks(query=query, limit=limit)
+        """Rows with the exchange fields every search source answers.
+
+        FMP's stable search names the venue ``exchange`` / ``exchangeFullName``,
+        where the v3 rows the search route reads said ``exchangeShortName`` /
+        ``stockExchange``.
+        """
+        rows = await self._client.search_stocks(query=query, limit=limit)
+        return [_search_row(row) for row in rows]
 
     async def close(self) -> None:
         pass  # client lifecycle managed by get_fmp_client singleton

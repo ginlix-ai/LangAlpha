@@ -236,6 +236,16 @@ class TestFMPFinancialSource:
         assert result == [{"symbol": "AAPL"}]
 
     @pytest.mark.asyncio
+    async def test_search_rows_name_their_exchange_as_the_route_reads_it(self, source):
+        # Stable search says exchange / exchangeFullName; the route reads the
+        # v3 names, so the exchange on every row read as empty.
+        src, client = source
+        row = {"symbol": "NVDA", "name": "NVIDIA", "exchange": "NASDAQ", "exchangeFullName": "NASDAQ Global Select"}
+        client.search_stocks = AsyncMock(return_value=[row])
+        result = await src.search_stocks(query="nv", limit=10)
+        assert result == [{**row, "exchangeShortName": "NASDAQ", "stockExchange": "NASDAQ Global Select"}]
+
+    @pytest.mark.asyncio
     async def test_close_is_noop(self, source):
         src, _ = source
         await src.close()  # should not raise
