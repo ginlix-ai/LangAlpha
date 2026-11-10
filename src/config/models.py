@@ -164,13 +164,9 @@ class RedisTTLConfig(BaseModel):
 class RedisSWRConfig(BaseModel):
     """Stale-While-Revalidate configuration for Redis cache."""
 
-    enabled: bool = Field(default=True, description="Enable SWR for cache reads")
     soft_ttl_ratio: float = Field(
         default=0.6,
         description="Refresh when remaining TTL < this ratio of original",
-    )
-    warm_after_invalidation: bool = Field(
-        default=True, description="Pre-populate cache after invalidation"
     )
 
 
@@ -207,9 +203,6 @@ class RedisConfig(BaseModel):
         default=5, description="Redis socket connect timeout in seconds"
     )
     ttl: RedisTTLConfig = Field(default_factory=RedisTTLConfig)
-    cache_invalidate_on_write: bool = Field(
-        default=True, description="Invalidate cache on writes"
-    )
     swr: RedisSWRConfig = Field(default_factory=RedisSWRConfig)
 
 

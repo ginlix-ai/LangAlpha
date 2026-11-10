@@ -5,7 +5,6 @@ Provides Redis-based caching with:
 - Connection pooling and health checking
 - Deterministic key generation
 - TTL management
-- Cache invalidation patterns
 """
 
 from src.utils.cache.redis_cache import (
@@ -20,11 +19,6 @@ from src.utils.cache.cache_keys import (
     CacheKeyBuilder,
 )
 
-from src.utils.cache.invalidation import (
-    CacheInvalidator,
-    get_cache_invalidator,
-)
-
 __all__ = [
     # Redis client
     "RedisCacheClient",
@@ -34,7 +28,4 @@ __all__ = [
     "cache_context",
     # Cache keys
     "CacheKeyBuilder",
-    # Invalidation
-    "CacheInvalidator",
-    "get_cache_invalidator",
 ]

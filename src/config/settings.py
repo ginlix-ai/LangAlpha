@@ -405,10 +405,6 @@ def get_redis_ttl_memo_metadata_cancel() -> int:
     return get_infrastructure_config().redis.ttl.memo_metadata_cancel
 
 
-def is_cache_invalidate_on_write_enabled() -> bool:
-    return get_infrastructure_config().redis.cache_invalidate_on_write
-
-
 # Fallback TTLs matching config.yaml defaults (interval_seconds × 1.5)
 _DEFAULT_OHLCV_TTLS: Dict[str, int] = {
     "1min": 90,
