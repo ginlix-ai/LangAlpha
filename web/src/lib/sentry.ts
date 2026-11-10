@@ -10,6 +10,8 @@
  * research. Breadcrumbs keep no console text and no request bodies.
  */
 
+import { pageIsTranslated } from './translatedDom';
+
 type SentryModule = typeof import('@sentry/react');
 
 // Paths that are their own credential: a share page, a public share, a file
@@ -59,11 +61,27 @@ export function redactEvent<T extends EventShape>(event: T): T {
   return event;
 }
 
+/**
+ * The release, named after the entry chunk the page loaded (`web@index-Bsv8HSB4`).
+ * Its hash moves exactly when the shipped code does. A commit id baked into the
+ * bundle would move the entry's hash on every deploy, and the stale-build check
+ * would then offer every open tab a reload for a backend-only release.
+ */
+export function releaseFromEntry(entryUrl: string): string | undefined {
+  const name = /\/assets\/([^/?#]+)\.js(?:[?#]|$)/.exec(entryUrl)?.[1];
+  return name ? `web@${name}` : undefined;
+}
+
 let sentry: SentryModule | null = null;
 // The account, kept for an SDK that has not loaded yet.
 let userId: string | null = null;
+// The translated-page guard reports once per page load for each kind, so a
+// translation earlier on cannot hide a later absorb on an untranslated page.
+// What it absorbs before the SDK loads waits in pendingAbsorbed.
+const absorbedReported = { translated: false, untranslated: false };
+let pendingAbsorbed: Array<{ error: DOMException; translated: boolean }> = [];
 
-export function initSentry(): void {
+export function initSentry(entryUrl: string): void {
   const dsn = import.meta.env.VITE_SENTRY_DSN as string | undefined;
   if (!dsn) return;
   const start = (): void => {
@@ -71,16 +89,24 @@ export function initSentry(): void {
       mod.init({
         dsn,
         environment: (import.meta.env.VITE_SENTRY_ENVIRONMENT as string | undefined) || import.meta.env.MODE,
+        release: releaseFromEntry(entryUrl),
         // The user is set by id alone (setSentryUser); nothing else about the
         // request leaves: a URL's query can name a ticker or a search.
         dataCollection: { userInfo: false, cookies: false, httpHeaders: false, httpBodies: [], urlQueryParams: false },
         tracesSampleRate: 0,
         integrations: (defaults) => defaults.filter((i) => i.name !== 'BrowserSession'),
         beforeBreadcrumb: (crumb) => redactCrumb(crumb),
-        beforeSend: (event) => redactEvent(event),
+        // A translated page rewrites the DOM under React, so an error from one
+        // is told apart from a bug in our own markup.
+        beforeSend: (event) => {
+          event.tags = { page_translated: pageIsTranslated() ? 'yes' : 'no', ...event.tags };
+          return redactEvent(event);
+        },
       });
       if (userId) mod.setUser({ id: userId });
       sentry = mod;
+      for (const { error, translated } of pendingAbsorbed) sendAbsorbed(mod, error, translated);
+      pendingAbsorbed = [];
     }).catch(() => {
       // An ad blocker refusing the chunk or the ingest host is the user's call.
     });
@@ -98,4 +124,30 @@ export function setSentryUser(id: string | null): void {
 /** For errors React caught in a boundary, which never reach the global handler. */
 export function captureException(error: unknown): void {
   sentry?.captureException(error);
+}
+
+/**
+ * Reports the first DOM call the translated-page guard absorbed on this page
+ * load, on a translated page and on an untranslated one. On a translated page
+ * that is the guard doing its job, kept as one warning issue so its rate stays
+ * visible. On any other page nothing should have moved React's nodes, so it is
+ * an error: our own DOM code or an extension.
+ */
+export function reportAbsorbedDomError(error: DOMException): void {
+  const translated = pageIsTranslated();
+  const kind = translated ? 'translated' : 'untranslated';
+  if (absorbedReported[kind]) return;
+  absorbedReported[kind] = true;
+  if (sentry) sendAbsorbed(sentry, error, translated);
+  else pendingAbsorbed.push({ error, translated });
+}
+
+function sendAbsorbed(mod: SentryModule, error: DOMException, translated: boolean): void {
+  mod.withScope((scope) => {
+    scope.setTag('dom_guard', 'absorbed');
+    scope.setTag('page_translated', translated ? 'yes' : 'no');
+    scope.setLevel(translated ? 'warning' : 'error');
+    if (translated) scope.setFingerprint(['dom-guard-translated']);
+    mod.captureException(error);
+  });
 }
