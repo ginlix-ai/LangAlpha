@@ -23,6 +23,7 @@ import { useArchiveThreadConfirm } from './threadArchiveAction';
 import { useThreadDeleteConfirm } from './threadDeleteAction';
 import ShareThreadDialog, { type ShareThreadTarget } from './ShareThreadDialog';
 import { NavTreeContext, useNavTreeKit } from './navTreeKit';
+import { isThreadRemoved } from '@/lib/deletedThreads';
 import './NavigationPanel.css';
 
 interface NavigationPanelProps {
@@ -188,7 +189,10 @@ function NavigationPanel({
   // first page of recents), which would leave it highlighted-but-hidden. Page in
   // successive batches until it surfaces so the open folder always holds the
   // current thread — re-runs as each page lands, walking the tail. Bounded by
-  // MAX_REVEAL_PAGES.
+  // MAX_REVEAL_PAGES. A thread known archived or deleted is in no page:
+  // archiving the open thread drops its row before the navigation off it
+  // lands, and a navigation is a transition that each landed page defers
+  // again, so paging for it walked the whole tail.
   const revealAttemptRef = useRef<{ key: string; pages: number }>({ key: '', pages: 0 });
   React.useEffect(() => {
     // Only the visible ChatView's panel pages threads. Up to 5 panels stay
@@ -204,6 +208,7 @@ function NavigationPanel({
     if (!data || data.loading) return;
     const loaded = data.threads || [];
     if (loaded.some((thr) => thr.thread_id === currentThreadId)) return; // already visible
+    if (isThreadRemoved(currentThreadId)) return; // archived or deleted: no page holds it
     if (typeof data.total !== 'number' || loaded.length >= data.total) return; // nothing more to page
 
     const key = `${currentWorkspaceId}:${currentThreadId}`;

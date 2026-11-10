@@ -14,7 +14,7 @@ import { scrollMemory } from '@/lib/scrollMemory';
 import { clearAllMarketThreadsForWorkspace } from '../../MarketView/utils/threadPersistence';
 import { forgetNavPanelExpansion } from '../components/navExpansionStore';
 import { updateWorkspace } from '../utils/api';
-import { forgetStableNavOrder, resetWorkspaceOrderFreeze } from './useNavigationData';
+import { forgetStableNavOrder, resetWorkspaceOrderFreeze } from './navOrderFreeze';
 import { removeStoredThreadId } from './utils/threadStorage';
 
 // Shape of a cached workspace-list query entry (queryKeys.workspaces.lists()).

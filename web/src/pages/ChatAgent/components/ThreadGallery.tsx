@@ -12,7 +12,6 @@ import { useNavigate, useParams, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../../lib/queryKeys';
-import { patchThreadRows, rollbackThreadRows } from '@/lib/threadRowActions';
 import { patchThreadTitle } from '@/lib/threadListCache';
 import { threadGalleryQuery } from '../utils/threadGalleryQuery';
 import { useWorkspace } from '../../../hooks/useWorkspace';
@@ -22,6 +21,7 @@ import RenameThreadModal from './RenameThreadModal';
 import { useArchiveThreadConfirm } from './threadArchiveAction';
 import { useThreadDeleteConfirm } from './threadDeleteAction';
 import { deleteThreadRow } from '../hooks/deleteThreadRow';
+import { setThreadArchived } from '../hooks/threadRowMutations';
 import ChatInput from '../../../components/ui/chat-input';
 import type { ChatInputHandle } from '../../../components/ui/chat-input';
 import type { ComposerSend, ContextPayload } from '../../../components/ui/chat-input.types';
@@ -29,7 +29,7 @@ import { attachmentsToContexts } from '../utils/fileUpload';
 import FilePanel, { SYSTEM_DIR_PREFIXES } from './FilePanel';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import SandboxSettingsPanel from './SandboxSettingsPanel';
-import { updateThreadTitle, updateThread } from '../utils/api';
+import { updateThreadTitle } from '../utils/api';
 import { isValidUuid } from '../utils/uuid';
 import { WorkspaceProvider } from '../contexts/WorkspaceContext';
 import { useComputerFolders } from '../hooks/useComputerFolders';
@@ -392,21 +392,13 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
 
   // Archive (from the active view) or unarchive (from the archived view).
   // Either way the row leaves the CURRENT list. Optimistic so the card's exit
-  // animation IS the feedback; the prefix invalidation then refreshes both
-  // views plus the sidebar's page caches, and a failure puts the row back.
+  // animation IS the feedback; every other list holding the thread (the
+  // sidebar's, the recent threads, the palette's search answers) follows, the
+  // lists are read again once saved, and a failure puts the row back.
   const handleArchiveToggle = useCallback(async (thread: Record<string, unknown>, archived: boolean) => {
     const threadId = thread.thread_id as string | undefined;
     if (!threadId) return;
-    const snapshot = patchThreadRows(queryClient, queryKeys.threads.byWorkspace(workspaceId), (rows) =>
-      rows.some((th) => th.thread_id === threadId) ? rows.filter((th) => th.thread_id !== threadId) : rows,
-    );
-    try {
-      await updateThread(threadId, { archived });
-      queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) });
-    } catch (err) {
-      rollbackThreadRows(queryClient, snapshot);
-      console.error('Error updating thread archive state:', err);
-    }
+    await setThreadArchived(queryClient, workspaceId, threadId, archived);
   }, [workspaceId, queryClient]);
 
   // Stable per-direction wrappers — inline `(th) => handleArchiveToggle(...)`

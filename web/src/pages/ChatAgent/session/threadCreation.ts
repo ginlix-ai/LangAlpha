@@ -10,7 +10,7 @@ import { insertOptimisticThread } from '@/lib/threadListCache';
 import type { Thread } from '@/types/api';
 import { sentMessageWords } from '../components/messageList/sentMessage';
 import { createThreadWithTitle } from '../utils/api';
-import { bumpThreadNavOrder } from '../hooks/useNavigationData';
+import { bumpThreadNavOrder } from '../hooks/navOrderFreeze';
 
 export interface EnsureThreadIdArgs {
   threadId: string;

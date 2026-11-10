@@ -16,13 +16,9 @@ import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
 import { createTestQueryClient } from '@/test/utils';
 import { allWorkspacesKey } from '@/hooks/useAllWorkspaces';
 import type { WorkspacesResponse } from '@/types/api';
-import {
-  useNavigationData,
-  applyStableOrder,
-  applyStableOrderBy,
-  resetStableNavOrder,
-  bumpThreadNavOrder,
-} from '../useNavigationData';
+import { useNavigationData, applyStableOrder, applyStableOrderBy } from '../useNavigationData';
+import { resetStableNavOrder, bumpThreadNavOrder } from '../navOrderFreeze';
+import { pinThreadRow } from '../threadRowMutations';
 import { resetSharedWorkspaceThreads } from '@/lib/navThreadsStore';
 import { isArchivedThreadsKey, patchThreadRows } from '@/lib/threadRowActions';
 import { isCacheOnlyMeta, queryKeys } from '@/lib/queryKeys';
@@ -928,17 +924,17 @@ describe('useNavigationData — pin thread', () => {
     const rendered = renderHook(() => useNavigationData('ws-1'), { wrapper });
     const ids = () =>
       (rendered.result.current.workspaceThreads['ws-1']?.threads ?? []).map((t) => t.thread_id);
-    return { ...rendered, ids };
+    return { ...rendered, ids, queryClient };
   }
 
   it('pin hoists the row and unpin re-freezes from the refetched order', async () => {
-    const { result, ids } = setup();
+    const { queryClient, ids } = setup();
     await waitFor(() => expect(ids()).toEqual(['t-3', 't-1', 't-2']));
 
     // Pin t-2 — the server re-sorts pinned-first.
     serverThreads = [{ ...thread('t-2'), is_pinned: true }, thread('t-3'), thread('t-1')];
     await act(async () => {
-      await result.current.pinThread('ws-1', 't-2', true);
+      await pinThreadRow(queryClient, 'ws-1', 't-2', true);
     });
     await waitFor(() => expect(ids()).toEqual(['t-2', 't-3', 't-1']));
     expect(mockUpdateThread).toHaveBeenCalledWith('t-2', { is_pinned: true });
@@ -947,7 +943,7 @@ describe('useNavigationData — pin thread', () => {
     // AFTER the refetch lands, or t-2 keeps squatting at the top all session.
     serverThreads = threads('t-3', 't-1', 't-2');
     await act(async () => {
-      await result.current.pinThread('ws-1', 't-2', false);
+      await pinThreadRow(queryClient, 'ws-1', 't-2', false);
     });
 
     await waitFor(() => expect(ids()).toEqual(['t-3', 't-1', 't-2']));

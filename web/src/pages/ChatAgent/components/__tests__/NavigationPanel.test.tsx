@@ -19,6 +19,7 @@ import NavigationPanel from '../NavigationPanel';
 import { resetNavPanelExpansion, forgetNavPanelExpansion, expandedWorkspaces } from '../navExpansionStore';
 import { toSidebarAgentRow } from '../../session/subagents/subagentStatus';
 import { loadNavTreeKit } from '../navTreeKit';
+import { markThreadDeleted } from '@/lib/deletedThreads';
 
 // The panel paints with a static kit until the interactive one loads. Load it
 // up front so these cases run against the tree people actually use.
@@ -429,6 +430,46 @@ describe('NavigationPanel — active-thread auto-reveal', () => {
     });
 
     expect(onLoadMoreThreads).not.toHaveBeenCalled();
+  });
+
+  describe('when the open thread’s row leaves the list', () => {
+    const panel = (currentThreadId: string, threads: { thread_id: string; title: string }[], onLoadMoreThreads: Mock<(wsId: string) => void>) => (
+      <NavigationPanel
+        workspaces={[{ workspace_id: WS_ID, name: 'Test workspace', is_home: false }]}
+        workspaceThreads={{ [WS_ID]: { threads, loading: false, total: 185 } }}
+        currentWorkspaceId={WS_ID}
+        currentThreadId={currentThreadId}
+        agents={[]}
+        activeAgentId={null}
+        expandWorkspace={vi.fn()}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={vi.fn()}
+        onLoadMoreThreads={onLoadMoreThreads}
+      />
+    );
+    const shown = (id: string) => [{ thread_id: 't-1', title: 'Thread one' }, { thread_id: id, title: 'Open thread' }];
+    const without = [{ thread_id: 't-1', title: 'Thread one' }, { thread_id: 't-3', title: 'Thread three' }];
+
+    it('does not page for one this tab removed, which no page holds', async () => {
+      resetNavPanelExpansion();
+      const onLoadMoreThreads = vi.fn<(wsId: string) => void>();
+      const { rerender } = render(panel('t-removed', shown('t-removed'), onLoadMoreThreads));
+      // Archiving or deleting it drops the row at once, while the route still
+      // names it until the navigation off it lands.
+      markThreadDeleted('t-removed');
+      rerender(panel('t-removed', without, onLoadMoreThreads));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onLoadMoreThreads).not.toHaveBeenCalled();
+    });
+
+    it('pages for one that still exists, pushed off the first page', async () => {
+      resetNavPanelExpansion();
+      const onLoadMoreThreads = vi.fn<(wsId: string) => void>();
+      const { rerender } = render(panel('t-pushed', shown('t-pushed'), onLoadMoreThreads));
+      rerender(panel('t-pushed', without, onLoadMoreThreads));
+      await waitFor(() => expect(onLoadMoreThreads).toHaveBeenCalledWith(WS_ID));
+    });
   });
 
   it('does not page when every thread is already loaded', () => {
