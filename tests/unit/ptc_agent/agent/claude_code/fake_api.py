@@ -103,6 +103,10 @@ def plan(body: dict[str, Any]) -> list[dict[str, Any]]:
         elif _texts(blocks):
             result = None
     think = {"type": "thinking", "thinking": "Reasoning about it.", "signature": "sig-" + uuid.uuid4().hex}
+    if any("<summary>" in t for t in _texts(turns[-1] if turns else [])):
+        # The CLI's summary request asks for a <summary> block, and it retries
+        # a reply without one as a failed summary.
+        return [think, {"type": "text", "text": f"<analysis>Reviewing.</analysis>\n<summary>ECHO {prompt.strip()[:120]}</summary>"}]
     if result is not None:
         content = result.get("content")
         if isinstance(content, list):
