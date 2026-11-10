@@ -11,7 +11,7 @@
  * `quote === undefined` — never an error.
  */
 import { useCallback, useMemo } from 'react';
-import { useQueries, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, useQueries, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { getQuoteBatcher, quoteKey, type QuoteRow } from './quoteBatcher';
 
@@ -36,6 +36,19 @@ export interface UseQuotesResult {
 
 const DEFAULT_STALE_MS = 30_000;
 const DEFAULT_REFETCH_MS = 60_000;
+
+/** One quote row's query, shared by the hooks and by readers outside React that must hit the same entry. */
+export function quoteQueryOptions(
+  queryClient: QueryClient,
+  key: string,
+  { isIndex = false, staleTime = DEFAULT_STALE_MS }: { isIndex?: boolean; staleTime?: number } = {},
+) {
+  return queryOptions({
+    queryKey: queryKeys.quote.detail(key),
+    queryFn: () => getQuoteBatcher(queryClient).request(key, { isIndex }),
+    staleTime,
+  });
+}
 
 /**
  * Subscribe to quotes for a set of symbols. Symbols are normalized + de-duped;
@@ -65,10 +78,8 @@ export function useQuotes(symbols: string[], options: UseQuotesOptions = {}): Us
 
   const results = useQueries({
     queries: keys.map((key) => ({
-      queryKey: queryKeys.quote.detail(key),
-      queryFn: () => getQuoteBatcher(queryClient).request(key, { isIndex }),
+      ...quoteQueryOptions(queryClient, key, { isIndex, staleTime }),
       enabled,
-      staleTime,
       refetchInterval: enabled ? refetchInterval : (false as const),
       refetchIntervalInBackground: false,
     })),

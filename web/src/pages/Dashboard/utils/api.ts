@@ -5,6 +5,7 @@
 import { api } from '@/api/client';
 import i18n from '@/i18n';
 import { utcMsToETDate, utcMsToETTime } from '@/lib/utils';
+import type { Profile } from '@/lib/appBridge/protocol';
 import { normalizeIndexKey } from '@/lib/marketUtils';
 import { snapshotRowSpellings, snapshotToStockPrice } from '@/lib/quotes/quoteAdapters';
 import { getSnapshotIndexes, getSnapshotStocks } from '@/lib/quotes/snapshotApi';
@@ -345,6 +346,21 @@ export async function getStockCompanyNames(symbols: string[]): Promise<Record<st
   }
 }
 
+/** One listing's profile as `POST /market-data/profiles` sends it: the shape a framed app reads, field for field. */
+export type CompanyProfileRow = Profile;
+
+export interface CompanyProfilesResponse {
+  /** Keyed by the spelling as sent; a symbol with no profile is in neither map. */
+  results: Record<string, CompanyProfileRow>;
+  errors: Record<string, string>;
+}
+
+/** Profiles for up to 50 listings; a failed request rejects, unlike the name lookup above. */
+export async function getCompanyProfiles(symbols: string[]): Promise<CompanyProfilesResponse> {
+  const { data } = await api.post('/api/v1/market-data/profiles', { symbols });
+  return { results: data?.results ?? {}, errors: data?.errors ?? {} };
+}
+
 export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
   const list = [...(symbols || [])].map((s: string) => String(s).trim().toUpperCase()).filter(Boolean);
   if (!list.length) return [];
@@ -427,10 +443,15 @@ export async function getNewsArticle(articleId: string): Promise<Record<string, 
 
 // --- AI Insights ---
 
+/** Rejects on failure, for a reader that must not take a failed read for a day with no insights. */
+export async function fetchTodayInsights(): Promise<Record<string, unknown>[]> {
+  const { data } = await api.get('/api/v1/insights/today');
+  return data?.insights || [];
+}
+
 export async function getTodayInsights(): Promise<Record<string, unknown>[]> {
   try {
-    const { data } = await api.get('/api/v1/insights/today');
-    return data?.insights || [];
+    return await fetchTodayInsights();
   } catch (e: unknown) {
     const err = e as { message?: string };
     console.error('[API] getTodayInsights failed:', err?.message);
@@ -454,13 +475,18 @@ export async function generatePersonalizedInsight(): Promise<Record<string, unkn
  * GET /api/v1/calendar/earnings?from=YYYY-MM-DD&to=YYYY-MM-DD
  * Returns { data: [{ symbol, date, epsEstimated, revenueEstimated, ... }], count }
  */
-export async function getEarningsCalendar({ from, to }: EarningsParams = {}): Promise<EarningsResponse> {
+export async function fetchEarningsCalendar({ from, to }: EarningsParams = {}): Promise<EarningsResponse> {
+  const params: Record<string, string> = {};
+  if (from) params.from = from;
+  if (to) params.to = to;
+  const { data } = await api.get('/api/v1/calendar/earnings', { params });
+  return data || { data: [], count: 0 };
+}
+
+/** As `fetchEarningsCalendar`, but a failure reads as an empty calendar. */
+export async function getEarningsCalendar(params: EarningsParams = {}): Promise<EarningsResponse> {
   try {
-    const params: Record<string, string> = {};
-    if (from) params.from = from;
-    if (to) params.to = to;
-    const { data } = await api.get('/api/v1/calendar/earnings', { params });
-    return data || { data: [], count: 0 };
+    return await fetchEarningsCalendar(params);
   } catch (e: unknown) {
     const err = e as { message?: string };
     console.error('[API] getEarningsCalendar failed:', err?.message);

@@ -60,3 +60,10 @@
   pointer-events: none;
   transition: opacity var(--motion-exit) var(--ease-out);
 }
+
+/* The kit's consent bar, over the top of the document while it asks. */
+.bridged-frame-kit {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 3;
+}

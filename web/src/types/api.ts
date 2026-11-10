@@ -812,6 +812,11 @@ export interface AppShareLink extends ShareLinkBase {
   path: string | null;
   port: number;
   artifact_id?: null;
+  /**
+   * 16 hex of the sha256 of the command that starts the app, null when none is
+   * stored; absent from an older server. The app's grants are kept under it.
+   */
+  command_key?: string | null;
 }
 
 /** One item's stable `/a/<code>` link. Private unless `shared`. */

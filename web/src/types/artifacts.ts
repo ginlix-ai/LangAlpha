@@ -36,8 +36,12 @@ export interface Artifact {
   shared: boolean;
   shared_at: string | null;
   keep_updated: boolean;
-  /** 0 until the first publish. */
+  /** Kept for the owner (their dashboard): versions cut without sharing. Absent from an older server. */
+  kept?: boolean;
+  /** The newest version, what the owner's views open; 0 until the first. */
   latest_seq: number;
+  /** The version visitors see, which a kept page's newer copies leave behind; 0 when none is shared. Absent from an older server, where it is the latest. */
+  shared_seq?: number;
   /** Where its comments go until unbound. */
   bound_thread_id: string | null;
   open_comments: number;

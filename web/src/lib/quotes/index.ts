@@ -1,7 +1,7 @@
 /**
  * Unified frontend quote layer. See quoteBatcher.ts for the coalescing design.
  */
-export { useQuote, useQuotes } from './useQuotes';
+export { quoteQueryOptions, useQuote, useQuotes } from './useQuotes';
 export type { UseQuoteOptions, UseQuoteResult, UseQuotesOptions, UseQuotesResult } from './useQuotes';
 export { getQuoteBatcher, QuoteBatcher, quoteKey, stockKey, indexKey, BATCH_WINDOW_MS } from './quoteBatcher';
 export type { QuoteRow } from './quoteBatcher';
