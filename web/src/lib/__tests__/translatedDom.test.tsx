@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { tolerateTranslatedDom } from '../translatedDom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pageIsTranslated, tolerateTranslatedDom } from '../translatedDom';
 
 // What Chrome's translator does to a text node: swaps it for <font> wrappers
 // holding the translation, so the node React kept is out of the document.
@@ -90,5 +90,51 @@ describe('tolerateTranslatedDom', () => {
     expect([...parent.children]).toEqual([b, a]);
     parent.removeChild(a);
     expect([...parent.children]).toEqual([b]);
+  });
+
+  it('hands each absorbed error to the reporter', () => {
+    const onAbsorb = vi.fn();
+    restore = tolerateTranslatedDom(onAbsorb);
+    const parent = document.createElement('div');
+    parent.removeChild(document.createElement('i'));
+    parent.insertBefore(document.createElement('u'), document.createElement('i'));
+    expect(onAbsorb).toHaveBeenCalledTimes(2);
+    expect(onAbsorb.mock.calls[0][0]).toMatchObject({ name: 'NotFoundError' });
+  });
+
+  it('still absorbs when the reporter throws', () => {
+    restore = tolerateTranslatedDom(() => {
+      throw new Error('reporter down');
+    });
+    renderTranslated();
+    act(() => root.render(<Greeting hello={false} badge={false} />));
+    expect(container.querySelector('span')?.textContent).toBe('end');
+  });
+});
+
+describe('pageIsTranslated', () => {
+  afterEach(() => {
+    document.documentElement.classList.remove('translated-ltr', 'translated-rtl');
+    document.querySelectorAll('font').forEach((font) => font.remove());
+  });
+
+  it('reads an untouched page as not translated', () => {
+    expect(pageIsTranslated()).toBe(false);
+  });
+
+  it("reads Chrome's mark on the root", () => {
+    document.documentElement.classList.add('translated-rtl');
+    expect(pageIsTranslated()).toBe(true);
+  });
+
+  it("reads the translator's <font> wrappers", () => {
+    const font = document.body.appendChild(document.createElement('font'));
+    font.setAttribute('style', 'vertical-align: inherit;');
+    expect(pageIsTranslated()).toBe(true);
+  });
+
+  it('does not read a <font> the page drew itself, as in a Mermaid label', () => {
+    document.body.appendChild(document.createElement('font')).setAttribute('color', 'red');
+    expect(pageIsTranslated()).toBe(false);
   });
 });
