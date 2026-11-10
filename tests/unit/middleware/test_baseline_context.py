@@ -721,6 +721,33 @@ class TestCrossWriterChanges:
         assert advanced is not None
         assert advanced.cursor.observed["agent_md"] == sha256_text("original")
 
+    def test_a_change_past_the_cut_does_not_show_the_hidden_part(self):
+        """The row is diffed against the file as cut, so what the cut hides
+        never arrives through the side door of a change row."""
+        from ptc_agent.agent.middleware.runtime_context.changes import SourceRead
+        from ptc_agent.agent.tools.context_file_policy import AGENT_MD, visible
+
+        shown = "kept line\n" * (MAX_AGENT_MD_SIZE // 10)
+        before = shown + "hidden before\n" * 50
+        after = shown + "hidden after\n" * 50
+        epoch = BaselineEpoch.from_state(
+            {"agent_md": {"text": visible(AGENT_MD, before), "sha256": sha256_text(before)}}
+        )
+        read = SourceRead(
+            kind="agent_md",
+            update_kind="agent_md_changed",
+            path="/agent.md",
+            text=after,
+            cap=AGENT_MD,
+        )
+        _advanced, updates = advance_epoch(
+            epoch, Observations(now=NOW, reads=(read,)), _unrendered
+        )
+
+        assert len(updates) == 1
+        assert "changed past the part shown in its frozen copy" in updates[0].text
+        assert "hidden" not in updates[0].text
+
 
 # ---------------------------------------------------------------------------
 # Supersession is chronology
