@@ -190,7 +190,7 @@
         "description": "Claude Sonnet 5.5 model",
         "pricing": {
           "input": 2.0,
-          "cached_input": 0.2,
+          "cached_input": 0.1,
           "cache_5m": 2.5,
           "cache_1h": 4.0,
           "output": 10.0,
