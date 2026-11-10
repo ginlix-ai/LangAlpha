@@ -9,6 +9,9 @@ node_modules/
 .env.production
 **/__pycache__/
 **/*.pyc
+# A host build of chartkit's render page: the images build their own, and stale
+# hashed assets from the host would ship into every sandbox beside it.
+libs/chartkit/chartkit/render/
 .ruff_cache/
 web/node_modules/
 web/.pnpm-store/
@@ -24,6 +27,7 @@ build/
 docs/
 # Backend tests
 tests/
+libs/chartkit/tests/
 mcp_servers/tests/
 
 # Frontend tests

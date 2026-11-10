@@ -2324,6 +2324,30 @@ wheels = [
 ]
 
 [[package]]
+name = "langalpha-chartkit"
+version = "0.1.0"
+source = { editable = "libs/chartkit" }
+dependencies = [
+    { name = "langalpha-market-protocol" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "langalpha-market-protocol", directory = "libs/market-protocol" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pandas", specifier = ">=2.2.2" },
+    { name = "playwright", marker = "extra == 'snapshot'", specifier = ">=1.49" },
+    { name = "pydantic", specifier = ">=2" },
+]
+provides-extras = ["snapshot"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0.0" }]
+
+[[package]]
 name = "langalpha-core"
 version = "0.1.0"
 source = { editable = "." }
@@ -2350,6 +2374,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "json-repair" },
     { name = "jsonschema" },
+    { name = "langalpha-chartkit" },
     { name = "langalpha-market-protocol" },
     { name = "langchain", extra = ["mcp"] },
     { name = "langchain-anthropic" },
@@ -2467,6 +2492,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.3" },
     { name = "json-repair", specifier = ">=0.7.0" },
     { name = "jsonschema", specifier = ">=4.0" },
+    { name = "langalpha-chartkit", editable = "libs/chartkit" },
     { name = "langalpha-market-protocol", editable = "libs/market-protocol" },
     { name = "langchain", extras = ["mcp"], specifier = ">=1.4.0" },
     { name = "langchain-anthropic", specifier = ">=1.0.0" },

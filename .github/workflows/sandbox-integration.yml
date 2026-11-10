@@ -42,6 +42,7 @@ on:
       - Dockerfile.sandbox
       - docker-compose.yml
       - libs/market-protocol/**
+      - libs/chartkit/**
       - pyproject.toml
       - uv.lock
       - tests/conftest.py
@@ -102,6 +103,7 @@ jobs:
             docker:
               - Dockerfile.sandbox
               - libs/market-protocol/**
+              - libs/chartkit/**
               - src/ptc_agent/core/sandbox/providers/docker.py
               - src/ptc_agent/core/sandbox/providers/_chart_capture.py
               - tests/integration/sandbox/providers/**

@@ -93,6 +93,7 @@ services:
       # Mount source for hot-reload
       - ./src:/app/src
       - ./libs/market-protocol:/app/libs/market-protocol
+      - ./libs/chartkit:/app/libs/chartkit
       - ./server.py:/app/server.py
       - ./agent_config.yaml:/app/agent_config.yaml
       # The `langalpha` CLI each computer gets, built by the cli service.
@@ -166,6 +167,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./libs/market-protocol:/app/libs/market-protocol
+      - ./libs/chartkit:/app/libs/chartkit
       - ./alembic.ini:/app/alembic.ini
       - ./migrations:/app/migrations
     # Wait for the backend so its migrations have run before the gateway reads keys.

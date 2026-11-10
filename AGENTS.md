@@ -40,6 +40,7 @@ cd web && pnpm test                   # Vitest;  pnpm test:e2e = Playwright;  pn
 | `src/data_client/` | Financial data protocol abstraction |
 | `src/utils/` | Redis cache, shared utilities |
 | `cli/` | `langalpha` (`la` for short), the TypeScript CLI (`cli/README.md`): one esbuild bundle every computer gets on its agent's `PATH` under both names, with a token of its own that reaches only that computer and never Home, whose turns run the Chief of Staff (`src/server/dependencies/principal.py`), and every call it makes there is recorded with the thread whose command made it (`computer_cli_calls`); people sign in with `la login`. |
+| `libs/chartkit/` | Chart layers from pandas (pkg `langalpha-chartkit`): the library agent code imports in the sandbox as `chartkit`, shipped there as an internal package with its render page (`cd web && pnpm build:chart-render`, gitignored). The server reads only `chartkit.schema` (the layer contract) and `chartkit.protocol`. Its suite runs in its own environment: `make test-chartkit`. |
 
 ### Frontend (`web/src/`)
 

@@ -152,3 +152,7 @@ docs/pr_context/
 
 # Generated per deployment by `python -m scripts.data_probe` against its own data tokens
 data_routing.yaml
+
+# The chart render page chartkit snapshots with, built by `pnpm build:chart-render`
+# in web/ (and by the backend images' node stage)
+/libs/chartkit/chartkit/render/

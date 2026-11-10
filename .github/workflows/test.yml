@@ -32,6 +32,7 @@ jobs:
       bridge: ${{ steps.filter.outputs.bridge }}
       cli: ${{ steps.filter.outputs.cli }}
       market_protocol: ${{ steps.filter.outputs.market_protocol }}
+      chartkit: ${{ steps.filter.outputs.chartkit }}
       claude_code_scripts: ${{ steps.filter.outputs.claude_code_scripts }}
     steps:
       - uses: dorny/paths-filter@v3
@@ -54,6 +55,10 @@ jobs:
               - cli/**
             market_protocol:
               - *workflow
+              - libs/market-protocol/**
+            chartkit:
+              - *workflow
+              - libs/chartkit/**
               - libs/market-protocol/**
             claude_code_scripts:
               - *workflow
@@ -138,6 +143,31 @@ jobs:
           uv venv "$RUNNER_TEMP/floors"
           uv pip install --python "$RUNNER_TEMP/floors" --resolution lowest-direct . "pytest>=8"
           "$RUNNER_TEMP/floors/bin/pytest" -v --tb=short -p no:cacheprovider
+
+  # libs/chartkit, like market-protocol, in its own environment: it ships into
+  # every sandbox, so an import it forgot to declare must fail here rather than
+  # pass through the backend's environment.
+  chartkit:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.chartkit != 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    defaults:
+      run:
+        working-directory: libs/chartkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv sync --locked --no-editable
+      - run: uv run --locked --no-editable pytest -v --tb=short
 
   # Everything in tests/integration/ that needs only Postgres and Redis, with
   # the sandbox tests on the in-process memory provider. No secrets, so it

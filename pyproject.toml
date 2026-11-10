@@ -109,6 +109,7 @@ dependencies = [
     "tavily-python>=0.7.18",
     "PyJWT[crypto]>=2.13",
     "langalpha-market-protocol",
+    "langalpha-chartkit",
     "certifi>=2026.1.4",
     "requests>=2.32.5",
     "croniter>=2.0.0",
@@ -140,6 +141,7 @@ dependencies = [
 
 [tool.uv.sources]
 langalpha-market-protocol = { path = "libs/market-protocol", editable = true }
+langalpha-chartkit = { path = "libs/chartkit", editable = true }
 
 [project.optional-dependencies]
 dev = [
@@ -191,9 +193,9 @@ required-version = ">=0.6.15"
 
 [tool.ruff]
 extend-exclude = ["src/llms/vendor", "src/ptc_agent/core/sandbox/livefs_runtime/mfusepy.py"]
-# The package supports 3.11; a [tool.ruff] table of its own would make it the
+# The packages support 3.11; a [tool.ruff] table of its own would make it the
 # config root and drop the rules below.
-per-file-target-version = { "libs/market-protocol/**" = "py311" }
+per-file-target-version = { "libs/market-protocol/**" = "py311", "libs/chartkit/**" = "py311" }
 
 [tool.ruff.lint]
 ignore = ["E741"]  # allow short names like l, O, I (common in OHLCV code)
