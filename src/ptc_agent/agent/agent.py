@@ -154,7 +154,7 @@ from src.tools.market_data.tool import (
     screen_stocks,
 )
 from src.tools.market_watch import watch_market
-from src.tools.chart_annotation import CHART_ANNOTATION_TOOLS
+from src.tools.chart_annotation import CHART_LAYER_TOOLS
 from src.tools.messaging import build_messaging_tools, messaging_enabled
 from src.tools.wakeups.tool import build_schedule_wakeup_tool
 from src.tools.thread_status.tool import build_thread_status_tool
@@ -1114,12 +1114,12 @@ class PTCAgent:
             )
             tools.append(run_workflow_tool)
 
-        # Chart annotations, main agent only: appended after the subagent
+        # The chart-layer tool, main agent only: appended after the subagent
         # snapshot above, which the default general-purpose subagent is built
         # from. A drawing is part of the reply the user sees, and a subagent
         # answers the main agent, not the user.
         if chart_annotation:
-            tools.extend(CHART_ANNOTATION_TOOLS)
+            tools.extend(CHART_LAYER_TOOLS)
 
         # Messaging the user (send_message, list_message_targets), present only
         # when a channel gateway is configured. Main agent only, added after the

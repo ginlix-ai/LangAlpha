@@ -11,6 +11,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
 )
 from ptc_agent.agent.middleware.background_subagent.outcomes import Outcome
 from src.llms.content_utils import extract_reasoning_summary_index
+from src.server.models.chart_layer import CHART_LAYER_FORWARDED_KEYS
 from src.server.utils.content_normalizer import normalize_text_content
 
 logger = structlog.get_logger(__name__)
@@ -28,6 +29,9 @@ _ALLOWED_CUSTOM_EVENT_TYPES = frozenset({"context_window", "provenance"})
 # memory/memo views, and the written content would bloat the per-task buffer.
 _FORWARDED_ARTIFACT_PAYLOAD_KEYS = {
     "file_operation": ("operation", "file_path", "sandbox_path", "error"),
+    # A layer a subagent's code published is already stored; an open chart
+    # refetches it on the task lane's add, which names it without its body.
+    "chart_layer": CHART_LAYER_FORWARDED_KEYS,
 }
 
 

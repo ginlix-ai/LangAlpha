@@ -140,6 +140,13 @@ def _as_is(data: bytes) -> bytes:
     return data
 
 
+def encoded_jsonb(value: Any) -> Jsonb:
+    """``SafeJson``'s encoding done now rather than at bind time, so a caller
+    can do it off the event loop (``asyncio.to_thread``) for a value large
+    enough to stall it."""
+    return Jsonb(_safe_dumps(value).encode(), dumps=_as_is)
+
+
 class SafeJson(Json):
     """Drop-in replacement for `psycopg.types.json.Json` that strips `\\u0000`.
 

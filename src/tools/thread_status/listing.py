@@ -158,6 +158,11 @@ def command_detail(row: Mapping[str, Any], now: datetime) -> str:
     tail = (row.get("output_tail") or "").rstrip()
     if not running and tail:
         lines.append(f"Last lines of the log:\n{_last_lines(tail)}")
+    # Showing the end drops the notice, which is where a handed-off job's chart
+    # layer read-back otherwise reaches the agent.
+    if published := row.get("outbox_report"):
+        # Apart from the log's last lines, as the stop's answer sets it.
+        lines.append(f"\n{published}")
     return "\n".join(lines)
 
 

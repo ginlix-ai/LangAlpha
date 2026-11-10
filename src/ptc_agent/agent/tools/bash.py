@@ -29,7 +29,9 @@ from ptc_agent.core.paths import (
 )
 from ptc_agent.core.sandbox import livefs_mount
 from ptc_agent.core.sandbox.execution import JobExecFailed
-from ptc_agent.core.sandbox.jobs import Ended, Failed, JobHandle, JobNotLaunched, JobOutcome
+from ptc_agent.core.sandbox.jobs import (
+    Ended, Failed, JobContext, JobHandle, JobNotLaunched, JobOutcome
+)
 from src.observability import (
     TOOL_CHANNEL,
     TOOL_PROVIDER,
@@ -312,9 +314,12 @@ def create_execute_bash_tool(
                     call.command,
                     working_dir=working_dir,
                     wait_s=wait_s,
-                    thread_id=thread_id or None,
-                    call_id=call_id,
-                    allowed_servers=allowed_servers,
+                    context=JobContext(
+                        thread_id=thread_id or None,
+                        call_id=call_id,
+                        allowed_servers=allowed_servers,
+                        env=command_handoff.turn_job_env(call.config),
+                    ),
                 )
             except JobNotLaunched as e:
                 return await _not_launched(e, wait_s, call.config)
