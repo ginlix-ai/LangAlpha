@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes, KeyboardEvent } from 'react';
+import { useLayoutEffect, useRef, type InputHTMLAttributes, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Search, X } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
@@ -18,6 +18,10 @@ interface FieldProps {
   /** The row whose actions are open, or the drilled-in view, named at the field's end. */
   trailing: string | null;
   busy: boolean;
+  /** The field holds a value to edit (a rename): its text is selected as it arrives, so typing replaces it. */
+  selected: boolean;
+  /** The longest text the field takes, while it edits a value. */
+  maxLength?: number;
   /** The combobox's wiring to its list. */
   combobox: Pick<InputHTMLAttributes<HTMLInputElement>, 'aria-describedby' | 'aria-controls' | 'aria-activedescendant'>;
 }
@@ -26,8 +30,13 @@ interface FieldProps {
  * The palette's one field. The row owns its field's focus: the keyboard ring
  * goes round the row, and the always-focused field draws no edge of its own.
  */
-export function PaletteField({ query, onText, onKeyDown, placeholder, label, chips, onLeave, trailing, busy, combobox }: FieldProps) {
+export function PaletteField({ query, onText, onKeyDown, placeholder, label, chips, onLeave, trailing, busy, selected, maxLength, combobox }: FieldProps) {
   const { t } = useTranslation();
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Once, as the value arrives: later edits leave the caret where it is.
+  useLayoutEffect(() => {
+    if (selected) inputRef.current?.select();
+  }, [selected]);
   return (
     <div className="command-palette-field rings-within owns-its-edge">
       <Search className="command-palette-field-icon" aria-hidden />
@@ -54,10 +63,12 @@ export function PaletteField({ query, onText, onKeyDown, placeholder, label, chi
         );
       })}
       <input
+        ref={inputRef}
         value={query}
         onChange={(e) => onText(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder={placeholder}
+        maxLength={maxLength}
         aria-label={label}
         role="combobox"
         aria-expanded

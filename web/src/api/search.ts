@@ -22,6 +22,10 @@ export interface SearchThreadHit {
   /** Set on a thread an automation runs in. */
   automation_name: string | null;
   updated_at: string;
+  /** Pinned to the top of its workspace. */
+  is_pinned: boolean;
+  /** The thread has a title of its own; `title` is otherwise its first message. */
+  has_title: boolean;
   /** Spans of `title` the query matched. */
   match: MatchRange[];
 }
@@ -39,6 +43,10 @@ export interface SearchTurnHit {
   /** Spans of `snippet` the query matched. */
   matches: MatchRange[];
   turn_at: string;
+  /** Whether the turn's thread is pinned to the top of its workspace. */
+  is_pinned: boolean;
+  /** The turn's thread has a title of its own; `thread_title` is otherwise its first message. */
+  has_title: boolean;
 }
 
 export interface SearchFileHit {

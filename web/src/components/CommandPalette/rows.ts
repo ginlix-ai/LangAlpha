@@ -1,4 +1,18 @@
-import { ChartCandlestick, Copy, ExternalLink, FileText, Link2, MessageSquare, MessageSquareQuote, Search, Sparkles } from 'lucide-react';
+import {
+  Archive,
+  ChartCandlestick,
+  Copy,
+  ExternalLink,
+  FileText,
+  Link2,
+  MessageSquare,
+  MessageSquareQuote,
+  PencilLine,
+  Pin,
+  PinOff,
+  Search,
+  Sparkles,
+} from 'lucide-react';
 import type { MatchRange, SearchFileHit, SearchThreadHit, SearchTurnHit } from '@/api/search';
 import type { SlashCommand } from '@/components/ui/chat-input.types';
 import { fileGlyph } from '@/pages/ChatAgent/components/filePanel/fileMeta';
@@ -43,6 +57,14 @@ export interface Verbs extends Names {
   copy: (text: string) => void;
   /** Opens an app path in a new tab; null in the desktop shell, which sends a new window to the system browser, signed out. */
   openInNewTab: ((path: string) => void) | null;
+  renameThread: (thread: ThreadRef, title: string) => void;
+  pinThread: (thread: ThreadRef, pinned: boolean) => void;
+  /**
+   * At once, or once confirmed for a thread with a run going. Once the server
+   * has archived the thread on screen, the next one in its workspace opens in
+   * its place, as from the sidebar.
+   */
+  archiveThread: (thread: ThreadRef) => void;
 }
 
 type Actions = [PaletteAction, ...PaletteAction[]];
@@ -68,12 +90,40 @@ function threadElsewhere(threadId: string, v: Verbs): PaletteAction[] {
 export interface ThreadRef {
   threadId: string;
   workspaceId: string;
-  /** Empty for a thread with none. */
+  /** What the row calls it: its title, or with none its first message (the app's lists give its words, a search hit the message as sent). Empty with neither. */
   title: string;
+  /** The title the thread holds, empty for one without. */
+  savedTitle: string;
   spans?: [number, number][];
   /** Where it runs: its automation, or its workspace. */
   where: string;
   at: string | null | undefined;
+  /** Pinned to the top of its workspace. */
+  pinned: boolean;
+}
+
+/**
+ * What a thread's row can change about it, after the ways to open it: its
+ * title (in the palette's field, starting from its title, or for an untitled
+ * thread from its first message's words, as the recent rows show them: a
+ * search hit's stands for the message as sent, markup and all), its pin (named for what it would do now, as the theme
+ * action is), and whether it is archived.
+ */
+function threadChanges(ref: ThreadRef, v: Verbs): PaletteAction[] {
+  return [
+    {
+      id: 'rename',
+      label: v.t('nav.renameThread'),
+      icon: PencilLine,
+      effect: 'edit',
+      value: ref.savedTitle || sentMessageWords(ref.title),
+      placeholder: v.t('palette.rename.placeholder'),
+      maxLength: 255, // ThreadUpdateRequest.title, as the sidebar's and the dialog's fields
+      save: (title) => v.renameThread(ref, title),
+    },
+    runs('pin', ref.pinned ? v.t('nav.unpinThread') : v.t('nav.pinToTop'), ref.pinned ? PinOff : Pin, () => v.pinThread(ref, !ref.pinned)),
+    runs('archive', v.t('nav.archiveThread'), Archive, () => v.archiveThread(ref)),
+  ];
 }
 
 export function threadOfList(thread: Thread, names: Names): ThreadRef {
@@ -81,8 +131,10 @@ export function threadOfList(thread: Thread, names: Names): ThreadRef {
     threadId: thread.thread_id,
     workspaceId: thread.workspace_id,
     title: thread.title || sentMessageWords(thread.first_query_content ?? ''),
+    savedTitle: thread.title ?? '',
     where: names.workspaceName(thread.workspace_id),
     at: thread.updated_at,
+    pinned: !!thread.is_pinned,
   };
 }
 
@@ -91,26 +143,53 @@ export function threadOfHit(hit: SearchThreadHit, names: Names): ThreadRef {
     threadId: hit.thread_id,
     workspaceId: hit.workspace_id,
     title: hit.title,
+    savedTitle: hit.has_title ? hit.title : '',
     spans: hit.title ? hit.match : undefined,
     // An automation's thread says which automation runs in it: its title is
     // usually the automation's own words, the same on every run.
     where: hit.automation_name ?? names.workspaceName(hit.workspace_id, hit.workspace_name),
     at: hit.updated_at,
+    pinned: hit.is_pinned,
+  };
+}
+
+/** The thread a conversation match is in. When it was last active the hit does not say. */
+function threadOfTurn(hit: SearchTurnHit, names: Names): ThreadRef {
+  return {
+    threadId: hit.thread_id,
+    workspaceId: hit.workspace_id,
+    title: hit.thread_title,
+    savedTitle: hit.has_title ? hit.thread_title : '',
+    where: names.workspaceName(hit.workspace_id, hit.workspace_name),
+    at: null,
+    pinned: hit.is_pinned,
+  };
+}
+
+/** A thread's row without its actions: how it looks wherever it shows. */
+function threadFace(ref: ThreadRef, v: Verbs) {
+  return {
+    icon: MessageSquare,
+    title: ref.title || v.t('palette.untitledThread'),
+    meta: [ref.where, v.when(ref.at)].filter(Boolean).join(' · '),
+    pinned: ref.pinned || undefined,
   };
 }
 
 export function threadRow(ref: ThreadRef, v: Verbs): PaletteItem {
   const { threadId, workspaceId } = ref;
-  const title = ref.title || v.t('palette.untitledThread');
+  const face = threadFace(ref, v);
   return {
     id: `thread:${threadId}`,
-    icon: MessageSquare,
-    title,
+    ...face,
     spans: ref.spans,
-    meta: [ref.where, v.when(ref.at)].filter(Boolean).join(' · '),
     preview: { kind: 'thread', threadId },
-    place: { kind: 'thread', threadId, workspaceId, title },
-    actions: [runs('open', v.t('palette.do.open'), MessageSquare, () => v.openThread(threadId, workspaceId)), ...threadElsewhere(threadId, v)],
+    place: { kind: 'thread', threadId, workspaceId, title: face.title },
+    actions: [
+      runs('open', v.t('palette.do.open'), MessageSquare, () => v.openThread(threadId, workspaceId)),
+      ...threadElsewhere(threadId, v),
+      ...threadChanges(ref, v),
+    ],
   };
 }
 
@@ -122,11 +201,13 @@ export function threadRow(ref: ThreadRef, v: Verbs): PaletteItem {
  */
 export function turnRow(hit: SearchTurnHit, v: Verbs, { inThread = false } = {}): PaletteItem {
   const { thread_id: threadId, workspace_id: workspaceId, turn_index: turnIndex } = hit;
+  const thread = threadOfTurn(hit, v);
   const speaker = hit.side === 'user' ? v.t('palette.you') : v.isHome(workspaceId) ? v.t('agents.chiefOfStaff') : v.t('agents.analyst');
   const actions: Actions = [
     runs('open-at-turn', v.t('palette.do.openAtTurn'), MessageSquareQuote, () => v.openThread(threadId, workspaceId, { focusTurn: turnIndex })),
     runs('open-thread', v.t('palette.do.openThread'), MessageSquare, () => v.openThread(threadId, workspaceId)),
     ...threadElsewhere(threadId, v),
+    ...threadChanges(thread, v),
   ];
   const row = {
     id: `turn:${threadId}:${turnIndex}:${hit.side}`,
@@ -137,10 +218,11 @@ export function turnRow(hit: SearchTurnHit, v: Verbs, { inThread = false } = {})
   if (inThread) {
     return { ...row, title: hit.snippet, spans: hit.matches, meta: [speaker, v.when(hit.turn_at)].filter(Boolean).join(' · ') };
   }
-  const title = hit.thread_title || v.t('palette.untitledThread');
+  const { title, pinned } = threadFace(thread, v);
   return {
     ...row,
     title,
+    pinned,
     meta: [v.workspaceName(workspaceId, hit.workspace_name), v.when(hit.turn_at)].filter(Boolean).join(' · '),
     detail: { label: speaker, text: hit.snippet, spans: hit.matches },
     place: { kind: 'thread', threadId, workspaceId, title },

@@ -12,8 +12,11 @@ import { copyText } from '@/lib/clipboard';
 import { isDesktopShell } from '@/lib/desktop';
 import { relativeTime } from '@/lib/format';
 import { isHomeWorkspace } from '@/lib/homeWorkspace';
+import { useArchiveThreadConfirm } from '@/pages/ChatAgent/components/threadArchiveAction';
+import { archiveThreadRow, pinThreadRow, renameThreadRow } from '@/pages/ChatAgent/hooks/threadRowMutations';
+import { useRemoveThread } from '@/pages/ChatAgent/hooks/useRemoveThread';
 import { buildMarketViewUrl } from '@/pages/MarketView/utils/marketRoute';
-import { fileHref, type Names, type NewWork, type Verbs } from './rows';
+import { fileHref, type Names, type NewWork, type ThreadRef, type Verbs } from './rows';
 
 /** The user's workspaces by id, and Home as its own lookup knows it. */
 function useWorkspaces() {
@@ -70,9 +73,36 @@ export function usePlace(): NewWork {
   };
 }
 
-/** What the palette's rows do in the app. Each runs after the palette has closed. */
-export function useVerbs(): Verbs {
+/**
+ * Archiving a thread from the palette, which outlives the palette's own
+ * content: a thread with a run going asks first, in a dialog that opens
+ * after the palette has closed (a turn later, or the palette's focus trap
+ * would take focus back from it) and stays up once it has. So the host,
+ * mounted for good once the palette is first used, holds the dialog, and
+ * the thread on screen gives way to the next one as it does in the sidebar.
+ */
+export function useArchiveThread() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { removeThread } = useRemoveThread(useChatRoute().currentThreadId);
+  const { requestArchive, dialog } = useArchiveThreadConfirm();
+
+  const archive = ({ threadId, workspaceId }: ThreadRef) =>
+    removeThread(workspaceId, threadId, async () => {
+      const ok = await archiveThreadRow(queryClient, workspaceId, threadId);
+      toast(ok ? { title: t('thread.archived') } : { variant: 'destructive', title: t('thread.failedArchiveThread') });
+      return ok;
+    });
+  return {
+    archiveThread: (thread: ThreadRef) => void window.setTimeout(() => requestArchive(thread.threadId, () => void archive(thread)), 0),
+    dialog,
+  };
+}
+
+/** What the palette's rows do in the app. Each runs after the palette has closed. */
+export function useVerbs(archiveThread: Verbs['archiveThread']): Verbs {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
   const label = useWorkspaceLabel();
@@ -115,5 +145,15 @@ export function useVerbs(): Verbs {
         () => toast({ variant: 'destructive', title: t('palette.copyFailed') }),
       ),
     openInNewTab: isDesktopShell() ? null : (path) => void window.open(path, '_blank', 'noopener'),
+    renameThread: (thread, title) => void renameThreadRow(queryClient, thread.workspaceId, thread.threadId, title, thread.savedTitle, t),
+    pinThread: (thread, pinned) =>
+      void pinThreadRow(queryClient, thread.workspaceId, thread.threadId, pinned).then((ok) =>
+        toast(
+          ok
+            ? { title: pinned ? t('palette.pinned') : t('palette.unpinned') }
+            : { variant: 'destructive', title: pinned ? t('thread.failedPinThread') : t('thread.failedUnpinThread') },
+        ),
+      ),
+    archiveThread,
   };
 }

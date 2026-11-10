@@ -14,9 +14,10 @@ import { ResultGroups } from './ResultGroups';
 import { fieldLabel, lensLabel, placeholder, scopeChips } from './labels';
 import { canEnter, scopeOf } from './scope';
 import type { PaletteAction, PaletteItem } from './types';
+import type { Verbs } from './rows';
 import { useLocalSources } from './useLocalSources';
 import { usePaletteView, type PaletteDispatch, type Wait } from './usePaletteView';
-import { useVerbs } from './useVerbs';
+import { useArchiveThread, useVerbs } from './useVerbs';
 import { useViewResult } from './useViewResult';
 import './CommandPalette.css';
 
@@ -44,47 +45,58 @@ export default function CommandPalette({ open, onClose, typed, returnFocus }: Co
   // Radix hands focus back only to a Dialog.Trigger, which the palette has
   // none of, so it hands it back itself, to where its host saw it last.
   const returnRef = useRef<HTMLElement | null>(null);
+  const { archiveThread, dialog: archiveConfirm } = useArchiveThread();
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent
-        variant="command"
-        className="command-palette"
-        onOpenAutoFocus={(e) => {
-          returnRef.current = returnFocus();
-          // ⌘K opens a place to type, not a walk through the page with the
-          // keyboard, so the field takes focus as a clicked one would: no ring.
-          e.preventDefault();
-          focusWithoutRing((e.currentTarget as HTMLElement | null)?.querySelector('input'));
-        }}
-        onCloseAutoFocus={(e) => {
-          e.preventDefault();
-          // Focus goes back where it was unless something took it since: the
-          // page a row led to (a composer it filled), or a click elsewhere.
-          // The palette's own field, removed with it, leaves it on the body.
-          const now = document.activeElement;
-          if ((!now || now === document.body) && !lastInputWasPointer()) focusWithoutRing(returnRef.current);
-        }}
-        onEscapeKeyDown={(e) => {
-          // Escape in an IME composition drops the candidates, nothing more.
-          // In the field (where focus lives) the field answers it: it steps
-          // back out of a row's actions or a view before it closes. Radix
-          // hears the key first, on the document's capture phase, so the
-          // field could not stop it from there.
-          if (isImeComposing(e) || (e.target as Element | null)?.closest?.('.command-palette-field')) e.preventDefault();
-        }}
-      >
-        <DialogTitle className="sr-only">{t('palette.title')}</DialogTitle>
-        <PaletteBody open={open} onClose={onClose} typed={typed} />
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+        <DialogContent
+          variant="command"
+          className="command-palette"
+          onOpenAutoFocus={(e) => {
+            returnRef.current = returnFocus();
+            // ⌘K opens a place to type, not a walk through the page with the
+            // keyboard, so the field takes focus as a clicked one would: no ring.
+            e.preventDefault();
+            focusWithoutRing((e.currentTarget as HTMLElement | null)?.querySelector('input'));
+          }}
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            // Focus goes back where it was unless something took it since: the
+            // page a row led to (a composer it filled), or a click elsewhere.
+            // The palette's own field, removed with it, leaves it on the body.
+            const now = document.activeElement;
+            if ((!now || now === document.body) && !lastInputWasPointer()) focusWithoutRing(returnRef.current);
+          }}
+          onEscapeKeyDown={(e) => {
+            // Escape in an IME composition drops the candidates, nothing more.
+            // In the field (where focus lives) the field answers it: it steps
+            // back out of a row's actions or a view before it closes. Radix
+            // hears the key first, on the document's capture phase, so the
+            // field could not stop it from there.
+            if (isImeComposing(e) || (e.target as Element | null)?.closest?.('.command-palette-field')) e.preventDefault();
+          }}
+        >
+          <DialogTitle className="sr-only">{t('palette.title')}</DialogTitle>
+          <PaletteBody open={open} onClose={onClose} typed={typed} archiveThread={archiveThread} />
+        </DialogContent>
+      </Dialog>
+      {archiveConfirm}
+    </>
   );
 }
 
-/** An action that runs closes the palette first; one that opens a view opens it in the palette. */
+/**
+ * An action that runs closes the palette first; one that opens a view opens
+ * it in the palette, and one that edits the row opens the edit in the field.
+ */
 function performAction(action: PaletteAction, dispatch: PaletteDispatch, close: () => void) {
   if (action.effect === 'open') {
     dispatch({ type: 'open', lens: action.view });
+    return;
+  }
+  if (action.effect === 'edit') {
+    dispatch({ type: 'edit', action });
     return;
   }
   close();
@@ -95,17 +107,18 @@ interface BodyProps {
   open: boolean;
   onClose: () => void;
   typed: string;
+  archiveThread: Verbs['archiveThread'];
 }
 
 /** Mounted with the dialog's content, so every open starts from an empty field. */
-function PaletteBody({ open, onClose, typed }: BodyProps) {
+function PaletteBody({ open, onClose, typed, archiveThread }: BodyProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const listId = useId();
   const listRef = useRef<HTMLDivElement>(null);
-  const { frames, top, drilled, actionsOf: actionsOfId, actionIndex, waiting, waitedOut, dispatch } = usePaletteView(open, typed);
+  const { frames, top, drilled, actionsOf: actionsOfId, actionIndex, edit, waiting, waitedOut, dispatch } = usePaletteView(open, typed);
   const { spec, query, chosenId, lead } = top;
-  const verbs = useVerbs();
+  const verbs = useVerbs(archiveThread);
   const view = useViewResult(spec, query, verbs, useLocalSources(verbs));
   const placePending = verbs.newWork.pending;
 
@@ -122,6 +135,9 @@ function PaletteBody({ open, onClose, typed }: BodyProps) {
   const leadingId = chosenAt >= 0 ? chosenId : leadAt >= 0 ? flat[leadAt].id : null;
   const active: PaletteItem | undefined = flat[index];
   const actionsOf = actionsOfId ? (flat.find((item) => item.id === actionsOfId) ?? null) : null;
+  // The row's action editing it in the field, as it was picked: it outlives
+  // the row, should a refetch drop it from the list meanwhile.
+  const editing = edit ? { ...edit.action, text: edit.text } : null;
   // Tab narrows to the selected row's workspace or thread, where that is somewhere new.
   const tabPlace = !actionsOf && canEnter(frames, active?.place) ? active.place : undefined;
   // At a scope's own results, Backspace in the empty field, Shift+Tab and Escape leave it.
@@ -199,9 +215,35 @@ function PaletteBody({ open, onClose, typed }: BodyProps) {
     return true;
   };
 
+  // In an edit the field is a text field: Enter saves a value that changed
+  // (an empty one saves nothing), and Esc, Shift+Tab and Backspace in the
+  // field already empty go back to the row's actions. A held Backspace's
+  // repeats only clear the field: going back on one would hand the rest to
+  // the search under it. The arrows move the caret.
+  const onEditKeyDown = (e: KeyboardEvent<HTMLInputElement>, { value, text, save }: NonNullable<typeof editing>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const next = text.trim();
+      if (!next) return;
+      onClose();
+      if (next !== value.trim()) save(next);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.shiftKey) dispatch({ type: 'endEdit' });
+    } else if (e.key === 'Escape' || (e.key === 'Backspace' && !e.repeat && text === '')) {
+      e.preventDefault();
+      dispatch({ type: 'endEdit' });
+    }
+  };
+
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     // Keys that commit an IME composition edit the query; they pick nothing.
     if (isImeComposing(e)) return;
+    if (editing) {
+      onEditKeyDown(e, editing);
+      return;
+    }
     const field = e.currentTarget;
     const caretAtEnd = field.selectionStart === field.value.length;
     const caretAtStart = field.selectionStart === 0 && field.selectionEnd === 0;
@@ -256,20 +298,24 @@ function PaletteBody({ open, onClose, typed }: BodyProps) {
         if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 160) loadMore();
       }
     : undefined;
-  const chips = scopeChips(scopeOf(frames), t);
-  const trailing = actionsOf ? (actionsOf.symbol ?? actionsOf.title) : drilled && spec.lens ? lensLabel(spec.lens, t) : null;
+  // An edit names only what it does: the field holds its value, not a search.
+  const chips = editing ? [editing.label] : scopeChips(scopeOf(frames), t);
+  const rowName = actionsOf ? (actionsOf.symbol ?? actionsOf.title) : null;
+  const trailing = editing ? null : (rowName ?? (drilled && spec.lens ? lensLabel(spec.lens, t) : null));
   const paneTarget = (actionsOf ?? active)?.preview ?? view.preview?.fallback;
 
   return (
     <>
       <PaletteField
-        query={query}
-        onText={(text) => dispatch({ type: 'type', text })}
+        query={editing ? editing.text : query}
+        onText={(text) => dispatch(editing ? { type: 'editText', text } : { type: 'type', text })}
         onKeyDown={onKeyDown}
-        placeholder={placeholder(spec, t)}
-        label={fieldLabel(chips, t)}
+        placeholder={editing ? editing.placeholder : placeholder(spec, t)}
+        label={editing ? t('palette.editLabel', { action: editing.label, name: editing.value }) : fieldLabel(chips, t)}
+        selected={!!editing}
+        maxLength={editing?.maxLength}
         chips={chips}
-        onLeave={() => dispatch({ type: 'leave' })}
+        onLeave={() => dispatch(editing ? { type: 'endEdit' } : { type: 'leave' })}
         trailing={trailing}
         busy={view.rowsPending || view.serverMayLead || view.pending || (!!waiting && placePending)}
         combobox={{
@@ -284,7 +330,7 @@ function PaletteBody({ open, onClose, typed }: BodyProps) {
           ref={listRef}
           id={listId}
           role="listbox"
-          aria-label={actionsOf ? t('palette.actionsFor', { name: trailing }) : (trailing ?? chips.at(-1) ?? t('palette.title'))}
+          aria-label={actionsOf ? t('palette.actionsFor', { name: rowName }) : (trailing ?? chips.at(-1) ?? t('palette.title'))}
           className="command-palette-list"
           onScroll={onScroll}
         >
@@ -299,7 +345,8 @@ function PaletteBody({ open, onClose, typed }: BodyProps) {
                 icon={action.icon}
                 accent={actionsOf.accent && i === 0}
                 title={action.label}
-                onHover={() => dispatch({ type: 'actionIndex', index: i })}
+                // The pointer passing over the actions leaves an edit be.
+                onHover={() => !editing && dispatch({ type: 'actionIndex', index: i })}
                 onPick={() => {
                   dispatch({ type: 'actionIndex', index: i });
                   runWhenReady({ kind: 'action', of: actionsOf.id, action: action.id });
@@ -332,12 +379,14 @@ function PaletteBody({ open, onClose, typed }: BodyProps) {
       <PaletteFooter
         describedId={describedId}
         keys={{
-          enter: actionsOf ? t('palette.do.run') : active?.actions[0].label,
+          enter: editing ? (editing.text.trim() ? t('common.save') : undefined) : actionsOf ? t('palette.do.run') : active?.actions[0].label,
+          move: !editing,
           actions: !actionsOf && !!active && active.actions.length > 1,
           ask: !!view.ask && !actionsOf,
-          back: !!actionsOf || drilled,
+          back: !editing && (!!actionsOf || drilled),
           scope: !!tabPlace,
           leave: atScope ? (chips.at(-1) ?? null) : null,
+          edit: !!editing,
         }}
       />
     </>

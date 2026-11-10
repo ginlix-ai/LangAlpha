@@ -65,8 +65,12 @@ export function patchThreadTitle(
     const rowTs = Date.parse(row.updated_at);
     return !Number.isNaN(rowTs) && eventTs <= rowTs;
   };
+  // A search hit says whether its title is the thread's own (has_title), its
+  // title otherwise standing for the first message: a title written here is.
   const apply = <T extends Thread>(row: T): T =>
-    isStale(row) ? row : { ...row, title, ...(updatedAt ? { updated_at: updatedAt } : {}) };
+    isStale(row)
+      ? row
+      : { ...row, title, ...('has_title' in row ? { has_title: !!title } : {}), ...(updatedAt ? { updated_at: updatedAt } : {}) };
   patchThreadRows(queryClient, queryKeys.threads.all, (rows) =>
     rows.some((t) => t.thread_id === threadId)
       ? rows.map((t) => (t.thread_id === threadId ? apply(t) : t))

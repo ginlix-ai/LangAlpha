@@ -32,6 +32,21 @@ describe('patchThreadTitle', () => {
     expect(qc.getQueryData(rosterKey)).toEqual(expected);
   });
 
+  it('marks a renamed search hit as titled, and a cleared one as not, leaving rows without the flag without it', () => {
+    const qc = new QueryClient();
+    const searchKey = queryKeys.threads.search({ q: 'nvda', limit: 6 });
+    const pageKey = queryKeys.threads.page('ws-1', 10);
+    qc.setQueryData(searchKey, { threads: [{ thread_id: 't-1', title: 'what about nvda', has_title: false, match: [] }], turns: [] });
+    qc.setQueryData(pageKey, { threads: [{ thread_id: 't-1', title: '' }], total: 1 });
+
+    patchThreadTitle(qc, 't-1', 'NVDA margins');
+    expect((qc.getQueryData(searchKey) as { threads: object[] }).threads[0]).toMatchObject({ title: 'NVDA margins', has_title: true });
+    expect((qc.getQueryData(pageKey) as { threads: object[] }).threads[0]).not.toHaveProperty('has_title');
+
+    patchThreadTitle(qc, 't-1', '');
+    expect((qc.getQueryData(searchKey) as { threads: object[] }).threads[0]).toMatchObject({ title: '', has_title: false });
+  });
+
   it('leaves a read that does not hold the thread as it was', () => {
     const qc = new QueryClient();
     const key = queryKeys.threads.dispatchLiveness({ threads: ['t-2'], runs: [], steers: [] });
