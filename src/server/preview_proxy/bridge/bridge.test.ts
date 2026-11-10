@@ -1171,6 +1171,87 @@ describe('the page bridge moves to a renewed grant', () => {
   });
 });
 
+// jsdom lays nothing out and cannot scroll, so the window scrolls as far as
+// `max` says the document reaches, and fires its scroll event a task later,
+// as a browser does.
+function scrollable(state: { y: number; max: number }) {
+  return (win: PageWindow) => {
+    Object.defineProperty(win, 'scrollX', { configurable: true, get: () => 0 });
+    Object.defineProperty(win, 'scrollY', { configurable: true, get: () => state.y });
+    win.scrollTo = ((to: ScrollToOptions | number, y?: number) => {
+      const top = typeof to === 'number' ? (y ?? 0) : (to.top ?? 0);
+      const next = Math.max(0, Math.min(top, state.max));
+      if (next === state.y) return;
+      state.y = next;
+      win.setTimeout(() => win.document.dispatchEvent(new win.Event('scroll')), 0);
+    }) as typeof win.scrollTo;
+  };
+}
+
+describe("the page bridge keeps the reader's place", () => {
+  const VERSION = 'https://api.example.com/api/v1/artifacts/g/tok/v/3/index.html';
+  const stops = (page: ReturnType<typeof served>) =>
+    page.of('page:scroll').filter((m) => m.moving === false).map((m) => m.y);
+  const grow = (page: ReturnType<typeof served>, state: { max: number }, max: number) => {
+    state.max = max;
+    page.w.document.body.append(page.w.document.createElement('section'));
+  };
+  const tick = () => new Promise((done) => setTimeout(done, 20));
+
+  it('says where the document stands once loaded, and where each scroll stopped', async () => {
+    const state = { y: 0, max: 2000 };
+    const page = served(VERSION, '', scrollable(state));
+    page.speak();
+    await vi.waitFor(() => expect(stops(page)).toEqual([0]));
+
+    state.y = 480;
+    page.w.document.dispatchEvent(new page.w.Event('scroll'));
+    await vi.waitFor(() => expect(stops(page)).toEqual([0, 480]));
+  });
+
+  it('puts the reader back as the document grows far enough, the ask naming the viewer', async () => {
+    const state = { y: 0, max: 0 };
+    const page = served(VERSION, '', scrollable(state));
+    // The restore is the viewer's first word: the reports it unlocks follow.
+    page.from(page.viewer, { type: 'page:restore-scroll', x: 0, y: 900 });
+    grow(page, state, 300);
+    await vi.waitFor(() => expect(state.y).toBe(300));
+    grow(page, state, 2000);
+    await vi.waitFor(() => expect(state.y).toBe(900));
+    await vi.waitFor(() => expect(stops(page)).toContain(900));
+  });
+
+  it('stops for good once the reader acts', async () => {
+    const state = { y: 0, max: 300 };
+    const page = served(VERSION, '', scrollable(state));
+    page.from(page.viewer, { type: 'page:restore-scroll', x: 0, y: 900 });
+    await vi.waitFor(() => expect(state.y).toBe(300));
+    page.w.dispatchEvent(new page.w.Event('wheel'));
+    grow(page, state, 2000);
+    await tick();
+    expect(state.y).toBe(300);
+  });
+
+  it('keeps trying a moment after the page settled, then leaves the page alone', async () => {
+    const state = { y: 0, max: 300 };
+    const page = served(VERSION, '', scrollable(state));
+    page.speak();
+    await vi.waitFor(() => expect(page.of('page:settled')).toHaveLength(1), { timeout: 10_000 });
+    // A settled page still gets data over the bridge, which nothing counts.
+    page.from(page.viewer, { type: 'page:restore-scroll', x: 0, y: 900 });
+    expect(state.y).toBe(300);
+    grow(page, state, 2000);
+    await vi.waitFor(() => expect(state.y).toBe(900));
+
+    await new Promise((done) => setTimeout(done, 2_100));
+    // The page moving itself is no longer undone.
+    state.y = 100;
+    grow(page, state, 3000);
+    await tick();
+    expect(state.y).toBe(100);
+  }, 15_000);
+});
+
 describe('the page bridge finds what a comment was stored on', () => {
   it('knows an image by its alt, which its text does not hold', () => {
     const anchor = { path: 'body > img:nth-of-type(1)', quote: 'Revenue by quarter' };
