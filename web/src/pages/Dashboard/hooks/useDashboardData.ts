@@ -1,6 +1,7 @@
 import { useQuery, useInfiniteQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { getNews, getIndex, INDEX_SYMBOLS, normalizeIndexSymbol, buildIndexData } from '../utils/api';
+import { getNews, INDEX_SYMBOLS, normalizeIndexSymbol, buildIndexData } from '../utils/api';
+import { getIndex } from '../utils/indices';
 import { useQuotes } from '@/lib/quotes';
 import { fetchMarketStatus } from '@/lib/marketUtils';
 import type { IndexData, SparklinePoint } from '@/types/market';

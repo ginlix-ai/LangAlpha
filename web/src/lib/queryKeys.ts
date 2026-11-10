@@ -389,6 +389,12 @@ export const queryKeys = {
     all:    ['quote'],
     detail: (symbol: string) => [...queryKeys.quote.all, symbol],
   },
+  // A ticker's latest trading session as a line (lib/bars/sessionQuery).
+  // Key = display spelling.
+  intradaySession: {
+    all:    ['intradaySession'],
+    detail: (symbol: string) => [...queryKeys.intradaySession.all, symbol],
+  },
   insights: {
     all:         ['insights'],
     // Today's market-wide brief, as markdown for the agent.

@@ -11,9 +11,9 @@ vi.mock('../../utils/api', async (importOriginal) => {
   return {
     ...actual,
     getNews: vi.fn(),
-    getIndex: vi.fn(),
   };
 });
+vi.mock('../../utils/indices', () => ({ getIndex: vi.fn() }));
 
 // Index quotes flow through the shared quote layer's batcher, which hits the
 // snapshot primitives in lib/quotes — mock those to feed useQuotes.
@@ -29,7 +29,8 @@ vi.mock('@/lib/marketUtils', async (importOriginal) => ({
   fetchMarketStatus: vi.fn(),
 }));
 
-import { getNews, getIndex } from '../../utils/api';
+import { getNews } from '../../utils/api';
+import { getIndex } from '../../utils/indices';
 import { getSnapshotIndexes } from '@/lib/quotes/snapshotApi';
 import { fetchMarketStatus } from '@/lib/marketUtils';
 

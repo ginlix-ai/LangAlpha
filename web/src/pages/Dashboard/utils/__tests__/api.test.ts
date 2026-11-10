@@ -10,7 +10,8 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock('@/api/client', () => ({ api: apiMock }));
 
-import { getIndex, getIndices, getStockPrices } from '../api';
+import { getStockPrices } from '../api';
+import { getIndex } from '../indices';
 
 describe('getStockPrices', () => {
   beforeEach(() => {
@@ -144,95 +145,5 @@ describe('getIndex', () => {
     expect(result.asOfDate).toBe('2025-01-14');
     expect(result.sparklineData.map((p) => p.val)).toEqual([105, 110]);
     expect(result.price).toBe(110);
-  });
-});
-
-describe('getIndices', () => {
-  beforeEach(() => {
-    apiMock.get.mockReset();
-  });
-
-  it('flags quoteAvailable true when a snapshot is present and false when missing', async () => {
-    apiMock.get.mockImplementation((url: string) => {
-      if (url.includes('/snapshots/indexes')) {
-        return Promise.resolve({
-          data: {
-            snapshots: [
-              {
-                symbol: 'GSPC',
-                price: 5000.12,
-                change: 10.5,
-                change_percent: 0.21,
-                previous_close: 4989.62,
-              },
-            ],
-          },
-        });
-      }
-      // intraday — no data; getIndex throws and getIndices falls back to []
-      return Promise.resolve({ data: { data: [] } });
-    });
-
-    const { indices, failedCount } = await getIndices(['GSPC', 'VIX']);
-    const gspc = indices.find((i) => i.symbol === 'GSPC')!;
-    const vix = indices.find((i) => i.symbol === 'VIX')!;
-
-    expect(gspc.quoteAvailable).toBe(true);
-    expect(gspc.price).toBe(5000.12);
-    expect(vix.quoteAvailable).toBe(false);
-    expect(vix.price).toBe(0);
-    expect(failedCount).toBe(1);
-  });
-
-  it('treats a zero-price index snapshot as no quote (N/A, not a fake 0.00)', async () => {
-    // Index prices are never legitimately 0; a partial provider snapshot
-    // (missing lastPrice coerced to 0) must not render as a real quote.
-    apiMock.get.mockImplementation((url: string) => {
-      if (url.includes('/snapshots/indexes')) {
-        return Promise.resolve({
-          data: {
-            snapshots: [
-              { symbol: 'GSPC', price: 0, change: 0, change_percent: 0, previous_close: 0 },
-            ],
-          },
-        });
-      }
-      return Promise.resolve({ data: { data: [] } });
-    });
-
-    const { indices, failedCount } = await getIndices(['GSPC']);
-    const gspc = indices.find((i) => i.symbol === 'GSPC')!;
-
-    expect(gspc.quoteAvailable).toBe(false);
-    expect(failedCount).toBe(1);
-  });
-
-  it('threads the intraday session asOfDate onto the index when the snapshot is present', async () => {
-    apiMock.get.mockImplementation((url: string) => {
-      if (url.includes('/snapshots/indexes')) {
-        return Promise.resolve({
-          data: {
-            snapshots: [
-              { symbol: 'GSPC', price: 5000, change: 1, change_percent: 0.1, previous_close: 4999 },
-            ],
-          },
-        });
-      }
-      // intraday — a complete regular-hours session on 2025-01-13
-      return Promise.resolve({
-        data: {
-          data: [
-            { time: ET(2025, 0, 13, 9, 30), open: 100, close: 100 },
-            { time: ET(2025, 0, 13, 16, 0), open: 100, close: 101 },
-          ],
-        },
-      });
-    });
-
-    const { indices } = await getIndices(['GSPC']);
-    const gspc = indices.find((i) => i.symbol === 'GSPC')!;
-
-    expect(gspc.quoteAvailable).toBe(true);
-    expect(gspc.asOfDate).toBe('2025-01-13');
   });
 });

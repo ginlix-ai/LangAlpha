@@ -1,7 +1,15 @@
 import { useEffect, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { Sparkline } from '@/components/charts/Sparkline';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
+import { timezoneForSymbol } from '@/lib/bars/exchanges';
+import { sessionLineQuery } from '@/lib/bars/sessionQuery';
+import { clockTime, formatCalendarMonthDay } from '@/lib/format';
 import { flattenInline } from '@/lib/plainLine';
 import { quoteKey, useQuotes } from '@/lib/quotes';
+import { dateStrInTz } from '@/lib/utils';
 import { matchSpans } from '@/lib/textMatch';
 import { Highlighted, QuoteFigures } from './PaletteRow';
 import { useSearchPreview } from './useServerSearch';
@@ -122,6 +130,40 @@ function TickerPreview({ symbol }: { symbol: string }) {
           </div>
         }
       />
+      <SessionSparkline symbol={symbol} previousClose={quote?.previous_close ?? null} />
     </div>
+  );
+}
+
+/** A time of day in the reader's clock that prints as `minutes` past midnight: a venue's hours in its own wall clock. */
+const minuteOfDay = (minutes: number) => new Date(2000, 0, 1, 0, minutes);
+
+/**
+ * The latest session's prices across its hours, against the close before it:
+ * today's while the venue trades or once it has closed for the day, the last
+ * session's (captioned with its date) on a day it does not open. Nothing, and
+ * no room kept, until there is a line to draw.
+ */
+function SessionSparkline({ symbol, previousClose }: { symbol: string; previousClose: number | null }) {
+  const { t } = useTranslation();
+  const locale = useLocale();
+  const now = useNow();
+  const { data: line } = useQuery(sessionLineQuery(symbol));
+  if (!line) return null;
+  // The bars' own previous session is the close this line moved from; the
+  // quote's stands in when the bars do not reach back to it.
+  const baseline = line.previousClose ?? previousClose;
+  const last = line.values[line.values.length - 1];
+  const color = last >= (baseline ?? line.values[0]) ? 'var(--color-profit)' : 'var(--color-loss)';
+  const today = line.date === dateStrInTz(now, timezoneForSymbol(symbol));
+  return (
+    <figure className="command-palette-pane-spark">
+      <Sparkline values={line.values} at={line.at} baseline={baseline} color={color} height={46} />
+      <figcaption>
+        <span>{clockTime(minuteOfDay(line.opens), locale)}</span>
+        <span>{today ? t('palette.preview.today') : formatCalendarMonthDay(line.date, locale)}</span>
+        <span>{clockTime(minuteOfDay(line.closes), locale)}</span>
+      </figcaption>
+    </figure>
   );
 }

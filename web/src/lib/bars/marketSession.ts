@@ -15,13 +15,15 @@
  *
  * `deriveMarketSession` is pure; every consumer decision is a table test.
  */
-import { isUSEquity, timezoneForSymbol } from './exchanges';
+import { isUSEquity, timezoneForSymbol, US_MARKET_HOURS } from './exchanges';
 import { isSettledDailyHeadTime } from './formingBar';
 
 export type ExtendedHoursType = 'pre' | 'post';
 
 /** US intervals that render pre/post extended-hours data. */
 export const EXTENDED_HOURS_INTERVALS = new Set(['1min', '5min', '15min', '30min', '1hour']);
+
+const [US_OPEN, US_CLOSE] = US_MARKET_HOURS[0];
 
 /**
  * Classify a chart timestamp (venue wall-clock seconds, fake-UTC encoding)
@@ -32,8 +34,8 @@ export const EXTENDED_HOURS_INTERVALS = new Set(['1min', '5min', '15min', '30min
 export function getExtendedHoursType(timeSec: number): ExtendedHoursType | null {
   const d = new Date(timeSec * 1000);
   const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
-  if (mins < 570) return 'pre'; // before 9:30
-  if (mins >= 960) return 'post'; // 16:00 or later
+  if (mins < US_OPEN) return 'pre';
+  if (mins >= US_CLOSE) return 'post';
   return null;
 }
 
