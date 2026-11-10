@@ -58,6 +58,19 @@ export async function setArtifactKeepUpdated(artifactId: string, keepUpdated: bo
   return data;
 }
 
+/**
+ * Keep the file for its owner without sharing it, which makes a page a
+ * dashboard: the server holds a version, cut now and again at the end of each
+ * turn whose files changed, so it opens with the computer off. A keep carries
+ * what the open page reported loading, as a publish does: a file it fetches
+ * by a path built in code is named by nothing else.
+ */
+export async function setArtifactKept(artifactId: string, kept: boolean, loads?: PageLoads): Promise<Artifact> {
+  const body = kept && loads ? { kept, loaded: loads.now, earlier: loads.earlier } : { kept };
+  const { data } = await api.put<Artifact>(`${artifactPath(artifactId)}/kept`, body);
+  return data;
+}
+
 /** Take a file the page does not need to draw off what a publish carries, or put it back. */
 export async function setArtifactFileLeftOut(artifactId: string, path: string, leftOut: boolean): Promise<Artifact> {
   const { data } = await api.post<Artifact>(`${artifactPath(artifactId)}/left-out`, { path, left_out: leftOut });

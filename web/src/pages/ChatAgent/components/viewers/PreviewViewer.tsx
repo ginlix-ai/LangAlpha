@@ -3,8 +3,9 @@ import { RefreshCw, ExternalLink, X, LayoutDashboard, AlertCircle } from 'lucide
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
 import { useShareLink } from '@/hooks/useShareLink';
+import type { BridgeOptions } from '@/lib/appBridge/AppBridge';
+import { useAppFrame } from '@/lib/appBridge/useAppFrame';
 import { shareLinkHref } from '../../utils/api/shareLinks';
-import { APP_PREVIEW_SANDBOX } from './html/sandbox';
 import { HostedFrame } from './HostedFrame';
 import './PreviewViewer.css';
 import type { PreviewData } from '../../hooks/utils/types';
@@ -20,15 +21,18 @@ interface PreviewViewerProps extends Pick<PreviewData, 'url' | 'port' | 'title' 
   isDragging?: boolean;
   /** Monotonic counter — when it changes, force iframe reload even if URL is the same. */
   reloadToken?: number;
+  /** Given, the frame may read the owner's data through the kit, under its `/a/` code's grants. */
+  bridge?: Pick<BridgeOptions, 'grantKey' | 'active'>;
 }
 
-export default function PreviewViewer({ url, port, title, path, workspaceId, loading: externalLoading, error: externalError, onClose, onRefresh, isDragging, reloadToken, chrome = true }: PreviewViewerProps) {
+export default function PreviewViewer({ url, port, title, path, workspaceId, loading: externalLoading, error: externalError, onClose, onRefresh, isDragging, reloadToken, chrome = true, bridge }: PreviewViewerProps) {
   const { t } = useTranslation();
   // The toolbar opens the app's private /a/ link, minted with the toolbar so
   // the tab opens inside the click.
   const { data: link } = useShareLink(workspaceId, port ? { kind: 'app', port } : null, { enabled: chrome });
   const [loading, setLoading] = useState(true);
   const [iframeKey, setIframeKey] = useState(0);
+  const app = useAppFrame(url, bridge ?? null);
   // Keep overlay visible briefly after drag ends so iframe repaints at new size
   const [overlayLinger, setOverlayLinger] = useState(false);
 
@@ -131,6 +135,7 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
       ) : (
         /* Normal iframe view */
         <>
+          {app.bridge}
           {loading && !showDragOverlay && (
             <div className="preview-viewer-loading">
               <Loader size={24} className="text-(--color-text-tertiary)" />
@@ -148,11 +153,10 @@ export default function PreviewViewer({ url, port, title, path, workspaceId, loa
             </div>
           )}
           <HostedFrame
+            {...app.frame}
             key={iframeKey}
-            src={url}
             className="preview-viewer-frame"
             title={t('filePanel.previewFrameTitle', { port })}
-            sandbox={APP_PREVIEW_SANDBOX}
             onLoad={handleIframeLoad}
             style={isDragging ? { pointerEvents: 'none' } : undefined}
           />

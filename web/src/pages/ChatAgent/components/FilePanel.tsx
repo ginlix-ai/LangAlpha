@@ -353,6 +353,7 @@ function FilePanel({
     active: isActive,
     readAt: readAt ?? null,
     ui: comments,
+    threadId,
   });
   const htmlArtifactPath = artifactTab.path;
   // The agent's edit to the HTML file in front is read at once, unlike other
@@ -791,6 +792,7 @@ function FilePanel({
           entry={previews.byPort.get(activeTab.port) ?? { port: activeTab.port, url: '', loading: true, error: false, reloadToken: 0 }}
           onRefresh={() => previews.refresh(activeTab.port)}
           workspaceId={workspaceId}
+          threadId={threadId}
           readOnly={readOnly}
         />
       )}
@@ -913,7 +915,7 @@ function FilePanel({
                   onDismiss={dismissSelection}
                 />
               )}
-              <PreviewPanes tabs={tabs.tabs} activeId={activeTab.id} previews={previews} />
+              <PreviewPanes tabs={tabs.tabs} activeId={activeTab.id} previews={previews} workspaceId={readOnly ? null : workspaceId} />
               {!treeFull && (
               <ActiveTabBody
                 activeTab={activeTab}

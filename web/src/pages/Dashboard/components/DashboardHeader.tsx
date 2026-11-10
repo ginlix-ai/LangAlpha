@@ -16,9 +16,11 @@ interface DashboardHeaderProps {
     editMode: boolean;
     onEditModeChange: (edit: boolean) => void;
   };
+  /** The dashboard switcher and the shown dashboard's own actions, before Edit. */
+  actions?: React.ReactNode;
 }
 
-const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }) => {
+const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit, actions }) => {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { t } = useTranslation();
@@ -220,7 +222,8 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }
         </div>
 
         {/* Right actions */}
-        <div className="flex items-center gap-3 ml-3 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-3 ml-3 min-w-0">
+          {actions}
           {edit && (
             <button
               type="button"

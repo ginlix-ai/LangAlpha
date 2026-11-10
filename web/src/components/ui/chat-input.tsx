@@ -493,7 +493,8 @@ function ChatInput({
       restoreFiles(files);
       if (back.mentions.length > 0) setMentionedFiles((prev) => [...prev, ...back.mentions]);
       restoreSlash(commands);
-      if (focus) setTimeout(() => textareaRef.current?.focus(), 0);
+      // Handed back by the app, not reached by a key: no keyboard ring.
+      if (focus) setTimeout(() => focusWithoutRing(textareaRef.current), 0);
     },
     send() {
       return sendRef.current();
