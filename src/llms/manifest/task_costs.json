@@ -17,6 +17,12 @@
       "url": "https://www.kimi.ai/blog/kimi-k3-1-pro",
       "metric": "Max is Artificial Analysis's 'Kimi K3.1 Pro' (v4.3.2; Moonshot runs it at max by default); High is Max scaled by the launch post's Terminal-Bench 4.0 cost per task chart (read off its linear scale: high 4.14, max 5.22 USD)",
       "retrieved": "2026-10-27"
+    },
+    "claude-fable-5-2": {
+      "name": "Artificial Analysis, Intelligence Index v5.0.1",
+      "url": "https://artificialanalysis.ai/models/claude-fable-5-2",
+      "metric": "v5.0.1 cost per task (low 3.10, high 9.08, xhigh 14.83, max 26.54 USD; medium not measured) scaled into v4.3.2 by Claude Fable 5.1's max, the one figure both versions measured (7.629706 in v4.3.2, 12.99 in v5.0.1)",
+      "retrieved": "2026-11-09"
     }
   },
   "baseline": {
@@ -45,12 +51,11 @@
       "xhigh": 0.123786,
       "max": 0.21277
     },
-    "claude-fable-5-1": {
-      "low": 2.371025,
-      "medium": 2.982597,
-      "high": 3.912527,
-      "xhigh": 5.978304,
-      "max": 7.629706
+    "claude-fable-5-2": {
+      "low": 1.820792,
+      "high": 5.333159,
+      "xhigh": 8.710434,
+      "max": 15.588329
     },
     "gpt-6-luna": {
       "none": 0.011345,

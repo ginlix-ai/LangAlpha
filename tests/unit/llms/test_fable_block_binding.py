@@ -1,4 +1,4 @@
-"""Claude Fable 5.1 drops a block whose prefix changed instead of refusing the request.
+"""Claude Fable 5.2 drops a block whose prefix changed instead of refusing the request.
 
 Where the API enforces the prefix check, a request with ``thinking.block_binding``
 unset is refused with a 400 on the first edit, and the resilience retry then
@@ -16,9 +16,9 @@ from tests.unit.ptc_agent.agent.prefix_stability import BINDING_BETA, Wire, anth
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", ["claude-fable-5-1", "claude-fable-5-1-oauth"])
+@pytest.mark.parametrize("route", ["claude-fable-5-2", "claude-fable-5-2-oauth"])
 async def test_both_fable_routes_drop_a_mismatched_block(monkeypatch, route):
-    wire = Wire([reply(1, text="Hello.", model_name="claude-fable-5-1")]).install(monkeypatch, stream=False)
+    wire = Wire([reply(1, text="Hello.", model_name="claude-fable-5-2")]).install(monkeypatch, stream=False)
     agent = create_agent(model=anthropic_model(route), system_prompt="Answer plainly.")
     await agent.ainvoke({"messages": [HumanMessage("Hi.")]})
 

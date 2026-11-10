@@ -140,11 +140,11 @@
       "write": "parameters.reasoning.effort"
     }
   },
-  "claude-fable-5-1": {
+  "claude-fable-5-2": {
     "prompt_guidance": "lean",
-    "model_id": "claude-fable-5-1",
+    "model_id": "claude-fable-5-2",
     "provider": "anthropic",
-    "display_name": "Claude Fable 5.1",
+    "display_name": "Claude Fable 5.2",
     "visible": true,
     "speed": 3,
     "intelligence": 5,
@@ -178,7 +178,7 @@
         "xhigh",
         "max"
       ],
-      "default": "high",
+      "default": "medium",
       "write": "parameters.output_config.effort"
     }
   },
@@ -1453,11 +1453,11 @@
       "store": false
     }
   },
-  "claude-fable-5-1-oauth": {
+  "claude-fable-5-2-oauth": {
     "prompt_guidance": "lean",
-    "model_id": "claude-fable-5-1",
+    "model_id": "claude-fable-5-2",
     "provider": "claude-oauth",
-    "display_name": "Claude Fable 5.1",
+    "display_name": "Claude Fable 5.2",
     "visible": true,
     "speed": 3,
     "intelligence": 5,
@@ -1491,7 +1491,7 @@
         "xhigh",
         "max"
       ],
-      "default": "high",
+      "default": "medium",
       "write": "parameters.output_config.effort"
     }
   },

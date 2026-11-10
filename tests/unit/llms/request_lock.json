@@ -1,5 +1,5 @@
 {
- "claude-fable-5-1": {
+ "claude-fable-5-2": {
   "client": "ChatAnthropic",
   "graph_build": {
    "middleware": [
@@ -74,11 +74,11 @@
   },
   "metadata": {
    "billing_type": "byok",
-   "manifest_model": "claude-fable-5-1",
-   "pricing_model_id": "claude-fable-5-1",
+   "manifest_model": "claude-fable-5-2",
+   "pricing_model_id": "claude-fable-5-2",
    "pricing_provider": "anthropic",
    "provider_route": "anthropic",
-   "reasoning_effort": "high"
+   "reasoning_effort": "medium"
   },
   "request": {
    "body": {
@@ -89,9 +89,9 @@
       "role": "user"
      }
     ],
-    "model": "claude-fable-5-1",
+    "model": "claude-fable-5-2",
     "output_config": {
-     "effort": "high"
+     "effort": "medium"
     },
     "stream": true,
     "system": "You are a lock probe.",
@@ -132,7 +132,7 @@
    "url": "https://api.anthropic.com/v1/messages"
   }
  },
- "claude-fable-5-1-oauth": {
+ "claude-fable-5-2-oauth": {
   "client": "ChatAnthropicOAuth",
   "graph_build": {
    "middleware": [
@@ -207,11 +207,11 @@
   },
   "metadata": {
    "billing_type": "oauth",
-   "manifest_model": "claude-fable-5-1-oauth",
-   "pricing_model_id": "claude-fable-5-1",
+   "manifest_model": "claude-fable-5-2-oauth",
+   "pricing_model_id": "claude-fable-5-2",
    "pricing_provider": "claude-oauth",
    "provider_route": "claude-oauth",
-   "reasoning_effort": "high"
+   "reasoning_effort": "medium"
   },
   "request": {
    "body": {
@@ -222,9 +222,9 @@
       "role": "user"
      }
     ],
-    "model": "claude-fable-5-1",
+    "model": "claude-fable-5-2",
     "output_config": {
-     "effort": "high"
+     "effort": "medium"
     },
     "stream": true,
     "system": [

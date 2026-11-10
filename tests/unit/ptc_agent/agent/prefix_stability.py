@@ -1,6 +1,6 @@
 """What an Anthropic request carries in front of each earlier thinking block.
 
-A thinking block from Claude Fable 5.1 or a 5.5 model stays valid only while
+A thinking block from Claude Fable 5.2 or a 5.5 model stays valid only while
 the top-level ``system``, the set of ``tools`` and every message before it are
 byte-identical to what was sent when the block was produced. With server-side
 compaction the message part of that prefix starts at the newest compaction

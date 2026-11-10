@@ -125,7 +125,7 @@ async def test_every_claude_request_sends_every_claude_block(monkeypatch, route)
         "gpt-6-luna",
         f"claude-haiku-5-5{route}",
         "deepseek-flash",
-        f"claude-fable-5-1{route}",
+        f"claude-fable-5-2{route}",
         f"claude-opus-5-5{route}",
     ]
     view = await _switch(monkeypatch, turns)
@@ -141,7 +141,7 @@ async def test_a_route_switch_still_sends_every_claude_block(monkeypatch):
     # so a switch between the routes edits every block's prefix whatever is
     # sent; leaving the blocks out would lose them for the way back too.
     view = await _switch(
-        monkeypatch, ["claude-opus-5-5", "claude-opus-5-5-oauth", "claude-sonnet-5-5", "claude-fable-5-1-oauth"]
+        monkeypatch, ["claude-opus-5-5", "claude-opus-5-5-oauth", "claude-sonnet-5-5", "claude-fable-5-2-oauth"]
     )
 
     assert len(view.payloads) == 8
