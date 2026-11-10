@@ -1,0 +1,157 @@
+/* Explain card for an agent chart-layer element. The overlay is click-through;
+   only a pinned card takes the pointer, so the chart pans and zooms under a
+   hover card as if it were not there. */
+
+.chart-layer-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Over the OHLC crosshair tooltip (20): the card is what the pointer asked for. */
+  z-index: 21;
+}
+
+.chart-layer-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px 10px;
+  border-radius: var(--cs-radius-float, var(--radius, 8px));
+  border: 1px solid var(--color-shell-edge, var(--color-border-muted));
+  background: var(--color-shell-float, var(--color-bg-elevated));
+  box-shadow: var(--cs-float-shadow, var(--shadow-card));
+  color: var(--color-text-primary);
+  font-family: var(--font-content);
+  pointer-events: none;
+  animation: chart-layer-card-in var(--motion-quick) var(--ease-out);
+}
+
+.chart-layer-card--pinned {
+  pointer-events: auto;
+}
+
+@keyframes chart-layer-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chart-layer-card-kicker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--color-text-tertiary);
+}
+
+.chart-layer-card-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+
+.chart-layer-card-type {
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.chart-layer-card-sep {
+  flex-shrink: 0;
+}
+
+.chart-layer-card-layer {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-layer-card-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin: -4px -6px -4px auto;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+
+.chart-layer-card-close:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.chart-layer-card-close:focus-visible,
+.chart-layer-card-ask:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+.chart-layer-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.chart-layer-card-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 168px;
+  overflow: auto;
+}
+
+.chart-layer-card-hint {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--color-text-quaternary);
+}
+
+.chart-layer-card-actions {
+  display: flex;
+  margin-top: 6px;
+}
+
+.chart-layer-card-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
+  border: 1px solid var(--color-border-elevated);
+  background: transparent;
+  color: var(--color-text-primary);
+  font: 500 12px var(--font-content);
+  cursor: pointer;
+}
+
+.chart-layer-card-ask:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
+}
+
+.chart-layer-card-ask:disabled {
+  cursor: default;
+  color: var(--color-text-secondary);
+}

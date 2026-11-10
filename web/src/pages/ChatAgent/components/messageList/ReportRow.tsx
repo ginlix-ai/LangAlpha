@@ -11,6 +11,8 @@ import type { MessageProvenance } from '@/types/chat';
 import { mapReportOutcome } from '../../hooks/usePTCDispatchStatus';
 import { useOpenDispatchedThread, type DispatcherContext } from '../../hooks/useOpenDispatchedThread';
 import { OPEN_ACTION } from '../analystHandoff/HandoffParts';
+import type { ChartLayersCard } from '../chartLayerGrouping';
+import { InlineChartLayerCard } from '../charts/InlineChartLayerCard';
 import { HANDOFF_PHASES, handoffPhase } from '../analystHandoff/handoffModel';
 import { commandName, commandOutcome, OUTCOME_KEYS } from '../commands/commandWords';
 import { SubagentGlyph } from '../mcp/subagentGlyph';
@@ -41,10 +43,13 @@ export function ReportRow({
   together,
   readOnly,
   dispatcherContext,
+  chartCards,
 }: {
   id: string;
   provenance: ReportProvenance;
   together?: boolean;
+  /** The chart cards drawn under the row (`planReportChartCards`). */
+  chartCards?: readonly ChartLayersCard[];
   readOnly?: boolean;
   dispatcherContext?: DispatcherContext | null;
 }): React.ReactElement {
@@ -62,7 +67,7 @@ export function ReportRow({
       {provenance.kind === 'analyst_report'
         ? <AnalystReportRow provenance={provenance} readOnly={readOnly} dispatcherContext={dispatcherContext} />
         : provenance.kind === 'command_report'
-          ? <CommandReportRow provenance={provenance} readOnly={readOnly} />
+          ? <CommandReportRow provenance={provenance} readOnly={readOnly} chartCards={chartCards} />
           : <TaskReportRow provenance={provenance} readOnly={readOnly} />}
     </div>
   );
@@ -190,15 +195,22 @@ const COMMAND_LEADS = {
  * the description the agent gave it, in the words a task's report uses (one
  * stopped an hour after its turn reads as stopped early, not failed), and
  * the way back to the tool card it started from. A command that named no
- * call has no way in, as a share's row has none.
+ * call has no way in, as a share's row has none. The chart layers it
+ * published after its hand-off get the card per chart an inline call's do,
+ * under the line, since its tool card closed before they came; the turn the
+ * report opens folds its own publishes on those charts into them.
  */
-function CommandReportRow({ provenance, readOnly }: { provenance: CommandReport; readOnly?: boolean }): React.ReactElement {
+function CommandReportRow({ provenance, readOnly, chartCards = [] }: {
+  provenance: CommandReport;
+  readOnly?: boolean;
+  chartCards?: readonly ChartLayersCard[];
+}): React.ReactElement {
   const { t } = useTranslation();
   const { onToolCallDetailClick } = useMessageActions();
   const { tool, description, status, failureReason, toolCallId } = provenance;
   const outcome = commandOutcome(status, failureReason);
   const { Lead, tone } = COMMAND_LEADS[status];
-  return (
+  const line = (
     <ReportLineParts
       lead={<Lead aria-hidden className={cn('h-3.5 w-3.5 shrink-0', tone)} />}
       name={commandName(description, tool, t)}
@@ -206,5 +218,14 @@ function CommandReportRow({ provenance, readOnly }: { provenance: CommandReport;
       outcomeKey={OUTCOME_KEYS[outcome].report}
       onOpen={toolCallId && onToolCallDetailClick && !readOnly ? () => onToolCallDetailClick(toolCallId) : undefined}
     />
+  );
+  if (chartCards.length === 0) return line;
+  return (
+    <>
+      {line}
+      <div className="mt-2 flex flex-col gap-2">
+        {chartCards.map((card) => <InlineChartLayerCard key={card.id} card={card} />)}
+      </div>
+    </>
   );
 }

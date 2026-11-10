@@ -16,6 +16,7 @@ import { act, waitFor } from '@testing-library/react';
 import { renderHookWithProviders } from '@/test/utils';
 import { settleMountEffect } from './chatHookHarness';
 import type { AssistantMessage, ChatMessage, UserMessage } from '@/types/chat';
+import type { ChartView } from '@/pages/MarketView/types/chartView';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string) => k }),
@@ -95,6 +96,9 @@ const sendPosts = () => posts.filter((p) => p.path === 'messages');
 
 const QUESTION = 'what moved NVDA today?';
 const CONTEXT = [{ type: 'image', data: 'data:image/png;base64,iVBORw0KGgo=', description: 'chart.png' }];
+const VIEWS: ChartView[] = [{
+  symbol: 'NVDA', timeframe: '1day', theme: 'dark', locale: 'en-US', from: '2026-08-01', to: '2026-10-30', width: 1180, height: 760,
+}];
 const users = (messages: readonly ChatMessage[]) => messages.filter((m) => m.role === 'user');
 
 const assistants = (messages: readonly ChatMessage[]): AssistantMessage[] =>
@@ -121,7 +125,7 @@ async function advance(ms: number) {
 
 async function mountAndSend(
   additionalContext: Record<string, unknown>[] | null = null,
-  options: { subagentsAllowed?: boolean } = {},
+  options: { subagentsAllowed?: boolean; chartViews?: ChartView[] } = {},
 ) {
   const rendered = renderHookWithProviders(() => useChatMessages(WS, TID));
   await waitFor(() => expect(mockReplay).toHaveBeenCalled());
@@ -315,6 +319,31 @@ describe('useChatMessages: a turn the server ends with `retry`', () => {
     await advance(1000);
 
     expect(retryPosts()[0].body).toMatchObject({ run_id: 'run-1', additional_context: CONTEXT });
+  });
+
+  it('sends the charts\' views as `chart_views`, apart from the context, on a resend too', async () => {
+    onSend = (n) => n === 1
+      ? sse('run-1', [STARTING, retryFrame(1, 'resend')], { drop: true })
+      : sse('run-2', [metadataFrame('run-2'), ANSWER], { drop: false });
+
+    await mountAndSend(CONTEXT, { chartViews: VIEWS });
+    await advance(1000);
+
+    const [first, again] = sendPosts();
+    for (const post of [first, again]) {
+      expect(post.body).toMatchObject({ additional_context: CONTEXT, chart_views: VIEWS });
+    }
+  });
+
+  it('sends the charts\' views the send carried with /retry', async () => {
+    onSend = () => sse('run-1', [STARTING, retryFrame(1)], { drop: true });
+    onRetry = () => sse('run-2', [metadataFrame('run-2'), ANSWER], { drop: false });
+
+    await mountAndSend(null, { chartViews: VIEWS });
+    await advance(1000);
+
+    expect(sendPosts()[0].body.additional_context).toBeUndefined();
+    expect(retryPosts()[0].body).toMatchObject({ run_id: 'run-1', chart_views: VIEWS });
   });
 
   it('a failure `error` with no run left keeps the send for the manual Retry', async () => {

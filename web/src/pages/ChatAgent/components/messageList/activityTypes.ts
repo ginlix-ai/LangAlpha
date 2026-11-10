@@ -33,7 +33,6 @@ export interface ToolActivityItem extends ActivityIdentity {
    *  absent from history. */
   _createdAt?: number;
   _recentlyCompleted?: boolean;
-  _annotationStep?: boolean;
   /** The computer's root, which the row's title, pill and icon read its
    *  paths under. Stamped by the projection that built the row, so every
    *  reader of the row agrees with the filter that kept it. */

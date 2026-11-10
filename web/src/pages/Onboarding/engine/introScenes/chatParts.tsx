@@ -450,7 +450,7 @@ export function ChartCard({
 
 /** A file's thumbnail on its card: a page over a tilted sheet, the kind's
     glyph on it, and under the glyph its `label`, set as the app's
-    `.turn-file-ext` sets it: a file's extension, or a chart's interval. */
+    `.turn-file-ext` sets it: the file's extension. */
 function FileThumb({ icon: Glyph, label }: { icon: Icon; label?: string }) {
   return (
     <span className="relative h-[15px] w-3 shrink-0">
@@ -486,25 +486,21 @@ function FileThumb({ icon: Glyph, label }: { icon: Icon; label?: string }) {
 /**
  * A file the turn produced (`TurnFileCards`): thumbnail, name, what it is
  * (`meta`), and the Open button with its menu, or the deck's count once
- * `count` files are stacked. The thumbnail carries `label` under its glyph:
- * a file's extension, or, on a chart the agent drew on
- * (`InlineChartAnnotationCard`), its interval, that card having Open on its
- * own (`solo`), there being no menu to open it otherwise.
+ * `count` files are stacked. The thumbnail carries `label`, the file's
+ * extension, under its glyph.
  */
-export function FileCard({
+function FileCard({
   name,
   meta,
   icon,
   label,
   count = 1,
-  solo = false,
 }: {
   name: string;
   meta: ReactNode;
   icon: Icon;
   label?: string;
   count?: number;
-  solo?: boolean;
 }) {
   const { t } = useTranslation();
   const open = (
@@ -545,13 +541,6 @@ export function FileCard({
             {count}
           </span>
           <ChevronDown className="h-2 w-2" style={{ color: 'var(--color-text-tertiary)' }} />
-        </span>
-      ) : solo ? (
-        <span
-          className="ml-auto flex shrink-0 items-center gap-0.5 rounded-[4px] border px-1 py-0.5 text-[6px] leading-none"
-          style={{ borderColor: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
-        >
-          {open}
         </span>
       ) : (
         <span

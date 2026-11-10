@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.server.handlers.chat import error_handling
+from src.server.models.additional_context import SkillContext
 from src.server.services.runs.admission import RunScope
 
 # The scope routes releases through the definition site — patch it there.
@@ -339,7 +340,7 @@ _SEND = {"messages": [{"role": "user", "content": "what moved NVDA?"}]}
         ),
         # Context sent beside the text is kept by no row: a retry brings it.
         (
-            {**_SEND, "additional_context": [{"type": "skills", "name": "dcf-model"}]},
+            {**_SEND, "additional_context": [SkillContext(name="dcf-model")]},
             {"checkpoint_id": None, "context": True},
             "retry",
         ),

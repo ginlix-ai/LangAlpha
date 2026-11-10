@@ -145,18 +145,38 @@ class TestBuildChartSelectionReminder:
         # chart_id upper-cases the symbol.
         assert "<chart-selection chart_id='NVDA:1day' selection_type='region'>" in result
         # Bounds.
-        assert "Time range: 2024-01-03T00:00:00.000Z → 2024-02-15T00:00:00.000Z" in result
+        # Chart times are the venue's wall clock stamped Z by the web; they render
+        # zone-less, as chartkit and bars() read them.
+        assert "Time range: 2024-01-03 → 2024-02-15" in result
         assert "180.5" in result and "195" in result
         # OHLCV table.
         assert "| time | open | high | low | close | volume |" in result
         # Prices render via %g (FP-noise stripped, trailing .0 dropped); volume
         # stays a plain float string.
-        assert "| 2024-01-03T00:00:00.000Z | 1 | 2 | 1 | 2 | 1000.0 |" in result
-        # Draw-back line: rectangle corners map to (start, high) / (end, low).
-        assert "To annotate this back onto the chart, call draw_chart_annotation(" in result
-        assert '"type": "rectangle"' in result
-        assert '"point1": {"time": "2024-01-03T00:00:00.000Z", "price": 195}' in result
-        assert '"point2": {"time": "2024-02-15T00:00:00.000Z", "price": 180.5}' in result
+        assert "| 2024-01-03 | 1 | 2 | 1 | 2 | 1000.0 |" in result
+        # Draw-back line: box corners map to (start, high) / (end, low).
+        assert (
+            'To draw this back, build on bars("NVDA", "1day") and add '
+            'c.box(("2024-01-03", 195), ("2024-02-15", 180.5)).'
+        ) in result
+
+    def test_intraday_region_keeps_the_wall_clock(self):
+        # 10:30 on the venue's clock arrives as 10:30Z; read as UTC it would
+        # draw hours early on a US chart.
+        sel = ChartSelectionContext(
+            symbol="nvda",
+            timeframe="1hour",
+            selection_type="region",
+            time_start="2024-01-03T10:30:00.000Z",
+            time_end="2024-01-04T15:00:00.000Z",
+            price_low=180.5,
+            price_high=195,
+            bars=[{"time": "2024-01-03T10:30:00.000Z", "close": 1}],
+        )
+        result = build_chart_selection_reminder([sel])
+        assert "Time range: 2024-01-03 10:30 → 2024-01-04 15:00" in result
+        assert "| 2024-01-03 10:30 |" in result
+        assert 'c.box(("2024-01-03 10:30", 195), ("2024-01-04 15:00", 180.5)).' in result
 
     def test_price_level_renders_single_price_and_price_line(self):
         [sel] = parse_chart_selection_contexts([_PRICE_LEVEL_DICT])
@@ -168,7 +188,7 @@ class TestBuildChartSelectionReminder:
         assert "Time range:" not in result
         # Empty bars → no OHLCV table.
         assert "| time | open | high | low | close | volume |" not in result
-        assert '"type": "price_line", "price": 200' in result
+        assert 'build on bars("AAPL", "1hour") and add c.level(200).' in result
 
     def test_price_noise_stripped_in_render(self):
         # Pixel→price interpolation can deliver 195.10000000000002; the rendered
@@ -184,7 +204,7 @@ class TestBuildChartSelectionReminder:
         assert result is not None
         assert "195.10000000000002" not in result
         assert "Price level: 195.1" in result
-        assert '"price": 195.1' in result
+        assert "c.level(195.1)" in result
 
     def test_includes_explainer_preamble(self):
         [sel] = parse_chart_selection_contexts([_REGION_DICT])

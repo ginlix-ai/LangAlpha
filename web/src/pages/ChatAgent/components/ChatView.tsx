@@ -70,6 +70,7 @@ import { DispatchStatusProvider } from '../hooks/usePTCDispatchStatus';
 import JumpToLatestPill from './JumpToLatestPill';
 import ShareButton from './ShareButton';
 import { WorkspaceProvider } from '../contexts/WorkspaceContext';
+import { ChartComposerContext } from '@/components/chart/chartComposer';
 import { ShareLinkOpenerContext } from '../contexts/ShareLinkOpenerContext';
 import { RouteLeaveGuardContext } from '../contexts/RouteLeaveGuardContext';
 import SubagentStatusBar from './SubagentStatusBar';
@@ -136,7 +137,7 @@ import { useRightPanel } from './chatView/useRightPanel';
 import { handOffToggleFocus } from './filePanel/panelToggleFocus';
 import { PanelLoadingStrip } from './filePanel/PanelLoadingStrip';
 import { usePanelFiles } from './chatView/usePanelFiles';
-import { usePanelChartSelections } from './chatView/usePanelChartSelections';
+import { usePanelChart } from './chatView/usePanelChart';
 import { SelectionChips } from '@/pages/MarketView/components/SelectionChips';
 import { useMessageActionBundles } from './chatView/useMessageActionBundles';
 
@@ -717,7 +718,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [isCompacting, isLoading, handleStop, stableStopCompaction]);
 
-  const { chips: chartSelectionChips, takeForSend: takeChartSelections } = usePanelChartSelections(isActive);
+  const panelChart = usePanelChart(isActive, chatInputRef);
 
   // Wrapper: converts ChatInput's send into handleSendMessage(message,
   // additionalContext, attachmentMeta), the send itself the draft it gives back.
@@ -748,7 +749,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
 
     // Watch toggle activates the market-watch skill (re-sent every turn while
-    // on, like MarketView's chart-annotation). Dedup against a manually-typed
+    // on, as MarketView's sends carry the chart-annotation skill). Dedup against a manually-typed
     // /market-watch pill added by the loop above (SkillsMiddleware also dedups
     // the body, but this keeps the context list clean).
     if (modelOptions.marketWatch && marketWatchEnabled && !contexts.some((c) => c.type === 'skills' && c.name === 'market-watch')) {
@@ -769,8 +770,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       contexts.push(...(items as unknown as Record<string, unknown>[]));
     }
 
-    // Regions and price levels picked on a panel chart tab.
-    const picked = takeChartSelections(message);
+    // Regions and price levels picked on a panel chart tab, and what each chart shows.
+    const { picked, chartViews } = panelChart.takeForSend(message);
     if (picked) {
       contexts.push(...picked.contexts);
       if (picked.attachments.length > 0) attachmentMeta = [...(attachmentMeta ?? []), ...picked.attachments];
@@ -784,9 +785,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       ...modelOptions,
       ...(picked ? { chartSelections: picked.snapshots } : {}),
       ...(artifactComments ? { artifactComments } : {}),
+      ...(chartViews.length > 0 ? { chartViews } : {}),
       draft: send,
     }));
-  }, [marketWatchEnabled, stableSendMessage, takeChartSelections, takeQueuedComments, composerSendOptions]);
+  }, [marketWatchEnabled, stableSendMessage, panelChart, takeQueuedComments, composerSendOptions]);
 
   const planReader = useLatestRef(usePlanReader());
 
@@ -1013,7 +1015,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // The queued comments ride above the text box and count as something to
   // send. Folded as the sheet starts over the chat, so it docks folded.
   const composerDeck = {
-    hasExternalContext: chartSelectionChips.length > 0 || commentDeck.ready.length > 0,
+    hasExternalContext: panelChart.chips.length > 0 || commentDeck.ready.length > 0,
     placeholder: commentDeck.placeholder ?? chatPlaceholder,
     deck: <QueuedCommentDeck deck={commentDeck} running={isLoading} compact={isMobile && dockOpen} onOpen={handleOpenArtifactComment}
       onAddToTurn={addCommentsToTurn} focusComposer={focusComposer} />,
@@ -1302,6 +1304,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         fastMode,
         widgetSnapshots,
         chartSelections,
+        chartViews,
         skills,
         hiddenOpener,
         threadTitle,
@@ -1317,6 +1320,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           fastMode,
           widgetSnapshots,
           chartSelections,
+          chartViews,
           subagentsAllowed: subagentsToSend,
           ...tuningToSend,
           hiddenOpener,
@@ -1434,6 +1438,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   }
 
   return (
+    <ChartComposerContext value={panelChart.composer}>
     <WorkspaceProvider workspaceId={workspaceId} downloadFile={null} folders={chatFolders}>
     {/* A link in the transcript that changes the route unmounts the file
         panel beside it, so it leaves through the panel's guard like the
@@ -1830,7 +1835,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     />
                     <ThreadOffers model={threadModel} subagents={threadSubagents} summary={summaryHint} />
                     <ClaudeCodePlanRow workspaceId={workspaceId} chiefOfStaff={isHome} model={threadModel.model} />
-                    <SelectionChips chips={chartSelectionChips} />
+                    <SelectionChips chips={panelChart.chips} />
                     {/* At a file's foot the transcript is out of view, so the
                         turn's progress comes along with the composer. */}
                     {composerDock.docked && <DockTurnStatus running={isLoading} messages={messages} />}
@@ -2087,6 +2092,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     </ShareLinkOpenerContext>
     </RouteLeaveGuardContext>
     </WorkspaceProvider>
+    </ChartComposerContext>
   );
 }
 

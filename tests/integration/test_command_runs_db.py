@@ -675,3 +675,70 @@ async def test_a_command_notice_a_week_old_is_closed(thread, test_db_pool):
     }
 
     assert closed == {old}
+
+
+# -- The chart layers a command published ------------------------------------
+
+
+def _layer_outbox(workspace_id: str, layer_id: str = "orb"):
+    """A command's staged chart layer, as ``stage_outbox`` hands it over."""
+    from src.server.models.chart_layer import ChartRef, CommandOutbox
+
+    ref = ChartRef.of(workspace_id, "SPY", "5min").layer(layer_id)
+    body = {"version": 1, "id": layer_id, "title": "Opening range", "symbol": "SPY", "timeframe": "5min"}
+    return CommandOutbox(
+        rows=[(ref, body)],
+        report=f"Published chart layer {layer_id}",
+        layers=[ref.artifact("Opening range", None, None)],
+        unsaved_report=f"Chart layer {layer_id!r} NOT published",
+    )
+
+
+async def _layer_ids(pool, workspace_id: str) -> list[str]:
+    async with pool.connection() as conn:
+        result = await conn.execute(
+            "SELECT annotation_id FROM chart_annotations WHERE workspace_id = %s ORDER BY 1",
+            (workspace_id,),
+        )
+        return [r["annotation_id"] for r in await result.fetchall()]
+
+
+async def test_a_commands_layers_are_stored_once_by_the_finalize_that_ends_it(thread, test_db_pool):
+    """A retried settle, after one that committed, stores nothing, so a layer
+    the user deleted in between stays deleted."""
+    command_id = (await _handoff(thread))["command_id"]
+    outbox = _layer_outbox(thread.workspace_id)
+
+    ended = await _end(command_id, QUIET, outbox=outbox)
+    assert ended["outbox_report"] == "Published chart layer orb"
+    assert ended["outbox_layers"] == list(outbox.layers)
+    assert await _layer_ids(test_db_pool, thread.workspace_id) == ["orb"]
+
+    async with test_db_pool.connection() as conn:
+        await conn.execute("DELETE FROM chart_annotations WHERE workspace_id = %s", (thread.workspace_id,))
+    assert await _end(command_id, QUIET, outbox=outbox) is None
+    assert await _layer_ids(test_db_pool, thread.workspace_id) == []
+
+
+async def test_of_two_racing_settles_only_the_winners_layers_are_stored(thread, test_db_pool):
+    command_id = (await _handoff(thread))["command_id"]
+    ends = await asyncio.gather(
+        _end(command_id, QUIET, outbox=_layer_outbox(thread.workspace_id, "watcher")),
+        _end(command_id, QUIET, outbox=_layer_outbox(thread.workspace_id, "stopper")),
+    )
+    [won] = [e for e in ends if e is not None]
+    assert await _layer_ids(test_db_pool, thread.workspace_id) == [won["outbox_layers"][0]["layer_id"]]
+
+
+async def test_a_layer_store_that_fails_still_ends_the_command_and_says_so(thread, test_db_pool):
+    command_id = (await _handoff(thread))["command_id"]
+    # No such workspace: the row's foreign key refuses it.
+    outbox = _layer_outbox(str(uuid.uuid4()))
+
+    ended = await _end(command_id, Outcome.exited(0, up=True), outbox=outbox)
+    assert ended["status"] == "completed"
+    assert (ended["outbox_report"], ended["outbox_layers"]) == ("Chart layer 'orb' NOT published", None)
+    row = await cr.get_thread_command(thread.id, command_id)
+    assert (row["outbox_report"], row["outbox_layers"]) == ("Chart layer 'orb' NOT published", None)
+    # Its notice committed with the end all the same.
+    assert [j["hook_type"] for j in await _jobs(test_db_pool, thread.id)] == ["command_report_back"]

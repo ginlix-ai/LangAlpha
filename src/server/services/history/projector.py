@@ -7,7 +7,7 @@ adapter instead of rippling through replay.
 
 Artifact derivation mirrors the live emitters: ``file_operation``/``todo_update``
 payloads are rebuilt from tool-call args (the same source the middleware reads),
-``html_widget``/``preview_url``/``chart_annotation`` from the checkpointed
+``html_widget``/``preview_url`` from the checkpointed
 ToolMessage artifact, and ``task`` from ``additional_kwargs.task_artifact``.
 Non-derivable payloads (image URL rewrites, widget ``data``) are merged by the
 replay endpoint from persisted sources, not synthesized here.
@@ -64,8 +64,6 @@ _FILE_OPERATION_TOOLS = {"Write", "Edit"}
 _ARTIFACT_FROM_TOOL_MESSAGE = {
     "ShowWidget": "html_widget",
     "GetPreviewUrl": "preview_url",
-    "draw_chart_annotation": "chart_annotation",
-    "manage_chart_annotations": "chart_annotation",
 }
 
 

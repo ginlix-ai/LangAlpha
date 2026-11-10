@@ -78,6 +78,8 @@ export interface LocationState {
    * to metadata, so replay re-renders them regardless).
    */
   chartSelections?: import('@/pages/MarketView/stores/chartSelectionStore').ChartSelectionSnapshot[];
+  /** What MarketView's chart showed at the send, for `initialMessage`'s `chart_views`. */
+  chartViews?: import('@/pages/MarketView/types/chartView').ChartView[];
   /**
    * Skill names to preload as hidden skills (chart-annotation forwarding from
    * MarketView). Merged into `additionalContext` as `{type:'skills',name}` on

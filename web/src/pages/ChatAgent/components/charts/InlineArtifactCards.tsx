@@ -4,7 +4,6 @@ import type { InlineCardProps } from './cardReaders';
 import { InlineAutomationCard } from './InlineAutomationCards';
 import { InlinePreviewCard } from './InlinePreviewCard';
 import { ArtifactCommentReplyCard } from '../artifactComments/ArtifactCommentReplyLine';
-import { InlineChartAnnotationCard } from './InlineChartAnnotationCard';
 import { InlineQuoteCard } from './InlineQuoteCard';
 import { InlineStockPriceCard } from './InlineStockPriceCard';
 import { InlineCompanyOverviewCard } from './InlineCompanyOverviewCard';
@@ -45,7 +44,6 @@ export const INLINE_ARTIFACT_TOOLS = new Set([
   'create_automation',
   'GetPreviewUrl',
   'WebSearch',
-  'draw_chart_annotation',
 ]);
 
 // ─── Artifact-type dispatch ─────────────────────────────────────────
@@ -73,7 +71,6 @@ export const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<InlineCardP
   preview_url: InlinePreviewCard,
   artifact_comment: ArtifactCommentReplyCard,
   web_search: InlineWebSearchCard,
-  chart_annotation: InlineChartAnnotationCard,
   order_receipt: OrderReceiptCard,
   message_delivery: MessageDeliveryCard,
 };

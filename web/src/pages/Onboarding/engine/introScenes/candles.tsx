@@ -1,6 +1,9 @@
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import { MessageSquarePlus, X } from 'lucide-react';
 import { PAST, useSceneTime } from './clock';
 import { useSvgId } from './kit';
+import { cardPosition, type CardMetrics } from '@/pages/MarketView/utils/layerCardPosition';
 import {
   AXIS_W,
   TIME_H,
@@ -15,8 +18,8 @@ import {
    app's chart theme. Candles over a volume histogram in the bottom fifth of
    the price pane, MA20 and MA50, an RSI pane beneath, the price axis on the
    right with the last price on it, the time axis below. Over it go the
-   agent's event badges, each pinned to the bar its news hit, and the user's
-   selection (chartTools.tsx). The series and its scale are nvdaSeries.ts. */
+   agent's chart layer, a label on the bar each piece of news hit, and the
+   user's selection (chartTools.tsx). The series and its scale are nvdaSeries.ts. */
 
 /* ── the chart ─────────────────────────────────────────────────────────── */
 
@@ -205,137 +208,159 @@ export function Candles({
   );
 }
 
-/* ── the agent's event badges ──────────────────────────────────────────── */
+/* ── the agent's layer ─────────────────────────────────────────────────── */
 
-/** An event's color when the agent names none (`DEFAULT_EVENT_COLOR`): the
-    annotation amber, apart from the slate blue of technical marks. */
-const EVENT_COLOR = '#E9954A';
-/** A badge's center keeps this far from the pane's edges (`EDGE_X`). */
+/** A layer element's color when the agent names none: the layer theme's
+    neutral. */
+const LAYER_COLOR = 'var(--color-info)';
+/** A label's center keeps this far from the pane's edges. */
 const EDGE_X = 15;
-/** An anchor higher than this hangs its badge under it (`FLIP_Y`). */
-const FLIP_Y = 22;
+/** A label's chip sits this far above its point, center to point. */
+const CHIP_RISE = 7;
 
-/** Where a click lands on an event's badge, in chart px: over its bar, at
-    the middle of a badge hung above its dot (the 4.5px gap and half the
-    badge's height). The badges the scenes click sit clear of the pane's
-    edges and its top, so neither clamp nor flip applies. */
-// eslint-disable-next-line react-refresh/only-export-components -- the anchor travels with the badge's geometry
-export function badgeAnchor(k: ChartScale, ev: ChartEvent): [number, number] {
-  return [k.x(ev.i), k.y(ev.price) - 10.5];
+/** Where a pointer lands on a label, in chart px: on its chip, over its bar.
+    The labels the scenes point at sit clear of the pane's edges. */
+// eslint-disable-next-line react-refresh/only-export-components -- the anchor travels with the label's geometry
+export function labelAnchor(k: ChartScale, el: ChartEvent): [number, number] {
+  return [k.x(el.i), k.y(el.price) - CHIP_RISE];
 }
 
 /**
- * An event annotation as `AgentEventOverlay` draws it, at half the app's
- * size: a dot ringed in the card color on the bar and price, and the
- * headline on an elevated badge whose caret points down at the dot (or up,
- * hung under a dot near the pane's top). Pops in at `at`. `hover` gives it
- * the accent edge; `open` shows the detail in a popover beside it.
+ * A label in the agent's chart layer as the layer renderer paints it
+ * (`chartLayer/kinds/label`), at half the app's size: a dot on the bar and
+ * price, and the text on a pill chip above it with the element's color as its
+ * dot. Pops in at `at`. `hover` gives the chip the element's edge and opens
+ * the explain card (`ChartLayerOverlay`) with its hint; `open` pins the card,
+ * with Ask about this. `layer` is the layer's title, which the card names.
  */
-export function EventBadge({
+export function LayerLabel({
   scale: k,
-  ev,
+  el,
+  layer,
   at = PAST,
   hover = false,
   open = false,
 }: {
   scale: ChartScale;
-  ev: ChartEvent;
+  el: ChartEvent;
+  layer: string;
   at?: number;
   hover?: boolean;
   open?: boolean;
 }) {
   if (useSceneTime() < at) return null;
-  const x = Math.max(EDGE_X, Math.min(k.x(ev.i), k.paneW - EDGE_X));
-  const y = k.y(ev.price);
-  const below = y < FLIP_Y;
-  const edge = hover || open ? 'var(--color-accent-primary)' : 'var(--color-border-muted)';
+  const x = Math.max(EDGE_X, Math.min(k.x(el.i), k.paneW - EDGE_X));
+  const y = k.y(el.price);
   return (
-    <span className="absolute" style={{ left: x, top: y, zIndex: open ? 1 : undefined }}>
-      <span
-        className="intro-pop absolute block h-[3.5px] w-[3.5px] rounded-full"
-        style={{
-          left: -1.75,
-          top: -1.75,
-          background: EVENT_COLOR,
-          boxShadow: '0 0 0 1px var(--color-bg-card)',
-        }}
-      />
-      {/* centered on the anchor; the pop animates the badge's own transform */}
-      <span
-        className="absolute left-0 -translate-x-1/2"
-        style={below ? { top: 4.5 } : { bottom: 4.5 }}
-      >
+    <>
+      <span className="absolute" style={{ left: x, top: y }}>
         <span
-          className="intro-pop relative flex items-center gap-[3px] whitespace-nowrap rounded-[3px] border px-[4.5px] py-[1.5px] text-[5.5px] font-semibold leading-[1.3]"
-          style={{
-            background: 'var(--color-bg-elevated)',
-            borderColor: edge,
-            color: 'var(--color-text-primary)',
-            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.18)',
-          }}
+          className="intro-pop absolute block h-[2.5px] w-[2.5px] rounded-full"
+          style={{ left: -1.25, top: -1.25, background: LAYER_COLOR }}
+        />
+        {/* centered on the anchor; the pop animates the chip's own transform */}
+        <span
+          className="absolute left-0 -translate-x-1/2 -translate-y-1/2"
+          style={{ top: -CHIP_RISE }}
         >
           <span
-            className="h-[3.5px] w-[3.5px] shrink-0 rounded-full"
-            style={{ background: EVENT_COLOR }}
-          />
-          {ev.title}
-          <span
-            className="absolute left-1/2 h-[3.5px] w-[3.5px] -translate-x-1/2 rotate-45"
+            className="intro-pop flex h-[9.5px] items-center gap-[2.5px] whitespace-nowrap rounded-full border px-[4px] text-[5.5px] font-semibold leading-none transition-colors"
             style={{
-              ...(below ? { top: -2 } : { bottom: -2 }),
               background: 'var(--color-bg-elevated)',
-              borderColor: edge,
-              borderStyle: 'solid',
-              borderWidth: below ? '1px 0 0 1px' : '0 1px 1px 0',
+              borderColor: hover || open ? LAYER_COLOR : 'var(--color-border-elevated)',
+              color: 'var(--color-text-primary)',
+              boxShadow: '0 0.5px 3px rgba(0, 0, 0, 0.18)',
             }}
-          />
+          >
+            <span
+              className="h-[3px] w-[3px] shrink-0 rounded-full"
+              style={{ background: LAYER_COLOR }}
+            />
+            {el.title}
+          </span>
         </span>
-        {open && ev.detail && (
-          <EventDetail
-            ev={ev}
-            below={below}
-            // kept inside the chart, as the popover's collision padding keeps it on screen
-            shift={Math.max(DETAIL_W / 2 + 2, Math.min(x, k.width - DETAIL_W / 2 - 2)) - x}
-          />
-        )}
       </span>
-    </span>
+      {(hover || open) && (
+        <ExplainCard k={k} el={el} layer={layer} at={[x, y - CHIP_RISE]} pinned={open} />
+      )}
+    </>
   );
 }
 
-const DETAIL_W = 140;
+/** The overlay's card at half size; its height as placed, before it is measured. */
+const CARD: CardMetrics = { width: 140, height: 60, gap: 7, edge: 4 };
 
-/** The badge's detail (`agent-event-pop`, a popover on its far side from the
-    dot): the dot and headline, then the story in a few sentences. `shift`
-    moves it off center. */
-function EventDetail({ ev, below, shift }: { ev: ChartEvent; below: boolean; shift: number }) {
+/** The explain card (`.chart-layer-card`, half size): the element's kind and
+    its layer, its text, the agent's note; then the hint while it is only
+    hovered, or Ask about this once pinned. Up and to the left of the
+    pointer, as the overlay places it, else beside or below it. */
+function ExplainCard({
+  k,
+  el,
+  layer,
+  at: [px, py],
+  pinned,
+}: {
+  k: ChartScale;
+  el: ChartEvent;
+  layer: string;
+  at: [number, number];
+  pinned: boolean;
+}) {
+  const { t } = useTranslation();
+  const { left, top } = cardPosition(px, py, k.width, k.height, CARD);
   return (
     <span
-      className="intro-pop absolute left-1/2 z-10 flex flex-col gap-[3.5px] whitespace-normal rounded-[3px] border px-[7px] py-[6px]"
+      className="intro-pop absolute z-10 flex flex-col gap-[2px] rounded-[4px] border px-[6px] py-[5px]"
       style={{
-        ...(below ? { top: 'calc(100% + 5px)' } : { bottom: 'calc(100% + 5px)' }),
-        width: DETAIL_W,
-        marginLeft: shift - DETAIL_W / 2,
-        background: 'var(--color-bg-popover)',
-        borderColor: 'var(--color-border-default)',
-        boxShadow: '0 2px 6px rgba(0, 0, 0, 0.12)',
+        left,
+        top,
+        width: CARD.width,
+        background: 'var(--color-bg-elevated)',
+        borderColor: 'var(--color-border-muted)',
+        boxShadow: 'var(--shadow-card)',
       }}
     >
-      <span className="flex items-center gap-[3.5px]">
-        <span className="h-1 w-1 shrink-0 rounded-full" style={{ background: EVENT_COLOR }} />
+      <span
+        className="flex min-w-0 items-center gap-[3px] font-mono text-[5px] leading-none tracking-[0.02em]"
+        style={{ color: 'var(--color-text-tertiary)' }}
+      >
         <span
-          className="text-[6.5px] font-bold leading-none"
-          style={{ color: 'var(--color-text-primary)' }}
-        >
-          {ev.title}
-        </span>
+          className="h-[3.5px] w-[3.5px] shrink-0 rounded-full"
+          style={{ background: LAYER_COLOR }}
+        />
+        <span className="shrink-0 uppercase">{t('marketView.layerExplain.types.label')}</span>
+        <span className="shrink-0">·</span>
+        <span className="min-w-0 truncate">{layer}</span>
+        {pinned && <X className="ml-auto h-[6.5px] w-[6.5px] shrink-0" />}
       </span>
       <span
-        className="text-[6.25px] font-normal leading-[1.55]"
-        style={{ color: 'var(--color-text-secondary)' }}
+        className="text-[6.5px] font-semibold leading-[1.35]"
+        style={{ color: 'var(--color-text-primary)' }}
       >
-        {ev.detail}
+        {el.title}
       </span>
+      {el.note && (
+        <span className="text-[6px] leading-[1.5]" style={{ color: 'var(--color-text-secondary)' }}>
+          {el.note}
+        </span>
+      )}
+      {pinned ? (
+        <span
+          className="mt-[3px] flex h-[13px] w-fit items-center gap-[3px] rounded-full border px-[5px] text-[6px] font-medium leading-none"
+          style={{ borderColor: 'var(--color-border-elevated)', color: 'var(--color-text-primary)' }}
+        >
+          <MessageSquarePlus className="h-[6.5px] w-[6.5px]" />
+          {t('marketView.layerExplain.ask')}
+        </span>
+      ) : (
+        <span
+          className="mt-px text-[5.5px] leading-none"
+          style={{ color: 'var(--color-text-quaternary)' }}
+        >
+          {t('marketView.layerExplain.pinHint')}
+        </span>
+      )}
     </span>
   );
 }

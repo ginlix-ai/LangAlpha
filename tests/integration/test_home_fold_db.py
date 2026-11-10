@@ -149,12 +149,17 @@ async def test_former_rows_fold_into_home_and_retire(seed_user, test_db_pool):
         test_db_pool, "SELECT workspace_id::text AS ws FROM workspace_skill_disables"
     )
     assert disable["ws"] == first
-    (annotation,) = await _rows(
+    # Both charts' layers by one id land in Home, the former one renamed.
+    annotations = await _rows(
         test_db_pool,
-        "SELECT payload FROM chart_annotations WHERE workspace_id = %s",
+        "SELECT annotation_id, payload FROM chart_annotations WHERE workspace_id = %s"
+        " ORDER BY annotation_id",
         home,
     )
-    assert annotation["payload"] == {"from": "home"}
+    assert annotations == [
+        {"annotation_id": "a", "payload": {"from": "home"}},
+        {"annotation_id": "a-2", "payload": {"from": "former"}},
+    ]
     automations = await _rows(
         test_db_pool,
         "SELECT name, workspace_id::text AS ws FROM automations ORDER BY name",
@@ -167,6 +172,57 @@ async def test_former_rows_fold_into_home_and_retire(seed_user, test_db_pool):
         user_id,
     )
     assert usages == [{"ws": home}] * 2
+
+
+async def test_a_layer_id_both_homes_chart_has_is_kept_under_a_free_one(seed_user, test_db_pool):
+    """Every chart 117 converted holds ``earlier-annotations``, and layer ids
+    are the agent's own: the former Home's layer is renamed, in its row and
+    its payload, past every id either chart has, within the id's length cap."""
+    import json
+
+    user_id = seed_user["user_id"]
+    home = str((await workspaces.get_or_create_home_workspace(user_id))["workspace_id"])
+    former = await _former(user_id, "old-account-layers")
+    long_id = "x" * 48
+
+    def layer(layer_id: str, title: str) -> str:
+        return json.dumps({"version": 1, "id": layer_id, "title": title, "symbol": "NVDA", "timeframe": "1day"})
+
+    rows = [
+        (home, "earlier-annotations", "home"),
+        (home, long_id, "home long"),
+        (former, "earlier-annotations", "former"),
+        # The former chart's own second layer takes "-2", so the rename skips it.
+        (former, "earlier-annotations-2", "former 2"),
+        (former, long_id, "former long"),
+        (former, "only-former", "only"),
+    ]
+    async with test_db_pool.connection() as conn:
+        for ws, layer_id, title in rows:
+            await conn.execute(
+                "INSERT INTO chart_annotations "
+                "(workspace_id, chart_id, symbol, timeframe, annotation_id, payload) "
+                "VALUES (%s, 'NVDA:1day', 'NVDA', '1day', %s, %s::jsonb)",
+                (ws, layer_id, layer(layer_id, title)),
+            )
+
+    await workspaces.get_or_create_home_workspace(user_id)
+
+    landed = await _rows(
+        test_db_pool,
+        "SELECT workspace_id::text AS ws, annotation_id, payload->>'id' AS id, payload->>'title' AS title"
+        " FROM chart_annotations WHERE workspace_id = ANY(%s) ORDER BY title",
+        [home, former],
+    )
+    assert {(r["annotation_id"], r["title"]) for r in landed} == {
+        ("earlier-annotations", "home"),
+        (long_id, "home long"),
+        ("earlier-annotations-3", "former"),
+        ("earlier-annotations-2", "former 2"),
+        ("x" * 46 + "-2", "former long"),
+        ("only-former", "only"),
+    }
+    assert all(r["ws"] == home and r["id"] == r["annotation_id"] for r in landed)
 
 
 @pytest.mark.parametrize("background", [False, True], ids=["root", "subagent"])

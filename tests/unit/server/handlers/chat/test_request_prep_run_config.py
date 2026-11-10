@@ -156,6 +156,36 @@ class TestBuildGraphConfig:
         config = self._build()
         assert "checkpoint_id" not in config["configurable"]
 
+    def test_the_user_chart_views_ride_configurable(self):
+        """Never the prompt: the turn's sandbox jobs read them from here."""
+        import json
+
+        from ptc_agent.agent.tools.command_handoff import JOB_ENV_KEY
+        from chartkit.protocol import CHART_VIEWS_ENV
+        from src.server.models.chat import ChatRequest
+
+        view = {
+            "symbol": "NVDA",
+            "timeframe": "1day",
+            "theme": "dark",
+            "from": "2026-01-02",
+            "to": "2026-10-30",
+            "width": 1200,
+            "height": 600,
+        }
+        request = ChatRequest(
+            workspace_id="ws-1",
+            messages=[{"role": "user", "content": "hi"}],
+            chart_views=[view],
+        )
+        job_env = self._build(request=request)["configurable"][JOB_ENV_KEY]
+        assert json.loads(job_env[CHART_VIEWS_ENV]) == [view]
+
+    def test_no_chart_views_no_key(self):
+        from ptc_agent.agent.tools.command_handoff import JOB_ENV_KEY
+
+        assert JOB_ENV_KEY not in self._build()["configurable"]
+
     def test_base_checkpoint_id_when_the_request_names_none(self):
         config = self._build(base_checkpoint_id="cp-base")
         assert config["configurable"]["checkpoint_id"] == "cp-base"

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.core.sandbox.jobs import JobState
+from ptc_agent.core.sandbox.jobs import JobState, Outbox
 from src.server.database.runs.command_runs import Outcome
 from src.server.services.commands import settle
 from src.server.services.commands import watcher as w
@@ -168,10 +168,16 @@ class _Harness:
         self.stopped: set[str] = set()
         self.judged: dict = {}
         self.read = AsyncMock(side_effect=self._read)
-        self.trace = AsyncMock(return_value=[{"tool": "t"}])
+        self.trace = [{"tool": "t"}]
+        self.outbox = Outbox()
+        self.read_end = AsyncMock(side_effect=self._read_end)
         self.mirror = AsyncMock()
+        self.finalize_wins = True
         # What a fresh read of the threads finds before the hour's stop.
         self.fresh_coverage: dict = {}
+
+    async def _read_end(self, exec_fn, ref, *, trace):
+        return (self.trace if trace else None), self.outbox
 
     async def _read(self, exec_fn, refs, **kw):
         self.calls.read([r.command_id for r in refs])
@@ -194,7 +200,13 @@ class _Harness:
         async def finalize(judged, outcome, **kw):
             calls.finalize(judged["command_id"], outcome, **kw)
             self.judged[judged["command_id"]] = judged
-            return {**judged, "status": outcome.status}
+            if not self.finalize_wins:
+                return None
+            ended = {**judged, "status": outcome.status}
+            # The finalize stores the outbox's layers; its row keeps their entries.
+            if (outbox := kw.get("outbox")) and outbox.layers:
+                ended["outbox_layers"] = list(outbox.layers)
+            return ended
 
         async def discard(exec_fn, refs):
             calls.discard([r.command_id for r in refs])
@@ -217,7 +229,7 @@ class _Harness:
             ),
             patch.object(w, "computer_jobs_runtime", jobs_runtime),
             patch.object(jobs, "read_job_states", new=self.read),
-            patch.object(jobs, "collect_job_trace", new=self.trace),
+            patch.object(jobs, "read_job_end", new=self.read_end),
             patch.object(jobs, "discard_jobs", new=discard),
             patch.object(jobs, "end_jobs", new=end_jobs),
             patch.object(w.cr_db, "finalize", new=finalize),
@@ -269,11 +281,11 @@ async def test_one_read_settles_ended_jobs_with_their_tail_and_trace_then_drops_
     h.calls.read.assert_called_once_with(["bg-00000000000a", "bg-00000000000b", "bg-00000000000c"])
     h.calls.finalize.assert_any_call(
         "bg-00000000000a", Outcome("completed", exit_code=0), tail="done\n",
-        trace=[{"tool": "t"}], oom_kill_on=None,
+        trace=[{"tool": "t"}], outbox=None, oom_kill_on=None,
     )
     h.calls.finalize.assert_any_call(
         "bg-00000000000b", Outcome("failed", "exit", 3), tail="boom\n",
-        trace=[{"tool": "t"}], oom_kill_on=None,
+        trace=[{"tool": "t"}], outbox=None, oom_kill_on=None,
     )
     # Each job's state goes only after its finalize, so a pass that dies
     # between them still finds the job ended rather than gone.
@@ -285,7 +297,7 @@ async def test_one_read_settles_ended_jobs_with_their_tail_and_trace_then_drops_
     h.calls.nudge.assert_called()
     # The trace is read and left for the discard: a finalize that fails finds
     # it again on the next pass.
-    assert all(c.kwargs == {"delete": False} for c in h.trace.await_args_list)
+    assert all(c.kwargs == {"trace": True} for c in h.read_end.await_args_list)
     # Each end recorded is the mirror's to judge; the running one is not.
     assert [c.args[0]["command_id"] for c in h.mirror.await_args_list] == [
         "bg-00000000000a", "bg-00000000000b",
@@ -303,10 +315,129 @@ async def test_a_failed_trace_read_leaves_the_row_and_its_trace_for_the_next_pas
     the read was kept for."""
     row = _row("bg-00000000000a")
     with _Harness(_computer(), {"bg-00000000000a": state}) as h:
-        h.trace.side_effect = w.jobs.JobReplyError("no reply")
+        h.read_end.side_effect = w.jobs.JobReplyError("no reply")
         assert await _pass(h, [row]) == 0
     h.calls.finalize.assert_not_called()
     h.calls.discard.assert_not_called()
+
+
+_ENTRY = {
+    "workspace_id": "22222222-2222-2222-2222-222222222222",
+    "chart_id": "NVDA:1day", "symbol": "NVDA", "timeframe": "1day",
+    "layer_id": "x", "title": "X", "summary": None, "as_of": None,
+}
+
+
+def _layer_line() -> str:
+    import json
+
+    # The layer contract's own sample, kept with chartkit's suite.
+    from libs.chartkit.tests.samples import sample
+
+    return json.dumps(sample("intraday"))
+
+
+@pytest.fixture
+def writer():
+    w_ = MagicMock()
+    with patch("langgraph.config.get_stream_writer", return_value=w_):
+        yield w_
+
+
+@pytest.mark.asyncio
+async def test_an_ended_jobs_layers_are_stored_by_its_finalize_then_streamed(writer):
+    """A handed-off job's chart layers are validated when it is settled, in
+    the workspace it ran in, and handed to the finalize, which stores them
+    with the end; they stream only once it has, and the outbox is discarded
+    after."""
+    row = _row("bg-00000000000a")
+    with _Harness(_computer(), {"bg-00000000000a": _state(exit_code=0)}) as h, patch(
+        "src.server.database.chart_annotation.add_layers", new=AsyncMock()
+    ) as add:
+        writer.side_effect = lambda _: h.calls.event()
+        h.outbox = Outbox((_layer_line(),))
+        assert await _pass(h, [row]) == 1
+    # Never stored apart from the finalize.
+    add.assert_not_awaited()
+    outbox = h.calls.finalize.call_args.kwargs["outbox"]
+    [(ref, body)] = outbox.rows
+    assert (ref.workspace_id, ref.chart_id, ref.layer_id) == (
+        row["workspace_id"], "SPY:5min", body["id"],
+    )
+    assert outbox.report.startswith(f"Published chart layer {body['id']} ")
+    assert [e["layer_id"] for e in outbox.layers] == [body["id"]]
+    assert outbox.unsaved_report.startswith(f"Chart layer {body['id']!r} NOT published")
+    assert [c for c in h.order() if c in ("finalize", "event", "discard")] == [
+        "finalize", "event", "discard",
+    ]
+    assert writer.call_args.args[0]["payload"]["op"] == "add"
+
+
+@pytest.mark.asyncio
+async def test_a_settle_that_loses_its_finalize_stores_and_streams_nothing(writer):
+    """A stopper and the watcher racing, or a retry of a settle that already
+    committed: the finalize that finds the row ended stores nothing (it is
+    the one place layers are stored), and nothing streams."""
+    row = _row("bg-00000000000a")
+    with _Harness(_computer(), {"bg-00000000000a": _state(exit_code=0)}) as h:
+        h.finalize_wins = False
+        h.outbox = Outbox((_layer_line(),))
+        await _pass(h, [row])
+    assert h.calls.finalize.call_args.kwargs["outbox"].rows
+    writer.assert_not_called()
+
+
+def test_a_settled_rows_published_layers_reach_its_command_report():
+    from datetime import datetime
+
+    from src.server.services.commands.notice import command_report
+
+    row = {
+        "command_id": "bg-00000000000a", "tool": "Bash", "description": None,
+        "status": "completed", "failure_reason": None, "tool_call_id": "toolu_1",
+        "outbox_layers": [_ENTRY], "ended_at": datetime(2026, 1, 1),
+    }
+    assert command_report(row).chart_layers == [_ENTRY]
+
+
+@pytest.mark.asyncio
+async def test_staging_is_total_so_a_broken_outbox_still_ends_the_command(writer):
+    """``stage_outbox`` never raises: the read-back says it failed, and the
+    command's end is still recorded."""
+    row = _row("bg-00000000000a")
+    with _Harness(_computer(), {"bg-00000000000a": _state(exit_code=0)}) as h, patch(
+        "src.tools.chart_annotation.layers._stage", side_effect=RuntimeError("bug"),
+    ):
+        h.outbox = Outbox(('{"id":"x"}',))
+        assert await _pass(h, [row]) == 1
+    outbox = h.calls.finalize.call_args.kwargs["outbox"]
+    assert outbox.report == (
+        "Chart layers NOT published: they could not be processed. "
+        "Publish them again in a moment."
+    )
+    assert not outbox.rows and outbox.layers is None
+    writer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_wrote_nothing_publishes_nothing():
+    with _Harness(_computer(), {"bg-00000000000a": _state(exit_code=0)}) as h, patch(
+        "src.tools.chart_annotation.layers._stage"
+    ) as stage:
+        assert await _pass(h, [_row("bg-00000000000a")]) == 1
+    stage.assert_not_called()
+    assert h.calls.finalize.call_args.kwargs["outbox"] is None
+
+
+@pytest.mark.asyncio
+async def test_no_trace_is_read_when_the_end_reports_nothing():
+    """The one end read still asks for the trace only when the end is reported."""
+    row = _row("bg-00000000000a", stopped_by="agent")
+    with _Harness(_computer(), {"bg-00000000000a": _state(exit_code=0, tail="x")}) as h:
+        await _pass(h, [row])
+    outcome = h.outcomes()["bg-00000000000a"]
+    for c in h.read_end.await_args_list:
+        assert c.kwargs["trace"] is (outcome.report != "none")
 
 
 @pytest.mark.asyncio
@@ -384,7 +515,7 @@ async def test_a_command_past_the_hour_is_marked_then_stopped_and_held_for_the_n
     h.calls.request_stop.assert_called_once_with(late["command_id"], AFTER_TURN_LIMIT, over=late)
     h.calls.finalize.assert_called_once_with(
         late["command_id"], Outcome("failed", "after_turn_limit"), tail="end",
-        trace=[{"tool": "t"}], oom_kill_on=None,
+        trace=[{"tool": "t"}], outbox=None, oom_kill_on=None,
     )
     assert h.judged[late["command_id"]]["stopped_by"] == AFTER_TURN_LIMIT
 
@@ -504,7 +635,7 @@ async def test_a_computer_stuck_between_states_settles_its_commands_as_gone(stat
     }
     h.calls.finalize.assert_any_call(
         "bg-00000000000b", Outcome("stopped", stopped_by="user"), tail=None, trace=None,
-        oom_kill_on=None,
+        outbox=None, oom_kill_on=None,
     )
     h.read.assert_not_called()
 
@@ -553,7 +684,7 @@ async def test_a_job_ended_by_a_stop_that_began_after_the_read_reports_at_the_ne
             assert await _pass(h, [row]) == 1
     h.calls.finalize.assert_called_once_with(
         row["command_id"], Outcome("failed", "exit", 143, up=False), tail="",
-        trace=[{"tool": "t"}], oom_kill_on=None,
+        trace=[{"tool": "t"}], outbox=None, oom_kill_on=None,
     )
     h.calls.nudge.assert_not_called()
 

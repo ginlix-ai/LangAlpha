@@ -6,7 +6,7 @@
  */
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
@@ -19,6 +19,7 @@ import MessageList from '../../MessageList';
 import type { ToolActivityItem } from '../../messageList/activityTypes';
 import type { MessageRecord } from '../../messageList/types';
 import { ThreadCommandsContext } from '../threadCommandsContext';
+import { WorkspaceProvider } from '../../../contexts/WorkspaceContext';
 
 vi.mock('../../../utils/api', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -186,6 +187,64 @@ describe('ReportRow: a background command\'s', () => {
     lost.unmount();
     withCommands(<ReportRow id="r" provenance={report()} readOnly />, undefined, actions);
     expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('draws the layers it published under its line, one card per chart, with its turn\'s republish folded in', () => {
+    const published = (layer_id: string, title: string, chart_id = 'NVDA:1day') => ({
+      workspace_id: 'ws-1', chart_id, symbol: chart_id.split(':')[0], timeframe: '1day',
+      layer_id, title, summary: null, as_of: '2026-10-28',
+    });
+    const at = new Date('2030-01-01T12:00:00Z');
+    const messages: MessageRecord[] = [
+      {
+        id: 'history-user-2', role: 'user', content: '', contentType: 'text', timestamp: at,
+        isStreaming: false, isHistory: true, turnIndex: 2,
+        provenance: report({
+          chartLayers: [
+            published('channel', 'Rising channel'),
+            published('levels', 'AAPL levels', 'AAPL:1day'),
+            published('channel', 'Rising channel, revised'),
+          ],
+        }),
+      },
+      {
+        id: 'history-assistant-2', role: 'assistant', content: 'Redrawn.', contentType: 'text', timestamp: at,
+        isStreaming: false, isHistory: true, turnIndex: 2,
+        contentSegments: [{ type: 'tool_call', toolCallId: 't1', order: 0 }, { type: 'text', content: 'Redrawn.', order: 1 }],
+        reasoningProcesses: {},
+        toolCallProcesses: {
+          t1: {
+            toolName: 'ExecuteCode', toolCall: { id: 't1', name: 'ExecuteCode', args: {} },
+            isInProgress: false, isComplete: true, isFailed: false,
+            toolCallResult: {
+              content: 'SUCCESS',
+              artifact: { chart_layers: [published('channel', 'Rising channel, final'), published('m', 'MSFT trend', 'MSFT:1day')] },
+            },
+          },
+        },
+      },
+    ];
+    const onOpenChart = vi.fn();
+    const { container } = withCommands(
+      <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
+        <MessageList messages={messages} />
+      </WorkspaceProvider>,
+      undefined,
+      { onOpenChart },
+    );
+    const row = container.querySelector<HTMLElement>('[data-message-id="history-user-2"]')!;
+    said('Run 10-year backtest finished');
+    // One NVDA card for the turn, under the report, at the layer's latest version.
+    expect(screen.getAllByRole('region', { name: /^NVDA .* layers$/ })).toHaveLength(1);
+    const nvda = within(row).getByRole('region', { name: /^NVDA .* layers$/ });
+    expect(nvda).toHaveTextContent('Rising channel, final');
+    expect(nvda).toHaveTextContent('1 layer');
+    expect(within(row).getByRole('region', { name: /^AAPL .* layers$/ })).toHaveTextContent('AAPL levels');
+    // A chart the report did not publish on is the message's own.
+    expect(within(row).queryByRole('region', { name: /^MSFT .* layers$/ })).toBeNull();
+    expect(screen.getByRole('region', { name: /^MSFT .* layers$/ })).toHaveTextContent('MSFT trend');
+    fireEvent.click(within(nvda).getByRole('button', { name: /Open chart with these layers/ }));
+    expect(onOpenChart).toHaveBeenCalledWith({ symbol: 'NVDA', timeframe: '1day', workspaceId: 'ws-1' });
   });
 
   it('is drawn by the transcript as a line on the agent\'s side, with no bubble', () => {

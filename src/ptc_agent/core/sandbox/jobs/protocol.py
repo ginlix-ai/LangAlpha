@@ -77,6 +77,16 @@ _PRUNE_AT_DIRS = 32
 RAISED_FILE = "raised"
 # The most of it a reply carries: a module name is far shorter.
 _RAISED_READ_MAX = 4 * 1024
+#: A file in the job's state directory that sandbox code hands the server
+#: records through, one JSON line each, for the server to act on when the job
+#: ends (chart layers, ``chartkit``'s ``Chart.publish``, are the one kind so
+#: far). It rides the end's reply in a section of its own, so it reaches the
+#: server on every provider through the exec alone.
+OUTBOX_FILE = "outbox"
+#: The most of it a reply carries. Agent code writes the file, so a runaway
+#: loop must not fill the reply; past this the reply says how large it was and
+#: the caller reports the records cut off.
+OUTBOX_READ_MAX = 4 * 1024 * 1024
 # Free space under this, in KiB, where a launch could not write reads as a
 # full disk.
 _DISK_FULL_KIB = 1024
@@ -110,6 +120,21 @@ class JobState:
 
 
 @dataclass(frozen=True)
+class Outbox:
+    """What a job wrote to its outbox (``OUTBOX_FILE``): one raw JSON line
+    each, not yet validated, since agent code wrote them, and whether the file
+    ran past the read cap, cutting off the records after it. Empty when the
+    job wrote nothing; a run that crashed after writing still carries what it
+    wrote."""
+
+    lines: tuple[str, ...] = ()
+    truncated: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.lines) or self.truncated
+
+
+@dataclass(frozen=True)
 class StoppedJob:
     """What a stop found."""
 
@@ -118,6 +143,9 @@ class StoppedJob:
     # ended on its own, and a wait reports it as ended.
     had_ended: bool
     mcp_trace: list[dict]
+    # Its outbox, read by the stop (``outbox``): a job stopped at its call's
+    # deadline keeps what it published.
+    outbox: Outbox = Outbox()
 
 
 @dataclass(frozen=True)
@@ -145,6 +173,7 @@ class WaitReply:
     raised: str | None = None
     # A launch that could not write: whether the disk it writes to is full.
     disk_full: bool = False
+    outbox: Outbox = Outbox()
 
 
 @dataclass(frozen=True)
@@ -217,13 +246,22 @@ _WAIT_SH = (
     '[ "$(date +%s)" -lt $end ] || return 0; done; }\n'
 )
 
+# ``jo DIR`` prints the job's outbox (``OUTBOX_FILE``): its size, then up to
+# the read cap.
+_OUTBOX_SH = (
+    f'jo() {{ local c=0; [ ! -s "$1/{OUTBOX_FILE}" ] || c=$(wc -c < "$1/{OUTBOX_FILE}"); '
+    'c=$((c+0)); printf "\\n%s O %s\\n" "$N" "$c"; '
+    f'[ $c = 0 ] || head -c {OUTBOX_READ_MAX} "$1/{OUTBOX_FILE}"; }}\n'
+)
+
 # ``jr DIR LOG TRACE [NEW]`` reports the job. One that ended prints its output
-# and a small trace with it, and its ``raised`` record (``RAISED_FILE``) when
-# it wrote one, and is reaped unless its output was cut, in which case the log
-# is what the agent reads and the state stays with it. Reaping moves the log
-# and trace into the job's directory: out of the agent's way at once, and
-# still there for a retried call to report again.
-_REPORT_SH = (
+# and a small trace with it, its ``raised`` record (``RAISED_FILE``) when it
+# wrote one, and its outbox (``jo``) when it wrote to it, and is reaped unless
+# its output was cut, in which case the log is what the agent reads and the
+# state stays with it. Reaping moves the log and trace into the job's
+# directory: out of the agent's way at once, and still there for a retried
+# call to report again, as the outbox, which never leaves it, is.
+_REPORT_SH = _OUTBOX_SH + (
     'jr() { js "$1" "$4"; local o t z y; '
     "case $s in done|vanished|reaped) ;; "
     '*) printf "\\n%s H %s %s - -\\n" "$N" "$s" "${e:--}"; return 0;; esac; '
@@ -234,6 +272,7 @@ _REPORT_SH = (
     'printf "\\n%s T\\n" "$N"; '
     f'[ $y = 0 ] || [ $y -gt {_TRACE_INLINE_MAX} ] || cat "$t"; '
     f'[ ! -s "$1/raised" ] || {{ printf "\\n%s R\\n" "$N"; tail -c {_RAISED_READ_MAX} "$1/raised"; }}; '
+    f'[ ! -s "$1/{OUTBOX_FILE}" ] || jo "$1"; '
     f"[ $s = reaped ] || [ $z -gt {OUTPUT_INLINE_MAX} ] || "
     f'{{ echo "${{e:-{_VANISHED_MARK}}}" > "$1/reaped"; mv -f "$o" "$1/log"; '
     f'[ $y -gt {_TRACE_INLINE_MAX} ] || [ ! -e "$t" ] || mv -f "$t" "$1/trace"; }}; }}\n'
@@ -466,7 +505,7 @@ def states_script(refs: Sequence[JobRef], tail_bytes: int, nonce: str) -> str:
 
 
 def stop_script(
-    ref: JobRef, nonce: str, *, discard: bool = False, trace: bool = False
+    ref: JobRef, nonce: str, *, discard: bool = False, trace: bool = False, outbox: bool = False
 ) -> str:
     """Mark the job stopped, then end its process group; report whether it
     ran, and the exit code it had written before the stop (``r`` once reaped).
@@ -477,9 +516,12 @@ def stop_script(
     (``psig``). ``trace`` prints the trace once the group is ended, as
     ``trace_script`` does, and before ``discard`` removes it; without
     ``discard`` it leaves the file, so the script stays safe to run twice.
+    ``outbox`` prints the job's outbox once the group is ended, as the end's
+    report does.
     """
     discard_sh = 'rm -f -- "$L" "$T"\n' if discard else ""
     trace_sh = f"{_TRACE_SH}\n" if trace else ""
+    outbox_sh = f'{_OUTBOX_SH}[ ! -s "$J/{OUTBOX_FILE}" ] || jo "$J"\n' if outbox else ""
     return (
         f"{_PREAMBLE}N={nonce}\n{PROC_SH}{_paths_sh(ref)}"
         'mkdir -p "$JD"; mkdir "$J"; : > "$J/stop"; r=0; e=\n'
@@ -489,14 +531,22 @@ def stop_script(
         f'  if psig TERM "$p" "$t"; then r=1; pgrace {_STOP_GRACE_TENTHS} "$p"; fi;; esac; fi\n'
         'printf "\\n%s X %s %s\\n" "$N" "$r" "${e:--}"\n'
         f"{trace_sh}"
+        f"{outbox_sh}"
         f"{discard_sh}"
     )
 
 
-def trace_script(ref: JobRef, nonce: str, *, delete: bool = True) -> str:
-    """Print the job's trace, then delete it unless ``delete`` is False."""
-    rm = '; rm -f -- "$T"' if delete else ""
-    return f"{_PREAMBLE}N={nonce}; T={_q(ref.trace_path)}\n{_TRACE_SH}{rm}\n"
+def trace_script(ref: JobRef, nonce: str) -> str:
+    """Print the job's trace, then delete it."""
+    return f"{_PREAMBLE}N={nonce}; T={_q(ref.trace_path)}\n{_TRACE_SH}; rm -f -- \"$T\"\n"
+
+
+def end_read_script(ref: JobRef, nonce: str, *, trace: bool) -> str:
+    """Print an ended job's trace (when ``trace``) and its outbox in one exec,
+    for a caller that followed the job without a wait. Both files stay for
+    ``discard_script``."""
+    trace_sh = f"T={_q(ref.trace_path)}\n{_TRACE_SH}\n" if trace else ""
+    return f"{_PREAMBLE}N={nonce}\n{_OUTBOX_SH}{trace_sh}jo {_q(ref.state_dir)}\n"
 
 
 def end_jobs_script(
@@ -636,7 +686,25 @@ def parse_wait_reply(result: ExecResult, nonce: str) -> WaitReply:
         output=output,
         trace_text=next((body for f, body in sections if f == ["T"]), ""),
         raised=next((body for f, body in sections if f == ["R"]), None),
+        outbox=_outbox_section(sections),
     )
+
+
+def _outbox_section(sections: Sequence[Section]) -> Outbox:
+    """The outbox an ``O <size>`` section carries; empty when the reply has
+    none. A cut file's last line is partial, so it is dropped rather than
+    reported as a malformed record; the lines are left unparsed, since what
+    they hold is the caller's to judge. Split on newlines alone: a record's
+    text may carry other line separators inside its strings."""
+    found = next(((f, body) for f, body in sections if f[:1] == ["O"] and len(f) > 1), None)
+    if found is None:
+        return Outbox()
+    fields, text = found
+    cut = (_int(fields[1]) or 0) > OUTBOX_READ_MAX
+    if cut:
+        text = text.rpartition("\n")[0]
+    lines = tuple(line for line in (raw.strip() for raw in text.split("\n")) if line)
+    return Outbox(lines, cut)
 
 
 def parse_states_reply(result: ExecResult, nonce: str) -> dict[str, JobState]:
@@ -663,7 +731,26 @@ def parse_stop_reply(result: ExecResult, nonce: str, command_id: str) -> Stopped
         (_trace(f, body, command_id) for f, body in sections if f[:1] == ["T"] and len(f) > 1),
         [],
     )
-    return StoppedJob(was_running=fields[1] == "1", had_ended=fields[2] != "-", mcp_trace=trace)
+    return StoppedJob(
+        was_running=fields[1] == "1",
+        had_ended=fields[2] != "-",
+        mcp_trace=trace,
+        outbox=_outbox_section(sections),
+    )
+
+
+def parse_end_read_reply(
+    result: ExecResult, nonce: str, command_id: str, *, trace: bool
+) -> tuple[list[dict] | None, Outbox]:
+    """``end_read_script``'s trace (None when not asked for) and outbox. The
+    outbox section comes last, so a reply that has it has the trace too."""
+    _, _, sections = _reply(result, nonce, "O", "Job end read", size=2)
+    mcp_trace = (
+        next((_trace(f, body, command_id) for f, body in sections if f[:1] == ["T"] and len(f) > 1), [])
+        if trace
+        else None
+    )
+    return mcp_trace, _outbox_section(sections)
 
 
 def parse_trace_reply(result: ExecResult, nonce: str, command_id: str) -> list[dict]:

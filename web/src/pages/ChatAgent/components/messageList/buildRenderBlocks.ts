@@ -1,4 +1,4 @@
-import { chartInstanceKey, planChartAnnotationCards } from '../chartAnnotationGrouping';
+import { planChartLayerCards, type ChartLayersCard } from '../chartLayerGrouping';
 import { INLINE_ARTIFACT_MAP, INLINE_ARTIFACT_TOOLS, isInlineArtifactReady } from '../charts/InlineArtifactCards';
 import { isPillArtifactType } from '../charts/pillArtifacts';
 import { normalizeSubagentText } from './normalizeSubagentText';
@@ -9,6 +9,7 @@ import { preapprovedCardOf, type PreapprovedCard } from '../../utils/preapproved
 import { isPlanTool, readPastPlan, type PastPlanOutcome } from './pastPlan';
 import { readArtifactCommentReply, type ArtifactCommentReply } from '../artifactComments/artifactCommentReply';
 import type { PTCAgentProposalState } from '@/types/chat';
+import type { ChartKey } from '@/pages/MarketView/utils/chartInstanceKey';
 import type { ContentSegmentRecord, ToolCallProcessRecord } from './types';
 import type { ActivityItem, ToolActivityItem, LiveState, ToolCallData, ToolCallResultData } from './activityTypes';
 
@@ -47,13 +48,13 @@ export interface CompactArtifactRenderBlock {
  * `pill`: a one-line pill, in a wrapping row with the pills beside it.
  * `call`: its call's own card on a line of its own, which takes the call's row
  * over as the call lands (CardArrivals).
- * `chart`: a chart annotation's card, which every draw on the chart feeds.
  * `line`: an answer to a file comment, a quiet line said together with the
  * lines beside it, carrying the reply read off the artifact.
  */
 export type ArtifactCard =
-  | { type: string; kind: 'pill' | 'call' | 'chart' }
+  | { type: string; kind: 'pill' | 'call' }
   | { type: 'artifact_comment'; kind: 'line'; reply: ArtifactCommentReply };
+
 
 function cardOf(artifact: Record<string, unknown>): ArtifactCard | null {
   const { type } = artifact;
@@ -63,7 +64,17 @@ function cardOf(artifact: Record<string, unknown>): ArtifactCard | null {
     const reply = readArtifactCommentReply(artifact);
     return reply ? { type, kind: 'line', reply } : null;
   }
-  return { type, kind: isPillArtifactType(type) ? 'pill' : type === 'chart_annotation' ? 'chart' : 'call' };
+  return { type, kind: isPillArtifactType(type) ? 'pill' : 'call' };
+}
+/**
+ * A chart's layers card, beside the first call of the message that published
+ * on the chart. Every publish on it feeds the card, so it is its own block
+ * rather than one call's artifact.
+ */
+export interface ChartLayersRenderBlock {
+  type: 'chart_layers';
+  key: string;
+  card: ChartLayersCard;
 }
 export interface SubagentTaskRenderBlock {
   type: 'subagent_task';
@@ -133,6 +144,7 @@ export type RenderBlock =
   | ActivityRenderBlock
   | TextRenderBlock
   | CompactArtifactRenderBlock
+  | ChartLayersRenderBlock
   | SubagentTaskRenderBlock
   | UserQuestionRenderBlock
   | CreateWorkspaceRenderBlock
@@ -207,6 +219,7 @@ export function buildRenderBlocks(
     preparing,
     now = Date.now(),
     root,
+    cardedCharts,
   }: {
     reasoningProcesses: Record<string, Record<string, unknown>>;
     toolCallProcesses: Record<string, ToolCallProcessRecord>;
@@ -222,6 +235,9 @@ export function buildRenderBlocks(
     now?: number;
     /** The computer's own root, so a README read under it is still hidden. */
     root?: string | null;
+    /** Charts whose card this turn draws under its report row: the message
+     *  draws none for them (see `planReportChartCards`). */
+    cardedCharts?: ReadonlySet<ChartKey>;
   },
 ): { blocks: RenderBlock[]; nextExpiry: number | null; pinnedLive: boolean; pinnedSettledAt: number | null } {
     // A hidden secretary call the user approved in advance has no proposal
@@ -257,10 +273,10 @@ export function buildRenderBlocks(
         return false;
       });
 
-      // One card per chart instance, pinned at the first draw and fed the
-      // freshest cumulative artifact (so it grows in place); every other draw
-      // folds into the timeline as an ordinary row.
-      const chartCardPlan = planChartAnnotationCards(filtered, toolCallProcesses);
+      // Layers are published from inside ExecuteCode and Bash, whose rows stay
+      // in the timeline. The card for each chart is pinned right after the first
+      // call that published on it, and lists everything published there since.
+      const layerCardPlan = planChartLayerCards(filtered, toolCallProcesses, cardedCharts);
 
       const blocks: RenderBlock[] = [];
       let pendingItems: ActivityItem[] = [];
@@ -289,6 +305,14 @@ export function buildRenderBlocks(
           });
           pendingItems = [];
         }
+      };
+
+      // The layer cards that sit beside this call's row, if it is where a chart's card starts.
+      const pushLayerCards = (toolCallId: string) => {
+        const cards = layerCardPlan.get(toolCallId);
+        if (!cards) return;
+        flushActivity();
+        for (const card of cards) blocks.push({ type: 'chart_layers', key: `chart-layers-${card.id}`, card });
       };
 
       for (const seg of filtered) {
@@ -376,7 +400,8 @@ export function buildRenderBlocks(
             if (settled && (pinnedSettledAt === null || settled > pinnedSettledAt)) pinnedSettledAt = settled;
           }
 
-          if ((proc.isInProgress as boolean) && (isAlwaysLive || (isStreaming && age < MAX_IN_PROGRESS_MS))) {
+          const running = (proc.isInProgress as boolean) && (isAlwaysLive || (isStreaming && age < MAX_IN_PROGRESS_MS));
+          if (running) {
             pendingItems.push(toolActivity(proc, seg.toolCallId!, 'active', root));
             if (isAlwaysLive) pinnedLive = true;
             if (!isAlwaysLive) {
@@ -386,44 +411,15 @@ export function buildRenderBlocks(
               }
             }
           } else if (artifactResult && isArtifactReady) {
-            const isChartAnnotation = artifactResult.type === 'chart_annotation';
-            const plan = isChartAnnotation
-              ? chartCardPlan.get(chartInstanceKey(artifactResult))
-              : undefined;
-            if (isChartAnnotation && plan && plan.anchorCallId !== seg.toolCallId) {
-              // A later draw on a chart whose card is already pinned at its first
-              // draw: render as an ordinary completed row (its content shows in
-              // the pinned card above). `_annotationStep` stops ActivityBlock
-              // (see its partition guard) from re-promoting it into a card.
-              pendingItems.push(toolActivity(proc, seg.toolCallId!, 'completed', root, { _annotationStep: true }));
-            } else if (isChartAnnotation && plan) {
-              // The anchor (first) draw: pin the card here but feed it the
-              // freshest cumulative artifact so it grows in place. Key is the
-              // chart instance, not the tool-call id, so the element persists
-              // across draws (no remount).
-              const freshestProc = toolCallProcesses[plan.freshestCallId] ?? proc;
-              // The plan picked the freshest draw for its artifact.
-              const artifact = freshestProc.toolCallResult?.artifact ?? artifactResult;
-              flushActivity();
-              blocks.push({
-                type: 'compact_artifact',
-                key: `chart-${chartInstanceKey(artifactResult)}`,
-                toolCallId: plan.freshestCallId,
-                proc: freshestProc,
-                artifact,
-                card: cardOf(artifact),
-              });
-            } else {
-              flushActivity();
-              blocks.push({
-                type: 'compact_artifact',
-                key: `compact-${seg.toolCallId}`,
-                toolCallId: seg.toolCallId!,
-                proc,
-                artifact: artifactResult,
-                card: cardOf(artifactResult),
-              });
-            }
+            flushActivity();
+            blocks.push({
+              type: 'compact_artifact',
+              key: `compact-${seg.toolCallId}`,
+              toolCallId: seg.toolCallId!,
+              proc,
+              artifact: artifactResult,
+              card: cardOf(artifactResult),
+            });
           } else if (!streamEnded && age < MIN_LIVE_EXPOSURE_MS && !INLINE_ARTIFACT_TOOLS.has(proc.toolName as string)) {
             pendingItems.push(toolActivity(proc, seg.toolCallId!, proc.isFailed ? 'failed' : 'completing', root, { _recentlyCompleted: true }));
             const expiry = createdAt! + MIN_LIVE_EXPOSURE_MS;
@@ -433,6 +429,9 @@ export function buildRenderBlocks(
           } else {
             pendingItems.push(toolActivity(proc, seg.toolCallId!, 'completed', root));
           }
+          // A call still running has published nothing yet. One that has a
+          // card of its own still has its layers drawn after it.
+          if (!running) pushLayerCards(seg.toolCallId!);
         } else if (seg.type === 'subagent_task') {
           flushActivity();
           blocks.push({ type: 'subagent_task', key: `subagent-${seg.subagentId}`, segment: seg });
@@ -473,11 +472,5 @@ export function buildRenderBlocks(
       if (preparing && blocks[blocks.length - 1]?.type !== 'activity') {
         blocks.push({ type: 'activity', key: `activity-${activityCounter++}`, items: [] });
       }
-
-      // Per chart instance, only the anchor (first) draw became a
-      // `compact_artifact` block — fed the freshest cumulative proc via
-      // `chartCardPlan` (see `planChartAnnotationCards` above); every later draw
-      // was forced to an ordinary `_annotationStep` row, so no post-pass dedup
-      // is needed.
       return { blocks, nextExpiry: computedNextExpiry, pinnedLive, pinnedSettledAt };
 }

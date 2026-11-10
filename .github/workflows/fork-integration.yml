@@ -51,6 +51,7 @@ on:
       - Dockerfile.sandbox
       - docker-compose.yml
       - libs/market-protocol/**
+      - libs/chartkit/**
       - pyproject.toml
       - uv.lock
       - tests/conftest.py

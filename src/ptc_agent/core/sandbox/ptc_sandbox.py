@@ -25,6 +25,7 @@ from ptc_agent.core.sandbox.providers._image_recipe import builtin_mcp_packages
 from ptc_agent.core.sandbox.jobs import (
     Ended,
     Failed,
+    JobContext,
     JobOutcome,
     JobRef,
     JobSpec,
@@ -1242,18 +1243,14 @@ class PTCSandbox:
         *,
         working_dir: str | None = None,
         wait_s: float | None,
-        thread_id: str | None = None,
-        call_id: str | None = None,
-        allowed_servers: frozenset[str] | None = None,
+        context: JobContext = JobContext(),
     ) -> JobOutcome:
         return await _execution.start_bash_job(
             self,
             command,
             working_dir=working_dir,
             wait_s=wait_s,
-            thread_id=thread_id,
-            call_id=call_id,
-            allowed_servers=allowed_servers,
+            context=context,
         )
 
     async def run_foreground(self, spec: JobSpec, timeout: int) -> Ended | Failed:
@@ -1264,17 +1261,13 @@ class PTCSandbox:
         code: str,
         *,
         wait_s: float | None,
-        thread_id: str | None = None,
-        call_id: str | None = None,
-        allowed_servers: frozenset[str] | None = None,
+        context: JobContext = JobContext(),
     ) -> JobOutcome:
         return await _execution.start_code_job(
             self,
             code,
             wait_s=wait_s,
-            thread_id=thread_id,
-            call_id=call_id,
-            allowed_servers=allowed_servers,
+            context=context,
         )
 
     async def continue_job(self, outcome: Running, wait_s: float | None) -> JobOutcome:

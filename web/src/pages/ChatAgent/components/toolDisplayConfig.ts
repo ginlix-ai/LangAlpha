@@ -109,9 +109,11 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   check_automations:        { displayName: 'Automations',          i18nKey: 'automations',         icon: Clock },
   create_automation:        { displayName: 'Create Automation',    i18nKey: 'createAutomation',    icon: Zap },
   manage_automation:        { displayName: 'Manage Automation',    i18nKey: 'manageAutomation',    icon: Settings },
-  // Chart annotation
+  // Chart drawing. The two annotation tools are retired; older threads still
+  // hold their calls, which keep these rows.
   draw_chart_annotation:    { displayName: 'Annotate Chart',       i18nKey: 'annotateChart',       icon: PenLine },
   manage_chart_annotations: { displayName: 'Manage Annotations',   i18nKey: 'manageAnnotations',   icon: Settings },
+  manage_chart_layers:      { displayName: 'Manage Chart Layers',  i18nKey: 'manageChartLayers',   icon: Settings },
   // Messaging
   send_message:             { displayName: 'Send Message',         i18nKey: 'sendMessage',         icon: Send },
   list_message_targets:     { displayName: 'Message Targets',      i18nKey: 'messageTargets',      icon: Contact },
@@ -411,10 +413,8 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
       return args?.action
         ? (tr?.('actionAutomation', { action: args.action }) ?? `${args.action} automation...`)
         : (tr?.('managingAutomation') ?? 'managing automation...');
-    case 'draw_chart_annotation':
-      return tr?.('annotatingChart') ?? 'annotating chart...';
-    case 'manage_chart_annotations':
-      return tr?.('updatingAnnotations') ?? 'updating annotations...';
+    case 'manage_chart_layers':
+      return tr?.('updatingChartLayers') ?? 'updating chart layers...';
     case 'send_message': {
       const app = messagingAppName(platformOf(args?.target));
       return app
@@ -434,6 +434,10 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
  * doesn't need localization today, but the param keeps call sites symmetric
  * and reserves space for future translated variants.
  */
+/** Tools that act on one chart instance. The annotation tools are retired,
+ *  but older threads still hold their calls. */
+const CHART_INSTANCE_TOOLS = new Set(['manage_chart_layers', 'draw_chart_annotation', 'manage_chart_annotations']);
+
 export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, _t?: TFn, root?: string | null): string | null {
   const args = toolCall?.args;
   if (!args) return null;
@@ -459,10 +463,10 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
       return info.rawPath.split('/').pop()?.replace(/\.json$/, '') || null;
     }
   }
-  // Annotation steps: headline reads "NVDA · 1D" — the chart instance the draw
+  // Chart calls: headline reads "NVDA · 1D" — the chart instance the call
   // targets. `timeframe` defaults to 1day server-side, so a missing arg means 1D.
   // INTERVAL_LABEL is the shared chart interval→label map (chartConstants).
-  if (toolName === 'draw_chart_annotation' || toolName === 'manage_chart_annotations') {
+  if (CHART_INSTANCE_TOOLS.has(toolName)) {
     if (!args.symbol) return null;
     const tf = (args.timeframe as string) || '1day';
     return `${String(args.symbol).toUpperCase()} · ${INTERVAL_LABEL[tf] ?? tf}`;

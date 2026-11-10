@@ -61,6 +61,7 @@ export function reportRowProvenance(source?: ReportSource): MessageProvenance | 
         status: source.status,
         failureReason: source.failure_reason ?? null,
         toolCallId: source.tool_call_id ?? null,
+        ...(source.chart_layers?.length ? { chartLayers: source.chart_layers } : {}),
       };
     default:
       return null;

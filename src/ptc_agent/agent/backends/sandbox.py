@@ -52,6 +52,7 @@ from ptc_agent.core.sandbox.grep_render import GrepLine
 from ptc_agent.core.sandbox.jobs import (
     Ended,
     Failed,
+    JobContext,
     JobOutcome,
     JobRef,
     JobSpec,
@@ -679,18 +680,14 @@ class SandboxBackend(SandboxBackendProtocol):
         *,
         working_dir: str | None = None,
         wait_s: float | None,
-        thread_id: str | None = None,
-        call_id: str | None = None,
-        allowed_servers: frozenset[str] | None = None,
+        context: JobContext = JobContext(),
     ) -> JobOutcome:
         """Start a bash command as a job; wait up to ``wait_s`` (None: until it ends)."""
         return await self.sandbox.start_bash_job(
             command,
             working_dir=working_dir,
             wait_s=wait_s,
-            thread_id=thread_id,
-            call_id=call_id,
-            allowed_servers=allowed_servers,
+            context=context,
         )
 
     async def run_foreground(self, spec: JobSpec, timeout: int) -> Ended | Failed:
@@ -702,17 +699,13 @@ class SandboxBackend(SandboxBackendProtocol):
         code: str,
         *,
         wait_s: float | None,
-        thread_id: str | None = None,
-        call_id: str | None = None,
-        allowed_servers: frozenset[str] | None = None,
+        context: JobContext = JobContext(),
     ) -> JobOutcome:
         """Start Python code as a job; wait up to ``wait_s`` (None: until it ends)."""
         return await self.sandbox.start_code_job(
             code,
             wait_s=wait_s,
-            thread_id=thread_id,
-            call_id=call_id,
-            allowed_servers=allowed_servers,
+            context=context,
         )
 
     async def continue_job(self, outcome: Running, wait_s: float | None) -> JobOutcome:

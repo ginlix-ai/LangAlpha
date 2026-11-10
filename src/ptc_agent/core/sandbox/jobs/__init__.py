@@ -30,11 +30,14 @@ from ptc_agent.core.sandbox.jobs.protocol import (
     _STOP_GRACE_TENTHS,
     _TRACE_INLINE_MAX,
     KILLED_EXIT,
+    OUTBOX_FILE as OUTBOX_FILE,
+    OUTBOX_READ_MAX as OUTBOX_READ_MAX,
     OUTPUT_INLINE_MAX,
     RAISED_FILE as RAISED_FILE,
     ForegroundReply as ForegroundReply,
     JobReplyError as JobReplyError,
     JobState as JobState,
+    Outbox as Outbox,
     StoppedJob as StoppedJob,
     UnendedJob as UnendedJob,
     WaitReply,
@@ -44,8 +47,10 @@ from ptc_agent.core.sandbox.jobs.protocol import (
     end_jobs_script,
     foreground_script as foreground_script,
     launch_script,
+    end_read_script,
     parse_end_reply,
     parse_foreground_reply,
+    parse_end_read_reply,
     parse_states_reply,
     parse_stop_reply,
     parse_trace,
@@ -146,6 +151,23 @@ class JobSpec:
 
 
 @dataclass(frozen=True)
+class JobContext:
+    """Whom a Bash or ExecuteCode job runs for, as its launch is given it: one
+    value from the tool down to the job's environment, so a field added here
+    reaches the job without touching the signatures between."""
+
+    #: The thread whose folder keeps the job's log and code.
+    thread_id: str | None = None
+    #: The tool call, tagged on every process the job starts.
+    call_id: str | None = None
+    #: The MCP servers a limited subagent may call; None for all.
+    allowed_servers: frozenset[str] | None = None
+    #: What the turn adds to the environment (the user's chart views); a name
+    #: the job sets itself wins over it.
+    env: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class JobHandle:
     """A launched job as the call holding it knows it.
 
@@ -194,6 +216,8 @@ class Ended(_Outcome):
     # The module a code run's own unhandled exception failed to import
     # (``RAISED_FILE``); None for a job that wrote none.
     raised: str | None = None
+    # What it wrote to its outbox, for the call that ran it to publish.
+    outbox: Outbox = Outbox()
 
 
 FailReason = Literal["timeout", "transport", "lost", "not_launched"]
@@ -306,6 +330,7 @@ async def _settled(exec_fn: ExecFn, handle: JobHandle, reply: WaitReply) -> JobO
         truncated=reply.log_bytes > OUTPUT_INLINE_MAX,
         killed=killed,
         raised=reply.raised,
+        outbox=reply.outbox,
     )
 
 
@@ -423,12 +448,17 @@ async def read_job_states(
 
 
 async def _stop(
-    exec_fn: ExecFn, ref: JobRef, *, discard: bool = False, trace: bool = False
+    exec_fn: ExecFn,
+    ref: JobRef,
+    *,
+    discard: bool = False,
+    trace: bool = False,
+    outbox: bool = False,
 ) -> StoppedJob:
     nonce = _nonce()
     return await _ask(
         exec_fn,
-        stop_script(ref, nonce, discard=discard, trace=trace),
+        stop_script(ref, nonce, discard=discard, trace=trace, outbox=outbox),
         _STOP_GRACE_TENTHS // 10 + EXEC_MARGIN_S,
         lambda r: parse_stop_reply(r, nonce, ref.command_id),
     )
@@ -457,28 +487,40 @@ async def stop_job_with_trace(exec_fn: ExecFn, outcome: Running) -> StoppedJob:
     log: a wait after the stop would reap the job and move that log into its
     state. A job that had ended before the stop came is the exception
     (``had_ended``), which the caller reads with a wait and reports as ended.
-    The trace carries what the call's earlier attempts called first.
+    The trace carries what the call's earlier attempts called first, and the
+    outbox what the job published before the stop.
     """
-    stopped = await _stop(exec_fn, outcome.ref, trace=True)
+    stopped = await _stop(exec_fn, outcome.ref, trace=True, outbox=True)
     return replace(stopped, mcp_trace=[*outcome.handle.carried, *stopped.mcp_trace])
 
 
-async def collect_job_trace(
-    exec_fn: ExecFn, ref: JobRef, *, delete: bool = True
-) -> list[dict]:
-    """Read the job's MCP trace and delete it.
-
-    ``delete=False`` leaves the file for ``discard_jobs``, for a caller that
-    records the trace before anything removes it: one whose record fails can
-    read it again. A reply with no trace answer raises ``JobReplyError``, as
-    its siblings do, so such a caller never records a read that failed as a
-    job that called nothing. A trace too large to read is skipped (logged)."""
+async def collect_job_trace(exec_fn: ExecFn, ref: JobRef) -> list[dict]:
+    """Read the job's MCP trace and delete it. A reply with no trace answer
+    raises ``JobReplyError``. A trace too large to read is skipped (logged)."""
     nonce = _nonce()
     return await _ask(
         exec_fn,
-        trace_script(ref, nonce, delete=delete),
+        trace_script(ref, nonce),
         EXEC_MARGIN_S,
         lambda r: parse_trace_reply(r, nonce, ref.command_id),
+    )
+
+
+async def read_job_end(
+    exec_fn: ExecFn, ref: JobRef, *, trace: bool
+) -> tuple[list[dict] | None, Outbox]:
+    """An ended job's MCP trace (None unless ``trace``) and outbox, in one
+    exec, for a caller that followed the job without a wait (the watcher of a
+    handed-off command). Both files stay for ``discard_jobs``, so a caller
+    whose record fails reads them again. A reply with no answer raises
+    ``JobReplyError``, so a failed read never passes for a job that called
+    and published nothing."""
+    nonce = _nonce()
+    return await _ask(
+        exec_fn,
+        end_read_script(ref, nonce, trace=trace),
+        EXEC_MARGIN_S,
+        lambda r: parse_end_read_reply(r, nonce, ref.command_id, trace=trace),
     )
 
 

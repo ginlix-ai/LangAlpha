@@ -38,6 +38,7 @@ from typing import (
 from psycopg.rows import dict_row
 
 from src.server.database import pool
+from src.server.models.chart_layer import CommandOutbox
 from src.server.models.command import CommandStatus, FailureReason, StopMark
 from src.server.utils.pg_sanitize import SafeJson, normalize_uuid, strip_pg_nul_str
 
@@ -316,6 +317,7 @@ async def finalize(
     *,
     tail: Optional[str] = None,
     trace: Optional[List[Dict[str, Any]]] = None,
+    outbox: Optional[CommandOutbox] = None,
     oom_kill_on: Optional[Tuple[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """The one move from ``running`` to ``outcome``; None when the row is
@@ -333,12 +335,23 @@ async def finalize(
     in and never starts one of its own.
 
     ``trace`` follows what the call's earlier attempts recorded at hand-off;
-    none keeps the row's. ``oom_kill_on`` names the computer's (provider
-    kind, sandbox id) for a job that exited 137: the kill is counted against
+    none keeps the row's. ``outbox`` is the chart layers the job published:
+    their rows are stored here, inside the move, so only the finalize that
+    wins stores them, once, and a retried or losing one stores nothing (a
+    layer the user deleted meanwhile stays deleted). The row keeps their
+    read-back, which the notice carries, and their entries, which its caption
+    draws as the chat's chart-layer card; a store that fails leaves the end
+    to commit with the read-back saying so and no entries. ``oom_kill_on``
+    names the computer's (provider kind, sandbox id) for a job that exited
+    137: the kill is counted against
     that sandbox's open usage run inside the move, so a retried finalize,
     which moves nothing, never counts it twice."""
+    from src.server.database.chart_annotation import encode_layers
+
     command_id = str(judged["command_id"])
     mark = judged.get("stopped_by")
+    # Encoded before the row is locked: it can take a while.
+    layer_rows = await encode_layers(outbox.rows) if outbox is not None and outbox.rows else []
     async with pool.get_db_connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -347,6 +360,8 @@ async def finalize(
                     UPDATE command_runs
                     SET status = %s, exit_code = %s, failure_reason = %s,
                         output_tail = COALESCE(%s, output_tail),
+                        outbox_report = COALESCE(%s, outbox_report),
+                        outbox_layers = COALESCE(%s::jsonb, outbox_layers),
                         mcp_trace = CASE
                             WHEN %s::jsonb IS NULL THEN mcp_trace
                             -- After what the call's earlier attempts called.
@@ -356,13 +371,15 @@ async def finalize(
                         next_check_at = NULL, updated_at = NOW()
                     WHERE command_id = %s AND status = 'running'
                       AND stopped_by IS NOT DISTINCT FROM %s
-                    RETURNING {_LISTED_COLUMNS}
+                    RETURNING {_LISTED_COLUMNS}, outbox_report, outbox_layers
                     """,
                     (
                         outcome.status,
                         outcome.exit_code,
                         outcome.failure_reason,
                         _tail(tail),
+                        strip_pg_nul_str(outbox.report if outbox else None),
+                        SafeJson(list(outbox.layers)) if outbox and outbox.layers else None,
                         SafeJson(trace) if trace is not None else None,
                         SafeJson(trace) if trace is not None else None,
                         outcome.stopped_by,
@@ -378,6 +395,8 @@ async def finalize(
                 )
                 return None
             row = dict(row)
+            if layer_rows:
+                await _store_layers(conn, row, outbox, layer_rows)
             if oom_kill_on is not None:
                 await _count_oom_kill(conn, oom_kill_on, command_id)
             if outcome.report != "none":
@@ -388,6 +407,36 @@ async def finalize(
         f"report={outcome.report}"
     )
     return row
+
+
+async def _store_layers(
+    conn, row: Dict[str, Any], outbox: CommandOutbox, layer_rows: List[Tuple[Any, ...]]
+) -> None:
+    """Store the job's chart layers on the finalize transaction, in a
+    savepoint of their own: a failed store never holds back the command's
+    end, which then commits with the read-back that says the layers were not
+    saved (and ``row`` is changed to match)."""
+    from src.server.database.chart_annotation import insert_layers
+
+    try:
+        async with conn.transaction():
+            await insert_layers(conn, layer_rows)
+        return
+    except Exception:
+        logger.warning(
+            f"[command_runs] storing the chart layers of {row['command_id']} failed",
+            exc_info=True,
+        )
+    row["outbox_report"] = outbox.unsaved_report
+    row["outbox_layers"] = None
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE command_runs SET outbox_report = %s, outbox_layers = NULL
+            WHERE command_id = %s
+            """,
+            (strip_pg_nul_str(outbox.unsaved_report), row["command_id"]),
+        )
 
 
 async def _count_oom_kill(conn, oom_kill_on: Tuple[str, str], command_id: str) -> None:
@@ -591,7 +640,8 @@ async def get_thread_command(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""
-                SELECT {_prefixed("c", _LISTED_COLUMNS)}, {_REPORTED_SQL} AS reported{trace}
+                SELECT {_prefixed("c", _LISTED_COLUMNS)}, c.outbox_report, c.outbox_layers,
+                       {_REPORTED_SQL} AS reported{trace}
                 FROM command_runs c
                 WHERE c.command_id = %s AND c.conversation_thread_id = %s
                 """,
@@ -607,14 +657,16 @@ async def read_notice(command_id: str) -> Optional[Dict[str, Any]]:
 
     ``owed``: ``COMMAND_OWED_SQL``. ``no_turn``: no turn will come to its
     thread (``outbox.NO_TURN_SQL``). ``thread_workspace_id``: the workspace
-    its thread is in now, which a notice turn posts to."""
+    its thread is in now, which a notice turn posts to. ``outbox_report``:
+    what the job's outbox came to, which the notice carries, and
+    ``outbox_layers`` the layers it stored, which its caption draws."""
     from src.server.database.runs.outbox import NO_TURN_SQL
 
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""
-                SELECT {_prefixed("c", _LISTED_COLUMNS)},
+                SELECT {_prefixed("c", _LISTED_COLUMNS)}, c.outbox_report, c.outbox_layers,
                        t.workspace_id AS thread_workspace_id,
                        {COMMAND_OWED_SQL} AS owed,
                        {NO_TURN_SQL} AS no_turn

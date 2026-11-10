@@ -17,6 +17,8 @@ moves, because an unbound row's agent never had one.
 from __future__ import annotations
 
 import logging
+import re
+from itertools import count
 
 from psycopg.rows import dict_row
 
@@ -63,8 +65,10 @@ MOVES: dict[str, str] = {
         UPDATE conversation_usages SET workspace_id = %(home)s
         WHERE workspace_id = %(former)s
     """,
-    # Where Home already holds the same key, Home's stays and the former one
-    # is left on the retired row.
+    # A layer whose id Home's chart already has was renamed first
+    # (``_rename_colliding_layers``), so both charts' layers land in Home. Only
+    # a legacy annotation that collides, which no read shows, is left on the
+    # retired row.
     "chart_annotations": """
         UPDATE chart_annotations a SET workspace_id = %(home)s
         WHERE a.workspace_id = %(former)s AND NOT EXISTS (
@@ -74,6 +78,11 @@ MOVES: dict[str, str] = {
         )
     """,
 }
+
+#: A layer id's longest (``chartkit.schema.LAYER_ID_PATTERN``), which a
+#: renamed one keeps to.
+_LAYER_ID_MAX = 48
+_LAYER_ID = re.compile(r"^[a-z0-9-]{1,48}$")
 
 _SANDBOX = "sandbox state, and a never-bound row has no sandbox"
 
@@ -145,6 +154,7 @@ async def fold_former_homes(user_id: str, home_id: str, conn=None) -> list[str]:
                 if await workspace_has_live_runs(cur, former):
                     continue
                 params = {"home": home_id, "former": former}
+                await _rename_colliding_layers(cur, params)
                 for table, statement in MOVES.items():
                     await cur.execute(statement, params)
                     moved[table] += cur.rowcount
@@ -156,3 +166,59 @@ async def fold_former_homes(user_id: str, home_id: str, conn=None) -> list[str]:
             f"[home_fold] user={user_id} folded {folded} into {home_id} (moved {moved})"
         )
     return folded
+
+
+def renamed_layer_id(layer_id: str, taken: set[str]) -> str:
+    """``layer_id`` with the first ``-<n>`` suffix (from 2) no id in ``taken``
+    has, cut to the layer id's length cap."""
+    for n in count(2):
+        suffix = f"-{n}"
+        candidate = layer_id[: _LAYER_ID_MAX - len(suffix)] + suffix
+        if candidate not in taken:
+            return candidate
+    raise AssertionError("unreachable")
+
+
+async def _rename_colliding_layers(cur, params: dict[str, str]) -> None:
+    """Give each of the former row's layers whose id its chart in Home
+    already has a free id of its own (``renamed_layer_id``), in its row and
+    its payload, so the fold keeps both. Layer ids are the agent's own, and
+    every chart 117 converted holds ``earlier-annotations``, so two Homes'
+    charts often share one."""
+    await cur.execute(
+        """
+        SELECT a.chart_id, a.annotation_id,
+               ARRAY(
+                   SELECT o.annotation_id FROM chart_annotations o
+                   WHERE o.chart_id = a.chart_id
+                     AND o.workspace_id IN (%(home)s, %(former)s)
+               ) AS taken
+        FROM chart_annotations a
+        JOIN chart_annotations h
+          ON h.workspace_id = %(home)s
+         AND h.chart_id = a.chart_id AND h.annotation_id = a.annotation_id
+        WHERE a.workspace_id = %(former)s
+        ORDER BY a.chart_id, a.annotation_id
+        """,
+        params,
+    )
+    taken_on: dict[str, set[str]] = {}
+    for row in await cur.fetchall():
+        old = row["annotation_id"]
+        if not _LAYER_ID.match(old):
+            # A legacy annotation: no read shows it, so it stays put.
+            continue
+        taken = taken_on.setdefault(row["chart_id"], set(row["taken"]))
+        new = renamed_layer_id(old, taken)
+        taken.add(new)
+        await cur.execute(
+            """
+            UPDATE chart_annotations
+            SET annotation_id = %(new)s::text,
+                payload = CASE WHEN payload ? 'id'
+                               THEN jsonb_set(payload, '{id}', to_jsonb(%(new)s::text))
+                               ELSE payload END
+            WHERE workspace_id = %(former)s AND chart_id = %(chart)s AND annotation_id = %(old)s
+            """,
+            {**params, "new": new, "old": old, "chart": row["chart_id"]},
+        )

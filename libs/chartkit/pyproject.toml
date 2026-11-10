@@ -1,0 +1,51 @@
+[project]
+name = "langalpha-chartkit"
+version = "0.1.0"
+description = "Chart layers from pandas: build an explained overlay for the LangAlpha chart, check it, and snapshot it as the user will see it"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "langalpha-market-protocol",
+    "numpy>=1.26",
+    "pandas>=2.2.2",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+# Snapshots drive the render page in headless Chromium. The server only reads
+# the layer contract (chartkit.schema, chartkit.protocol), so it goes without.
+snapshot = ["playwright>=1.49"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["chartkit"]
+# The render page is a build output, so it is gitignored; listed here so a
+# wheel built after `pnpm build:chart-render` still carries it.
+artifacts = ["chartkit/render/**"]
+
+[tool.hatch.build.targets.sdist]
+include = ["chartkit", "README.md", "LICENSE", "pyproject.toml"]
+artifacts = ["chartkit/render/**"]
+
+[dependency-groups]
+dev = ["pytest>=8.0.0"]
+
+# A table of its own stops uv from walking up to the backend's [tool.uv] in
+# the repository root, so the package resolves on its own declarations.
+[tool.uv]
+required-version = ">=0.6.15"
+# A non-editable install is rebuilt only when a cache key changes; the default
+# key is pyproject.toml alone, so a source edit would leave the suite testing
+# the previous build.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "chartkit/**/*.py" },
+]
+
+[tool.uv.sources]
+langalpha-market-protocol = { path = "../market-protocol" }

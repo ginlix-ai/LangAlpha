@@ -1,7 +1,7 @@
 /**
  * Shared chart data constants — the interval vocabulary and the load/poll/live
  * tables used by the bars pipeline (chartDataLoaders, useLiveBars) and by the
- * cross-page chart consumers (Dashboard widgets, ChatAgent annotation cards).
+ * cross-page chart consumers (Dashboard widgets, ChatAgent chart layer cards).
  *
  * MarketView-page-only presentation constants (theme colors, scroll/UI layout,
  * extended-hours session shading, MA/RSI/overlay config) live in
@@ -25,7 +25,7 @@ export const INTERVALS: IntervalConfig[] = [
 ];
 
 // Interval key → short display label, derived from INTERVALS. Single source for
-// any surface that shows a timeframe badge (chart picker, annotation cards/rows).
+// any surface that shows a timeframe badge (chart picker, layer cards, tool rows).
 // Look up as `INTERVAL_LABEL[key] ?? key` so unknown keys degrade to the raw value.
 export const INTERVAL_LABEL: Record<string, string> = Object.fromEntries(
   INTERVALS.map((i) => [i.key, i.label]),

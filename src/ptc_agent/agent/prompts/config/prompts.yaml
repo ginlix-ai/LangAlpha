@@ -5,8 +5,8 @@
 # rebuild. A thread pinned below rebuild_before rebuilds at its next turn
 # start, whatever its size; a build below a thread's pinned version, a
 # rollback, never forces one. When to bump: templates/AGENTS.md.
-prompt_version: 0
-rebuild_before: 0
+prompt_version: 1
+rebuild_before: 1
 
 defaults:
   # Runtime variables (set at render time, these are just documentation)
@@ -71,7 +71,7 @@ defaults:
   show_widget_enabled: true
   finance_enabled: true
   web_enabled: true
-  # Gates the draw_chart_annotation line in the PTC visualizations section.
+  # Gates the chart-layer line in the PTC visualizations section.
   # The agent builds pass false when the chart-annotation skill is off, and
   # the subagent compiler always does: only the main agent binds the tools.
   chart_annotation_enabled: true

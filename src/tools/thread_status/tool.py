@@ -300,18 +300,32 @@ class _Reader:
             ), None
         # Named on the result as a hand-off names its command, so a view whose
         # stream never saw this call (one reconnected since) still re-reads
-        # the thread's commands.
-        return await self._stop(command_id), {"command_id": command_id}
+        # the thread's commands. The chart layers the command published ride
+        # it, for their card, only where nothing else shows them: this stop's
+        # own settle stored them, or this look is the first to show the end
+        # (a notice that got there first brought the card with it).
+        text, row, outcome = await self._stop(command_id)
+        artifact: dict[str, Any] = {"command_id": command_id}
+        layers = row.get("outbox_layers")
+        if layers and (outcome == "stopped" or command_id in self.stamped):
+            artifact["chart_layers"] = layers
+        return text, artifact
 
-    async def _stop(self, command_id: str) -> str:
+    async def _stop(self, command_id: str) -> tuple[str, Mapping[str, Any], str | None]:
         try:
             result = await control.stop_thread_command(self.thread_id, command_id, by="agent")
         except Exception as e:
             logger.warning("[ThreadStatus] stop of %s failed", command_id, exc_info=True)
-            return f"ERROR: Could not stop {command_id}, so it may still be running: {e}"
+            return f"ERROR: Could not stop {command_id}, so it may still be running: {e}", {}, None
         row = result.row or {}
+        return await self._stopped(command_id, result.outcome, row), row, result.outcome
+
+    async def _stopped(self, command_id: str, outcome: str, row: Mapping[str, Any]) -> str:
         wrote = f"What it wrote is in {row.get('log_path')}."
-        match result.outcome:
+        # The stop's settle published the job's outbox; no notice carries it.
+        if published := row.get("outbox_report"):
+            wrote += f"\n\n{published}"
+        match outcome:
             case "not_found":
                 return _unknown(command_id)
             case "stopped":

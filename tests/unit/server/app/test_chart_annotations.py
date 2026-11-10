@@ -1,4 +1,4 @@
-"""Tests for the Chart Annotations API router (src/server/app/chart_annotations.py).
+"""Tests for the chart layers API router (src/server/app/chart_annotations.py).
 
 The router is read / bulk-delete only (writes go through the agent tool). These
 tests cover the ownership guards (404 / 403), symbol validation (400 / 422), and
@@ -49,7 +49,12 @@ async def test_list_success_maps_charts(client):
         "chart_id": "AAPL:1day",
         "symbol": "AAPL",
         "timeframe": "1day",
-        "annotations": [{"annotation_id": "a1", "type": "price_line", "price": 205}],
+        "layers": [
+            {
+                "workspace_id": ws["workspace_id"], "chart_id": "AAPL:1day", "symbol": "AAPL",
+                "timeframe": "1day", "layer_id": "a", "layer": {"id": "a"},
+            }
+        ],
     }
     with (
         patch(
@@ -222,3 +227,158 @@ async def test_clear_forbidden(client):
     ):
         resp = await client.delete(_url(ws["workspace_id"]), params={"symbol": "AAPL"})
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# DELETE — one chart layer
+# ---------------------------------------------------------------------------
+
+
+def _item_url(workspace_id: str, layer_id: str) -> str:
+    return f"{_url(workspace_id)}/items/{layer_id}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spelled", ["BRK.B", "brk-b"])
+async def test_remove_item_class_share_hits_the_stored_chart(client, spelled):
+    """BRK.B and BRK-B are one chart: the delete lands on the id rows store."""
+    ws = _ws()
+    with (
+        patch(
+            "src.server.app.chart_annotations.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch(
+            "src.server.app.chart_annotations.remove_layers",
+            new_callable=AsyncMock,
+            return_value=["a"],
+        ) as mock_remove,
+    ):
+        resp = await client.delete(
+            _item_url(ws["workspace_id"], "a"),
+            params={"symbol": spelled, "timeframe": "1day"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["chart_id"] == "BRK-B:1day"
+    mock_remove.assert_awaited_once_with(ws["workspace_id"], "BRK-B:1day", ["a"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("removed", [["nvda-setup"], []])
+async def test_remove_item_deletes_one_row_and_a_repeat_succeeds(client, removed):
+    ws = _ws()
+    with (
+        patch(
+            "src.server.app.chart_annotations.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch(
+            "src.server.app.chart_annotations.remove_layers",
+            new_callable=AsyncMock,
+            return_value=removed,
+        ) as mock_remove,
+    ):
+        resp = await client.delete(
+            _item_url(ws["workspace_id"], "nvda-setup"),
+            params={"symbol": "nvda", "timeframe": "1hour"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "workspace_id": ws["workspace_id"],
+        "chart_id": "NVDA:1hour",
+        "layer_id": "nvda-setup",
+        "removed": len(removed),
+    }
+    mock_remove.assert_awaited_once_with(ws["workspace_id"], "NVDA:1hour", ["nvda-setup"])
+
+
+@pytest.mark.asyncio
+async def test_remove_item_forbidden_deletes_nothing(client):
+    ws = _ws(user_id="someone-else")
+    with (
+        patch(
+            "src.server.app.chart_annotations.db_get_workspace",
+            new_callable=AsyncMock,
+            return_value=ws,
+        ),
+        patch(
+            "src.server.app.chart_annotations.remove_layers",
+            new_callable=AsyncMock,
+        ) as mock_remove,
+    ):
+        resp = await client.delete(
+            _item_url(ws["workspace_id"], "nvda-setup"), params={"symbol": "NVDA"}
+        )
+    assert resp.status_code == 403
+    mock_remove.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# The store's list: layers grouped by chart
+# ---------------------------------------------------------------------------
+
+
+class _Rows:
+    """A pooled connection whose one query answers ``rows``, keeping what it was asked."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.queries: list[tuple[str, list]] = []
+
+    def cursor(self, **_):
+        outer = self
+
+        class _Cursor:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def execute(self, sql, params):
+                outer.queries.append((sql, params))
+
+            async def fetchall(self):
+                return outer.rows
+
+        return _Cursor()
+
+
+@pytest.mark.asyncio
+async def test_list_charts_groups_layer_rows_by_chart():
+    from contextlib import asynccontextmanager
+
+    from src.server.database import chart_annotation as store
+
+    layer = {"id": "a"}
+    rows = [
+        {"workspace_id": "ws", "chart_id": cid, "symbol": "NVDA", "timeframe": tf,
+         "annotation_id": "a", "payload": layer, "matched": 2}
+        for cid, tf in (("NVDA:1day", "1day"), ("NVDA:1hour", "1hour"))
+    ]
+    db = _Rows(rows)
+
+    @asynccontextmanager
+    async def conn():
+        yield db
+
+    with patch.object(store, "get_db_connection", conn):
+        charts = await store.list_charts("ws", "NVDA")
+
+    # Each layer's address comes from its row's columns; the payload is the layer.
+    assert charts == [
+        {
+            "chart_id": cid, "symbol": "NVDA", "timeframe": tf,
+            "layers": [
+                {"workspace_id": "ws", "chart_id": cid, "symbol": "NVDA", "timeframe": tf,
+                 "layer_id": "a", "layer": layer}
+            ],
+        }
+        for cid, tf in (("NVDA:1day", "1day"), ("NVDA:1hour", "1hour"))
+    ]
+    [(sql, params)] = db.queries
+    assert params[:2] == ["ws", "NVDA"]

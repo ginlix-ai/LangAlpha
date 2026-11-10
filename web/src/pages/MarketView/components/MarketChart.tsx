@@ -46,16 +46,17 @@ import TradingViewWidget from './TradingViewWidget';
 import { TradingViewAttribution } from '@/pages/Dashboard/widgets/framework/TradingViewAttribution';
 import { useChartAnnotations } from '../hooks/useChartAnnotations';
 import { useChartOverlays } from '../hooks/useChartOverlays';
-import { useAgentAnnotations } from '../hooks/useAgentAnnotations';
-import { AgentEventOverlay } from './AgentEventOverlay';
-import { chartAnnotationStore, makeChartId, normalizeTimeframe, useAnnotationsForView, useDisplayCleared } from '../stores/chartAnnotationStore';
+import { useChartLayerDrawing, useChartLayerIntegration } from '../hooks/useChartLayerIntegration';
+import type { ChartView } from '../types/chartView';
+import type { LayerFrameReporter } from '../utils/chartLayer/layerReport';
+import { chartKeyFor, normalizeTimeframe } from '../utils/chartInstanceKey';
 import { chartSelectionStore, useChartSelections } from '../stores/chartSelectionStore';
 import { SelectionPrimitive, type CommittedSelection } from '../utils/selectionPrimitive';
 import { SelectionCommentOverlay } from './SelectionCommentOverlay';
-import { snapToNearestBar, toUnixSeconds } from '../utils/annotationGeometry';
+import { snapToNearestBar, toUnixSeconds } from '../utils/barTime';
 import { downsampleBars } from '../utils/downsampleBars';
 import { clampToPricePane, isOnPricePane, pricePaneHeight } from '../utils/paneBounds';
-import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu, X, SquareDashedMousePointer, Ruler } from 'lucide-react';
+import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu, SquareDashedMousePointer, Ruler } from 'lucide-react';
 
 import { loadPref, savePref } from '../utils/prefs';
 import type { Freshness, SnapshotData } from '@/types/market';
@@ -117,6 +118,12 @@ interface MarketChartProps {
   /** Offer the Light / Advanced (TradingView) switch. Off forces the light chart. */
   modeSwitcher?: boolean;
   /**
+   * Called with the layer renderer's report after each painted frame (null
+   * once no layer is on the chart). Only the snapshot page passes one: without
+   * it the report is never computed.
+   */
+  onLayerFrame?: LayerFrameReporter;
+  /**
    * Rendered first in the toolbar row, before the intervals: a host's ticker
    * legend. Inline content, laid on one line. The slot is the one flex item
    * in the row that gives: it takes what the controls leave and ellipsizes
@@ -131,6 +138,12 @@ interface MarketChartProps {
    * passes that.
    */
   toolbarLeadKey?: string;
+  /**
+   * The room the lead asks of the toolbar row, which may differ from its
+   * width: a lead with a part that gives way asks for less. Its full scroll
+   * width by default. Keep its identity stable.
+   */
+  measureToolbarLead?: (lead: HTMLElement) => number;
   /** Rendered last in the toolbar row, after the chart's tools: a host's own actions. */
   toolbarTrail?: React.ReactNode;
   /** A second thin row under the toolbar, above the panes: a host's actions and figures. */
@@ -141,6 +154,23 @@ export interface MarketChartHandle {
   captureChart: () => Promise<Blob | null>;
   captureChartAsDataUrl: () => Promise<string | null>;
   getChartMetadata: () => Record<string, unknown> | null;
+  /**
+   * What the chart shows right now, as the chart view a chat message carries
+   * (`chart_views`). Null in the Advanced (TradingView) mode, before bars load, and
+   * while the chart has no size.
+   */
+  getViewForContext: () => ChartView | null;
+  /**
+   * Frame visible layers of the chart, named by their ids, by the shared
+   * rule (`layerFrame`). False until they and the bars are there.
+   */
+  frameLayer: (layerIds: readonly string[]) => boolean;
+  /**
+   * Show a time window in the chart's convention (`YYYY-MM-DD` or
+   * `YYYY-MM-DDTHH:MM`, exchange wall clock; `to` may be past the last bar).
+   * False until bars are there or when a time is unreadable.
+   */
+  showTimeRange: (from: string, to: string) => boolean;
 }
 
 /** Max OHLCV bars sent with a region selection (downsampled past this). */
@@ -148,6 +178,8 @@ export interface MarketChartHandle {
 // currently 500). Raising it past the server cap makes the server silently
 // slice the payload and flag it truncated even when the client thought it wasn't.
 const MAX_SELECTION_BARS = 300;
+
+const scrollWidthOf = (el: HTMLElement): number => el.scrollWidth;
 
 /** A drag smaller than this (px, either axis) is treated as a click, not a region. */
 const MIN_DRAG_PX = 4;
@@ -181,8 +213,10 @@ const MarketChart = React.memo(function MarketChart({
   selectionTools = false,
   defaultView = 'centered',
   modeSwitcher = true,
+  onLayerFrame,
   toolbarLead,
   toolbarLeadKey,
+  measureToolbarLead = scrollWidthOf,
   toolbarTrail,
   toolbarSubrow,
   ref,
@@ -196,6 +230,8 @@ const MarketChart = React.memo(function MarketChart({
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const lightWrapperRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  // The same chart as state, for what subscribes to it from a child.
+  const [chart, setChart] = useState<IChartApi | null>(null);
   const watermarkRef = useRef<ITextWatermarkPluginApi<Time> | null>(null);
   const rsiLabelRef = useRef<PaneLabelPrimitive | null>(null);
   // TODO: type properly — lightweight-charts series types are complex generics
@@ -267,9 +303,8 @@ const MarketChart = React.memo(function MarketChart({
   // Toolbar collapse tier by container width. As space shrinks the toolbar
   // sacrifices items in priority order (least → most important): indicator
   // values (1) → scale/view tools (2) → indicators + tools dropdowns (3) →
-  // mode switch into the menu + Clear icon-only (4, phone widths) → the
-  // primary intervals into their dropdown (5). Clear and the selection tools
-  // always stay inline. Hidden actionable items move into the overflow menu.
+  // mode switch into the menu (4, phone widths) → the primary intervals into
+  // their dropdown (5). The selection tools always stay inline. Hidden actionable items move into the overflow menu.
   // A host's lead and trail take room the tiers were sized without, so the
   // width they see is the container minus those slots. Slots are measured by
   // scrollWidth: the row clips the lead when it is short of room, and the
@@ -282,9 +317,9 @@ const MarketChart = React.memo(function MarketChart({
     const el = rootRef.current;
     if (!el) return;
     const { lead, trail } = toolbarSlotsRef.current;
-    const w = el.clientWidth - (lead?.scrollWidth ?? 0) - (trail?.scrollWidth ?? 0);
+    const w = el.clientWidth - (lead ? measureToolbarLead(lead) : 0) - (trail?.scrollWidth ?? 0);
     setToolbarLevel((cur) => selectToolbarTier(w, cur));
-  }, []);
+  }, [measureToolbarLead]);
   // A slot arrives with the host's content, which may be after the chart has
   // mounted, so the observer follows the slot element rather than the mount.
   const slotRef = useCallback((key: 'lead' | 'trail') => (node: HTMLDivElement | null) => {
@@ -404,40 +439,41 @@ const MarketChart = React.memo(function MarketChart({
 
   // Chart data state for hooks
   const [chartDataForHooks, setChartDataForHooks] = useState<ChartDataBar[]>([]);
+  // The bars the agent's layers read: these, and the forming bar again whenever
+  // a live fold moves its high or low, so a forecast's verdict follows the live
+  // candle (useStableBars keeps the grid, so only the verdicts repaint).
+  const [layerBars, setLayerBars] = useState<ChartDataBar[]>([]);
 
   // --- Price lines via hook ---
   const priceTargetsForAnnotations = overlayVisibility.priceTargets ? (overlayData?.priceTargets as any) : null;
   useChartAnnotations(candlestickSeriesRef, stockMeta, quoteData, priceTargetsForAnnotations, annotationsVisible, symbol);
 
-  // --- Agent-sourced annotations: price_line, trendline, marker (derived) ---
-  // Subscribe to the store directly too: `hasAgentAnnotations` drives the
-  // first-class Clear button, and `agentAnnotationsCleared` suppresses the
-  // drawing (data stays in the store) until the user re-opens the artifact.
-  //
-  // The agent can only draw on VALID_TIMEFRAMES, so it stores under the
-  // normalized timeframe (unknown intervals -> '1day'). Look annotations up
-  // under the same normalized key, or they are invisible on non-agent-writable
-  // intervals.
+  // --- Agent chart layers: drawn here, before the load effect, as the other overlays are ---
+  const isCustom = effectiveChartMode === 'custom';
+  const layerChartKey = chartKeyFor(workspaceId, symbol, interval);
+  // What the chart plots itself, so a layer's copy of it is not drawn twice.
+  const layerBuiltins = useMemo(() => ({ rsiPeriod, maPeriods: enabledMaPeriods, volume: true }), [rsiPeriod, enabledMaPeriods]);
+  const layerDrawing = useChartLayerDrawing({
+    chartRef,
+    seriesRef: candlestickSeriesRef,
+    chartData: layerBars,
+    chartKey: layerChartKey,
+    interval,
+    theme,
+    enabled: isCustom,
+    builtins: layerBuiltins,
+    onFrame: onLayerFrame,
+  });
+
+  // --- Series markers via hook (earnings + grades + layer markers) ---
+  useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol, layerDrawing.markers, theme as 'dark' | 'light');
+
+  // Selections are keyed by the timeframe the agent draws on (unknown
+  // intervals -> '1day'), as layers are (`chartKeyFor`), or they would be
+  // invisible on intervals the agent cannot write.
   const annotationInterval = normalizeTimeframe(interval);
   const selectionSymbol = symbol ? symbol.toUpperCase() : '';
   const { selections: userSelections, activeId: editorOpenId } = useChartSelections();
-  const agentAnnotations = useAnnotationsForView(workspaceId ?? null, symbol, annotationInterval);
-  const hasAgentAnnotations = agentAnnotations.length > 0;
-  const agentAnnotationsCleared = useDisplayCleared(workspaceId ?? null, symbol, annotationInterval);
-  const agentMarkers = useAgentAnnotations(
-    chartRef,
-    candlestickSeriesRef,
-    symbol,
-    effectiveChartMode,
-    chartDataForHooks as any,
-    workspaceId ?? null,
-    annotationInterval,
-    !agentAnnotationsCleared,
-    theme,
-  );
-
-  // --- Series markers via hook (earnings + grades + agent markers) ---
-  useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol, agentMarkers, theme as 'dark' | 'light');
 
   // --- User chart selection (region / price level → agent) ---
   // Keep the selection primitive's theme in sync.
@@ -793,6 +829,8 @@ const MarketChart = React.memo(function MarketChart({
         candlestickSeriesRef.current.update({
           time: head.time, open: head.open, high: head.high, low: head.low, close: head.close,
         });
+        const was = data[data.length - 1];
+        if (!was || was.high !== head.high || was.low !== head.low) setLayerBars(folded);
         if (volumeSeriesRef.current) {
           const ct = ctRef.current;
           const ext = isUSEquity(symbolRef.current) && EXTENDED_HOURS_INTERVALS.has(interval) && getExtendedHoursType(head.time);
@@ -919,11 +957,15 @@ const MarketChart = React.memo(function MarketChart({
 
     // Keep allDataRef in sync (data already declared above for the time guard)
     const isSameBar = data.length > 0 && data[data.length - 1].time === barTime;
+    const was = isSameBar ? data[data.length - 1] : null;
     if (isSameBar) {
       data[data.length - 1] = { time: barTime, open: barOpen, high: barHigh, low: barLow, close: barClose, volume: barVolume };
     } else if (!data.length || barTime > data[data.length - 1].time) {
       data.push({ time: barTime, open: barOpen, high: barHigh, low: barLow, close: barClose, volume: barVolume });
     }
+    // The layers read their bars by identity, and this array is edited in
+    // place, so hand them a copy when the forming bar's range moves.
+    if (!was || was.high !== barHigh || was.low !== barLow) setLayerBars(data.slice());
 
     // Keep extended-hours background in sync with live bars
     if (ext && extHoursBgRef.current) {
@@ -1004,6 +1046,8 @@ const MarketChart = React.memo(function MarketChart({
     candlestickSeriesRef.current.update({
       time: head.time, open: head.open, high: head.high, low: head.low, close: head.close,
     });
+    const was = prev[prev.length - 1];
+    if (!was || was.high !== head.high || was.low !== head.low) setLayerBars(folded);
     if (volumeSeriesRef.current) {
       const ct = ctRef.current;
       const up = head.close >= head.open;
@@ -1023,92 +1067,6 @@ const MarketChart = React.memo(function MarketChart({
       if (needsReveal) wrapper.style.visibility = '';
     }
   }, []);
-
-  useImperativeHandle(ref, () => ({
-    captureChart: async () => {
-      // Use native takeScreenshot for main chart download
-      if (chartRef.current) {
-        try {
-          const canvas = chartRef.current.takeScreenshot();
-          if (canvas) {
-            return new Promise((resolve) => {
-              canvas.toBlob((blob) => resolve(blob), 'image/png');
-            });
-          }
-        } catch (err) {
-          console.warn('Native takeScreenshot failed, falling back to html2canvas:', err);
-        }
-      }
-      // Fallback to html2canvas (temporarily reveal if hidden)
-      if (!chartContainerRef.current) return null;
-      return revealForCapture(async () => {
-        try {
-          const canvas = await html2canvas(chartContainerRef.current!, {
-            backgroundColor: ct.bg,
-            scale: 2,
-            logging: false,
-          });
-          return new Promise((resolve) => {
-            canvas.toBlob((blob) => resolve(blob), 'image/png');
-          });
-        } catch (err) {
-          console.error('Chart capture failed:', err);
-          return null;
-        }
-      });
-    },
-    captureChartAsDataUrl: async () => {
-      // html2canvas can't read lightweight-charts canvas pixels; the native
-      // screenshot covers every pane (price + RSI) in one image.
-      try {
-        const canvas = chartRef.current?.takeScreenshot();
-        if (!canvas) return null;
-        return canvas.toDataURL('image/jpeg', 0.85);
-      } catch (err) {
-        console.error('Chart capture failed:', err);
-        return null;
-      }
-    },
-    getChartMetadata: () => {
-      const data = allDataRef.current;
-      if (!data || data.length === 0) return null;
-
-      const firstTime = data[0].time;
-      const lastTime = data[data.length - 1].time;
-      // Chart timestamps are already ET-shifted, so UTC interpretation gives the ET date
-      const formatDate = (ts: number) => new Date(ts * 1000).toISOString().split('T')[0];
-
-      const enabledMAs = enabledMaPeriodsRef.current;
-      const maInfo = enabledMAs
-        .filter((p) => maValues[p] != null)
-        .map((p) => `MA${p}: ${maValues[p]}`);
-
-      const lastCandle = data[data.length - 1];
-
-      return {
-        chartMode: effectiveChartMode === 'tradingview' ? 'Advanced (TradingView)' : 'Light',
-        dateRange: { from: formatDate(firstTime), to: formatDate(lastTime) },
-        dataPoints: data.length,
-        enabledMAs,
-        maValues: Object.fromEntries(
-          enabledMAs.filter((p) => maValues[p] != null).map((p) => [p, maValues[p]])
-        ),
-        maDescription: maInfo.length > 0 ? maInfo.join(', ') : null,
-        rsiPeriod: rsiPeriodRef.current,
-        rsiValue: rsiValue,
-        lastCandle: {
-          open: lastCandle.open,
-          high: lastCandle.high,
-          low: lastCandle.low,
-          close: lastCandle.close,
-          volume: lastCandle.volume,
-        },
-        annotationsVisible,
-        overlayVisibility,
-        priceScaleMode,
-      };
-    },
-  }));
 
   // Re-apply when the snapshot's official-close inputs move — the signature
   // carries the close-line price, so an unchanged snapshot is a no-op.
@@ -1203,6 +1161,7 @@ const MarketChart = React.memo(function MarketChart({
 
     // Update chart data state for overlay hooks
     setChartDataForHooks(data);
+    setLayerBars(data);
   }, [applySessionPresentation]);
 
   // --- Live forming-bar delta-poll (shared controller) ---
@@ -1345,6 +1304,7 @@ const MarketChart = React.memo(function MarketChart({
       },
     });
     chartRef.current = chart;
+    setChart(chart);
 
     watermarkRef.current = createTextWatermark(chart.panes()[0], {
       horzAlign: 'center',
@@ -1408,7 +1368,7 @@ const MarketChart = React.memo(function MarketChart({
       priceLineVisible: false,
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     }, 1);
-    rsiSeries.priceScale().applyOptions({ scaleMargins: { top: 0.15, bottom: 0.15 } });
+    rsiSeries.priceScale().applyOptions({ scaleMargins: { top: 0.15, bottom: 0.15 }, entireTextOnly: true });
     rsiSeriesRef.current = rsiSeries;
     const rsiPane = chart.panes()[1];
     rsiPane.setStretchFactor(0.5);
@@ -1489,6 +1449,7 @@ const MarketChart = React.memo(function MarketChart({
       if (chartRef.current) {
         chartRef.current.remove();
         chartRef.current = null;
+        setChart(null);
       }
     };
     // priceFormatRef is a stable ref (from useCurrencyDisplay) — listed so
@@ -1697,6 +1658,7 @@ const MarketChart = React.memo(function MarketChart({
         if (s) s.setData([]);
       });
       setChartDataForHooks([]);
+      setLayerBars([]);
       // Reset RSI incremental state on symbol/interval change
       rsiSmoothingRef.current = null;
       prevBarSmoothingRef.current = null;
@@ -1842,6 +1804,115 @@ const MarketChart = React.memo(function MarketChart({
     if (chartRef.current) chartRef.current.applyOptions({ timeScale: opts });
   }, [interval]);
 
+  // --- Agent chart layers: framed, explained, listed (drawn above) ---
+  // Placed after the load effect (see `useChartLayerIntegration`).
+  const chartLayers = useChartLayerIntegration({
+    drawing: layerDrawing,
+    chart,
+    chartRef,
+    seriesRef: candlestickSeriesRef,
+    containerRef: chartContainerRef,
+    barsRef: allDataRef,
+    chartData: layerBars,
+    chartKey: layerChartKey,
+    symbol,
+    interval,
+    theme,
+    enabled: isCustom,
+    explainEnabled: selectMode === 'off',
+    defaultView,
+    loading,
+  });
+
+  useImperativeHandle(ref, () => ({
+    captureChart: async () => {
+      // Use native takeScreenshot for main chart download
+      if (chartRef.current) {
+        try {
+          const canvas = chartRef.current.takeScreenshot();
+          if (canvas) {
+            return new Promise((resolve) => {
+              canvas.toBlob((blob) => resolve(blob), 'image/png');
+            });
+          }
+        } catch (err) {
+          console.warn('Native takeScreenshot failed, falling back to html2canvas:', err);
+        }
+      }
+      // Fallback to html2canvas (temporarily reveal if hidden)
+      if (!chartContainerRef.current) return null;
+      return revealForCapture(async () => {
+        try {
+          const canvas = await html2canvas(chartContainerRef.current!, {
+            backgroundColor: ct.bg,
+            scale: 2,
+            logging: false,
+          });
+          return new Promise((resolve) => {
+            canvas.toBlob((blob) => resolve(blob), 'image/png');
+          });
+        } catch (err) {
+          console.error('Chart capture failed:', err);
+          return null;
+        }
+      });
+    },
+    captureChartAsDataUrl: async () => {
+      // html2canvas can't read lightweight-charts canvas pixels; the native
+      // screenshot covers every pane (price + RSI) in one image.
+      try {
+        const canvas = chartRef.current?.takeScreenshot();
+        if (!canvas) return null;
+        return canvas.toDataURL('image/jpeg', 0.85);
+      } catch (err) {
+        console.error('Chart capture failed:', err);
+        return null;
+      }
+    },
+    getViewForContext: chartLayers.handle.getView,
+    frameLayer: chartLayers.handle.frameLayer,
+    showTimeRange: chartLayers.handle.showTimeRange,
+    getChartMetadata: () => {
+      const data = allDataRef.current;
+      if (!data || data.length === 0) return null;
+
+      const firstTime = data[0].time;
+      const lastTime = data[data.length - 1].time;
+      // Chart timestamps are already ET-shifted, so UTC interpretation gives the ET date
+      const formatDate = (ts: number) => new Date(ts * 1000).toISOString().split('T')[0];
+
+      const enabledMAs = enabledMaPeriodsRef.current;
+      const maInfo = enabledMAs
+        .filter((p) => maValues[p] != null)
+        .map((p) => `MA${p}: ${maValues[p]}`);
+
+      const lastCandle = data[data.length - 1];
+
+      return {
+        chartMode: effectiveChartMode === 'tradingview' ? 'Advanced (TradingView)' : 'Light',
+        dateRange: { from: formatDate(firstTime), to: formatDate(lastTime) },
+        dataPoints: data.length,
+        enabledMAs,
+        maValues: Object.fromEntries(
+          enabledMAs.filter((p) => maValues[p] != null).map((p) => [p, maValues[p]])
+        ),
+        maDescription: maInfo.length > 0 ? maInfo.join(', ') : null,
+        rsiPeriod: rsiPeriodRef.current,
+        rsiValue: rsiValue,
+        lastCandle: {
+          open: lastCandle.open,
+          high: lastCandle.high,
+          low: lastCandle.low,
+          close: lastCandle.close,
+          volume: lastCandle.volume,
+        },
+        annotationsVisible,
+        overlayVisibility,
+        priceScaleMode,
+      };
+    },
+  }));
+
   // --- Effect 4: Re-run updateSeriesData when MA/RSI config changes ---
   useEffect(() => {
     if (allDataRef.current.length > 0) {
@@ -1926,11 +1997,6 @@ const MarketChart = React.memo(function MarketChart({
   const handleToggleAnnotations = useCallback(() => {
     setAnnotationsVisible((prev) => !prev);
   }, []);
-
-  const handleClearAgentAnnotations = useCallback(() => {
-    if (!workspaceId || !symbol) return;
-    chartAnnotationStore.clearDisplay(workspaceId, makeChartId(symbol, annotationInterval));
-  }, [workspaceId, symbol, annotationInterval]);
 
   const handleToggleOverlay = useCallback((key: string) => {
     setOverlayVisibility((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -2097,6 +2163,21 @@ const MarketChart = React.memo(function MarketChart({
     </div>
   );
 
+  const renderIndicatorReadouts = () => (
+    <>
+      {MA_CONFIGS.filter(({ period }) => enabledMaPeriods.includes(period)).map(({ period, color, label }) => (
+        <span className="indicator-item" key={period}>
+          <span className="indicator-color" style={{ backgroundColor: color }} />
+          {label}: {maValues[period] ?? '\u2014'}
+        </span>
+      ))}
+      <span className="indicator-item">
+        <span className="indicator-color" style={{ backgroundColor: 'var(--color-accent-primary)' }} />
+        {rsiCaption}
+      </span>
+    </>
+  );
+
   const renderViewButtons = () => (
     <>
       <button
@@ -2209,40 +2290,19 @@ const MarketChart = React.memo(function MarketChart({
                   </div>
                 )}
               </div>
-              {/* Indicator values — read-only readouts; dropped first (tier 1) */}
-              <div className="chart-indicators toolbar-item--values">
-                {MA_CONFIGS.filter(({ period }) => enabledMaPeriods.includes(period)).map(({ period, color, label }) => (
-                  <span className="indicator-item" key={period}>
-                    <span className="indicator-color" style={{ backgroundColor: color }} />
-                    {label}: {maValues[period] ?? '\u2014'}
-                  </span>
-                ))}
-                <span className="indicator-item">
-                  <span className="indicator-color" style={{ backgroundColor: 'var(--color-accent-primary)' }} />
-                  {rsiCaption}
-                </span>
-              </div>
+              {/* Indicator values — read-only readouts; dropped first (tier 1).
+                  Beside a host's subrow they ride that row instead. */}
+              {!toolbarSubrow && (
+                <div className="chart-indicators toolbar-item--values">
+                  {renderIndicatorReadouts()}
+                </div>
+              )}
             </>
           )}
         </div>
         <div className="chart-tools-right">
           {!isTV && (
             <>
-              {/* Clear annotations — first-class, shown only while agent
-                  annotations are drawn. Clears them from the chart (data stays
-                  in the store; re-open the chat artifact to restore). */}
-              {hasAgentAnnotations && !agentAnnotationsCleared && (
-                <button
-                  type="button"
-                  className="chart-tool-btn chart-clear-annotations-btn"
-                  onClick={handleClearAgentAnnotations}
-                  title={t('marketView.chart.clearAnnotationsTitle')}
-                  aria-label={t('marketView.chart.clearAnnotations')}
-                >
-                  <X size={14} />
-                  <span className="clear-label">{t('marketView.chart.clearAnnotations')}</span>
-                </button>
-              )}
               {/* Selection tools — first-class, both layouts. Primary entry
                   point for the chart → agent hand-off, so not buried in a
                   dropdown. Only meaningful on the Light chart (custom mode). */}
@@ -2338,7 +2398,14 @@ const MarketChart = React.memo(function MarketChart({
           {toolbarTrail && <div className="chart-toolbar-trail" ref={toolbarTrailRef}>{toolbarTrail}</div>}
         </div>
       </div>
-      {toolbarSubrow && <div className="chart-subrow rule-b">{toolbarSubrow}</div>}
+      {/* The host's figures, then the indicator readouts, which have room
+          here at every width the toolbar would have shed them at. */}
+      {toolbarSubrow && (
+        <div className="chart-subrow rule-b">
+          {toolbarSubrow}
+          {!isTV && <div className="chart-indicators chart-subrow-readouts">{renderIndicatorReadouts()}</div>}
+        </div>
+      )}
 
       {/* ---- Charts area: shared flex container for both modes ---- */}
       <div style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -2363,19 +2430,9 @@ const MarketChart = React.memo(function MarketChart({
                 containerRef={chartContainerRef}
                 currency={displayCurrency.code ?? undefined}
                 decimals={displayCurrency.decimals}
+                suppressed={chartLayers.cardOpen}
               />
-              {effectiveChartMode === 'custom' && (
-                <AgentEventOverlay
-                  chartRef={chartRef}
-                  seriesRef={candlestickSeriesRef}
-                  chartData={chartDataForHooks as any}
-                  theme={theme as 'light' | 'dark'}
-                  visible={!agentAnnotationsCleared}
-                  workspaceId={workspaceId ?? null}
-                  symbol={symbol}
-                  timeframe={annotationInterval}
-                />
-              )}
+              {chartLayers.ui}
               {effectiveChartMode === 'custom' && (
                 <div
                   className="chart-selection-capture"

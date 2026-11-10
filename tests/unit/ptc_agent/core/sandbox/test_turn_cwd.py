@@ -40,6 +40,7 @@ from ptc_agent.config.core import (
 from ptc_agent.core import paths as core_paths
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.project_context import ProjectContext, set_project
+from ptc_agent.core.sandbox.jobs import JobContext
 from ptc_agent.core.sandbox.livefs_runtime.protocol import CALL_ENV
 from ptc_agent.core.sandbox._shared import (
     _TURN_CWD_SOURCE,
@@ -190,7 +191,7 @@ class TestTheCallId:
     async def test_a_job_starts_tagged_with_its_call(self, sandbox, runtime, call_id):
         """A job outlives its call, so the tag rides the wrapper's starting
         environment, which every process the command starts inherits."""
-        await sandbox.start_bash_job("pwd", wait_s=0, call_id=call_id)
+        await sandbox.start_bash_job("pwd", wait_s=0, context=JobContext(call_id=call_id))
 
         (launch, *_) = [c for c in self._sent(runtime) if "MCP_TRACE_FILE=" in c]
         words = re.search(r"\( export ([^;]*); exec ", launch).group(1)

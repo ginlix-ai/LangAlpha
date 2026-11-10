@@ -64,7 +64,7 @@
     },
     "draw": {
       "title": "The agent marks what moved the price",
-      "body": "It answers on the chart too, pinning each event behind a move to the bar where it hit. Click a badge for the story behind it. The drawings stay with the workspace, so its chart tab shows them too."
+      "body": "It answers on the chart too, with a layer that labels each event behind a move at the bar where it hit. Click a label for the agent's note on it. The layer stays with the workspace, so its chart tab shows it too."
     }
   },
   "automations": {

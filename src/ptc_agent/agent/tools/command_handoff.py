@@ -23,7 +23,7 @@ from typing import Any
 import structlog
 
 from ptc_agent.agent.tools.utils import mark_sandbox_failed, note_sandbox_exit
-from ptc_agent.core.sandbox.jobs import Ended, Failed, JobOutcome, JobRef, Running
+from ptc_agent.core.sandbox.jobs import Ended, Failed, JobOutcome, JobRef, Outbox, Running
 from src.utils.durations import format_duration
 
 logger = structlog.get_logger(__name__)
@@ -49,10 +49,17 @@ _WAKEUP_CHECK = (
     "each check, and each check can schedule the next."
 )
 
+#: ``configurable`` key holding what the turn adds to every job's environment
+#: (``JobContext.env``): the user's chart views, set where the request is
+#: handled. Every tool call of the turn, a subagent's included, inherits it.
+JOB_ENV_KEY = "job_env"
+
 #: Renders a job that ended, or a call that failed, as the tool returns it.
 Render = Callable[[Ended | Failed], Awaitable[tuple[str, dict[str, Any]]]]
 #: Starts the tool's job with the wait it is given.
 Launch = Callable[[float], Awaitable[JobOutcome]]
+#: What a call returns: its text and its artifact.
+Result = tuple[str, dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,12 @@ class CommandCall:
     def computer_id(self) -> str | None:
         computer_id = getattr(self.session, "computer_id", None)
         return str(computer_id) if computer_id else None
+
+
+def turn_job_env(config: Mapping[str, Any] | None) -> Mapping[str, str]:
+    """What the turn adds to each job's environment (``JOB_ENV_KEY``)."""
+    env = ((config or {}).get("configurable") or {}).get(JOB_ENV_KEY)
+    return env if isinstance(env, Mapping) else {}
 
 
 def run_id_of(config: Mapping[str, Any] | None) -> str | None:
@@ -196,8 +209,56 @@ async def run_command(
     wait. A job not handed off is waited on to the call's clock and stopped
     there, or stopped at its first wait when nothing times the call. Until
     the ledger owns a job, a cancel stops it, since nothing else would ever
-    end it.
+    end it. A job that ended in the call, whichever way, has its outbox
+    published here, once, as the call returns; the watcher publishes one
+    handed off.
     """
+    result, outbox = await _drive(
+        backend,
+        call,
+        launch,
+        render,
+        hand_off=hand_off,
+        first_wait=first_wait,
+        background=background,
+        slot=slot,
+    )
+    if not outbox:
+        return result
+    # Lazy: a build with no server behind it, and every run that published
+    # nothing, never loads the store.
+    from src.tools.chart_annotation.layers import publish_outbox
+
+    workspace_id = ((call.config or {}).get("configurable") or {}).get("workspace_id")
+    published = await publish_outbox(outbox, str(workspace_id) if workspace_id else None)
+    content, artifact = result
+    if published.layers:
+        artifact = {**artifact, "chart_layers": published.layers}
+    if published.text:
+        content = content.rstrip("\n") + "\n\n" + published.text
+    return content, artifact
+
+
+def _outbox_of(outcome: Ended | Failed) -> Outbox:
+    return outcome.outbox if isinstance(outcome, Ended) else Outbox()
+
+
+async def _drive(
+    backend: Any,
+    call: CommandCall,
+    launch: Launch,
+    render: Render,
+    *,
+    hand_off: HandOff | None,
+    first_wait: float,
+    background: bool,
+    slot: Callable[[], AbstractAsyncContextManager[Any]] | None,
+) -> tuple[Result, Outbox]:
+    """``run_command``'s result, and the outbox of a job that ended in it."""
+
+    async def ended(outcome: Ended | Failed) -> tuple[Result, Outbox]:
+        return await render(outcome), _outbox_of(outcome)
+
     held = _Held(backend)
     try:
         async with slot() if slot is not None else contextlib.nullcontext():
@@ -205,7 +266,7 @@ async def run_command(
             # Held before the slot is let go, whose release can be cancelled.
             outcome = held.hold(await launch(wait_s))
         if not isinstance(outcome, Running):
-            return await render(outcome)
+            return await ended(outcome)
         if hand_off is not None:
             if await held.hand_over(call, hand_off):
                 log = hand_off.log_path(outcome.ref)
@@ -216,11 +277,11 @@ async def run_command(
                         outcome, waited_s=wait_s, wakeups=hand_off.wakeups, log=log
                     )
                 )
-                return text, {"mcp_trace": [], "command_id": outcome.ref.command_id}
+                return (text, {"mcp_trace": [], "command_id": outcome.ref.command_id}), Outbox()
             if background:
                 # Unrecorded, nothing would report it or stop it after the turn.
                 await held.stop()
-                return not_handed_off_result(), {"mcp_trace": []}
+                return (not_handed_off_result(), {"mcp_trace": []}), Outbox()
         left = wait_left(call.config) if waits_on else None
         if left is not None:
             # The call keeps the command it started, until its tools stop:
@@ -229,7 +290,7 @@ async def run_command(
             # bound, as its timeout was before commands ran as jobs.
             outcome = held.hold(await backend.continue_job(outcome, left))
             if not isinstance(outcome, Running):
-                return await render(outcome)
+                return await ended(outcome)
         return await stop_at_deadline(backend, outcome, render, log_of(outcome.ref, hand_off))
     except asyncio.CancelledError:
         await held.release()
@@ -382,14 +443,15 @@ async def _row_exists(thread_id: str, command_id: str) -> bool:
 
 async def stop_at_deadline(
     backend: Any, outcome: Running, render: Render, log: str
-) -> tuple[str, dict[str, Any]]:
-    """Stop a job the call's clock ran out on, and what the call returns.
+) -> tuple[Result, Outbox]:
+    """Stop a job the call's clock ran out on: what the call returns, and
+    what the job published before the stop, for the call to publish.
 
     The MCP calls ride the result as an ended job's do, read by the stop's
-    own exec: a wait would reap the stopped job and move the log the result
-    names. A job that ended between the call's last wait and the stop is
-    read, and returned as ``render`` returns any ended job; a read that
-    fails leaves its log for the deadline result to name.
+    own exec, as is the outbox: a wait would reap the stopped job and move
+    the log the result names. A job that ended between the call's last wait
+    and the stop is read, and returned as ``render`` returns any ended job;
+    a read that fails leaves its log for the deadline result to name.
     """
     stopped = await backend.stop_job_with_trace(outcome)
     if stopped.had_ended:
@@ -403,8 +465,9 @@ async def stop_at_deadline(
             )
         else:
             if not isinstance(done, Running):
-                return await render(done)
-    return deadline_result(outcome, log), {"mcp_trace": list(stopped.mcp_trace)}
+                return await render(done), _outbox_of(done)
+    result = deadline_result(outcome, log), {"mcp_trace": list(stopped.mcp_trace)}
+    return result, stopped.outbox
 
 
 async def settle(backend: Any, outcome: Ended | Failed, hand_off: HandOff | None) -> str:

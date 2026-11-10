@@ -50,11 +50,11 @@ class _Mounted:
     async def config_folder(self):
         return None
 
-    async def start_bash_job(self, command, *, call_id=None, **_):
+    async def start_bash_job(self, command, **_):
         self.ran.append(command)
         return outcome(output="ok")
 
-    async def start_code_job(self, code, *, call_id=None, **_):
+    async def start_code_job(self, code, **_):
         self.ran.append(code)
         return outcome(output="ok")
 

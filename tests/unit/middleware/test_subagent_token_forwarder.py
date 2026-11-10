@@ -766,6 +766,35 @@ async def test_forward_custom_sends_file_operation_as_path_only_artifact() -> No
 
 
 @pytest.mark.asyncio
+async def test_forward_custom_sends_a_published_chart_layer() -> None:
+    """A layer a subagent's code published is stored already; the open chart
+    refetches it on the task lane's add, so the forwarder passes its address
+    and never its body, which can run to megabytes."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="cl1")
+    fwd = _SubagentTokenForwarder(registry, task.tool_call_id, "task:cl1")
+    payload = {
+        "op": "add",
+        "workspace_id": "w",
+        "chart_id": "NVDA:1day",
+        "symbol": "NVDA",
+        "timeframe": "1day",
+        "layer_id": "lyr_x",
+        "layer": {"id": "x"},
+        "type": "message_chunk",
+    }
+
+    await fwd.forward_custom({"artifact_type": "chart_layer", "artifact_id": "lyr_x", "payload": payload})
+
+    (record,) = task._test_records
+    assert record["event"] == "artifact"
+    assert record["data"]["agent"] == "task:cl1"
+    assert record["data"]["payload"] == {
+        k: v for k, v in payload.items() if k not in ("type", "layer")
+    }
+
+
+@pytest.mark.asyncio
 async def test_atask_pipeline_forwards_custom_events_to_registry(monkeypatch):
     """End-to-end: when the subagent emits a ``custom``-mode payload, the
     Task-tool driver routes it through ``forward_custom`` so the per-task

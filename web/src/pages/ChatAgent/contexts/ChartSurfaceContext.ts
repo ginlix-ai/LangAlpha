@@ -5,13 +5,13 @@ import { createContext, useContext } from 'react';
  *
  * The chat engine (`useChatMessages`) and its `MessageList` are shared by the
  * standalone ChatAgent page AND the MarketView desktop chat panel. When the
- * agent draws a chart annotation, its inline card behaves differently by
+ * agent publishes a chart layer, its inline card behaves differently by
  * surface:
  * - ChatAgent (`chartPresent: false`, the default): a card naming the symbol,
- *   timeframe and annotations, which opens the chart in a tab beside the chat
+ *   timeframe and layers, which opens the chart in a tab beside the chat
  *   (MarketView on mobile).
  * - MarketView (`chartPresent: true`): the real chart already shows the
- *   drawing live, so the card collapses to a one-line confirmation chip.
+ *   layers live, so the card collapses to a one-line confirmation chip.
  *
  * MarketView also supplies the instance currently on screen (`activeSymbol` /
  * `activeTimeframe`) and an `onJumpToChart` callback, so a chip describing a
@@ -25,7 +25,7 @@ export interface ChartSurface {
   /**
    * Raw interval currently shown on the adjacent live chart (NOT normalized) —
    * so a view-only interval like `1s` doesn't read as "active" for a `1day`
-   * annotation.
+   * layer.
    */
   activeTimeframe?: string;
   /** Switch the adjacent live chart to a symbol+timeframe (MarketView only). */

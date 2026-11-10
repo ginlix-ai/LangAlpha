@@ -181,6 +181,18 @@ export function formatCalendarDayRange(from: string, to: string, locale: string)
   return a <= b ? calendarDayRange(locale).formatRange(a, b) : calendarDayRange(locale).formatRange(b, a);
 }
 
+// A chart's wall clock: seconds that write the exchange's local time as if it
+// were UTC (an intraday bar's time), so printed in UTC to keep the clock.
+const wallClockRange = perLocale((locale) => new Intl.DateTimeFormat(locale, {
+  month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC',
+}));
+
+/** "Mar 31, 10:30 AM – 3:00 PM" for two wall-clock times in chart seconds. */
+export function formatWallClockRange(fromSecs: number, toSecs: number, locale: string): string {
+  const [a, b] = fromSecs <= toSecs ? [fromSecs, toSecs] : [toSecs, fromSecs];
+  return wallClockRange(locale).formatRange(new Date(a * 1000), new Date(b * 1000));
+}
+
 const byteAmount = createFormatter({ maximumFractionDigits: 1 });
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
 

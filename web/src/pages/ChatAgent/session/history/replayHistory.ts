@@ -551,12 +551,12 @@ export async function loadConversationHistory(
       // Handle artifact events (e.g., todo_update)
       // In history replay, artifacts DO have turn_index, so we can use it directly
       //
-      // NOTE: `chart_annotation` artifacts are intentionally NOT replayed here
-      // (only the live stream applies them to the annotation store). On reload,
+      // NOTE: `chart_layer` artifacts are intentionally NOT replayed here
+      // (only the live stream applies them to the layer store). On reload,
       // every live chart (MarketView's, and the chat's chart tab through
       // `MarketChartSurface`) repopulates the store from Postgres with
-      // `useChartAnnotationSync`, and the inline card renders from the
-      // replayed `tool_call_result.artifact`.
+      // `useChartLayerSync`, and the inline card renders from the replayed
+      // tool result's `chart_layers`.
       if (eventType === 'artifact') {
         const artifactType = event.artifact_type;
         if (artifactType === 'todo_update') {

@@ -402,6 +402,12 @@ class TestATaskById:
         assert listed.content.endswith(" · 14 tool calls, now WebFetch")
 
 
+_LAYER = {
+    "workspace_id": "w", "chart_id": "SPY:5min", "symbol": "SPY", "timeframe": "5min",
+    "layer_id": "orb", "title": "Opening range", "summary": None, "as_of": None,
+}
+
+
 class TestStop:
     @pytest.mark.asyncio
     async def test_a_running_command_is_stopped_by_the_agent(self, db):
@@ -461,6 +467,29 @@ class TestStop:
 
         assert message.content.startswith("bg-000000000001 is not running: completed after 4m.")
         db.stamp_delivered.assert_awaited_once_with(["bg-000000000001"])
+
+    @pytest.mark.asyncio
+    async def test_the_layers_this_stops_settle_stored_ride_its_card(self, db):
+        db.stop_thread_command.return_value = StopResult(
+            "stopped",
+            {**_row("bg-000000000001", "stopped", stopped_by="agent"), "outbox_layers": [_LAYER]},
+        )
+
+        message = await _call(stop="bg-000000000001")
+
+        assert message.artifact["chart_layers"] == [_LAYER]
+
+    @pytest.mark.asyncio
+    async def test_an_ended_commands_layers_ride_only_an_end_no_notice_showed(self, db):
+        """A command that ended before the stop shows its card where its end
+        is first shown: here when this look is first, else on its notice."""
+        db.stop_thread_command.return_value = StopResult(
+            "ended", {**_row("bg-000000000001", "completed"), "outbox_layers": [_LAYER]}
+        )
+        assert (await _call(stop="bg-000000000001")).artifact["chart_layers"] == [_LAYER]
+
+        db.stamp_delivered.side_effect = lambda ids: []
+        assert "chart_layers" not in (await _call(stop="bg-000000000001")).artifact
 
     @pytest.mark.asyncio
     async def test_a_command_the_thread_does_not_have_is_unknown(self, db):

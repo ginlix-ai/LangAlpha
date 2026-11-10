@@ -11,8 +11,8 @@
 
 /* The chart is a card in the pane's gutter. Its rows tighten to the toolbar's
    own height so nothing above the candles is taller than a button; from the
-   chart's second collapse tier the toolbar keeps its own tightened padding,
-   as it does on the MarketView page. */
+   chart's second collapse tier the toolbar takes back its vertical padding,
+   as it does on the MarketView page, and keeps the card's inset. */
 .file-panel-chart-pane .market-chart-container {
   box-sizing: border-box;
   border: 1px solid var(--color-border-default);
@@ -25,5 +25,10 @@
 }
 
 .file-panel-chart-pane .chart--c2 .chart-tools {
-  padding: 8px 12px;
+  padding: 8px 10px;
+}
+
+/* The figures start under the ticker at every tier. */
+.file-panel-chart-pane .chart-subrow {
+  padding-inline: 10px;
 }

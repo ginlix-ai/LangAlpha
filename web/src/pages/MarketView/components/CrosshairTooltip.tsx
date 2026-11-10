@@ -111,6 +111,8 @@ interface CrosshairTooltipLayerProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
   currency?: string;
   decimals?: number;
+  /** Hidden while something else explains the point under the pointer (a layer's card). */
+  suppressed?: boolean;
 }
 
 /**
@@ -124,11 +126,12 @@ export const CrosshairTooltipLayer = React.memo(function CrosshairTooltipLayer({
   containerRef,
   currency,
   decimals,
+  suppressed = false,
 }: CrosshairTooltipLayerProps) {
   const state = React.useSyncExternalStore(store.subscribe, store.get);
   return (
     <CrosshairTooltip
-      visible={state.visible}
+      visible={state.visible && !suppressed}
       x={state.x}
       y={state.y}
       data={state.data}

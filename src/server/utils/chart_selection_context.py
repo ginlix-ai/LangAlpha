@@ -9,6 +9,7 @@ the chat can re-render the selection card on history replay.
 """
 
 import logging
+from datetime import datetime
 from typing import Any, List, Optional
 
 from src.server.models.additional_context import ChartSelectionContext, SelectionBar
@@ -51,7 +52,7 @@ _CHART_SELECTION_PREAMBLE = (
     "single price level they highlighted, with the chart's SYMBOL:timeframe, the "
     "bounds, and the OHLCV bars inside it. Analyze the bounded area — lean on the "
     "supplied bars and/or your market-data tools — and, when it helps, draw your "
-    "conclusion back onto the SAME chart with draw_chart_annotation."
+    "conclusion back onto the SAME chart as a chart layer."
 )
 
 
@@ -76,7 +77,24 @@ def _fmt_price(value: Optional[float]) -> str:
     return f"{value:.12g}"
 
 
-def _render_bars_table(bars: List[SelectionBar]) -> tuple[str, str]:
+def _chart_time(value: Optional[str], timeframe: str) -> str:
+    """A selection time as chartkit reads it: the exchange's wall clock, no zone.
+
+    The web encodes chart times as the venue's wall clock stamped UTC (``Z``),
+    so the zone is false: kept, chartkit would convert it to exchange time and
+    draw a daily box a day early, an intraday one hours off. Text that is not
+    an ISO time passes through as sent.
+    """
+    if not value:
+        return ""
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return moment.strftime("%Y-%m-%d" if timeframe == "1day" else "%Y-%m-%d %H:%M")
+
+
+def _render_bars_table(bars: List[SelectionBar], timeframe: str) -> tuple[str, str]:
     """Render an OHLCV markdown table plus a truncation note.
 
     Returns ``(table, note)`` where ``note`` is empty when nothing was dropped.
@@ -85,7 +103,7 @@ def _render_bars_table(bars: List[SelectionBar]) -> tuple[str, str]:
     shown = bars[:_MAX_TABLE_ROWS]
     rows = [
         "| {time} | {open} | {high} | {low} | {close} | {volume} |".format(
-            time=_fmt(b.time),
+            time=_chart_time(b.time, timeframe),
             open=_fmt_price(b.open),
             high=_fmt_price(b.high),
             low=_fmt_price(b.low),
@@ -113,24 +131,23 @@ def _render_selection(sel: ChartSelectionContext) -> str:
         lines.append(f"User note: {sel.label}")
 
     if sel.selection_type == "region":
-        lines.append(f"Time range: {sel.time_start} → {sel.time_end}")
+        start = _chart_time(sel.time_start, sel.timeframe)
+        end = _chart_time(sel.time_end, sel.timeframe)
+        lines.append(f"Time range: {start} → {end}")
         lines.append(f"Price range: {_fmt_price(sel.price_low)} – {_fmt_price(sel.price_high)}")
         draw_back = (
-            "To annotate this back onto the chart, call draw_chart_annotation("
-            f'symbol="{symbol}", timeframe="{sel.timeframe}", annotation='
-            '{"type": "rectangle", '
-            f'"point1": {{"time": "{sel.time_start}", "price": {_fmt_price(sel.price_high)}}}, '
-            f'"point2": {{"time": "{sel.time_end}", "price": {_fmt_price(sel.price_low)}}}}}).'
+            f'To draw this back, build on bars("{symbol}", "{sel.timeframe}") and add '
+            f'c.box(("{start}", {_fmt_price(sel.price_high)}), '
+            f'("{end}", {_fmt_price(sel.price_low)})).'
         )
     else:
         lines.append(f"Price level: {_fmt_price(sel.price_low)}")
         draw_back = (
-            "To annotate this back onto the chart, call draw_chart_annotation("
-            f'symbol="{symbol}", timeframe="{sel.timeframe}", annotation='
-            f'{{"type": "price_line", "price": {_fmt_price(sel.price_low)}}}).'
+            f'To draw this back, build on bars("{symbol}", "{sel.timeframe}") and add '
+            f"c.level({_fmt_price(sel.price_low)})."
         )
 
-    table, note = _render_bars_table(sel.bars)
+    table, note = _render_bars_table(sel.bars, sel.timeframe)
     if table:
         lines.append("")
         lines.append("Bars (OHLCV):")

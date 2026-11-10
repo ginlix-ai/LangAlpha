@@ -127,10 +127,25 @@ interface ChartSelectionImageItem {
   description: string;
 }
 
+/**
+ * A selection time as the agent's structured block prints it: the exchange's
+ * wall clock with no zone. The chart stamps that wall clock as UTC, so the `Z`
+ * on the ISO string is false and a model that honored it would shift the time.
+ */
+function chartTimeText(iso: string, timeframe: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const text = d.toISOString();
+  return timeframe === '1day' ? text.slice(0, 10) : `${text.slice(0, 10)} ${text.slice(11, 16)}`;
+}
+
 /** Caption for a region's cropped screenshot — the structured item holds the exact values. */
 export function describeSelectionImage(sel: ChartSelection): string {
   const range = selectionPriceBounds(sel, 'en-US');
-  const span = sel.timeStart && sel.timeEnd ? `, ${sel.timeStart} → ${sel.timeEnd}` : '';
+  const span =
+    sel.timeStart && sel.timeEnd
+      ? `, ${chartTimeText(sel.timeStart, sel.timeframe)} → ${chartTimeText(sel.timeEnd, sel.timeframe)}`
+      : '';
   return `Cropped chart image of ${sel.symbol} ${sel.timeframe} (price ${range}${span})`;
 }
 

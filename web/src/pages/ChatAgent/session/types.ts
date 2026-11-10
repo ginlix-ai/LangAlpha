@@ -192,6 +192,9 @@ interface SendOptions extends ModelOptions {
   /** This turn starts without the summary a cold thread would get first. An
    *  edit, regenerate or Retry takes it as an argument of its own. */
   keepFullContext?: boolean;
+  /** What the charts beside the composer show, sent as `chart_views` so the
+   *  agent's snapshot paints the same view. */
+  chartViews?: import('@/pages/MarketView/types/chartView').ChartView[];
 }
 
 /** Offload batch ref state. */

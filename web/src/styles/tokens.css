@@ -356,7 +356,7 @@ html {
      border-only outlines on the same white. */
   --color-bg-canvas: #F4F4F4;
   /* Filled surfaces in the chat (task cards, the subagent bar, the chart
-     annotation chip): the canvas fill, the inverse of the canvas pairing
+     layer chip): the canvas fill, the inverse of the canvas pairing
      (on the orders page white cards sit on tinted canvas; here tinted cards
      sit on the white chat page). The data cards are unfilled frames, and the
      detail panel's chart canvases draw on a transparent ground, so neither
@@ -515,7 +515,7 @@ html {
   --input: 0 0% 96.5%;
   /* The light theme's text ink, for the same reason. */
   --ring: var(--foreground);
-  /* Kept tight rather than dropped: floating overlays (AgentEventOverlay,
+  /* Kept tight rather than dropped: floating overlays (ChartLayerOverlay,
      SelectionCommentOverlay, JumpToLatestPill) rely on this to separate from
      a now-pure-white page — the workspace cards carry their own border. */
   --shadow-card: 0 1px 2px rgba(31, 29, 26, 0.04), 0 2px 8px rgba(31, 29, 26, 0.05);

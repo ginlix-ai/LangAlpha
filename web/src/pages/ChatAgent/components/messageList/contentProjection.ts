@@ -1,5 +1,7 @@
 import { registerAuthReset } from '@/lib/authResets';
 import type { PendingToolCallChunk } from '@/types/chat';
+import type { ChartKey } from '@/pages/MarketView/utils/chartInstanceKey';
+import type { ChartLayersCard } from '../chartLayerGrouping';
 import { buildRenderBlocks, groupSegments, HIDDEN_TOOL_CALL_NAMES, type RenderBlock } from './buildRenderBlocks';
 import { preparingCallsOf, samePreparing } from './pendingToolCalls';
 import type { ActivityItem, PreparingToolCallData } from './activityTypes';
@@ -17,6 +19,8 @@ export interface ContentInput {
   now?: number;
   /** The computer's own root, read as a sandbox root by the path checks. */
   root?: string | null;
+  /** See `buildRenderBlocks`. */
+  cardedCharts?: ReadonlySet<ChartKey>;
 }
 
 type FoldRole = 'retain' | 'text' | 'process';
@@ -34,19 +38,24 @@ export interface ContentProjection {
   /** When the last such task stopped, once none is running. The turn was live
    *  until then, so this is what its fold measures to. */
   pinnedSettledAt: number | null;
+  /** The charts it was built leaving to a report row, so a rebuild for the
+   *  clock leaves out the same. */
+  cardedCharts?: ReadonlySet<ChartKey>;
 }
 
 const RETAINED_TYPES = new Set<RenderBlock['type']>([
   'subagent_task', 'html_widget', 'user_question', 'create_workspace', 'start_question', 'ptc_agent',
   'delete_workspace', 'stop_workspace', 'delete_thread', 'credit_pause', 'tool_approval', 'past_plan',
+  // A chart's published layers are a thing the reader works with.
+  'chart_layers',
 ]);
 
 /** Outcomes stay; lookups fold. A collapsed turn shows the answer and what the
  *  turn produced, and an inline card the answer restates in a sentence is part
  *  of the working, not part of the result: a research turn that consulted a
  *  dozen tools would otherwise collapse to a stack of a dozen cards and the
- *  fold would buy nothing. These five are not lookups. A preview is a
- *  deliverable, an annotated chart is a thing the reader works with, the approval only records consent while the receipt owns the
+ *  fold would buy nothing. These four are not lookups. A preview is a
+ *  deliverable, the approval only records consent while the receipt owns the
  *  order outcome and the link to its ledger entry, and a sent message has
  *  already left for another app, where the turn cannot take it back. An
  *  answer to a file comment has left for the file in the same way, and its
@@ -56,7 +65,7 @@ const RETAINED_TYPES = new Set<RenderBlock['type']>([
  *  Every other entry in `INLINE_ARTIFACT_MAP` is a lookup and folds. Adding a
  *  card type here is a product decision, so `contentProjection.foldRole.test.ts`
  *  pins the split rather than letting it drift with the map. */
-const RETAINED_ARTIFACTS = new Set(['preview_url', 'chart_annotation', 'order_receipt', 'message_delivery', 'artifact_comment']);
+const RETAINED_ARTIFACTS = new Set(['preview_url', 'order_receipt', 'message_delivery', 'artifact_comment']);
 
 function foldRole(block: RenderBlock): FoldRole {
   if (block.type === 'text') return 'text';
@@ -73,6 +82,14 @@ function sameFields(a: object, b: object): boolean {
     if ((a as Record<string, unknown>)[key] !== (b as Record<string, unknown>)[key]) return false;
   }
   return true;
+}
+
+/** A card is rebuilt on every build, so it is compared by what it lists: an
+ *  entry is the wire's own object, kept until its call's result changes. */
+function sameCard(a: ChartLayersCard, b: ChartLayersCard): boolean {
+  if (a.id !== b.id || a.key !== b.key || a.workspaceId !== b.workspaceId
+    || a.symbol !== b.symbol || a.timeframe !== b.timeframe || a.layers.length !== b.layers.length) return false;
+  return a.layers.every((layer, i) => layer === b.layers[i] || sameFields(layer, b.layers[i]));
 }
 
 function shareItems(next: ActivityItem[], prev: ActivityItem[]): ActivityItem[] {
@@ -100,7 +117,18 @@ function shareBlock(next: RenderBlock, old: RenderBlock | undefined): RenderBloc
     // object on every build.
     return next.proc === old.proc && next.toolCallId === old.toolCallId ? old : next;
   }
+  if (next.type === 'chart_layers' && old.type === 'chart_layers') {
+    // Fed by every call that published on the chart, not by one.
+    return sameCard(next.card, old.card) ? old : next;
+  }
   return sameFields(next, old) ? old : next;
+}
+
+function sameKeys(a: ReadonlySet<ChartKey> | undefined, b: ReadonlySet<ChartKey> | undefined): boolean {
+  if (a === b) return true;
+  const sizeA = a?.size ?? 0;
+  if (sizeA !== (b?.size ?? 0)) return false;
+  return sizeA === 0 || [...a!].every((key) => b!.has(key));
 }
 
 /** `next` with every block and activity item that did not change taken from
@@ -122,7 +150,8 @@ function shareProjection(next: ContentProjection, prev: ContentProjection | unde
   const preparingToolCall = next.preparingToolCall && prev.preparingToolCall
     && samePreparing(next.preparingToolCall, prev.preparingToolCall) ? prev.preparingToolCall : next.preparingToolCall;
   if (unchanged && preparingToolCall === prev.preparingToolCall && next.nextExpiry === prev.nextExpiry
-    && next.hasPinnedLive === prev.hasPinnedLive && next.pinnedSettledAt === prev.pinnedSettledAt) return prev;
+    && next.hasPinnedLive === prev.hasPinnedLive && next.pinnedSettledAt === prev.pinnedSettledAt
+    && sameKeys(next.cardedCharts, prev.cardedCharts)) return prev;
   return { ...next, blocks: unchanged ? prev.blocks : blocks, preparingToolCall };
 }
 
@@ -154,7 +183,7 @@ export function projectContent(input: ContentInput, prev?: ContentProjection): C
   }
   return shareProjection({
     blocks, roles, nextExpiry, preparingToolCall, lastTextKey, textCount,
-    hasRetained, hasProcess, hasPinnedLive: pinnedLive, pinnedSettledAt,
+    hasRetained, hasProcess, hasPinnedLive: pinnedLive, pinnedSettledAt, cardedCharts: input.cardedCharts,
   }, prev);
 }
 
@@ -174,6 +203,7 @@ interface CacheEntry {
   pending: unknown;
   streaming: boolean;
   root: string | null | undefined;
+  carded: ReadonlySet<ChartKey> | undefined;
   projection: ContentProjection;
 }
 
@@ -188,10 +218,18 @@ const latestById = new Map<string, ContentProjection>();
 const LATEST_MAX = 32;
 registerAuthReset(() => latestById.clear());
 
-export function projectMessageContent(message: MessageRecord, isSubagentView = false, root?: string | null): ContentProjection {
+/** `cardedCharts` is the list's (`planReportChartCards`), rebuilt on every
+ *  frame, so a hit compares it by content. */
+export function projectMessageContent(
+  message: MessageRecord,
+  isSubagentView = false,
+  root?: string | null,
+  cardedCharts?: ReadonlySet<ChartKey>,
+): ContentProjection {
   const hit = cache.get(message);
   if (hit && hit.subagent === isSubagentView
     && hit.root === root
+    && sameKeys(hit.carded, cardedCharts)
     && hit.segments === message.contentSegments
     && hit.reasoning === message.reasoningProcesses
     && hit.tools === message.toolCallProcesses
@@ -210,6 +248,7 @@ export function projectMessageContent(message: MessageRecord, isSubagentView = f
     isStreaming: message.isStreaming === true,
     isSubagentView,
     root,
+    cardedCharts,
   }, prev);
   if (id) {
     latestById.delete(id);
@@ -224,6 +263,7 @@ export function projectMessageContent(message: MessageRecord, isSubagentView = f
     pending: message.pendingToolCallChunks,
     streaming: message.isStreaming === true,
     root,
+    carded: cardedCharts,
     projection,
   });
   return projection;
@@ -248,22 +288,33 @@ export function projectMessageContent(message: MessageRecord, isSubagentView = f
  * its content projection / provenanceRecords / error / stopped / isStreaming.
  * A future assistant field that renders OUTSIDE those (e.g. assistant-side
  * attachments) must be added to this guard or its bubbles will be hidden.
- * `isSubagentView` and `root` only key the projection cache the bubble itself
- * reads, so they must be the ones the bubble passes or each render rebuilds it.
+ * `isSubagentView`, `root` and `cardedCharts` only key the projection cache the
+ * bubble itself reads, so they must be the ones the bubble passes or each
+ * render rebuilds it.
  */
-export function isOrphanAssistantMessage(message: MessageRecord, isSubagentView = false, root?: string | null): boolean {
+export function isOrphanAssistantMessage(
+  message: MessageRecord,
+  isSubagentView = false,
+  root?: string | null,
+  cardedCharts?: ReadonlySet<ChartKey>,
+): boolean {
   if (message.role !== 'assistant') return false;
   if (message.isStreaming) return false;
   const provenance = message.provenanceRecords as Record<string, unknown> | undefined;
   if (provenance && Object.keys(provenance).length > 0) return false;
   if (message.error || message.stopped) return false;
-  const projection = projectMessageContent(message, isSubagentView, root);
+  const projection = projectMessageContent(message, isSubagentView, root, cardedCharts);
   return projection.textCount === 0 && projection.blocks.every((block) => block.type === 'text');
 }
 
 /** Drop bubbles the list must not paint (see `isOrphanAssistantMessage`). */
-export function visibleProjection(projected: ProjectedMessage[], isSubagentView = false, root?: string | null): ProjectedMessage[] {
-  return projected.filter((p) => !isOrphanAssistantMessage(p.message, isSubagentView, root));
+export function visibleProjection(
+  projected: ProjectedMessage[],
+  isSubagentView = false,
+  root?: string | null,
+  cardedOf?: (message: MessageRecord) => ReadonlySet<ChartKey> | undefined,
+): ProjectedMessage[] {
+  return projected.filter((p) => !isOrphanAssistantMessage(p.message, isSubagentView, root, cardedOf?.(p.message)));
 }
 
 /**

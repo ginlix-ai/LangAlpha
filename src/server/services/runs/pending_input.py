@@ -309,6 +309,7 @@ async def input_rerun_request(
         **_stored_turn_fields(query),
         checkpoint_id=pending.checkpoint_id,
         additional_context=body.additional_context if body else None,
+        chart_views=body.chart_views if body else None,
         locale=run_meta.get("locale"),
         timezone=run_meta.get("timezone"),
         subagents_enabled=run_meta.get("subagents_enabled"),

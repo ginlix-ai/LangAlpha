@@ -25,6 +25,7 @@ from src.observability import (
 
 from ptc_agent.core.sandbox import jobs as _jobs
 from ptc_agent.core.sandbox import mcp_setup
+from chartkit.protocol import CHART_FILE_ENV, SNAPSHOT_DIR_ENV
 from ptc_agent.core.sandbox._shared import (
     EXCEPTION_FILE_ENV,
     SANDBOX_TIMEOUT,
@@ -254,16 +255,19 @@ def _job_upload(sandbox: "PTCSandbox") -> _jobs.UploadFn:
 
 
 def _job_env(
-    sandbox: "PTCSandbox",
-    trace_path: str,
-    call_id: str | None,
-    allowed_servers: frozenset[str] | None,
+    sandbox: "PTCSandbox", ref: _jobs.JobRef, context: _jobs.JobContext
 ) -> dict[str, str]:
     """The environment every job starts with: its MCP trace file and the
     workspace's client config, so a script that imports the MCP wrappers
-    records its calls, and the call it runs for."""
+    records its calls, its outbox, which chartkit publishes chart layers to
+    and its end's report reads back, and the call it runs for.
+
+    Chart snapshots go to the thread's folder rather than the job's state,
+    which is dropped when the job ends, so the agent can still read them."""
     env = {
-        "MCP_TRACE_FILE": trace_path,
+        **context.env,
+        "MCP_TRACE_FILE": ref.trace_path,
+        CHART_FILE_ENV: f"{ref.state_dir}/{_jobs.OUTBOX_FILE}",
         "PTC_WORKSPACE_CONFIG": sandbox.workspace().mcp_client_config,
         # A script's prints reach the log as they happen.
         "PYTHONUNBUFFERED": "1",
@@ -271,10 +275,14 @@ def _job_env(
         # with; absent until the server writes one.
         "LANGALPHA_TOKEN_FILE": sandbox.layout.cli_token,
     }
-    if allowed_servers is not None:
-        env[_ALLOWED_SERVERS_ENV] = _allowed_servers_value(allowed_servers)
-    if call_id:
-        env[livefs_protocol.CALL_ENV] = call_id
+    if context.thread_id:
+        env[SNAPSHOT_DIR_ENV] = sandbox.workspace().join(
+            f"{_THREADS}/{context.thread_id}/charts"
+        )
+    if context.allowed_servers is not None:
+        env[_ALLOWED_SERVERS_ENV] = _allowed_servers_value(context.allowed_servers)
+    if context.call_id:
+        env[livefs_protocol.CALL_ENV] = context.call_id
     return env
 
 
@@ -407,9 +415,7 @@ async def start_bash_job(
     *,
     working_dir: str | None = None,
     wait_s: float | None,
-    thread_id: str | None = None,
-    call_id: str | None = None,
-    allowed_servers: frozenset[str] | None = None,
+    context: _jobs.JobContext = _jobs.JobContext(),
 ) -> _jobs.JobOutcome:
     """Run a bash command as a detached job and wait up to ``wait_s`` for it.
 
@@ -420,6 +426,7 @@ async def start_bash_job(
     """
     working_dir = sandbox.normalize_path(working_dir or ".")
     await sandbox._wait_ready()
+    thread_id = context.thread_id
     ref = _jobs.job_paths(
         sandbox.layout, sandbox.workspace(), thread_id, _jobs.new_command_id()
     )
@@ -438,7 +445,7 @@ async def start_bash_job(
     spec = _jobs.JobSpec(
         ref=ref,
         command=_eval_after_header(script_abs),
-        env=_job_env(sandbox, ref.trace_path, call_id, allowed_servers),
+        env=_job_env(sandbox, ref, context),
         pythonpath=":".join(sandbox.workspace().pythonpath(sandbox.layout)),
         path=sandbox.layout.cli_bin,
         files=((script_abs, ("\n".join(header) + "\n" + full_command + "\n").encode()),),
@@ -537,9 +544,7 @@ async def start_code_job(
     code: str,
     *,
     wait_s: float | None,
-    thread_id: str | None = None,
-    call_id: str | None = None,
-    allowed_servers: frozenset[str] | None = None,
+    context: _jobs.JobContext = _jobs.JobContext(),
 ) -> _jobs.JobOutcome:
     """Run Python code as a detached job: saved to a file, run as ``python3``.
 
@@ -554,9 +559,7 @@ async def start_code_job(
     left = wait_s
     reruns = _INSTALL_RERUNS
     while True:
-        outcome = await _run_code(
-            sandbox, code, left, thread_id, call_id, allowed_servers, carried
-        )
+        outcome = await _run_code(sandbox, code, left, context, carried)
         if not isinstance(outcome, _jobs.Ended) or outcome.exit_code == 0 or not reruns:
             return outcome
         # Never the output: it carries what the code printed and what its
@@ -583,18 +586,16 @@ async def _run_code(
     sandbox: "PTCSandbox",
     code: str,
     wait_s: float | None,
-    thread_id: str | None,
-    call_id: str | None,
-    allowed_servers: frozenset[str] | None,
+    context: _jobs.JobContext,
     carried: tuple[dict, ...],
 ) -> _jobs.JobOutcome:
     ref = _jobs.job_paths(
-        sandbox.layout, sandbox.workspace(), thread_id, _jobs.new_command_id()
+        sandbox.layout, sandbox.workspace(), context.thread_id, _jobs.new_command_id()
     )
-    code_dir, log_dir = _job_dirs(sandbox, thread_id, ref)
+    code_dir, log_dir = _job_dirs(sandbox, context.thread_id, ref)
     code_abs = f"{code_dir}/{ref.command_id}.py"
     workspace = sandbox.workspace().workspace
-    env = _job_env(sandbox, ref.trace_path, call_id, allowed_servers)
+    env = _job_env(sandbox, ref, context)
     # A display-less backend for pyplot, chosen without importing matplotlib,
     # and the turn's folder for the shipped sitecustomize.
     env["MPLBACKEND"] = "Agg"

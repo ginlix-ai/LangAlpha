@@ -29,23 +29,24 @@ interface HeaderProps {
   wsDataLevel?: DataLevel;
   onSwitchSymbol?: (symbol: string, hit?: unknown) => void;
   chartFreshness?: Freshness | null;
+  onOpenWatchlist?: () => void;
 }
 
 // The header prints a model the host derives; the tests build it from the
 // same inputs the host would, so each case still reads as raw quote data.
-function Header({ inputs = {}, wsDataLevel, onSwitchSymbol, chartFreshness }: HeaderProps): React.ReactElement {
+function Header({ inputs = {}, wsDataLevel, onSwitchSymbol, chartFreshness, onOpenWatchlist }: HeaderProps): React.ReactElement {
   const merged = { ...baseInputs, ...inputs };
   return (
     <StockHeader
       symbol={merged.symbol}
       quote={deriveStockQuote(merged)}
-      chartMeta={null}
       onToggleOverview={() => {}}
       wsStatus={merged.wsStatus}
       wsHasData={merged.wsHasData}
       wsDataLevel={wsDataLevel}
       onSwitchSymbol={onSwitchSymbol}
       chartFreshness={chartFreshness}
+      onOpenWatchlist={onOpenWatchlist}
     />
   );
 }
@@ -575,6 +576,14 @@ describe('StockHeader index row', () => {
       />,
     );
     expect(screen.getByText('CSI 300')).toBeInTheDocument();
+  });
+});
+
+describe('StockHeader on a phone', () => {
+  it('gives the metrics toggle and the watchlist pill a finger-sized hit area', () => {
+    const { container } = render(<Header onOpenWatchlist={() => {}} />);
+    expect(container.querySelector('button[aria-expanded].stock-metrics-toggle')).toHaveClass('tap-target');
+    expect(container.querySelector('button.stock-metrics-watchlist-pill')).toHaveClass('tap-target');
   });
 });
 
