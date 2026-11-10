@@ -1,6 +1,6 @@
 """Tests for the AdditionalContext discriminated union.
 
-Verifies that all five context types parse correctly through the union and
+Verifies that every context type parses correctly through the union and
 that required-field validation fires for each.
 """
 

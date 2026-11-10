@@ -10,6 +10,7 @@ macOS run and a Linux run cover both starts.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import secrets
 import shlex
@@ -26,6 +27,7 @@ import pytest
 
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox import execution, jobs
+from chartkit.protocol import CHART_FILE_ENV
 from ptc_agent.core.sandbox.providers._ssh_shell import stop_script
 from ptc_agent.core.sandbox.runtime import ExecResult
 
@@ -309,8 +311,9 @@ async def test_a_trace_read_to_record_stays_for_the_discard(shell, computer):
             break
         await asyncio.sleep(0.05)
     await jobs.stop_job(shell, spec.ref)
-    assert await jobs.collect_job_trace(shell, spec.ref, delete=False) == [{"server": "s"}]
-    assert await jobs.collect_job_trace(shell, spec.ref, delete=False) == [{"server": "s"}]
+    read = await jobs.read_job_end(shell, spec.ref, trace=True)
+    assert read == ([{"server": "s"}], jobs.Outbox())
+    assert await jobs.read_job_end(shell, spec.ref, trace=True) == read
     await jobs.discard_jobs(shell, [spec.ref])
     assert not os.path.exists(spec.ref.trace_path)
 
@@ -325,7 +328,7 @@ async def test_a_trace_read_with_no_answer_raises_rather_than_reading_as_no_call
         return ExecResult("", "", 0)
 
     with pytest.raises(jobs.JobReplyError):
-        await jobs.collect_job_trace(silent, spec.ref, delete=False)
+        await jobs.read_job_end(silent, spec.ref, trace=True)
 
 
 @pytest.mark.asyncio
@@ -335,8 +338,84 @@ async def test_a_trace_too_large_to_read_is_skipped_and_reads_as_none(
     spec = computer.spec("true")
     Path(spec.ref.trace_path).write_text('{"server":"s"}\n' * 4)
     monkeypatch.setattr(jobs.protocol, "_TRACE_READ_MAX", 16)
-    assert await jobs.collect_job_trace(shell, spec.ref, delete=False) == []
+    assert await jobs.read_job_end(shell, spec.ref, trace=True) == ([], jobs.Outbox())
     assert os.path.exists(spec.ref.trace_path)
+
+
+def _charting(computer: Computer, command: str) -> jobs.JobSpec:
+    """A job whose environment names its outbox, as every job's does."""
+    spec = computer.spec(command)
+    outbox = f"{spec.ref.state_dir}/{jobs.OUTBOX_FILE}"
+    return dataclasses.replace(spec, env={**spec.env, CHART_FILE_ENV: outbox})
+
+
+def test_wait_reply_reads_the_outbox_after_the_raised_record():
+    stdout = '\nn H done 1 2 0\nhi\nn T\n\nn R\nnumpy\nn O 24\n{"id":"a"}\n{"id":"b"}\n'
+    reply = jobs.protocol.parse_wait_reply(_reply(stdout), "n")
+    assert reply.raised == "numpy"
+    assert reply.outbox == jobs.Outbox(('{"id":"a"}', '{"id":"b"}'))
+
+
+def test_a_reply_with_no_outbox_section_reads_none():
+    """A job that wrote nothing to its outbox has no section: no records,
+    nothing cut."""
+    reply = jobs.protocol.parse_wait_reply(_reply("\nn H done 0 0 0\n\nn T\n"), "n")
+    assert reply.outbox == jobs.Outbox() and not reply.outbox
+
+
+def test_the_outbox_splits_on_newlines_only_and_a_cut_file_drops_its_partial_line():
+    text = '{"note":"a\u2028b"}\n\n{"id":"x"}\n{"id":"cu'
+
+    def read(size: int) -> jobs.Outbox:
+        reply = _reply(f"\nn H done 0 0 0\n\nn O {size}\n{text}")
+        return jobs.protocol.parse_wait_reply(reply, "n").outbox
+
+    assert read(len(text)) == jobs.Outbox(('{"note":"a\u2028b"}', '{"id":"x"}', '{"id":"cu'))
+    cut = read(jobs.OUTBOX_READ_MAX + 1)
+    assert cut == jobs.Outbox(('{"note":"a\u2028b"}', '{"id":"x"}'), truncated=True)
+    assert jobs.Outbox(truncated=True)
+
+
+@pytest.mark.asyncio
+async def test_the_outbox_returns_with_the_jobs_end_even_a_failed_one(shell, computer):
+    spec = _charting(
+        computer,
+        """echo working; printf '{"id":"a"}\\n' >> "$PTC_CHART_FILE"; """
+        """printf '{"id":"b"}\\n' >> "$PTC_CHART_FILE"; echo boom >&2; exit 1""",
+    )
+    outcome = await jobs.run_job(shell, spec, 30)
+    assert isinstance(outcome, jobs.Ended)
+    assert (outcome.exit_code, outcome.output) == (1, "working\nboom\n")
+    assert outcome.outbox == jobs.Outbox(('{"id":"a"}', '{"id":"b"}'))
+    # A retried wait finds the job reaped and reports the same records, and
+    # so does the end read the watcher makes, with the trace when asked.
+    again = await jobs.continue_job(shell, _held(spec), 0)
+    assert again.outbox == outcome.outbox
+    assert await jobs.read_job_end(shell, spec.ref, trace=False) == (None, outcome.outbox)
+    assert await jobs.read_job_end(shell, spec.ref, trace=True) == ([], outcome.outbox)
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_wrote_nothing_carries_no_outbox(shell, computer):
+    spec = _charting(computer, "echo hi")
+    outcome = await jobs.run_job(shell, spec, 30)
+    assert not outcome.outbox
+    assert await jobs.read_job_end(shell, spec.ref, trace=False) == (None, jobs.Outbox())
+
+
+@pytest.mark.asyncio
+async def test_an_outbox_past_the_cap_is_cut_and_says_so(shell, computer):
+    line = '{"id":"layer","pad":"' + "x" * 1000 + '"}'
+    count = jobs.OUTBOX_READ_MAX // (len(line) + 1) + 50
+    spec = _charting(
+        computer,
+        f"yes {shlex.quote(line)} | head -n {count} >> \"$PTC_CHART_FILE\"; echo done",
+    )
+    outcome = await jobs.run_job(shell, spec, 60)
+    assert outcome.output == "done\n"
+    assert outcome.outbox.truncated
+    assert 0 < len(outcome.outbox.lines) < count
+    assert set(outcome.outbox.lines) == {line}
 
 
 @pytest.mark.asyncio

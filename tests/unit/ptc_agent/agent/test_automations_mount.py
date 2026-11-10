@@ -198,12 +198,12 @@ class _Mounted:
     async def config_folder(self):
         return None
 
-    async def start_bash_job(self, command, *, call_id=None, wait_s=None, **_):
-        self.mount.events.append(("run", call_id))
+    async def start_bash_job(self, command, *, context, wait_s=None, **_):
+        self.mount.events.append(("run", context.call_id))
         return outcome(done=wait_s != 0, output="ok")
 
-    async def start_code_job(self, code, *, call_id=None, **_):
-        self.mount.events.append(("run", call_id))
+    async def start_code_job(self, code, *, context, **_):
+        self.mount.events.append(("run", context.call_id))
         return outcome(output="ok")
 
 

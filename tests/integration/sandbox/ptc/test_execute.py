@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ptc_agent.core.sandbox.jobs import Ended
+from ptc_agent.core.sandbox.jobs import Ended, JobContext
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="class")]
 
@@ -39,7 +39,7 @@ class TestExecute:
 
     async def test_execute_with_thread_id(self, shared_sandbox):
         result = await shared_sandbox.start_code_job(
-            "print('threaded')", wait_s=None, thread_id="test-thread-123"
+            "print('threaded')", wait_s=None, context=JobContext(thread_id="test-thread-123")
         )
         assert result.exit_code == 0
         ls_result = await shared_sandbox.runtime.exec(

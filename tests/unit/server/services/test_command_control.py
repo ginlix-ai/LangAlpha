@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.core.sandbox.jobs import JobState
+from ptc_agent.core.sandbox.jobs import JobState, Outbox
 from src.server.database.runs.command_runs import Outcome
 from src.server.services.commands import control, settle
 
@@ -19,6 +19,7 @@ THREAD = "11111111-1111-1111-1111-111111111111"
 ROW = {
     "command_id": ID,
     "conversation_thread_id": THREAD,
+    "workspace_id": "22222222-2222-2222-2222-222222222222",
     "computer_id": "33333333-3333-3333-3333-333333333333",
     "status": "running",
     "stopped_by": None,
@@ -94,7 +95,9 @@ class _Edges:
                 raise control.ComputerBetweenStates(computer["status"])
             yield MagicMock() if reach == "running" else None
 
-        self.trace = AsyncMock(return_value=[{"tool": "t"}])
+        self.trace = [{"tool": "t"}]
+        self.outbox = Outbox()
+        self.read_end = AsyncMock(side_effect=self._read_end)
         self.mirror = AsyncMock()
         self._p = [
             patch.object(settle, "mirror_after_end", new=self.mirror),
@@ -103,7 +106,7 @@ class _Edges:
             patch.object(control.cr_db, "finalize", new=finalize),
             patch.object(control.jobs, "end_jobs", new=end_jobs),
             patch.object(control.jobs, "read_job_states", new=read),
-            patch.object(control.jobs, "collect_job_trace", new=self.trace),
+            patch.object(control.jobs, "read_job_end", new=self.read_end),
             patch.object(control.jobs, "discard_jobs", new=discard),
             patch.object(control, "computer_jobs_runtime", jobs_runtime),
             patch.object(settle, "_nudge_hook_drainer", new=lambda: calls.nudge()),
@@ -112,6 +115,9 @@ class _Edges:
         for p in self._p:
             p.start()
         return self
+
+    async def _read_end(self, exec_fn, ref, *, trace):
+        return (self.trace if trace else None), self.outbox
 
     def __exit__(self, *exc):
         for p in reversed(self._p):
@@ -141,7 +147,7 @@ async def test_a_stop_marks_kills_finalizes_and_then_drops_the_jobs_state():
     # The user's stop is reported, so the job's MCP trace goes with it.
     e.calls.finalize.assert_called_once_with(
         ID, Outcome("stopped", stopped_by="user"), tail="last words\n",
-        trace=[{"tool": "t"}], oom_kill_on=None,
+        trace=[{"tool": "t"}], outbox=None, oom_kill_on=None,
     )
     e.calls.nudge.assert_not_called()
 
@@ -169,7 +175,7 @@ async def test_a_stopped_computer_is_not_started_to_stop_a_command_that_ended_wi
         assert (await _stop()).outcome == "stopped"
     assert "end_jobs" not in e.order()
     e.calls.finalize.assert_called_once_with(
-        ID, Outcome("stopped", stopped_by="user"), tail=None, trace=None, oom_kill_on=None
+        ID, Outcome("stopped", stopped_by="user"), tail=None, trace=None, outbox=None, oom_kill_on=None
     )
 
 
@@ -233,18 +239,18 @@ async def test_a_command_past_the_hour_finishes_failed_with_its_trace_for_the_ne
         assert len(await _stop_marked({**ROW, "stopped_by": HOUR})) == 1
     e.calls.finalize.assert_called_once_with(
         ID, Outcome("failed", "after_turn_limit"), tail="last words\n",
-        trace=[{"tool": "t"}], oom_kill_on=None,
+        trace=[{"tool": "t"}], outbox=None, oom_kill_on=None,
     )
     assert Outcome("failed", "after_turn_limit").report == "next_turn"
     # Read and left for the discard: a finalize that fails finds it again.
-    assert e.trace.await_args.kwargs == {"delete": False}
+    assert e.read_end.await_args.kwargs == {"trace": True}
 
 
 @pytest.mark.asyncio
 async def test_a_failed_trace_read_leaves_the_hours_stop_for_the_next_attempt():
     """No finalize with no trace, and no discard of the trace it is kept for."""
     with _Edges(RUNNING) as e:
-        e.trace.side_effect = control.jobs.JobReplyError("no reply")
+        e.read_end.side_effect = control.jobs.JobReplyError("no reply")
         assert await _stop_marked({**ROW, "stopped_by": HOUR}) == []
     e.calls.finalize.assert_not_called()
     e.calls.discard.assert_not_called()
@@ -267,7 +273,7 @@ async def test_the_hours_stop_finds_a_job_that_ended_on_its_own_ended_as_it_did(
         await _stop_marked({**ROW, "stopped_by": HOUR}, computer)
     e.calls.finalize.assert_called_once_with(
         ID, Outcome.exited(code, up=True), tail="done\n", trace=[{"tool": "t"}],
-        oom_kill_on=oom,
+        outbox=None, oom_kill_on=oom,
     )
     assert Outcome.exited(code, up=True).report == "now"
     e.calls.nudge.assert_called_once()
@@ -299,7 +305,7 @@ async def test_a_users_stop_that_finds_the_job_ended_ends_it_as_it_did():
         assert (await _stop()).outcome == "ended"
     e.calls.finalize.assert_called_once_with(
         ID, Outcome("completed", exit_code=0), tail="done\n", trace=[{"tool": "t"}],
-        oom_kill_on=None,
+        outbox=None, oom_kill_on=None,
     )
 
 
@@ -308,7 +314,7 @@ async def test_the_agents_stop_still_wins_over_an_end_it_races():
     with _Edges(RUNNING, ended=_exited(0)) as e:
         assert (await _stop(by="agent")).outcome == "stopped"
     e.calls.finalize.assert_called_once_with(
-        ID, Outcome("stopped", stopped_by="agent"), tail="done\n", trace=None, oom_kill_on=None,
+        ID, Outcome("stopped", stopped_by="agent"), tail="done\n", trace=None, outbox=None, oom_kill_on=None,
     )
 
 

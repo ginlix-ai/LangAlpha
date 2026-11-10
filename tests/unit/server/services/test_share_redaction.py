@@ -122,11 +122,11 @@ def test_strips_owner_ids_at_any_depth():
     artifact = {
         "event": "artifact",
         "data": {
-            "artifact_type": "chart_annotation",
+            "artifact_type": "chart_layer",
             "payload": {
                 "workspace_id": _OWNER_WS,
                 "symbol": "NVDA",
-                "annotations": [{"id": "ann-1", "workspace_id": _OWNER_WS}],
+                "layers": [{"layer_id": "lyr_a", "workspace_id": _OWNER_WS}],
             },
         },
     }
@@ -143,7 +143,7 @@ def test_strips_owner_ids_at_any_depth():
     }
     shown = _shown([artifact, steering, status])
     # The card still has what it draws from.
-    assert shown[0]["data"]["payload"] == {"symbol": "NVDA", "annotations": [{"id": "ann-1"}]}
+    assert shown[0]["data"]["payload"] == {"symbol": "NVDA", "layers": [{"layer_id": "lyr_a"}]}
     assert shown[1]["data"]["messages"] == [{"content": "Focus on margins"}]
     assert shown[2]["data"] == {"status": "ready"}
 

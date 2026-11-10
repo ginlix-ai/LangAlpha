@@ -1,12 +1,13 @@
 """Persisted symbols store one spelling per listing, whichever one arrived."""
 
+import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.server.database import chart_annotation
-from src.server.database.chart_annotation import make_chart_id
+from src.server.models.chart_layer import ChartRef, make_chart_id
 from src.server.models.user import (
     PortfolioHoldingCreate,
     WatchlistItemCreate,
@@ -30,29 +31,33 @@ def test_one_chart_per_listing():
     assert make_chart_id("600519.SS", "1day") == make_chart_id("600519.sh", "1day") == "600519.SH:1day"
 
 
+def test_a_chart_ref_names_its_chart_in_the_stored_spelling():
+    ref = ChartRef.of("ws-1", "600519.SS", " 1day ")
+    assert (ref.symbol, ref.timeframe, ref.chart_id) == ("600519.SH", "1day", "600519.SH:1day")
+
+
 @pytest.mark.asyncio
-async def test_an_annotation_answers_in_the_stored_spelling_when_the_read_back_fails():
-    """The read-back serves stored payloads, so its fallback must not echo the
-    caller's ``600519.SS`` while every other answer says ``600519.SH``."""
-    read_back = MagicMock()
-    read_back.__aenter__ = AsyncMock(return_value=MagicMock(execute=AsyncMock(side_effect=RuntimeError("read"))))
-    read_back.__aexit__ = AsyncMock(return_value=False)
-    write = MagicMock()
-    write.__aenter__ = AsyncMock(return_value=MagicMock(execute=AsyncMock()))
-    write.__aexit__ = AsyncMock(return_value=False)
-    conn = MagicMock()
-    conn.cursor = MagicMock(side_effect=[write, read_back])
+async def test_a_runs_layers_are_written_in_one_transaction():
+    """Every row of a run goes in one statement batch inside one transaction,
+    so the store holds all of them or none."""
+    cur = MagicMock(executemany=AsyncMock())
+    cursor = MagicMock(__aenter__=AsyncMock(return_value=cur), __aexit__=AsyncMock(return_value=False))
+    tx = MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+    conn = MagicMock(cursor=MagicMock(return_value=cursor), transaction=MagicMock(return_value=tx))
 
     @asynccontextmanager
     async def _connection():
         yield conn
 
-    annotation = {"annotation_id": "ann_1", "symbol": "600519.SS", "type": "hline"}
+    chart = ChartRef.of("ws-1", "600519.SS", "1day")
     with patch.object(chart_annotation, "get_db_connection", _connection):
-        served, read_at_us = await chart_annotation.add_and_list_annotations(
-            "ws-1", make_chart_id("600519.SS", "1day"), "600519.SS", "1day", annotation,
+        await chart_annotation.add_layers(
+            [(chart.layer("a"), {"id": "a"}), (chart.layer("b"), {"id": "b"})]
         )
-    stored = write.__aenter__.return_value.execute.await_args.args[1][-1].obj
-    assert served == [stored]
-    assert read_at_us is None
-    assert served[0]["symbol"] == "600519.SH"
+    conn.transaction.assert_called_once()
+    [(sql, params)] = [c.args for c in cur.executemany.await_args_list]
+    assert [p[:5] for p in params] == [
+        ("ws-1", "600519.SH:1day", "600519.SH", "1day", "a"),
+        ("ws-1", "600519.SH:1day", "600519.SH", "1day", "b"),
+    ]
+    assert [json.loads(p[5].obj) for p in params] == [{"id": "a"}, {"id": "b"}]
