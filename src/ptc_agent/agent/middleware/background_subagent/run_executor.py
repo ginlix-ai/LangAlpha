@@ -27,8 +27,6 @@ from ptc_agent.agent.middleware.credit_gate import (
 )
 from ptc_agent.agent.middleware.background_subagent.outcomes import (
     Outcome,
-    SubagentTimeLimitError,
-    is_time_limit_cancel,
 )
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
@@ -283,16 +281,12 @@ async def _run_background_task(
                 return torn.as_result()
             return {"success": True, "result": result}
         except asyncio.CancelledError as e:
-            if not is_time_limit_cancel(e):
+            outcome = Outcome.from_cancel(e)
+            if outcome is None:
                 raise
-            outcome = Outcome.from_exception(
-                SubagentTimeLimitError("Timed out: still running past its time limit")
-            )
             ledger_status, ledger_failure = outcome.status, outcome.as_failure()
-            logger.error(
-                "%s stopped past its time limit",
-                label,
-                display_id=task.display_id,
+            logger.warning(
+                "%s stopped: %s", label, outcome.error, display_id=task.display_id
             )
             return outcome.as_result()
         except Exception as e:

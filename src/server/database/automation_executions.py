@@ -13,6 +13,7 @@ from src.server.database.automation import (
     UNSETTLED_STATUSES,
     not_a_server_skip,
 )
+from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_RESUME_TTL
 from src.server.database.pool import get_db_connection
 from src.server.utils.db import UpdateQueryBuilder
 
@@ -470,8 +471,9 @@ async def list_abandoned_executions(
     """Firings whose heartbeat has been quiet ``quiet_seconds``, oldest first,
     with what settling each needs: its owner, thread, workspace and run.
 
-    A firing whose run is still going is left out: the sweep would leave it
-    alone anyway, and a page of long turns would starve the rest.
+    A firing whose run is still going, or still owed a restart's resume, is
+    left out: the sweep would leave it alone anyway, and a page of them would
+    starve the rest.
     """
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -488,12 +490,56 @@ async def list_abandoned_executions(
                   AND NOT EXISTS (
                       SELECT 1 FROM conversation_responses r
                       WHERE r.conversation_response_id = e.conversation_response_id
-                        AND r.status = 'in_progress'
+                        AND (r.status = 'in_progress'
+                             OR (r.status = 'cancelled' AND r.metadata ? %s
+                                 AND r.cancel_requested_at > NOW() - %s))
                   )
                 ORDER BY e.heartbeat_at
                 LIMIT %s
-            """, (quiet_seconds, limit))
+            """, (quiet_seconds, RESTART_INTERRUPTED_META, RESTART_RESUME_TTL, limit))
             return [dict(row) for row in await cur.fetchall()]
+
+
+async def hand_off_execution(
+    execution_id: str, *, from_statuses: Sequence[str], thread_id: str, job: Any
+) -> bool:
+    """Put a live firing back to ``pending`` on ``thread_id`` and write
+    ``job``, which the next process starts it from, in one transaction;
+    False when it was settled or moved first. The heartbeat is touched, so the
+    sweep gives the next process its full margin."""
+    from src.server.database.runs.outbox import enqueue_hooks
+
+    async with get_db_connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute("""
+                    UPDATE automation_executions
+                    SET status = 'pending', heartbeat_at = NOW(),
+                        conversation_thread_id = %s
+                    WHERE automation_execution_id = %s AND status = ANY(%s)
+                """, (thread_id, execution_id, list(from_statuses)))
+                if cur.rowcount != 1:
+                    return False
+            await enqueue_hooks(conn, thread_id=thread_id, jobs=[job])
+    return True
+
+
+async def get_running_execution_for_run(run_id: str) -> Optional[Dict[str, Any]]:
+    """The running firing whose linked run is ``run_id``, with its owner,
+    thread and workspace; None when there is none."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("""
+                SELECT e.automation_execution_id, e.automation_id,
+                       e.conversation_thread_id, a.user_id, t.workspace_id
+                FROM automation_executions e
+                JOIN automations a ON a.automation_id = e.automation_id
+                LEFT JOIN conversation_threads t
+                    ON t.conversation_thread_id = e.conversation_thread_id
+                WHERE e.conversation_response_id = %s AND e.status = 'running'
+            """, (run_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 
 async def get_settling_run(run_id: str) -> Optional[Dict[str, Any]]:
@@ -502,7 +548,7 @@ async def get_settling_run(run_id: str) -> Optional[Dict[str, Any]]:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("""
                 SELECT conversation_response_id, status, interrupt_reason,
-                       metadata, errors
+                       metadata, errors, cancel_requested_at
                 FROM conversation_responses
                 WHERE conversation_response_id = %s
             """, (run_id,))

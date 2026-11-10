@@ -30,7 +30,12 @@ from enum import StrEnum
 from typing import Any, Dict, Literal, Optional
 
 from src.observability import automation_executions, safe_add
-from src.server.contracts.status import INTERRUPT_REASON_CREDIT_PAUSE, is_user_stop
+from src.server.contracts.status import (
+    INTERRUPT_REASON_CREDIT_PAUSE,
+    is_restart_interrupted,
+    is_user_stop,
+    restart_resume_expired,
+)
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.database.pool import get_db_connection
@@ -218,7 +223,9 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     """How a firing ended, by its admitted run's ledger row; None while the
     run is still going.
 
-    A cancel the reader did not ask for is a server stopping, and an error
+    A run a restart stopped goes on in the turn that takes it over, for as
+    long as one may (``carried_firing``). Any other cancel the reader did
+    not ask for is a server stopping, and an error
     written by the ledger's recovery is a worker lost: both are ours. A run
     the credit gate paused hit a usage limit, and one the Claude plan stopped
     (``claude_plan``, ``plan_stop_metadata``) the plan's. A model call refused 401/403
@@ -236,6 +243,10 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
         return Outcome.COMPLETED
     metadata = run.get("metadata") or {}
     if status == "cancelled":
+        if is_restart_interrupted(run) and not restart_resume_expired(
+            run["cancel_requested_at"]
+        ):
+            return None
         return Outcome.STOPPED if is_user_stop(run) else Outcome.INTERRUPTED
     if status == "interrupted" and run.get("interrupt_reason") == INTERRUPT_REASON_CREDIT_PAUSE:
         return Outcome.LIMITED
@@ -251,6 +262,49 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
             if code == _KEY_REFUSED:
                 return Outcome.KEY_REJECTED
     return Outcome.FAILED
+
+
+async def take_over_firing(execution_id: str, run_id: str) -> None:
+    """Point the firing of a turn a restart stopped at the turn that took it
+    over (``carry.carried_firing``), so the live run opens from the firing
+    and a sweep settles it by this run, not the stopped one."""
+    await exec_db.transition_execution(
+        execution_id,
+        from_statuses=("running",),
+        to="running",
+        conversation_response_id=run_id,
+    )
+
+
+async def settle_unresumed(run_id: str) -> None:
+    """Settle as interrupted the firing a restart stopped that still points
+    at the stopped run, once a user's newer turn took the resume's place. A
+    firing a newer turn took over (``carry.carried_firing``) is that turn's
+    to settle, even before it relinked the firing: its START stamp says so."""
+    from src.server.database.runs import lifecycle as tl_db
+
+    row = await exec_db.get_running_execution_for_run(run_id)
+    if row is None:
+        return
+    latest = await tl_db.get_latest_attempt(str(row["conversation_thread_id"]))
+    if latest is not None and str(latest["conversation_response_id"]) != run_id and (
+        (latest.get("metadata") or {}).get("automation_execution_id")
+        == str(row["automation_execution_id"])
+    ):
+        return
+    automation = await auto_db.get_automation(str(row["automation_id"]), row["user_id"])
+    if automation is None:
+        return
+    execution_id = str(row["automation_execution_id"])
+    thread_id = str(row["conversation_thread_id"])
+    workspace_id = row.get("workspace_id") or automation.get("workspace_id")
+    await settle(
+        automation, execution_id, Outcome.INTERRUPTED,
+        thread_id=thread_id, run_id=run_id, workspace_id=workspace_id,
+        delivery=automation_delivery.delivery_of_run(
+            await exec_db.get_settling_run(run_id), execution_id
+        ),
+    )
 
 
 def clean_error_text(text: str) -> str:

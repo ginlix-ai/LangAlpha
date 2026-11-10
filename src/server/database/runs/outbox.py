@@ -31,6 +31,7 @@ from src.server.database.runs.hook_jobs import (  # noqa: F401
     HookJob,
     NeedsInputWakePayload,
     PushPayload,
+    RESTART_RESUME_HOOK,
     ReportBackPayload,
     UserFeedPayload,
     WatchClearPayload,
@@ -1186,7 +1187,8 @@ async def release_deferred_notifications(conn, thread_id: str) -> int:
     again if not, so each further try waits on another turn's ending. An
     alert that never wakes the thread (``_Alert.wakes``) is never made due:
     only a hold the ending turn left on it is dropped, so the turn after
-    takes it in.
+    takes it in. A restart's resume parked behind a turn is released too,
+    to find that turn ended.
     """
     async with conn.cursor() as cur:
         await cur.execute(
@@ -1198,7 +1200,7 @@ async def release_deferred_notifications(conn, thread_id: str) -> int:
             WHERE o.status = 'pending'
               AND o.next_retry_at = 'infinity'::timestamptz
               AND (
-                (o.hook_type IN {_sql_list(("task_report_back", COMMAND_REPORT_HOOK, *ALERT_HOOK_TYPES))}
+                (o.hook_type IN {_sql_list(("task_report_back", COMMAND_REPORT_HOOK, RESTART_RESUME_HOOK, *ALERT_HOOK_TYPES))}
                  AND o.conversation_thread_id = %s)
                 OR (o.hook_type = 'report_back' AND o.ordering_key = %s)
               )
@@ -1527,6 +1529,25 @@ async def release_steered_report_jobs(job_ids: List[str], *, run_id: str) -> Lis
                 (job_ids, run_id),
             )
             return [str(r[0]) for r in await cur.fetchall()]
+
+
+async def unhold_run_reports(conn, thread_id: str, run_id: str) -> int:
+    """Give back every report-back ``run_id`` holds, on the caller's
+    connection, leaving it parked: for a run that ends without reading them
+    and keeps the thread's parked reports for the turn that resumes it."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"""
+            UPDATE hook_outbox
+            SET payload = payload - 'steered_run_id'
+            WHERE status = 'pending'
+              AND (conversation_thread_id = %s OR ordering_key = %s)
+              AND payload->>'steered_run_id' = %s::text
+              AND {_REPORT_TYPES_SQL}
+            """,
+            (thread_id, str(thread_id), run_id),
+        )
+        return cur.rowcount
 
 
 async def confirm_steered_report_jobs(job_ids: List[str], *, run_id: str) -> List[str]:

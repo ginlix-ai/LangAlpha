@@ -19,7 +19,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol
 
-from src.server.contracts.status import is_user_stop
+from src.server.contracts.status import (
+    is_restart_interrupted,
+    is_user_stop,
+    restart_resume_expired,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,18 +43,29 @@ _TERMINAL_POLL = 5.0
 _BUSY_STATUSES = ("interrupted", "in_progress")
 
 
-async def _holds_notifications(thread_id: str, latest: Mapping[str, Any] | None) -> bool:
-    """Whether the thread cannot take a notification turn now.
-
-    The latest attempt decides, except for one that was stopped or failed:
-    it may have ended before its first step, leaving a card an earlier run
-    paused on still waiting, and a notification turn would go past it,
-    answering the call it holds with a cancellation.
-    """
+async def holds_notifications(thread_id: str, latest: Mapping[str, Any] | None) -> bool:
+    """Whether the thread cannot take a notification turn now: its latest
+    attempt is live, waits on the user, or is a turn a restart stopped,
+    which holds the thread for its resume (``report_back.restart``) for as
+    long as one may come. The resume takes the held reports in."""
     if not latest:
         return False
+    if latest.get("status") == "in_progress":
+        return True
+    if is_restart_interrupted(latest) and not restart_resume_expired(
+        latest["cancel_requested_at"]
+    ):
+        return True
+    return await waits_on_user(thread_id, latest)
+
+
+async def waits_on_user(thread_id: str, latest: Mapping[str, Any]) -> bool:
+    """Whether the thread's latest attempt leaves it waiting on the user: it
+    is interrupted, or it was stopped or failed over a card an earlier run
+    paused on, which a notification turn would go past, answering the call
+    it holds with a cancellation."""
     status = latest.get("status")
-    if status in _BUSY_STATUSES:
+    if status == "interrupted":
         return True
     if status not in ("cancelled", "error"):
         return False
@@ -100,6 +115,15 @@ class NotOwed:
     wake: bool = True
 
 
+@dataclass(frozen=True)
+class NotYet:
+    """A report that cannot be decided until its thread settles: its job asks
+    again after ``wait_s``, the claim not counted."""
+
+    reason: str
+    wait_s: int
+
+
 def stop_already_covered(parent: Mapping[str, Any] | None, settled_at: datetime | None) -> bool:
     """Whether the user stopped the turn behind a report after the work it
     reports on had settled (``settled_at``).
@@ -146,6 +170,21 @@ class Owed(Protocol):
     def message(self, *, steered: bool) -> str: ...
 
 
+def message_turn(owed: Owed, request_key: str) -> tuple[str, dict]:
+    """The thread route and body of a turn that tells the agent ``owed``,
+    hidden from the user."""
+    body = {
+        "messages": [{"role": "user", "content": owed.message(steered=False)}],
+        "workspace_id": owed.workspace_id,
+        "query_type": "system",
+        "request_key": request_key,
+    }
+    # The message is hidden, so history captions the turn from this.
+    if owed.report_source:
+        body["report_source"] = owed.report_source
+    return "messages", body
+
+
 @dataclass(frozen=True)
 class ReportPipeline:
     """One kind of report-back on its thread's own chain: how its executor
@@ -158,8 +197,9 @@ class ReportPipeline:
     request_ns: uuid.UUID
     #: How long a POST waits out a busy thread before the job re-parks.
     busy_cap: float
-    #: How long the job stays open waiting for its turn to end.
-    terminal_cap: float
+    #: How long the job stays open waiting for its turn to end; None acks it
+    #: once its turn is admitted.
+    terminal_cap: Optional[float]
     #: ``NotOwed`` or an ``Owed``, against the ledger: the one eligibility
     #: the executor and a live turn decide by.
     verdict: Callable[[Mapping[str, Any]], Awaitable["Owed | NotOwed"]]
@@ -174,14 +214,23 @@ class ReportPipeline:
     #: posts as, where the verdict cannot read them for free; only the
     #: executor needs them, so a live turn's offer never pays the read.
     owner: Optional[Callable[[Mapping[str, Any], Any], Awaitable["Owed | NotOwed"]]] = None
+    #: The thread route and body of the turn an owed report posts.
+    turn: Callable[[Any, str], tuple[str, dict]] = message_turn
+    #: Park behind a thread that holds notifications, until a turn's ending
+    #: releases the job. False for a kind the thread is held for, whose
+    #: verdict decides when it may post: a refused POST asks again by the
+    #: clock instead.
+    parks: bool = True
 
     def request_key(self, job_id: str) -> str:
         """The request key a job's notification turn is admitted under."""
         return str(uuid.uuid5(self.request_ns, job_id))
 
 
-async def run_report_back(job: dict, p: ReportPipeline) -> None:
-    """Execute one report-back job of pipeline ``p``.
+async def run_report_back(job: dict, p: ReportPipeline) -> Optional[NotOwed]:
+    """Execute one report-back job of pipeline ``p``; the ``NotOwed`` it
+    ended on when it posts no turn and never will, None when a turn ran or
+    the job comes back.
 
     Sole caller is the hook-outbox drainer: raising nacks, returning acks.
     The job stays open (lease-heartbeated) until the notification run ends,
@@ -206,7 +255,7 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
 
     if not thread_id:
         logger.warning(f"{log} Job {job_id} missing thread; dropping")
-        return
+        return NotOwed("its job names no thread", wake=False)
     # psycopg returns uuid columns as UUID objects; wake payloads are
     # json.dumps'd.
     thread_id = str(thread_id)
@@ -229,6 +278,13 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
         # The job was enqueued unconditionally with the work's end; whether a
         # notification is still owed is decided here, at claim time.
         verdict = await p.verdict(job)
+        if isinstance(verdict, NotYet):
+            logger.info(
+                f"{log} Asking again in {verdict.wait_s}s for {subject} on thread "
+                f"{thread_id}: {verdict.reason}"
+            )
+            await outbox_db.wait_for_room(job_id, attempts=attempts, wait_s=verdict.wait_s)
+            return None
         if p.owner is not None and not isinstance(verdict, NotOwed):
             verdict = await p.owner(job, verdict)
         if isinstance(verdict, NotOwed):
@@ -237,12 +293,12 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
                 # Watchers may be riding the pending chip on this job: tell
                 # them to reconcile now instead of via the backstop.
                 await publish_cleared_wake(thread_id)
-            return
+            return verdict
         if not verdict.user_id:
             logger.warning(
                 f"{log} Job {job_id} on thread {thread_id}: owner unresolvable; dropping"
             )
-            return
+            return NotOwed("its owner is unresolvable", wake=False)
 
         # Read before the look: a turn whose finalize runs while this job is
         # claimed releases nothing for it, and this is how a capped wait
@@ -251,20 +307,12 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
 
         # A live turn takes the report in as a steer before its next model
         # call (``report_back.steer``).
-        if await park_while_thread_busy(
+        if p.parks and await park_while_thread_busy(
             job_id, attempts, thread_id, log_prefix=log, subject=subject
         ):
-            return
+            return None
 
-        body = {
-            "messages": [{"role": "user", "content": verdict.message(steered=False)}],
-            "workspace_id": verdict.workspace_id,
-            "query_type": "system",
-            "request_key": p.request_key(job_id),
-        }
-        # The message is hidden, so history captions the turn from this.
-        if verdict.report_source:
-            body["report_source"] = verdict.report_source
+        route, body = p.turn(verdict, p.request_key(job_id))
 
         async def _still_due() -> bool:
             return not isinstance(await p.verdict(job), NotOwed)
@@ -279,15 +327,19 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
             subject=subject,
             still_due=_still_due if p.recheck else None,
             room_fails_fast=True,
+            route=route,
         )
         if outcome == "lost":
-            return  # reclaimed: the live owner resumes; no teardown
+            return None  # reclaimed: the live owner resumes; no teardown
         if outcome == "full":
             await outbox_db.wait_for_room(job_id, attempts=attempts, wait_s=TURN_ROOM_WAIT_S)
-            return
+            return None
         if outcome == "superseded":
             await publish_cleared_wake(thread_id)
-            return
+            return NotOwed("a newer turn took its place", wake=False)
+        if outcome == "cap" and not p.parks:
+            await outbox_db.wait_for_room(job_id, attempts=attempts, wait_s=TURN_ROOM_WAIT_S)
+            return None
         if outcome == "cap":
             # Busy thread. Not a failure: park until the next dead-turn
             # finalize re-releases the job, or now if a turn ended while this
@@ -301,9 +353,10 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
                     f"{log} A turn on thread {thread_id} ended during the claim; "
                     f"released {subject} for one more look"
                 )
-            return
+            return None
         if outcome in ("deleted", "drop"):
-            return  # thread gone or terminal rejection: ack, nothing owed
+            # Thread gone or terminal rejection: ack, nothing owed.
+            return NotOwed(f"the thread refused it ({outcome})", wake=False)
         if rb_run_id is None:
             raise RuntimeError(
                 f"{log} {subject} dispatched without a run_id; nacking to recover "
@@ -337,6 +390,8 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
     if p.on_dispatched is not None:
         # Again on a resume: the claim that dispatched may have died before it.
         await p.on_dispatched(job)
+    if p.terminal_cap is None:
+        return None
 
     outcome = await await_run_terminal(
         job_id, attempts, rb_run_id, wait_cap=p.terminal_cap, log_prefix=log
@@ -351,6 +406,7 @@ async def run_report_back(job: dict, p: ReportPipeline) -> None:
     # No recovery-ledger write here: the drainer's ack (status='done' +
     # completed_at) is the ledger, which the status slice derives its
     # recents from.
+    return None
 
 
 async def park_while_thread_busy(
@@ -386,7 +442,7 @@ async def park_while_thread_busy(
     from src.server.services.hook_outbox import MAX_ATTEMPTS
 
     latest = await tl_db.get_latest_attempt(thread_id)
-    if not await _holds_notifications(thread_id, latest):
+    if not await holds_notifications(thread_id, latest):
         return False
     parked = await outbox_db.defer_claimed_job(
         job_id,
@@ -400,7 +456,7 @@ async def park_while_thread_busy(
     )
     if parked == "pending" or (parked == "exhausted" and parks_at_ceiling):
         latest = await tl_db.get_latest_attempt(thread_id, wait_for_finalize=True)
-        if not await _holds_notifications(thread_id, latest):
+        if not await holds_notifications(thread_id, latest):
             await release_parked_notifications(thread_id)
     return True
 
@@ -443,7 +499,7 @@ async def release_if_a_turn_ended(thread_id: str, since: tuple[str, str] | None)
 
     # Behind a finalize in flight, as the park's re-read is.
     latest = await tl_db.get_latest_attempt(thread_id, wait_for_finalize=True)
-    if not latest or await _holds_notifications(thread_id, latest):
+    if not latest or await holds_notifications(thread_id, latest):
         return False
     if run_marker(latest) == since:
         return False
@@ -488,6 +544,7 @@ async def post_notification_turn(
     on_unanswered=None,
     on_plan_limited=None,
     room_fails_fast: bool = False,
+    route: str = "messages",
 ) -> tuple[str, str | None]:
     """POST a synthetic turn to ``thread_id``, deferring through admission.
 
@@ -521,7 +578,8 @@ async def post_notification_turn(
     asks again by the clock (``outbox.wait_for_room``) rather than waiting
     here for turns on other threads to end.
     ``subject`` is a short label for log lines (e.g. the source PTC thread
-    or task id).
+    or task id). ``route`` is the thread route posted to: ``messages``, or
+    ``retry`` with a retry body.
     """
     import aiohttp
 
@@ -548,7 +606,7 @@ async def post_notification_turn(
         "X-User-Id": user_id,
         "X-Dispatch": "background",
     }
-    url = f"{self_base_url}/api/v1/threads/{thread_id}/messages"
+    url = f"{self_base_url}/api/v1/threads/{thread_id}/{route}"
 
     deadline = asyncio.get_running_loop().time() + wait_cap
     backoff = 1.0

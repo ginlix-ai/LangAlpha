@@ -16,6 +16,7 @@ from ptc_agent.agent.middleware.image_capture import CAPTURE_TIMEOUT_SECONDS
 from src.config.settings import get_checkpoint_flush_timeout
 from src.server.contracts.status import (
     INTERRUPT_REASON_CREDIT_PAUSE,
+    RESTART_INTERRUPTED_META,
     classify_interrupts,
     is_user_stop,
 )
@@ -132,6 +133,7 @@ async def assemble_finalize_artifacts(
     user_id: Optional[str],
     stop_events: Optional[list[dict]] = None,
     exc: Optional[BaseException] = None,
+    restart: bool = False,
 ) -> RunOutcome:
     """Build everything the finalize CAS writes: usage records, the persist
     metadata and the producer's record.
@@ -155,6 +157,8 @@ async def assemble_finalize_artifacts(
             persist_metadata[extra] = metadata[extra]
     if status == "cancelled":
         persist_metadata["cancelled_by_user"] = cancelled_by_user
+        if restart:
+            persist_metadata[RESTART_INTERRUPTED_META] = True
     if exc is not None:
         persist_metadata.update(
             model_call_failure(

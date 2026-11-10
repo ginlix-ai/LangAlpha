@@ -11,6 +11,7 @@ renames never leak and the frontend switches on exactly one vocabulary.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 # The public vocabulary is a PARTITION, not a list: every status is live
@@ -135,6 +136,32 @@ def bills_subagents(row: Optional[dict[str, Any]]) -> bool:
 # families above — change here first, then the mirror.
 INTERRUPT_REASON_CREDIT_PAUSE = "credit_pause"
 CREDIT_STOP_ERROR_TYPE = "credit_stop"
+
+# A graceful restart stops each running turn and each running subagent run so
+# the next process can resume them: the turn's row carries the metadata key,
+# the subagent run's failure the error type. The resume reads both from the
+# ledger, so neither may follow a name in code.
+RESTART_INTERRUPTED_META = "interrupted_by_restart"
+RESTART_STOP_ERROR_TYPE = "restart"
+# How long after a restart its work is still resumed: a resume that late would
+# surprise more than help.
+RESTART_RESUME_TTL = timedelta(hours=1)
+
+
+def is_restart_interrupted(row: Optional[Mapping[str, Any]]) -> bool:
+    """True iff a run row was cancelled by a graceful restart and is owed a
+    resume. A user's stop wins wherever it lands (the executor, or the
+    finalize adopting a durable cancel), which drops the stamp."""
+    if not row or row.get("status") != "cancelled":
+        return False
+    metadata = row.get("metadata")
+    return isinstance(metadata, dict) and bool(metadata.get(RESTART_INTERRUPTED_META))
+
+
+def restart_resume_expired(stopped_at: datetime) -> bool:
+    """Whether work a restart stopped at ``stopped_at`` is past resuming."""
+    return datetime.now(timezone.utc) - stopped_at > RESTART_RESUME_TTL
+
 
 # Every interrupt raised here names itself: the ones this codebase raises
 # directly carry ``type``, and the tool-approval middleware carries

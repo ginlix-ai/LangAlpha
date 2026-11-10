@@ -36,8 +36,13 @@ from src.server.database.runs.outbox import (
     release_deferred_notifications,
     settle_run_steers,
     steer_ordering_key,
+    unhold_run_reports,
 )
-from src.server.contracts.status import TERMINAL_STATUSES
+from src.server.contracts.status import (
+    RESTART_INTERRUPTED_META,
+    TERMINAL_STATUSES,
+    is_restart_interrupted,
+)
 from src.server.database.claude_code_hosted import CLI_COMPUTER
 from src.server.database.provenance import MAIN_PROVENANCE_LANE
 from src.server.database.runs.hook_jobs import is_unchanged_quiet
@@ -666,7 +671,8 @@ async def finalize_run(
     Callers must read the terminal status from the returned row, not from
     what they asked for. Pre-existing intent stamps metadata.cancelled_by_user
     regardless of the requested status (intent only ever comes from a user
-    /cancel); a requested 'cancelled' finalize backfills cancel_requested_at
+    /cancel) and drops a restart's stamp, since nothing resumes a user's
+    stop; a requested 'cancelled' finalize backfills cancel_requested_at
     so terminal cancelled rows are self-consistent — on terminal rows the
     flag is the user-provenance marker, the timestamp only the decision time. usage_writer runs inside the transaction on the
     same connection so a persist failure aborts the terminal transition
@@ -721,11 +727,14 @@ async def finalize_run(
                                     THEN NOW()
                                 ELSE cancel_requested_at
                             END,
-                            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                            metadata = (COALESCE(metadata, '{}'::jsonb) || %s::jsonb
                                 || CASE
                                     WHEN cancel_requested_at IS NOT NULL
                                         THEN '{"cancelled_by_user": true}'::jsonb
                                     ELSE '{}'::jsonb
+                                END) - CASE
+                                    WHEN cancel_requested_at IS NOT NULL THEN %s::text
+                                    ELSE ''
                                 END,
                             warnings = %s,
                             errors = %s,
@@ -748,6 +757,7 @@ async def finalize_run(
                             outcome.interrupt_reason,
                             status,
                             SafeJson(run_metadata),
+                            RESTART_INTERRUPTED_META,
                             outcome.warnings or [],
                             outcome.errors or [],
                             outcome.execution_time,
@@ -827,9 +837,14 @@ async def finalize_run(
                 # POST would collide with it, and the turn that resumes it
                 # takes them in as a steer. An interrupted turn that later
                 # errors or cancels releases here, so a parked job can never
-                # be stranded. Same transaction as the terminal CAS, so
+                # be stranded. A turn a restart stopped keeps them parked
+                # too, for the turn that resumes it, and gives back the ones
+                # it held (``report_back.restart`` releases them should no
+                # resume come). Same transaction as the terminal CAS, so
                 # release and successor hooks commit together.
-                if final_status in ("completed", "error", "cancelled"):
+                if is_restart_interrupted(run_row):
+                    await unhold_run_reports(conn, thread_id, run_id)
+                elif final_status in ("completed", "error", "cancelled"):
                     released = await release_deferred_notifications(
                         conn, thread_id
                     )
@@ -1386,9 +1401,11 @@ async def get_continued_runs(thread_id: str, run_id: str) -> List[str]:
     A run that ends interrupted waits on the user and reports nothing; the
     next attempt on the thread, a resume or a message past the interrupt,
     carries its work on and reports for it, as ``carried_pair`` has it carry
-    a summary's pair. So a report on the last leg answers every leg back to
-    the first one that did not follow an interrupt, which is the run a
-    hand-off named. Empty when ``run_id`` is not a run of ``thread_id``.
+    a summary's pair. A run a restart stopped reports nothing either, and the
+    turn that resumes it carries it on the same way. So a report on the last
+    leg answers every leg back to the first one that did not follow an
+    interrupt or a restart, which is the run a hand-off named. Empty when
+    ``run_id`` is not a run of ``thread_id``.
     """
     thread, run = normalize_uuid(thread_id), normalize_uuid(run_id)
     if thread is None or run is None:
@@ -1397,7 +1414,7 @@ async def get_continued_runs(thread_id: str, run_id: str) -> List[str]:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                SELECT conversation_response_id, status
+                SELECT conversation_response_id, status, metadata
                 FROM conversation_responses
                 WHERE conversation_thread_id = %s
                   AND run_seq <= (
@@ -1412,10 +1429,10 @@ async def get_continued_runs(thread_id: str, run_id: str) -> List[str]:
             )
             rows = await cur.fetchall()
     # The first row is the run itself; each earlier one joins while it ended
-    # interrupted.
+    # interrupted, or stopped by a restart.
     chain = [str(r["conversation_response_id"]) for r in rows[:1]]
     for row in rows[1:]:
-        if row["status"] != "interrupted":
+        if row["status"] != "interrupted" and not is_restart_interrupted(row):
             break
         chain.append(str(row["conversation_response_id"]))
     return chain[::-1]

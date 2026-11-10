@@ -568,6 +568,8 @@ async def lifespan(app: FastAPI):
     # permanently off behind one WARN line (report-backs undelivered, burst
     # slots leaking).
     from src.server.services.report_back import command as command_report
+    from src.server.services.report_back import restart as restart_resume
+    from src.server.services import automation_executor
     from src.server.services.report_back import steer_executor, subagent
     from src.server.services.report_back.handoff import core as handoff_core
     from src.server.services import automation_settlement, idle_compaction, thread_lifecycle_feed
@@ -581,6 +583,8 @@ async def lifespan(app: FastAPI):
     handoff_core.register_outbox_executors()
     subagent.register_outbox_executors()
     command_report.register_outbox_executors()
+    restart_resume.register_outbox_executors()
+    automation_executor.register_outbox_executors()
     steer_executor.register_outbox_executors()
     thread_lifecycle_feed.register_outbox_executors()
     automation_settlement.register_outbox_executors()
@@ -616,6 +620,12 @@ async def lifespan(app: FastAPI):
         scanner.start()
     except Exception as e:
         logger.warning(f"Recovery scanner startup failed: {e}")
+
+    # Graceful restart: drain on request or on SIGTERM, leaving this worker's
+    # running work for the next process to resume.
+    from src.server.services.runs import restart_drain
+
+    restart_drain.start(asyncio.get_running_loop())
 
     # Turn-cancel nudge listener (v4 Phase 2.4e): a /cancel landing on
     # another worker signals this one's executor via pub/sub.
@@ -815,6 +825,14 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Application shutdown started...")
+    # Before anything stops: running turns and subagents are cancelled and
+    # recorded for the next process to resume, while every pool is open.
+    try:
+        from src.server.services.runs import restart_drain
+
+        await restart_drain.stop()
+    except Exception as e:
+        logger.warning(f"Error draining for restart: {e}")
     # Awaited, so a warm-up stopped midway releases its lock while Redis is
     # still open; a lock left to expire skips the warm-up of a quick restart.
     # The refreshes go after it, since the warm-up can start them.

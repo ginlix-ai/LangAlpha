@@ -12,12 +12,13 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from fastapi import HTTPException
 
+from src.server.contracts.status import is_restart_interrupted, restart_resume_expired
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.database.api_keys import is_byok_active
@@ -33,6 +34,8 @@ from src.server.services.automation_settlement import (
     plan_message,
     settle,
 )
+from src.server.database.runs.hook_jobs import AUTOMATION_HANDOFF_HOOK, automation_handoff_job
+from src.server.services.runs import restart_drain
 from src.server.services.runs.admission import BUSY_STATES
 from src.server.services.thread_lifecycle_feed import publish_automation_wait
 from src.server.services.turn_runtime import TurnRoute, turn_route
@@ -62,6 +65,59 @@ _RUNNABLE = frozenset({"active", "executing"})
 
 # ``_look_again``'s answer while the thread is still busy.
 _STILL_WAITING = object()
+
+async def hand_off(
+    automation: Dict[str, Any], execution_id: str, thread_id: str, *, from_status: str
+) -> None:
+    """Leave a firing this draining process has not started a turn for to the
+    next process: back to ``pending``, with a job that starts it there."""
+    job = automation_handoff_job(
+        execution_id=execution_id,
+        automation_id=str(automation["automation_id"]),
+        user_id=automation["user_id"],
+    )
+    handed = await exec_db.hand_off_execution(
+        execution_id, from_statuses=(from_status,), thread_id=thread_id, job=job
+    )
+    logger.info(
+        f"[AUTOMATION_EXEC] Draining, {'handed' if handed else 'could not hand'} "
+        f"the firing to the next process: execution_id={execution_id}"
+    )
+
+
+async def start_handed_off(job: Dict[str, Any]) -> None:
+    """The ``automation_handoff`` job: start the firing a draining process
+    handed over, which runs on the thread its row records. A process that is
+    itself draining hands the job back. One older than the sweep's margin is
+    left to the sweep, which settles it as lost: a firing that late is not
+    the one the user expects."""
+    from src.server.services.automation_scheduler import AutomationScheduler
+
+    if restart_drain.draining():
+        raise RuntimeError("draining; the next process starts it")
+    if datetime.now(timezone.utc) - job["created_at"] > timedelta(
+        seconds=ABANDONED_AFTER_SECONDS
+    ):
+        logger.warning(
+            f"[AUTOMATION_EXEC] Leaving a stale hand-off to the sweep: "
+            f"execution_id={job['payload']['execution_id']}"
+        )
+        return
+    payload = job["payload"]
+    automation = await auto_db.get_automation(payload["automation_id"], payload["user_id"])
+    if automation is None:
+        return
+    AutomationScheduler.get_instance().dispatch(
+        automation,
+        payload["execution_id"],
+        name=f"handed_exec_{payload['automation_id'][:8]}",
+    )
+
+
+def register_outbox_executors() -> None:
+    from src.server.services.hook_outbox import register_hook_executor
+
+    register_hook_executor(AUTOMATION_HANDOFF_HOOK, start_handed_off)
 
 
 @dataclass
@@ -109,14 +165,21 @@ class _Firing:
 
 
 async def _thread_busy(thread_id: str) -> bool:
-    """A turn is live on the thread, or a compact or offload is rewriting it.
+    """A turn is live on the thread, a turn a restart stopped waits for its
+    resume (``report_back.restart``), or a compact or offload is rewriting
+    it.
 
-    Both are read where every worker sees them: the run ledger and the
+    All are read where every worker sees them: the run ledger and the
     mutation registry's advertised op.
     """
     from src.server.services.thread_mutation import ThreadMutationRunner
 
     if await tl_db.get_active_run(thread_id) is not None:
+        return True
+    latest = await tl_db.get_latest_attempt(thread_id)
+    if is_restart_interrupted(latest) and not restart_resume_expired(
+        latest["cancel_requested_at"]
+    ):
         return True
     return await ThreadMutationRunner.get_instance().is_mutating(thread_id)
 
@@ -457,7 +520,12 @@ class AutomationExecutor:
                     )
                 except asyncio.TimeoutError:
                     continue
-                await self._skip_interrupted(automation, execution_id)
+                # The server is stopping: one draining for a restart hands the
+                # firing on, still in line for the thread.
+                if restart_drain.draining():
+                    await hand_off(automation, execution_id, thread_id, from_status="waiting")
+                else:
+                    await self._skip_interrupted(automation, execution_id)
                 return None
         except asyncio.CancelledError:
             await self._skip_interrupted(automation, execution_id)
@@ -805,7 +873,8 @@ class AutomationExecutor:
         it sat in line. Once its turn reached the run ledger, the run's
         finalize settles it. Every other exit goes through ``settle`` here,
         which refuses when a skip or the sweep ended the firing first; the
-        firing then stays as they recorded it.
+        firing then stays as they recorded it. A firing a draining process
+        handed over (``hand_off``) runs on the thread it had there.
         """
         automation_id = str(automation["automation_id"])
         user_id = automation["user_id"]
@@ -814,17 +883,19 @@ class AutomationExecutor:
             f"[AUTOMATION_EXEC] Starting execution: "
             f"automation_id={automation_id} execution_id={execution_id}"
         )
-        if not await exec_db.transition_execution(
+        started = await exec_db.transition_execution(
             execution_id,
             from_statuses=("pending",),
             to="running",
             started_at=datetime.now(timezone.utc),
-        ):
+        )
+        if not started:
             logger.warning(
                 f"[AUTOMATION_EXEC] Not starting: execution_id={execution_id} "
                 f"was settled before it began"
             )
             return
+        handed_thread = started.get("conversation_thread_id")
 
         _trigger = automation.get("trigger_type") or "unknown"
         _exec_span = _otel_tracer.start_span(
@@ -867,8 +938,10 @@ class AutomationExecutor:
             route = turn_route(user_id, place.workspace)
             await route.bind(user_id, place.workspace)
             firing.route = route
-            firing.thread_id = await self._resolve_thread(
-                firing.automation, place, firing.workspace_id
+            firing.thread_id = (
+                str(handed_thread)
+                if handed_thread
+                else await self._resolve_thread(firing.automation, place, firing.workspace_id)
             )
             # The thread exists from here on, so record it on the run now: a
             # live run can then be opened and watched while it streams, not
@@ -908,6 +981,11 @@ class AutomationExecutor:
                 )
             _exec_span.set_attribute("status", "handed_to_run")
 
+        except restart_drain.Draining:
+            await hand_off(
+                firing.automation, execution_id, firing.thread_id, from_status="running"
+            )
+            _exec_span.set_attribute("status", "handed_off")
         except Exception as e:
             _exec_span.record_exception(e)
             if await self._left_to_run(execution_id, e, firing):

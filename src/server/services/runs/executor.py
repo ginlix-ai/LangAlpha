@@ -41,6 +41,7 @@ from src.server.contracts.status import COLLECTED_ENDINGS, is_user_stop
 from src.server.services.runs import (
     admission,
     finalization,
+    restart_drain,
     stream_writer,
     subagent_collection,
     teardown,
@@ -88,6 +89,9 @@ class LocalRunExecution:
     # the flush+teardown gate but leave this False so they are NOT persisted as
     # user-cancelled "Stopped" turns. See ``_finalize_run``.
     user_stop: bool = False
+    # True when a graceful restart cancelled it, so its finalize records it
+    # for the next process to resume (``runs/restart_drain``).
+    restart: bool = False
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     active_connections: int = 0
@@ -674,6 +678,12 @@ class LocalRunExecutor:
 
             run_handle.guard.attach_abort(_abort_on_session_loss)
 
+        # A turn this process admits while it drains is left to the next one.
+        if started is not None and restart_drain.draining():
+            await self.signal_cancel(
+                thread_id, run_id, user_initiated=False, restart=True
+            )
+
         # Handoff intent recheck: a /cancel between START and this registration
         # stamped durable intent on the row but found no LocalRunExecution to signal
         # (the QUEUED placeholder that used to fill this gap is gone — the
@@ -928,13 +938,16 @@ class LocalRunExecutor:
         self, thread_id: str, run_id: str, stop: StopTeardown
     ) -> None:
         """Run the stop teardown into ``stop``, lending it this executor's
-        orphan-collector bucket."""
+        orphan-collector bucket, as a restart's stop when a restart cancelled
+        the run."""
+        ti = self.executions.get((thread_id, run_id))
         await teardown.teardown_subagents_on_stop(
             thread_id,
             run_id,
             stop,
             orphan_collectors=self._orphan_collectors.get(thread_id, {}),
             drain=self._drain_killed_subagent_events,
+            restart=bool(ti and ti.restart),
         )
 
     async def _drain_killed_subagent_events(
@@ -1145,6 +1158,7 @@ class LocalRunExecutor:
                 return
             metadata = task_info.metadata
             cancelled_by_user = bool(task_info.user_stop)
+            restart = task_info.restart
             completion_callback = task_info.completion_callback
             graph = task_info.graph
             stop = task_info.stop_teardown
@@ -1178,6 +1192,7 @@ class LocalRunExecutor:
             error=error,
             handler=handler,
             cancelled_by_user=cancelled_by_user,
+            restart=restart,
             workspace_id=workspace_id,
             user_id=user_id,
             stop_events=carried_events,
@@ -1543,13 +1558,14 @@ class LocalRunExecutor:
 
     async def signal_cancel(
         self, thread_id: str, run_id: Optional[str] = None,
-        *, user_initiated: bool = True,
+        *, user_initiated: bool = True, restart: bool = False,
     ) -> bool:
         """Cancel a running workflow immediately.
 
         ``user_initiated`` distinguishes a user pressing Stop (HTTP /cancel,
         the default) from a system-driven cancel (graceful shutdown). Only
         user stops are persisted as cancelled-by-user "Stopped" turns.
+        ``restart`` marks a system cancel the next process resumes.
 
         ``run_id`` may be omitted — falls back to the most recent active
         run on the thread.
@@ -1587,8 +1603,12 @@ class LocalRunExecutor:
             # Only ever raise user_stop; never let a later system cancel
             # (user_initiated=False, e.g. graceful shutdown) downgrade a turn the
             # user explicitly stopped — that would mislabel it as system-cancelled.
+            # A user's stop also wins over a restart's, so nothing resumes it.
             if user_initiated:
                 task_info.user_stop = True
+                task_info.restart = False
+            elif restart and not task_info.user_stop:
+                task_info.restart = True
             if task_info.inner_task and not task_info.inner_task.done():
                 task_info.inner_task.cancel()
             logger.debug(
