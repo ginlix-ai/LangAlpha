@@ -38,6 +38,7 @@ def _row(status: str) -> dict:
 def _coordinator() -> RunCoordinator:
     coordinator = RunCoordinator()
     coordinator._schedule_replay_refresh = MagicMock()
+    coordinator._schedule_search_index = MagicMock()
     coordinator._nudge_hook_drainer = MagicMock()
     coordinator._newest_checkpoint = AsyncMock(return_value=NEWEST)
     return coordinator

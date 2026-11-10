@@ -90,7 +90,9 @@ async def test_a_slice_cut_on_another_branch_is_projected_again_first():
     with pointer, reader, rows, patch(_REFRESH, refresh):
         texts = await committed.committed_texts("t-1", {"r-1": 1})
     assert texts == {"r-1": "this branch"}
-    refresh.assert_awaited_once_with("t-1", {"r-1"}, claims_pass=False)
+    refresh.assert_awaited_once_with(
+        "t-1", {"r-1"}, claims_pass=False, schedule_claims_pass=True
+    )
 
 
 async def test_a_turn_still_without_a_slice_is_read_from_its_checkpoints():
@@ -112,6 +114,37 @@ async def test_a_turn_whose_checkpoints_cannot_be_read_is_left_to_the_caller():
     pointer, reader, rows = _branch([{}, {}], read_error=RuntimeError("pool closed"))
     with pointer, reader, rows, patch(_REFRESH, AsyncMock()):
         assert await committed.committed_texts("t-1", {"r-1": 1}) == {}
+
+
+async def test_an_unreadable_turn_is_told_apart_from_one_that_said_nothing():
+    # r-1 has checkpoints whose read failed; r-2 has no boundary and archived
+    # nothing, so there is nothing to read.
+    pointer, reader, rows = _branch([{}, {}], read_error=RuntimeError("pool closed"))
+    with pointer, reader, rows, patch(_REFRESH, AsyncMock()):
+        read = await committed.read_committed_texts("t-1", {"r-1": 1, "r-2": 2})
+    assert read.texts == {}
+    assert read.unread == {"r-1"}
+
+
+async def test_a_branch_that_cannot_be_read_leaves_every_unarchived_turn_unread():
+    with patch.object(
+        committed, "get_branch_pointer", AsyncMock(side_effect=RuntimeError("boom"))
+    ):
+        read = await committed.read_committed_texts("t-1", {"r-1": 1})
+    assert read.texts == {} and read.unread == {"r-1"}
+
+
+async def test_a_backfill_read_passes_on_not_scheduling_the_claims_pass():
+    refresh = AsyncMock()
+    pointer, reader, rows = _branch([{}, {"r-1": _row("projected")}])
+    with pointer, reader, rows, patch(_REFRESH, refresh):
+        read = await committed.read_committed_texts(
+            "t-1", {"r-1": 1}, schedule_claims_pass=False
+        )
+    assert read.texts == {"r-1": "projected"} and not read.unread
+    refresh.assert_awaited_once_with(
+        "t-1", {"r-1"}, claims_pass=False, schedule_claims_pass=False
+    )
 
 
 async def test_a_database_fault_raises_rather_than_read_as_no_text():

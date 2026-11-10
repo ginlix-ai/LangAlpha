@@ -150,6 +150,9 @@ _REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
     # Has a model describe MCP servers; a claim on each job's row under its
     # scope's advisory lock dedups it across workers.
     ("McpDescriptionWorker", "src.server.services.mcp_descriptions.worker"),
+    # Indexes for conversation search the turns their settle missed, and
+    # backfills older ones; an advisory lock keeps it to one worker a pass.
+    ("ThreadSearchSweeper", "src.server.services.search.sweep"),
 )
 
 

@@ -311,6 +311,26 @@ class McpDescriptionsConfig(BaseModel):
     interval_seconds: int = Field(default=20, ge=5)
 
 
+class ThreadSearchConfig(BaseModel):
+    """The sweep that keeps conversation search's index whole.
+
+    A turn is indexed as it settles, in the process that ran it; each pass
+    finds the recently settled turns that trigger missed (a worker lost, a
+    deploy) and retries the answers whose read failed, and the deployment
+    walks every thread, the backfill for turns that settled before search
+    existed, then again each day. One worker sweeps at a time. Each batch
+    takes ``batch_threads`` threads; the walk goes in slices of a few
+    seconds' work, each resting at least as long as it took and never less
+    than ``pause_seconds``, so a backfill never holds the database or the
+    checkpoint reader for long. Off, turns are still indexed as they settle.
+    """
+
+    enabled: bool = Field(default=True)
+    interval_seconds: int = Field(default=120, ge=10)
+    batch_threads: int = Field(default=10, ge=1, le=200)
+    pause_seconds: float = Field(default=0.5, ge=0)
+
+
 class FeatureFlagOverride(BaseModel):
     """Deployment override for a code-declared feature (src/config/features.py).
 
@@ -579,3 +599,5 @@ class InfrastructureConfig(BaseModel):
     order_reconcile: OrderReconcileConfig = Field(
         default_factory=OrderReconcileConfig
     )
+    # Conversation search index sweep
+    thread_search: ThreadSearchConfig = Field(default_factory=ThreadSearchConfig)

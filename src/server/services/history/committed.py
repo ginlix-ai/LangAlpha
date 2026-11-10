@@ -23,6 +23,7 @@ import asyncio
 import logging
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import ToolMessage
@@ -52,23 +53,89 @@ logger = logging.getLogger(__name__)
 # committed by its resume.
 UNSAVED_RESULT_ENDINGS = frozenset({"cancelled", "error"})
 
+# Turns read at once from stored slices and archived rows, which are light.
+_TURNS_PER_READ = 50
+
+
+@dataclass(frozen=True)
+class CommittedTexts:
+    #: The main agent's text by response id; empty for a turn that
+    #: committed none (tool calls only, cancelled before it wrote).
+    texts: dict[str, str]
+    #: The responses whose text exists but could not be read this time (a
+    #: checkpoint or projection failed, or the branch itself): not ones that
+    #: said nothing, so a reader that keeps the text reads them again.
+    unread: frozenset[str]
+
 
 async def committed_texts(thread_id: str, turns: Mapping[str, Any]) -> dict[str, str]:
+    """The main agent's text in each of ``turns`` (response id to turn
+    index), as ``read_committed_texts`` reads it. A response left out has
+    no text to read or its read failed."""
+    return (await read_committed_texts(thread_id, turns)).texts
+
+
+async def read_committed_texts(
+    thread_id: str,
+    turns: Mapping[str, Any],
+    *,
+    schedule_claims_pass: bool = True,
+) -> CommittedTexts:
     """The main agent's text in each of ``turns`` (response id to turn
     index), cut from the turn's stored slice, which a turn without one has
     projected first, as its settle would have. A turn whose lanes wait on the
     thread's claims pass is read straight from its checkpoints instead: the
-    pass places subagent launches, which its main lane never needs. A turn
-    with no checkpoint boundary reads the stream its row archived. A response
-    left out has neither or its read failed. A database fault raises instead:
-    its turns would read as ones that said nothing."""
+    pass places subagent launches, which its main lane never needs; it is
+    left to this process's replay runner, unless ``schedule_claims_pass`` is
+    off (a backfill, which must not start whole-thread work it does not
+    pace). A turn with no checkpoint boundary reads the stream its row
+    archived. A database fault raises instead: its turns would read as ones
+    that said nothing.
+
+    The branch is read once; the turns' slices ``_TURNS_PER_READ`` at a
+    time and their checkpoints replay's ``PROJECT_BATCH`` at a time, so a
+    long thread's backfill holds a bounded part of it at once."""
+    found, branch_read = await _anchors(thread_id, turns)
+    anchors = list(found.items())
+    texts: dict[str, str] = {}
+    for i in range(0, len(anchors), _TURNS_PER_READ):
+        texts.update(
+            await _anchored_texts(
+                thread_id,
+                dict(anchors[i : i + _TURNS_PER_READ]),
+                schedule_claims_pass=schedule_claims_pass,
+            )
+        )
+    unread = [rid for rid in turns if rid not in texts]
+    for i in range(0, len(unread), _TURNS_PER_READ):
+        texts.update(await _archived_texts(unread[i : i + _TURNS_PER_READ]))
+    return CommittedTexts(
+        texts,
+        frozenset(
+            rid
+            for rid in turns
+            if rid not in texts and (rid in found or not branch_read)
+        ),
+    )
+
+
+async def _anchored_texts(
+    thread_id: str,
+    anchors: Mapping[str, TurnAnchor],
+    *,
+    schedule_claims_pass: bool,
+) -> dict[str, str]:
     from src.server.services.history.replay.refresh import refresh_thread
 
-    anchors = await _anchors(thread_id, turns)
     texts = await _slice_texts(thread_id, anchors)
     missing = {rid for rid in anchors if rid not in texts}
     if missing:
-        await refresh_thread(thread_id, missing, claims_pass=False)
+        await refresh_thread(
+            thread_id,
+            missing,
+            claims_pass=False,
+            schedule_claims_pass=schedule_claims_pass,
+        )
         texts.update(
             await _slice_texts(
                 thread_id, {rid: anchors[rid] for rid in missing}
@@ -76,22 +143,22 @@ async def committed_texts(thread_id: str, turns: Mapping[str, Any]) -> dict[str,
         )
     if unread := {rid: a for rid, a in anchors.items() if rid not in texts}:
         texts.update(await _checkpoint_texts(thread_id, unread))
-    if unread := [rid for rid in turns if rid not in texts]:
-        texts.update(await _archived_texts(unread))
     return texts
 
 
 async def _anchors(
     thread_id: str, turns: Mapping[str, Any]
-) -> dict[str, TurnAnchor]:
+) -> tuple[dict[str, TurnAnchor], bool]:
     """Each response's turn on the current branch, paired as replay pairs
-    them; none when the branch cannot be read or paired."""
+    them, and whether the branch was read: a thread with no branch, or one
+    that does not pair, has none to read; a branch whose read failed is
+    unknown."""
     from src.server.services.history.replay import pair_anchors
 
     try:
         pointer = await get_branch_pointer(thread_id)
         if pointer is None:
-            return {}
+            return {}, True
         tip, persisted = pointer
         anchors, _ = await CheckpointHistoryReader.get_instance().aget_turn_anchors(
             thread_id, tip
@@ -99,13 +166,13 @@ async def _anchors(
         paired = dict(pair_anchors(anchors, persisted))
     except (CheckpointBranchTipNotFound, CheckpointReplayUnavailable) as e:
         logger.debug("no branch to read for %s: %s", thread_id, e)
-        return {}
+        return {}, True
     except DATABASE_UNAVAILABLE:
         raise
     except Exception:
         logger.warning("branch read failed for %s", thread_id, exc_info=True)
-        return {}
-    return {rid: paired[ti] for rid, ti in turns.items() if ti in paired}
+        return {}, False
+    return {rid: paired[ti] for rid, ti in turns.items() if ti in paired}, True
 
 
 async def _slice_texts(
@@ -126,17 +193,25 @@ async def _slice_texts(
 async def _checkpoint_texts(
     thread_id: str, anchors: Mapping[str, TurnAnchor]
 ) -> dict[str, str]:
-    """Main-lane text by response id, cut from each turn's checkpoints."""
-    try:
-        turns = await CheckpointHistoryReader.get_instance().aget_turn_slices(
-            thread_id, list(anchors.values())
-        )
-    except DATABASE_UNAVAILABLE:
-        raise
-    except Exception:
-        logger.warning("turn read failed", exc_info=True)
-        return {}
-    return _span_texts(thread_id, dict(zip(anchors, turns)))
+    """Main-lane text by response id, cut from each turn's checkpoints,
+    ``PROJECT_BATCH`` turns' states in hand at once. A batch whose read
+    fails is left out."""
+    from src.server.services.history.replay.cold import PROJECT_BATCH
+
+    reader = CheckpointHistoryReader.get_instance()
+    items = list(anchors.items())
+    out: dict[str, str] = {}
+    for i in range(0, len(items), PROJECT_BATCH):
+        batch = dict(items[i : i + PROJECT_BATCH])
+        try:
+            turns = await reader.aget_turn_slices(thread_id, list(batch.values()))
+        except DATABASE_UNAVAILABLE:
+            raise
+        except Exception:
+            logger.warning("turn read failed", exc_info=True)
+            continue
+        out.update(_span_texts(thread_id, dict(zip(batch, turns))))
+    return out
 
 
 async def _archived_texts(response_ids: list[str]) -> dict[str, str]:
