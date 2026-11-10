@@ -4,7 +4,10 @@ No search source orders its rows usefully (FMP answers the shortest symbols
 first, so ``nv`` showed NVDA thirteenth), and every symbol field reads the
 same route, so the order is settled here once for every source. A wider set
 of candidates is asked for than any caller shows, sorted into relevance tiers,
-and ordered inside a tier by the day's dollar volume from the quote cache.
+and ordered inside a tier by traded value in dollars: the twenty-session
+average from ginlix-data's liquidity tables where ginlix-data is configured
+(:class:`TableTradedValue`), else today's from the quote cache
+(:class:`QuoteTradedValue`).
 """
 
 from __future__ import annotations
@@ -13,18 +16,30 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple, Protocol
 
-from market_protocol import to_canonical
+from market_protocol import InstrumentRef, market_of, to_canonical
 from market_protocol.enums import AssetClass
+
+from src.server.services.cache.liquidity_tables import (
+    COVERED_MARKETS,
+    LiquidityTable,
+    LiquidityTables,
+    get_liquidity_tables,
+)
 
 logger = logging.getLogger(__name__)
 
 #: Candidates asked of the source whatever the caller shows, so a liquid
 #: listing the source ranks low still makes the cut.
 MIN_CANDIDATES = 50
-#: How long the ranking waits on quotes before answering in tier order.
+#: How long the ranking waits on its figures (a liquidity table a worker does
+#: not hold yet, then quotes) before answering in tier order.
 LIQUIDITY_TIMEOUT_S = 1.5
+#: Where a table ranks the rest, the quotes for markets it does not cover
+#: (Hong Kong, the foreign lines a name search brings in) get this long: a
+#: table-ranked search answers about as fast as the provider does.
+UNCOVERED_QUOTE_WAIT_S = 0.4
 #: A ranked answer stands as long as the unranked one used to.
 _RANKED_TTL_S = 300
 #: One ranked without quotes is kept briefly: the fill it gave up on keeps
@@ -64,11 +79,13 @@ class NoSearchSource(Exception):
     """No financial data provider is configured to search."""
 
 
-def search_cache_key(query: str, limit: int) -> str:
+def search_cache_key(query: str, limit: int, exchanges: frozenset[str] = frozenset()) -> str:
     """The cache key of a ranked search. Versioned so an older order is never
-    served as a ranked one. Keyed by the limit, since only the rows that can
-    reach the first *limit* are ranked by their quotes."""
-    return f"search:v{_KEY_VERSION}:{query.strip().lower()}:{limit}"
+    served as a ranked one. Keyed by the limit and the exchange filter, since
+    only the rows that can reach the first *limit* of what the filter keeps
+    are ranked by their figures."""
+    venues = ",".join(sorted(exchanges))
+    return f"search:v{_KEY_VERSION}:{query.strip().lower()}:{limit}:{venues}"
 
 
 def candidate_count(limit: int) -> int:
@@ -130,7 +147,7 @@ def rank_rows(rows: list[dict[str, Any]], figures: dict[str, float] | None) -> l
 def contested(rows: list[dict[str, Any]], limit: int) -> list[str]:
     """The symbols whose order decides the first *limit*: every row of the
     tiers that reach into them. A lower tier's rows fall past the cut
-    whatever they trade, so their quotes are not asked for."""
+    whatever they trade, so their figures are not asked for."""
     if len(rows) < 2:
         return []  # nothing to order
     cutoff = sorted(_TIER[row["match"]] for row in rows)[min(limit, len(rows)) - 1]
@@ -154,52 +171,74 @@ def dollar_volume(row: dict[str, Any], currency: str | None, now_ms: int) -> flo
     return value if value > 0 else None
 
 
-async def liquidity(
-    symbols: list[str], user_id: str | None, timeout: float,
-) -> dict[str, float] | None:
-    """Day dollar volume per symbol from the quote cache, or None when the
-    quotes did not come in time or failed.
+class Figures(NamedTuple):
+    """Traded value in dollars by symbol, for the symbols that have one."""
 
-    One batched fill for every miss. One that outlasts *timeout* is left to
-    finish, so its quotes are cached for the next search.
-    """
-    from src.server.services.cache.quote_cache_service import QuoteCacheService
+    values: dict[str, float]
+    #: Every symbol was looked up. False when a lookup failed or ran out of
+    #: time, so the order is cached only briefly.
+    complete: bool
 
-    by_key: dict[str, list[str]] = {}
-    refs = []
+
+class TradedValue(Protocol):
+    """Where the figures a search ranks by come from, within *timeout* seconds."""
+
+    async def figures(self, symbols: list[str], user_id: str | None, timeout: float) -> Figures: ...
+
+
+def _by_instrument(symbols: list[str]) -> dict[str, tuple[InstrumentRef, list[str]]]:
+    """*symbols* by the instrument they name, so ``BRK.B`` and ``BRK-B`` share one figure."""
+    out: dict[str, tuple[InstrumentRef, list[str]]] = {}
     for symbol in symbols:
         try:
             ref = to_canonical(symbol, asset_class=AssetClass.EQUITY)
         except Exception:  # noqa: BLE001 (an unreadable symbol just has no figure)
             continue
-        if ref.instrument_key not in by_key:
-            refs.append(ref)
-        by_key.setdefault(ref.instrument_key, []).append(symbol)
-    if not refs:
-        return {}
-
-    fill = asyncio.ensure_future(QuoteCacheService.get_instance().get_quotes(refs, user_id=user_id))
-    done, _ = await asyncio.wait({fill}, timeout=timeout)
-    if not done:
-        _draining.add(fill)
-        fill.add_done_callback(_drained)
-        logger.info("symbol_search.liquidity_timeout | symbols=%d", len(refs))
-        return None
-    try:
-        quotes = fill.result()
-    except Exception as exc:  # noqa: BLE001 (ranking is a nicety; the search still answers)
-        logger.warning("symbol_search.liquidity_failed | error=%s", type(exc).__name__)
-        return None
-    from src.data_client.normalize import listing_currency
-
-    now_ms = int(time.time() * 1000)
-    out: dict[str, float] = {}
-    for ref, row in quotes:
-        value = dollar_volume(row, listing_currency(ref), now_ms)
-        if value is not None:
-            for symbol in by_key.get(ref.instrument_key, []):
-                out[symbol] = value
+        out.setdefault(ref.instrument_key, (ref, []))[1].append(symbol)
     return out
+
+
+class QuoteTradedValue:
+    """Today's dollar volume from the quote cache, for a deployment without
+    ginlix-data's tables or a market they do not cover.
+
+    One batched fill for every miss. A fill that outlasts the timeout is left
+    to finish, so its quotes are cached for the next search.
+    """
+
+    async def figures(self, symbols: list[str], user_id: str | None, timeout: float) -> Figures:
+        from src.data_client.normalize import listing_currency
+        from src.server.services.cache.quote_cache_service import QuoteCacheService
+
+        instruments = _by_instrument(symbols)
+        if not instruments:
+            return Figures({}, True)
+        refs = [ref for ref, _ in instruments.values()]
+        # fetch_quotes, not get_quotes: get_quotes swallows a fill that failed
+        # for some instruments when others answered, and an order missing
+        # them must not be cached as a complete one.
+        fill = asyncio.ensure_future(QuoteCacheService.get_instance().fetch_quotes(refs, user_id=user_id))
+        done, _ = await asyncio.wait({fill}, timeout=timeout)
+        if not done:
+            _draining.add(fill)
+            fill.add_done_callback(_drained)
+            logger.info("symbol_search.liquidity_timeout | symbols=%d", len(refs))
+            return Figures({}, False)
+        try:
+            quotes, failure = fill.result()
+        except Exception as exc:  # noqa: BLE001 (ranking is a nicety; the search still answers)
+            logger.warning("symbol_search.liquidity_failed | error=%s", type(exc).__name__)
+            return Figures({}, False)
+        if failure is not None:
+            logger.info("symbol_search.liquidity_partial | unreached=%d", len(failure.refs))
+        now_ms = int(time.time() * 1000)
+        values: dict[str, float] = {}
+        for ref, row in quotes:
+            value = dollar_volume(row, listing_currency(ref), now_ms)
+            if value is not None:
+                for symbol in instruments.get(ref.instrument_key, (ref, []))[1]:
+                    values[symbol] = value
+        return Figures(values, failure is None)
 
 
 def _drained(task: asyncio.Task) -> None:
@@ -208,11 +247,75 @@ def _drained(task: asyncio.Task) -> None:
         logger.info("symbol_search.late_fill_failed | error=%s", type(task.exception()).__name__)
 
 
-async def search_symbols(query: str, limit: int, user_id: str | None) -> list[dict[str, Any]]:
-    """Every candidate for *query*, ranked for the first *limit*, read through the search cache.
+class TableTradedValue:
+    """Average daily traded value from ginlix-data's liquidity tables, with
+    no quote fetch and no wait once a table is held.
 
-    The caller filters and then cuts to its limit, so a filter that drops
-    rows still leaves the next ones.
+    A candidate in a market a table covers is ranked by it, or has no figure
+    when the table does not list it. The rest go to *fallback*: a market no
+    table covers gets ``UNCOVERED_QUOTE_WAIT_S``, and a covered one whose
+    table is not to be had what is left of the timeout, as a search without
+    tables would. Only a worker holding no table waits on one, and a fetch
+    cut short finishes for the next search.
+    """
+
+    def __init__(self, tables: LiquidityTables, fallback: TradedValue) -> None:
+        self._tables = tables
+        self._fallback = fallback
+
+    async def figures(self, symbols: list[str], user_id: str | None, timeout: float) -> Figures:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        instruments = _by_instrument(symbols)
+        markets = {market_of(ref) for ref, _ in instruments.values()} & COVERED_MARKETS
+        tables = dict(zip(markets, await asyncio.gather(*(self._table(m, timeout) for m in markets))))
+        values: dict[str, float] = {}
+        rest: list[str] = []
+        tableless = False  # a covered market whose table is not to be had
+        for ref, spellings in instruments.values():
+            table = tables.get(market_of(ref))
+            if table is None:
+                rest.extend(spellings)
+                tableless = tableless or market_of(ref) in COVERED_MARKETS
+                continue
+            adv = table.value_of(ref)
+            rate = _USD_PER_UNIT.get(table.currency.upper())
+            if adv is not None and rate is not None:
+                values.update(dict.fromkeys(spellings, adv * rate))
+        if not rest:
+            return Figures(values, True)
+        left = max(0.0, deadline - loop.time())
+        wait = left if tableless else min(UNCOVERED_QUOTE_WAIT_S, left)
+        fallen = await self._fallback.figures(rest, user_id, wait)
+        return Figures({**values, **fallen.values}, fallen.complete)
+
+    async def _table(self, market: str, timeout: float) -> LiquidityTable | None:
+        try:
+            return await asyncio.wait_for(self._tables.table(market), timeout)
+        except TimeoutError:
+            logger.info("symbol_search.table_wait_timeout | market=%s", market)
+            return None
+
+
+def traded_value() -> TradedValue:
+    """ginlix-data's tables where it is configured, else today's quotes (a self-hosted stack)."""
+    from src.config.settings import GINLIX_DATA_ENABLED
+
+    quotes = QuoteTradedValue()
+    if not GINLIX_DATA_ENABLED:
+        return quotes
+    return TableTradedValue(get_liquidity_tables(), fallback=quotes)
+
+
+async def search_symbols(
+    query: str, limit: int, user_id: str | None, exchanges: frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
+    """Every candidate for *query* listed on one of *exchanges* (short names,
+    upper case; empty for any), ranked for the first *limit*, read through
+    the search cache. The caller cuts to its limit.
+
+    The filter comes before the ranking: the rows it drops would otherwise
+    take the places that decide whose figures are looked up.
     """
     from src.data_client import get_financial_data_provider
     from src.data_client.financial_data_provider import PartialSearch
@@ -221,7 +324,7 @@ async def search_symbols(query: str, limit: int, user_id: str | None) -> list[di
     query = query.strip()
     candidates = candidate_count(limit)
     cache = get_cache_client()
-    key = search_cache_key(query, limit)
+    key = search_cache_key(query, limit, exchanges)
     cached = await cache.get(key)
     if cached is not None:
         return cached["results"]
@@ -237,11 +340,16 @@ async def search_symbols(query: str, limit: int, user_id: str | None) -> list[di
         # so the next search asks it again.
         rows, complete = partial.rows, False
     match = matcher(query)
-    rows = [{**row, "match": match(row)} for row in rows or [] if row.get("symbol")]
+    rows = [
+        {**row, "match": match(row)}
+        for row in rows or []
+        if row.get("symbol")
+        and (not exchanges or str(row.get("exchangeShortName") or "").upper() in exchanges)
+    ]
 
-    figures = await liquidity(contested(rows, limit), user_id, LIQUIDITY_TIMEOUT_S)
-    ranked = rank_rows(rows, figures)
+    figures = await traded_value().figures(contested(rows, limit), user_id, LIQUIDITY_TIMEOUT_S)
+    ranked = rank_rows(rows, figures.values)
     if complete:
-        ttl = _RANKED_TTL_S if figures is not None else _UNRANKED_TTL_S
+        ttl = _RANKED_TTL_S if figures.complete else _UNRANKED_TTL_S
         await cache.set(key, {"results": ranked}, ttl=ttl)
     return ranked

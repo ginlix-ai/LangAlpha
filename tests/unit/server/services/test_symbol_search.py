@@ -2,6 +2,7 @@
 quote fill's failure and timeout falling back to tier order."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,23 +93,26 @@ class TestDollarVolume:
 
 
 class _Quotes:
-    """QuoteCacheService.get_quotes, answering after *delay* or raising *error*."""
+    """QuoteCacheService.fetch_quotes, answering after *delay* or raising
+    *error*; the symbols in *unreached* failed to fill."""
 
-    def __init__(self, rows, *, delay=0.0, error=None):
-        self.rows, self.delay, self.error = rows, delay, error
+    def __init__(self, rows, *, delay=0.0, error=None, unreached=()):
+        self.rows, self.delay, self.error, self.unreached = rows, delay, error, set(unreached)
         self.asked = []
         self.finished = asyncio.Event()
 
     def get_instance(self):
         return self
 
-    async def get_quotes(self, refs, user_id=None):
+    async def fetch_quotes(self, refs, user_id=None):
         self.asked.append([ref.instrument_key for ref in refs])
         await asyncio.sleep(self.delay)
         self.finished.set()
         if self.error:
             raise self.error
-        return [(ref, self.rows[ref.symbol]) for ref in refs if ref.symbol in self.rows]
+        failed = [ref for ref in refs if ref.symbol in self.unreached]
+        failure = SimpleNamespace(refs=failed) if failed else None
+        return [(ref, self.rows[ref.symbol]) for ref in refs if ref.symbol in self.rows], failure
 
 
 @pytest.fixture
@@ -123,21 +127,30 @@ def quotes(monkeypatch):
     return install
 
 
-class TestLiquidity:
+class TestQuoteTradedValue:
     @pytest.mark.asyncio
     async def test_figures_per_symbol(self, quotes):
         quotes({"NVDA": {"price": 100, "volume": 10}, "NVO": {"price": 50, "volume": 2}})
-        assert await ss.liquidity(["NVDA", "NVO", "NVX"], "u1", 1.0) == {"NVDA": 1000.0, "NVO": 100.0}
+        figures = await ss.QuoteTradedValue().figures(["NVDA", "NVO", "NVX"], "u1", 1.0)
+        assert figures == ss.Figures({"NVDA": 1000.0, "NVO": 100.0}, True)
+
+    @pytest.mark.asyncio
+    async def test_a_fill_that_failed_for_some_is_incomplete(self, quotes):
+        # The cached NVO answers while NVDA's fill fails: an order without
+        # NVDA is not one to keep for the full TTL.
+        quotes({"NVO": {"price": 50, "volume": 2}}, unreached={"NVDA"})
+        figures = await ss.QuoteTradedValue().figures(["NVDA", "NVO"], "u1", 1.0)
+        assert figures == ss.Figures({"NVO": 100.0}, False)
 
     @pytest.mark.asyncio
     async def test_a_failed_fill_is_no_figures(self, quotes):
         quotes({}, error=RuntimeError("down"))
-        assert await ss.liquidity(["NVDA"], "u1", 1.0) is None
+        assert await ss.QuoteTradedValue().figures(["NVDA"], "u1", 1.0) == ss.Figures({}, False)
 
     @pytest.mark.asyncio
     async def test_a_slow_fill_is_no_figures_and_is_left_to_finish(self, quotes):
         fake = quotes({"NVDA": {"price": 100, "volume": 10}}, delay=0.2)
-        assert await ss.liquidity(["NVDA"], "u1", 0.01) is None
+        assert await ss.QuoteTradedValue().figures(["NVDA"], "u1", 0.01) == ss.Figures({}, False)
         await asyncio.wait_for(fake.finished.wait(), 1)
         await asyncio.sleep(0)
         assert not ss._draining
@@ -179,6 +192,7 @@ def sources(monkeypatch):
 
         cache = _Cache(hit)
         monkeypatch.setattr(redis_cache, "get_cache_client", lambda: cache)
+        monkeypatch.setattr(ss, "traded_value", lambda: ss.QuoteTradedValue())
         monkeypatch.setattr(data_client, "get_financial_data_provider", provider)
         return _Provider.financial, cache
 
@@ -201,7 +215,7 @@ class TestSearchSymbols:
         ]
         assert financial.asked == [ss.MIN_CANDIDATES]
         assert len(fake.asked) == 1 and len(fake.asked[0]) == 4  # one fill; every row can reach the first 12
-        assert cache.writes == [("search:v2:nv:12", {"results": rows}, 300)]
+        assert cache.writes == [("search:v2:nv:12:", {"results": rows}, 300)]
 
     @pytest.mark.asyncio
     async def test_a_timed_out_fill_answers_in_tier_order_cached_briefly(self, sources, quotes, monkeypatch):
@@ -260,3 +274,159 @@ class TestRoute:
         resp = await market_data.search_stocks(user_id="u1", query="nv", limit=1, exchange=["nyse"])
 
         assert [(r.symbol, r.match) for r in resp.results] == [("NVO", "symbol_prefix")]
+
+    @pytest.mark.asyncio
+    async def test_a_row_with_no_name_answers_with_an_empty_one(self, sources, quotes):
+        # A row past the limit is never validated; one within it reads as nameless.
+        from src.server.app import market_data
+
+        sources([_row("NVDA", None), _row("NVO", "Novo"), _row("NVS", None)])
+        quotes({})
+
+        resp = await market_data.search_stocks(user_id="u1", query="nv", limit=2, exchange=[])
+
+        assert [(r.symbol, r.name) for r in resp.results] == [("NVDA", ""), ("NVO", "Novo")]
+
+    @pytest.mark.asyncio
+    async def test_a_filtered_out_row_takes_no_place_in_the_ranking(self, sources, quotes):
+        # The exact NYSE "A" would decide the cut at one row, leaving the
+        # NASDAQ rows unquoted and in the provider's order.
+        from src.server.app import market_data
+
+        _, cache = sources([
+            _row("A", "Agilent", exchangeShortName="NYSE"),
+            _row("AMD", "AMD", exchangeShortName="NASDAQ"),
+            _row("AAPL", "Apple", exchangeShortName="NASDAQ"),
+        ])
+        fake = quotes({"AAPL": {"price": 230, "volume": 5e7}, "AMD": {"price": 150, "volume": 3e7}})
+
+        resp = await market_data.search_stocks(user_id="u1", query="a", limit=1, exchange=["nasdaq"])
+
+        assert [r.symbol for r in resp.results] == ["AAPL"]
+        assert sorted(fake.asked[0]) == ["AAPL.XNAS", "AMD.XNAS"]
+        assert cache.writes[0][0] == "search:v2:a:1:NASDAQ"
+
+
+class _Tables:
+    """LiquidityTables, holding fixed tables by market."""
+
+    def __init__(self, **tables):
+        self.tables, self.asked = tables, []
+
+    async def table(self, market):
+        self.asked.append(market)
+        return self.tables.get(market)
+
+
+class _Fallback:
+    def __init__(self, values=None, complete=True):
+        self.values, self.complete, self.asked, self.timeouts = values or {}, complete, [], []
+
+    async def figures(self, symbols, user_id, timeout):
+        self.asked.append(sorted(symbols))
+        self.timeouts.append(timeout)
+        return ss.Figures({s: v for s, v in self.values.items() if s in symbols}, self.complete)
+
+
+def _table(market, currency, adv, as_of="2026-11-09"):
+    from src.server.services.cache.liquidity_tables import LiquidityTable
+
+    return LiquidityTable.of(market, currency, as_of, 0.0, adv)
+
+
+US_TABLE = _table("us", "USD", {"NVDA.XNAS": 3.0e10, "NVO.XNYS": 5.0e8, "BRK-B.XNYS": 1.5e9})
+CN_TABLE = _table("cn", "CNY", {"600519.XSHG": 7.0e9})
+
+
+class TestTableTradedValue:
+    @pytest.mark.asyncio
+    async def test_figures_from_the_tables_in_dollars_without_quotes(self):
+        fallback = _Fallback()
+        source = ss.TableTradedValue(_Tables(us=US_TABLE, cn=CN_TABLE), fallback)
+
+        figures = await source.figures(["NVDA", "NVO", "NVQX", "600519.SH"], "u1", 1.0)
+
+        assert figures.complete
+        assert figures.values == {"NVDA": 3.0e10, "NVO": 5.0e8, "600519.SH": pytest.approx(7.0e9 * 0.14)}
+        assert fallback.asked == []  # NVQX is not in the table: no figure, and no quote
+
+    @pytest.mark.asyncio
+    async def test_spellings_of_one_listing_join_on_its_instrument_key(self):
+        source = ss.TableTradedValue(_Tables(us=US_TABLE), _Fallback())
+        figures = await source.figures(["BRK.B", "BRK-B"], "u1", 1.0)
+        assert figures.values == {"BRK.B": 1.5e9, "BRK-B": 1.5e9}
+
+    @pytest.mark.asyncio
+    async def test_a_market_without_a_table_falls_back_to_quotes(self):
+        fallback = _Fallback({"NVDA": 9.0, "0700.HK": 4.0}, complete=False)
+        tables = _Tables(cn=CN_TABLE)  # the US table is missing; HK has none
+        figures = await ss.TableTradedValue(tables, fallback).figures(["NVDA", "0700.HK", "600519.SH"], "u1", 1.0)
+
+        assert fallback.asked == [["0700.HK", "NVDA"]]
+        assert figures.values == {"NVDA": 9.0, "0700.HK": 4.0, "600519.SH": pytest.approx(9.8e8)}
+        assert not figures.complete
+        assert sorted(tables.asked) == ["cn", "us"]  # HK is never asked of ginlix-data
+
+    @pytest.mark.asyncio
+    async def test_a_stale_table_falls_back_to_quotes(self):
+        from src.server.services.cache.liquidity_tables import LiquidityTables
+
+        async def route(market):
+            return {"currency": "USD", "as_of": "2025-01-02", "rows": [{"instrument_key": "NVDA.XNAS", "adv": 1e10}]}
+
+        class _NoRedis:
+            async def get(self, key):
+                return None
+
+            async def set(self, key, value, ttl=None):
+                pass
+
+        fallback = _Fallback({"NVDA": 7.0})
+        tables = LiquidityTables(route, cache=_NoRedis)
+        figures = await ss.TableTradedValue(tables, fallback).figures(["NVDA"], "u1", 1.0)
+        assert figures.values == {"NVDA": 7.0} and fallback.asked == [["NVDA"]]
+
+    @pytest.mark.asyncio
+    async def test_a_table_slow_to_arrive_leaves_the_fallback_what_is_left_of_one_deadline(self):
+        class _Slow:
+            async def table(self, market):
+                await asyncio.sleep(1)
+
+        fallback = _Fallback({"NVDA": 7.0})
+        figures = await ss.TableTradedValue(_Slow(), fallback).figures(["NVDA"], "u1", 0.05)
+        assert figures.values == {"NVDA": 7.0}
+        assert fallback.timeouts[0] < 0.01  # the table spent the whole budget; the fill gets none of its own
+
+
+    @pytest.mark.asyncio
+    async def test_a_market_no_table_covers_waits_briefly_and_a_tableless_one_the_rest(self):
+        fallback = _Fallback({"0700.HK": 9.0})
+        tables = _Tables(us=US_TABLE)
+        await ss.TableTradedValue(tables, fallback).figures(["NVDA", "0700.HK"], "u1", 1.5)
+        assert fallback.asked == [["0700.HK"]] and fallback.timeouts[0] <= ss.UNCOVERED_QUOTE_WAIT_S
+
+        fallback = _Fallback({})
+        await ss.TableTradedValue(_Tables(), fallback).figures(["NVDA", "0700.HK"], "u1", 1.5)
+        assert fallback.timeouts[0] > 1.0  # no US table to be had: quotes get what is left
+
+
+class TestSourceChoice:
+    def test_ginlix_data_configured_ranks_by_its_tables(self, monkeypatch):
+        import src.config.settings as settings
+
+        monkeypatch.setattr(settings, "GINLIX_DATA_ENABLED", True)
+        assert isinstance(ss.traded_value(), ss.TableTradedValue)
+        monkeypatch.setattr(settings, "GINLIX_DATA_ENABLED", False)
+        assert isinstance(ss.traded_value(), ss.QuoteTradedValue)
+
+    @pytest.mark.asyncio
+    async def test_a_search_ranked_from_the_tables_fetches_no_quote(self, sources, quotes, monkeypatch):
+        _, cache = sources(NV_ROWS)
+        fake = quotes({})
+        monkeypatch.setattr(ss, "traded_value", lambda: ss.TableTradedValue(_Tables(us=US_TABLE), ss.QuoteTradedValue()))
+
+        rows = await ss.search_symbols("nv", 12, "u1")
+
+        assert [r["symbol"] for r in rows] == ["NVDA", "NVO", "NVS", "XNV"]
+        assert fake.asked == []
+        assert cache.writes[0][2] == 300

@@ -163,6 +163,11 @@ class GinlixDataV2Routes:
         )
         return (body or {}).get("results") or []
 
+    async def get_liquidity_v2(self, market: str) -> dict[str, Any] | None:
+        """The market's daily liquidity table (``rows`` of ``instrument_key``,
+        ``adv``, ``rank``), or ``None`` when no table has been built."""
+        return await self._v2_json("/api/v2/data/liquidity", {"market": market})
+
     async def get_news_v2(self, *, market: str, limit: int = 20) -> list[dict[str, Any]]:
         body = await self._v2_json("/api/v2/data/news", {"market": market, "limit": limit})
         return (body or {}).get("results") or []

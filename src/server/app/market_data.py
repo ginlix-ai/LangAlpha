@@ -459,14 +459,16 @@ async def search_stocks(
         from src.server.services.symbol_search import NoSearchSource, search_symbols
 
         try:
-            rows = await search_symbols(query, limit, user_id)
+            rows = await search_symbols(query, limit, user_id, frozenset(e.upper() for e in exchange))
         except NoSearchSource:
             raise HTTPException(status_code=503, detail="No financial data provider available")
 
+        # Cut before validating: the rows past the limit are never shown, and
+        # a provider row with a null name would otherwise fail the request.
         results = [
             StockSearchResult(
                 symbol=item.get("symbol", ""),
-                name=item.get("name", ""),
+                name=item.get("name") or "",
                 nameLocal=item.get("nameLocal"),
                 nameEn=item.get("nameEn"),
                 currency=item.get("currency"),
@@ -474,12 +476,8 @@ async def search_stocks(
                 exchangeShortName=item.get("exchangeShortName"),
                 match=item.get("match"),
             )
-            for item in rows
+            for item in rows[:limit]
         ]
-        if exchange:
-            exchange_set = {e.upper() for e in exchange}
-            results = [r for r in results if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set]
-        results = results[:limit]
 
         return StockSearchResponse(query=query.strip(), results=results, count=len(results))
 
