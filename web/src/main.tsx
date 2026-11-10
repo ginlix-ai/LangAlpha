@@ -15,6 +15,7 @@ import { trackVisualViewport } from './lib/visualViewport'
 import { Toaster } from './components/ui/toaster'
 import { StaleBuildBoundary } from './components/StaleBuildBoundary'
 import { captureException, initSentry } from './lib/sentry'
+import { tolerateTranslatedDom } from './lib/translatedDom'
 
 // Initialize a global QueryClient for data fetching and caching
 const queryClient = new QueryClient({
@@ -27,6 +28,7 @@ const queryClient = new QueryClient({
   },
 })
 
+tolerateTranslatedDom()
 applyCardStyle(getCardStyle())
 trackVisualViewport()
 initSentry()
