@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.llms.reasoning import ReasoningLevel
 from src.server.models.additional_context import AdditionalContext
+from src.server.models.chart_view import ChartViews
 from src.server.models.chat import RequestKey
 
 
@@ -493,4 +494,8 @@ class RetryRequest(BaseModel):
         None,
         description="The failed send's additional context, when its message "
         "never reached the agent and so runs again. A replay ignores it.",
+    )
+    chart_views: ChartViews = Field(
+        None,
+        description="The failed send's chart views, as its additional context.",
     )

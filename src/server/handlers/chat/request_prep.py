@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 from ptc_agent.agent.limits import UNBOUNDED_RECURSION_LIMIT
 from ptc_agent.agent.middleware.provenance.command_trace import REPORT_COMMAND_KEY
 from ptc_agent.agent.middleware.runtime_context import TurnContext, parse_surface
+from ptc_agent.agent.tools.command_handoff import JOB_ENV_KEY
 from src.config.settings import (
     get_langsmith_metadata,
     get_langsmith_tags,
@@ -41,6 +42,7 @@ from src.server.services.runs.pending_input import cache_clock_attempt
 from src.server.database.runs import lifecycle as tl_db
 from src.server.database.runs.hook_jobs import SURFACE_META
 from src.server.models.chat import CommandReport, summarize_hitl_response_map
+from src.server.utils.chart_view_context import chart_views_env
 from src.server.utils.skill_context import (
     detect_slash_commands,
     parse_skill_contexts,
@@ -957,6 +959,11 @@ def build_graph_config(
     report = request.report_source
     if isinstance(report, CommandReport):
         configurable[REPORT_COMMAND_KEY] = report.command_id
+    # The user's chart views reach the turn's sandbox jobs from here, never
+    # the prompt; a turn with no user message of its own has none.
+    job_env = chart_views_env(request.chart_views)
+    if job_env:
+        configurable[JOB_ENV_KEY] = job_env
     if extra_configurable:
         configurable.update(extra_configurable)
     if skill_contexts:

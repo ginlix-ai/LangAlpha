@@ -17,6 +17,8 @@ from pydantic import (
 )
 
 from src.server.models.additional_context import AdditionalContext
+from src.server.models.chart_view import ChartViews
+from src.server.models.chart_layer import PublishedLayer
 from src.server.models.command import FailureReason
 from src.server.utils.pg_sanitize import uuid_text
 
@@ -384,7 +386,8 @@ class CommandReport(BaseModel):
     non-zero exit), ``lost`` (its computer stopped under it), ``vanished``
     (no exit recorded while its computer ran) or ``after_turn_limit``
     (stopped an hour after its turn ended, which the caption calls stopped
-    early).
+    early). ``chart_layers`` are the chart layers it published, drawn as
+    the chart-layer card an inline call's result gets.
     """
 
     kind: Literal["command_report"]
@@ -394,6 +397,7 @@ class CommandReport(BaseModel):
     status: Literal["completed", "failed", "stopped"]
     failure_reason: Optional[FailureReason] = None
     tool_call_id: Optional[str] = None
+    chart_layers: Optional[List[PublishedLayer]] = None
 
 
 # What a report-back turn announces, kept on its query row for display only.
@@ -520,6 +524,11 @@ class ChatRequest(BaseModel):
     additional_context: Optional[List[AdditionalContext]] = Field(
         default=None,
         description="Additional context to be included. Supports: skills (skill instructions)",
+    )
+    chart_views: ChartViews = Field(
+        default=None,
+        description="The charts on screen as the message is sent, for the turn's chart "
+        "snapshots; never shown to the model.",
     )
 
     # LLM selection (optional)
