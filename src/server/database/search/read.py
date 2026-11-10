@@ -89,6 +89,9 @@ class ThreadMatch:
     title: str
     automation_name: str | None
     updated_at: datetime
+    is_pinned: bool
+    #: Whether the thread has a title of its own, not its first message.
+    has_title: bool
 
     @property
     def key(self) -> tuple[datetime, str]:
@@ -118,7 +121,8 @@ async def search_threads(
                t.workspace_id::text AS workspace_id, w.name AS workspace_name,
                COALESCE(NULLIF(t.title, ''), first_query.content, '') AS title,
                {_AUTOMATION_NAME} AS automation_name,
-               {_THREAD_RECENCY} AS updated_at
+               {_THREAD_RECENCY} AS updated_at,
+               t.is_pinned, NULLIF(t.title, '') IS NOT NULL AS has_title
         FROM conversation_threads t
         JOIN workspaces w ON w.workspace_id = t.workspace_id
         LEFT JOIN LATERAL ({_sql.first_query(untitled_only=True)}) first_query ON TRUE
@@ -149,6 +153,10 @@ class TurnMatch:
     in_user: bool
     #: That side's text.
     text: str
+    #: Whether the turn's thread is pinned to the top of its workspace.
+    is_pinned: bool
+    #: Whether the turn's thread has a title of its own, not its first message.
+    has_title: bool
 
     @property
     def key(self) -> tuple[datetime, str, int]:
@@ -229,7 +237,8 @@ async def search_turns(
                COALESCE({_sql.TITLE_OR_FIRST_QUERY}, '') AS thread_title,
                t.workspace_id::text AS workspace_id, w.name AS workspace_name,
                p.turn_index, p.turn_at, p.in_user,
-               CASE WHEN p.in_user THEN s.user_text ELSE s.answer_text END AS text
+               CASE WHEN p.in_user THEN s.user_text ELSE s.answer_text END AS text,
+               t.is_pinned, NULLIF(t.title, '') IS NOT NULL AS has_title
         FROM page p
         JOIN thread_search_turns s
           ON s.conversation_thread_id = p.conversation_thread_id

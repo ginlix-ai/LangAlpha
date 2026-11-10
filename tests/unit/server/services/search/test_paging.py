@@ -23,6 +23,8 @@ MATCHES = [
         turn_at=_START + timedelta(minutes=i),
         in_user=True,
         text=f"send {i}",
+        is_pinned=False,
+        has_title=True,
     )
     for i in range(30)
 ]

@@ -22,6 +22,11 @@ class ThreadHit(BaseModel):
     #: The automation that started the thread, if one did.
     automation_name: Optional[str] = None
     updated_at: datetime
+    #: Pinned to the top of its workspace's threads.
+    is_pinned: bool
+    #: Whether the thread has a title of its own; ``title`` is otherwise its
+    #: first message.
+    has_title: bool
     #: Where the terms are in ``title``.
     match: List[List[int]]
 
@@ -41,6 +46,11 @@ class TurnHit(BaseModel):
     #: Where the terms are in ``snippet``.
     matches: List[List[int]]
     turn_at: datetime
+    #: Whether the turn's thread is pinned to the top of its workspace.
+    is_pinned: bool
+    #: Whether the turn's thread has a title of its own; ``thread_title`` is
+    #: otherwise its first message.
+    has_title: bool
 
 
 class FileHit(BaseModel):
