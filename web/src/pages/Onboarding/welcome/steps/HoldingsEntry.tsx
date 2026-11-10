@@ -9,9 +9,8 @@ import { useSymbolSearch } from '@/hooks/useSymbolSearch';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import { asksHoldingCurrency, isCurrencyCode, typedCurrencyCode } from '@/lib/holdingCurrency';
 import { apiErrorReason, apiErrorStatus } from '@/pages/ChatAgent/utils/api';
-import { portfolioHoldingsQuery } from '@/pages/Dashboard/hooks/usePortfolioData';
 import { addPortfolioHolding, deletePortfolioHolding } from '@/pages/Dashboard/utils/portfolio';
-import { watchlistItemsQuery } from '@/pages/Dashboard/hooks/useWatchlistData';
+import { portfolioHoldingsQuery, watchlistItemsQuery } from '@/hooks/membershipQueries';
 import { addWatchlistItem, deleteWatchlistItem } from '@/pages/Dashboard/utils/watchlistItems';
 
 const chipClass =

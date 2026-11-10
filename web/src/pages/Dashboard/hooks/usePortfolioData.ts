@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from 'react';
-import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/components/ui/use-toast';
 import {
   addPortfolioHolding,
   deletePortfolioHolding,
-  getPortfolio,
   updatePortfolioHolding,
 } from '../utils/api';
+import { portfolioHoldingsQuery } from '@/hooks/membershipQueries';
 import { useQuotes, snapshotToStockPrice } from '@/lib/quotes';
 import { quotePlaces } from '@/lib/bars/currencyDisplay';
 import type { PortfolioHoldingPayload, PortfolioHoldingUpdatePayload } from '../utils/portfolio';
@@ -33,30 +33,6 @@ export interface PortfolioRow {
   session?: ExtendedSessionFields;
   [key: string]: unknown;
 }
-
-export interface PortfolioHolding {
-  user_portfolio_id: string;
-  symbol: string;
-  quantity?: number;
-  average_cost?: number | null;
-  currency?: string | null;
-  notes?: string;
-  [key: string]: unknown;
-}
-
-/**
- * The holdings list alone, for a reader that needs what is held but not its
- * quotes (the welcome flow's holdings entry). The same entry the hook below
- * polls, so a holding added anywhere shows everywhere.
- */
-export const portfolioHoldingsQuery = queryOptions({
-  queryKey: ['portfolioData'],
-  queryFn: async (): Promise<PortfolioHolding[]> => {
-    const { holdings: rawHoldings } = await getPortfolio() as { holdings?: PortfolioHolding[] };
-    return rawHoldings ?? [];
-  },
-  staleTime: 1000 * 30, // 30s fresh cache
-});
 
 interface PortfolioEditForm {
   quantity: string;
