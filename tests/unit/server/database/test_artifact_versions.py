@@ -1,14 +1,15 @@
-"""Version rules under the record's lock: a keep-updated cut lands only on
-the version its read began from, a cut prunes kept-updated versions past the
-newest ones and nothing else, and a refused send gives its comments back only
-when, after their locks, no copy of it reached a run."""
+"""Version rules under the record's lock: what a read was based on must
+still hold when its version lands, visitors move only to a version of the list
+someone reviewed, a cut prunes kept-updated versions past the newest ones but
+never the latest or the shared one, and a refused send gives its comments back
+only when, after their locks, no copy of it reached a run."""
 
 from __future__ import annotations
 
 import dataclasses
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,6 +17,7 @@ import pytest
 
 from src.server.database import artifacts
 from src.server.database.artifacts import delivery, versions
+from src.server.database.artifacts.records import FOLLOWS_TURNS
 
 _A = "00000000-0000-0000-0000-00000000000a"
 _U = "00000000-0000-0000-0000-00000000000e"
@@ -35,8 +37,9 @@ def _sql(mock_cursor) -> list[str]:
     return [_flat(c.args[0]) for c in mock_cursor.execute.call_args_list]
 
 
-def _record(latest_seq: int) -> artifacts.Artifact:
-    return artifacts.Artifact(
+def _record(latest_seq: int, **changes) -> artifacts.Artifact:
+    """Shared, kept updated, its visitors on the latest version."""
+    record = artifacts.Artifact(
         artifact_id=_A,
         code="c0de",
         workspace_id="w",
@@ -49,62 +52,333 @@ def _record(latest_seq: int) -> artifacts.Artifact:
         files=("r.html",),
         revision=1,
         created_at=_NOW,
+        shared_seq=latest_seq,
     )
+    return dataclasses.replace(record, **changes)
 
 
-def _file(text: str) -> artifacts.VersionFile:
+def _kept(**changes) -> artifacts.Artifact:
+    """Kept and shared, kept updated, its Dashboard two versions past the share."""
+    fields = {
+        "latest_seq": 4,
+        "kept_at": _NOW,
+        "shared_seq": 2,
+        "files": ("r.html", "d.json"),
+    }
+    return _record(**{**fields, **changes})
+
+
+def _file(text: str, path: str = "r.html") -> artifacts.VersionFile:
     data = text.encode()
     return artifacts.VersionFile(
-        "r.html", hashlib.sha256(data).hexdigest(), len(data), "text/html", data
+        path, hashlib.sha256(data).hexdigest(), len(data), "text/html", data
     )
+
+
+# --- do visitors move on a turn's cut -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "record, paths, left_out, moves",
+    [
+        # A kept walk that found exactly the shared list.
+        (_kept(), ("r.html", "d.json"), (), True),
+        # A file the page started reading, which nobody reviewed.
+        (_kept(), ("r.html", "d.json", "new.json"), (), False),
+        # A reviewed file the walk no longer found.
+        (_kept(), ("r.html",), (), False),
+        # Shared without Keep updated: visitors wait for the owner's Update.
+        (_kept(keep_updated=False), ("r.html", "d.json"), (), False),
+        # Kept, never shared.
+        (_kept(shared_at=None, shared_seq=0, files=None), ("r.html", "d.json"), (), False),
+        # A keep stopped during a walk: the record now looks like a shared list
+        # kept updated, but the walk found a file nobody reviewed.
+        (_kept(kept_at=None), ("r.html", "new.json"), (), False),
+        # A shared list, not kept, short by a file the owner left out since.
+        (_kept(kept_at=None, left_out_files=("d.json",)), ("r.html",), (), True),
+        # The same record kept: the walk drops the left-out file, and visitors
+        # still move. They used to stop for good here.
+        (_kept(left_out_files=("d.json",)), ("r.html",), ("d.json",), True),
+        (_kept(left_out_files=("d.json",)), ("r.html",), (), True),
+        # Another path to a left-out file, which the read left out with it.
+        (_kept(left_out_files=("x.json",)), ("r.html",), ("d.json",), True),
+    ],
+)
+def test_visitors_follow_a_turn_only_to_a_version_of_their_list(
+    record, paths, left_out, moves
+):
+    assert versions.visitors_follow_turn(record, paths, left_out) is moves
+
+
+# --- what a read was based on -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "locked, raised",
+    [
+        (_record(4, revision=2), artifacts.SharingChanged),
+        (_record(5), artifacts.VersionMoved),
+        (_record(4, left_out_files=("b.html",)), artifacts.LeftOutChanged),
+    ],
+)
+def test_a_read_that_raced_the_record_never_lands(locked, raised):
+    with pytest.raises(raised):
+        artifacts.ReadBasis.of(_record(4)).check(locked)
+
+
+def test_a_read_lands_on_the_left_out_list_it_read_in_any_order():
+    read = artifacts.ReadBasis.of(_record(4, left_out_files=("b", "c")))
+
+    read.check(_record(4, left_out_files=("c", "b")))
+
+
+# --- which records a turn's end refreshes -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "record, follows",
+    [
+        (_kept(keep_updated=False), True),
+        (_kept(shared_at=None, shared_seq=0, files=None, keep_updated=False), True),
+        (_record(4), True),
+        (_record(4, keep_updated=False), False),
+        (_record(4, shared_at=None, shared_seq=0), False),
+        # Shared before versions and not kept: its first view cuts v1.
+        (_record(0), False),
+        (_record(3, shared_seq=0), False),
+        # Kept is never without a version; the rule still says so.
+        (_kept(latest_seq=0, shared_seq=0), False),
+    ],
+)
+def test_turns_refresh_kept_records_and_shared_ones_kept_updated(record, follows):
+    assert record.follows_turns is follows
+
+
+@pytest.mark.asyncio
+async def test_the_listing_of_records_a_turn_refreshes_is_the_same_rule(mock_cursor):
+    await artifacts.list_kept_updated("w")
+
+    (sql,) = _sql(mock_cursor)
+    assert _flat(FOLLOWS_TURNS) in sql
+    assert "l.latest_seq > 0" in _flat(FOLLOWS_TURNS)
+    assert "l.shared_seq > 0" in _flat(FOLLOWS_TURNS)
+
+
+# --- the cut under the lock -------------------------------------------------------
 
 
 @pytest.fixture
-def locked(monkeypatch):
+def locked(monkeypatch, mock_cursor):
+    """The record under its lock; the UPDATE answers with it unchanged unless
+    a test says otherwise."""
     lock = AsyncMock(return_value=_record(latest_seq=4))
     monkeypatch.setattr(versions, "lock_owned", lock)
+    mock_cursor.fetchone.side_effect = lambda: dataclasses.asdict(lock.return_value)
     return lock
 
 
+def _update(mock_cursor) -> tuple[str, dict]:
+    (update,) = [
+        c
+        for c in mock_cursor.execute.call_args_list
+        if _flat(c.args[0]).lstrip().startswith("UPDATE share_links")
+    ]
+    # What it sets, not what it reads back.
+    return _flat(update.args[0]).split("RETURNING")[0], update.args[1]
+
+
+def _wrote(mock_cursor) -> bool:
+    return any("UPDATE share_links" in s or "INSERT" in s for s in _sql(mock_cursor))
+
+
+def _same_as_latest(monkeypatch, *files: artifacts.VersionFile) -> None:
+    monkeypatch.setattr(
+        versions, "_hashes", AsyncMock(return_value={f.path: f.sha256 for f in files})
+    )
+
+
+async def _publish(read: artifacts.ReadBasis, files, **over):
+    return await artifacts.publish_version(
+        **{
+            "user_id": _U,
+            "artifact_id": _A,
+            "read": read,
+            "files": files,
+            "title": None,
+            "label": None,
+            "keep_updated": None,
+            "loaded_files": [],
+            "left_out_files": [],
+            **over,
+        }
+    )
+
+
+async def _turn(read: artifacts.ReadBasis, files, left_out=()):
+    return await artifacts.turn_version(
+        user_id=_U, artifact_id=_A, read=read, files=files, title=None, left_out=left_out
+    )
+
+
 @pytest.mark.asyncio
-async def test_a_keep_updated_read_older_than_the_latest_cuts_nothing(
+@pytest.mark.parametrize(
+    "read, raised",
+    [
+        # A stop landed during the read: the publish must not undo it.
+        (_record(4, revision=0), artifacts.SharingChanged),
+        # Version 4 landed since: these bytes may be older.
+        (_record(3), artifacts.VersionMoved),
+        # A file taken off since, which the read would carry.
+        (_record(4, left_out_files=("b.html",)), artifacts.LeftOutChanged),
+    ],
+)
+async def test_an_owners_publish_raced_by_the_record_writes_nothing(
+    locked, mock_cursor, read, raised
+):
+    with pytest.raises(raised):
+        await _publish(artifacts.ReadBasis.of(read), [_file("x")])
+
+    assert not _wrote(mock_cursor)
+
+
+@pytest.mark.asyncio
+async def test_an_owners_publish_equal_to_a_private_latest_still_shares_it(
+    locked, mock_cursor, monkeypatch
+):
+    """The latest may be a version cut for the Dashboard alone: nothing is cut,
+    but visitors move to it with its list, and a legacy refusal clears."""
+    locked.return_value = _kept()
+    now = _file("x")
+    _same_as_latest(monkeypatch, now)
+
+    result = await _publish(
+        artifacts.ReadBasis.of(_kept()),
+        [now],
+        loaded_files=["d.csv"],
+        left_out_files=["b.html"],
+    )
+
+    sql, params = _update(mock_cursor)
+    assert (result.cut, result.seq) == (False, 4)
+    assert (params["shared_seq"], params["files"]) == (4, ["r.html"])
+    assert "legacy_refused = NULL" in sql
+    assert (params["loaded_files"], params["left_out_files"]) == (["d.csv"], ["b.html"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moved", [False, True])
+async def test_other_views_hear_of_a_publish_only_when_what_they_show_moved(
+    locked, mock_cursor, monkeypatch, moved
+):
+    """Other views show the setting, so moving it alone is still a change."""
+    now = _file("x")
+    _same_as_latest(monkeypatch, now)
+    after = _record(4, keep_updated=not moved)
+    mock_cursor.fetchone.side_effect = lambda: dataclasses.asdict(after)
+
+    result = await _publish(
+        artifacts.ReadBasis.of(_record(4)), [now], keep_updated=after.keep_updated
+    )
+
+    assert (result.cut, result.shared_now, result.changed) == (False, False, moved)
+
+
+@pytest.mark.asyncio
+async def test_keeping_marks_the_record_in_the_write_that_cuts_and_moves_no_visitor(
     locked, mock_cursor
 ):
-    result = await artifacts.publish_version(
+    """A keep whose read failed never gets here, so a record is never kept
+    with no version to show."""
+    locked.return_value = _kept(kept_at=None)
+
+    result = await artifacts.keep_version(
         user_id=_U,
         artifact_id=_A,
-        origin="keep_updated",
-        files=[_file("stale")],
-        based_on=3,
+        read=artifacts.ReadBasis.of(_kept(kept_at=None)),
+        files=[_file("x"), _file("{}", "d.json")],
+        title=None,
+        loaded_files=["d.json"],
     )
 
-    assert (result.cut, result.seq) == (False, 4)
-    assert not any("INSERT" in s or "DELETE" in s for s in _sql(mock_cursor))
+    sql, params = _update(mock_cursor)
+    assert (result.cut, params["seq"], params["shared_seq"]) == (True, 5, 2)
+    assert "kept_at = NOW()" in sql
+    assert "loaded_files = %(loaded_files)s::text[]" in sql
+    assert params["loaded_files"] == ["d.json"]
+    # The visitors' list stays as it is.
+    assert not re.search(r"(?<![\w.])files =", sql) and "legacy_refused" not in sql
 
 
 @pytest.mark.asyncio
-async def test_a_cut_prunes_kept_updated_versions_past_the_newest(locked, mock_cursor):
-    mock_cursor.fetchall.return_value = [{"path": "r.html", "sha256": "0" * 64}]
-    mock_cursor.fetchone.return_value = None
+async def test_a_turns_cut_of_a_kept_record_short_by_a_left_out_file_moves_visitors(
+    locked, mock_cursor
+):
+    """Leaving a file out after the publish changes no ``files``, and the walk
+    drops it; visitors still follow, as they do for the record not kept."""
+    record = _kept(left_out_files=("d.json",))
+    locked.return_value = record
 
-    result = await artifacts.publish_version(
-        user_id=_U,
-        artifact_id=_A,
-        origin="keep_updated",
-        files=[_file("fresh")],
-        based_on=4,
-    )
+    result = await _turn(artifacts.ReadBasis.of(record), [_file("x")], ("d.json",))
 
-    assert (result.cut, result.seq) == (True, 5)
+    sql, params = _update(mock_cursor)
+    assert (result.cut, params["seq"], params["shared_seq"]) == (True, 5, 5)
+    assert params["files"] == ["r.html"]
+    # Only an owner's publish changes what the page is known to load or what
+    # it leaves out.
+    assert "loaded_files" not in sql and "left_out_files" not in sql
+
+
+@pytest.mark.asyncio
+async def test_a_turns_cut_with_a_path_nobody_reviewed_moves_only_the_owner(
+    locked, mock_cursor
+):
+    locked.return_value = _kept()
+
+    await _turn(artifacts.ReadBasis.of(_kept()), [_file("x"), _file("{}", "new.json")])
+
+    sql, params = _update(mock_cursor)
+    assert (params["seq"], params["shared_seq"]) == (5, 2)
+    assert "files =" not in sql and "legacy_refused" not in sql
+
+
+@pytest.mark.asyncio
+async def test_a_turns_cut_raced_by_a_newer_version_writes_nothing(locked, mock_cursor):
+    with pytest.raises(artifacts.VersionMoved):
+        await _turn(artifacts.ReadBasis.of(_record(3)), [_file("stale")])
+
+    assert not _wrote(mock_cursor)
+
+
+@pytest.mark.asyncio
+async def test_a_turns_cut_of_a_record_that_stopped_following_turns_does_nothing(
+    locked, mock_cursor
+):
+    locked.return_value = _record(4, keep_updated=False)
+
+    result = await _turn(artifacts.ReadBasis.of(_record(4)), [_file("x")])
+
+    assert (result.cut, result.seq, result.changed) == (False, 4, False)
+    assert not _wrote(mock_cursor)
+
+
+@pytest.mark.asyncio
+async def test_a_cut_prunes_kept_updated_versions_past_the_newest_but_never_the_shared(
+    locked, mock_cursor
+):
+    locked.return_value = _kept()
+
+    await _turn(artifacts.ReadBasis.of(_kept()), [_file("x"), _file("{}", "new.json")])
+
     calls = mock_cursor.execute.call_args_list
     (prune,) = [c for c in calls if "DELETE FROM artifact_versions" in c.args[0]]
     sql = _flat(prune.args[0])
     assert "v.origin = 'keep_updated'" in sql
-    assert "v.seq <> %(latest)s" in sql
+    assert "v.seq NOT IN (%(latest)s, %(shared)s)" in sql
     assert "ORDER BY seq DESC LIMIT %(keep)s" in sql
     assert prune.args[1] == {
         "artifact_id": _A,
         "latest": 5,
+        "shared": 2,
         "keep": artifacts.KEEP_UPDATED_VERSIONS,
     }
     assert artifacts.KEEP_UPDATED_VERSIONS == 10
@@ -114,37 +388,113 @@ async def test_a_cut_prunes_kept_updated_versions_past_the_newest(locked, mock_c
     assert insert < calls.index(prune)
 
 
-@pytest.mark.asyncio
-async def test_a_publish_clears_a_legacy_refusal(locked, mock_cursor):
-    mock_cursor.fetchone.return_value = None
-
-    await artifacts.publish_version(
-        user_id=_U, artifact_id=_A, origin="owner", files=[_file("x")]
+async def _legacy(read: artifacts.Artifact):
+    return await artifacts.legacy_version(
+        user_id=_U,
+        artifact_id=_A,
+        read=artifacts.ReadBasis.of(read),
+        files=[_file("x")],
+        title=None,
     )
 
-    (update,) = [
-        s for s in _sql(mock_cursor) if s.lstrip().startswith("UPDATE share_links")
-    ]
-    assert "legacy_refused = NULL" in update
-
 
 @pytest.mark.asyncio
-async def test_only_an_owners_publish_changes_what_the_page_is_known_to_load(
+async def test_a_legacy_link_kept_first_gets_its_first_shared_version_following_the_file(
     locked, mock_cursor
 ):
+    """No version yet means none shared: a keep may have cut private ones. It
+    was live until now, whichever build shared it."""
+    record = _kept(shared_seq=0, latest_seq=3)
+    locked.return_value = record
+
+    result = await _legacy(record)
+
+    sql, params = _update(mock_cursor)
+    assert (result.cut, result.seq) == (True, 4)
+    assert (params["seq"], params["shared_seq"]) == (4, 4)
+    assert "keep_updated = TRUE" in sql
+    assert "legacy_refused = NULL" in sql
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_cut_after_the_first_shared_version_does_nothing(
+    locked, mock_cursor
+):
+    """Of two workers snapshotting one link, only the first cuts it, and the
+    second does not fail its visitor."""
+    locked.return_value = _kept()
+
+    result = await _legacy(_kept(shared_seq=0, latest_seq=3))
+
+    assert (result.cut, result.seq) == (False, 4)
+    assert not _wrote(mock_cursor)
+
+
+# --- the record's other writes ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unsharing_drops_the_shared_version(mock_cursor):
     mock_cursor.fetchone.return_value = None
 
-    await artifacts.publish_version(
-        user_id=_U, artifact_id=_A, origin="keep_updated", files=[_file("x")]
+    with pytest.raises(artifacts.ArtifactNotFound):
+        await artifacts.unshare(user_id=_U, artifact_id=_A)
+
+    assert "shared_seq = 0" in _sql(mock_cursor)[0]
+
+
+@pytest.mark.asyncio
+async def test_stopping_keeping_only_stops_keeping(mock_cursor):
+    mock_cursor.fetchone.return_value = None
+
+    with pytest.raises(artifacts.ArtifactNotFound):
+        await artifacts.stop_keeping(user_id=_U, artifact_id=_A)
+
+    assert "SET kept_at = NULL FROM" in _sql(mock_cursor)[0]
+
+
+@pytest.mark.asyncio
+async def test_letting_go_of_records_off_the_list_waits_on_the_keep_and_the_list(
+    mock_cursor,
+):
+    """Both stamps are read in the statement, so a pin's keep or an undo's
+    listing that lands after the list was read still holds the record."""
+    mock_cursor.fetchall.return_value = []
+
+    await artifacts.release_unlisted(
+        user_id=_U, workspace_id="w", listed={"b", "a"}, grace=timedelta(minutes=10)
     )
 
-    (update,) = [
-        c
-        for c in mock_cursor.execute.await_args_list
-        if c.args[0].lstrip().startswith("UPDATE share_links")
-    ]
-    assert "COALESCE(" in update.args[0]
-    assert update.args[1]["loaded_files"] is None
+    sql = _sql(mock_cursor)[0]
+    params = mock_cursor.execute.call_args.args[1]
+    assert "SET kept_at = NULL" in sql
+    assert "l.kept_at < NOW() - %(grace)s" in sql
+    assert "NOT (l.artifact_id::text = ANY(%(listed)s::text[]))" in sql
+    assert "p.updated_at < NOW() - %(grace)s" in sql
+    assert params["listed"] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_refusal_waits_on_the_shared_version_not_the_latest(
+    mock_cursor,
+):
+    await versions.refuse_legacy(artifact_id=_A, code="too_many_files")
+
+    (sql,) = _sql(mock_cursor)
+    assert "l.shared_seq = 0" in sql
+    assert "l.latest_seq = 0" not in sql
+
+
+@pytest.mark.asyncio
+async def test_a_visitor_is_served_only_the_shared_version(mock_cursor):
+    """Never a newer version kept for the owner alone."""
+    await artifacts.get_shared_version_file(
+        code="c0de", artifact_id=_A, revision=1, seq=2, path="r.html"
+    )
+
+    (sql,) = _sql(mock_cursor)
+    assert "f.seq = l.shared_seq" in sql
+    assert "l.shared_seq = %(seq)s" in sql
 
 
 @pytest.mark.asyncio
@@ -184,75 +534,6 @@ async def test_a_release_with_no_run_or_steer_gives_back(mock_cursor, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_an_owners_publish_does_not_undo_a_stop_that_landed_during_its_read(
-    locked, mock_cursor
-):
-    with pytest.raises(artifacts.SharingChanged):
-        await artifacts.publish_version(
-            user_id=_U,
-            artifact_id=_A,
-            origin="owner",
-            files=[_file("x")],
-            # What the record said when the read began; a stop has moved it.
-            revision=0,
-        )
-
-    assert not any("UPDATE share_links" in s or "INSERT" in s for s in _sql(mock_cursor))
-
-
-@pytest.mark.asyncio
-async def test_an_owners_publish_does_not_replace_a_version_cut_during_its_read(
-    locked, mock_cursor
-):
-    with pytest.raises(artifacts.VersionMoved):
-        await artifacts.publish_version(
-            user_id=_U,
-            artifact_id=_A,
-            origin="owner",
-            files=[_file("x")],
-            # The latest when the read began; version 4 has landed since.
-            based_on=3,
-            revision=1,
-        )
-
-    assert not any("UPDATE share_links" in s or "INSERT" in s for s in _sql(mock_cursor))
-
-
-@pytest.mark.asyncio
-async def test_an_owners_publish_at_the_revision_it_read_goes_through(
-    locked, mock_cursor
-):
-    mock_cursor.fetchone.return_value = None
-
-    await artifacts.publish_version(
-        user_id=_U, artifact_id=_A, origin="owner", files=[_file("x")], revision=1
-    )
-
-    assert any("UPDATE share_links" in s for s in _sql(mock_cursor))
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "keep_updated, changed", [(False, True), (True, False), (None, False)]
-)
-async def test_a_publish_of_the_same_files_changes_the_record_only_with_the_setting(
-    locked, mock_cursor, monkeypatch, keep_updated, changed
-):
-    """Other views show the setting, so moving it alone is still a change."""
-    now = _file("x")
-    monkeypatch.setattr(
-        versions, "_hashes", AsyncMock(return_value={now.path: now.sha256})
-    )
-    mock_cursor.fetchone.return_value = None
-
-    result = await artifacts.publish_version(
-        user_id=_U, artifact_id=_A, origin="owner", files=[now], keep_updated=keep_updated
-    )
-
-    assert (result.cut, result.shared_now, result.changed) == (False, False, changed)
-
-
-@pytest.mark.asyncio
 async def test_a_deleted_workspace_ends_an_owners_grant_however_long_it_has_left(
     mock_cursor,
 ):
@@ -272,27 +553,6 @@ async def test_a_deleted_workspaces_comments_stop_waiting_for_a_send(mock_cursor
     await artifacts.list_queued_comments(user_id=_U, thread_id="t")
 
     assert "w.status <> 'deleted'" in _sql(mock_cursor)[0]
-
-
-@pytest.mark.asyncio
-async def test_a_links_first_cut_leaves_it_following_the_file(
-    monkeypatch, mock_cursor
-):
-    """It was live until now, whichever build shared it."""
-    record = _record(latest_seq=0)
-    monkeypatch.setattr(versions, "lock_owned", AsyncMock(return_value=record))
-    mock_cursor.fetchone.return_value = None
-
-    await artifacts.publish_version(
-        user_id=_U, artifact_id=_A, origin="legacy", files=[_file("x")]
-    )
-
-    (params,) = [
-        c.args[1]
-        for c in mock_cursor.execute.call_args_list
-        if "UPDATE share_links" in c.args[0]
-    ]
-    assert params["keep_updated"] is True
 
 
 def _said(*rows):
@@ -375,75 +635,3 @@ async def test_what_no_agent_read_goes_back_though_its_key_is_spent(mock_cursor)
     sql = _sql(mock_cursor)
     assert "FOR UPDATE" in sql[0]
     assert any("sent_at = NULL" in s for s in sql)
-
-
-@pytest.fixture
-def left_out_locked(monkeypatch):
-    record = dataclasses.replace(
-        _record(latest_seq=4), left_out_files=("b.html", "c.html")
-    )
-    monkeypatch.setattr(versions, "lock_owned", AsyncMock(return_value=record))
-    return record
-
-
-@pytest.mark.asyncio
-async def test_an_owners_publish_does_not_carry_a_file_left_out_during_its_read(
-    left_out_locked, mock_cursor
-):
-    """Taking a file off moves no revision, since visitors' grants are minted at
-    it, so the list the read walked with is compared under the lock."""
-    with pytest.raises(versions.LeftOutChanged):
-        await artifacts.publish_version(
-            user_id=_U,
-            artifact_id=_A,
-            origin="owner",
-            files=[_file("x")],
-            revision=1,
-            left_out_read=("b.html",),
-        )
-
-    assert not any("UPDATE share_links" in s or "INSERT" in s for s in _sql(mock_cursor))
-
-
-@pytest.mark.asyncio
-async def test_an_owners_publish_keeps_what_its_walk_still_left_out(
-    left_out_locked, mock_cursor
-):
-    mock_cursor.fetchone.return_value = None
-
-    await artifacts.publish_version(
-        user_id=_U,
-        artifact_id=_A,
-        origin="owner",
-        files=[_file("x")],
-        revision=1,
-        # The same choice, read in another order.
-        left_out_read=("c.html", "b.html"),
-        left_out_files=["b.html"],
-    )
-
-    (update,) = [
-        c
-        for c in mock_cursor.execute.await_args_list
-        if c.args[0].lstrip().startswith("UPDATE share_links")
-    ]
-    assert "left_out_files = COALESCE(" in _flat(update.args[0])
-    assert update.args[1]["left_out_files"] == ["b.html"]
-
-
-@pytest.mark.asyncio
-async def test_a_cut_that_did_not_walk_leaves_the_left_out_list_alone(
-    left_out_locked, mock_cursor
-):
-    mock_cursor.fetchone.return_value = None
-
-    await artifacts.publish_version(
-        user_id=_U, artifact_id=_A, origin="keep_updated", files=[_file("x")]
-    )
-
-    (update,) = [
-        c
-        for c in mock_cursor.execute.await_args_list
-        if c.args[0].lstrip().startswith("UPDATE share_links")
-    ]
-    assert update.args[1]["left_out_files"] is None

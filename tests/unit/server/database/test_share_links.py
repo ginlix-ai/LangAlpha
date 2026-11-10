@@ -10,6 +10,7 @@ carries none.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -146,5 +147,26 @@ async def test_a_stop_moves_the_revision_so_an_older_share_cannot_land():
         link = await set_private("AbCdEfGh1234")
 
     (sql, _), = cur.statements
-    assert "SET shared_at = NULL, files = NULL, revision = l.revision + 1" in sql
+    assert (
+        "SET shared_at = NULL, files = NULL, shared_seq = 0, "
+        "revision = l.revision + 1" in sql
+    )
     assert link.revision == 4
+
+
+@pytest.mark.asyncio
+async def test_an_app_link_carries_its_start_commands_key_and_never_the_command():
+    """The owner's grant for an app is tied to the command serving its port, so
+    another program there asks again; the key comes in the link's own read."""
+    command = "TOKEN=s3cret python -m http.server 3000"
+    cur, db = _script([_app_row(app_command=command), _app_row(), _row()])
+    with db:
+        app_link = await get_link("AppCode12345")
+        bare_app = await get_link("AppCode67890")
+        file_link = await get_link("AbCdEfGh1234")
+
+    assert "preview_servers" in cur.statements[0][0]
+    assert app_link.command_key == hashlib.sha256(command.encode()).hexdigest()[:16]
+    assert command not in repr(app_link)
+    assert bare_app.command_key is None
+    assert file_link.command_key is None

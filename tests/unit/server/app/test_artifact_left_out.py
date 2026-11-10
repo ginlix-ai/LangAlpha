@@ -9,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from src.server.app.artifacts import records
-from src.server.app.artifacts.models import LeftOutRequest
+from src.server.app.artifacts.models import KeptRequest, LeftOutRequest
 from src.server.database.artifacts import records as records_db
 from src.server.database.artifacts.records import Artifact
 
@@ -88,3 +88,29 @@ async def test_a_path_the_full_list_did_not_take_is_refused(monkeypatch, stateme
     assert await records.set_file_left_out(
         _ID, LeftOutRequest(path="more.html", left_out=False), "u"
     ) == "answer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal, status",
+    [
+        (records.snapshot.SnapshotRefused("file_missing"), 404),
+        (records.snapshot.SnapshotRefused("needs_computer"), 409),
+        (records.snapshot.SnapshotUnavailable("down"), 503),
+        (records.artifacts_db.SharingChanged(), 409),
+    ],
+)
+async def test_a_refused_keep_leaves_the_record_as_it_was(
+    monkeypatch, statement, refusal, status
+):
+    """Keeping cuts its first version in the write that keeps the record, so a
+    read that fails writes nothing: no record kept with no version, nor one
+    that starts following turns for a page on no dashboard."""
+    monkeypatch.setattr(records, "owned", AsyncMock(return_value=_artifact()))
+    monkeypatch.setattr(records.snapshot, "keep", AsyncMock(side_effect=refusal))
+
+    with pytest.raises(HTTPException) as refused:
+        await records.set_artifact_kept(_ID, KeptRequest(kept=True), "u")
+
+    assert refused.value.status_code == status
+    statement.assert_not_awaited()

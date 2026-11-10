@@ -46,3 +46,51 @@ async def test_a_deleted_workspace_is_not_found(stranger):
             f"/api/v1/workspaces/{_WS}/artifacts", json={"path": "a.html"}
         )
     assert resp.status_code == 404
+
+
+def _record(**over):
+    from datetime import datetime, timezone
+
+    from src.server.database.artifacts import Artifact
+
+    at = datetime(2026, 11, 10, tzinfo=timezone.utc)
+    fields = dict(
+        artifact_id="00000000-0000-0000-0000-00000000000a",
+        code="c0de",
+        workspace_id=_WS,
+        path="dash.html",
+        created_thread_id=None,
+        bound_thread_id=None,
+        keep_updated=True,
+        latest_seq=5,
+        shared_at=at,
+        files=("dash.html",),
+        revision=1,
+        created_at=at,
+        kept_at=at,
+        shared_seq=3,
+    )
+    fields.update(over)
+    return Artifact(**fields)
+
+
+@pytest.mark.asyncio
+async def test_the_owner_sees_the_dashboards_version_and_the_one_visitors_see():
+    from types import SimpleNamespace
+
+    from src.server.app.artifacts import records
+
+    counts = AsyncMock(return_value=SimpleNamespace(open=0, unread=0))
+    with patch.object(records.artifacts_db, "comment_counts", counts):
+        answer = await records._response(_record(), "owner")
+    assert (answer.latest_seq, answer.shared_seq) == (5, 3)
+
+
+@pytest.mark.asyncio
+async def test_the_owners_tabs_hear_both_pointers_move():
+    from src.server.services.artifacts import events
+
+    with patch.object(events, "publish_user_event", AsyncMock()) as sent:
+        await events.publish_artifact_change("owner", _record())
+    event = sent.await_args.args[1]
+    assert (event["latest_seq"], event["shared_seq"]) == (5, 3)

@@ -7,6 +7,7 @@ stands in for the computer."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from contextlib import asynccontextmanager
@@ -16,11 +17,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.server.database.artifacts import Artifact
+from src.server.database.artifacts import Artifact, PublishResult, ReadBasis
 from src.server.database.artifacts.versions import LeftOutChanged
 from src.server.services.artifacts import manifest as manifest_mod
 from src.server.services.artifacts import reader as reader_mod
-from src.server.services.artifacts import snapshot
+from src.server.services.artifacts import dashboards, snapshot
 from src.server.services.artifacts.manifest import MAX_FILES, ManifestEntryMissing
 from src.server.services.artifacts.reader import NotInStoredCopy, Reader, ReadMode
 from src.server.services.served_paths import may_be_artifact
@@ -33,7 +34,23 @@ def _captured(*paths: str) -> SimpleNamespace:
         files=[SimpleNamespace(path=p) for p in paths],
         entries=[SimpleNamespace(path=p, reason="page") for p in paths],
         left_out=[],
+        blobs={},
+        title=None,
+        absent=frozenset(),
     )
+
+
+@pytest.fixture
+def lands(monkeypatch):
+    """The four ways a version lands, each answering that nothing changed."""
+    monkeypatch.setattr(snapshot, "store_unregistered_blobs", AsyncMock())
+    found = {}
+    for kind in ("publish", "keep", "turn", "legacy"):
+        found[kind] = AsyncMock(
+            return_value=SimpleNamespace(artifact="landed", changed=False)
+        )
+        monkeypatch.setattr(snapshot.artifacts_db, f"{kind}_version", found[kind])
+    return SimpleNamespace(**found)
 
 
 def _artifact(**over) -> Artifact:
@@ -203,7 +220,7 @@ async def test_a_review_past_a_cap_offers_what_may_be_left_out_to_fit(
 
 @pytest.mark.asyncio
 async def test_only_what_the_page_alone_could_name_is_remembered(
-    workspace_holds, monkeypatch
+    workspace_holds, lands
 ):
     # A file the source names drops out when the reference does, so it is not
     # kept with the record, however the page also came to load it.
@@ -214,9 +231,6 @@ async def test_only_what_the_page_alone_could_name_is_remembered(
             "data/a.csv": b"a",
         }
     )
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
-
     await snapshot.publish(
         _artifact(),
         user_id="u",
@@ -226,16 +240,14 @@ async def test_only_what_the_page_alone_could_name_is_remembered(
         loaded=("reports/named.png", "data/a.csv"),
     )
 
-    assert cut.await_args.kwargs["loaded_files"] == ["data/a.csv"]
+    assert lands.publish.await_args.kwargs["loaded_files"] == ["data/a.csv"]
 
 
 @pytest.mark.asyncio
 async def test_a_list_the_owner_did_not_review_is_refused_with_the_list_as_it_is(
-    workspace_holds, monkeypatch
+    workspace_holds, lands
 ):
     workspace_holds({"reports/q3.html": b'<img src="new.png">', "reports/new.png": b"n"})
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
 
     with pytest.raises(snapshot.SnapshotRefused) as refused:
         await snapshot.publish(
@@ -252,7 +264,7 @@ async def test_a_list_the_owner_did_not_review_is_refused_with_the_list_as_it_is
         "reports/q3.html",
         "reports/new.png",
     ]
-    cut.assert_not_awaited()
+    lands.publish.assert_not_awaited()
 
 
 @pytest.fixture
@@ -296,42 +308,28 @@ async def test_a_legacy_link_past_the_caps_is_recorded_and_told_once(legacy):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("changed", [True, False])
-async def test_other_views_hear_of_a_publish_only_when_it_changed_the_record(
+async def test_other_views_hear_of_a_version_only_when_it_changed_the_record(
     monkeypatch, changed
 ):
     record = _artifact(latest_seq=1)
-    monkeypatch.setattr(snapshot, "store_unregistered_blobs", AsyncMock())
-    monkeypatch.setattr(
-        snapshot.artifacts_db,
-        "publish_version",
-        AsyncMock(
-            return_value=snapshot.artifacts_db.PublishResult(
-                record, 1, False, False, changed
-            )
-        ),
-    )
     published = AsyncMock()
     monkeypatch.setattr(snapshot, "publish_artifact_change", published)
 
-    await snapshot._cut(
-        record,
-        SimpleNamespace(files=[], title=None, blobs=[], total=0),
-        user_id="u",
-        origin="owner",
-        keep_updated=False,
+    await snapshot._announce(
+        "u",
+        SimpleNamespace(files=[], total=0),
+        PublishResult(record, 1, False, False, changed),
     )
 
     assert published.await_count == (1 if changed else 0)
 
 
 @pytest.mark.asyncio
-async def test_an_owners_publish_names_the_version_its_read_began_from(monkeypatch):
-    record = _artifact(latest_seq=7)
+async def test_an_owners_publish_names_what_its_read_began_from(monkeypatch, lands):
+    record = _artifact(latest_seq=7, revision=3, left_out_files=("x.html",))
     monkeypatch.setattr(
         snapshot, "_capture", AsyncMock(return_value=_captured(record.path))
     )
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
 
     await snapshot.publish(
         record,
@@ -342,7 +340,9 @@ async def test_an_owners_publish_names_the_version_its_read_began_from(monkeypat
         loaded=(),
     )
 
-    assert cut.await_args.kwargs["based_on"] == 7
+    assert lands.publish.await_args.kwargs["read"] == ReadBasis(
+        3, 7, frozenset({"x.html"})
+    )
 
 
 @pytest.mark.asyncio
@@ -369,34 +369,29 @@ async def test_a_missing_legacy_file_is_not_remembered(legacy):
 
 @pytest.mark.asyncio
 async def test_a_keep_updated_cut_is_based_on_the_version_before_the_read(
-    monkeypatch,
+    monkeypatch, lands
 ):
     artifact = _artifact(latest_seq=7)
     monkeypatch.setattr(
         snapshot, "_capture", AsyncMock(return_value=_captured(*artifact.files))
     )
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
 
     await snapshot._keep_one(artifact, "u")
 
-    assert cut.await_args.kwargs["origin"] == "keep_updated"
-    assert cut.await_args.kwargs["based_on"] == 7
+    assert lands.turn.await_args.kwargs["read"].latest_seq == 7
 
 
 @pytest.mark.asyncio
-async def test_keep_updated_cuts_no_version_without_a_listed_file(monkeypatch):
+async def test_keep_updated_cuts_no_version_without_a_listed_file(monkeypatch, lands):
     """The list never widens on its own, so a version cut while a file is being
     rebuilt would leave the link without it for good."""
     monkeypatch.setattr(
         snapshot, "_capture", AsyncMock(return_value=_captured("reports/q3.html"))
     )
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
 
     await snapshot._keep_one(_artifact(), "u")
 
-    cut.assert_not_awaited()
+    lands.turn.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -468,7 +463,7 @@ def test_a_path_past_what_the_schema_holds_may_not_be_an_artifact():
 
 
 @pytest.mark.asyncio
-async def test_a_turns_end_cut_leaves_out_what_the_owner_took_off(monkeypatch):
+async def test_a_turns_end_cut_leaves_out_what_the_owner_took_off(monkeypatch, lands):
     """It reads the frozen list rather than walking, so the list must lose the
     page itself, and the page's absence is not a listed file gone."""
     artifact = _artifact(
@@ -478,13 +473,11 @@ async def test_a_turns_end_cut_leaves_out_what_the_owner_took_off(monkeypatch):
     )
     capture = AsyncMock(return_value=_captured("reports/q3.html"))
     monkeypatch.setattr(snapshot, "_capture", capture)
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
 
     await snapshot._keep_one(artifact, "u")
 
     assert capture.await_args.kwargs["source"].paths == ("reports/q3.html",)
-    cut.assert_awaited_once()
+    lands.turn.assert_awaited_once()
 
 
 def _linked_page(page: bytes) -> Reader:
@@ -530,53 +523,58 @@ async def test_a_path_the_page_loads_stays_when_another_path_to_its_file_is_left
 
 @pytest.mark.asyncio
 async def test_a_turns_end_cut_drops_the_other_path_and_still_cuts(
-    workspace_holds, monkeypatch
+    workspace_holds, lands
 ):
     workspace_holds(
         {"reports/q3.html": b'<a href="link.png">chart</a>', "data/real.png": b"png"},
         {"reports/link.png": "data/real.png"},
     )
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
-
     await snapshot._keep_one(
         _artifact(files=_BOTH_PATHS, left_out_files=("reports/link.png",)), "u"
     )
 
-    cut.assert_awaited_once()
-    assert [f.path for f in cut.await_args.args[1].files] == ["reports/q3.html"]
+    kwargs = lands.turn.await_args.kwargs
+    assert [f.path for f in kwargs["files"]] == ["reports/q3.html"]
+    # Left out with it, so visitors still follow the cut.
+    assert kwargs["left_out"] == ["data/real.png"]
 
 
 @pytest.mark.asyncio
 async def test_a_turns_end_cut_steps_aside_for_a_file_left_out_during_its_read(
-    monkeypatch,
+    monkeypatch, lands
 ):
     artifact = _artifact(left_out_files=("reports/other.html",))
     monkeypatch.setattr(
         snapshot, "_capture", AsyncMock(return_value=_captured(*artifact.files))
     )
-    cut = AsyncMock(side_effect=LeftOutChanged)
-    monkeypatch.setattr(snapshot, "_cut", cut)
+    lands.turn.side_effect = LeftOutChanged
 
     await snapshot._keep_one(artifact, "u")
 
-    assert cut.await_args.kwargs["left_out_read"] == ("reports/other.html",)
+    assert lands.turn.await_args.kwargs["read"].left_out == {"reports/other.html"}
 
 
 @pytest.mark.asyncio
-async def test_a_legacy_cut_raced_by_a_left_out_file_waits_for_the_next_view(
-    legacy, monkeypatch
+@pytest.mark.parametrize(
+    "raced",
+    [
+        LeftOutChanged,
+        snapshot.artifacts_db.VersionMoved,
+        snapshot.artifacts_db.SharingChanged,
+    ],
+)
+async def test_a_legacy_cut_raced_by_the_record_waits_for_the_next_view(
+    legacy, lands, raced
 ):
     capture, refuse, _ = legacy
     capture.side_effect = None
     capture.return_value = _captured("reports/q3.html", "reports/big.bin")
-    cut = AsyncMock(side_effect=LeftOutChanged)
-    monkeypatch.setattr(snapshot, "_cut", cut)
+    lands.legacy.side_effect = raced
 
     with pytest.raises(snapshot.SnapshotUnavailable):
         await snapshot.legacy_snapshot(_artifact(left_out_files=("reports/x.html",)))
 
-    assert cut.await_args.kwargs["left_out_read"] == ("reports/x.html",)
+    assert lands.legacy.await_args.kwargs["read"].left_out == {"reports/x.html"}
     refuse.assert_not_awaited()
 
 
@@ -756,12 +754,10 @@ async def test_data_of_any_type_the_page_loaded_moves_the_page_code(workspace_ho
 
 @pytest.mark.asyncio
 async def test_a_publish_is_refused_once_the_page_code_moved_from_what_was_reviewed(
-    workspace_holds, monkeypatch
+    workspace_holds, lands
 ):
     workspace_holds(dict(_PAGE))
     reviewed = await _page_code()
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
     publish = dict(
         user_id="u",
         reviewed=["reports/q3.html", "reports/app.js", "reports/more.html"],
@@ -774,15 +770,15 @@ async def test_a_publish_is_refused_once_the_page_code_moved_from_what_was_revie
     with pytest.raises(snapshot.SnapshotRefused) as refused:
         await snapshot.publish(_artifact(), **publish, reviewed_page=reviewed)
     assert refused.value.code == "files_changed"
-    cut.assert_not_awaited()
+    lands.publish.assert_not_awaited()
     # A tab on the previous build sends none, and publishes as it did.
     await snapshot.publish(_artifact(), **publish)
-    cut.assert_awaited_once()
+    lands.publish.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_a_publish_keeps_only_the_left_out_paths_the_page_still_names(
-    workspace_holds, monkeypatch
+    workspace_holds, lands
 ):
     """A path no page names any more would hold a place under the cap with no
     box in the review to clear it."""
@@ -792,8 +788,6 @@ async def test_a_publish_keeps_only_the_left_out_paths_the_page_still_names(
             "reports/other.html": b"other",
         }
     )
-    cut = AsyncMock()
-    monkeypatch.setattr(snapshot, "_cut", cut)
     record = _artifact(left_out_files=("reports/gone.html", "reports/other.html"))
 
     await snapshot.publish(
@@ -805,8 +799,8 @@ async def test_a_publish_keeps_only_the_left_out_paths_the_page_still_names(
         loaded=(),
     )
 
-    kwargs = cut.await_args.kwargs
-    assert kwargs["left_out_read"] == ("reports/gone.html", "reports/other.html")
+    kwargs = lands.publish.await_args.kwargs
+    assert kwargs["read"].left_out == {"reports/gone.html", "reports/other.html"}
     assert kwargs["left_out_files"] == ["reports/other.html"]
 
 
@@ -944,3 +938,395 @@ async def test_a_visitors_first_cut_without_the_libraries_is_not_made(
             mode=ReadMode.WARM_OR_STORED,
             source=snapshot._Listed(("reports/q3.html", "reports/vendor/lib.js")),
         )
+
+
+def _kept(**over) -> Artifact:
+    """A record kept for its owner alone, its last version holding the page
+    and the script it runs. Not shared, so it has no visitors' list."""
+    fields = dict(
+        shared_at=None,
+        kept_at=_NOW,
+        keep_updated=False,
+        latest_seq=2,
+        files=None,
+    )
+    fields.update(over)
+    return _artifact(**fields)
+
+
+_RUNS_DATA = b'<html><script src="data.js"></script></html>'
+
+
+@pytest.fixture
+def held(monkeypatch):
+    """The latest version's paths, which a kept record reads off the version."""
+    hashes = AsyncMock(return_value={"reports/data.js": "h", "reports/q3.html": "h"})
+    monkeypatch.setattr(snapshot.artifacts_db, "get_version_hashes", hashes)
+    return hashes
+
+
+@pytest.mark.asyncio
+async def test_a_turns_end_cuts_no_dashboard_version_while_a_file_it_held_is_gone(
+    workspace_holds, held, lands
+):
+    """The walk drops a file that is not there without a word; a version cut
+    then (a rebuild, a failed turn) is the Dashboard without its data."""
+    workspace_holds({"reports/q3.html": _RUNS_DATA})
+
+    await snapshot._keep_one(_kept(), "u")
+
+    lands.turn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_page_stopped_naming_leaves_the_dashboards_next_version(
+    workspace_holds, held, lands
+):
+    workspace_holds({"reports/q3.html": b"<html>no script</html>"})
+
+    await snapshot._keep_one(_kept(), "u")
+
+    lands.turn.assert_awaited_once()
+    assert [f.path for f in lands.turn.await_args.kwargs["files"]] == ["reports/q3.html"]
+
+
+@pytest.mark.asyncio
+async def test_a_turns_end_cut_steps_aside_for_a_share_changing_during_its_read(
+    workspace_holds, held, lands
+):
+    """A share changes what the cut may give visitors; the next turn's end
+    looks again."""
+    workspace_holds({"reports/q3.html": _RUNS_DATA, "reports/data.js": b"1"})
+    lands.turn.side_effect = snapshot.artifacts_db.SharingChanged
+
+    await snapshot._keep_one(_kept(revision=5), "u")
+
+    lands.turn.assert_awaited_once()
+    assert lands.turn.await_args.kwargs["read"] == ReadBasis(5, 2, frozenset())
+
+
+@pytest.mark.asyncio
+async def test_a_turns_end_cut_looks_once_more_when_a_version_lands_during_its_read(
+    workspace_holds, held, lands, monkeypatch
+):
+    """Two turns ending together: the one that read first can land first, and
+    its version is then older than the bytes the other holds."""
+    workspace_holds({"reports/q3.html": _RUNS_DATA, "reports/data.js": b"1"})
+    lands.turn.side_effect = snapshot.artifacts_db.VersionMoved
+    moved = _kept(revision=5, latest_seq=3)
+    monkeypatch.setattr(snapshot.artifacts_db, "get_artifact", AsyncMock(return_value=moved))
+
+    await snapshot._keep_one(_kept(revision=5), "u")
+
+    assert [c.kwargs["read"] for c in lands.turn.await_args_list] == [
+        ReadBasis(5, 2, frozenset()),
+        ReadBasis(5, 3, frozenset()),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_keeping_cuts_the_first_version_in_the_write_that_keeps_it(
+    workspace_holds, lands
+):
+    workspace_holds({"reports/q3.html": _RUNS_DATA, "reports/data.js": b"1"})
+    kept = _kept(kept_at=None, latest_seq=0, files=None, revision=3)
+
+    assert await snapshot.keep(kept, user_id="u") == "landed"
+    assert lands.keep.await_args.kwargs["read"] == ReadBasis(3, 0, frozenset())
+
+
+@pytest.mark.asyncio
+async def test_keeping_takes_what_the_open_page_loaded_and_remembers_it(
+    workspace_holds, lands
+):
+    """A file the page fetches by a path built in code is named only by its
+    report: without it the kept copy answers 404 for it while the computer is
+    off, and every turn's cut after leaves it out too."""
+    workspace_holds(
+        {"reports/q3.html": b"<p>x</p>", "data/a.csv": b"a", "data/b.csv": b"b"}
+    )
+
+    await snapshot.keep(
+        _kept(kept_at=None, loaded_files=("data/a.csv",)),
+        user_id="u",
+        loaded=("data/b.csv",),
+    )
+
+    kwargs = lands.keep.await_args.kwargs
+    assert [f.path for f in kwargs["files"]] == [
+        "reports/q3.html",
+        "data/a.csv",
+        "data/b.csv",
+    ]
+    assert kwargs["loaded_files"] == ["data/a.csv", "data/b.csv"]
+
+
+@pytest.mark.asyncio
+async def test_a_keep_raced_by_a_left_out_file_is_the_changed_list(
+    workspace_holds, lands
+):
+    workspace_holds({"reports/q3.html": _RUNS_DATA, "reports/data.js": b"1"})
+    lands.keep.side_effect = LeftOutChanged
+
+    with pytest.raises(snapshot.SnapshotRefused) as refused:
+        await snapshot.keep(_kept(kept_at=None), user_id="u")
+    assert refused.value.code == "files_changed"
+
+
+@pytest.mark.asyncio
+async def test_keeping_a_shared_record_walks_and_cuts_like_an_unshared_one(
+    workspace_holds, lands
+):
+    """Its visitors stay on their version (``keep_version`` never moves it);
+    the Dashboard gets the page as it is now."""
+    workspace_holds({"reports/q3.html": _RUNS_DATA, "reports/data.js": b"1"})
+    shared = _artifact(latest_seq=3, shared_seq=3, files=("reports/q3.html",))
+
+    assert await snapshot.keep(shared, user_id="u") == "landed"
+    kwargs = lands.keep.await_args.kwargs
+    assert kwargs["read"].latest_seq == 3
+    assert [f.path for f in kwargs["files"]] == [
+        "reports/q3.html",
+        "reports/data.js",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_kept_and_shared_record_is_walked_at_a_turns_end(
+    workspace_holds, held, lands
+):
+    """The Dashboard follows the newest copy, a file the page starts reading
+    with it; whether visitors move is ``visitors_follow_turn``'s to decide."""
+    workspace_holds({"reports/q3.html": _RUNS_DATA, "reports/data.js": b"2"})
+    record = _kept(
+        shared_at=_NOW,
+        keep_updated=True,
+        latest_seq=4,
+        shared_seq=3,
+        files=("reports/q3.html",),
+    )
+
+    await snapshot._keep_one(record, "u")
+
+    assert [f.path for f in lands.turn.await_args.kwargs["files"]] == [
+        "reports/q3.html",
+        "reports/data.js",
+    ]
+    # The record's list is the shared version's, not the latest's.
+    held.assert_awaited_once_with(record.artifact_id, 4)
+
+
+@pytest.mark.asyncio
+async def test_a_kept_walk_carries_what_the_owner_left_out_to_the_visitors_rule(
+    workspace_holds, held, lands
+):
+    """The walk drops a file left out after the publish; the cut names it, so
+    visitors still follow (``visitors_follow_turn``)."""
+    workspace_holds(
+        {
+            "reports/q3.html": b'<a href="other.html">o</a>',
+            "reports/other.html": b"other",
+        }
+    )
+    record = _kept(
+        shared_at=_NOW,
+        keep_updated=True,
+        latest_seq=4,
+        shared_seq=4,
+        files=("reports/q3.html", "reports/other.html"),
+        left_out_files=("reports/other.html",),
+    )
+
+    await snapshot._keep_one(record, "u")
+
+    kwargs = lands.turn.await_args.kwargs
+    assert [f.path for f in kwargs["files"]] == ["reports/q3.html"]
+    assert kwargs["left_out"] == ["reports/other.html"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "shared_at, against", [(_NOW, 3), (None, 4)], ids=["shared", "private"]
+)
+async def test_status_drift_is_against_what_a_publish_would_replace(
+    workspace_holds, monkeypatch, shared_at, against
+):
+    """Shared, the version visitors see, not a newer one cut for the Dashboard;
+    otherwise the latest, which a publish of the same files resumes at."""
+    workspace_holds({"reports/q3.html": b"<html></html>"})
+    hashes = AsyncMock(return_value={"reports/q3.html": "old"})
+    monkeypatch.setattr(snapshot.artifacts_db, "get_version_hashes", hashes)
+    record = _kept(
+        shared_at=shared_at,
+        latest_seq=4,
+        shared_seq=3 if shared_at else 0,
+        files=("reports/q3.html",) if shared_at else None,
+    )
+
+    found = await snapshot.status(record, user_id="u", loaded=())
+
+    hashes.assert_awaited_once_with(record.artifact_id, against)
+    assert (found.latest_seq, found.changed) == (4, True)
+
+
+# --- a kept page off the Dashboard list, and a change outside a turn -------------
+
+_LISTED = "00000000-0000-0000-0000-0000000000b1"
+_OFF = "00000000-0000-0000-0000-0000000000b2"
+_LONG_AGO = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def pass_over(monkeypatch):
+    """A running workspace holding the records a test names, each cut by a
+    stub, and the release answering with what the test says it let go."""
+    found = SimpleNamespace(
+        kept=AsyncMock(return_value=[]),
+        listed=AsyncMock(return_value=frozenset({_LISTED})),
+        release=AsyncMock(return_value=[]),
+        cut=AsyncMock(),
+        announced=AsyncMock(),
+    )
+    monkeypatch.setattr(snapshot.artifacts_db, "list_kept_updated", found.kept)
+    monkeypatch.setattr(snapshot.artifacts_db, "release_unlisted", found.release)
+    monkeypatch.setattr(snapshot.dashboards, "listed_pages", found.listed)
+    monkeypatch.setattr(snapshot, "_keep_one", found.cut)
+    monkeypatch.setattr(snapshot, "publish_artifact_change", found.announced)
+    monkeypatch.setattr(
+        snapshot,
+        "db_get_workspace",
+        AsyncMock(return_value={"user_id": "u", "status": "running"}),
+    )
+    return found
+
+
+def _cut_ids(found) -> list[str]:
+    return [c.args[0].artifact_id for c in found.cut.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_a_kept_page_off_the_list_is_let_go_after_the_grace_not_cut(pass_over):
+    listed, off = _kept(artifact_id=_LISTED, kept_at=_LONG_AGO), _kept(
+        artifact_id=_OFF, kept_at=_LONG_AGO
+    )
+    pass_over.kept.return_value = [listed, off]
+    pass_over.release.return_value = [_kept(artifact_id=_OFF, kept_at=None)]
+
+    await snapshot.keep_updated_after_turn(workspace_id="w", user_id="u")
+
+    kwargs = pass_over.release.await_args.kwargs
+    assert kwargs["listed"] == frozenset({_LISTED})
+    assert kwargs["grace"] == snapshot.KEPT_RELEASE_GRACE
+    assert _cut_ids(pass_over) == [_LISTED]
+    pass_over.announced.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_page_kept_inside_the_grace_is_left_alone(pass_over):
+    """A pin keeps the page a moment before it lists it."""
+    pass_over.kept.return_value = [
+        _kept(artifact_id=_OFF, kept_at=datetime.now(timezone.utc))
+    ]
+
+    await snapshot.keep_updated_after_turn(workspace_id="w", user_id="u")
+
+    pass_over.listed.assert_not_awaited()
+    pass_over.release.assert_not_awaited()
+    assert _cut_ids(pass_over) == [_OFF]
+
+
+@pytest.mark.asyncio
+async def test_a_list_that_cannot_be_read_lets_go_of_nothing(pass_over):
+    pass_over.kept.return_value = [_kept(artifact_id=_OFF, kept_at=_LONG_AGO)]
+    pass_over.listed.return_value = None
+
+    await snapshot.keep_updated_after_turn(workspace_id="w", user_id="u")
+
+    pass_over.release.assert_not_awaited()
+    assert _cut_ids(pass_over) == [_OFF]
+
+
+@pytest.mark.parametrize(
+    "value, ids",
+    [
+        (
+            {
+                "custom_dashboards": {
+                    "current": "a",
+                    "list": [
+                        {"kind": "page", "code": "a", "artifactId": _LISTED},
+                        # An app names no record, whatever it carries.
+                        {"kind": "app", "code": "b", "artifactId": _OFF},
+                        "junk",
+                    ],
+                }
+            },
+            frozenset({_LISTED}),
+        ),
+        ({}, frozenset()),
+        ({"custom_dashboards": {"current": None}}, None),
+        ({"custom_dashboards": ["not", "the", "shape"]}, None),
+    ],
+    ids=["pages-only", "no-list", "no-items", "not-the-shape"],
+)
+def test_the_list_names_its_pages_or_is_unknown(value, ids):
+    assert dashboards.listed_page_ids(value) == ids
+
+
+class _Claims:
+    """Redis's SET NX, as every worker sees it."""
+
+    def __init__(self) -> None:
+        self.held: set[str] = set()
+
+    async def set(self, key, value, *, nx, px):
+        if key in self.held:
+            return None
+        self.held.add(key)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_a_burst_of_changes_in_a_workspace_with_a_kept_page_runs_one_pass(
+    monkeypatch,
+):
+    from src.utils.cache import redis_cache
+
+    claims = _Claims()
+    monkeypatch.setattr(
+        redis_cache,
+        "get_cache_client",
+        lambda: SimpleNamespace(enabled=True, client=claims),
+    )
+    monkeypatch.setattr(
+        snapshot.artifacts_db, "list_kept_updated", AsyncMock(return_value=[_kept()])
+    )
+    monkeypatch.setattr(snapshot, "_CHANGE_SETTLE_S", 0)
+    passes = AsyncMock()
+    monkeypatch.setattr(snapshot, "keep_updated_after_turn", passes)
+
+    await asyncio.gather(*(snapshot._after_change("w", "u") for _ in range(3)))
+
+    passes.assert_awaited_once_with(workspace_id="w", user_id="u")
+
+
+@pytest.mark.asyncio
+async def test_a_change_in_a_workspace_with_nothing_kept_claims_no_pass(monkeypatch):
+    from src.utils.cache import redis_cache
+
+    claims = _Claims()
+    monkeypatch.setattr(
+        redis_cache,
+        "get_cache_client",
+        lambda: SimpleNamespace(enabled=True, client=claims),
+    )
+    monkeypatch.setattr(
+        snapshot.artifacts_db, "list_kept_updated", AsyncMock(return_value=[])
+    )
+    passes = AsyncMock()
+    monkeypatch.setattr(snapshot, "keep_updated_after_turn", passes)
+
+    await snapshot._after_change("w", "u")
+
+    assert not claims.held
+    passes.assert_not_awaited()

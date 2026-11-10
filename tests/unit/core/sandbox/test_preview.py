@@ -22,6 +22,8 @@ from ptc_agent.config.core import (
     SandboxConfig,
     SecurityConfig,
 )
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.sandbox.execution import app_command
 from ptc_agent.core.sandbox.runtime import (
     PreviewInfo,
     SessionCommandResult,
@@ -383,11 +385,14 @@ class TestWorkspaceScopedPreviewCommands:
                 8080,
                 command="python -m http.server 8080",
                 force=True,
-                work_dir="/home/workspace/project-a",
+                folder=WorkspaceLayout("/home/workspace", "project-a"),
             )
 
         mock_sandbox_for_endpoint.start_and_get_preview_url.assert_awaited_once_with(
-            "cd /home/workspace/project-a && python -m http.server 8080",
+            app_command(
+                WorkspaceLayout("/home/workspace", "project-a"),
+                "python -m http.server 8080",
+            ),
             8080,
             expires_in=3600,
             owner="ws-test-001",
@@ -412,7 +417,8 @@ class TestWorkspaceScopedPreviewCommands:
 
         def launched(returns=None):
             async def launch(cmd, *_args, **_kwargs):
-                events.append(f"launch {cmd.split(' && ')[0]}")
+                cd = next(p for p in cmd.split(" && ") if p.startswith("cd "))
+                events.append(f"launch {cd}")
                 return returns
             return launch
 
@@ -441,7 +447,7 @@ class TestWorkspaceScopedPreviewCommands:
         and the server would start in the sibling's folder."""
         from src.server.app.workspace_sandbox import (
             PreviewRestartRequest,
-            owner_preview_url,
+            owner_preview,
             restart_preview_server,
         )
 
@@ -458,12 +464,41 @@ class TestWorkspaceScopedPreviewCommands:
                 )
                 assert response.success is True
             else:
-                await owner_preview_url(
+                await owner_preview(
                     "ws-test-001", "test-user-123", 8080,
                     command="python -m http.server 8080", force=True,
                 )
 
         assert events == ["hold", "read", "launch cd /home/workspace/project-a", "release"]
+
+    @pytest.mark.asyncio
+    async def test_the_command_that_starts_the_app_is_the_one_its_key_names(
+        self, mock_sandbox_for_endpoint
+    ):
+        """The owner's grant is tied to the key. Read apart from the launch
+        (before the computer woke, say), it could name a command replaced
+        meanwhile, and the new program would read under the old one's grant."""
+        from src.server.app.workspace_sandbox import owner_preview
+        from src.server.database.share_links import command_key
+
+        stored = AsyncMock(return_value="python app.py")
+        events = []
+        with ExitStack() as stack:
+            for p in self._held_folder(mock_sandbox_for_endpoint, events):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch("src.server.app.workspace_sandbox.get_preview_command", stored)
+            )
+            lookup = stack.enter_context(
+                patch("src.server.services.preview_links.get_preview_command", AsyncMock())
+            )
+            preview = await owner_preview("ws-test-001", "test-user-123", 8080, force=True)
+
+        stored.assert_awaited_once_with("ws-test-001", 8080)
+        lookup.assert_not_awaited()
+        launched = mock_sandbox_for_endpoint.start_and_get_preview_url.await_args.args[0]
+        assert launched.endswith("&& python app.py")
+        assert preview.command_key == command_key("python app.py")
 
     @pytest.mark.asyncio
     async def test_a_url_a_browser_cannot_open_is_cached_and_returned_as_published(
@@ -495,7 +530,7 @@ class TestWorkspaceScopedPreviewCommands:
                 "ws-test-001",
                 8080,
                 command=None,
-                work_dir="/home/workspace/project-a",
+                folder=WorkspaceLayout("/home/workspace", "project-a"),
             )
 
         assert url == capability
@@ -515,7 +550,7 @@ class TestWorkspaceScopedPreviewCommands:
         from fastapi import HTTPException
 
         from src.config import env
-        from src.server.app.workspace_sandbox import owner_preview_url
+        from src.server.app.workspace_sandbox import owner_preview
 
         monkeypatch.setattr(env, "PREVIEW_PROXY_BASE_URL", "")
         mock_sandbox_for_endpoint.get_preview_url = AsyncMock(
@@ -531,7 +566,7 @@ class TestWorkspaceScopedPreviewCommands:
             for p in self._held_folder(mock_sandbox_for_endpoint, events):
                 stack.enter_context(p)
             with pytest.raises(HTTPException) as raised:
-                await owner_preview_url(
+                await owner_preview(
                     "ws-test-001", "test-user-123", 8080, command=None
                 )
 
@@ -590,7 +625,7 @@ class TestWorkspaceScopedPreviewCommands:
                 "ws-test-001",
                 8080,
                 command="python -m http.server 8080",
-                work_dir="/home/workspace/project-a",
+                folder=WorkspaceLayout("/home/workspace", "project-a"),
             )
 
         assert url == "https://preview.example.com/signed?token=abc"
@@ -665,7 +700,7 @@ class TestWorkspaceScopedPreviewCommands:
                 "workspace-a",
                 8080,
                 command="python -m http.server 8080",
-                work_dir="/home/workspace/a",
+                folder=WorkspaceLayout("/home/workspace", "a"),
             ))
             await launch_entered.wait()
             second_task = asyncio.create_task(resolve_preview(
@@ -673,7 +708,7 @@ class TestWorkspaceScopedPreviewCommands:
                 "workspace-b",
                 8080,
                 command="python -m http.server 8080",
-                work_dir="/home/workspace/b",
+                folder=WorkspaceLayout("/home/workspace", "b"),
             ))
             await asyncio.sleep(0.1)
             second.start_and_get_preview_url.assert_not_awaited()
@@ -707,7 +742,7 @@ class TestWorkspaceScopedPreviewCommands:
                     "workspace-a",
                     8080,
                     command="python -m http.server 8080",
-                    work_dir="/home/workspace/a",
+                    folder=WorkspaceLayout("/home/workspace", "a"),
                 )
 
         assert "preview:owner:sb-123:8080" not in values
@@ -736,7 +771,7 @@ class TestWorkspaceScopedPreviewCommands:
                     "workspace-a",
                     8080,
                     command=None,
-                    work_dir="/home/workspace/a",
+                    folder=WorkspaceLayout("/home/workspace", "a"),
                 )
 
         mock_sandbox_for_endpoint.get_preview_url.assert_not_awaited()
@@ -759,7 +794,7 @@ class TestWorkspaceScopedPreviewCommands:
                     "workspace-a",
                     8080,
                     command="python -m http.server 8080",
-                    work_dir="/home/workspace/a",
+                    folder=WorkspaceLayout("/home/workspace", "a"),
                 )
 
         mock_sandbox_for_endpoint.start_and_get_preview_url.assert_not_awaited()

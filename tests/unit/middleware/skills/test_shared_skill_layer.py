@@ -82,3 +82,15 @@ async def test_sandbox_sync_keeps_the_layer(tmp_path):
         [str(tmp_path)], disabled=frozenset({LAYER, *_dependents()})
     )
     assert names == set()
+
+
+def test_dashboard_apps_keep_the_kit_they_read():
+    """interactive-dashboard's apps read the LangAlpha kit from dashboard-page's
+    references, so dashboard-page's disable alone does not take it away."""
+    assert "dashboard-page" in SKILL_REGISTRY["interactive-dashboard"].requires
+    assert "dashboard-page" in build_effective_skill_registry(
+        disabled_skills={"dashboard-page"}
+    )
+    assert "dashboard-page" not in build_effective_skill_registry(
+        disabled_skills={"dashboard-page", "interactive-dashboard"}
+    )
