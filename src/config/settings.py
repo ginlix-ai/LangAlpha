@@ -17,6 +17,7 @@ from src.config.models import (
     McpDescriptionsConfig,
     NewsPollConfig,
     OrderReconcileConfig,
+    ThreadSearchConfig,
     WorkflowOrchestrationConfig,
 )
 
@@ -213,6 +214,11 @@ def get_mcp_descriptions_config() -> McpDescriptionsConfig:
 def get_order_reconcile_config() -> OrderReconcileConfig:
     """Order reconciliation sweep config (enabled / cadence / windows / batch)."""
     return get_infrastructure_config().order_reconcile
+
+
+def get_thread_search_config() -> ThreadSearchConfig:
+    """Conversation search index sweep config (enabled / cadence / batch)."""
+    return get_infrastructure_config().thread_search
 
 
 def get_redis_max_connections() -> int:

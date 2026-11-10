@@ -38,6 +38,7 @@ STAMP = {PENDING_INPUT_KEY: {"checkpoint_id": "cp-base"}}
 async def _finalized_metadata(status: str, newest) -> dict:
     coordinator = RunCoordinator()
     coordinator._schedule_replay_refresh = MagicMock()
+    coordinator._schedule_search_index = MagicMock()
     coordinator._nudge_hook_drainer = MagicMock()
     coordinator._newest_checkpoint = (
         AsyncMock(side_effect=newest)

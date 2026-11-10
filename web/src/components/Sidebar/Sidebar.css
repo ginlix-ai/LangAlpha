@@ -572,6 +572,15 @@ html.desktop-mac .sidebar-history {
   color: var(--color-accent-primary);
 }
 
+/* A finger's worth of row (web/AGENTS.md, .tap-target): the rows touch, so
+   each grows rather than its hit area spilling onto its neighbours, as the
+   command palette's rows do. The rail's icons sit 8px apart and take
+   .tap-target instead, which keeps their square. */
+@media (pointer: coarse) {
+  .sidebar-panel-item,
+  .sidebar-account-row { min-height: 44px; }
+}
+
 @media (max-width: 767px) {
   .sidebar { display: none; }
 }

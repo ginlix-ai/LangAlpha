@@ -27,6 +27,24 @@ _THREAD_COLUMNS = ", ".join(_THREAD_COLUMN_NAMES)
 # For a query that joins another table under the ``t`` alias.
 _THREAD_COLUMNS_T = ", ".join(f"t.{c}" for c in _THREAD_COLUMN_NAMES)
 
+def first_query(*, untitled_only: bool = False) -> str:
+    """The first message of thread ``t``, which an untitled thread shows as
+    its title: a query for one row of one column, ``content``.
+    ``untitled_only`` reads nothing for a titled thread, for a lateral join,
+    whose ``ON`` would read it for every thread first."""
+    gate = "NULLIF(t.title, '') IS NULL AND " if untitled_only else ""
+    return f"""
+        SELECT left(q.content, 120) AS content FROM conversation_queries q
+        WHERE {gate}q.conversation_thread_id = t.conversation_thread_id
+        ORDER BY q.turn_index ASC LIMIT 1"""
+
+
+# A thread's title, or for an untitled one its first message, as every
+# listing shows it: a hand-off's thread runs before its title is written. For
+# a query that joins the thread under the ``t`` alias.
+TITLE_OR_FIRST_QUERY = f"COALESCE(NULLIF(t.title, ''), ({first_query()}))"
+
+
 def owner_subagents_default(workspace_id_sql: str) -> str:
     """The subagents default of a workspace's owner, as a SQL boolean.
 

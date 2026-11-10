@@ -746,13 +746,14 @@ class RunCoordinator:
         self, thread_id: str, run: Optional[Dict[str, Any]]
     ) -> None:
         """The uniform after-a-won-CAS tail: every site that applies a
-        terminal transition schedules the replay refresh and the
-        transcript export and nudges the drainer, so they never drift apart
+        terminal transition schedules the replay refresh, the search index
+        and the transcript export and nudges the drainer, so they never drift apart
         per call site. The export runs at every terminal status, since each
         stamps the checkpoint and another thread may read this one's
         transcript, and so does the check on artifacts kept updated, since a
         failed or cancelled turn may have changed their files too."""
         self._schedule_replay_refresh(thread_id)
+        self._schedule_search_index(thread_id)
         self._schedule_transcript_export(thread_id, run)
         self._schedule_keep_updated(run)
         self._schedule_archive_prune(thread_id)
@@ -779,6 +780,19 @@ class RunCoordinator:
             logger.warning(
                 f"[RunCoordinator] replay refresh scheduling failed for "
                 f"{thread_id}",
+                exc_info=True,
+            )
+
+    def _schedule_search_index(self, thread_id: str) -> None:
+        # After the replay refresh, which the indexer waits out to read the
+        # turns it projects.
+        try:
+            from src.server.services.search.index import schedule_search_index
+
+            schedule_search_index(thread_id)
+        except Exception:
+            logger.warning(
+                f"[RunCoordinator] search index scheduling failed for {thread_id}",
                 exc_info=True,
             )
 

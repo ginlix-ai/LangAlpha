@@ -49,6 +49,13 @@ def normalize_uuid(value: object) -> str | None:
         return None
 
 
+def like_escape(value: str) -> str:
+    """``value`` matching literally inside a ``LIKE`` pattern: its ``\\``,
+    ``%`` and ``_`` escaped under ``\\``, which is LIKE's default escape
+    (spell ``ESCAPE '\\'`` anyway, so the reading never depends on it)."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def uuid_text(value: str) -> str:
     """``normalize_uuid`` as a model field's validator: a value that is not a
     UUID is the client's 422 rather than the insert's 500."""

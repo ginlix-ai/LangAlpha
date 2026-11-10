@@ -78,6 +78,22 @@ export function pageBudget(screen: ScreenBudget, reach = 0): PageBudget {
 }
 
 /**
+ * Turns one page of a jump to an older turn (useFocusTurn) may reach back, at
+ * most. A jump further back than this takes several pages, each asked once
+ * the last has landed, so no one request replays a long thread whole.
+ */
+export const JUMP_PAGE_TURNS = 100;
+
+/** A page of a jump to a turn `reach` turns above the oldest one loaded: the
+ *  turns up to it, at most `JUMP_PAGE_TURNS`, its bytes stopping it sooner,
+ *  though never short of a page's turns (or the reach, when that is less) or
+ *  the screen's floor. A page that stops short is followed by the next. */
+export function jumpPageBudget(screen: ScreenBudget, reach: number): PageBudget {
+  const minTurns = Math.max(screen.minTurns, Math.min(reach, HISTORY_PAGE_TURNS));
+  return { limit: Math.max(HISTORY_PAGE_TURNS, Math.min(reach, JUMP_PAGE_TURNS)), minTurns, maxBytes: screen.maxBytes };
+}
+
+/**
  * How many turns a replay of the newest page must reach back to cover turn
  * `from`: none when nothing reaches further than a first open, otherwise
  * every turn from `from` to the newest the thread has, plus `margin`, so it

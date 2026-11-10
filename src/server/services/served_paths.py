@@ -21,6 +21,7 @@ from ptc_agent.core.paths import (
     SandboxLayout,
     is_agent_notes_path,
 )
+from src.server.utils.pg_sanitize import like_escape
 
 # Derived from shared constants (source of truth: ptc_agent.core.paths)
 SYSTEM_DIR_PREFIXES = tuple(f"{d}/" for d in sorted(AGENT_SYSTEM_DIRS))
@@ -76,6 +77,43 @@ def is_always_hidden_path(client_path: str) -> bool:
         return True
 
     return False
+
+
+def panel_lists_stored_file(
+    client_path: str, *, include_system: bool = False, include_hidden: bool = False
+) -> bool:
+    """Whether the file panel lists a backed-up file at this path, as its
+    listing of a stopped workspace does.
+
+    Without ``include_system`` every system directory is out whole: the
+    carve-out ``_is_system_path`` makes for the user's profile, automation and
+    subagent files does not reach a backup row, since their rows are the only
+    copy and the panel splices them in from there, dropping any stored row at
+    their paths.
+    """
+    return not (
+        is_always_hidden_path(client_path)
+        or (not include_hidden and is_hidden_path(client_path))
+        or (not include_system and client_path.startswith(SYSTEM_DIR_PREFIXES))
+    )
+
+
+# ``panel_lists_stored_file``'s default rules as LIKE patterns over the path
+# with a leading ``/`` (as ``is_always_hidden_path`` reads it), any match
+# leaving the file out, for a SQL reader that has to drop the same files
+# before it pages.
+STORED_FILE_EXCLUDED_LIKES: tuple[str, ...] = (
+    *(f"/{like_escape(p)}%" for p in (*SYSTEM_DIR_PREFIXES, *_HIDDEN_DIR_PREFIXES)),
+    f"/{like_escape(SandboxLayout.INTERNAL_DIR)}",
+    *(
+        f"%{like_escape(s)}%"
+        for s in (*_ALWAYS_HIDDEN_SEGMENTS, *_ALWAYS_HIDDEN_DIR_SEGMENTS)
+    ),
+    *(f"%{like_escape(e)}" for e in (*_ALWAYS_HIDDEN_BASENAMES, *_ALWAYS_HIDDEN_SUFFIXES)),
+)
+# The transient root names, which a LIKE cannot keep to the root: it pairs
+# with the path holding no ``/``.
+STORED_FILE_ROOT_EXCLUDED_LIKE = f"{like_escape(TRANSIENT_ROOT_PREFIX)}%"
 
 
 def is_agent_machinery_path(client_path: str) -> bool:

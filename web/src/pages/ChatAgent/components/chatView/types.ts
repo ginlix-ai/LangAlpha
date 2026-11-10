@@ -55,6 +55,13 @@ export interface LocationState {
   handoff?: boolean;
   workspaceId?: string;
   workspaceName?: string;
+  /**
+   * The backend turn index to open the thread at: its opening bubble is
+   * brought under the viewport top and tinted, with older pages loaded back
+   * to it (useFocusTurn). The command palette's "In conversations" hit. A
+   * turn the thread does not have leaves the reader at the newest one.
+   */
+  focusTurn?: number;
   fromThreadId?: string;
   fromWorkspaceId?: string;
   /**

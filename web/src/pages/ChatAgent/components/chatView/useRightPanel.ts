@@ -21,6 +21,7 @@ import { NO_TRANSCRIPTS, useToolCallLookup, type TranscriptMessage } from './too
 import { useTranscriptReader } from '../filePanel/transcriptStore';
 import { DEFAULT_PANEL_WIDTH, detailPanelWidth } from '../filePanel/detailWidth';
 import { usePanelAsks, usePanelLinkOpen } from './usePanelLinks';
+import { useFileDeepLink } from './useFileDeepLink';
 
 export { nextPanelOverride } from './usePanelLinks';
 
@@ -66,9 +67,6 @@ export function useRightPanel({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
-
-  // Guards one-shot consumption of the ?file= deep link (report share / copy link).
-  const fileDeepLinkConsumedRef = useRef(false);
 
   const {
     panelTarget,
@@ -383,26 +381,9 @@ export function useRightPanel({
     () => collectRecentWritePaths(messages, writeScope),
   );
 
-  // One-shot ?file= deep link: opens the file panel targeting that file. Gated
-  // on isActive so only the visible ChatView consumes it (ChatAgent keeps cached
-  // hidden instances), and on workspaceId so the panel has something to read.
-  // The param is stripped after consuming so it can't re-fire on re-render.
-  useEffect(() => {
-    if (!isActive || !workspaceId || fileDeepLinkConsumedRef.current) return;
-    const params = new URLSearchParams(location.search);
-    const raw = params.get('file');
-    if (!raw) return;
-    fileDeepLinkConsumedRef.current = true;
-    // URLSearchParams.get already percent-decodes; a second decodeURIComponent
-    // would throw on a literal '%' in the filename (e.g. 100%25_report.html).
-    handleOpenFileFromChat(raw);
-    params.delete('file');
-    const search = params.toString();
-    navigate(
-      { pathname: location.pathname, search: search ? `?${search}` : '' },
-      { replace: true, state: location.state },
-    );
-  }, [isActive, workspaceId, location.search, location.pathname, location.state, navigate, handleOpenFileFromChat]);
+  // The ?file= link opens the file panel at that file. Only the visible
+  // ChatView reads it (ChatAgent keeps cached hidden instances).
+  useFileDeepLink(isActive, workspaceId, handleOpenFileFromChat);
 
   // Resolve preview URL: always pass command so the backend can start the
   // server if the port is idle (common for history sessions where the

@@ -4,7 +4,7 @@ import asyncio
 import contextvars
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -158,3 +158,56 @@ async def iterate_until(
             await aclose_within(
                 stream, close_timeout, label=label, track=track
             )
+
+
+class CoalescingRunner[T]:
+    """Fire-and-forget work per key, at most one runner per key in this
+    process: work scheduled while its runner is going folds into one more
+    pass rather than starting another.
+
+    Each key's pending work is a ``T`` that ``new`` makes and ``schedule``'s
+    ``add`` folds a trigger into; ``run`` gets the key and what had piled up
+    when its pass began. Execution context only: a trigger landing in another
+    process, or lost with this one, is that process's to run or lose.
+    """
+
+    def __init__(
+        self,
+        run: Callable[[str, T], Awaitable[None]],
+        new: Callable[[], T],
+    ) -> None:
+        self._run = run
+        self._new = new
+        self._runners: dict[str, asyncio.Task[None]] = {}
+        self._pending: dict[str, T] = {}
+
+    def schedule(self, key: str, add: Callable[[T], None] | None = None) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # no running loop (sync test contexts)
+            return
+        work = self._pending.setdefault(key, self._new())
+        if add is not None:
+            add(work)
+        current = self._runners.get(key)
+        if current is not None and not current.done():
+            return
+        task = loop.create_task(self._passes(key))
+        self._runners[key] = task
+        task.add_done_callback(lambda done, k=key: self._runner_done(k, done))
+
+    async def wait(self, key: str) -> None:
+        """Wait out the key's runner, if one is going. Its failure is its own
+        to log, and a cancelled waiter leaves it running."""
+        current = self._runners.get(key)
+        if current is not None and not current.done():
+            await asyncio.wait({current})
+
+    def _runner_done(self, key: str, task: asyncio.Task[None]) -> None:
+        # Without clobbering a newer runner.
+        if self._runners.get(key) is task:
+            self._runners.pop(key, None)
+
+    async def _passes(self, key: str) -> None:
+        while key in self._pending:
+            await self._run(key, self._pending.pop(key))

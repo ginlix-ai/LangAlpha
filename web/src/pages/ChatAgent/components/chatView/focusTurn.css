@@ -1,0 +1,21 @@
+/* A turn a link jumped to (useFocusTurn): the file panel's arrival tint
+   (.file-focus-enter), faded out rather than kept, since a message is not an
+   annotation that stays. Under reduced motion it shows flat for as long and
+   goes at once. */
+.turn-focus-enter {
+  border-radius: 8px;
+  /* motion-exempt: how long the tint dwells, which no transition token names */
+  animation: turn-focus-out 1600ms var(--ease-out);
+}
+@keyframes turn-focus-out {
+  from { background-color: color-mix(in srgb, var(--color-accent-primary) 24%, transparent); }
+  35% { background-color: var(--color-accent-soft); }
+  to { background-color: transparent; }
+}
+@keyframes turn-focus-hold {
+  from, to { background-color: var(--color-accent-soft); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* motion-exempt: the same dwell, shown flat */
+  .turn-focus-enter { animation: turn-focus-hold 1600ms step-end; }
+}

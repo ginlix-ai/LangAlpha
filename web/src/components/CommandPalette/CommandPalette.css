@@ -8,61 +8,24 @@
   color: var(--color-text-primary);
 }
 
-.command-palette-field {
+/* The list, and in a drilled-in view the preview beside it. */
+.command-palette-main {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--color-border-muted);
-  flex-shrink: 0;
-  /* The field is focused for as long as the palette is open, so focus is
-     not news here: the row keeps its divider rather than lighting up. */
-  --focus-edge: var(--color-border-muted);
-  --focus-halo: none;
-  /* The dialog clips what passes its edge, so the keyboard ring is drawn
-     inside the row, following the dialog's top corners. */
-  outline-offset: -3px !important;
-  border-radius: 12px 12px 0 0;
+  flex: 1 1 auto;
+  min-height: 0;
 }
-.command-palette-field-icon {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  color: var(--color-icon-muted);
+/* A drilled-in view is wider by the pane, and keeps one height whatever the
+   list holds, so neither the pane's width nor its height moves as the
+   selection does. */
+.command-palette:has(.command-palette-main.is-paned) { max-width: 700px; }
+.command-palette-main.is-paned {
+  flex: 0 0 auto;
+  height: min(26rem, calc(100dvh - 14rem));
 }
-.command-palette-field input {
-  flex: 1;
-  min-width: 0;
-  background: transparent;
-  border: 0;
-  outline: none;
-  font-size: 1rem;
-  line-height: 1.5rem;
-  color: var(--color-text-primary);
-}
-.command-palette-field input::placeholder { color: var(--color-text-tertiary); }
-
-/* The row whose actions are open, named at the field's end. */
-.command-palette-scope {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-  max-width: 40%;
-  padding: 3px 6px 3px 9px;
-  border: 1px solid var(--color-border-muted);
-  border-radius: 9999px;
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.command-palette-scope svg { width: 12px; height: 12px; flex-shrink: 0; }
 
 .command-palette-list {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -82,6 +45,16 @@
   color: var(--color-text-tertiary);
 }
 .command-palette-list > :first-child .command-palette-group { padding-top: 6px; }
+/* A header that opens its group alone, for a pointer. */
+.command-palette-group.is-drillable {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+}
+.command-palette-group.is-drillable svg { width: 11px; height: 11px; opacity: 0; }
+.command-palette-group.is-drillable:hover { color: var(--color-text-secondary); }
+.command-palette-group.is-drillable:hover svg { opacity: 1; }
 
 .command-palette-row {
   display: flex;
@@ -100,6 +73,41 @@
      the row grows rather than its hit area spilling onto its neighbours. */
   .command-palette-row { min-height: 44px; }
 }
+
+/* A two-line row (a conversation match) keeps its icon on the first line. */
+.command-palette-row.has-detail { align-items: flex-start; }
+.command-palette-row.has-detail .command-palette-row-icon { margin-top: 2px; }
+.command-palette-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.command-palette-row-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.command-palette-detail {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+.command-palette-detail mark {
+  background: none;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+/* Who said it: quiet, so the words lead. */
+.command-palette-detail-label {
+  margin-right: 6px;
+  color: var(--color-text-tertiary);
+}
+.command-palette-detail-label::after { content: ':'; }
 
 /* One leading column: every label starts at one x (DESIGN.md § Alignment). */
 .command-palette-row-icon {
@@ -169,6 +177,129 @@
 .command-palette-quote .is-up { color: var(--color-profit); }
 .command-palette-quote .is-down { color: var(--color-loss); }
 
+/* A row's other actions, for a pointer: on the row under it or selected,
+   and always under a finger, which has no hover. Hidden rather than absent,
+   so a row keeps its layout as the selection moves. */
+.command-palette-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  border-radius: 5px;
+  color: var(--color-icon-muted);
+  visibility: hidden;
+}
+.command-palette-trailing + .command-palette-more { margin-left: 0; }
+.command-palette-more svg { width: 14px; height: 14px; }
+.command-palette-more:hover { background: var(--color-border-muted); color: var(--color-text-primary); }
+.command-palette-row:hover .command-palette-more,
+.command-palette-row.is-active .command-palette-more { visibility: visible; }
+@media (pointer: coarse) {
+  .command-palette-more { visibility: visible; }
+}
+
+.command-palette-note {
+  padding: 18px 10px;
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+}
+
+/* The preview of the selected row in a drilled-in view. Fixed width. */
+.command-palette-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 280px;
+  width: 280px;
+  min-height: 0;
+  border-left: 1px solid var(--color-border-muted);
+}
+.command-palette-pane-scroll {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 16px 18px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-elevated) transparent;
+}
+.command-palette-pane-head { margin-bottom: 14px; }
+.command-palette-pane-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.command-palette-pane-meta {
+  margin-top: 3px;
+  font-size: 0.71875rem;
+  color: var(--color-text-tertiary);
+}
+.command-palette-pane-kicker {
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.65625rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.command-palette-pane-turn + .command-palette-pane-turn { margin-top: 16px; }
+.command-palette-pane-turn p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.78125rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+.command-palette-pane-turn mark {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+  font-weight: 600;
+  border-radius: 2px;
+}
+.command-palette-pane-note {
+  padding: 18px 16px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.command-palette-pane-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 16px;
+}
+.command-palette-pane-loading span {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--color-bg-hover);
+}
+.command-palette-pane-loading span:nth-child(2) { width: 80%; }
+.command-palette-pane-loading span:nth-child(3) { width: 60%; }
+.command-palette-pane-ticker {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.command-palette-pane-symbol {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 600;
+}
+.command-palette-pane-price {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 14px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.command-palette-pane-price > :first-child { font-size: 1.25rem; }
+.command-palette-pane-price > :last-child { font-size: 0.75rem; color: var(--color-text-secondary); }
+.command-palette-pane-price .is-up { color: var(--color-profit); }
+.command-palette-pane-price .is-down { color: var(--color-loss); }
+
 .command-palette kbd {
   display: inline-flex;
   align-items: center;
@@ -184,6 +315,19 @@
   line-height: 1;
   color: var(--color-text-secondary);
 }
+
+/* The prefixes, under an empty field: quieter than the keys below them. */
+.command-palette-prefixes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  flex-shrink: 0;
+  padding: 9px 16px;
+  border-top: 1px solid var(--color-border-muted);
+  font-size: 0.71875rem;
+  color: var(--color-text-tertiary);
+}
+.command-palette-prefixes > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 
 .command-palette-footer {
   display: flex;

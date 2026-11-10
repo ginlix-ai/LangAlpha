@@ -195,6 +195,14 @@
   .nav-panel-agent-row { min-height: 44px; padding: 10px 16px; }
 }
 
+/* A finger's worth of row wherever the tree shows under a touch, the app
+   sidebar on a tablet included: the rows touch, so each grows, and the
+   desktop's padding stays. */
+@media (pointer: coarse) {
+  .nav-panel-row,
+  .nav-panel-agent-row { min-height: 44px; }
+}
+
 /* Subagent avatar glyph: solid white on the charcoal tile; light theme flips
    it to a solid dark glyph — a forced-white PNG vanishes on the paper fills. */
 .subagent-avatar-glyph {

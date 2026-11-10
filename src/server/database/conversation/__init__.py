@@ -33,7 +33,6 @@ from src.server.database.conversation.threads_read import (
     ThreadPrefixes,
     fenced_workspace_thread_prefixes,
     get_workspace_thread_prefixes,
-    _like_escape,
     lookup_thread_by_external_id,
 )
 from src.server.database.conversation.threads_write import (
@@ -112,7 +111,6 @@ __all__ = [
     "fenced_workspace_thread_prefixes",
     "get_workspace_thread_prefixes",
     "get_thread_lifecycle_rows",
-    "_like_escape",
     "lookup_thread_by_external_id",
     "QueryConflictError",
     "_SETTLED_ATTEMPTS",

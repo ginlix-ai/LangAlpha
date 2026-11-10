@@ -35,6 +35,7 @@ import { WorkspaceProvider } from '../contexts/WorkspaceContext';
 import { useComputerFolders } from '../hooks/useComputerFolders';
 import { usePanelFiles } from './chatView/usePanelFiles';
 import { usePanelAsks, usePanelLinkOpen } from './chatView/usePanelLinks';
+import { useFileDeepLink } from './chatView/useFileDeepLink';
 import { saveChatSession } from '../hooks/utils/chatSessionRestore';
 import iconComputerLight from '../../../assets/img/icon-computer.svg';
 import iconComputerDark from '../../../assets/img/icon-computer-dark.svg';
@@ -42,6 +43,7 @@ import { useTheme } from '../../../contexts/ThemeContext';
 import { PresenceFold } from '@/components/ui/Disclosure';
 import { motion, AnimatePresence } from '@/lib/framer';
 import { DURATION, EASE_OUT, TWEEN } from '@/lib/motion';
+import { PaletteSearchButton } from '@/components/nav/PaletteSearchButton';
 
 /** Placeholder rows while the list is read: the first screen's worth. */
 const THREAD_SKELETON_ROWS = 5;
@@ -291,10 +293,27 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     });
   }, []);
 
+  // Measured at the moment it opens when the observer has not reported yet:
+  // a ?file= link opens the panel from the first commit's effects, before it does.
   const clampPanelWidth = useCallback(
-    (desired: number) => clampPanelWidthUtil(desired, containerWidthRef.current),
+    (desired: number) =>
+      clampPanelWidthUtil(
+        desired,
+        containerWidthRef.current || containerRef.current?.offsetWidth || window.innerWidth,
+      ),
     [],
   );
+  // The panel opens at its usual width, or stays as wide as it was left.
+  const openFilePanel = useCallback(() => {
+    if (!showFilePanel) setFilePanelWidth(clampPanelWidth(850));
+    setShowFilePanel(true);
+  }, [showFilePanel, clampPanelWidth]);
+  // The ?file= link (a file picked in the command palette) opens the panel at it.
+  const openLinkedFile = useCallback((path: string) => {
+    handleOpenFile(path);
+    openFilePanel();
+  }, [handleOpenFile, openFilePanel]);
+  useFileDeepLink(true, workspaceId, openLinkedFile);
 
   // Track container width via ResizeObserver
   useEffect(() => {
@@ -540,10 +559,9 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
       // The card is the workspace's own files; a sibling shown before the
       // panel closed was reached through a link.
       setPanelOverride(null);
-      setFilePanelWidth(clampPanelWidth(850));
-      setShowFilePanel(true);
+      openFilePanel();
     }
-  }, [showFilePanel, clampPanelWidth, setPanelOverride]);
+  }, [showFilePanel, openFilePanel, setPanelOverride]);
 
   /**
    * Handle drag panel width
@@ -625,7 +643,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
             in the desktop shell: it is the top bar the content column already
             has, so it costs no layout, and the back button wins its own clicks
             back through the `no-drag` list in chrome.css. */}
-        <div className="shrink-0 px-6 py-4" data-chrome="drag" style={{ paddingTop: 'calc(var(--page-top) - 4px)' }}>
+        <div className="shrink-0 px-6 py-4 flex items-center justify-between" data-chrome="drag" style={{ paddingTop: 'calc(var(--page-top) - 4px)' }}>
           <button
             onClick={onBack}
             className="p-2 rounded-md transition-colors"
@@ -636,6 +654,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
+          {isMobile && <PaletteSearchButton />}
         </div>
 
         {/* Main Content - Centered with max width */}
@@ -740,8 +759,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                             // sibling's on show gives way to them.
                             setPanelOverride(null);
                             askPanel({ kind: 'file', path: filePath });
-                            setFilePanelWidth(clampPanelWidth(850));
-                            setShowFilePanel(true);
+                            openFilePanel();
                           }}
                         >
                           <FileText className="h-3.5 w-3.5 shrink-0" />

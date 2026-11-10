@@ -7115,8 +7115,8 @@
   "palette": {
     "copyFailed": "Couldn't copy to the clipboard",
     "title": "Search and commands",
-    "label": "Search threads, tickers, skills, settings, or ask anything",
-    "placeholder": "Search threads, tickers, skills, settings, or ask anything",
+    "label": "Search threads, files, tickers, settings, or ask anything",
+    "placeholder": "Search threads, files, tickers, settings, or ask anything",
     "untitledThread": "Untitled thread",
     "analystIn": "Analyst in {{workspace}}",
     "askTitle": "Ask “{{query}}”",
@@ -7130,7 +7130,11 @@
       "workspaces": "Workspaces",
       "skills": "Skills",
       "places": "Pages and settings",
-      "ask": "Ask"
+      "ask": "Ask",
+      "turns": "In conversations",
+      "ticker": "Ticker",
+      "threadsOn": "Your threads on {{symbol}}",
+      "files": "Files"
     },
     "kind": {
       "workspace": "Workspace",
@@ -7152,7 +7156,12 @@
       "back": "Back",
       "move": "Move",
       "close": "Close",
-      "actions": "Actions"
+      "actions": "Actions",
+      "openAtTurn": "Open at this turn",
+      "openThread": "Open thread",
+      "threadsMentioning": "Threads mentioning {{symbol}}",
+      "searchIn": "Search in",
+      "copyPath": "Copy path"
     },
     "action": {
       "newThread": "New thread",
@@ -7167,7 +7176,73 @@
       "newAutomation": "schedule alert recurring briefing",
       "theme": "appearance dark light mode color"
     },
-    "search": "Search"
+    "search": "Search",
+    "inThisThread": "{{agent}}, in this thread",
+    "you": "You",
+    "narrowPlaceholder": "Narrow your threads on {{symbol}}",
+    "busy": "Too many searches at once. Try again in a moment.",
+    "searchFailed": "Couldn't search your conversations.",
+    "kindFailed": {
+      "threads": "Couldn't search your thread titles right now.",
+      "turns": "Couldn't search what was said in your conversations right now.",
+      "files": "Couldn't search your files right now."
+    },
+    "noMatches": "No matches",
+    "showAll": {
+      "threads": "Show all threads",
+      "turns": "Show all conversation matches",
+      "files": "Show all files"
+    },
+    "preview": {
+      "missing": "Nothing to preview yet.",
+      "failed": "Couldn't load the preview."
+    },
+    "scope": {
+      "label": "Search in {{scope}}",
+      "leave": "Stop searching here",
+      "workspacePlaceholder": "Search these threads and files, or ask the agent",
+      "threadPlaceholder": "Search this thread, or write to it",
+      "tickersHint": "Type a symbol or company name.",
+      "threadHint": "Search in this thread",
+      "noThreads": "No threads here yet.",
+      "kinds": {
+        "tickers": "Tickers",
+        "files": "Files",
+        "threads": "Threads",
+        "turns": "Conversations",
+        "workspaces": "Workspaces",
+        "actions": "Actions"
+      },
+      "placeholders": {
+        "tickers": "Search tickers by symbol or company",
+        "files": "Search files by name or path",
+        "threads": "Search thread titles",
+        "turns": "Search what was said in your conversations",
+        "workspaces": "Search workspaces",
+        "actions": "Search actions, pages and settings"
+      },
+      "kindIn": "Search {{kind}} in {{place}}",
+      "filesHint": "Type part of a file's name or path.",
+      "turnsHint": "Type words you or the agent said."
+    },
+    "keys": {
+      "enter": "Enter: {{action}}.",
+      "actions": "Right arrow: more actions.",
+      "askMac": "Command Enter: ask the agent.",
+      "askOther": "Control Enter: ask the agent.",
+      "back": "Left arrow or Escape: back.",
+      "scope": "Tab: search in it.",
+      "leave": "Backspace or Escape: stop searching in {{scope}}."
+    },
+    "prefixes": {
+      "label": "Type one of these first to search one kind:",
+      "tickers": "tickers",
+      "files": "files",
+      "threads": "threads",
+      "turns": "conversations",
+      "workspaces": "workspaces",
+      "actions": "actions"
+    }
   },
   "report": {
     "menuItem": "Report a problem",

@@ -262,6 +262,16 @@ order_reconcile:
   batch_limit: 50                 # Attempts examined per pass
   match_window_seconds: 900       # How long after the attempt a listed order may be placed
 
+# Conversation search: each turn is indexed as it settles; this sweep finds the
+# recent turns that missed it, and a process's first pass backfills the ones
+# from before search existed. One worker sweeps at a time. Off, turns are
+# still indexed as they settle.
+thread_search:
+  enabled: true
+  interval_seconds: 120   # How often a worker looks for turns left unindexed
+  batch_threads: 10       # Threads per batch; the backfill walks newest first
+  pause_seconds: 0.5      # Least rest between backfill slices (each rests as long as it worked)
+
 # RunWorkflow programmatic subagent orchestration
 workflow:
   enabled: true                  # Expose the RunWorkflow tool to the PTC main agent

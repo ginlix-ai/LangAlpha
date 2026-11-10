@@ -8,6 +8,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useNavActive } from '../nav/useNavActive';
 import { useNavItems } from '../nav/useNavItems';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
 import NavigationPanel from '@/pages/ChatAgent/components/NavigationPanel';
 import NavDisplayOptions from '@/pages/ChatAgent/components/NavDisplayOptions';
 import { useNavTreeProps } from '@/pages/ChatAgent/hooks/useNavTreeProps';
@@ -206,7 +207,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    className="sidebar-nav-item"
+                    className="sidebar-nav-item tap-target"
                     onClick={palette.open}
                     onPointerEnter={palette.preload}
                     aria-label={t('palette.search')}
@@ -228,7 +229,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
                 <Tooltip key={item.key}>
                   <TooltipTrigger asChild>
                     <button
-                      className={`sidebar-nav-item ${active ? 'active' : ''}`}
+                      className={cn('sidebar-nav-item tap-target', active && 'active')}
                       onClick={() => navigate(item.key)}
                       aria-label={label}
                       aria-current={active ? 'page' : undefined}

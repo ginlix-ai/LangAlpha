@@ -1111,7 +1111,7 @@ export function useChatMessages(
     isTaskLive: (agentId) => muxOpenTaskIds().has(agentId.replace(/^task:/, '')),
     liveOutcome: (agentId) => terminalTaskOutcomesRef.current.get(agentId.replace(/^task:/, '')),
   });
-  const loadOlderHistory = useStableHandler((place?: HoldPlace) => olderHistory().load(place));
+  const loadOlderHistory = useStableHandler((place?: HoldPlace, reachTo?: number) => olderHistory().load(place, reachTo));
   const backfillOlderHistory = useStableHandler((place?: HoldPlace) =>
     olderHistory().backfill(place, getIsMobileSnapshot()));
 

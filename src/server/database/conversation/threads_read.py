@@ -16,18 +16,9 @@ from src.server.contracts.status import (
 from src.server.database import pool
 from src.server.database.conversation import _sql
 from src.server.database.home_workspace import get_home_workspace_id
-from src.server.utils.pg_sanitize import normalize_uuid
+from src.server.utils.pg_sanitize import like_escape, normalize_uuid
 
 logger = logging.getLogger(__name__)
-
-
-def _like_escape(value: str) -> str:
-    """Escape LIKE wildcards so caller-supplied prefixes match literally.
-
-    Use with `ESCAPE '\\'` in the LIKE clause so `_` and `%` in the prefix
-    (e.g. `market_view`) bind to themselves instead of matching any character.
-    """
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 async def lookup_thread_by_external_id(
@@ -155,16 +146,6 @@ _TURN_COUNT_LATERAL = """
     ) tc ON TRUE
 """
 
-# A thread's title, or for an untitled one its first message: a hand-off's
-# thread runs before its title is written.
-_TITLE_OR_FIRST_QUERY = """
-    COALESCE(NULLIF(t.title, ''), (
-        SELECT left(q.content, 120) FROM conversation_queries q
-        WHERE q.conversation_thread_id = t.conversation_thread_id
-        ORDER BY q.turn_index ASC LIMIT 1
-    ))"""
-
-
 async def get_workspace_threads(
     workspace_id: str,
     limit: int = 20,
@@ -203,7 +184,7 @@ async def get_workspace_threads(
     extra_params: List[Any] = []
     if platform_prefix:
         where_extra = " AND platform LIKE %s ESCAPE '\\'"
-        extra_params.append(f"{_like_escape(platform_prefix)}%")
+        extra_params.append(f"{like_escape(platform_prefix)}%")
 
     try:
         async with pool.get_db_connection() as conn:
@@ -283,7 +264,7 @@ async def get_threads_for_user(
     extra_params: List[Any] = []
     if platform_prefix:
         where_extra = " AND t.platform LIKE %s ESCAPE '\\'"
-        extra_params.append(f"{_like_escape(platform_prefix)}%")
+        extra_params.append(f"{like_escape(platform_prefix)}%")
     if computer_id is not None:
         where_extra += " AND w.computer_id = %s::uuid AND w.workspace_id <> %s::uuid"
         extra_params += [computer_id, get_home_workspace_id(user_id)]
@@ -355,7 +336,7 @@ async def get_recent_threads_for_user(
             await cur.execute(
                 f"""
                 SELECT t.conversation_thread_id, t.workspace_id, t.updated_at,
-                       t.workspace_name, {_TITLE_OR_FIRST_QUERY} AS title,
+                       t.workspace_name, {_sql.TITLE_OR_FIRST_QUERY} AS title,
                        {_LATEST_ATTEMPT_LATERAL_COLS}
                 FROM (
                     SELECT t.conversation_thread_id, t.workspace_id, t.title,
@@ -395,7 +376,7 @@ async def get_thread_labels(
                 f"""
                 SELECT t.conversation_thread_id, t.workspace_id,
                        w.name AS workspace_name,
-                       {_TITLE_OR_FIRST_QUERY} AS title
+                       {_sql.TITLE_OR_FIRST_QUERY} AS title
                 FROM conversation_threads t
                 JOIN workspaces w ON t.workspace_id = w.workspace_id
                 WHERE t.conversation_thread_id = ANY(%s)

@@ -9,6 +9,7 @@ import pytest
 
 from src.server.services.history import replay
 from src.server.services.history.replay import refresh
+from src.utils.concurrency import CoalescingRunner
 from tests.unit.server.services.history.replay_builders import thread_rows
 
 pytestmark = pytest.mark.asyncio
@@ -38,6 +39,17 @@ async def test_turns_that_need_the_whole_thread_are_left_to_the_runner(wired):
     assert project.await_args.kwargs["claims_pass"] is False
     assert project.await_args.kwargs["turn_indexes"] == [3]
     schedule.assert_called_once_with("t-1", "r-3")
+
+
+async def test_a_backfill_never_starts_the_whole_thread_pass(wired):
+    project, schedule = wired
+    project.side_effect = replay.ClaimsPassNeeded("tsk1")
+
+    await refresh.refresh_thread(
+        "t-1", {"r-3"}, newest=True, claims_pass=False, schedule_claims_pass=False
+    )
+
+    schedule.assert_not_called()
 
 
 async def test_a_thread_the_checkpoints_cannot_cover_is_not_retried(wired):
@@ -70,8 +82,9 @@ async def test_a_newest_pass_that_needs_the_whole_thread_is_rescheduled(wired):
 async def test_triggers_landing_before_the_runner_starts_fold_into_one_pass(
     monkeypatch,
 ):
-    monkeypatch.setattr(refresh, "_runners", {})
-    monkeypatch.setattr(refresh, "_pending", {})
+    monkeypatch.setattr(
+        refresh, "REFRESHES", CoalescingRunner(refresh._refresh_pass, refresh._Wanted)
+    )
     passes = []
 
     async def refresh_thread(thread_id, response_ids, *, newest=False):
@@ -81,6 +94,6 @@ async def test_triggers_landing_before_the_runner_starts_fold_into_one_pass(
 
     refresh.schedule_replay_refresh("t-1")
     refresh.schedule_replay_refresh("t-1", "r-2")
-    await refresh._runners["t-1"]
+    await refresh.REFRESHES.wait("t-1")
 
     assert passes == [("t-1", {"r-2"}, True)]

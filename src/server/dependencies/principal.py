@@ -395,6 +395,13 @@ async def assert_automation_target(
         _refuse_own_thread(computer_call(request.scope), thread_id)
 
 
+def refuse_computer(principal: Principal, message: str) -> None:
+    """For a surface only a person reads: a computer's token is refused even
+    where its scopes would pass."""
+    if principal.computer_id is not None:
+        raise _forbidden(message)
+
+
 def refuse_rewrite(principal: Principal, checkpoint_id: Any, fork_from_turn: Any = None) -> None:
     """A turn a computer's token runs only adds to its thread: replaying an
     older checkpoint or forking from a turn would drop the turns after it."""

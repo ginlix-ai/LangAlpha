@@ -150,6 +150,9 @@ _REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
     # Has a model describe MCP servers; a claim on each job's row under its
     # scope's advisory lock dedups it across workers.
     ("McpDescriptionWorker", "src.server.services.mcp_descriptions.worker"),
+    # Indexes for conversation search the turns their settle missed, and
+    # backfills older ones; an advisory lock keeps it to one worker a pass.
+    ("ThreadSearchSweeper", "src.server.services.search.sweep"),
 )
 
 
@@ -1438,6 +1441,7 @@ from src.server.app.plugins import router as plugins_router
 from src.server.app.marketplace import router as marketplace_router
 from src.server.app.user_vault import router as user_vault_router
 from src.server.app.mcp_servers import router as mcp_servers_router
+from src.server.app.search import router as search_router
 
 # Conditionally import ginlix-data WS proxy (only when GINLIX_DATA_WS_URL is set)
 from src.config.settings import GINLIX_DATA_ENABLED
@@ -1461,6 +1465,7 @@ else:
 
 # Include all routers
 app.include_router(threads_router)  # /api/v1/threads/* - Thread CRUD, messages, control
+app.include_router(search_router)  # /api/v1/search - Conversation search (command palette)
 app.include_router(sessions_router)  # /api/v1/sessions - Active session stats
 app.include_router(workspaces_router)  # /api/v1/workspaces/* - Workspace CRUD
 app.include_router(
