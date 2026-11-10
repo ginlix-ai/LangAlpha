@@ -1,13 +1,8 @@
-import { Search, HelpCircle, Mail, Pencil } from 'lucide-react';
-import React, { useState, useEffect, useRef, type CSSProperties } from 'react';
+import { HelpCircle, Mail, Pencil } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { StockSearchHit } from '@/lib/marketUtils';
-import { useSymbolSearch } from '@/hooks/useSymbolSearch';
-import { resolveDualName } from '@/lib/displayName';
-import { useNavigate } from 'react-router';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { buildMarketViewUrl } from '@/pages/MarketView/utils/marketRoute';
-import './DashboardHeader.css';
+import { DashboardPaletteField, DashboardSymbolField } from './DashboardSearch';
 
 interface DashboardHeaderProps {
   onScrollToTop?: () => void;
@@ -21,33 +16,10 @@ interface DashboardHeaderProps {
 }
 
 const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit, actions }) => {
-  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { t } = useTranslation();
   const [showHelpPopover, setShowHelpPopover] = useState(false);
   const helpRef = useRef<HTMLDivElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // Search state
-  const [searchValue, setSearchValue] = useState('');
-  const { hits: searchResults, loading: searchLoading } = useSymbolSearch(searchValue, 12);
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [searchFocused, setSearchFocused] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  // Global "/" shortcut to focus search
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const tag = document.activeElement?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement as HTMLElement)?.isContentEditable) return;
-        e.preventDefault();
-        searchInputRef.current?.focus();
-      }
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, []);
 
   // Close help popover on outside click
   useEffect(() => {
@@ -60,45 +32,6 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit, 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showHelpPopover]);
-
-  // Close search dropdown on outside click
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setShowDropdown(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const openSymbol = (symbol: string) => {
-    setSearchValue(symbol);
-    setShowDropdown(false);
-    navigate(buildMarketViewUrl({ symbol }));
-  };
-
-  const handleSelectStock = (stock: StockSearchHit) => {
-    openSymbol(stock.symbol.trim().toUpperCase());
-  };
-
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const q = searchValue.trim();
-    if (!q) return;
-    // Nothing is taken while a search is resting or in flight: the rows on
-    // screen may still answer the query that was typed over, and the raw text
-    // may yet resolve to a hit of its own. The same rule as SymbolSearch.
-    if (searchLoading) return;
-
-    // Default to the first search result when available
-    if (searchResults.length > 0) {
-      handleSelectStock(searchResults[0]);
-      return;
-    }
-
-    openSymbol(q.toUpperCase());
-  };
 
   return (
     <>
@@ -125,100 +58,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit, 
       >
         {/* Search */}
         <div className="flex-1 min-w-0 max-w-xl">
-          <div className="dashboard-search-wrapper" ref={dropdownRef}>
-            <form
-              onSubmit={handleSubmit}
-              className="dashboard-search-form owns-its-edge relative group flex items-center gap-2 h-10 px-3 rounded-[var(--cs-radius-control,0.75rem)] border transition-all"
-              // The open card styles draw it as their other fields, open and
-              // flat, and focus darkens its edge to ink rather than lighting
-              // it amber (the focus edge is the shared rule's, tokens.css).
-              style={{
-                '--focus-edge': 'var(--color-shell-ink, var(--color-accent-primary))',
-                '--focus-halo': 'var(--cs-frame-shadow, 0 0 0 1px var(--color-accent-soft))',
-                backgroundColor: 'var(--color-shell-fill, var(--color-bg-input))',
-                borderColor: searchFocused
-                  ? 'var(--color-shell-ink, var(--color-accent-primary))'
-                  : 'var(--color-shell-edge, var(--color-border-muted))',
-                boxShadow: searchFocused ? 'var(--cs-frame-shadow, 0 0 0 1px var(--color-accent-soft))' : 'none',
-              } as CSSProperties}
-            >
-              <Search
-                className="dashboard-search-icon transition-colors"
-                style={{
-                  color: searchFocused ? 'var(--color-shell-ink, var(--color-accent-primary))' : 'var(--color-icon-muted)',
-                }}
-              />
-              <input
-                ref={searchInputRef}
-                type="text"
-                aria-label={t('dashboard.searchLabel')}
-                placeholder={t('dashboard.searchPlaceholder')}
-                value={searchValue}
-                onChange={(e) => { setSearchValue(e.target.value); setShowDropdown(e.target.value.trim() !== ''); }}
-                onFocus={() => {
-                  setSearchFocused(true);
-                  if (searchValue.trim()) setShowDropdown(true);
-                }}
-                onBlur={() => setSearchFocused(false)}
-                className="dashboard-search-input"
-                autoComplete="off"
-                style={{
-                  backgroundColor: 'transparent',
-                  border: 'none',
-                  color: 'var(--color-text-primary)',
-                }}
-              />
-              {/* "/" shortcut badge */}
-              {!searchFocused && !searchValue && (
-                <span
-                  className="text-xs border rounded px-1.5 py-0.5 shrink-0"
-                  style={{
-                    color: 'var(--color-text-quaternary, var(--color-text-secondary))',
-                    borderColor: 'var(--color-border-default)',
-                  }}
-                >
-                  /
-                </span>
-              )}
-            </form>
-            {showDropdown && searchValue.trim() && (
-              <div data-slot="menu" className="dashboard-search-dropdown">
-                {searchLoading && searchResults.length === 0 ? (
-                  <div className="dashboard-search-dropdown-item dashboard-search-dropdown-loading">
-                    {t('dashboard.searching')}
-                  </div>
-                ) : searchResults.length === 0 ? (
-                  <div className="dashboard-search-dropdown-item dashboard-search-dropdown-empty">
-                    {t('dashboard.noResults')}
-                  </div>
-                ) : (
-                  searchResults.map((stock, index) => {
-                    const dualName = resolveDualName(
-                      { name: stock.name, nameLocal: stock.nameLocal, nameEn: stock.nameEn },
-                      stock.symbol,
-                    );
-                    return (
-                      <button
-                        key={`${stock.symbol}-${index}`}
-                        type="button"
-                        data-slot="menu-item"
-                        className="dashboard-search-dropdown-item"
-                        onClick={() => handleSelectStock(stock)}
-                      >
-                        <span className="dashboard-search-dropdown-symbol">{stock.symbol}</span>
-                        <span className="dashboard-search-dropdown-name">
-                          {dualName.primary}
-                          {dualName.secondary && (
-                            <span className="dashboard-search-dropdown-name-secondary">{dualName.secondary}</span>
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            )}
-          </div>
+          {isMobile ? <DashboardPaletteField /> : <DashboardSymbolField />}
         </div>
 
         {/* Right actions */}

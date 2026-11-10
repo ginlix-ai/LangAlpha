@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { PREFIXES } from './scope';
+import { PREFIXES } from './prefixes';
 import type { Kind } from './types';
 
 /**

@@ -1,3 +1,4 @@
+import { PREFIXES } from './prefixes';
 import type { Kind, Lens, Place, ViewSpec } from './types';
 
 /**
@@ -22,15 +23,6 @@ export const ROOT: ViewSpec = { place: null, lens: null };
 
 const frame = (spec: ViewSpec, query = ''): Frame => ({ spec, query, chosenId: null, lead: null });
 
-/** The character that asks for each kind alone, typed as the field's first. */
-export const PREFIXES: Readonly<Record<Kind, string>> = {
-  tickers: '$',
-  files: '/',
-  threads: '#',
-  turns: '"',
-  workspaces: '@',
-  actions: '>',
-};
 const BY_PREFIX = new Map(Object.entries(PREFIXES).map(([kind, char]) => [char, kind as Kind]));
 /** What a workspace holds, so what its scope narrows to; there the other prefixes are text. */
 const IN_WORKSPACE: ReadonlySet<Kind> = new Set<Kind>(['files', 'threads', 'turns']);

@@ -7,7 +7,7 @@ import { CreateWorkspaceHost } from '@/components/CreateWorkspaceHost';
 import { clientOs } from '@/lib/clientOs';
 import { searchConversations } from '@/api/search';
 import { getRecentThreads } from '@/pages/ChatAgent/utils/api';
-import { CommandPaletteProvider } from '../CommandPaletteProvider';
+import { CommandPaletteProvider, useCommandPalette } from '../CommandPaletteProvider';
 
 // The palette's sources answer with nothing, and at once: these tests are
 // about its keys and focus, not what it finds.
@@ -55,11 +55,22 @@ function Path() {
   return <output aria-label="Path">{useLocation().pathname}</output>;
 }
 
+/** A surface that opens the palette at a kind, as the phone's Dashboard field does. */
+function OpensTickers() {
+  const palette = useCommandPalette();
+  return (
+    <button type="button" onClick={() => palette?.open({ kind: 'tickers' })}>
+      Search stocks
+    </button>
+  );
+}
+
 function renderShell() {
   return renderWithProviders(
     <CreateWorkspaceHost>
       <CommandPaletteProvider>
         <textarea aria-label="Composer" />
+        <OpensTickers />
         <Path />
       </CommandPaletteProvider>
     </CreateWorkspaceHost>,
@@ -216,6 +227,39 @@ describe('scopes', () => {
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(input).toHaveAccessibleName(/Search threads/);
     expect(screen.getByRole('combobox')).toBeInTheDocument();
+  });
+
+  it('opens in the tickers scope when asked to start there, and Backspace widens it to everything', async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Search stocks' }));
+    const input = await field();
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(input).toHaveValue('');
+    expect(input).toHaveAccessibleName('Search in Tickers');
+
+    fireEvent.change(input, { target: { value: 'nv' } });
+    expect(input).toHaveAccessibleName('Search in Tickers');
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.keyDown(input, { key: 'Backspace' });
+    expect(input).toHaveAccessibleName(/Search threads/);
+
+    // The next open by the shortcut starts from everything again.
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('combobox')).not.toBeInTheDocument());
+    shortcut();
+    expect(await field()).toHaveAccessibleName(/Search threads/);
+  });
+
+  it('starts in the tickers scope on a cold open, keeping keys typed before the field had focus', async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Search stocks' }));
+    // Focus is on the button, outside the palette, while its code loads.
+    press('n');
+    press('v');
+    const input = await field();
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(input).toHaveAccessibleName('Search in Tickers');
+    expect(input).toHaveValue('nv');
   });
 
   it('takes a leading / as the files chip, says what to type, and Backspace in the empty field takes it off', async () => {

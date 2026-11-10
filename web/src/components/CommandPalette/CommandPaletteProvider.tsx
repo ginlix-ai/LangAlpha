@@ -1,6 +1,8 @@
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { clientOs, type ClientOs } from '@/lib/clientOs';
 import { focusWithoutRing } from '@/lib/inputModality';
+import { PREFIXES } from './prefixes';
+import type { Kind } from './types';
 
 // Off the entry chunk: nothing of the palette is needed until it opens. A
 // palette whose code cannot load (offline, or a deploy removed it, which
@@ -26,8 +28,17 @@ function Unavailable({ open, onClose, onUnavailable }: PaletteProps) {
   return null;
 }
 
+/** Where an open starts. */
+export interface PaletteStart {
+  /**
+   * The kind's view, as if its prefix were typed after ⌘K: Backspace in the
+   * empty field widens it to everything.
+   */
+  kind: Kind;
+}
+
 interface CommandPaletteControls {
-  open: () => void;
+  open: (start?: PaletteStart) => void;
   close: () => void;
   isOpen: boolean;
   /** Fetches the palette's code ahead of the first open, for a pointer resting on its button. */
@@ -90,14 +101,14 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   // cancelled, and beforeinput for it is not cancellable in every browser).
   const standInRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
-  const setOpen = useCallback((next: boolean) => {
+  const setOpen = useCallback((next: boolean, first = '') => {
     const was = document.activeElement;
     if (next && !isOpenRef.current && was instanceof HTMLElement && was !== standInRef.current && !was.closest('.command-palette')) {
       returnToRef.current = was === document.body ? null : was;
     }
     isOpenRef.current = next;
     bufferingRef.current = next;
-    if (next) setTyped('');
+    if (next) setTyped(first);
     setIsOpen(next);
     // Closed before the palette took focus (Escape on a cold open, code that
     // failed to load): the stand-in hands focus back itself.
@@ -106,7 +117,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       focusWithoutRing(returnToRef.current);
     }
   }, []);
-  const open = useCallback(() => setOpen(true), [setOpen]);
+  const open = useCallback((start?: PaletteStart) => setOpen(true, start ? PREFIXES[start.kind] : ''), [setOpen]);
   const close = useCallback(() => setOpen(false), [setOpen]);
   const preload = useCallback(() => void loadPalette().catch(() => {}), []);
   const returnFocus = useCallback(() => returnToRef.current, []);
