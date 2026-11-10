@@ -1620,6 +1620,36 @@
       "write": "parameters.output_config.effort"
     }
   },
+  "claude-fable-5-2-code": {
+    "prompt_guidance": "lean",
+    "model_id": "claude-fable-5-2",
+    "provider": "claude-code",
+    "display_name": "Claude Fable 5.2",
+    "visible": true,
+    "speed": 3,
+    "intelligence": 5,
+    "context": 1000000,
+    "compaction_profile": "expansive",
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "parameters": {
+      "max_tokens": 128000
+    },
+    "reasoning": {
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default": "medium",
+      "write": "parameters.output_config.effort"
+    }
+  },
   "claude-opus-5-5-code": {
     "prompt_guidance": "lean",
     "model_id": "claude-opus-5-5",

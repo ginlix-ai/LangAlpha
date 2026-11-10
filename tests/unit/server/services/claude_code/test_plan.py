@@ -221,6 +221,8 @@ async def test_a_turn_on_a_used_up_plan_is_refused_with_the_limit_that_lasts_lon
     ("seven_day_opus", "claude-opus-5-5-code", True),
     ("seven_day_sonnet", "claude-haiku-5-5-code", False),
     ("seven_day", "claude-haiku-5-5-code", True),
+    ("seven_day_overage_included", "claude-fable-5-2-code", True),
+    ("seven_day_overage_included", "claude-opus-5-5-code", False),
 ])
 async def test_a_weekly_family_limit_refuses_only_that_familys_rows(rows, window, model, refused):
     rows["rows"] = {"saved": _held(PlanLimit(window, datetime.now(UTC) + timedelta(days=1)))}
