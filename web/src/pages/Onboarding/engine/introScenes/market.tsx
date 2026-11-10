@@ -3,11 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { Check } from 'lucide-react';
 import type { IntroVisualId } from '../../registry';
 import { Camera, REST, VIEW, shot, type Shot } from './camera';
-import { Candles, EventBadge, badgeAnchor } from './candles';
+import { Candles, LayerLabel, labelAnchor } from './candles';
 import {
-  AnnotateRow,
   CommentBox,
   Pin,
+  PublishRow,
   Selection,
   SelectionChip,
   SentSelection,
@@ -18,7 +18,7 @@ import {
 import { PAST, useSceneTime } from './clock';
 import { Loader, Typed, pointerScript } from './kit';
 import { CHART, CHAT_X, MarketPage, PAGE, REGION_BTN, SEND } from './marketParts';
-import { NVDA, NVDA_EVENTS, chartScale } from './nvdaSeries';
+import { NVDA, NVDA_EVENTS, NVDA_LAYER, chartScale } from './nvdaSeries';
 import { Reply } from './transcriptParts';
 import type { IntroScene } from './types';
 
@@ -27,10 +27,10 @@ import type { IntroScene } from './types';
    the chart under the stock's header, the Region tool is armed and the
    September drop is taken and noted; across to the chat panel, where the
    selection goes out as a chip. The agent starts on it. marketDraw: on the
-   chat panel as the agent pins the news behind each move to the chart;
-   the pointer rests on its chip, then the camera crosses to the chart,
-   where each move carries its event badge, and a click opens the story
-   behind the drop. */
+   chat panel as the agent publishes a layer labelling the news behind each
+   move; the pointer rests on its chip, then the camera crosses to the
+   chart, where each move carries its label, and a click pins the agent's
+   note on the drop. */
 /* eslint-disable react-refresh/only-export-components -- scene module:
    private scene components, one record export */
 
@@ -180,17 +180,17 @@ function MarketAsk() {
 
 /* ── marketDraw ────────────────────────────────────────────────────────── */
 
-/** The chart's chip in the panel (`InlineChartAnnotationCard` beside the live
-    chart): the first draw's place in the transcript, counting what is on the
-    chart as later draws add to it. Hovered, its edge takes the accent. */
-function ChartChip({ count, hover }: { count: number; hover: boolean }) {
+/** The layer's chip in the panel (`InlineChartLayerCard` beside the live
+    chart), right after the run that published it: the chart it is on, and
+    how many layers the turn put there. */
+function LayerChip() {
   const { t } = useTranslation();
   return (
     <span
-      className="intro-pop flex w-fit items-center gap-[4px] rounded-full border px-[5px] py-[3px] text-[6.5px] leading-none transition-colors"
+      className="intro-pop flex w-fit items-center gap-[4px] rounded-full border px-[5px] py-[3px] text-[6.5px] leading-none"
       style={{
         background: 'var(--color-bg-tool-card)',
-        borderColor: hover ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',
+        borderColor: 'var(--color-border-muted)',
         color: 'var(--color-text-tertiary)',
       }}
     >
@@ -200,19 +200,18 @@ function ChartChip({ count, hover }: { count: number; hover: boolean }) {
           NVDA
         </span>
         {' · 1D · '}
-        {t('chat.chartAnnotationCard.chipShownCount', { count })}
+        {t('chat.chartLayerCard.chipShownCount', { count: 1 })}
       </span>
     </span>
   );
 }
 
-/** Four draws, one per event, issued together and landing one by one: the
-    first becomes the chip, the rest settle as rows under it. Each lands on
-    the chart as it settles. */
+/** One ExecuteCode run builds the layer and publishes it: its row settles,
+    the chip lands under it, and every label lands on the chart at once. */
 const DRAW = {
   run: 250,
-  dones: [1000, 1250, 1500, 1750],
-  answer: 2000,
+  published: 1500,
+  answer: 1750,
   hover: 3950,
   tip: 4250,
   leave: 4700,
@@ -232,15 +231,17 @@ const EVENTS = [
 const DROP = NVDA_EVENTS.exportRule;
 
 /** On the chip, in page px, and the bottom of it. */
-const CHIP_AT = { x: CHAT_X + 46, y: 126 };
-const CHIP_BOTTOM = 134;
-/** The drop's badge, centered over its anchor. */
-const BADGE = onPage(...badgeAnchor(SCALE, DROP));
+const CHIP_AT = { x: CHAT_X + 46, y: 149 };
+const CHIP_BOTTOM = 157;
+/** The drop's label, on its chip. */
+const LABEL = onPage(...labelAnchor(SCALE, DROP));
+/** The explain card opens once the pointer has dwelt on the label. */
+const DWELL = 140;
 
 /** On the chat panel the whole time the reply comes in, its message on top
     and the chart's right half beside it; then across to rest on the chart
-    under the stock's header, where each move carries its badge, and the
-    drop's story opens over the toolbar. */
+    under the stock's header, where the layer labels each move, and the
+    drop's note opens beside its label. */
 const DRAW_SHOTS: [Shot, ...Shot[]] = [
   shot(0, PAGE.width, 0, CHAT_REST),
   // a quick pan, settled before the reply's last words can trail at the edge
@@ -248,35 +249,32 @@ const DRAW_SHOTS: [Shot, ...Shot[]] = [
 ];
 
 /** Onto the chip, held there for its tooltip, then across to the drop's
-    badge, clicked open. */
+    label, clicked to pin its card. */
 const DRAW_POINTER = pointerScript(
   { at: 3300, x: CHAT_X + 120, y: 238 },
   {
     chip: { ...CHIP_AT, arrive: DRAW.hover, leave: DRAW.leave },
-    badge: { ...BADGE, arrive: 5800, click: DRAW.click },
+    label: { ...LABEL, arrive: 5800, click: DRAW.click },
   }
 );
 
 function MarketDraw() {
   const { t: tr } = useTranslation();
   const t = useSceneTime();
-  const [first] = DRAW.dones;
-  const count = DRAW.dones.filter((d) => t >= d).length;
-  const hover = t >= DRAW.hover && t < DRAW.leave;
   return (
     <Camera shots={DRAW_SHOTS} page={PAGE} pointer={DRAW_POINTER}>
       <MarketPage
-        clear={t >= first}
         title={NOTE}
         chart={
           <Candles series={NVDA} scale={SCALE}>
-            {EVENTS.map((ev, i) => (
-              <EventBadge
+            {EVENTS.map((ev) => (
+              <LayerLabel
                 key={ev.title}
                 scale={SCALE}
-                ev={ev}
-                at={DRAW.dones[i]}
-                hover={ev === DROP && t >= DRAW_POINTER.beats.badge.arrive}
+                el={ev}
+                layer={NVDA_LAYER}
+                at={DRAW.published}
+                hover={ev === DROP && t >= DRAW_POINTER.beats.label.arrive + DWELL}
                 open={ev === DROP && t >= DRAW.click + 60}
               />
             ))}
@@ -286,23 +284,15 @@ function MarketDraw() {
           <>
             <SentSelection at={PAST} text={NOTE} note={NOTE} />
             <Reply text={LEAD} />
-            {t < first ? (
-              <AnnotateRow at={DRAW.run} done={first} />
-            ) : (
-              <ChartChip count={count} hover={hover} />
-            )}
-            <div className="flex flex-col">
-              {DRAW.dones.slice(1).map((done) => (
-                <AnnotateRow key={done} at={DRAW.run} done={done} />
-              ))}
-            </div>
+            <PublishRow at={DRAW.run} done={DRAW.published} />
+            {t >= DRAW.published && <LayerChip />}
             <Reply text={ANSWER} at={DRAW.answer} cps={80} />
           </>
         }
       />
       {t >= DRAW.tip && t < DRAW.leave && (
         <Tip x={CHIP_AT.x + 2} y={CHIP_BOTTOM + 3}>
-          {tr('chat.chartAnnotationCard.chipShownTitle')}
+          {tr('chat.chartLayerCard.chipShownTitle')}
         </Tip>
       )}
     </Camera>

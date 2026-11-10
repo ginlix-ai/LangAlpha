@@ -3,9 +3,9 @@ import { useTranslation } from 'react-i18next';
 import {
   Check,
   ChevronDown,
-  PenLine,
   Plus,
   Ruler,
+  SquareChevronRight,
   SquareDashedMousePointer,
   X,
   type LucideIcon,
@@ -17,8 +17,8 @@ import { ToolRow } from './transcriptParts';
 
 /* What goes over and around the chart (candles.tsx) when the user picks out
    part of it: the selection, its pin and comment box, the chip it waits as
-   above a composer and the card it is sent as, and the agent's annotate
-   call; and the chart toolbar's parts. The market page and the thread's
+   above a composer and the card it is sent as, and the agent's run that
+   publishes its layer; and the chart toolbar's parts. The market page and the thread's
    chart tab both draw these, so they sit apart from either. */
 /* eslint-disable react-refresh/only-export-components -- shared parts:
    the overlays plus the sizes and placement helpers the scenes lay them
@@ -261,17 +261,21 @@ export function dragBox(
   return { ...region, x1: p.x - origin.x, y1: p.y - origin.y };
 }
 
-/** One `draw_chart_annotation` call (`ToolCallRow`): annotating while it
-    runs, then the settled row naming the chart it drew on. */
-export function AnnotateRow({ at, done }: { at: number; done: number }) {
+/** What the agent says its run does: the call's `description`. */
+const PUBLISH = 'Publish the news layer on NVDA';
+
+/** The ExecuteCode call that builds the agent's layer with chartkit and
+    publishes it (`ToolCallRow`): its description while it runs, then the
+    settled row with the description as its pill. */
+export function PublishRow({ at, done }: { at: number; done: number }) {
   const { t } = useTranslation();
   return (
     <ToolRow
-      icon={PenLine}
+      icon={SquareChevronRight}
       at={at}
       done={done}
-      running={{ label: t('toolArtifact.inProgress.annotatingChart') }}
-      settled={{ label: t('toolArtifact.tool.annotateChart'), pill: 'NVDA · 1D' }}
+      running={{ label: `${PUBLISH}...` }}
+      settled={{ label: t('toolArtifact.tool.executeCode'), pill: PUBLISH }}
     />
   );
 }
@@ -315,12 +319,6 @@ export function SelectionTools({ armed = false }: { armed?: boolean }) {
       <ToolBtn icon={Ruler} />
     </span>
   );
-}
-
-/** Clear, shown while the agent's drawing is on the chart. */
-export function ClearButton() {
-  const { t } = useTranslation();
-  return <ToolBtn icon={X}>{t('marketView.chart.clearAnnotations')}</ToolBtn>;
 }
 
 /** A segmented control (`.interval-selector`), the picked one raised. */

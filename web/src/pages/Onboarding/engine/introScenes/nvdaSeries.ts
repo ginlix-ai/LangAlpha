@@ -162,23 +162,26 @@ export const NVDA = seriesOf(
   }
 );
 
-/** One `event` annotation: the bar it is pinned to, the price its badge
-    anchors at, the headline on the badge and the story behind it. */
+/** One label in the agent's chart layer (`c.label`): the bar and price it
+    sits at, its text, and the agent's note on it. */
 export interface ChartEvent {
   i: number;
   price: number;
   title: string;
-  detail?: string;
+  note?: string;
 }
 
-/** The news the agent pins to NVDA's moves, each at the bar it hit. */
+/** The title of the layer the agent publishes on NVDA's chart. */
+export const NVDA_LAYER = 'News behind the moves';
+
+/** The news that layer labels, each at the bar it hit. */
 export const NVDA_EVENTS = {
   earnings: { i: 10, price: 184.5, title: 'Earnings beat' },
   exportRule: {
     i: 17,
     price: 180.1,
     title: 'New export rule',
-    detail: 'Licenses tightened on AI chips sold abroad. NVDA fell 3% in a day.',
+    note: 'Licenses tightened on AI chips sold abroad. NVDA fell 3% in a day.',
   },
   fedCut: { i: 23, price: 171.4, title: 'Fed cuts rates' },
   upgrade: { i: 38, price: 173.9, title: 'Analyst upgrade' },

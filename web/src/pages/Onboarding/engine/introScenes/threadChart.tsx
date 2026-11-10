@@ -1,15 +1,16 @@
 import { useTranslation } from 'react-i18next';
-import { CandlestickChart, ExternalLink, Menu, TextSelect, X } from 'lucide-react';
+import { ArrowRight, CandlestickChart, ExternalLink, Menu, TextSelect } from 'lucide-react';
 import { useLocale } from '@/hooks/useLocale';
 import { fixed2, signedFixed2 } from '@/lib/format';
+import { formatLayerAsOf } from '@/pages/MarketView/utils/layerDisplay';
 import type { IntroVisualId } from '../../registry';
 import { CLOSE, Camera, REST, type Shot, VIEW, shot } from './camera';
-import { Candles, EventBadge, badgeAnchor } from './candles';
+import { Candles, LayerLabel, labelAnchor } from './candles';
 import {
-  AnnotateRow,
   CommentBox,
   FoldedIntervals,
   Pin,
+  PublishRow,
   Selection,
   SelectionChip,
   SelectionTools,
@@ -20,10 +21,17 @@ import {
   dragBox,
 } from './chartTools';
 import { StockPriceCard } from './charts';
-import { FileCard } from './chatParts';
 import { PAST, useSceneTime } from './clock';
 import { Appear, Loader, Typed, UserBubble, pointerScript, signColor } from './kit';
-import { NVDA, NVDA_EVENTS, NVDA_LAST, NVDA_PREV, NVDA_QUOTE, chartScale } from './nvdaSeries';
+import {
+  NVDA,
+  NVDA_EVENTS,
+  NVDA_LAST,
+  NVDA_LAYER,
+  NVDA_PREV,
+  NVDA_QUOTE,
+  chartScale,
+} from './nvdaSeries';
 import { PanelTab } from './panelParts';
 import { PANEL_W, ThreadPage } from './threadParts';
 import { HEADER_H } from './transcriptParts';
@@ -33,10 +41,10 @@ import type { IntroScene } from './types';
 /* The thread intro's chart step: a chart tab in the file panel
    (`MarketChartSurface` in its compact form, as `ChartTab` hosts it). The
    user takes a region of it, notes it and sends it from the thread's
-   composer; the agent pins the news behind the move to the same chart and
-   answers with the chart's card in the transcript. A camera follows the
-   work across the page: the chart, the composer, the reply, then the chart
-   again, where a badge opens on its story. */
+   composer; the agent publishes a layer labelling the news behind the move
+   on the same chart and answers with the layer's card in the transcript. A
+   camera follows the work across the page: the chart, the composer, the
+   reply, then the chart again, where a label opens on the agent's note. */
 /* eslint-disable react-refresh/only-export-components -- scene module:
    private scene components, one record export */
 
@@ -85,8 +93,8 @@ const BOX_W = 88;
 const BOX = besideRegion(SCALE, REGION.x0, REGION.x1, REGION.y0, BOX_W);
 const PIN = besideRegion(SCALE, REGION.x0, REGION.x1, REGION.y0, 10);
 const ADD = addButton(BOX, BOX_W);
-/** The export rule's badge, centered over its anchor. */
-const BADGE = toPage(...badgeAnchor(SCALE, EXPORT_RULE));
+/** The export rule's label, on its chip. */
+const LABEL = toPage(...labelAnchor(SCALE, EXPORT_RULE));
 
 const CH = {
   arm: 850,
@@ -112,7 +120,7 @@ const ASK = 'Why did this fade?';
     volume and an edge of the chat beside it, as the region is taken and
     noted; across to the chat as the chip lands in the composer, held there
     as the ask is typed and the reply comes in above it; then in on the
-    chart as its badges land and one opens on its story. */
+    chart as its labels land and one opens on the agent's note. */
 const SHOTS: [Shot, ...Shot[]] = [
   shot(0, 240, 132, REST),
   shot(4100, 160, 198, REST, 850),
@@ -121,7 +129,7 @@ const SHOTS: [Shot, ...Shot[]] = [
 
 /** Region armed; the drag from the region's corner, pressed over the
     dwell, to its far corner and off it; Add on the comment box; send in
-    the composer; and the export rule's badge, clicked open. */
+    the composer; and the export rule's label, clicked to pin its card. */
 const POINTER = pointerScript(
   { at: 150, x: 352, y: 168 },
   {
@@ -131,7 +139,7 @@ const POINTER = pointerScript(
     clear: { ...toPage(REGION.x1 + 4, REGION.y1 - 10), arrive: 2350 },
     add: { ...toPage(ADD.x, ADD.y), arrive: 2900, click: CH.add, leave: 3300 },
     send: { ...SEND, arrive: 5100, click: CH.send, leave: 5600 },
-    badge: { ...BADGE, arrive: 8800, click: CH.open - 60 },
+    label: { ...LABEL, arrive: 8800, click: CH.open - 60 },
   }
 );
 
@@ -201,10 +209,9 @@ function LegendStats() {
 }
 
 /** The compact chart in the panel: the legend and the folded interval
-    picker, Clear (icon only at this width) while the agent's drawing is up,
-    the selection tools and the menu, then the tab's own actions, add to
-    context and open in MarketView. */
-function PanelChart({ armed, clear }: { armed: boolean; clear: boolean }) {
+    picker, the selection tools and the menu, then the tab's own actions,
+    add to context and open in MarketView. */
+function PanelChart({ armed }: { armed: boolean }) {
   const t = useSceneTime();
   const sent = t >= CH.send;
   const drawing = t >= CH.press && !sent;
@@ -224,11 +231,6 @@ function PanelChart({ armed, clear }: { armed: boolean; clear: boolean }) {
           <LegendLead />
           <FoldedIntervals />
           <span className="flex items-center gap-[2px]">
-            {clear && (
-              <span className="intro-pop">
-                <ToolBtn icon={X} />
-              </span>
-            )}
             <SelectionTools armed={armed} />
             <ToolBtn icon={Menu} />
           </span>
@@ -253,12 +255,13 @@ function PanelChart({ armed, clear }: { armed: boolean; clear: boolean }) {
             />
           )}
           {t >= CH.added && !sent && <Pin n={1} left={PIN.left} top={PIN.top} />}
-          <EventBadge scale={SCALE} ev={EARNINGS} at={CH.drawn} />
-          <EventBadge
+          <LayerLabel scale={SCALE} el={EARNINGS} layer={NVDA_LAYER} at={CH.drawn} />
+          <LayerLabel
             scale={SCALE}
-            ev={EXPORT_RULE}
-            at={CH.drawn + 150}
-            hover={t >= POINTER.beats.badge.arrive}
+            el={EXPORT_RULE}
+            layer={NVDA_LAYER}
+            at={CH.drawn}
+            hover={t >= POINTER.beats.label.arrive}
             open={t >= CH.open}
           />
         </Candles>
@@ -269,26 +272,74 @@ function PanelChart({ armed, clear }: { armed: boolean; clear: boolean }) {
 
 /* ── the transcript ────────────────────────────────────────────────────── */
 
-/** The chart's card in a thread (`InlineChartAnnotationCard` with no live
-    chart beside it): the candle glyph over the interval, the chart's name,
-    how many annotations and which, and Open. */
-function ChartFileCard() {
+/** What the layer's card lists for it: its as-of (the last bar it was built
+    on) and the agent's summary. */
+const AS_OF = '2026-10-21';
+const SUMMARY =
+  'The Aug 27 gap faded on news: a new export rule on Sep 8 started the slide to 170.60.';
+
+/** The layer's card in a thread (`InlineChartLayerCard` with no live chart
+    beside it), right after the run that published it: the candle glyph, the
+    chart and how many layers, and Open chart; then each layer with its as-of
+    and summary. */
+function LayerCard() {
   const { t } = useTranslation();
-  const labels = [EARNINGS.title, EXPORT_RULE.title];
+  const locale = useLocale();
   return (
     <Appear at={CH.drawn} pop>
-      <FileCard
-        name={t('chat.chartAnnotationCard.name', { symbol: 'NVDA', interval: '1D' })}
-        meta={
-          <>
-            {t('chat.chartAnnotationCard.metaCount', { count: labels.length })} ·{' '}
-            {labels.join(t('chat.chartAnnotationCard.labelSeparator'))}
-          </>
-        }
-        icon={CandlestickChart}
-        label="1D"
-        solo
-      />
+      <div
+        className="overflow-hidden rounded-[6px] border"
+        style={{ borderColor: 'var(--color-border-muted)', background: 'var(--color-bg-card)' }}
+      >
+        <div
+          className="flex items-center gap-[5px] border-b px-[7px] py-[5px]"
+          style={{ borderColor: 'var(--color-border-muted)' }}
+        >
+          <CandlestickChart
+            className="h-2 w-2 shrink-0"
+            style={{ color: 'var(--color-text-tertiary)' }}
+          />
+          <span
+            className="min-w-0 flex-1 truncate text-[6.5px] leading-none"
+            style={{ color: 'var(--color-text-primary)' }}
+          >
+            <span className="font-semibold">NVDA</span>
+            <span style={{ color: 'var(--color-text-tertiary)' }}>{' · 1D · '}</span>
+            <span style={{ color: 'var(--color-text-secondary)' }}>
+              {t('marketView.layers.count', { count: 1 })}
+            </span>
+          </span>
+          <span
+            className="flex shrink-0 items-center gap-[2px] rounded-[3px] border px-[5px] py-[2px] text-[6px] leading-none"
+            style={{ borderColor: 'var(--color-border-muted)', color: 'var(--color-text-primary)' }}
+          >
+            {t('chat.chartLayerCard.open')}
+            <ArrowRight className="h-[6px] w-[6px]" />
+          </span>
+        </div>
+        <div className="flex flex-col gap-[3px] px-[7px] py-[6px]">
+          <span className="flex items-baseline justify-between gap-[6px] leading-none">
+            <span
+              className="min-w-0 truncate text-[6.5px] font-medium"
+              style={{ color: 'var(--color-text-primary)' }}
+            >
+              {NVDA_LAYER}
+            </span>
+            <span
+              className="shrink-0 font-mono text-[5px] tabular-nums"
+              style={{ color: 'var(--color-text-tertiary)' }}
+            >
+              {t('marketView.layers.asOf', { date: formatLayerAsOf(AS_OF, locale) })}
+            </span>
+          </span>
+          <span
+            className="text-[6px] leading-[1.55]"
+            style={{ color: 'var(--color-text-secondary)' }}
+          >
+            {SUMMARY}
+          </span>
+        </div>
+      </div>
     </Appear>
   );
 }
@@ -321,9 +372,10 @@ function Chat() {
         {t >= CH.think && t < CH.draw && (
           <Loader color="var(--color-icon-muted)" className="text-[10px]" />
         )}
-        {t < CH.drawn ? <AnnotateRow at={CH.draw} done={CH.drawn} /> : <ChartFileCard />}
+        <PublishRow at={CH.draw} done={CH.drawn} />
+        {t >= CH.drawn && <LayerCard />}
         <Reply
-          text="It faded on news: a **new export rule** on Sep 8 took 3% off in a day, and the slide ran through the gap to **170.60**. Both events are on the chart."
+          text="It faded on news: a **new export rule** on Sep 8 took 3% off in a day, and the slide ran through the gap to **170.60**. Both events are labelled on the chart."
           at={CH.answer}
           cps={110}
         />
@@ -341,7 +393,7 @@ function ChartPanel() {
         title="NVDA earnings"
         tabs={<PanelTab icon={CandlestickChart} label="NVDA" active />}
         chat={<Chat />}
-        panel={<PanelChart armed={t >= CH.arm && t < CH.release} clear={t >= CH.drawn} />}
+        panel={<PanelChart armed={t >= CH.arm && t < CH.release} />}
         ask={{ text: ASK, at: CH.ask, send: CH.send, cps: 22 }}
       />
     </Camera>
