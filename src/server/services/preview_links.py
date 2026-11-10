@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import shlex
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -18,6 +17,8 @@ from typing import Any
 
 import httpx
 
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.sandbox.execution import app_command
 from ptc_agent.core.sandbox.preview_probe import head_preview
 from ptc_agent.core.sandbox.runtime import PreviewInfo
 from src.server.database.workspace import get_preview_command
@@ -255,9 +256,9 @@ async def resolve_preview(
     command: str | None | object = UNSET,
     force: bool = False,
     expires_in: int = SIGNED_URL_LIFETIME,
-    work_dir: str,
+    folder: WorkspaceLayout,
 ) -> str:
-    """Core preview URL resolution, behind ``owner_preview_url``.
+    """Core preview URL resolution, behind ``owner_preview``.
 
     When a *command* is available (supplied by the caller or read from the
     workspace ``artifacts`` column), ``start_and_get_preview_url`` is called.
@@ -333,7 +334,7 @@ async def resolve_preview(
             await set_preview_owner(sandbox.sandbox_id, port, workspace_id)
             try:
                 preview_info = await sandbox.start_and_get_preview_url(
-                    f"cd {shlex.quote(work_dir)} && {cmd}",
+                    app_command(folder, cmd),
                     port,
                     expires_in=expires_in,
                     owner=workspace_id,

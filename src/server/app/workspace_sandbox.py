@@ -17,6 +17,7 @@ import posixpath
 import re
 import shlex
 import time
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -27,16 +28,16 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from src.server.database.share_codes import share_url
-from src.server.database.share_links import ensure_app_link
+from src.server.database.share_links import command_key, ensure_app_link
 from src.server.utils.api import CurrentUserId
 from src.server.database.workspace import (
     get_preview_command,
     get_workspace_dir_name as db_get_workspace_dir_name,
 )
 from src.server.database.workspace_folders import is_top_level, workspace_folder_in_use
-from src.server.app.workspace_files._shared import work_dir_for
 from src.server.services.workspace_files import (
     held_workspace_row,
+    layout_for,
     owned_workspace_on_computer,
 )
 from src.server.services.workspace_layout import WorkspaceLayoutUnavailable
@@ -44,6 +45,7 @@ from src.server.utils.error_sanitization import sandbox_failure_http
 from src.server.services.workspace_manager import WorkspaceManager
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT, WorkspaceLayout
 from ptc_agent.core.sandbox import PTCSandbox
+from ptc_agent.core.sandbox.execution import app_command
 from ptc_agent.core.sandbox.preview_probe import head_preview
 from ptc_agent.core.sandbox.runtime import (
     RuntimeState,
@@ -574,18 +576,30 @@ class PreviewUrlResponse(BaseModel):
     url: str
     port: int
     expires_in: int
+    #: The fingerprint of the command behind ``url`` (``command_key``), which
+    #: the owner's grant to the app is tied to; answered with the URL so a
+    #: frame is never keyed by a command other than the one it runs.
+    command_key: str | None = None
 
 
-def _preview_work_dir(workspace: dict[str, Any]) -> str:
+def _preview_layout(workspace: dict[str, Any]) -> WorkspaceLayout:
     try:
-        return work_dir_for(workspace)
+        return layout_for(workspace)
     except WorkspaceLayoutUnavailable as e:
         raise HTTPException(
             status_code=503, detail="Workspace files are not available"
         ) from e
 
 
-async def owner_preview_url(
+@dataclass(frozen=True)
+class OwnerPreview:
+    url: str
+    #: The fingerprint of the command ``url``'s app is started with
+    #: (``command_key``), which the owner's grant to the app is tied to.
+    command_key: str | None
+
+
+async def owner_preview(
     workspace_id: str,
     user_id: str,
     port: int,
@@ -593,24 +607,31 @@ async def owner_preview_url(
     command: str | None | object = UNSET,
     force: bool = False,
     expires_in: int = SIGNED_URL_LIFETIME,
-) -> str:
+) -> OwnerPreview:
     """A signed URL for the owner's own preview, as an HTTP answer.
 
     The one acquisition path for an authenticated caller: the preview panel
     and the ``/a/`` page both come through here, so a stopped sandbox is
     started for the owner and for nobody else. Ownership, the unbound-Home
     refusal and every failure status live here rather than in each route.
+
+    The stored command is read once, after the computer is up, and that one
+    read both starts the app and names it: a key taken from a read before the
+    wake could belong to a command replaced meanwhile.
     """
     _session, sandbox = await _get_sandbox(workspace_id, user_id)
     try:
         # The server starts in the folder, which a settle on any worker would
         # otherwise move between the read and the launch.
         async with held_workspace_row(workspace_id) as workspace:
-            return await resolve_preview(
+            if command is UNSET:
+                command = await get_preview_command(workspace_id, port)
+            url = await resolve_preview(
                 sandbox, workspace_id, port,
                 command=command, force=force, expires_in=expires_in,
-                work_dir=_preview_work_dir(workspace),
+                folder=_preview_layout(workspace),
             )
+            return OwnerPreview(url, command_key(command))
     except HTTPException:
         raise
     except NotImplementedError:
@@ -675,12 +696,17 @@ async def get_sandbox_preview_url(
 
     If command is provided, starts the server process in background before generating the URL.
     """
-    url = await owner_preview_url(
+    preview = await owner_preview(
         workspace_id, x_user_id, body.port,
         command=body.command if body.command else UNSET,
         force=body.force, expires_in=body.expires_in,
     )
-    return PreviewUrlResponse(url=url, port=body.port, expires_in=body.expires_in)
+    return PreviewUrlResponse(
+        url=preview.url,
+        port=body.port,
+        expires_in=body.expires_in,
+        command_key=preview.command_key,
+    )
 
 
 class PreviewHealthRequest(BaseModel):
@@ -781,7 +807,7 @@ async def restart_preview_server(
     # The server starts in the folder, which a settle on any worker would
     # otherwise move between the read and the launch.
     async with held_workspace_row(workspace_id) as workspace:
-        work_dir = _preview_work_dir(workspace)
+        folder = _preview_layout(workspace)
         try:
             async with preview_launch_lease(sandbox.sandbox_id, body.port):
                 owner = await get_preview_owner(sandbox.sandbox_id, body.port)
@@ -795,7 +821,7 @@ async def restart_preview_server(
                 await set_preview_owner(sandbox.sandbox_id, body.port, workspace_id)
                 try:
                     await sandbox.start_preview_server(
-                        f"cd {shlex.quote(work_dir)} && {body.command}",
+                        app_command(folder, body.command),
                         body.port,
                         owner=workspace_id,
                     )

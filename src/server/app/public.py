@@ -42,7 +42,7 @@ from src.server.app.share_access import (
     resolve_link,
 )
 from src.server.app.share_files import share_files_router
-from src.server.app.workspace_sandbox import owner_preview_url, with_preview_path
+from src.server.app.workspace_sandbox import owner_preview, with_preview_path
 from src.server.database import artifacts as artifacts_db
 from src.server.database.artifacts import Artifact, Version
 from src.server.database.conversation.replay_rows import get_replay_thread_data
@@ -169,12 +169,15 @@ async def _link_metadata(
     link = access.link
     if link.kind == KIND_APP:
         # An app link is never shared, so only its owner is ever here.
-        url = await owner_preview_url(link.workspace_id, user_id, link.port)
+        preview = await owner_preview(link.workspace_id, user_id, link.port)
         return {
             "kind": "app",
             "title": link.display_title,
-            "url": with_preview_path(url, path or link.path),
-            "expires_in": seconds_left(await signed_url_expires_at(url)),
+            # With the URL, so the page keys the owner's grant by the command
+            # this URL's app was started with and by no earlier one.
+            "command_key": preview.command_key,
+            "url": with_preview_path(preview.url, path or link.path),
+            "expires_in": seconds_left(await signed_url_expires_at(preview.url)),
         }
     return await _file_metadata(access)
 
