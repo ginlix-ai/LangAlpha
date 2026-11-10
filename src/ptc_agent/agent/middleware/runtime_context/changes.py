@@ -20,7 +20,10 @@ from __future__ import annotations
 import difflib
 import hashlib
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ptc_agent.agent.tools.context_file_policy import CappedFile
 
 UPDATE_SCHEMA_VERSION = 1
 
@@ -53,7 +56,7 @@ class SourceRead:
     ``available`` is separate from an empty ``text`` on purpose: "the workspace
     has no notes" and "the sandbox did not answer" must never collapse into the
     same value, or a transient read failure looks like a deletion and the model
-    is told to recreate a file that already exists. ``cap`` is the ceiling this
+    is told to recreate a file that already exists. ``cap`` is the capped file this
     source was read under, carried with the read so the freeze does not have to
     know which source it is holding.
     """
@@ -64,7 +67,7 @@ class SourceRead:
     text: str | None = None
     available: bool = True
     provenance: dict[str, Any] = field(default_factory=dict)
-    cap: int | None = None
+    cap: CappedFile | None = None
 
     @property
     def content(self) -> str:

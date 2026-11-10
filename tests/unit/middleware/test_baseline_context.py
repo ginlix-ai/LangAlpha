@@ -33,10 +33,10 @@ from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
+from ptc_agent.agent.tools.context_file_policy import MAX_AGENT_MD_SIZE
 from ptc_agent.agent.middleware.runtime_context import (
     ENVELOPE_OPEN,
     HARNESS_BLOCKS,
-    MAX_AGENT_MD_SIZE,
     RUNTIME_UPDATE_KEY,
     BaselineContextMiddleware,
     BaselineEpoch,
@@ -1223,7 +1223,7 @@ class TestRendering:
     async def test_a_large_agent_md_is_truncated(self):
         mw = _middleware(_session("x" * (MAX_AGENT_MD_SIZE + 1000)))
         state = await mw.abefore_agent({}, None)
-        assert "[... truncated ...]" in _text(await _render(mw, state))
+        assert "[... truncated: agent.md is past its size limit" in _text(await _render(mw, state))
 
     @pytest.mark.asyncio
     async def test_a_renamed_workspace_is_a_row_and_the_block_stays(self):
