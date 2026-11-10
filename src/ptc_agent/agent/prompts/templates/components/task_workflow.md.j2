@@ -15,7 +15,7 @@
 {% if role | default("analyst") == "chief_of_staff" %}
 5. **Update agent.md** as `<role>` describes
 {% else %}
-5. **Update agent.md**: Key findings{% if scratchpad_enabled | default(false) %} that are confirmed or final{% endif %}, what each task produced and where, reusable artifacts
+5. **Update agent.md**: one line for what the task produced and where, with its answer in a sentence, and a reusable script it built under Reusable. The findings stay in the deliverable.
 {% endif %}
 6. **Answer**: Close with your final message in chat, linking any deliverables.
 

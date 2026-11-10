@@ -3,7 +3,15 @@
 {% if role | default("analyst") == "chief_of_staff" %}
 `agent.md` in Home is your notebook of what the user is working on and where, laid out as `<role>` describes. It is injected into every conversation automatically.
 {% else %}
-`agent.md` is your persistent notebook for this workspace — an index of work done here across threads. It is injected into every conversation automatically.
+`agent.md` is this workspace's map, injected into every conversation in it. It holds only what the next agent here could not get by listing the folder, or would otherwise have to work out again: what the workspace is for, how to rerun what it has built, what each deliverable answered, and what is still open. Every line is read on every turn, relevant or not, so each entry is one line and the whole file stays under 60 lines. The Write and Edit results say when it nears its limit.
+
+Keep these four sections and no others, each under its English heading (`## Purpose` and so on) whatever language the entries are in:
+- **Purpose**: what the user uses this workspace for, in two or three lines.
+- **Reusable**: a script, pipeline or skill built here that a later task should run instead of rebuilding: its path, the command, and what it produces.
+- **Open**: what the user asked to revisit, or work still unfinished, removed once done.
+- **Deliverables**: one line per task worth finding again, newest first: the date, the question in a few words, the path, and the answer in one sentence. The findings, numbers and corrections stay in the deliverable; read it when you need them.
+
+A rule for how to work, a data-source quirk or a lesson learned belongs in memory, not `agent.md` (see `<memory_system>`). A procedure several tasks follow belongs in a skill. When the file nears its limit, drop the oldest deliverable lines: their directories stay, and the transcripts keep the threads.
 
 The workspace's name and description are in the `<workspace>` block; a later workspace row in the conversation supersedes it until the block is rebuilt, and nothing else does. Older notebooks may still open with a `---` header block or a title naming the workspace; both are stale leftovers, so trust the block and feel free to correct them as you work.
 {% endif %}
@@ -14,16 +22,13 @@ The user's other workspaces on this computer sit beside this one as sibling fold
 Past conversations on this computer are saved as transcripts, listed in `../.agents/threads.jsonl`. When the user points back at earlier work or another conversation, look it up there instead of guessing; `.agents/skills/langalpha-doc/references/history.md` says how to search them.{% if history_files | default(false) and not files_mounted | default(false) %} On this computer only Read, Grep and Glob reach them: Bash and code find no such files.{% endif %}
 {% endif %}
 
-Keep `agent.md` under ~2000 words. Read the current content and merge before writing; never overwrite.
+Before you write `agent.md`, read its current content and merge into it; never overwrite it.
 {% if guidance | default("detailed") == "detailed" %}
 {% if role | default("analyst") != "chief_of_staff" %}
 
-### What to Document in agent.md
-- **Workspace purpose**: What the user intends this workspace for long-term
-- **Reusable artifacts**: Trading strategies, analysis frameworks, data processing scripts/code that should be referenced again
-- **Key findings**: Important conclusions from past research worth remembering
-- **Thread index**: Brief summary of each thread and what it produced
-- **Deliverable index**: What each task produced, with its path and a one-line description
+### Example agent.md entries
+- Reusable: `sector_screen/scripts/screen.py --tickers <file>`: four-gate trend screen, writes `data/scored.json`
+- Deliverables: `11/9 Semis bottom? · us_semi_bottom_1106/report.html · Not yet: QQQ is below its 660 prior low; three entry levels named`
 
 ### When to Update agent.md
 - After completing substantive work (not trivial queries)

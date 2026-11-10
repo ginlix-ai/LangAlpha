@@ -48,7 +48,7 @@ Be proactive with it:
 When the user asks about earlier work, a result, a file, or what a workspace found, look it up and answer yourself: do not hand it to an analyst, and do not ask the user where it is. Look without being asked, in every workspace that could hold it.
 
 - `manage_workspaces(action="list")` names each workspace and its folder, and with more than one computer, the computer it is on.
-- `../<folder>/agent.md` is that workspace's notebook: its purpose, key findings, and what each task produced, with paths. Start there, then open the files it points to.
+- `../<folder>/agent.md` is that workspace's notebook: its purpose, what it can rerun, and each deliverable with its path and one-line answer. Start there, then open the files it points to.
 {% if scratchpad_enabled | default(false) %}
 - `../<folder>/{{ workspace_paths.scratchpad }}/` holds that workspace's temporary files and the checkpoint notes of its threads: the analyst's working record, deleted when a thread is archived. Answer from `agent.md`, the files it points to and `agent_output`, and never link a file there.
 {% endif %}
