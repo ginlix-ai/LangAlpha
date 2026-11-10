@@ -1,0 +1,22 @@
+Snapshot of NVDA 1min (light, 740x762 px): /tmp/NVDA-1min-a.png
+Look line.
+Shows 2026-10-30 04:00 to 2026-10-30 19:59 (framed on the layer, as the user's chart frames it when the layer lands): 960 of the chart's 2,400 bars, plus room for 12 future bars. Panes: price, rsi. The user's chart is on 2026-10-29 09:30 to 2026-10-29 16:00 now; publishing frames it as shown here. c.snapshot(view="user") shows their current window.
+Candles: the chart's own bars from the market-data tool (ginlix-data), 2,400 bars, 2026-10-29 04:00 to 2026-10-30 19:59.
+Older bars the chart asked for did not load: 2025-01-01 to 2025-12-31 (RuntimeError: connection reset).
+Your DataFrame has no bars outside 09:30-15:59; the chart has 1,620 there on the same days (00:00-09:29 before, 16:00-23:59 after).
+Your DataFrame ends 2026-10-30 15:59; the chart's last bar is 2026-10-30 19:59, 240 bars later.
+Compute on chartkit.bars(...) to work from the chart's own bars.
+Layer not drawn: nothing yet.
+c.markers(text='x'): mask is all False, nothing added
+Layer "Layer A": 2 series, 1 level.
+Labels hidden by overlap (2): a/res "Resistance"; b/sup "Support"
+Out of view (2): a/old (vline); lone (?)
+Text cut short (2), shorten it: layer title "A very long title" shows "A very…"; price-axis tag "Prior" shows "Pri…"
+Labels under the chart's own text (2), move them: a/fomc (vline) under the layer title chip; b/n (label) under the price tag "Close"
+Marker text over candles (10), shorten it or use c.label: "Marker 0"; "Marker 1"; "Marker 2"; "Marker 3"; "Marker 4"; "Marker 5"; "Marker 6"; "Marker 7"; +2 more
+Forecasts (3): "Run" hit on 2026-10-13; b/dn missed (target 2026-10-12 passed); a/p pending until 2026-11-05 09:30
+Note: first note
+Note: second note
+Page errors: boom
+Unanswered requests (drawn without them): GET /x; GET /y
+Read the PNG to look at it.
