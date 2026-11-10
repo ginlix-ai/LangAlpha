@@ -1,4 +1,5 @@
 import type { QueryMeta } from '@tanstack/react-query';
+import type { SearchKind } from '@/api/search';
 
 /**
  * Hierarchical query key factory for React Query, plus the query `meta`
@@ -191,6 +192,15 @@ export const queryKeys = {
     recentAll:   () => [...queryKeys.threads.all, 'recent'],
     recent:      (limit: number) => [...queryKeys.threads.recentAll(), limit],
     status:      (threadId: string) => [...queryKeys.threads.all, 'status', threadId],
+    // The search across every thread (the command palette). Under the prefix,
+    // so a rename, archive or delete rereads the results already on screen.
+    searchAll:   () => [...queryKeys.threads.all, 'search'],
+    // `workspaceId` / `threadId` narrow it to one workspace or one thread.
+    search:      (params: { q: string; kinds?: SearchKind | readonly SearchKind[]; limit: number; paged?: boolean; workspaceId?: string; threadId?: string }) =>
+      [...queryKeys.threads.searchAll(), params],
+    // One turn as the palette's preview shows it; null is the newest turn.
+    searchPreview: (threadId: string, turnIndex: number | null) =>
+      [...queryKeys.threads.searchAll(), 'preview', threadId, turnIndex],
     // The thread's public link: whether it is shared, its URL, what visitors
     // may open. The chat header and every share panel read this one entry.
     share:       (threadId: string) => [...queryKeys.threads.all, 'share', threadId],

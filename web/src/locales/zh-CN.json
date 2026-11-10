@@ -7027,8 +7027,8 @@
   "palette": {
     "copyFailed": "无法复制到剪贴板",
     "title": "搜索与命令",
-    "label": "搜索对话、股票代码、技能、设置，或直接提问",
-    "placeholder": "搜索对话、股票代码、技能、设置，或直接提问",
+    "label": "搜索对话、文件、股票代码、设置，或直接提问",
+    "placeholder": "搜索对话、文件、股票代码、设置，或直接提问",
     "untitledThread": "未命名对话",
     "analystIn": "{{workspace}} 的分析师",
     "askTitle": "提问“{{query}}”",
@@ -7042,7 +7042,11 @@
       "workspaces": "工作区",
       "skills": "技能",
       "places": "页面与设置",
-      "ask": "提问"
+      "ask": "提问",
+      "turns": "对话内容",
+      "ticker": "股票",
+      "threadsOn": "与 {{symbol}} 相关的对话",
+      "files": "文件"
     },
     "kind": {
       "workspace": "工作区",
@@ -7064,7 +7068,12 @@
       "back": "返回",
       "move": "移动",
       "close": "关闭",
-      "actions": "操作"
+      "actions": "操作",
+      "openAtTurn": "定位到这一轮",
+      "openThread": "打开对话",
+      "threadsMentioning": "提及 {{symbol}} 的对话",
+      "searchIn": "在其中搜索",
+      "copyPath": "复制路径"
     },
     "action": {
       "newThread": "新建对话",
@@ -7079,7 +7088,73 @@
       "newAutomation": "定时 提醒 周期 简报 automation",
       "theme": "外观 深色 浅色 模式 颜色 theme dark light"
     },
-    "search": "搜索"
+    "search": "搜索",
+    "inThisThread": "{{agent}}，在此对话中",
+    "you": "你",
+    "narrowPlaceholder": "在与 {{symbol}} 相关的对话中筛选",
+    "busy": "搜索过于频繁，请稍后再试。",
+    "searchFailed": "无法搜索对话。",
+    "kindFailed": {
+      "threads": "暂时无法搜索对话标题。",
+      "turns": "暂时无法搜索对话内容。",
+      "files": "暂时无法搜索文件。"
+    },
+    "noMatches": "无匹配结果",
+    "showAll": {
+      "threads": "显示全部对话",
+      "turns": "显示全部对话内容匹配",
+      "files": "显示全部文件"
+    },
+    "preview": {
+      "missing": "暂无可预览的内容。",
+      "failed": "无法加载预览。"
+    },
+    "scope": {
+      "label": "在 {{scope}} 中搜索",
+      "leave": "退出此范围",
+      "workspacePlaceholder": "搜索这里的对话和文件，或向 Agent 提问",
+      "threadPlaceholder": "在此对话中搜索，或继续写",
+      "tickersHint": "输入股票代码或公司名称。",
+      "threadHint": "在此对话中搜索",
+      "noThreads": "这里还没有对话。",
+      "kinds": {
+        "tickers": "股票代码",
+        "files": "文件",
+        "threads": "对话",
+        "turns": "对话内容",
+        "workspaces": "工作区",
+        "actions": "操作"
+      },
+      "placeholders": {
+        "tickers": "按代码或公司名搜索股票",
+        "files": "按文件名或路径搜索文件",
+        "threads": "搜索对话标题",
+        "turns": "搜索对话中说过的内容",
+        "workspaces": "搜索工作区",
+        "actions": "搜索操作、页面与设置"
+      },
+      "kindIn": "在 {{place}} 中搜索{{kind}}",
+      "filesHint": "输入文件名或路径的一部分。",
+      "turnsHint": "输入你或 Agent 说过的话。"
+    },
+    "keys": {
+      "enter": "回车：{{action}}。",
+      "actions": "右方向键：更多操作。",
+      "askMac": "Command 加回车：向 Agent 提问。",
+      "askOther": "Ctrl 加回车：向 Agent 提问。",
+      "back": "左方向键或 Esc：返回。",
+      "scope": "Tab：在其中搜索。",
+      "leave": "退格键或 Esc：退出在 {{scope}} 中的搜索。"
+    },
+    "prefixes": {
+      "label": "先输入以下前缀，只搜索一类内容：",
+      "tickers": "股票代码",
+      "files": "文件",
+      "threads": "对话",
+      "turns": "对话内容",
+      "workspaces": "工作区",
+      "actions": "操作"
+    }
   },
   "report": {
     "menuItem": "报告问题",

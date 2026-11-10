@@ -1,5 +1,6 @@
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { clientOs, type ClientOs } from '@/lib/clientOs';
+import { focusWithoutRing } from '@/lib/inputModality';
 
 // Off the entry chunk: nothing of the palette is needed until it opens. A
 // palette whose code cannot load (offline, or a deploy removed it, which
@@ -11,6 +12,7 @@ interface PaletteProps {
   open: boolean;
   onClose: () => void;
   typed: string;
+  returnFocus: () => HTMLElement | null;
   onUnavailable: () => void;
 }
 const lazyPalette = () => lazy<ComponentType<PaletteProps>>(() => loadPalette().catch(() => ({ default: Unavailable })));
@@ -75,15 +77,51 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   // Read by the shortcut's listener, which toggles without a render between
   // presses; kept beside the state so an updater never has to write a ref.
   const isOpenRef = useRef(false);
+  // Where focus was when the palette was asked to open, which it hands back
+  // on close. Taken here, before the shortcut moves focus to the stand-in.
+  const returnToRef = useRef<HTMLElement | null>(null);
+  // A stand-in field that holds focus from ⌘K until the palette's own takes
+  // it. Swallowing keydowns keeps plain keys off the page, but an IME's text
+  // arrives as a composition, not keys, and lands in whatever has focus: a
+  // composer under the palette would take Chinese or Japanese typed straight
+  // after ⌘K. With focus here the composition happens in this field, and
+  // each finished one joins what was typed. Redirecting focus beats trying
+  // to cancel the composition elsewhere (compositionstart cannot be
+  // cancelled, and beforeinput for it is not cancellable in every browser).
+  const standInRef = useRef<HTMLInputElement>(null);
+  const composingRef = useRef(false);
   const setOpen = useCallback((next: boolean) => {
+    const was = document.activeElement;
+    if (next && !isOpenRef.current && was instanceof HTMLElement && was !== standInRef.current && !was.closest('.command-palette')) {
+      returnToRef.current = was === document.body ? null : was;
+    }
     isOpenRef.current = next;
     bufferingRef.current = next;
     if (next) setTyped('');
     setIsOpen(next);
+    // Closed before the palette took focus (Escape on a cold open, code that
+    // failed to load): the stand-in hands focus back itself.
+    if (!next && was === standInRef.current) {
+      standInRef.current!.value = '';
+      focusWithoutRing(returnToRef.current);
+    }
   }, []);
   const open = useCallback(() => setOpen(true), [setOpen]);
   const close = useCallback(() => setOpen(false), [setOpen]);
   const preload = useCallback(() => void loadPalette().catch(() => {}), []);
+  const returnFocus = useCallback(() => returnToRef.current, []);
+
+  // A finished composition, or text that reached the stand-in some other
+  // way (a dead key), joins what was typed. Mid-composition the text is the
+  // IME's own; it settles as the composition ends, which also happens when
+  // the palette's field takes focus from here.
+  const flushStandIn = useCallback(() => {
+    const field = standInRef.current;
+    if (!field || composingRef.current || !field.value) return;
+    const text = field.value;
+    field.value = '';
+    if (bufferingRef.current) setTyped((was) => was + text);
+  }, []);
 
   // Its code is fetched once the page is idle, so the first ⌘K opens at once
   // and the keys typed straight after it land in the field. A failed fetch is
@@ -110,7 +148,12 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
         e.preventDefault();
         // Held down, the key repeats: one press is one toggle.
         if (e.repeat) return;
-        setOpen(!isOpenRef.current);
+        const opening = !isOpenRef.current;
+        setOpen(opening);
+        // Unless the palette's field has it already (a reopen during the close).
+        if (opening && !(document.activeElement as Element | null)?.closest?.('.command-palette')) {
+          standInRef.current?.focus({ preventScroll: true });
+        }
         return;
       }
       if (!bufferingRef.current) return;
@@ -145,9 +188,30 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   return (
     <CommandPaletteContext.Provider value={value}>
       {children}
+      <input
+        ref={standInRef}
+        // Unseen, where the palette's field will be, so an IME's candidate
+        // window opens beside it rather than in a corner of the screen.
+        className="pointer-events-none fixed left-1/2 top-[min(14vh,7.5rem)] size-px border-0 p-0 opacity-0"
+        aria-hidden
+        tabIndex={-1}
+        autoComplete="off"
+        onCompositionStart={() => {
+          composingRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          composingRef.current = false;
+          flushStandIn();
+        }}
+        onInput={flushStandIn}
+        onBlur={() => {
+          composingRef.current = false;
+          flushStandIn();
+        }}
+      />
       {used && (
         <Suspense fallback={null}>
-          <CommandPalette open={isOpen} onClose={close} typed={typed} onUnavailable={retryPalette} />
+          <CommandPalette open={isOpen} onClose={close} typed={typed} returnFocus={returnFocus} onUnavailable={retryPalette} />
         </Suspense>
       )}
     </CommandPaletteContext.Provider>
