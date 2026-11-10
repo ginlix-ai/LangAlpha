@@ -77,6 +77,8 @@ import TodoDrawer from './TodoDrawer';
 import { ComposerTray, ReconnectingChip, TrayDock } from './chatView/ComposerTray';
 import { useTrayContents } from './chatView/useTrayContents';
 import { useHistoryBackfill } from './chatView/useHistoryBackfill';
+import { useFocusTurn } from './chatView/useFocusTurn';
+import { PaletteSearchButton } from '@/components/nav/PaletteSearchButton';
 import { OlderHistorySkeleton } from './chatView/OlderHistorySkeleton';
 import { useThreadCommands } from '../hooks/useCommands';
 import { ThreadCommandsContext } from './commands/threadCommandsContext';
@@ -555,6 +557,24 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     () => ({ resolve: resolveSubagentTelemetry, followsRuns: true }),
     [resolveSubagentTelemetry],
   );
+
+  // A navigation naming a turn (the command palette's "In conversations" hit)
+  // opens the thread there, once its entry has landed.
+  const showMainTranscript = useCallback(() => handleSelectAgent('main'), [handleSelectAgent]);
+  const focusNewest = useCallback(() => pinToBottom('auto'), [pinToBottom]);
+  useFocusTurn({
+    isActive,
+    ready: entryRestored,
+    onMain: activeAgentId === 'main',
+    showMain: showMainTranscript,
+    messages,
+    status: olderHistory.status,
+    load: loadOlderHistory,
+    place: holdPlace,
+    reveal: revealMessage,
+    toNewest: focusNewest,
+    scrollRoot: getMainScrollRoot,
+  });
 
   // Whether the open subagent's turn is still running. A bubble's own
   // `isStreaming` goes false between two model calls of one agent loop, so a
@@ -1513,6 +1533,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           </div>
 
           <div className="flex items-center gap-2">
+            {/* A phone has no sidebar search row and, mostly, no ⌘K. */}
+            {isMobile && <PaletteSearchButton />}
             {currentThreadId && currentThreadId !== '__default__' && (
               <ShareButton threadId={currentThreadId} initialIsShared={threadIsShared} workspaceId={workspaceId} />
             )}

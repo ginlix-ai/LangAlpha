@@ -3,10 +3,14 @@
  *
  * A thread opens on its newest turns, as many as a page's bytes allow, and
  * older pages go above them as the reader scrolls up, or behind first paint
- * when that page stopped short on its bytes (`backfill`): nothing jumps to a
- * turn that is not on screen (no URL names a turn; the minimap, sources, files
- * and tool links all point at loaded bubbles), and a reload's place is a
- * loaded bubble the reload's floor keeps. The window holds the page the newest
+ * when that page stopped short on its bytes (`backfill`). The one jump to a
+ * turn that is not on screen, a navigation naming it (`focusTurn`, the command
+ * palette's search hit), pages back to it the same way, in older pages of a
+ * bounded size until one reaches it (useFocusTurn), so the transcript still
+ * runs unbroken from its
+ * oldest loaded turn to the newest; the minimap, sources, files and tool links
+ * all point at loaded bubbles, and a reload's place is a loaded bubble the
+ * reload's floor keeps. The window holds the page the newest
  * load or the last older page reported, the one page in flight or held ahead,
  * and the token that refuses the landing of a page a reload, a thread switch
  * or a fork overtook.

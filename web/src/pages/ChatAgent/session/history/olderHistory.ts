@@ -12,7 +12,7 @@ import {
   type OlderHistoryPage,
   type OlderPageCommitDeps,
 } from './olderPages';
-import { currentScreenBudget, pageBudget } from './pageBudget';
+import { currentScreenBudget, jumpPageBudget, pageBudget } from './pageBudget';
 
 /** Holds the reader's place across a page put above them: handed the page's
  *  bubble count and the commit, which renders before it returns. */
@@ -36,17 +36,21 @@ export function createOlderHistory({
   threadId: () => string;
 } & OlderPageCommitDeps) {
   /** Replays the page before the oldest one loaded, when the window lets one
-   *  start, into a transcript of its own. Null when none started, or when a
-   *  reload, a thread switch or a fork overtook it on its way. */
-  const fetchOlderPage = async (tid: string): Promise<FetchedPage | null> => {
+   *  start, into a transcript of its own, reaching toward turn `reachTo` when
+   *  one is named (a jump's page, which may take several to get there). Null
+   *  when none started, or when a reload, a thread switch or a fork overtook
+   *  it on its way. */
+  const fetchOlderPage = async (tid: string, reachTo?: number): Promise<FetchedPage | null> => {
     const request = historyWindow.request(tid);
     if (!request) return null;
     const { beforeTurn, carry, signal, token } = request;
+    const screen = currentScreenBudget();
+    const page = reachTo === undefined ? pageBudget(screen) : jumpPageBudget(screen, Math.max(0, beforeTurn - reachTo));
     let older: OlderHistoryPage | null = null;
     try {
       older = await loadOlderHistoryPage(
         runtime,
-        { threadId: tid, beforeTurn, page: pageBudget(currentScreenBudget()), signal },
+        { threadId: tid, beforeTurn, page, signal },
         carry,
       );
     } catch (err) {
@@ -72,11 +76,13 @@ export function createOlderHistory({
   };
 
   /** Puts the page before the oldest one loaded above the transcript: the page
-   *  held ahead at once, or one replayed now. A page something overtook is
-   *  dropped, and the trigger asks again. */
-  const load = async (place?: HoldPlace) => {
+   *  held ahead at once, or one replayed now, reaching toward turn `reachTo`
+   *  when a jump to it names one (useFocusTurn, which asks again until the
+   *  turn is in). A page something overtook is dropped, and the trigger asks
+   *  again. */
+  const load = async (place?: HoldPlace, reachTo?: number) => {
     const tid = threadId();
-    const page = historyWindow.takeAhead(tid) ?? await fetchOlderPage(tid);
+    const page = historyWindow.takeAhead(tid) ?? await fetchOlderPage(tid, reachTo);
     if (page) commitOlderPage(tid, page, place);
   };
 
