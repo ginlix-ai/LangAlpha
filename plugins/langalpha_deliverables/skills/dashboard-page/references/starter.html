@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My dashboard</title>
+  <script src="kit.js"></script>
+  <style>
+    body { margin: 0; padding: 16px; background: var(--color-bg-page); color: var(--color-text-primary); font-family: var(--font-ui); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    td { padding: 6px 0; border-top: 1px solid var(--color-border-muted); }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .up { color: var(--color-up); } .down { color: var(--color-down); }
+  </style>
+</head>
+<body>
+  <la-grid cols="3">
+    <la-quote symbol="GSPC" kind="index"></la-quote>
+    <la-quote symbol="IXIC" kind="index"></la-quote>
+    <la-quote symbol="DJI" kind="index"></la-quote>
+    <la-card heading="Watchlist"><la-watchlist></la-watchlist></la-card>
+    <la-card heading="Holdings" span="2"><la-portfolio></la-portfolio></la-card>
+    <la-card heading="Market news" span="2"><la-news limit="8"></la-news></la-card>
+    <la-card heading="Earnings this week"><la-earnings days="7"></la-earnings></la-card>
+    <la-card heading="Top movers in my screen" span="3">
+      <la-updated src="data/screen.json" due="30 8,16 * * 1-5" timezone="America/New_York"></la-updated>
+      <table id="screen"></table>
+    </la-card>
+  </la-grid>
+
+  <script>
+    // Custom data: written by refresh.py on the automation's schedule (the
+    // same cron <la-updated> checks), read with a path written out so the
+    // Dashboard's copy carries the file.
+    fetch('data/screen.json')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var table = document.getElementById('screen');
+        d.rows.forEach(function (row) {
+          // textContent, since the file's values are data, not markup.
+          var tr = table.insertRow();
+          tr.insertCell().textContent = row.symbol;
+          var change = tr.insertCell();
+          change.textContent = la.format.percent(row.change_pct);
+          change.className = 'num' + (row.change_pct > 0 ? ' up' : row.change_pct < 0 ? ' down' : '');
+        });
+      })
+      .catch(function () { /* <la-updated> says there is no data yet */ });
+  </script>
+</body>
+</html>
