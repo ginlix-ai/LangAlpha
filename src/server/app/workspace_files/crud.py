@@ -74,6 +74,7 @@ from src.server.services.served_paths import (
     is_hidden_path,
     is_text_content_type,
     is_utf8,
+    panel_lists_stored_file,
 )
 from src.server.services.workspace_files import (
     HOME_NOT_ON_COMPUTER_REASON,
@@ -205,9 +206,9 @@ async def list_workspace_files(
         files = [
             f["path"]
             for f in file_tree
-            if not is_always_hidden_path(f["path"])
-            and (include_system or not _is_system_path(f["path"]))
-            and (allow_hidden or not is_hidden_path(f["path"]))
+            if panel_lists_stored_file(
+                f["path"], include_system=include_system, include_hidden=allow_hidden
+            )
             # A row at a virtual path predates the backup skipping its folder;
             # a read answers from the DB, so only the splice may list one.
             and not _virtual_file(f["path"])
