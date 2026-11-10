@@ -8,6 +8,9 @@
  * different points in their flow).
  */
 import { chartSelectionToContext, describeSelectionImage } from '../../ChatAgent/utils/fileUpload';
+import { marketViewAnnotationContext } from '../constants/annotationPrompt';
+import type { ChartView } from '../types/chartView';
+import { normalizeTimeframe } from './chartInstanceKey';
 import {
   chartSelectionStore,
   promoteSelectionComment,
@@ -74,5 +77,37 @@ export function buildChartSelectionSend(
     snapshots: confirmed.map(toSelectionSnapshot),
     attachments,
     outgoingMessage: promoteSelectionComment(message, confirmed),
+  };
+}
+
+export interface MarketSendContexts extends ChartSelectionSend {
+  /** The chart-annotation skill, first in the send's `additional_context`. */
+  skill: Record<string, unknown>;
+  /** What the charts beside the composer show (`chart_views`). */
+  chartViews: ChartView[];
+}
+
+/**
+ * What every MarketView send carries about the chart on screen: the
+ * chart-annotation skill, for its drawing guide and to say which ticker and
+ * timeframe "the chart" is (drawing on another timeframe would not show on
+ * this one), the confirmed selections for that chart, and its view.
+ */
+export function buildMarketSendContexts(
+  symbol: string,
+  interval: string,
+  message: string,
+  chartViews: ChartView[],
+): MarketSendContexts {
+  const sym = symbol.toUpperCase();
+  const tf = normalizeTimeframe(interval);
+  return {
+    skill: {
+      type: 'skills',
+      name: 'chart-annotation',
+      instruction: sym ? marketViewAnnotationContext(sym, tf) : undefined,
+    },
+    ...buildChartSelectionSend(sym, tf, message),
+    chartViews,
   };
 }

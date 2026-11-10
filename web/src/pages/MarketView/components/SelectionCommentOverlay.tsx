@@ -28,7 +28,7 @@ import type { IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 
 import { chartSelectionStore, isConfirmedFor, useChartSelections, type ChartSelection } from '../stores/chartSelectionStore';
 import { isImeComposing } from '@/lib/ime';
-import { toUnixSeconds } from '../utils/annotationGeometry';
+import { toUnixSeconds } from '../utils/barTime';
 import { pricePaneElement, pricePaneHeight } from '../utils/paneBounds';
 import './SelectionCommentOverlay.css';
 

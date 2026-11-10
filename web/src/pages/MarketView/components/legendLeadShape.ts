@@ -21,3 +21,18 @@ export function legendLeadShapeKey(symbol: string, q: StockQuoteModel, locale: s
     : '';
   return `${locale}|${symbol}|${priceOrDash(q.headline.price, places, locale).length}|${q.currency}|${headlineChange(q.headline, places, locale).length}|${ext}|${q.status}|${q.quoteBadge?.key ?? ''}:${q.quoteBadge?.minutes ?? ''}`;
 }
+
+/**
+ * The room the lead asks of the chart's toolbar row (`measureToolbarLead`):
+ * its full width, less the company name, which gives way to the controls down
+ * to nothing, plus whatever the quote, cut at its end, is holding back. So the
+ * demand is the width of what the lead will not give up, however much of the
+ * name shows, and a name filling spare room never reads to the toolbar as
+ * room taken.
+ */
+export function legendLeadDemand(lead: HTMLElement): number {
+  let w = lead.scrollWidth;
+  for (const el of lead.querySelectorAll<HTMLElement>('.legend-lead-name')) w -= el.getBoundingClientRect().width;
+  for (const el of lead.querySelectorAll<HTMLElement>('.legend-lead-quote')) w += el.scrollWidth - el.clientWidth;
+  return w;
+}

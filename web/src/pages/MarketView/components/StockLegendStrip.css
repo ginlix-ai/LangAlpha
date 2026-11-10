@@ -1,19 +1,62 @@
 /* Toolbar-sized ticker legend. Everything here matches the interval buttons'
-   type so the strip reads as one row of equal weight. It is inline content,
-   spaced by margins rather than a flex gap, because the chart's lead slot
-   ellipsizes it as a line of text when the row is short of room. */
+   type so the strip reads as one row of equal weight. Three parts in a row:
+   the ticker keeps its width, the company name gives way first (down to
+   nothing), and the quote, once the name is gone, is cut at its end with an
+   ellipsis. The quote stays inline content so that cut lands on a character.
+   The chart's toolbar measures the quote by its scrollWidth and leaves the
+   name out (`legendLeadDemand`). */
 .legend-lead {
-  display: inline;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.legend-lead > * {
+.legend-lead > .stock-symbol-btn,
+.legend-lead > .legend-lead-symbol {
+  flex-shrink: 0;
+}
+
+.legend-lead-tail {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Muted and in the UI face: an identity, not a figure. */
+.legend-lead-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-tertiary);
+}
+
+/* Never shrinks while the name has room left to give; past that it is held
+   to the row and cut. The space after the name is the quote's own padding,
+   inside its max-width, so a cut quote still ends at the row's edge. */
+.legend-lead-quote {
+  display: block;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.legend-lead-name + .legend-lead-quote {
+  padding-left: 8px;
+}
+
+.legend-lead-quote > * {
   vertical-align: middle;
 }
 
-.legend-lead > * + * {
+.legend-lead-quote > * + * {
   margin-left: 8px;
 }
 
@@ -28,7 +71,7 @@
    keeps one width across a tick: a digit gained at 99.99 -> 100.00 must not
    toggle the tier. */
 .legend-lead-price {
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   min-width: 6ch;
@@ -42,7 +85,7 @@
 }
 
 .legend-lead-change {
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   color: var(--color-text-secondary);
 }
 
@@ -51,25 +94,38 @@
 .legend-lead-price.negative,
 .legend-lead-change.negative { color: var(--color-loss); }
 
+/* The extended-hours pair and the session label are plain inline text, not
+   boxes: the quote's ellipsis cuts inside them, where a box would vanish
+   whole and leave its width blank before the controls. */
 .legend-lead-ext {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  display: inline;
+  font-family: var(--font-mono);
   font-size: 0.6875rem;
 }
 
+.legend-lead-ext > svg {
+  display: inline-block;
+  vertical-align: -1px;
+  margin-right: 4px;
+}
+
+.legend-lead-ext > span {
+  margin-left: 4px;
+}
+
 .legend-lead-status {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
+  display: inline;
+  cursor: default;
+  border-radius: 4px;
   font-size: 0.6875rem;
   color: var(--color-text-secondary);
 }
 
 .legend-lead-dot {
+  display: inline-block;
   width: 6px;
   height: 6px;
+  margin-right: 4px;
   border-radius: 50%;
   background: var(--color-text-tertiary);
   flex-shrink: 0;
@@ -85,16 +141,33 @@
 .legend-lead-status--closed .legend-lead-dot { background: var(--color-text-tertiary); }
 .legend-lead-status--warning .legend-lead-dot { background: var(--color-warning); }
 
-/* The day's figures as one mono string: label dim, value bright. */
+/* Once the chart's toolbar has folded its own controls (tier 4 on), there is
+   no spare room left for the name to fill; a sliver of it would only read as
+   noise. It yields from the toolbar's measure, so taking it out moves no tier. */
+.chart--c4 .legend-lead-name {
+  display: none;
+}
+
+.chart--c4 .legend-lead-name + .legend-lead-quote {
+  padding-left: 0;
+}
+
+/* The day's figures as one mono string: label dim, value bright. Inside the
+   chart's subrow the cells join the row's own flow, so they and the
+   indicator readouts after them pack onto as few lines as fit. */
 .legend-stats {
   display: flex;
   flex-wrap: wrap;
   gap: 2px 12px;
   min-width: 0;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-secondary);
+}
+
+.chart-subrow > .legend-stats {
+  display: contents;
 }
 
 .legend-stat {
@@ -107,3 +180,11 @@
 .legend-stat-value { color: var(--color-text-primary); }
 .legend-stat-value.positive { color: var(--color-profit); }
 .legend-stat-value.negative { color: var(--color-loss); }
+
+/* The provenance under the session label: one source per line. */
+.legend-lead-source {
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}

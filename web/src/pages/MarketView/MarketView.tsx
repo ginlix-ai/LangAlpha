@@ -1,11 +1,13 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useEffectEvent, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { Info } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 import './MarketView.css';
 import StockHeader from './components/StockHeader';
 import MarketChart from './components/MarketChart';
+import { ChartToolButton } from './components/ChartToolButton';
 import type { MarketChartHandle } from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
 import type { ComposerScope, ComposerSend } from '../../components/ui/chat-input.types';
@@ -36,14 +38,16 @@ import { loadPref, savePref } from './utils/prefs';
 import { recordRecentTicker } from '@/lib/recentTickers';
 import { useRestoredWorkspace } from './hooks/useRestoredWorkspace';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { ChartComposerContext, createChartComposer, useChartAskHandler, useChartComposer } from '@/components/chart/chartComposer';
 
 import { useStockData } from './hooks/useStockData';
 import { useStockQuoteModel } from './hooks/useStockQuoteModel';
-import { useChartAnnotationSync } from './hooks/useChartAnnotationSync';
-import { marketViewAnnotationContext } from './constants/annotationPrompt';
-import { normalizeTimeframe, subscribeLiveAnnotationAdd } from './stores/chartAnnotationStore';
+import { useChartLegendSlots } from './hooks/useChartLegendSlots';
+import { chartKeyParts, normalizeTimeframe } from './utils/chartInstanceKey';
+import { getShowLayersRequest, subscribeLayerView, type ShowLayersRequest } from './stores/layerViewStore';
 import { chartSelectionStore, isConfirmedFor, useChartSelections } from './stores/chartSelectionStore';
-import { buildChartSelectionSend } from './utils/selectionSend';
+import { buildMarketSendContexts } from './utils/selectionSend';
+import { layerAskContext } from './utils/layerAsk';
 
 interface AttachmentItem {
   dataUrl: string;
@@ -98,7 +102,7 @@ function MarketViewInner() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { prices: wsPrices, connectionStatus: wsStatus, dataLevel: wsDataLevel, ginlixDataEnabled, subscribe: wsSubscribe, unsubscribe: wsUnsubscribe } = useMarketDataWSContext();
+  const { prices: wsPrices, connectionStatus: wsStatus, dataLevel: wsDataLevel, subscribe: wsSubscribe, unsubscribe: wsUnsubscribe } = useMarketDataWSContext();
   // A chart link is the page's opening state, not a correction applied after
   // it: MarketChatPanel reads a symbol or workspace that changes after its
   // mount as a scope change the user made, and drops the forwarded `?thread`
@@ -141,6 +145,7 @@ function MarketViewInner() {
     return INTERVALS.some(({ key }) => key === stored) ? stored : '1day';
   });
   const chartRef = useRef<MarketChartHandle>(null);
+  const { collectViews } = useChartComposer();
   const [chartImage, setChartImage] = useState<string | null>(null);       // base64 data URL
   const [chartImageDesc, setChartImageDesc] = useState<string | null>(null); // text description for LLM
   const [showOverview, setShowOverview] = useState<boolean>(false);
@@ -237,19 +242,16 @@ function MarketViewInner() {
   const tuning = useThreadTuning({ threadId: null });
 
   // Home's id, which the Chief of Staff runs in. Retried, since
-  // a failed first fetch would otherwise leave the Chief of Staff annotations
-  // unscoped until something refetches it.
+  // a failed first fetch would otherwise leave the Chief of Staff's chart
+  // layers unscoped until something refetches it.
   const { data: homeWorkspace } = useQuery({ ...homeWorkspaceQuery(queryClient), retry: 3 });
 
   // The workspace the chat runs in: Home under the Chief of Staff, the selected
-  // one otherwise. The chart shows the agent-drawn instance for it, and since
-  // annotations are keyed by (workspace_id, chart_id), this single id scopes
-  // both the persistence sync and the live chart selection.
+  // one otherwise. The chart shows the agent's layers drawn in it.
   const activeWorkspaceId = scope === 'all' ? homeWorkspace?.workspace_id ?? null : selectedWorkspaceId;
-  useChartAnnotationSync(activeWorkspaceId, selectedStock);
 
-  // Switch the chart to a given instance — used by the live-add auto-focus
-  // below and by an annotation chip that jumps to a different ticker.
+  // Switch the chart to a given instance: for a request to show layers below,
+  // and a layer chip that jumps to a different ticker.
   const handleJumpToChart = useCallback((symbol: string, timeframe?: string | null) => {
     const sym = displaySpelling(symbol || '');
     if (!sym) return;
@@ -265,24 +267,37 @@ function MarketViewInner() {
     }
   }, [selectedStock]);
 
-  // Auto-apply: when the agent draws an annotation from the chat panel on a
-  // different instance than what's on screen (e.g. the user asks to mark GOOGL
-  // while viewing AAPL), bring the chart to that symbol+timeframe so the new
-  // drawing is actually visible instead of silently landing off-screen. Scoped
-  // to the active workspace's live draws (the store's live-add channel only
-  // fires for fresh SSE adds, not server re-sync).
+  // A request to show layers made while the page is open (the agent publishing
+  // from the chat panel, a card's chip) brings the chart to their instance when
+  // it is in this workspace, so a layer drawn on GOOGL while AAPL is on screen
+  // does not land out of sight. The chart there frames them.
+  const onShowLayers = useEffectEvent((req: ShowLayersRequest) => {
+    const { workspaceId, symbol, timeframe } = chartKeyParts(req.key);
+    if (workspaceId === activeWorkspaceId) handleJumpToChart(symbol, timeframe);
+  });
   useEffect(() => {
-    return subscribeLiveAnnotationAdd((add) => {
-      if (!activeWorkspaceId || add.workspaceId !== activeWorkspaceId) return;
-      handleJumpToChart(add.symbol, add.timeframe);
+    let seen = getShowLayersRequest();
+    return subscribeLayerView(() => {
+      const req = getShowLayersRequest();
+      if (!req || req === seen) return;
+      seen = req;
+      onShowLayers(req);
     });
-  }, [activeWorkspaceId, handleJumpToChart]);
+  }, []);
+
+  // The mobile composer has no handle to add a context pill through, so the
+  // chart's "ask about this layer" becomes its draft instead. The desktop chat
+  // panel answers with a pill.
+  useChartAskHandler(isMobile ? (req) => {
+    setPrefillMessage(t('marketView.layers.askDraft', { label: layerAskContext(req).label }));
+    setChatExpanded(true);
+  } : null);
 
   // Chat return path — captured from URL when navigating from chat DetailPanel
   const [chatReturnPath, setChatReturnPath] = useState<string | null>(null);
 
   // Handle URL parameters (symbol + returnTo from chat context, and ws when
-  // opening a chart-annotation card from ChatAgent). Preserve
+  // opening a chart layer card from ChatAgent). Preserve
   // `?thread` so MarketChatPanel can pick it up to resume the right
   // conversation in the same workspace. On the first render the state above is
   // already seeded from the same route, so this re-applies identical values;
@@ -297,10 +312,10 @@ function MarketViewInner() {
         setChartMeta(null);
       }
     }
-    // Land on the timeframe the expanded card was drawn for, so its annotations
+    // Land on the timeframe the expanded card was drawn for, so its layers
     // (keyed by symbol:timeframe) show immediately. Validate against the chart's
     // own interval allowlist so a stale/hand-crafted ?tf= can't strand the chart
-    // on an unknown interval (empty data + annotations keyed to a dead chart_id).
+    // on an unknown interval (empty data + layers keyed to a dead chart_id).
     if (route.timeframe && INTERVALS.some((i) => i.key === route.timeframe)) {
       setSelectedInterval(route.timeframe);
     }
@@ -357,6 +372,27 @@ function MarketViewInner() {
     marketPhase,
     displayOverride: selectedStockDisplay,
   });
+
+  // Desktop: the quote rides the chart's own toolbar, as in the chat's chart
+  // panel, with the figures a wide page has room for in the row beneath.
+  const legend = useChartLegendSlots({
+    symbol: selectedStock,
+    quote,
+    onSwitchSymbol: handleStockSearch,
+    source: { wsStatus, wsHasData, wsDataLevel, chartFreshness },
+    detail: 'full',
+  });
+  const toggleOverview = useCallback(() => setShowOverview((v) => !v), []);
+  const overviewButton = useMemo(() => (
+    <ChartToolButton
+      onClick={toggleOverview}
+      title={t('marketView.companyOverview')}
+      aria-pressed={showOverview}
+      className={showOverview ? 'chart-tool-btn-active' : undefined}
+    >
+      <Info size={14} />
+    </ChartToolButton>
+  ), [toggleOverview, showOverview, t]);
 
   // A confirmed chart selection for the live chart rides on send (even with an
   // empty box), so let the mobile input treat it as sendable content.
@@ -437,37 +473,16 @@ function MarketViewInner() {
   }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice, quote.currency, quote.places]);
 
   const handleSendMessage = useCallback(async (message: string, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort, fastMode }: { model?: string | null; reasoningEffort?: string | null; fastMode?: boolean | null } = {}) => {
-    // Build additional_context from chart image + file attachments.
-    // The drawing tools are always bound; the chart-annotation skill rides
-    // every send for its drawing guide and to tell the agent which ticker +
-    // timeframe "the chart" is, so it edits the instance the user is actually
-    // viewing (chart_id = SYMBOL:timeframe).
-    const sym = (selectedStock || '').toUpperCase();
-    const tf = normalizeTimeframe(selectedInterval);
-    const contexts: unknown[] = [
-      {
-        type: 'skills',
-        name: 'chart-annotation',
-        instruction: sym ? marketViewAnnotationContext(sym, tf) : undefined,
-      },
-    ];
+    const send = buildMarketSendContexts(selectedStock || '', selectedInterval, message, collectViews());
+    const contexts: unknown[] = [send.skill];
     if (chartImage) {
       contexts.push({ type: 'image', data: chartImage, description: chartImageDesc || undefined });
     }
     if (attachments && attachments.length > 0) {
       contexts.push(...attachmentsToContexts(attachments as any));
     }
-    // Append every confirmed chart selection (region/price level + note) for
-    // the live (sym, tf); a stale one is dropped. The same set is snapshotted
-    // for the sent message's cards, and a lone note becomes the message text
-    // when the user typed nothing (so the bubble isn't empty).
-    const {
-      contexts: selectionContexts,
-      snapshots: selectionSnapshots,
-      attachments: selectionAttachments,
-      outgoingMessage,
-    } = buildChartSelectionSend(sym, tf, message);
-    contexts.push(...selectionContexts);
+    // The confirmed selections on the chart on screen.
+    contexts.push(...send.contexts);
     const imageContext = contexts.length > 0 ? contexts : null;
 
     // Build attachment metadata for display in user message bubble
@@ -492,7 +507,7 @@ function MarketViewInner() {
         });
       });
     }
-    metaItems.push(...selectionAttachments);
+    metaItems.push(...send.attachments);
     const attachmentMeta = metaItems.length > 0 ? metaItems : null;
 
     // The selected workspace, or, under the Chief of Staff, Home, which the server
@@ -511,13 +526,14 @@ function MarketViewInner() {
       navigate(`/chat/t/__default__`, {
         state: {
           workspaceId,
-          initialMessage: outgoingMessage,
+          initialMessage: send.outgoingMessage,
           ...(subagents.toSend !== undefined ? { subagentsAllowed: subagents.toSend } : {}),
           additionalContext: imageContext,
           // Carry the chart-annotation skill over so the agent starts with
           // the drawing guide (the tools themselves are always bound).
           skills: ['chart-annotation'],
-          ...(selectionSnapshots.length > 0 ? { chartSelections: selectionSnapshots } : {}),
+          ...(send.snapshots.length > 0 ? { chartSelections: send.snapshots } : {}),
+          ...(send.chartViews.length > 0 ? { chartViews: send.chartViews } : {}),
           ...(attachmentMeta ? { attachmentMeta } : {}),
           ...(model ? { model } : {}),
           ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -536,7 +552,7 @@ function MarketViewInner() {
     }
     setChartImage(null);
     setChartImageDesc(null);
-  }, [navigate, toast, t, queryClient, chartImage, chartImageDesc, scope, selectedWorkspaceId, selectedStock, selectedInterval, subagents.toSend, tuning.toSend]);
+  }, [navigate, toast, t, queryClient, chartImage, chartImageDesc, scope, selectedWorkspaceId, selectedStock, selectedInterval, subagents.toSend, tuning.toSend, collectViews]);
 
   const handleSidebarSymbolClick = useCallback((symbol: string) => {
     setSelectedStock(displaySpelling(symbol));
@@ -601,14 +617,12 @@ function MarketViewInner() {
           <StockHeader
             symbol={selectedStock}
             quote={quote}
-            chartMeta={chartMeta}
-            onToggleOverview={() => setShowOverview(v => !v)}
+            onToggleOverview={toggleOverview}
             onSwitchSymbol={handleStockSearch}
             onOpenWatchlist={() => setMobileTab('watchlist')}
             wsStatus={wsStatus}
             wsHasData={wsHasData}
             wsDataLevel={wsDataLevel}
-            ginlixDataEnabled={ginlixDataEnabled}
             chartFreshness={chartFreshness}
           />
 
@@ -741,20 +755,6 @@ function MarketViewInner() {
         <>
           <div className="market-content-wrapper">
             <div className="market-left-panel">
-              <div className="market-titlebar">
-                <StockHeader
-                  symbol={selectedStock}
-                  quote={quote}
-                  chartMeta={chartMeta}
-                  onToggleOverview={() => setShowOverview(v => !v)}
-                  onSwitchSymbol={handleStockSearch}
-                  wsStatus={wsStatus}
-                  wsHasData={wsHasData}
-                  wsDataLevel={wsDataLevel}
-                  ginlixDataEnabled={ginlixDataEnabled}
-                  chartFreshness={chartFreshness}
-                />
-              </div>
               <div className="market-chart-area">
                 {showOverview && (
                   <CompanyOverviewPanel
@@ -784,6 +784,11 @@ function MarketViewInner() {
                   wsStatus={wsStatus}
                   marketStatus={marketStatus}
                   selectionTools
+                  toolbarLead={legend.toolbarLead}
+                  toolbarLeadKey={legend.toolbarLeadKey}
+                  measureToolbarLead={legend.measureToolbarLead}
+                  toolbarTrail={overviewButton}
+                  toolbarSubrow={legend.toolbarSubrow}
                 />
               </div>
             </div>
@@ -828,9 +833,14 @@ function MarketViewInner() {
 }
 
 function MarketView() {
+  // The page's chart reaches the composer through here: the desktop panel's
+  // and the mobile one's.
+  const [chartComposer] = useState(createChartComposer);
   return (
     <MarketDataWSProvider>
-      <MarketViewInner />
+      <ChartComposerContext value={chartComposer}>
+        <MarketViewInner />
+      </ChartComposerContext>
     </MarketDataWSProvider>
   );
 }

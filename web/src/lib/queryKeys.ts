@@ -284,6 +284,13 @@ export const queryKeys = {
       headers,
     ],
   },
+  // The layers an agent published on charts, one entry per (workspace,
+  // symbol) holding every timeframe, so switching the interval reads the same
+  // entry. `symbol` is the display spelling (`chartKeyParts`).
+  chartLayers: {
+    all:      ['chartLayers'],
+    bySymbol: (workspaceId: string, symbol: string) => [...queryKeys.chartLayers.all, workspaceId, symbol],
+  },
   // The brokerage connectors this build ships. Deliberately its own family
   // rather than a child of `mcp`: it is static and user-independent, so the
   // MCP fan-out has nothing to tell it, and sitting under that prefix meant

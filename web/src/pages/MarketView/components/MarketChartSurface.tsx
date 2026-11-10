@@ -1,63 +1,55 @@
 /**
- * A self-contained replica of the MarketView chart surface — the stock header
- * plus the candlestick / MA / volume / RSI chart — wired with its own
- * market-data websocket, REST data and annotation sync.
+ * A self-contained replica of the MarketView chart — the candlestick / MA /
+ * volume / RSI chart with the ticker legend in its toolbar — wired with its
+ * own market-data websocket and REST data (the chart reads its layers itself).
  *
  * Drop it anywhere outside the MarketView page (e.g. the chat's chart tab) to
  * show the *same* chart the user sees on MarketView, including the agent's
- * drawn annotations. It mirrors the data wiring of ``MarketView``'s desktop
+ * chart layers. It mirrors the data wiring of ``MarketView``'s desktop
  * left panel; it's read-only (no chat capture, no watchlist), but interval
- * switching and the company-overview panel work in place. Provide its own ``MarketDataWSProvider`` so it can live on any page.
+ * switching works in place. Provides its own ``MarketDataWSProvider`` so it
+ * can live on any page.
+ *
+ * It is sized for a host that keeps its height for the chart: the ticker
+ * legend and the host's actions ride the chart's toolbar row, the day's
+ * figures a thin row beneath, the host frames the chart as a card, bars pack
+ * across the width, light chart only, and no company overview, whose
+ * full-height sheet has no room beside a narrow chart.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import type { Freshness } from '@/types/market';
 import { displayOverrideFromHit, type SymbolDisplayOverride } from '@/lib/displayName';
 import { displaySpelling } from '@/lib/bars/exchanges';
 
-import { useLocale } from '@/hooks/useLocale';
-import StockHeader from './StockHeader';
-import { LegendLead, LegendStats } from './StockLegendStrip';
-import { legendLeadShapeKey } from './legendLeadShape';
 import MarketChart from './MarketChart';
-import CompanyOverviewPanel from './CompanyOverviewPanel';
 import { MarketDataWSProvider, useMarketDataWSContext } from '../contexts/MarketDataWSContext';
 import { useStockData } from '../hooks/useStockData';
-import { useChartAnnotationSync } from '../hooks/useChartAnnotationSync';
 import { useStockQuoteModel } from '../hooks/useStockQuoteModel';
+import { useChartLegendSlots } from '../hooks/useChartLegendSlots';
 
 interface MarketChartSurfaceProps {
   symbol: string;
   /** Initial chart interval (e.g. '1day'); switchable in place via the toolbar. */
   timeframe?: string;
-  /** Workspace whose agent-drawn annotations to show. */
+  /** Workspace whose agent chart layers to show. */
   workspaceId?: string | null;
   /** Follow the toolbar's interval switch, so a host can remember where the chart was left. */
   onIntervalChange?: (interval: string) => void;
-  /** Lets the ticker in the header be changed in place; the host decides what that means. */
+  /** Lets the legend's ticker be changed in place; the host decides what that means. */
   onSwitchSymbol?: (symbol: string, hit?: StockSearchHit) => void;
-  /** A host's own buttons in the header, beside Company Overview. In the
-   *  `compact` variant they land in the chart's toolbar row, so a host passes
-   *  toolbar-sized icon buttons there (`ChartToolButton`). */
+  /** A host's own buttons. They land in the chart's toolbar row, so a host
+   *  passes toolbar-sized icon buttons there (`ChartToolButton`). */
   headerActions?: React.ReactNode;
   /** Region and price-level selection, for a host whose composer sends them. */
   selectionTools?: boolean;
-  /**
-   * `full` reproduces the MarketView page (metrics grid, centered latest bar,
-   * Light / Advanced switch). `compact` is for a host that keeps its height
-   * for the chart: the ticker legend and the actions ride the chart's toolbar
-   * row, the day's figures a thin row beneath, the host frames the chart as a
-   * card, bars pack across the width, light chart only, and no company
-   * overview, whose full-height sheet has no room beside a narrow chart.
-   */
-  variant?: 'full' | 'compact';
 }
 
-/** The compact chart sits as a card inset on the panel's own page ground,
- *  not a gray well, so the panel reads as one surface; the host draws the
- *  card edge, this is the gutter around it. */
-const COMPACT_PADDING = '8px 10px 10px';
+/** The chart sits as a card inset on the panel's own page ground, not a
+ *  gray well, so the panel reads as one surface; the host draws the card
+ *  edge, this is the gutter around it. */
+const PADDING = '8px 10px 10px';
 
 function MarketChartSurfaceInner({
   symbol,
@@ -67,15 +59,11 @@ function MarketChartSurfaceInner({
   onSwitchSymbol,
   headerActions,
   selectionTools = false,
-  variant = 'full',
 }: MarketChartSurfaceProps): React.ReactElement {
-  const compact = variant === 'compact';
-  const locale = useLocale();
   const {
     prices: wsPrices,
     connectionStatus: wsStatus,
     dataLevel: wsDataLevel,
-    ginlixDataEnabled,
     subscribe: wsSubscribe,
     unsubscribe: wsUnsubscribe,
   } = useMarketDataWSContext();
@@ -91,7 +79,6 @@ function MarketChartSurfaceInner({
   // Venue phase from the chart's bars responses, the way the MarketView page
   // reads it; the chart resets it to null on a symbol switch.
   const [marketPhase, setMarketPhase] = useState<string | null>(null);
-  const [showOverview, setShowOverview] = useState(false);
   const wsHasData = wsPrices.has(symbol);
   const streamsLive = wsStatus === 'connected' && wsHasData;
 
@@ -100,14 +87,9 @@ function MarketChartSurfaceInner({
     realTimePrice,
     snapshotData,
     overviewData,
-    overviewLoading,
     overlayData,
     marketStatus,
   } = useStockData({ selectedStock: symbol, streamsLive });
-
-  // Load this symbol's persisted annotations (all timeframes) into the store so
-  // MarketChart renders them — exactly as the live MarketView page does.
-  useChartAnnotationSync(workspaceId ?? null, symbol);
 
   // Subscribe to the live feed for this symbol.
   useEffect(() => {
@@ -125,7 +107,7 @@ function MarketChartSurfaceInner({
     setChartMeta(meta as Record<string, unknown> | null);
   }, []);
 
-  // The header pick names the company before its quote lands, the way the
+  // The legend's pick names the company before its quote lands, the way the
   // MarketView page does; it is kept only while the symbol it named is up.
   const [picked, setPicked] = useState<{ symbol: string; display: SymbolDisplayOverride } | null>(null);
   const handleSwitchSymbol = useCallback((next: string, hit?: StockSearchHit) => {
@@ -134,15 +116,15 @@ function MarketChartSurfaceInner({
   }, [onSwitchSymbol]);
 
   // useStockData returns only the rows of the symbol on screen, so on an
-  // in-place switch the header renders dashes until the new quote lands.
+  // in-place switch the legend renders dashes until the new quote lands.
   // Prefer the live WS price; fall back to REST.
   const displayPrice = wsPrices.get(symbol) || realTimePrice;
   const displayOverride = picked && picked.symbol === symbol.trim().toUpperCase() ? picked.display : null;
   const quote = overviewData?.quote || null;
-  // The chart's own bars, measured apart from the quote: the header shows both.
+  // The chart's own bars, measured apart from the quote: the legend shows both.
   const [chartFreshness, setChartFreshness] = useState<Freshness | null>(null);
 
-  // Derived once; the header or the two strips only print it.
+  // Derived once; the two strips only print it.
   const q = useStockQuoteModel({
     symbol,
     stockInfo,
@@ -155,18 +137,13 @@ function MarketChartSurfaceInner({
     marketPhase,
     displayOverride,
   });
-  const toggleOverview = useCallback(() => setShowOverview((v) => !v), []);
-  // Memoized so MarketChart's React.memo holds while the feed is idle: fresh
-  // slot JSX each render would re-render the chart on every unrelated state tick.
-  const toolbarLead = useMemo(
-    () => (compact ? <LegendLead symbol={symbol} quote={q} onSwitchSymbol={handleSwitchSymbol} /> : undefined),
-    [compact, symbol, q, handleSwitchSymbol],
-  );
-  // The lead re-renders on every tick; the toolbar only needs to re-measure
-  // when its width can have moved.
-  const toolbarLeadKey = compact ? legendLeadShapeKey(symbol, q, locale) : undefined;
-  const toolbarTrail = compact ? headerActions : undefined;
-  const toolbarSubrow = useMemo(() => (compact ? <LegendStats quote={q} /> : undefined), [compact, q]);
+  // The same toolbar slots the MarketView page mounts.
+  const legend = useChartLegendSlots({
+    symbol,
+    quote: q,
+    onSwitchSymbol: handleSwitchSymbol,
+    source: { wsStatus, wsHasData, wsDataLevel, chartFreshness },
+  });
 
   return (
     <div
@@ -176,32 +153,10 @@ function MarketChartSurfaceInner({
         height: '100%',
         minHeight: 0,
         overflow: 'hidden',
-        background: compact ? 'var(--color-bg-page)' : 'var(--color-bg-card)',
+        background: 'var(--color-bg-page)',
       }}
     >
-      {!compact && <StockHeader
-        symbol={symbol}
-        quote={q}
-        chartMeta={chartMeta}
-        onToggleOverview={toggleOverview}
-        wsStatus={wsStatus}
-        wsHasData={wsHasData}
-        wsDataLevel={wsDataLevel}
-        ginlixDataEnabled={ginlixDataEnabled}
-        onSwitchSymbol={handleSwitchSymbol}
-        headerActions={headerActions}
-        chartFreshness={chartFreshness}
-      />}
-      <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', padding: compact ? COMPACT_PADDING : 0 }}>
-        {showOverview && (
-          <CompanyOverviewPanel
-            symbol={symbol}
-            visible={showOverview}
-            onClose={() => setShowOverview(false)}
-            data={overviewData}
-            loading={overviewLoading}
-          />
-        )}
+      <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', padding: PADDING }}>
         <MarketChart
           symbol={symbol}
           interval={selectedInterval}
@@ -218,13 +173,14 @@ function MarketChartSurfaceInner({
           liveTick={wsPrices.get(symbol)?.barData || null}
           wsStatus={wsStatus}
           marketStatus={marketStatus}
-          defaultView={compact ? 'fill' : 'centered'}
-          modeSwitcher={!compact}
+          defaultView="fill"
+          modeSwitcher={false}
           selectionTools={selectionTools}
-          toolbarLead={toolbarLead}
-          toolbarLeadKey={toolbarLeadKey}
-          toolbarTrail={toolbarTrail}
-          toolbarSubrow={toolbarSubrow}
+          toolbarLead={legend.toolbarLead}
+          toolbarLeadKey={legend.toolbarLeadKey}
+          measureToolbarLead={legend.measureToolbarLead}
+          toolbarTrail={headerActions}
+          toolbarSubrow={legend.toolbarSubrow}
         />
       </div>
     </div>

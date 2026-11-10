@@ -1,7 +1,7 @@
 /**
  * Lightweight-charts v4 series primitive that draws the user's *in-progress*
  * chart selection — the time×price region or price level they're picking to
- * ask the agent about. Mirrors `AgentAnnotationsPrimitive` / `ExtendedHoursBgPrimitive`.
+ * ask the agent about. Mirrors `ExtendedHoursBgPrimitive`.
  *
  * Two render sources:
  * - A live *draft* in pixel space (`setDraft`), updated imperatively while the
@@ -12,7 +12,7 @@
  *   being edited is flagged `active` and drawn with a stronger border.
  *
  * The selection accent (teal) is deliberately distinct from the agent's
- * slate-blue annotations so a user draft never reads as an agent drawing.
+ * layer colors so a user draft never reads as an agent drawing.
  */
 
 import type {

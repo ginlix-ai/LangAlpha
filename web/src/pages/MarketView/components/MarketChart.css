@@ -13,15 +13,31 @@
   animation: chart-reveal 0s 180ms both;
 }
 
+/* The thin row under the toolbar: a host's figures, then the indicator
+   readouts pushed to the far end. Its inset follows the toolbar's at every
+   tier, so the first figure sits under the ticker. */
 .chart-subrow {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 12px;
-  min-height: 30px;
-  padding: 3px 10px;
+  gap: 2px 12px;
+  min-height: 26px;
+  padding: 3px 20px;
   --rule-ink: var(--color-shell-divider, var(--color-border-default));
   flex-shrink: 0;
+}
+
+.chart--c2 .chart-subrow { padding-inline: 12px; }
+
+/* The readouts are one unit at the row's far end: beside the figures where
+   the line has room, else on a line of their own, still right-aligned. */
+.chart-subrow > .chart-subrow-readouts {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 12px;
+  margin-left: auto;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .chart-toolbar-trail {
@@ -84,7 +100,8 @@
   align-items: center;
   gap: 4px;
   font-size: 0.6875rem;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-secondary);
   white-space: nowrap;
 }
@@ -324,12 +341,6 @@
    hover edge replaces it. */
 :root:not([data-card-style='balanced']) .chart-tool-btn-active { border-color: var(--color-accent-primary); }
 
-/* "Clear annotations" toolbar button — a chart-tool-btn that carries an icon
-   plus a label, shown in the tools row only while agent annotations are drawn. */
-.chart-tool-btn.chart-clear-annotations-btn {
-  gap: 4px;
-}
-
 /* Light chart visible in Light mode: fills parent flex column */
 .light-chart-visible {
   flex: 1;
@@ -516,13 +527,11 @@
 .chart--c3 .toolbar-item--indicators,
 .chart--c3 .toolbar-item--tools { display: none; }
 
-/* Tier 4 (phone): tuck the Light/Advanced switch into the menu and drop the
-   Clear button's label so it goes icon-only. Keeps the interval selector, Clear
-   and the selection tools on a single row at the narrowest widths. The mode
-   switch is only tagged collapsible in Light mode, so the required TradingView
-   attribution (Advanced mode) is never hidden. */
+/* Tier 4 (phone): tuck the Light/Advanced switch into the menu. Keeps the
+   interval selector and the selection tools on a single row at the narrowest
+   widths. The mode switch is only tagged collapsible in Light mode, so the
+   required TradingView attribution (Advanced mode) is never hidden. */
 .chart--c4 .toolbar-item--mode { display: none; }
-.chart--c4 .chart-clear-annotations-btn .clear-label { display: none; }
 
 /* Tier 5 (under 300px, a lead slot taking most of a narrow row): the
    component folds the primary intervals into their dropdown, so the picker is
@@ -666,3 +675,13 @@
   white-space: nowrap;
 }
 .venue-clock-offset { color: var(--color-text-tertiary); }
+
+/* Agent layer legend: the chart's top-left corner, clear of the pane labels'
+   row and under the explain card (21) and crosshair tooltip (20). */
+.chart-layer-legend {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 17;
+  max-width: min(320px, 45%);
+}

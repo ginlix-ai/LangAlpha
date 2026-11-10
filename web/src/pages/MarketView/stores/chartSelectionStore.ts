@@ -2,11 +2,10 @@
  * Chart selection store — the regions / price levels the user picked on the
  * MarketView chart to hand to the agent, each with an optional note.
  *
- * This is the reverse of {@link chartAnnotationStore}: that one holds what the
- * agent drew; this one holds what the *user* picked. Unlike that store, this
- * one keeps a *list* — the user can stack several selections (each scoped to the
- * `(symbol, timeframe)` chart it was drawn on) and attach a per-selection note
- * before sending. Notes ride to the agent as each selection's `label`, separate
+ * This is the reverse of {@link chartLayerStore}: that one holds what the
+ * agent drew; this one holds what the *user* picked, as a *list* — the user can
+ * stack several selections (each scoped to the `(symbol, timeframe)` chart it
+ * was drawn on) and attach a per-selection note before sending. Notes ride to the agent as each selection's `label`, separate
  * from the chat message text.
  *
  * It is a module singleton (not React context) because the two send sites that
