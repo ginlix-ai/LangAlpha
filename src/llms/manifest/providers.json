@@ -152,58 +152,20 @@
         },
         "context_window": 1050000,
         "max_output": 128000
-      },
-      {
-        "id": "gpt-5.6-terra",
-        "name": "GPT-5.6 Terra",
-        "is_reasoning": true,
-        "description": "Retired 2026-10-26, superseded by gpt-6.1-terra. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 2.0,
-              "cached_input": 0.2,
-              "cache_5m": 2.5
-            },
-            {
-              "max_tokens": null,
-              "rate": 4.0,
-              "cached_input": 0.4,
-              "cache_5m": 5.0
-            }
-          ],
-          "cache_5m": 2.5,
-          "output_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 12.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 18.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 1050000,
-        "max_output": 128000
       }
     ],
     "anthropic": [
       {
-        "id": "claude-fable-5-1",
-        "name": "Claude Fable 5.1",
+        "id": "claude-fable-5-2",
+        "name": "Claude Fable 5.2",
         "is_reasoning": true,
-        "description": "Claude Fable 5.1 model",
+        "description": "Claude Fable 5.2 model",
         "pricing": {
-          "input": 10.0,
-          "cached_input": 0.25,
-          "cache_5m": 12.5,
-          "cache_1h": 20.0,
-          "output": 50.0,
+          "input": 8.0,
+          "cached_input": 0.2,
+          "cache_5m": 10.0,
+          "cache_1h": 16.0,
+          "output": 40.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -228,7 +190,7 @@
         "description": "Claude Sonnet 5.5 model",
         "pricing": {
           "input": 2.0,
-          "cached_input": 0.2,
+          "cached_input": 0.1,
           "cache_5m": 2.5,
           "cache_1h": 4.0,
           "output": 10.0,
@@ -269,6 +231,20 @@
           ],
           "output_pricing_mode": "input_dependent",
           "input_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "claude-fable-5-1",
+        "name": "Claude Fable 5.1",
+        "is_reasoning": true,
+        "description": "Retired 2026-11-09, superseded by claude-fable-5-2. Kept until the next retirement so a custom model on this id still bills.",
+        "pricing": {
+          "input": 10.0,
+          "cached_input": 0.25,
+          "cache_5m": 12.5,
+          "cache_1h": 20.0,
+          "output": 50.0,
           "unit": "per_1m_tokens"
         }
       }
@@ -888,19 +864,6 @@
           "input": 4.0,
           "cached_input": 0.2,
           "output": 20.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "kimi-k3",
-        "name": "Kimi K3",
-        "is_reasoning": true,
-        "description": "Retired 2026-10-26, superseded by kimi-k3.1-pro. Kept until the next retirement so a custom model on this id still bills.",
-        "context_window": 1000000,
-        "pricing": {
-          "input": 3.0,
-          "cached_input": 0.3,
-          "output": 15.0,
           "unit": "per_1m_tokens"
         }
       }

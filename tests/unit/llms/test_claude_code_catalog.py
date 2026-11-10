@@ -10,7 +10,7 @@ from src.llms.llm import LLM, ModelConfig, create_llm, get_configured_llm_models
 from src.llms.pricing_utils import find_model_pricing
 from src.llms.reasoning_lineage import ANTHROPIC_LINEAGE, lineage_for_route
 
-CODE_ROWS = {"claude-haiku-5-5-code", "claude-sonnet-5-5-code", "claude-opus-5-5-code"}
+CODE_ROWS = {"claude-haiku-5-5-code", "claude-sonnet-5-5-code", "claude-opus-5-5-code", "claude-fable-5-2-code"}
 
 
 def _listed(runs: bool) -> tuple[set, dict, dict]:

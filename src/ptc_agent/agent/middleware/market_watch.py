@@ -4,7 +4,7 @@ Each stamp is a durable ``market_watch`` row, written before the model call it
 is sent with (``abefore_model``) and kept where it was written. A stamp that
 rode only the newest request and was gone on the next one would sit in front of
 the thinking the model produced after reading it, and a model that binds
-thinking to its prefix (Claude Fable 5.1 and the 5.5 models) would lose that
+thinking to its prefix (Claude Fable 5.2 and the 5.5 models) would lose that
 reasoning on every later call. The model still reads only the newest stamp:
 the carrier sends every stamp as a turn-scoped system message where the API
 clears it once a later user message exists, and elsewhere sends only the

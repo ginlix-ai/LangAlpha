@@ -1,5 +1,5 @@
 {
- "claude-fable-5-1": {
+ "claude-fable-5-2": {
   "client": "ChatAnthropic",
   "graph_build": {
    "middleware": [
@@ -74,11 +74,11 @@
   },
   "metadata": {
    "billing_type": "byok",
-   "manifest_model": "claude-fable-5-1",
-   "pricing_model_id": "claude-fable-5-1",
+   "manifest_model": "claude-fable-5-2",
+   "pricing_model_id": "claude-fable-5-2",
    "pricing_provider": "anthropic",
    "provider_route": "anthropic",
-   "reasoning_effort": "high"
+   "reasoning_effort": "medium"
   },
   "request": {
    "body": {
@@ -89,9 +89,9 @@
       "role": "user"
      }
     ],
-    "model": "claude-fable-5-1",
+    "model": "claude-fable-5-2",
     "output_config": {
-     "effort": "high"
+     "effort": "medium"
     },
     "stream": true,
     "system": "You are a lock probe.",
@@ -132,7 +132,90 @@
    "url": "https://api.anthropic.com/v1/messages"
   }
  },
- "claude-fable-5-1-oauth": {
+ "claude-fable-5-2-code": {
+  "client": "ClaudeCodeTarget",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesDueMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "0316f9b69dfbc61f6944fc3d2c28e5a98a1d4d9842dfbed60b363652c5abd363",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "reply_to_comment",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "claude-fable-5-2-code",
+   "pricing_model_id": "claude-fable-5-2",
+   "pricing_provider": "claude-code",
+   "provider_route": "claude-code",
+   "reasoning_effort": "medium"
+  },
+  "request": null
+ },
+ "claude-fable-5-2-oauth": {
   "client": "ChatAnthropicOAuth",
   "graph_build": {
    "middleware": [
@@ -207,11 +290,11 @@
   },
   "metadata": {
    "billing_type": "oauth",
-   "manifest_model": "claude-fable-5-1-oauth",
-   "pricing_model_id": "claude-fable-5-1",
+   "manifest_model": "claude-fable-5-2-oauth",
+   "pricing_model_id": "claude-fable-5-2",
    "pricing_provider": "claude-oauth",
    "provider_route": "claude-oauth",
-   "reasoning_effort": "high"
+   "reasoning_effort": "medium"
   },
   "request": {
    "body": {
@@ -222,9 +305,9 @@
       "role": "user"
      }
     ],
-    "model": "claude-fable-5-1",
+    "model": "claude-fable-5-2",
     "output_config": {
-     "effort": "high"
+     "effort": "medium"
     },
     "stream": true,
     "system": [

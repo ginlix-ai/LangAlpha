@@ -1,6 +1,6 @@
 """The tools array an Anthropic thread first sent, kept as it was sent.
 
-A model that binds its thinking to the prefix (Claude Fable 5.1 and the 5.5
+A model that binds its thinking to the prefix (Claude Fable 5.2 and the 5.5
 models) loses every earlier thinking block once ``tools`` differs between two
 calls of one conversation, and ours differs routinely: a skill's tools are
 offered once the skill is loaded, a notification turn is built without the

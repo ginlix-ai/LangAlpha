@@ -181,7 +181,7 @@ pdf = ["playwright>=1.49"]
 # never run a Claude Code turn do not carry the CLI; the package is imported
 # only by that runtime. Pinned exactly: the runtime subclasses the SDK's
 # subprocess transport, which is internal API.
-claude-code = ["claude-agent-sdk==0.2.174"]
+claude-code = ["claude-agent-sdk==0.2.180"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ptc_agent"]
