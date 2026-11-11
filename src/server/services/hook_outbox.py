@@ -57,8 +57,12 @@ WAKEUP_INFLIGHT_QUOTA = 3
 # so an APNs that hangs would otherwise fill every slot with them and stall
 # steers and report-backs for everyone.
 PUSH_INFLIGHT_QUOTA = 3
+# A restart leaves a restart_resume job for every thread it interrupted,
+# which would otherwise take every slot at once.
+RESTART_RESUME_INFLIGHT_QUOTA = 3
 _INFLIGHT_QUOTAS = {
     "task_report_back": TASK_RB_INFLIGHT_QUOTA,
+    "restart_resume": RESTART_RESUME_INFLIGHT_QUOTA,
     "command_report_back": COMMAND_RB_INFLIGHT_QUOTA,
     "market_target": MARKET_TARGET_INFLIGHT_QUOTA,
     "wakeup": WAKEUP_INFLIGHT_QUOTA,

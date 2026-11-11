@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from langgraph.channels import DeltaChannel
 
+from ptc_agent.agent.middleware.background_subagent.registry import CANCEL_UNWIND_TIMEOUT
 from src.config.settings import (
     get_checkpoint_flush_timeout,
     get_stop_drain_timeout,
@@ -96,8 +97,13 @@ async def teardown_subagents_on_stop(
     *,
     orphan_collectors: dict[asyncio.Task, str],
     drain: Callable[[str, list], Awaitable[list[dict]]],
+    restart: bool = False,
 ) -> None:
     """Single-owner subagent teardown on a stop, scoped to the stopped run.
+    On a graceful restart's stop the run's subagents are stopped as the
+    restart stops them, resumable, before the kill: ones the turn launched or
+    resumed after the drain stopped the rest would otherwise end as a stop
+    nothing resumes.
 
     Order (decision 1A, amended): list this run's tasks, cancel this run's
     orphan collectors, kill and claim its subagents
@@ -141,6 +147,12 @@ async def teardown_subagents_on_stop(
             await asyncio.gather(*collectors, return_exceptions=True)
         for collector in collectors:
             orphan_collectors.pop(collector, None)
+
+    if restart:
+        with suppress(Exception):
+            writers = await registry_store.stop_run_writers_for_restart(thread_id, run_id)
+            if writers:
+                await asyncio.wait(writers, timeout=CANCEL_UNWIND_TIMEOUT)
 
     # --- 4. Kill and claim this run's subagents; the registry and prior-turn
     # tasks survive for their own collectors. cancel_run_tasks awaits the

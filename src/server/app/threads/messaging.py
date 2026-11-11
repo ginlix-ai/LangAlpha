@@ -1450,6 +1450,7 @@ async def retry_thread(
     principal: RunPrincipal,
     limit: ChatLimiter,
     body: Optional[RetryRequest] = None,
+    raw_request: Request = None,
 ):
     """
     Retry a failed run as a new attempt on the same turn (v4 attempt chain).
@@ -1460,7 +1461,8 @@ async def retry_thread(
     archived. Graph-wise the retry resumes from the last checkpoint, unless
     the failed attempt never reached the graph: then it runs that attempt's
     message again, or replays the checkpoint a regenerate named
-    (``pending_input``). Returns an SSE stream.
+    (``pending_input``). Returns an SSE stream, or for the server's own
+    dispatched retry the run id as JSON, as a dispatched send does.
 
     The path holds a computer's token to its thread as a send's does, and the
     workspace the body names is held here, before the admission. Its origin
@@ -1580,7 +1582,7 @@ async def retry_thread(
     # Retry provenance travels as a route-internal parameter, never in the
     # body.
     return await _handle_send_message(
-        request, auth, thread_id, retry_of_run_id=latest_run_id
+        request, auth, thread_id, raw_request, retry_of_run_id=latest_run_id
     )
 
 

@@ -38,6 +38,7 @@ from src.server.models.chat import (
     serialize_hitl_response_map,
 )
 from src.server.services.background_registry_store import BackgroundRegistryStore
+from src.server.services.runs import restart_drain
 from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.workspace_manager import WorkspaceManager
 from src.observability import (
@@ -93,7 +94,7 @@ from .request_prep import (
     user_skill_commands,
 )
 from src.server.contracts.turn_kinds import announced
-from src.server.services import automation_delivery
+from src.server.services import automation_delivery, automation_settlement
 from src.server.services.credit_gate_port import build_run_credit_gate
 from src.server.services.report_back.handoff import carry
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
@@ -483,8 +484,13 @@ async def astream_ptc_workflow(
             # continuation), and stamping the durable row with the inherited gen
             # while re-marking the tracker with None would make a live admitted
             # run read as unadmitted to the fenced-teardown probe.
+            # A firing's turn is not started on a process that is draining:
+            # its executor hands the firing to the next process instead.
+            if (run_metadata or {}).get("automation_execution_id") and restart_drain.draining():
+                raise restart_drain.Draining()
             origin_meta = await _resolve_origin_meta(request, thread_id)
             carried = await carry.carried_pair(request, thread_id)
+            firing = await carry.carried_firing(request, thread_id)
             # A resume or a retry names no automation run of its own: it sends for
             # the one the turn it continues sent for.
             if automation_delivery.delivery_of_turn(extra_configurable or {}) is None:
@@ -515,9 +521,14 @@ async def astream_ptc_workflow(
                     ),
                     **automation_delivery.turn_metadata(extra_configurable),
                     **run_stamp(config),
+                    **firing,
                     **(run_metadata or {}),
                 },
             )
+            if firing:
+                await automation_settlement.take_over_firing(
+                    firing["automation_execution_id"], run_id
+                )
             await comments.admitted()
         if not is_checkpoint_replay:
             logger.debug(
@@ -1093,6 +1104,9 @@ async def astream_ptc_workflow(
         # surface raw as HTTP errors — never SSE frames into a stream whose
         # run was never dispatched (nothing durable exists yet).
         if dispatched and run_handle is None:
+            raise
+        # A firing refused for a drain never started: its executor hands it on.
+        if isinstance(e, restart_drain.Draining):
             raise
         # A resend carries these comments again under a key of its own, so they
         # wait again before the frame asking for it goes out.

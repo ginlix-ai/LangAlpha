@@ -110,3 +110,24 @@ async def test_a_reported_run_names_the_interrupted_runs_it_continued(
     assert "LIMIT %s" in sql
     assert "turn_index" not in sql
     assert mock_cursor.execute.call_args.args[1][:3] == (_THREAD, _LEGS[-1], _THREAD)
+
+
+@pytest.mark.asyncio
+async def test_a_reported_run_names_the_runs_a_restart_stopped_before_it(
+    mock_db_connection, mock_cursor
+):
+    """The turn that resumes a restart's stop reports for it; a user's stop,
+    which leaves no restart stamp, ends the chain."""
+    restarted = {"interrupted_by_restart": True}
+    rows = [
+        ("completed", {}),
+        ("cancelled", {"cancelled_by_user": True}),
+        ("cancelled", restarted),
+        ("completed", {}),
+    ]
+    mock_cursor.fetchall.return_value = [
+        {"conversation_response_id": uuid.UUID(run), "status": status, "metadata": meta}
+        for run, (status, meta) in zip(reversed(_LEGS), reversed(rows))
+    ]
+
+    assert await tl_db.get_continued_runs(_THREAD, _LEGS[-1]) == _LEGS[2:]

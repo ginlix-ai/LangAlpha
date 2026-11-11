@@ -141,6 +141,31 @@ class BackgroundRegistryStore:
             if task.task_run_id and not task.completed
         ]
 
+    async def stop_all_for_restart(self) -> tuple[list[asyncio.Task], set[str]]:
+        """Stop every task this worker runs for a graceful restart: the
+        writers still unwinding, and the threads whose tasks were stopped."""
+        async with self._lock:
+            registries = list(self._registries.items())
+        writers: list[asyncio.Task] = []
+        threads: set[str] = set()
+        for thread_id, registry in registries:
+            stopped = await registry.stop_writers_for_restart()
+            if stopped:
+                writers.extend(stopped)
+                threads.add(thread_id)
+        return writers, threads
+
+    async def stop_run_writers_for_restart(
+        self, thread_id: str, run_id: str
+    ) -> list[asyncio.Task]:
+        """Stop the tasks ``run_id`` spawned for a graceful restart, ahead of
+        its own stop's kill: the writers still unwinding."""
+        async with self._lock:
+            registry = self._registries.get(thread_id)
+        if registry is None:
+            return []
+        return await registry.stop_writers_for_restart(run_id)
+
     async def get_registry(self, thread_id: str) -> BackgroundTaskRegistry | None:
         async with self._lock:
             return self._registries.get(thread_id)

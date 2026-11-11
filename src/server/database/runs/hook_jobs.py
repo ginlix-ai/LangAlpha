@@ -7,12 +7,13 @@ INSIDE that transaction, and keeping it importable without the DB pool is what
 makes it testable as data.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, NotRequired, Optional, TypedDict
 
 from src.config import env
 from src.config.features import is_feature_enabled_system
-from src.server.contracts.status import to_public
+from src.server.contracts.status import is_restart_interrupted, to_public
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
 
 
@@ -74,6 +75,57 @@ class IdleCompactPayload(TypedDict):
     run_id: str
     user_id: str
     workspace_id: Optional[str]
+
+
+#: Work a graceful restart stopped on a thread, for the next process to resume
+#: (``services.report_back.restart``).
+RESTART_RESUME_HOOK = "restart_resume"
+
+#: What a turn a restart stopped would owe as an ordinary stop, held for the
+#: turn that takes its work over: the watching thread's report, a summary's
+#: release and the automation firing's settle. A resume that will not come
+#: writes them after all (``restart_held_jobs``).
+RESTART_HELD_HOOKS = frozenset({"report_back", "watch_clear", "automation_settle"})
+
+
+class RestartResumePayload(TypedDict):
+    # The thread's latest run when the restart stopped its work: the turn it
+    # interrupted, or the one before the subagents it stopped.
+    run_id: str
+
+
+def restart_resume_job(*, run_id: str, thread_id: str) -> HookJob:
+    """One job per run, whichever of the run's finalize and the stop of a
+    subagent it left running writes it first. Off the thread's report chain:
+    the reports a restart left parked wait for the turn that resumes, which
+    takes them in, so they must not hold its job back."""
+    return HookJob(
+        hook_type=RESTART_RESUME_HOOK,
+        idempotency_key=f"{run_id}:{RESTART_RESUME_HOOK}",
+        payload=RestartResumePayload(run_id=run_id),
+        ordering_key=f"{RESTART_RESUME_HOOK}:{thread_id}",
+    )
+
+
+#: A firing handed to a process that is not draining, which starts it on the
+#: thread its execution row records (``automation_executor.start_handed_off``).
+AUTOMATION_HANDOFF_HOOK = "automation_handoff"
+
+
+def automation_handoff_job(
+    *, execution_id: str, automation_id: str, user_id: str
+) -> HookJob:
+    """A firing is handed on again each time a process drains before it
+    starts, so each hand-off is a job of its own."""
+    return HookJob(
+        hook_type=AUTOMATION_HANDOFF_HOOK,
+        idempotency_key=f"{execution_id}:{AUTOMATION_HANDOFF_HOOK}:{uuid.uuid4()}",
+        payload={
+            "execution_id": execution_id,
+            "automation_id": automation_id,
+            "user_id": user_id,
+        },
+    )
 
 
 class UserFeedPayload(TypedDict):
@@ -142,6 +194,7 @@ def build_finalize_jobs(
     superseded: bool = False,
     last_seen_run_seq: Optional[int] = None,
     push_enabled: bool = False,
+    restart_interrupted: bool = False,
 ) -> Callable[[str], List[HookJob]]:
     """The one decision table mapping a run's final status to its hook jobs.
 
@@ -323,6 +376,12 @@ def build_finalize_jobs(
                     ordering_key=okey,
                 )
             )
+        if restart_interrupted and final_status == "cancelled":
+            # A restart's stop is not the end of the work: the turn that takes
+            # it over owes what it holds (``carried_pair``, ``carried_firing``,
+            # ``get_continued_runs``).
+            jobs = [job for job in jobs if job.hook_type not in RESTART_HELD_HOOKS]
+            jobs.append(restart_resume_job(run_id=run_id, thread_id=thread_id))
         return jobs
 
     return _jobs
@@ -332,11 +391,13 @@ def build_finalize_jobs_from_run_row(
     run: Dict[str, Any],
     *,
     last_seen_run_seq: Optional[int] = None,
+    as_ordinary_stop: bool = False,
 ) -> Callable[[str], List[HookJob]]:
     """Factory from the durable row alone: everything the decision table
     needs was stamped into run metadata at START. This is finalize_run's
     DEFAULT: no finalize path can skip required terminal effects (I5).
-    ``last_seen_run_seq`` is the seen pointer the finalize itself carried."""
+    ``last_seen_run_seq`` is the seen pointer the finalize itself carried.
+    ``as_ordinary_stop`` reads a run a restart stopped as any other stop."""
     meta = run.get("metadata") or {}
     return build_finalize_jobs(
         run_id=str(run["conversation_response_id"]),
@@ -356,4 +417,16 @@ def build_finalize_jobs_from_run_row(
         superseded=bool(meta.get("superseded")),
         last_seen_run_seq=last_seen_run_seq,
         push_enabled=env.APNS_ENABLED,
+        restart_interrupted=not as_ordinary_stop and is_restart_interrupted(run),
     )
+
+
+def restart_held_jobs(run: Dict[str, Any]) -> List[HookJob]:
+    """What the finalize of ``run``, a turn a restart stopped, held back for
+    the turn that takes it over (``RESTART_HELD_HOOKS``), as an ordinary
+    stop writes it, for a resume that will not come."""
+    return [
+        job
+        for job in build_finalize_jobs_from_run_row(run, as_ordinary_stop=True)("cancelled")
+        if job.hook_type in RESTART_HELD_HOOKS
+    ]

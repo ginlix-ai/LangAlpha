@@ -32,9 +32,16 @@ async def health_check():
     process serves without that server's tools until its background reconnect
     gets through. Each worker discovers and reconnects on its own, so the
     answer is this worker's.
+
+    ``capabilities`` names what whatever restarts the server may rely on:
+    ``restart_resume_v1`` is a process that hands its running work over when
+    asked and resumes what another one handed over (``runs/restart_drain``).
+    A draining process answers 503 with ``draining`` true, so nothing new is
+    routed to it.
     """
     from ptc_agent.core.mcp_registry import get_global_registry
     from src.server.app.setup import checkpointer
+    from src.server.services.runs import restart_drain
     from src.server.utils.checkpointer import get_checkpointer_health
 
     result = {
@@ -42,7 +49,12 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat(),
         "version": "0.1.0",
         "service": "ptc-agent",
+        "capabilities": [restart_drain.CAPABILITY],
+        "draining": restart_drain.draining(),
     }
+    if result["draining"]:
+        result["status"] = "draining"
+        return JSONResponse(result, status_code=503)
 
     # Include checkpointer pool health if configured
     try:

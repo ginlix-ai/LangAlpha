@@ -40,6 +40,7 @@ from ptc_agent.config.agent import SubagentModel
 from src.server.database import pool
 from src.server.contracts.status import (
     REPORT_BACK_STATUSES,
+    RESTART_STOP_ERROR_TYPE,
     TERMINAL_STATUSES,
 )
 from src.server.utils.pg_sanitize import SafeJson, normalize_uuid
@@ -524,7 +525,8 @@ async def _settle_steers(
     cancel or ends it; ``run_row`` comes back with the returns in its
     ``replay_facts``, which the run's ``steering_returned`` frames are read
     from. A run stopped by anyone (the user, a shutdown, a credit stop) gives
-    the user's back; any other ending leaves them to resume the task with.
+    the user's back; a graceful restart's stop, which is offered back for
+    resume, and any other ending leave them to resume the task with.
     The stamp leaves the rows the run holds for its ending, which confirms
     the ones its checkpoint read, and stamps ``held_steers`` on ``run_row``
     with how many of the user's those are."""
@@ -537,8 +539,11 @@ async def _settle_steers(
         task_id=str(run_row["task_id"]),
         # A cancelled ending counts even unstamped: the stamp is best-effort
         # ahead of a local stop, and a stop never resumes the task.
-        cancelled=run_row.get("cancel_requested_at") is not None
-        or run_row.get("status") == "cancelled",
+        cancelled=(run_row.get("failure") or {}).get("error_type") != RESTART_STOP_ERROR_TYPE
+        and (
+            run_row.get("cancel_requested_at") is not None
+            or run_row.get("status") == "cancelled"
+        ),
         spare_held_by=task_run_id if at_stamp else None,
     )
     if at_stamp:
