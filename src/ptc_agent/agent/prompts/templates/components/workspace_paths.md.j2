@@ -15,7 +15,7 @@ Everything below is relative to it, and so is every path you {{ "pass a tool" if
 {% if role | default("analyst") == "chief_of_staff" %}
 | `{{ workspace_paths.agent_md }}` | Your notebook, laid out as `<role>` describes |
 {% else %}
-| `{{ workspace_paths.agent_md }}` | Workspace purpose, long-term goals, index of what each task produced |
+| `{{ workspace_paths.agent_md }}` | Workspace map: purpose, reusable tools, open items, deliverable index |
 {% endif %}
 | `<task_name>/` | One directory per task, directly here: {% if scratchpad_enabled | default(false) %}the scripts worth keeping and the finished deliverable{% else %}scripts, drafts, and the finished deliverable{% endif %} |
 | `<task_name>/data/` | Data for this task |

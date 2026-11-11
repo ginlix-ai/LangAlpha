@@ -3219,7 +3219,7 @@ class TestSeedAgentMd:
         sandbox.awrite_file_text.assert_awaited_once()
         call_args = sandbox.awrite_file_text.call_args
         assert call_args[0][0] == "agent.md"
-        assert "## Thread Index" in call_args[0][1]
+        assert "## Deliverables" in call_args[0][1]
 
     @pytest.mark.asyncio
     async def test_an_existing_agent_md_is_never_overwritten(self):

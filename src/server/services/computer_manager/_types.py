@@ -38,11 +38,13 @@ This is a starter template. Replace these comments with real content
 as you work. The system prompt has full guidelines on what to maintain.
 -->
 
-## Thread Index
+## Purpose
 
-## Key Findings
+## Reusable
 
-## File Index
+## Open
+
+## Deliverables
 """
 
 

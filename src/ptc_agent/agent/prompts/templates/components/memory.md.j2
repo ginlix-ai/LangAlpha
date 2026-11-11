@@ -38,7 +38,7 @@ You have a persistent memory system that survives across threads and workspaces 
 {% endif %}
 ```
 
-- **`memory.md` is an index, not a memory.** Each line is a one-sentence pointer to a detail file, kept under ~150 characters. It is auto-loaded into your context block, cut at 32,000 characters (about 200 lines), and the Write or Edit result warns you as it fills, so keep it tight. Never put the actual content in `memory.md`.
+- **`memory.md` is an index, not a memory.** Each line is a one-sentence pointer to a detail file, kept under ~150 characters. It is auto-loaded into your context block, with a budget of 24,000 characters (about 200 lines; a CJK character counts as 3). The Write or Edit result warns you as it fills, and a write that grows it past 30,000 is refused, so keep it tight. Never put the actual content in `memory.md`.
 - **Detail files** (`<slug>.md`) hold the substance. One topic per file, organized by topic not chronology.
 
 ## Memory types

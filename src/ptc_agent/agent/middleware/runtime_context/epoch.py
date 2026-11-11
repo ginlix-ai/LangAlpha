@@ -42,6 +42,7 @@ from ptc_agent.agent.middleware.runtime_context.restate import (
 )
 from ptc_agent.agent.middleware.runtime_context.state import as_dict
 from ptc_agent.agent.roles import AgentRole
+from ptc_agent.agent.tools.context_file_policy import visible
 
 # Rendered in a fixed order so the block is byte-identical for equal inputs.
 MEMORY_TIERS: tuple[str, ...] = ("user", "workspace")
@@ -887,13 +888,19 @@ def _file_row(
         # supersedes an earlier "changed" notice that is now wrong.
         text = f"{read.path} matches its frozen copy again."
     else:
-        # A harness block has no file behind it for the model to open.
-        text = render_diff(
-            entry.text,
-            read.content,
-            read.path,
-            readable=harness_block_for(read.update_kind) is None,
-        )
+        # Diffed as the model would see it, cut as the frozen copy was, so the
+        # part the cut hides never arrives through a change row.
+        current = read.content if read.cap is None else visible(read.cap, read.content)
+        if current == entry.text:
+            text = f"{read.path} changed past the part shown in its frozen copy; Read it for the rest."
+        else:
+            # A harness block has no file behind it for the model to open.
+            text = render_diff(
+                entry.text,
+                current,
+                read.path,
+                readable=harness_block_for(read.update_kind) is None,
+            )
     return DurableUpdate(
         kind=read.update_kind,
         schema_version=UPDATE_SCHEMA_VERSION,
@@ -1046,21 +1053,10 @@ def _entry(read: SourceRead, previous: FileEntry | None) -> FileEntry | None:
     raw = read.content
     return FileEntry(
         path=read.path,
-        text=_truncate(raw, read.cap),
+        text=raw if read.cap is None else visible(read.cap, raw),
         sha256=sha256_text(raw),
         exists=read.text is not None,
     )
-
-
-def _truncate(content: str, cap: int | None) -> str:
-    if cap is None or len(content) <= cap:
-        return content
-    # Cut at a newline so the slice never lands mid-fence and tempts the model
-    # to "repair" content it did not write.
-    cut = content.rfind("\n", 0, cap)
-    if cut <= 0:
-        cut = cap
-    return content[:cut] + "\n\n[... truncated ...]"
 
 
 def _memo_display(count: int | None) -> str | None:

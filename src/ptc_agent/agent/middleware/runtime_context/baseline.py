@@ -89,7 +89,7 @@ from ptc_agent.agent.middleware.runtime_context.turn import (
     NOTICE_ROW_KINDS,
 )
 from ptc_agent.agent.roles import AgentRole
-from ptc_agent.agent.tools.context_file_policy import MAX_AGENT_MD_SIZE, MAX_MEMORY_BLOCK_SIZE
+from ptc_agent.agent.tools.context_file_policy import AGENT_MD, MEMORY_INDEX
 from ptc_agent.core.paths import (
     MEMO_INDEX_FILENAME,
     MEMO_USER_DIR,
@@ -512,7 +512,7 @@ class BaselineContextMiddleware(AgentMiddleware):
                 path=AGENT_MD_PATH,
                 available=False,
                 provenance=provenance,
-                cap=MAX_AGENT_MD_SIZE,
+                cap=AGENT_MD,
             )
         return SourceRead(
             kind="agent_md",
@@ -520,7 +520,7 @@ class BaselineContextMiddleware(AgentMiddleware):
             path=AGENT_MD_PATH,
             text=content,
             provenance=provenance,
-            cap=MAX_AGENT_MD_SIZE,
+            cap=AGENT_MD,
         )
 
     async def _read_memory(self, tier: str) -> SourceRead:
@@ -531,7 +531,7 @@ class BaselineContextMiddleware(AgentMiddleware):
             path=source.display_path,
             available=False,
             provenance={"source": "store", "tier": tier},
-            cap=MAX_MEMORY_BLOCK_SIZE,
+            cap=MEMORY_INDEX,
         )
         try:
             namespace = source.namespace_factory()

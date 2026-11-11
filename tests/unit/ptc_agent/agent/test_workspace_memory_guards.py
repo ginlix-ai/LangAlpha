@@ -63,7 +63,7 @@ class TestTheWorkspaceTierIsGuarded:
             computer_root=ROOT,
         )
         assert capped is not None
-        assert capped.cap == MAX_MEMORY_BLOCK_SIZE
+        assert capped.limit == MAX_MEMORY_BLOCK_SIZE
 
 
 def test_every_tree_the_mount_serves_is_refused_without_it():
