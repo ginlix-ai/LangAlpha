@@ -35,6 +35,7 @@ from src.server.database.home_workspace import is_unbound
 from src.server.database.computer import get_computer
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.workspace_manager import WorkspaceManager
+from src.server.services.artifacts.snapshot import keep_updated_after_change
 from src.server.services.persistence.file import FilePersistenceService
 from src.server.services.persistence.download_link import (
     live_download_link,
@@ -628,6 +629,7 @@ async def write_workspace_file(
             pass
 
     record_fs_bytes("write", len(content_bytes))
+    keep_updated_after_change(workspace_id=workspace_id, user_id=x_user_id)
 
     return {
         "workspace_id": workspace_id,
@@ -1254,6 +1256,7 @@ async def upload_workspace_file(
 
     client_path = to_client_path(sandbox, normalized, work_dir)
     record_fs_bytes("upload", len(content))
+    keep_updated_after_change(workspace_id=workspace_id, user_id=x_user_id)
     return {
         "workspace_id": workspace_id,
         "path": client_path,
@@ -1540,4 +1543,6 @@ async def delete_workspace_files(
                                 }
                             )
 
+    if deleted:
+        keep_updated_after_change(workspace_id=workspace_id, user_id=x_user_id)
     return {"deleted": deleted, "errors": errors}

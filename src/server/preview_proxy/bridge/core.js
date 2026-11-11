@@ -186,16 +186,24 @@ function onScroll() {
 
 document.addEventListener('scroll', onScroll, { capture: true, passive: true });
 
-// Where the reader was on the page's previous version, applied again as
-// the document grows: a page that renders after load is short at first,
-// and an early scroll stops at its end. Any input from the reader ends it
-// (not a scroll event, which the bridge's own scrollTo fires too), so
-// their own scrolling is never undone.
+// Where the reader was on the page's previous version, applied again as the
+// document grows: a page that renders after load is short at first, and an
+// early scroll stops at its end. Kept until a moment after the page settles
+// (or after the ask, on a page already settled), since content can still land
+// then: a dashboard's data comes over the bridge, which no request counts.
+// Any input from the reader ends it (not a scroll event, which the bridge's
+// own scrollTo fires too), so their own scrolling is never undone.
 /** @type {{ x: number, y: number } | null} */
 var restoring = null;
+var RESTORE_GRACE_MS = 2000;
+var restoreGrace = 0;
+/** @type {Array<{ disconnect: () => void }>} */
+var restoreWatch = [];
 
 function restoreScroll() {
   if (!restoring || !document.body) return;
+  var fromX = window.scrollX;
+  var fromY = window.scrollY;
   try {
     // Not 'auto': a page that sets scroll-behavior: smooth would glide
     // there from the top.
@@ -203,11 +211,46 @@ function restoreScroll() {
   } catch (e) {
     window.scrollTo(restoring.x, restoring.y);
   }
-  jumpedTo = { x: round(window.scrollX), y: round(window.scrollY) };
+  // Only a jump that moved fires a scroll event to report it.
+  if (window.scrollX !== fromX || window.scrollY !== fromY) {
+    jumpedTo = { x: round(window.scrollX), y: round(window.scrollY) };
+  }
+}
+
+function stopRestoring() {
+  restoring = null;
+  window.clearTimeout(restoreGrace);
+  restoreGrace = 0;
+  for (var i = 0; i < restoreWatch.length; i++) restoreWatch[i].disconnect();
+  restoreWatch = [];
+}
+
+// Tried again whenever the document may have grown, which is when it can
+// first scroll that far.
+function watchGrowth() {
+  if (restoreWatch.length) return;
+  var root = document.documentElement;
+  if (!root) return;
+  if (window.MutationObserver) {
+    var changes = new MutationObserver(restoreScroll);
+    changes.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
+    restoreWatch.push(changes);
+  }
+  if (window.ResizeObserver) {
+    var sizes = new ResizeObserver(restoreScroll);
+    sizes.observe(root);
+    if (document.body) sizes.observe(document.body);
+    restoreWatch.push(sizes);
+  }
+}
+
+function restoreUntilGrace() {
+  window.clearTimeout(restoreGrace);
+  restoreGrace = window.setTimeout(stopRestoring, RESTORE_GRACE_MS);
 }
 
 function readerTookOver() {
-  restoring = null;
+  stopRestoring();
   jumpedTo = null;
 }
 
@@ -280,7 +323,7 @@ function settleNow() {
   if (quietWatch) quietWatch.disconnect();
   quietWatch = null;
   restoreScroll();
-  restoring = null;
+  if (restoring) restoreUntilGrace();
   reportGround();
   // Said once a frame has been drawn where the page was put back: the
   // viewer shows the document on this, and a frame still drawn at the old
@@ -307,6 +350,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
 function onLoaded() {
   restoreScroll();
+  // Once loaded, where the document stands, so the viewer holds a place for
+  // a reader who never scrolls; a scroll in motion reports its own stop.
+  if (!scrollFrame && !scrollStill) reportScroll(false);
   reportGround();
   settleSoon();
   quietCap = window.setTimeout(settleNow, SETTLE_CAP_MS);
@@ -326,9 +372,9 @@ listen('page:theme', function (data) {
 listen('page:restore-scroll', function (data) {
   if (typeof data.x !== 'number' || typeof data.y !== 'number' || !isFinite(data.x) || !isFinite(data.y)) return;
   restoring = { x: data.x, y: data.y };
+  watchGrowth();
   restoreScroll();
-  // Nothing left to grow into.
-  if (settled) restoring = null;
+  if (settled) restoreUntilGrace();
 });
 
 // A section a reference points at. One the URL already names moves neither

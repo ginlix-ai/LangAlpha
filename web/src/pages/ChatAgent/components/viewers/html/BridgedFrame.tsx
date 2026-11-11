@@ -2,6 +2,7 @@ import React, { useEffect, useEffectEvent, useReducer, useRef, useState } from '
 import { Loader } from '@/components/ui/loader';
 import { DURATION } from '@/lib/motion';
 import { useTranslation } from 'react-i18next';
+import { AppBridge, type BridgeOptions } from '@/lib/appBridge/AppBridge';
 import { HostedFrame } from '../HostedFrame';
 import { framedDirectly, messageOrigin, sendFrameTo } from '../frameHost';
 import { frameSwap, isReady, isShown, NO_SWAP, type FramedDoc, type FrameSwap, type FrameSwapAction } from './frameSwap';
@@ -94,6 +95,13 @@ interface BridgedFrameProps {
   onUnbridged?: () => void;
   /** The document on screen, or about to be, fired its `load`: what it fetches to draw is in. */
   onLoad?: () => void;
+  /**
+   * Answer the LangAlpha kit (`lib/appBridge`) for the owner, so a page built
+   * on it shows their data here as on their Dashboard. `grantKey` is the
+   * file's `/a/` code, which keys what the owner let it read. `active` is the
+   * bridge's: false while the frame is mounted out of sight.
+   */
+  kit?: Pick<BridgeOptions, 'grantKey' | 'active'>;
 }
 
 /**
@@ -109,7 +117,7 @@ interface BridgedFrameProps {
  * address would reload it under the reader.
  */
 export function BridgedFrame({
-  source, title, groundKey, notice, overlay, onBridge, onUnbridged, onLoad,
+  source, title, groundKey, notice, overlay, onBridge, onUnbridged, onLoad, kit,
 }: BridgedFrameProps): React.ReactElement {
   const { t } = useTranslation();
   const frameKey = source?.key ?? null;
@@ -304,6 +312,11 @@ export function BridgedFrame({
           />
         );
       })}
+      {kit && frame && !notice && (
+        <div className="bridged-frame-kit">
+          <AppBridge frameRef={frameRef} src={frame.src} sandbox={frame.sandbox} loaded={loaded} grantKey={kit.grantKey} active={kit.active} subject="page" />
+        </div>
+      )}
       {frame && !notice && overlay && (
         <div className="bridged-frame-overlay">{overlay(bridge, { key: frame.key, shown: shown && offPageOf !== frame.key })}</div>
       )}

@@ -18,11 +18,15 @@ vi.mock('@/pages/Dashboard/utils/api', () => ({
   clearPreferences: vi.fn(),
 }));
 
+vi.mock('@/lib/preferencesChannel', () => ({ announcePreferencesChanged: vi.fn() }));
+
 import { clearPreferences, updatePreferences } from '@/pages/Dashboard/utils/api';
+import { announcePreferencesChanged } from '@/lib/preferencesChannel';
 import { useClearPreferences, useUpdatePreferences } from '../useUpdatePreferences';
 
 const mockUpdate = updatePreferences as unknown as ReturnType<typeof vi.fn>;
 const mockClear = clearPreferences as unknown as ReturnType<typeof vi.fn>;
+const mockAnnounce = announcePreferencesChanged as unknown as ReturnType<typeof vi.fn>;
 
 /** A write that never answers, so what is asserted is the prediction alone. */
 function inFlight() {
@@ -164,6 +168,7 @@ describe('useClearPreferences', () => {
   beforeEach(() => {
     mockUpdate.mockReset();
     mockClear.mockReset();
+    mockAnnounce.mockReset();
   });
 
   it('deletes the row only once a write issued before it has landed', async () => {
@@ -210,6 +215,89 @@ describe('useClearPreferences', () => {
       other_preference: { card_style: 'terminal', theme: 'dark' },
     });
     expect(mockClear.mock.invocationCallOrder[0]).toBeLessThan(mockUpdate.mock.invocationCallOrder[0]);
+  });
+
+  it('saves the dashboards the user set back too: the list is what lets one be removed', async () => {
+    mockClear.mockResolvedValue({ success: true });
+    mockUpdate.mockResolvedValue({});
+    const custom_dashboards = { current: 'pg1', list: [{ kind: 'page', code: 'pg1', artifactId: 'art1' }] };
+    const queryClient = seeded({ other_preference: { custom_dashboards, app_scopes: { pg1: ['portfolio'] } } });
+    const { result } = renderHookWithProviders(() => useClearPreferences(), { queryClient });
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+    expect(mockUpdate).toHaveBeenCalledWith({ other_preference: { custom_dashboards } });
+  });
+
+  it('holds the lock whole-key writes take from its delete to its save back', async () => {
+    // Another tab's change to the list waits for the list to be back.
+    const steps: string[] = [];
+    const locks = {
+      request: async (_name: string, run: () => Promise<unknown>) => {
+        steps.push('locked');
+        try {
+          return await run();
+        } finally {
+          steps.push('released');
+        }
+      },
+    };
+    Object.defineProperty(navigator, 'locks', { value: locks, configurable: true });
+    try {
+      mockClear.mockImplementation(async () => { steps.push('delete'); return { success: true }; });
+      mockUpdate.mockImplementation(async () => { steps.push('save back'); return {}; });
+      const custom_dashboards = { current: 'pg1', list: [{ kind: 'page', code: 'pg1', artifactId: 'art1' }] };
+      const queryClient = seeded({ other_preference: { custom_dashboards } });
+      const { result } = renderHookWithProviders(() => useClearPreferences(), { queryClient });
+
+      await act(async () => {
+        await result.current.mutateAsync();
+      });
+      expect(steps).toEqual(['locked', 'delete', 'save back', 'released']);
+    } finally {
+      delete (navigator as { locks?: unknown }).locks;
+    }
+  });
+
+  it('tells other tabs once the reset is done, so none goes on serving what it cleared', async () => {
+    // An app's data access is cleared with the rest, and a tab left showing
+    // the app would answer its reads from the row it still holds.
+    mockClear.mockResolvedValue({ success: true });
+    mockUpdate.mockResolvedValue({});
+    const queryClient = seeded({ other_preference: { card_style: 'soft', app_scopes: { pg1: ['portfolio'] } } });
+    const { result } = renderHookWithProviders(() => useClearPreferences(), { queryClient });
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+    expect(mockAnnounce).toHaveBeenCalledTimes(1);
+    expect(mockUpdate.mock.invocationCallOrder[0]).toBeLessThan(mockAnnounce.mock.invocationCallOrder[0]);
+  });
+
+  it('says nothing when the delete fails, having cleared nothing', async () => {
+    mockClear.mockRejectedValue(new Error('offline'));
+    const queryClient = seeded({ other_preference: { card_style: 'soft' } });
+    const { result } = renderHookWithProviders(() => useClearPreferences(), { queryClient });
+
+    await act(async () => {
+      await expect(result.current.mutateAsync()).rejects.toThrow('offline');
+    });
+    expect(mockAnnounce).not.toHaveBeenCalled();
+  });
+
+  it('tries the save back again when it fails, so a blip does not lose the list', async () => {
+    mockClear.mockResolvedValue({ success: true });
+    mockUpdate.mockRejectedValueOnce(new Error('blip')).mockResolvedValue({});
+    const custom_dashboards = { current: 'pg1', list: [{ kind: 'page', code: 'pg1', artifactId: 'art1' }] };
+    const queryClient = seeded({ other_preference: { custom_dashboards } });
+    const { result } = renderHookWithProviders(() => useClearPreferences(), { queryClient });
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+    expect(mockUpdate).toHaveBeenCalledTimes(2);
+    expect(mockUpdate).toHaveBeenLastCalledWith({ other_preference: { custom_dashboards } });
   });
 
   it('sends nothing back when the account held no look', async () => {

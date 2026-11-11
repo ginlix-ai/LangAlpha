@@ -11,6 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { sharedSeq } from '@/hooks/useArtifact';
 import { useLocale } from '@/hooks/useLocale';
 import { shortMonthDay } from '@/lib/format';
 import type { ArtifactVersionView } from '../../filePanel/useArtifactVersionView';
@@ -39,8 +40,10 @@ export function ArtifactVersionPicker({ view, variant }: ArtifactVersionPickerPr
   const locale = useLocale();
   const { record, version, updatedTo } = view;
   const latestSeq = record?.latest_seq ?? 0;
-  // Whether visitors see the latest now; an unshared file keeps its versions.
+  // An unshared file keeps its versions, and a shared one's visitors may sit
+  // behind the latest, on the version the owner last published.
   const shared = !!record?.shared;
+  const visitorsAt = sharedSeq(record);
   const announcing = updatedTo !== null;
 
   // A pick closes the menu, which hands focus back to the trigger; an open
@@ -49,7 +52,9 @@ export function ArtifactVersionPicker({ view, variant }: ArtifactVersionPickerPr
 
   if (latestSeq < 1) return null;
   const label = version === null
-    ? t(shared ? 'artifact.publishedVersion' : 'artifact.unsharedVersion', { seq: latestSeq })
+    ? visitorsAt > 0
+      ? t('artifact.publishedVersion', { seq: visitorsAt })
+      : shared ? t('publish.published') : t('artifact.unsharedVersion', { seq: latestSeq })
     : announcing
       ? t('filePanel.pageUpdated', { seq: version })
       : t('filePanel.pageVersion', { seq: version });
@@ -128,6 +133,9 @@ export function ArtifactVersionPicker({ view, variant }: ArtifactVersionPickerPr
                     <span>{t('filePanel.pageVersion', { seq: v.seq })}</span>
                     {v.seq === latestSeq && (
                       <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.pageLatest')}</span>
+                    )}
+                    {v.seq === visitorsAt && visitorsAt !== latestSeq && (
+                      <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.pageShared')}</span>
                     )}
                     <span className="ml-auto pl-2 text-xs tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
                       {shortMonthDay(new Date(v.published_at), locale)}

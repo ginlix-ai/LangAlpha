@@ -138,13 +138,23 @@ export const queryKeys = {
     // `key` is the normalized entry path for a file, the port for an app.
     link:        (wsId: string, kind: string, key: string) => [...queryKeys.shareLinks.links(wsId), kind, key],
     shared:      (wsId: string) => [...queryKeys.shareLinks.byWorkspace(wsId), 'shared'],
+    // One of the owner's links read by its code, where the workspace is not at hand.
+    byCode:      (code: string) => [...queryKeys.shareLinks.all, 'code', code],
   },
   // What an `/s/` or `/a/` page resolves to. The visitor flag is part of the
   // question: the owner gets a different answer for the same code.
   share: {
     all:      ['share'],
+    // Every answer for one code, whoever asked and at whatever page.
+    metadataOf: (code: string) => [...queryKeys.share.all, 'metadata', code],
     metadata: (code: string, viewer: string | null, asVisitor: boolean, path: string | null) =>
-      [...queryKeys.share.all, 'metadata', code, viewer, asVisitor, path],
+      [...queryKeys.share.metadataOf(code), viewer, asVisitor, path],
+  },
+  // What a framed app read through the bridge, by its checked arguments;
+  // shared by every app on the page. Quotes are the page's own quote rows.
+  appBridge: {
+    all:    ['appBridge'],
+    method: (method: string, args: unknown) => [...queryKeys.appBridge.all, method, args],
   },
   // One projection of a machine: the list. A detail entry would be a second
   // place for a status to disagree with itself, and every surface that shows a

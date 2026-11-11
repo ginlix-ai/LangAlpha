@@ -95,6 +95,8 @@ export function ArtifactFrames({
 
   // A published version, framed from the artifact's own grant.
   const { record, version, entry } = view.versionView;
+  // The live frame is the one on screen: its tab picked, no version over it.
+  const liveShown = view.active && shown && version === null;
   const artifactId = record?.artifact_id ?? null;
   const versionGrant = useArtifactGrant(version !== null ? artifactId : null);
   const versionSource = useMemo<FrameSource | null>(() => {
@@ -138,6 +140,8 @@ export function ArtifactFrames({
             title={fileName || 'HTML Preview'}
             groundKey={filePath}
             onBridge={live.onBridge}
+            // The owner's own view: a page built on the kit shows their data.
+            kit={{ grantKey: record?.code ?? null, active: liveShown }}
             overlay={(bridge, frameView) => (
               // Its own boundary: the layer's chunk loading must not hide the frame.
               <Suspense fallback={null}>
@@ -147,7 +151,7 @@ export function ArtifactFrames({
                   path={filePath}
                   bridge={bridge}
                   view={frameView}
-                  active={view.active && shown && version === null}
+                  active={liveShown}
                   ui={view.ui}
                 />
               </Suspense>

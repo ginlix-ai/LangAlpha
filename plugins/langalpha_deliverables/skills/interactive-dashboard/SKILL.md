@@ -1,11 +1,11 @@
 ---
 name: interactive-dashboard
-description: "Interactive web dashboards: stock trackers, sector heatmaps, portfolio monitors, served via preview URL"
+description: "Interactive web apps served from the computer via preview URL: dashboards, trackers, screeners, monitors, tools, multi-page or React apps, anything that needs a running server"
 ---
 
-# Interactive Dashboard
+# Interactive Web Apps
 
-Build interactive web dashboards inside the sandbox and expose them to the user via `GetPreviewUrl`. Use this skill for any request involving dashboards, trackers, monitors, live visualizations, or interactive web apps.
+Build interactive web apps inside the sandbox and expose them to the user via `GetPreviewUrl`: dashboards, trackers, monitors, screeners, calculators and tools, live visualizations, multi-page apps. Anything the user opens as an app, which needs a server running on the computer.
 
 ## When to Use
 
@@ -18,6 +18,7 @@ Use this skill for a **live, served web app** — one that needs a running serve
 - User explicitly says "preview", "web view", "web app", or wants it running at a URL
 
 **Do NOT use if:**
+- User wants **their LangAlpha Dashboard**, the page they see when they open LangAlpha, built or changed. That's `.agents/skills/dashboard-page/SKILL.md`: a page LangAlpha keeps a copy of, which opens while the computer is off. A running app cannot. The user can still set a running app as their Dashboard from the file panel; it opens only while the computer is on.
 - User wants a **self-contained HTML report** — even an *interactive* one (sortable tables, tabs, hover/zoom charts) over a **data snapshot**. That's `.agents/skills/html-report/SKILL.md`: one file in the task directory, keepable, printable, PDF-exportable, share-linkable. Interactivity by itself does **not** require a dashboard.
 - User wants a **static chart image** → matplotlib/plotly `savefig`.
 - User wants an **in-chat figure** → `inline-widget` (`ShowWidget`).
@@ -133,6 +134,12 @@ The orchestrating agent calls `GetPreviewUrl(port=8050, command="...", title="..
 - The preview URL auto-recovers
 
 **Implication:** Write commands that are **idempotent** — they must work whether run for the first time or re-run after a restart. The platform handles the rest. Docker image cache survives restart so rebuilds are fast (~2-5s with warm cache).
+
+### The User's Own Data
+
+An app that shows the user's prices, watchlists, holdings, news, brief, earnings or threads reads them through the LangAlpha kit instead of fetching them itself: inside LangAlpha the page around the app answers as the signed-in user and keeps the data live. Read `.agents/skills/dashboard-page/references/dashboard-kit.md` for the components and `window.la`. Data the kit does not have comes from the app's backend, which imports `tools.*` as your code does when it runs directly on the computer; inside a Docker image it cannot (see Docker Gotchas).
+
+Start a backend that imports `tools.*` with `GetPreviewUrl` alone, not from Bash first: only the server `GetPreviewUrl` starts can import them, and a port already answering makes it skip that start and leave the Bash copy running without them. Check the app after the call; a sub-agent returns the serve details without starting it.
 
 ### Sandbox Capabilities
 
@@ -591,7 +598,7 @@ Layout:
 
 ### 5. Portfolio Monitor
 
-**Data**: `get_multiple_stocks_history`, `compare_valuations`, `get_company_info` for each holding
+**Data**: the holdings, their live prices and sectors through the kit (`portfolio.holdings`, `la.stream`, `profiles.get`); `compare_valuations` and history from the backend for what the kit does not have
 
 Layout:
 - Holdings table (ticker, shares, price, value, weight, day P&L)
@@ -603,7 +610,7 @@ Layout:
 
 ### General
 
-- **Data-first**: Fetch and validate ALL data before writing any HTML/React code
+- **Data-first**: Fetch and validate the data the backend serves before writing any HTML/React code (the kit's data comes live in the page)
 - **Fail gracefully**: If a ticker is invalid or API returns empty, show "No data available" — don't crash
 - **No console errors**: Verify chart rendering works before calling `GetPreviewUrl`
 - **Responsive**: CSS Grid `auto-fit` for layouts. No horizontal scroll at any width

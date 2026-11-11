@@ -80,6 +80,7 @@ _CRUD_DBWS = "src.server.app.workspace_files.crud.db_get_workspace"
 _CRUD_OWNER = "src.server.app.workspace_files.crud.require_workspace_owner"
 _CRUD_ACQUIRE_TO_CHANGE = "src.server.app.workspace_files.crud.acquire_sandbox_to_change"
 _CRUD_WD = "src.server.app.workspace_files.crud.owner_work_dir"
+_CRUD_KEEP_PASS = "src.server.app.workspace_files.crud.keep_updated_after_change"
 _CRUD_VAULT = "src.server.app.workspace_files.crud.get_vault_secrets_for_redaction"
 _CRUD_LINK = "src.server.app.workspace_files.crud.live_download_link"
 _CRUD_SCAN = "src.server.app.workspace_files.crud.FilePersistenceService.list_sandbox_files"
@@ -639,6 +640,23 @@ async def test_listing_after_a_rename_reads_the_folder_the_acquisition_settled(
         )
     assert "work/report.html" in result["files"]
     _nothing_from_the_sibling(computer)
+
+
+@pytest.mark.asyncio
+async def test_a_saved_file_asks_for_one_keep_updated_pass(computer) -> None:
+    """A page kept for the Dashboard follows an edit made outside a turn."""
+    with (
+        patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
+        patch(_FILES_DBWS, AsyncMock(return_value=_workspace())),
+        patch(_CRUD_OWNER, MagicMock()),
+        patch(_CRUD_WD, return_value=computer.work_dir),
+        patch(_CRUD_ACQUIRE_TO_CHANGE, _acquired(computer.sandbox, _workspace())),
+        patch(_CRUD_KEEP_PASS) as keep_pass,
+    ):
+        await write_workspace_file(
+            WS_A, OWNER, path="work/report.html", body=WriteFileRequest(content="x")
+        )
+    keep_pass.assert_called_once_with(workspace_id=WS_A, user_id=OWNER)
 
 
 @pytest.mark.asyncio

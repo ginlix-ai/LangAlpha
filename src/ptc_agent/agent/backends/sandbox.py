@@ -48,6 +48,7 @@ from deepagents.backends.protocol import (
 from ptc_agent.agent.backends.results import EditTextResult
 from ptc_agent.core.paths import langalpha_config_dir, on_file_mount, resolve_agent_path
 from ptc_agent.core.sandbox import PTCSandbox
+from ptc_agent.core.sandbox.execution import app_command
 from ptc_agent.core.sandbox.grep_render import GrepLine
 from ptc_agent.core.sandbox.jobs import (
     Ended,
@@ -749,7 +750,7 @@ class SandboxBackend(SandboxBackendProtocol):
         if self.preview_owner is not None:
             kwargs["owner"] = self.preview_owner
         return await self.sandbox.start_and_get_preview_url(
-            f"cd {shlex.quote(self.workspace_dir)} && {command}",
+            app_command(self.sandbox.workspace(), command),
             port,
             **kwargs,
         )

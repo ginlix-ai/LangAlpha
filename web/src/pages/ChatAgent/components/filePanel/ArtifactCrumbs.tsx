@@ -2,7 +2,7 @@ import React, { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } f
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
-import { useArtifactStatus } from '@/hooks/useArtifact';
+import { sharedSeq, useArtifactStatus } from '@/hooks/useArtifact';
 import { queryKeys } from '@/lib/queryKeys';
 import type { Artifact, ArtifactStatus } from '@/types/api';
 import { ArtifactVersionPicker } from '../viewers/html/ArtifactVersionPicker';
@@ -100,7 +100,7 @@ export function ArtifactCrumbs({ view, onReview, readAt }: ArtifactCrumbsProps):
           </button>
         </CrumbStatus>
       ) : changed && (
-        <CrumbStatus key="changed" words={t('artifact.changedSince')} label={t('publish.changedSince', { seq: latest })}>
+        <CrumbStatus key="changed" words={t('artifact.changedSince')} label={t('publish.changedSince', { seq: sharedSeq(artifact) })}>
           <button
             type="button"
             className="file-panel-artifact-update"

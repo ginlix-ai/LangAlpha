@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
+import { PREFERENCES_CHANNEL } from '@/lib/preferencesChannel';
 import { queryKeys } from '@/lib/queryKeys';
 import type { UserPreferences } from '@/types/api';
 import type { DashboardPrefs } from '../types';
 
-export const BROADCAST_CHANNEL = 'dashboard-prefs';
+export const BROADCAST_CHANNEL = PREFERENCES_CHANNEL;
 
 /**
  * Single writer for `other_preference.dashboard`. Centralizes three concerns

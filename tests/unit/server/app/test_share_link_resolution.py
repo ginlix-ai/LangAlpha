@@ -24,6 +24,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.server.app.public import router as public_router
 from src.server.app.share_access import resolve_shared_files
+from src.server.app.workspace_sandbox import OwnerPreview
 from src.server.database.artifacts import Artifact, Version
 from src.server.database.share_links import ShareLink
 from src.server.services import file_grants
@@ -48,7 +49,7 @@ _ACCESS_LINK = "src.server.app.share_access.get_link"
 _ACCESS_WS = "src.server.app.share_access.db_get_workspace"
 _ACCESS_THREAD = "src.server.app.share_access.get_thread_by_share_token"
 _PUBLIC_THREAD = "src.server.app.public.get_shared_thread"
-_PUBLIC_PREVIEW_URL = "src.server.app.public.owner_preview_url"
+_PUBLIC_PREVIEW_URL = "src.server.app.public.owner_preview"
 _PUBLIC_URL_EXPIRY = "src.server.app.public.signed_url_expires_at"
 _SERVE_VAULT = "src.server.app.workspace_files.serve.get_vault_secrets_for_redaction"
 _SHARE_FILES_FP = "src.server.app.share_files.FilePersistenceService.get_file_content"
@@ -92,7 +93,15 @@ def _workspace(**overrides) -> dict:
 _AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _artifact(*, latest_seq: int = 2, shared: bool = True) -> Artifact:
+def _artifact(
+    *,
+    latest_seq: int = 2,
+    shared: bool = True,
+    shared_seq: int | None = None,
+    kept: bool = False,
+) -> Artifact:
+    if shared_seq is None:
+        shared_seq = latest_seq if shared else 0
     return Artifact(
         artifact_id=ARTIFACT,
         code=CODE,
@@ -106,6 +115,8 @@ def _artifact(*, latest_seq: int = 2, shared: bool = True) -> Artifact:
         files=tuple(SHARED_FILES),
         revision=4,
         created_at=_AT,
+        kept_at=_AT if kept else None,
+        shared_seq=shared_seq,
     )
 
 
@@ -377,6 +388,48 @@ async def test_metadata_shared_file_is_its_latest_version_to_anyone():
     )
 
 
+async def test_a_visitor_gets_the_shared_version_not_a_newer_one_kept_for_the_owner():
+    """A kept record's turns cut versions past the share, which only the owner's
+    Dashboard sees."""
+    kept = _artifact(latest_seq=5, shared_seq=3, kept=True)
+    versions = _versions(latest=_version(3))
+    with (
+        patch(_ACCESS_LINK, AsyncMock(return_value=_link(artifact=kept))),
+        patch(_ACCESS_WS, AsyncMock(return_value=_workspace())),
+        patch(_ARTIFACTS_DB, versions),
+        patch(_LEGACY, AsyncMock()) as legacy,
+        patch(_PUBLIC_BASE, return_value=None),
+    ):
+        async with _client(None) as client:
+            resp = await client.get(f"/api/v1/public/shared/{CODE}")
+    assert resp.status_code == 200
+    assert resp.json()["seq"] == 3
+    assert "latest_seq" not in resp.json()
+    versions.get_version.assert_awaited_once_with(ARTIFACT, 3)
+    legacy.assert_not_awaited()
+    grant = await verify_artifact_share_grant(resp.json()["frame_base"].split("/")[5])
+    assert grant.seq == 3
+
+
+async def test_a_legacy_link_kept_before_its_first_view_is_still_snapshotted():
+    """A keep may cut versions for the owner first; visitors still have none."""
+    kept = _artifact(latest_seq=2, shared_seq=0, kept=True)
+    with (
+        patch(_ACCESS_LINK, AsyncMock(return_value=_link(artifact=kept))),
+        patch(_ACCESS_WS, AsyncMock(return_value=_workspace())),
+        patch(_ARTIFACTS_DB, _versions(latest=_version(3))),
+        patch(
+            _LEGACY,
+            AsyncMock(return_value=_artifact(latest_seq=3, shared_seq=3, kept=True)),
+        ) as legacy,
+        patch(_PUBLIC_BASE, return_value=None),
+    ):
+        async with _client(None) as client:
+            resp = await client.get(f"/api/v1/public/shared/{CODE}")
+    assert resp.json()["seq"] == 3
+    legacy.assert_awaited_once()
+
+
 async def test_metadata_frames_a_version_on_its_artifact_host_under_a_base():
     with (
         patch(_ACCESS_LINK, AsyncMock(return_value=_link())),
@@ -423,6 +476,7 @@ async def test_metadata_private_file_opens_live_for_the_owner_under_a_grant():
         "path": "report.html",
         "shared": False,
         "latest_seq": 0,
+        "shared_seq": 0,
     }
     assert body["frame_base"].startswith(f"/api/v1/wsfiles/g/v1.{WS_ID}.")
     assert body["frame_base"].endswith("/")
@@ -463,11 +517,20 @@ async def test_metadata_owner_as_visitor_on_a_private_file_is_404():
 
 async def test_metadata_app_opens_for_the_owner_only():
     with (
-        patch(_ACCESS_LINK, AsyncMock(return_value=_link("app", path="dash.html"))),
+        # The link's own key is from a read before the app was started; the
+        # answer carries the one the start itself read.
+        patch(
+            _ACCESS_LINK,
+            AsyncMock(return_value=_link("app", path="dash.html", command_key="0ld")),
+        ),
         patch(_ACCESS_WS, AsyncMock(return_value=_workspace())),
         patch(
             _PUBLIC_PREVIEW_URL,
-            AsyncMock(return_value="https://preview.example.com/signed?token=abc"),
+            AsyncMock(
+                return_value=OwnerPreview(
+                    "https://preview.example.com/signed?token=abc", "c0ffee"
+                )
+            ),
         ) as preview,
         patch(
             _PUBLIC_URL_EXPIRY, AsyncMock(return_value=int(time.time()) + 3600)
@@ -481,6 +544,8 @@ async def test_metadata_app_opens_for_the_owner_only():
     assert body == {
         "kind": "app",
         "title": "App on port 8080",
+        # With the URL: the grant is keyed by the command this URL's app runs.
+        "command_key": "c0ffee",
         "url": "https://preview.example.com/signed/dash.html?token=abc",
     }
     preview.assert_awaited_once_with(WS_ID, OWNER, 8080)
@@ -494,7 +559,11 @@ async def test_metadata_app_opens_at_the_page_an_old_preview_url_named():
         patch(_ACCESS_WS, AsyncMock(return_value=_workspace())),
         patch(
             _PUBLIC_PREVIEW_URL,
-            AsyncMock(return_value="https://preview.example.com/signed?token=abc"),
+            AsyncMock(
+                return_value=OwnerPreview(
+                    "https://preview.example.com/signed?token=abc", None
+                )
+            ),
         ),
         patch(_PUBLIC_URL_EXPIRY, AsyncMock(return_value=1_767_229_200)),
     ):

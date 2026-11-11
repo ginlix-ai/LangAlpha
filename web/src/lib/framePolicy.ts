@@ -9,11 +9,13 @@
 /**
  * Documents the app frames from third parties. TradingView's embed scripts
  * build their iframe on the widget host and fall back to the other when the
- * first is refused.
+ * first is refused; its web components (`<tv-*>`) frame their data feed on
+ * the host they load from.
  */
 export const EMBED_FRAME_ORIGINS = [
   'https://www.tradingview-widget.com',
   'https://s.tradingview.com',
+  'https://widgets.tradingview-widget.com',
 ] as const;
 
 /**

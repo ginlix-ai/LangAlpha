@@ -377,8 +377,16 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "interactive-dashboard": SkillDefinition(
         name="interactive-dashboard",
-        description="Interactive web dashboards: stock trackers, sector heatmaps, portfolio monitors, served via preview URL",
+        description="Interactive web apps served from the computer via preview URL: dashboards, trackers, screeners, monitors, tools, multi-page or React apps, anything that needs a running server",
         skill_md_path="skills/interactive-dashboard/SKILL.md",
+        command="web-app",
+        # Its apps read the LangAlpha kit from dashboard-page's references.
+        requires=("dashboard-page",),
+    ),
+    "dashboard-page": SkillDefinition(
+        name="dashboard-page",
+        description="The user's own LangAlpha Dashboard: build or change the page they see when they open LangAlpha, with live market data and custom data refreshed on a schedule",
+        skill_md_path="skills/dashboard-page/SKILL.md",
         command="dashboard",
     ),
     "initiating-coverage": SkillDefinition(

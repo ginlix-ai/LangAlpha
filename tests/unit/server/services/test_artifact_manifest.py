@@ -833,6 +833,39 @@ async def test_missing_and_hidden_references_are_left_out(reader):
     assert _paths(entries) == ["index.html", "here.png"]
 
 
+async def _absent(
+    files: dict[str, bytes | str], remembered: tuple[str, ...] = ()
+) -> frozenset[str]:
+    found = await walk_manifest(
+        Reader(FakeReader(files), WORK_DIR, ()), "index.html", remembered=remembered
+    )
+    return found.absent
+
+
+@pytest.mark.asyncio
+async def test_only_a_missing_file_the_page_uses_counts_as_gone():
+    """A turn's end holds a kept page's version back while a file the last one
+    held is gone. A deleted link target, or a load only an earlier report
+    named, never comes back, so counting it would hold every later version."""
+    page = (
+        '<img src="chart.png"><a href="more.html">More</a>'
+        "<script>fetch('data/screen.json')</script>"
+    )
+    absent = await _absent({"index.html": page}, remembered=("data/2026-11-01.json",))
+    assert absent == {"chart.png", "data/screen.json"}
+
+
+@pytest.mark.asyncio
+async def test_a_missing_link_target_a_later_page_loads_counts_as_gone():
+    absent = await _absent(
+        {
+            "index.html": '<a href="logo.png">Logo</a><a href="about.html">About</a>',
+            "about.html": '<img src="logo.png">',
+        }
+    )
+    assert absent == {"logo.png"}
+
+
 @pytest.mark.asyncio
 async def test_entry_that_is_absent_or_hidden_is_missing(reader):
     reader.files = {".agents/x.html": "<p>x</p>"}

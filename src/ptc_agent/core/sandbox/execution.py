@@ -164,6 +164,21 @@ async def execute_bash_command(
     }
 
 
+def app_command(workspace: WorkspaceLayout, command: str) -> str:
+    """An app's server command, run in its folder with the wrapper imports.
+
+    An app's backend calls the same data tools the agent's code does, and the
+    agent cannot set this up itself: the paths are under ``_internal``, which
+    its tools may not name. No trace file, since nothing harvests one.
+    """
+    pythonpath = ":".join(workspace.pythonpath(SandboxLayout(workspace.root)))
+    return (
+        f"export PTC_WORKSPACE_CONFIG={shlex.quote(workspace.mcp_client_config)} && "
+        f"export PYTHONPATH={shlex.quote(pythonpath)}${{PYTHONPATH:+:$PYTHONPATH}} && "
+        f"cd {shlex.quote(workspace.workspace)} && {command}"
+    )
+
+
 # -- Detached jobs --------------------------------------------------------------
 
 # How a ``python3`` code run starts: pyplot's show() under Agg is silent on a

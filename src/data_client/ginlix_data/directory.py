@@ -208,6 +208,14 @@ async def fill_quote_names(rows: Iterable[dict[str, Any]]) -> None:
     await attach_names(rows, local="name_local", english="name_en", display="name")
 
 
+def profile_name(profile: dict[str, Any], local_name: str | None) -> str | None:
+    """A listing's name off its company profile row: the vendor's local name
+    (CN rows carry ``nameLocal``), else the directory's, else the vendor's
+    English one. One rule, so the overview and the profiles name a listing
+    the same way."""
+    return profile.get("nameLocal") or local_name or profile.get("companyName") or None
+
+
 async def display_names(symbol_or_code: str) -> tuple[str | None, str | None]:
     """(local name, English name) for a CN/HK listing via the host's ginlix-data client."""
     return (await display_names_many([symbol_or_code]))[symbol_or_code]

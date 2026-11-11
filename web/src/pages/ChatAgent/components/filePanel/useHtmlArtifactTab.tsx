@@ -7,6 +7,7 @@ import { CommentTools } from '../viewers/html/comments/CommentTools';
 import { LazyCommentLayer } from '../viewers/html/comments/lazyCommentLayer';
 import type { CommentUi } from '../viewers/html/comments/useCommentUi';
 import { ArtifactCrumbs } from './ArtifactCrumbs';
+import { PinPageButton } from './PinPageButton';
 import { useArtifactVersionView, usePanelVersionStores, versionKey, LIVE_VIEW, type VersionStore } from './useArtifactVersionView';
 
 /** A view with no file to keep a version for. */
@@ -27,6 +28,8 @@ interface HtmlArtifactTabOptions {
   readAt: number | null;
   /** The owner's comment controls; left out, the panel is not the owner's and the file shows alone. */
   ui: CommentUi | undefined;
+  /** The thread beside the panel, where a dashboard set from here is edited. */
+  threadId?: string | null;
 }
 
 export interface HtmlArtifactTab {
@@ -55,7 +58,7 @@ export interface HtmlArtifactTab {
  * is made as soon as its tab is in front (`useArtifactVersionView`).
  */
 export function useHtmlArtifactTab({
-  workspaceId, tabId, file, html, source, active, readAt, ui,
+  workspaceId, tabId, file, html, source, active, readAt, ui, threadId = null,
 }: HtmlArtifactTabOptions): HtmlArtifactTab {
   const root = useWorkspaceFolders()?.rootDir;
   const path = ui && html ? file : null;
@@ -83,15 +86,18 @@ export function useHtmlArtifactTab({
       <ArtifactCrumbs view={versionView} onReview={() => openPublish(path)} readAt={readAt} />
     ),
     tools: path && ui && (
-      <CommentTools
-        tabId={tabId}
-        workspaceId={workspaceId}
-        path={path}
-        ui={ui}
-        variant="crumb"
-        // A version is read only, and the markup has no spots to pick.
-        modeDisabled={versionView.version !== null || source}
-      />
+      <>
+        <CommentTools
+          tabId={tabId}
+          workspaceId={workspaceId}
+          path={path}
+          ui={ui}
+          variant="crumb"
+          // A version is read only, and the markup has no spots to pick.
+          modeDisabled={versionView.version !== null || source}
+        />
+        <PinPageButton workspaceId={workspaceId} path={path} threadId={threadId} />
+      </>
     ),
     view: path && ui ? { tabId, ui, active, versionView } : null,
     hideMeta: !!path && !source,

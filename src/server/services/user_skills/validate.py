@@ -157,7 +157,7 @@ def _registered_skill_names() -> frozenset[str]:
 
     Registry keys preserve the no-shadowing invariant; command names prevent a
     user skill named e.g. ``dashboard`` from colliding with
-    ``interactive-dashboard``'s slash command; composer commands are the same
+    ``dashboard-page``'s slash command; composer commands are the same
     collision one layer up, in the client. All three are module-level Python,
     so reading them once is safe.
     """

@@ -17,6 +17,8 @@ export interface PreviewEntry {
   /** How the agent started the server; the backend replays it when the port is idle. */
   command?: string;
   url: string;
+  /** The fingerprint of the command behind `url`, which the user's grant to the app is kept under. */
+  commandKey?: string | null;
   /** When `url` was minted (ms since epoch); a reopen past `URL_FRESH_MS` mints again. */
   mintedAt?: number;
   loading: boolean;
@@ -100,7 +102,7 @@ export function usePreviews(workspaceId: string) {
     // again in the next workspace on the same port.
     const stale = () => !aliveRef.current || lastWorkspace.current !== ws || seqRef.current.get(port) !== ticket;
     try {
-      let result: { url: string };
+      let result: { url: string; command_key?: string | null };
       try {
         result = await ask();
       } catch (err: unknown) {
@@ -113,6 +115,7 @@ export function usePreviews(workspaceId: string) {
       if (stale()) return;
       patch(port, (entry) => ({
         url: appendPathSuffix(result.url, spec.path ?? entry.path),
+        commandKey: result.command_key ?? null,
         mintedAt: Date.now(),
         loading: false,
         error: false,
@@ -123,7 +126,7 @@ export function usePreviews(workspaceId: string) {
       }));
     } catch {
       if (stale()) return;
-      patch(port, () => ({ url: '', loading: false, error: true }));
+      patch(port, () => ({ url: '', commandKey: null, loading: false, error: true }));
     }
   }, [workspaceId, patch]);
 

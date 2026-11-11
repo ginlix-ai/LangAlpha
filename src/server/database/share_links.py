@@ -11,6 +11,7 @@ worker, and the row is the only place all of them can read it from.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Optional
@@ -28,8 +29,25 @@ from src.server.database.share_codes import mint_share_code
 KIND_FILE = "file"
 KIND_APP = "app"
 
-# Off ``share_links l``.
-_COLUMNS = f"{ARTIFACT_COLUMNS}, l.kind, l.port, l.title"
+# Off ``share_links l``. An app's start command comes along in the same
+# statement, so no caller reads it per row; ``_link`` keeps only its key.
+_COLUMNS = f"""{ARTIFACT_COLUMNS}, l.kind, l.port, l.title,
+    (SELECT w.artifacts->'preview_servers'->>(l.port::text)
+       FROM workspaces w
+      WHERE l.kind = 'app' AND w.workspace_id = l.workspace_id) AS app_command"""
+
+
+def command_key(command: Optional[str]) -> Optional[str]:
+    """A short fingerprint of an app's start command, or None with none stored.
+
+    The owner's permission grant for an app is tied to it as well as to the
+    link's code: a port keeps its code whatever program serves it, and a
+    different program there must ask again. A digest, so the command itself
+    (which may carry a token) never leaves the server.
+    """
+    if not command:
+        return None
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()[:16]
 
 
 def app_display_title(port: Optional[int], title: Optional[str] = None) -> str:
@@ -52,6 +70,8 @@ class ShareLink:
     revision: int = 0
     #: A file's artifact record, read with the link; None for an app.
     artifact: Optional[Artifact] = None
+    #: An app's ``command_key``; None for a file.
+    command_key: Optional[str] = None
 
     @property
     def artifact_id(self) -> Optional[str]:
@@ -85,6 +105,7 @@ def _link(record: dict[str, Any]) -> ShareLink:
         # An app row has an artifact_id too, from the column default, and
         # never uses it.
         artifact=artifact_from_row(record) if record["kind"] == KIND_FILE else None,
+        command_key=command_key(record.get("app_command")),
     )
 
 
@@ -186,7 +207,8 @@ async def set_private(code: str) -> Optional[ShareLink]:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 "UPDATE share_links l "
-                "SET shared_at = NULL, files = NULL, revision = l.revision + 1 "
+                "SET shared_at = NULL, files = NULL, shared_seq = 0, "
+                "revision = l.revision + 1 "
                 f"WHERE l.code = %s RETURNING {_COLUMNS}",
                 (code,),
             )

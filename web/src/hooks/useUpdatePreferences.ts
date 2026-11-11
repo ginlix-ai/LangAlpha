@@ -1,8 +1,12 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { appearancePatch, readAccountCardStyle, readAccountTheme } from '../lib/appearancePreference';
+import { SAVED_DASHBOARDS_KEY } from '../lib/dashboards/saved';
 import { MOVED_MODEL_KEYS, threadsMoved } from '../lib/modelPreferences';
+import { readOtherPreference } from '../lib/otherPreference';
+import { preferenceWriteLock } from '../lib/preferenceLock';
+import { announcePreferencesChanged } from '../lib/preferencesChannel';
 import { queryKeys } from '../lib/queryKeys';
-import { clearPreferences, updatePreferences } from '../pages/Dashboard/utils/api';
+import { clearPreferences, getPreferences, updatePreferences } from '../pages/Dashboard/utils/api';
 import type { UserPreferences } from '../types/api';
 
 /** Every preference write shares one mutation identity, so a save indicator can
@@ -71,8 +75,9 @@ function withMovedDeletes(patch: Partial<UserPreferences>): Partial<UserPreferen
 
 /** Request options that ride a write without being columns of the row.
  *  `apply_default_to` answers one default change and is never stored, so
- *  predicting it into the cache would show a setting nobody saved. */
-const ONE_SHOT_KEYS = new Set(['apply_default_to']);
+ *  predicting it into the cache would show a setting nobody saved; nor is
+ *  `expect_other_preference`, the values a whole-key write was built from. */
+const ONE_SHOT_KEYS = new Set(['apply_default_to', 'expect_other_preference']);
 
 /** What the row will look like once the server has applied this patch. */
 function mergePreferences(
@@ -151,25 +156,70 @@ export function useUpdatePreferences() {
   });
 }
 
+/**
+ * The row a reset saves back from: the server's, since another tab may have
+ * changed the list since this one last read it, or this tab's copy when the
+ * read fails.
+ */
+async function latestRow(queryClient: QueryClient): Promise<UserPreferences | null | undefined> {
+  const queryKey = queryKeys.user.preferences();
+  try {
+    return await queryClient.fetchQuery({ queryKey, queryFn: getPreferences as () => Promise<UserPreferences>, staleTime: 0 });
+  } catch {
+    return queryClient.getQueryData<UserPreferences | null>(queryKey);
+  }
+}
+
+/** The waits before each try of the save back that follows a reset. */
+const SAVE_BACK_WAITS_MS = [0, 300, 1200];
+
+async function saveBack(keep: Record<string, unknown>): Promise<void> {
+  for (const wait of SAVE_BACK_WAITS_MS) {
+    if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+    try {
+      await updatePreferences({ other_preference: keep });
+      return;
+    } catch {
+      // Tried again, then left: the reset itself is done.
+    }
+  }
+}
+
 /** Deletes the preferences row once every write issued before it has landed.
  *  Sent past them, a write the server takes after the delete inserts a fresh
  *  row holding its keys, and the reset leaves that value stored. It carries no
  *  key, so it never counts as one of the writes a save status watches.
  *
- *  The look (style and theme) lives in the same row but is not part of what a
- *  reset clears, so it is saved back before the reset settles, and the refetch
- *  after it finds the look still there. A failed save back leaves the reset
- *  done and the look at its defaults. */
+ *  The look (style and theme) and the dashboards the user set live in the same
+ *  row but are not part of what a reset clears, so they are saved back before
+ *  the reset settles, and the refetch after it finds them still there. The
+ *  list is the only record of which pages the server keeps a copy of: cleared,
+ *  every one of them would go on being kept with no way left to remove it, so
+ *  the save back is tried again before it is given up. One that keeps failing
+ *  leaves the reset done, the look at its defaults and the list empty.
+ *
+ *  The delete and the save back hold the lock whole-key writes take
+ *  (`preferenceWriteLock`), so another tab's change to the list waits for the
+ *  list to be back rather than landing between the two and being written
+ *  over. */
 export function useClearPreferences() {
   const queryClient = useQueryClient();
-  return useMutation({
+  const reset = useMutation({
     scope: PREFERENCE_SCOPE,
     mutationFn: async () => {
-      const row = queryClient.getQueryData<UserPreferences>(queryKeys.user.preferences());
-      const keep = appearancePatch({ cardStyle: readAccountCardStyle(row), theme: readAccountTheme(row) });
+      const row = await latestRow(queryClient);
+      const look = appearancePatch({ cardStyle: readAccountCardStyle(row), theme: readAccountTheme(row) });
+      const dashboards = readOtherPreference(row, SAVED_DASHBOARDS_KEY);
+      const keep: Record<string, unknown> = { ...(look?.other_preference as Record<string, unknown> | undefined) };
+      if (dashboards) keep[SAVED_DASHBOARDS_KEY] = dashboards;
       const cleared = await clearPreferences();
-      if (keep) await updatePreferences(keep).catch(() => {});
+      if (Object.keys(keep).length) await saveBack(keep);
+      // Other tabs still hold what the reset cleared, the data access an app
+      // was allowed among it, until they read the row again.
+      announcePreferencesChanged();
       return cleared;
     },
   });
+  const { mutateAsync } = reset;
+  return useMutation({ mutationFn: () => preferenceWriteLock(() => mutateAsync()) });
 }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ExternalLink, LayoutDashboard, Link2, Lock, PanelRight } from 'lucide-react';
+import { useParams } from 'react-router';
+import { ChevronDown, ExternalLink, House, LayoutDashboard, Link2, Lock, PanelRight } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,6 +11,7 @@ import {
 import { Loader } from '@/components/ui/loader';
 import { toast } from '@/components/ui/use-toast';
 import { useCopyShareLink } from '@/hooks/useCopyShareLink';
+import { usePinAppAsDashboard } from '@/lib/dashboards';
 import { useShareLink } from '@/hooks/useShareLink';
 import { useWorkspaceId } from '../../contexts/WorkspaceContext';
 import { checkPreviewHealth } from '../../utils/api';
@@ -69,6 +71,9 @@ export function InlinePreviewCard({ artifact, onClick }: InlineCardProps): React
     { enabled: menuOpen },
   );
   const { copy } = useCopyShareLink();
+  const title = text(artifact.title) || (port ? t('filePanel.previewFrameTitle', { port }) : t('filePanel.previewTab'));
+  const { threadId } = useParams();
+  const { pinned, pinIt } = usePinAppAsDashboard(link, title, path, { workspaceId, threadId });
 
   const doHealthCheck = useCallback(async () => {
     if (!workspaceId || !port || checkingRef.current) return;
@@ -108,7 +113,6 @@ export function InlinePreviewCard({ artifact, onClick }: InlineCardProps): React
     };
   }, [doHealthCheck]);
 
-  const title = text(artifact.title) || (port ? t('filePanel.previewFrameTitle', { port }) : t('filePanel.previewTab'));
   const thumb = (
     <span className="turn-file-thumb" aria-hidden="true">
       <span className="turn-file-sheet" />
@@ -180,6 +184,10 @@ export function InlinePreviewCard({ artifact, onClick }: InlineCardProps): React
             <DropdownMenuItem disabled={!link} onSelect={() => void copyLink()}>
               <Link2 className="h-3.5 w-3.5" />
               {t('filePanel.copyPrivateLink')}
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={!link || pinned} onSelect={pinIt}>
+              <House className="h-3.5 w-3.5" />
+              {pinned ? t('customDashboard.isDashboard') : t('customDashboard.setAsDashboard')}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

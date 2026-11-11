@@ -21,6 +21,7 @@ from src.server.app.artifacts.models import (
     DestinationsResponse,
     DriftResponse,
     KeepUpdatedRequest,
+    KeptRequest,
     LeftOutRequest,
     PublishRequest,
     PublishResponse,
@@ -136,7 +137,9 @@ async def _response(artifact: Artifact, user_id: str) -> ArtifactResponse:
         shared=artifact.shared,
         shared_at=artifact.shared_at,
         keep_updated=artifact.keep_updated,
+        kept=artifact.kept,
         latest_seq=artifact.latest_seq,
+        shared_seq=artifact.shared_seq,
         bound_thread_id=artifact.bound_thread_id,
         open_comments=counts.open,
         unread=counts.unread,
@@ -221,6 +224,35 @@ async def update_artifact(
             artifact_id=path_id(artifact_id),
             keep_updated=body.keep_updated,
         )
+    return await _changed(x_user_id, artifact)
+
+
+@router.put("/{artifact_id}/kept", response_model=ArtifactResponse)
+async def set_artifact_kept(
+    artifact_id: str, body: KeptRequest, x_user_id: CurrentUserId
+) -> ArtifactResponse:
+    """Keep the file for the owner without sharing it, which is how a page
+    becomes their dashboard: the server holds a version of it and the files it
+    reads, so it opens while its computer is off, and the end of each turn in
+    its workspace cuts another when they changed. The first version is cut
+    now, from the files as they are (a stopped computer is started); the same
+    409s and 503s as a publish's read. A shared file's visitors stay on their
+    version (``shared_seq``). Stopping keeps the versions cut so far. A keep
+    refused leaves the record as it was.
+    """
+    artifact = await owned(artifact_id, x_user_id)
+    with db_errors(), _snapshot_errors():
+        if body.kept:
+            artifact = await snapshot.keep(
+                artifact,
+                user_id=x_user_id,
+                loaded=tuple(body.loaded),
+                earlier=tuple(body.earlier),
+            )
+        else:
+            artifact = await artifacts_db.stop_keeping(
+                user_id=x_user_id, artifact_id=artifact.artifact_id
+            )
     return await _changed(x_user_id, artifact)
 
 
@@ -312,8 +344,9 @@ async def get_destinations(
 async def get_status(
     artifact_id: str, body: StatusRequest, x_user_id: CurrentUserId
 ) -> StatusResponse:
-    """The live file against the latest version, and the files a publish now
-    would carry, what the live page reported loading among them. Reads the
+    """The live file against the shared version (the latest when not shared),
+    and the files a publish now would carry, what the live page reported
+    loading among them. Reads the
     computer, or the stored copy when it is stopped, which holds no library
     folder: a page loading from one is a 409 ``needs_computer``. Past a cap,
     the files listed before the walk stopped, with ``over_cap``, so the owner

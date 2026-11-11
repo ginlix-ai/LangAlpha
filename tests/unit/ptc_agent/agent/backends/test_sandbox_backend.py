@@ -603,8 +603,11 @@ class TestMiscRich:
 
     @pytest.mark.asyncio
     async def test_astart_preview_url_delegates(self, sandbox, backend):
-        sandbox.workspace.return_value.workspace = "/workspace/project-a"
+        sandbox.workspace.return_value = WorkspaceLayout("/workspace", "project-a")
         sandbox.start_and_get_preview_url.return_value = MagicMock(url="https://x")
         result = await backend.astart_preview_url("node server.js", 3000)
         assert result.url == "https://x"
-        assert sandbox.start_and_get_preview_url.call_args.args[0] == "cd /workspace/project-a && node server.js"
+        command = sandbox.start_and_get_preview_url.call_args.args[0]
+        assert command.endswith("cd /workspace/project-a && node server.js")
+        # The app's backend imports the workspace's wrappers, as its code does.
+        assert "PYTHONPATH=/workspace/project-a/.agents:/workspace/_internal:" in command

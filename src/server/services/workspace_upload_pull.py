@@ -26,6 +26,7 @@ from src.config.settings import get_conversation_pool_max
 from src.server.database import workspace_file_uploads as db
 from src.server.database.workspace_file import WorkspaceSyncBusy, workspace_sync_lock
 from src.server.models.workspace import served_from_mirror
+from src.server.services.artifacts.snapshot import keep_updated_after_change
 from src.server.services.background_starts import schedule_start
 from src.server.services.computer_disk import (
     CRITICAL_FREE_BYTES,
@@ -361,6 +362,9 @@ async def pull_upload(row: dict[str, Any]) -> None:
     if await _end_pull(upload_id, attempt, state="done"):
         record_fs_bytes("upload", int(row["size"]))
         logger.info(f"Upload {upload_id} placed in workspace {row['workspace_id']}")
+        keep_updated_after_change(
+            workspace_id=str(row["workspace_id"]), user_id=str(row["user_id"])
+        )
 
 
 async def _end_pull(

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -19,8 +20,8 @@ from src.server.database.artifacts.records import (
 from src.server.database.pool import get_db_connection
 
 #: Who cut a version: the owner's publish or Update, the end of a turn for a
-#: shared artifact kept updated, or the first view of a link shared before
-#: versions existed.
+#: shared artifact kept updated or a kept one (and the keep itself), or the
+#: first view of a link shared before versions existed.
 Origin = Literal["owner", "keep_updated", "legacy"]
 
 #: Versions kept updated that an artifact keeps; a rebuilt report cuts one at
@@ -66,22 +67,23 @@ class StoredVersionFile:
 
 
 class SharingChanged(Exception):
-    """The record was shared or unshared while the owner's publish read its files."""
+    """The record was shared or unshared while its files were read."""
 
 
 class VersionMoved(Exception):
-    """A version was cut while the owner's publish read its files."""
+    """A version was cut while the record's files were read."""
 
 
 class LeftOutChanged(Exception):
-    """The owner took a file off the list, or put one back, while the owner's
-    publish read its files."""
+    """The owner took a file off the list, or put one back, while the record's
+    files were read."""
 
 
 @dataclass(frozen=True)
 class PublishResult:
     artifact: Artifact
-    #: The latest version after the call; 0 when there is none.
+    #: The latest version after the call; 0 when there is none. An owner's
+    #: publish also shares it.
     seq: int
     #: Whether this call made a new version.
     cut: bool
@@ -90,6 +92,68 @@ class PublishResult:
     #: Whether anything another view shows moved: a version, the sharing, or
     #: the setting alone, which a publish of the same files can still change.
     changed: bool = False
+
+
+#: What other views show of a record, so a write that moves none of it is
+#: news to nobody.
+_SHOWN = ("latest_seq", "shared_seq", "shared_at", "keep_updated", "kept")
+
+
+@dataclass(frozen=True)
+class ReadBasis:
+    """What a read of the record's files was based on, checked under the row
+    lock before its version lands. A share or unshare since (``revision``)
+    changes what the cut may give visitors, and must not be undone by the
+    write it overtook; a version cut since is newer than these bytes; a file
+    left out or put back since was walked by the old choice. The left-out list
+    is compared rather than moving ``revision``, since visitors' grants are
+    minted at that."""
+
+    revision: int
+    latest_seq: int
+    left_out: frozenset[str]
+
+    @classmethod
+    def of(cls, artifact: Artifact) -> ReadBasis:
+        return cls(
+            artifact.revision, artifact.latest_seq, frozenset(artifact.left_out_files)
+        )
+
+    def check(self, locked: Artifact) -> None:
+        if locked.revision != self.revision:
+            raise SharingChanged
+        if frozenset(locked.left_out_files) != self.left_out:
+            raise LeftOutChanged
+        if locked.latest_seq != self.latest_seq:
+            raise VersionMoved
+
+
+def visitors_follow_turn(
+    locked: Artifact, paths: Iterable[str], left_out: Iterable[str] = ()
+) -> bool:
+    """Whether a turn's cut of ``paths`` moves visitors to it.
+
+    Only a shared link kept updated, and only to a version of the list someone
+    reviewed (``files``): no path off it, so visitors never get one nobody
+    reviewed, and none of it missing but what the owner left out (``left_out``
+    is what the read left out for that choice, which takes a file's other
+    paths with it). The same rule whether the read walked the page or read the
+    list, so a file left out after the publish never strands visitors."""
+    if not (locked.shared and locked.keep_updated):
+        return False
+    reviewed = set(locked.files or ())
+    cut = set(paths)
+    return cut <= reviewed and reviewed - cut <= {*locked.left_out_files, *left_out}
+
+
+@asynccontextmanager
+async def _locked(user_id: str, artifact_id: str) -> AsyncIterator[tuple[Any, Artifact]]:
+    async with get_db_connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                yield cur, await lock_owned(
+                    cur, user_id=user_id, artifact_id=artifact_id
+                )
 
 
 async def _hashes(cur, artifact_id: str, seq: int) -> dict[str, str]:
@@ -103,187 +167,266 @@ async def _hashes(cur, artifact_id: str, seq: int) -> dict[str, str]:
     return {r["path"]: r["sha256"] for r in await cur.fetchall()}
 
 
+def _distinct(files: list[VersionFile]) -> None:
+    paths = [f.path for f in files]
+    if len(set(paths)) != len(paths):
+        raise ValueError("a version names each file once")
+
+
 async def publish_version(
     *,
     user_id: str,
     artifact_id: str,
-    origin: Origin,
+    read: ReadBasis,
     files: list[VersionFile],
-    title: str | None = None,
-    label: str | None = None,
-    keep_updated: bool | None = None,
-    based_on: int | None = None,
-    revision: int | None = None,
-    loaded_files: list[str] | None = None,
-    left_out_read: Sequence[str] | None = None,
-    left_out_files: list[str] | None = None,
+    title: str | None,
+    label: str | None,
+    keep_updated: bool | None,
+    loaded_files: list[str],
+    left_out_files: list[str],
 ) -> PublishResult:
-    """Cut the artifact's next version from ``files``, unless it would equal
-    the latest one, and with ``origin="owner"`` share it.
+    """The owner's Publish or Update: share the record at a version of
+    ``files``, the list the owner reviewed. Visitors move even with no cut, as
+    the latest may be a version kept for the owner alone. What the page loaded
+    and what the owner left out are replaced in the same write."""
+    _distinct(files)
+    async with _locked(user_id, artifact_id) as (cur, locked):
+        read.check(locked)
+        return await _cut(
+            cur,
+            locked,
+            files,
+            user_id=user_id,
+            origin="owner",
+            title=title,
+            label=label,
+            to_visitors=True,
+            share=True,
+            also=(
+                "keep_updated = COALESCE(%(keep_updated)s, l.keep_updated), "
+                "loaded_files = %(loaded_files)s::text[], "
+                "left_out_files = %(left_out_files)s::text[]"
+            ),
+            params={
+                "keep_updated": keep_updated,
+                "loaded_files": loaded_files,
+                "left_out_files": left_out_files,
+            },
+        )
 
-    One transaction under the record's row lock. The entry is the record's
-    own path, which ``files`` must hold. A version equal to the latest (the
-    same paths and hashes) is not cut again, so re-sharing an unchanged file
-    resumes at its latest version and an Update with no change is a no-op.
 
-    ``revision`` is the record's when the owner's read began. Sharing or
-    unsharing moves it, and that raises ``SharingChanged``: a stop that lands
-    during the read must not be undone by the publish it overtook. ``based_on``
-    is its latest version then, and a version cut since raises ``VersionMoved``:
-    those bytes may be older, and would replace it. ``left_out_read`` is what
-    it had left out then, and a change since raises ``LeftOutChanged``: the
-    read would carry a file the owner just took off, or miss one put back.
-    It is compared rather than moving ``revision``, since visitors' grants are
-    minted at that. ``left_out_files``, when given, replaces the list in the
-    same write.
+async def keep_version(
+    *,
+    user_id: str,
+    artifact_id: str,
+    read: ReadBasis,
+    files: list[VersionFile],
+    title: str | None,
+    loaded_files: list[str],
+) -> PublishResult:
+    """The owner keeping a record: kept in the write that cuts its version, so
+    a read that failed leaves it as it was, never kept with no version to
+    show. Visitors stay where they are. What the page loaded is replaced, as
+    a publish replaces it. Every keep restamps ``kept_at``, since a pin keeps
+    the page before it lists it, and the release of a record kept off the
+    list (``records.release_unlisted``) waits on the stamp."""
+    _distinct(files)
+    async with _locked(user_id, artifact_id) as (cur, locked):
+        read.check(locked)
+        return await _cut(
+            cur,
+            locked,
+            files,
+            user_id=user_id,
+            origin="keep_updated",
+            title=title,
+            to_visitors=False,
+            also=(
+                "kept_at = NOW(), "
+                "loaded_files = %(loaded_files)s::text[]"
+            ),
+            params={"loaded_files": loaded_files},
+        )
 
-    The other origins never change sharing, and each acts only while its
-    reason holds when the lock is taken: ``keep_updated`` on a shared record
-    kept updated whose latest version is still ``based_on``, the one it was
-    when its read began, so a slow read never lands over a newer version;
-    ``legacy`` on a shared record with no version yet, so of two workers
-    snapshotting one link only the first cuts v1.
 
-    A cut keeps the newest ``KEEP_UPDATED_VERSIONS`` versions kept updated and
-    deletes older ones in the same transaction; the owner's and legacy
-    versions and the latest always stay.
-    """
+async def turn_version(
+    *,
+    user_id: str,
+    artifact_id: str,
+    read: ReadBasis,
+    files: list[VersionFile],
+    title: str | None,
+    left_out: Sequence[str] = (),
+) -> PublishResult:
+    """The cut at a turn's end of a record that still follows turns
+    (``Artifact.follows_turns``); nothing when it stopped. Visitors move as
+    ``visitors_follow_turn`` says, which ``left_out`` (what the read left out
+    for the owner's choice) feeds."""
+    _distinct(files)
+    async with _locked(user_id, artifact_id) as (cur, locked):
+        if not locked.follows_turns:
+            return PublishResult(locked, locked.latest_seq, False, False)
+        read.check(locked)
+        return await _cut(
+            cur,
+            locked,
+            files,
+            user_id=user_id,
+            origin="keep_updated",
+            title=title,
+            to_visitors=visitors_follow_turn(
+                locked, (f.path for f in files), left_out
+            ),
+        )
+
+
+async def legacy_version(
+    *,
+    user_id: str,
+    artifact_id: str,
+    read: ReadBasis,
+    files: list[VersionFile],
+    title: str | None,
+) -> PublishResult:
+    """The first shared version of a link shared before versions, from its
+    frozen list; nothing once it has one, so of two workers snapshotting one
+    link only the first cuts it. A link with no version was live until now,
+    whichever build shared it, so it is left following the file rather than
+    frozen at the first view."""
+    _distinct(files)
+    async with _locked(user_id, artifact_id) as (cur, locked):
+        if not (locked.shared and locked.shared_seq == 0):
+            return PublishResult(locked, locked.latest_seq, False, False)
+        read.check(locked)
+        return await _cut(
+            cur,
+            locked,
+            files,
+            user_id=user_id,
+            origin="legacy",
+            title=title,
+            to_visitors=True,
+            also="keep_updated = TRUE",
+        )
+
+
+async def _cut(
+    cur,
+    locked: Artifact,
+    files: list[VersionFile],
+    *,
+    user_id: str,
+    origin: Origin,
+    title: str | None,
+    to_visitors: bool,
+    share: bool = False,
+    label: str | None = None,
+    also: str = "",
+    params: dict[str, Any] | None = None,
+) -> PublishResult:
+    """Cut the next version from ``files`` unless it would equal the latest
+    (the same paths and hashes), prune, and move the record's pointers, in the
+    caller's transaction under its row lock.
+
+    ``latest_seq`` moves on every cut; ``shared_seq`` and ``files``, what
+    visitors see and may fetch, move together, only ``to_visitors``, which also
+    clears a legacy refusal. ``share`` shares the record; ``also`` is the
+    caller's own assignments, bound from ``params``."""
+    artifact_id = locked.artifact_id
     paths = [f.path for f in files]
-    if len(set(paths)) != len(paths):
-        raise ValueError("a version names each file once")
-    async with get_db_connection() as conn:
-        async with conn.transaction():
-            async with conn.cursor(row_factory=dict_row) as cur:
-                artifact = await lock_owned(
-                    cur, user_id=user_id, artifact_id=artifact_id
+    if locked.path not in paths:
+        raise ValueError("a version holds its entry file")
+    latest = (
+        await _hashes(cur, artifact_id, locked.latest_seq) if locked.latest_seq else None
+    )
+    cut = latest != {f.path: f.sha256 for f in files}
+    seq = locked.latest_seq + 1 if cut else locked.latest_seq
+    shared_seq = seq if to_visitors else locked.shared_seq
+    if cut:
+        await cur.execute(
+            """
+            INSERT INTO artifact_versions
+                (artifact_id, seq, entry_path, origin, title, label, byte_len)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                artifact_id,
+                seq,
+                locked.path,
+                origin,
+                clip_title(title),
+                label,
+                sum(f.byte_len for f in files),
+            ),
+        )
+        await cur.executemany(
+            """
+            INSERT INTO artifact_version_files
+                (artifact_id, seq, path, user_id, sha256, byte_len,
+                 content_type, content)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    artifact_id,
+                    seq,
+                    f.path,
+                    user_id,
+                    f.sha256,
+                    f.byte_len,
+                    f.content_type,
+                    f.content,
                 )
-                if revision is not None and artifact.revision != revision:
-                    raise SharingChanged
-                if left_out_read is not None and set(artifact.left_out_files) != set(
-                    left_out_read
-                ):
-                    raise LeftOutChanged
-                if origin == "keep_updated":
-                    proceed = (
-                        artifact.shared
-                        and artifact.keep_updated
-                        and (based_on is None or artifact.latest_seq == based_on)
-                    )
-                elif origin == "legacy":
-                    proceed = artifact.shared and artifact.latest_seq == 0
-                else:
-                    if based_on is not None and artifact.latest_seq != based_on:
-                        raise VersionMoved
-                    proceed = True
-                if not proceed:
-                    return PublishResult(artifact, artifact.latest_seq, False, False)
-                if artifact.path not in paths:
-                    raise ValueError("a version holds its entry file")
-
-                latest = (
-                    await _hashes(cur, artifact_id, artifact.latest_seq)
-                    if artifact.latest_seq
-                    else None
-                )
-                cut = latest != {f.path: f.sha256 for f in files}
-                seq = artifact.latest_seq + 1 if cut else artifact.latest_seq
-                if cut:
-                    await cur.execute(
-                        """
-                        INSERT INTO artifact_versions
-                            (artifact_id, seq, entry_path, origin, title, label,
-                             byte_len)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            artifact_id,
-                            seq,
-                            artifact.path,
-                            origin,
-                            clip_title(title),
-                            label,
-                            sum(f.byte_len for f in files),
-                        ),
-                    )
-                    await cur.executemany(
-                        """
-                        INSERT INTO artifact_version_files
-                            (artifact_id, seq, path, user_id, sha256, byte_len,
-                             content_type, content)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        [
-                            (
-                                artifact_id,
-                                seq,
-                                f.path,
-                                user_id,
-                                f.sha256,
-                                f.byte_len,
-                                f.content_type,
-                                f.content,
-                            )
-                            for f in files
-                        ],
-                    )
-                    await _prune_kept_updated(cur, artifact_id=artifact_id, latest=seq)
-                # Every origin that gets here leaves the record shared, so its
-                # list becomes this version's.
-                share = origin == "owner"
-                shared_now = share and not artifact.shared
-                # A link with no version was live until now, whichever build
-                # shared it, so its first cut leaves it following the file
-                # rather than frozen at the first view.
-                setting = (
-                    True if origin == "legacy" else keep_updated if share else None
-                )
-                await cur.execute(
-                    f"""
-                    UPDATE share_links l
-                       SET latest_seq = %(seq)s,
-                           files = %(files)s,
-                           shared_at = CASE WHEN %(share)s
-                                            THEN COALESCE(l.shared_at, NOW())
-                                            ELSE l.shared_at END,
-                           revision = l.revision
-                                      + CASE WHEN %(shared_now)s THEN 1 ELSE 0 END,
-                           keep_updated = COALESCE(%(keep_updated)s, l.keep_updated),
-                           legacy_refused = NULL,
-                           loaded_files = COALESCE(
-                               %(loaded_files)s::text[], l.loaded_files
-                           ),
-                           left_out_files = COALESCE(
-                               %(left_out_files)s::text[], l.left_out_files
-                           )
-                     WHERE l.artifact_id = %(artifact_id)s
-                    RETURNING {ARTIFACT_COLUMNS}
-                    """,
-                    {
-                        "seq": seq,
-                        "share": share,
-                        "shared_now": shared_now,
-                        "files": sorted(paths),
-                        "keep_updated": setting,
-                        "artifact_id": artifact_id,
-                        "loaded_files": loaded_files,
-                        "left_out_files": left_out_files,
-                    },
-                )
-                updated = artifact_from_row(await cur.fetchone())
-    changed = cut or shared_now or setting not in (None, artifact.keep_updated)
-    return PublishResult(updated, seq, cut, shared_now, changed)
+                for f in files
+            ],
+        )
+        await _prune_kept_updated(
+            cur, artifact_id=artifact_id, latest=seq, shared=shared_seq
+        )
+    sets = ["latest_seq = %(seq)s", "shared_seq = %(shared_seq)s"]
+    if to_visitors:
+        sets += ["files = %(files)s::text[]", "legacy_refused = NULL"]
+    if share:
+        # Old values on the right: the revision moves only when this shares.
+        sets += [
+            "shared_at = COALESCE(l.shared_at, NOW())",
+            "revision = l.revision + CASE WHEN l.shared_at IS NULL THEN 1 ELSE 0 END",
+        ]
+    if also:
+        sets.append(also)
+    await cur.execute(
+        f"""
+        UPDATE share_links l
+           SET {", ".join(sets)}
+         WHERE l.artifact_id = %(artifact_id)s
+        RETURNING {ARTIFACT_COLUMNS}
+        """,
+        {
+            **(params or {}),
+            "seq": seq,
+            "shared_seq": shared_seq,
+            "files": sorted(paths),
+            "artifact_id": artifact_id,
+        },
+    )
+    updated = artifact_from_row(await cur.fetchone())
+    changed = any(getattr(locked, f) != getattr(updated, f) for f in _SHOWN)
+    return PublishResult(updated, seq, cut, share and not locked.shared, changed)
 
 
-async def _prune_kept_updated(cur, *, artifact_id: str, latest: int) -> None:
-    """Delete the versions kept updated past the newest ones kept. Their
-    files go with them (``ON DELETE CASCADE``), and a blob no other row names
-    is the blob sweep's (``blob_keys.REFERENCED_SQL``)."""
+async def _prune_kept_updated(
+    cur, *, artifact_id: str, latest: int, shared: int
+) -> None:
+    """Delete the versions kept updated past the newest ones kept, but never
+    the latest or the shared one. Their files go with them (``ON DELETE
+    CASCADE``), and a blob no other row names is the blob sweep's
+    (``blob_keys.REFERENCED_SQL``)."""
     await cur.execute(
         """
         DELETE FROM artifact_versions v
          WHERE v.artifact_id = %(artifact_id)s
            AND v.origin = 'keep_updated'
-           AND v.seq <> %(latest)s
+           AND v.seq NOT IN (%(latest)s, %(shared)s)
            AND v.seq < (
                SELECT MIN(k.seq) FROM (
                    SELECT seq FROM artifact_versions
@@ -293,15 +436,20 @@ async def _prune_kept_updated(cur, *, artifact_id: str, latest: int) -> None:
                ) k
            )
         """,
-        {"artifact_id": artifact_id, "latest": latest, "keep": KEEP_UPDATED_VERSIONS},
+        {
+            "artifact_id": artifact_id,
+            "latest": latest,
+            "shared": shared,
+            "keep": KEEP_UPDATED_VERSIONS,
+        },
     )
 
 
 async def refuse_legacy(*, artifact_id: str, code: str) -> Artifact | None:
     """Remember that a link shared before versions is past the caps, so its
     visitors stop asking for a first version. The record when this call set
-    it; None when it was set already, or the link has a version or is not
-    shared any more."""
+    it; None when it was set already, or the link has a shared version or is
+    not shared any more."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -309,7 +457,7 @@ async def refuse_legacy(*, artifact_id: str, code: str) -> Artifact | None:
                 UPDATE share_links l
                    SET legacy_refused = %s
                  WHERE l.artifact_id = %s AND l.kind = 'file'
-                   AND l.shared_at IS NOT NULL AND l.latest_seq = 0
+                   AND l.shared_at IS NOT NULL AND l.shared_seq = 0
                    AND l.legacy_refused IS NULL
                 RETURNING {ARTIFACT_COLUMNS}
                 """,
@@ -401,9 +549,10 @@ async def get_shared_version_file(
     One statement, so the answer is one snapshot: the link is the artifact's,
     shared, at the revision the visitor's grant was minted at (an unshare
     moves it, and so does sharing again after one), its workspace is not
-    deleted, and ``seq`` is still the latest. A new version therefore retires
-    the one before it for every visitor at once. None for any of it, which the
-    caller answers with the same 404 as a missing file.
+    deleted, and ``seq`` is still the shared one (``shared_seq``, never a
+    newer version kept for the owner alone). A new shared version therefore
+    retires the one before it for every visitor at once. None for any of it,
+    which the caller answers with the same 404 as a missing file.
     """
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -414,13 +563,13 @@ async def get_shared_version_file(
                   JOIN workspaces w
                     ON w.workspace_id = l.workspace_id AND w.status <> 'deleted'
                   JOIN artifact_version_files f
-                    ON f.artifact_id = l.artifact_id AND f.seq = l.latest_seq
+                    ON f.artifact_id = l.artifact_id AND f.seq = l.shared_seq
                  WHERE l.code = %(code)s
                    AND l.kind = 'file'
                    AND l.artifact_id = %(artifact_id)s
                    AND l.shared_at IS NOT NULL
                    AND l.revision = %(revision)s
-                   AND l.latest_seq = %(seq)s
+                   AND l.shared_seq = %(seq)s
                    AND f.path = %(path)s
                 """,
                 {

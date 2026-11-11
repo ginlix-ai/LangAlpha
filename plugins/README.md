@@ -83,6 +83,32 @@ instead of bending `mcp.json`:
   network still draws them. An uploaded plugin without one shows its
   homepage's mark, or the account's avatar when that homepage is on GitHub.
 
+## Writing a skill
+
+A skill is prompt surface, as a tool's docstring is (`src/tools/AGENTS.md`).
+Its `description` is read on every turn, its `SKILL.md` once the skill is
+loaded, and a file under `references/` when `SKILL.md` points the agent at it.
+
+- **Every sentence changes what the agent does**: which skill it picks, what
+  it builds, or what it does with a result. One the model would follow anyway
+  is cut whole, not trimmed.
+- **The description selects.** It says what the skill makes and names the
+  requests that mean it, one phrase per case.
+- **One home per fact.** What a reference file owns, `SKILL.md` points at
+  rather than repeats, and a fact about one tool stays in that tool's
+  description. A fact told twice is two places to change and reads as twice
+  as important as it is.
+- **Facts are stated outright; steps are for an order that matters.** What the
+  agent cannot work out by looking (a path the platform follows, a cap, what
+  happens to the output after the turn) goes in plainly, with its reason.
+- **Describe a control, never quote its label.** The label is translated, and
+  an agent that repeats the English one sends a reader in another language
+  looking for words that are not on their screen.
+- **Routing goes one way.** A skill may name the cheaper skill it gets
+  mistaken for. The cheaper one says where it stops and names no others; the
+  descriptions do that routing.
+- **A code sample runs.** Parse each one before it ships; the agent copies it.
+
 ## Adding a server to a bundle
 
 Declare it in the bundle's `mcp.json`, describe it under `servers`, and

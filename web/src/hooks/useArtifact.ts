@@ -52,6 +52,16 @@ import type {
 /** A grant lasts 12h; keep the entry that long so a re-opened version does not mint again. */
 const GRANT_GC_MS = 12 * 60 * 60_000;
 
+/**
+ * The version visitors see, or 0 when there is none. A page kept as a
+ * dashboard goes on cutting versions for its owner, so its share's own can
+ * sit behind the latest.
+ */
+export function sharedSeq(artifact: Pick<Artifact, 'shared' | 'latest_seq' | 'shared_seq'> | null | undefined): number {
+  if (!artifact?.shared) return 0;
+  return artifact.shared_seq ?? artifact.latest_seq;
+}
+
 /** The key a path is read under: the spelling the file routes answer for, so two spellings share one entry. */
 export function artifactPathKey(path: string, root?: string | null): string {
   return workspaceRelativePath(path, root);

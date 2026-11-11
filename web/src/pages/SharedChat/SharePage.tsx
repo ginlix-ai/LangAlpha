@@ -139,7 +139,7 @@ export default function SharePage(): React.ReactElement {
         </Suspense>
       );
     case 'app':
-      return <SharedAppView key={shareToken} metadata={data} />;
+      return <SharedAppView key={shareToken} code={shareToken} metadata={data} />;
     default:
       // A kind from a newer server than this tab: say so rather than crash.
       data satisfies never;

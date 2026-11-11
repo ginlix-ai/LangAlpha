@@ -20,6 +20,9 @@ from src.server.models.market_data import (
     CacheMetadata,
     BatchCacheStats,
     CompanyOverviewResponse,
+    CompanyProfile,
+    CompanyProfilesRequest,
+    CompanyProfilesResponse,
     StockSearchResult,
     StockSearchResponse,
     PriceTargetSummary,
@@ -40,6 +43,7 @@ from src.server.services.cache.daily_cache_service import (
 )
 from src.data_client.normalize import listing_currency, series_lineage
 from src.server.services.cache.quote_cache_service import QuoteCacheService
+from src.server.services.cache.profile_cache_service import get_profiles
 from src.data_client.freshness import measure_bars, measure_daily, measure_quote
 from market_protocol import (
     InstrumentRef, display_spelling, is_family_index, to_canonical, to_legacy_api,
@@ -572,6 +576,42 @@ async def get_company_overview(symbol: str, user_id: DataReadUserId) -> CompanyO
     except Exception as e:
         logger.error(f"Error fetching company overview for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch company overview: {str(e)}")
+
+
+# =============================================================================
+# Company Profiles Endpoint
+# =============================================================================
+
+@router.post(
+    "/profiles",
+    response_model=CompanyProfilesResponse,
+    summary="Get company profiles",
+    description="Name, sector, industry, market cap, currency, exchange and country for up to 50 stocks.",
+)
+async def get_company_profiles(
+    request: CompanyProfilesRequest,
+    user_id: DataReadUserId,
+) -> CompanyProfilesResponse:
+    """Profiles for many listings, each cached on its own instrument."""
+    errors: dict[str, str] = {}
+    # Keyed by the spelling as sent, so a caller finds each answer under what it
+    # asked for (600519.SS, which answers as 600519.SH); two spellings of one
+    # listing share a read.
+    listings: dict[str, str] = {}
+    for raw in dict.fromkeys(s.strip().upper() for s in request.symbols if s and s.strip()):
+        try:
+            listings[raw] = _listing_symbol(raw)
+        except HTTPException as e:
+            errors[raw] = str(e.detail)
+
+    profiles = await get_profiles(list(dict.fromkeys(listings.values())))
+    results: dict[str, CompanyProfile] = {}
+    for requested, listing in listings.items():
+        if listing in profiles.failed:
+            errors[requested] = profiles.failed[listing]
+        elif profiles.found.get(listing):
+            results[requested] = CompanyProfile(symbol=_requested(requested), **profiles.found[listing])
+    return CompanyProfilesResponse(results=results, errors=errors)
 
 
 # =============================================================================

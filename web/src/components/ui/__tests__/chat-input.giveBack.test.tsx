@@ -48,6 +48,20 @@ describe('ChatInput — giveBack', () => {
     expect(box.value).toBe('the edited question');
   });
 
+  it('takes the focus back without a keyboard ring, since no key moved it', () => {
+    vi.useFakeTimers();
+    try {
+      const { ref, box } = renderInput();
+      document.documentElement.removeAttribute('data-pointer-focus');
+      act(() => ref.current!.giveBack('the edited question'));
+      act(() => { vi.runAllTimers(); });
+      expect(document.activeElement).toBe(box);
+      expect(document.documentElement.hasAttribute('data-pointer-focus')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps what is typed and puts the text after it', () => {
     const { ref, box } = renderInput();
     fireEvent.change(box, { target: { value: 'a new question  ' } });

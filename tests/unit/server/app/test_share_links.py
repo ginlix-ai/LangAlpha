@@ -303,3 +303,22 @@ async def test_lookup_of_an_unknown_code_is_404(client):
         resp = await client.get(f"/api/v1/share-links/{_CODE}")
     assert resp.status_code == 404
     get_ws.assert_not_awaited()
+
+
+async def test_an_app_links_answer_names_its_command_key(client):
+    """Every route answering with an app link carries the key its grant is
+    tied to; a file's is null."""
+    with (
+        patch(_GET_LINK, AsyncMock(return_value=_app_link(command_key="0123456789abcdef"))),
+        patch(_DBWS, AsyncMock(return_value=_workspace())),
+    ):
+        resp = await client.get(f"/api/v1/share-links/{_CODE}")
+    assert resp.status_code == 200
+    assert resp.json()["command_key"] == "0123456789abcdef"
+
+    with (
+        patch(_GET_LINK, AsyncMock(return_value=_link())),
+        patch(_DBWS, AsyncMock(return_value=_workspace())),
+    ):
+        resp = await client.get(f"/api/v1/share-links/{_CODE}")
+    assert resp.json()["command_key"] is None

@@ -118,13 +118,14 @@ def test_the_row_is_read_as_one_statement_that_holds_every_condition():
     source = re.sub(r"\s+", " ", inspect.getsource(artifacts_db.get_shared_version_file))
     for condition in (
         "w.status <> 'deleted'",
-        "f.artifact_id = l.artifact_id AND f.seq = l.latest_seq",
+        # The version visitors see, never a newer one kept for the owner.
+        "f.artifact_id = l.artifact_id AND f.seq = l.shared_seq",
         "l.code = %(code)s",
         "l.kind = 'file'",
         "l.artifact_id = %(artifact_id)s",
         "l.shared_at IS NOT NULL",
         "l.revision = %(revision)s",
-        "l.latest_seq = %(seq)s",
+        "l.shared_seq = %(seq)s",
     ):
         assert condition in source, condition
 

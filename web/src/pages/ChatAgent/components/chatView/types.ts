@@ -39,6 +39,11 @@ export interface LocationState {
    */
   draftCommands?: SlashCommand[];
   /**
+   * Put `draftMessage` after what is already typed rather than over it: an
+   * existing thread's composer may hold the user's own words.
+   */
+  draftAppend?: boolean;
+  /**
    * The first send opens its turn with no message of its own, its
    * `initialMessage` empty (`SendOptions.hiddenOpener`): the welcome flow
    * asking the agent where to start (pages/Onboarding/welcome/kickoff.ts).

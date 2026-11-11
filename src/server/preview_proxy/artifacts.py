@@ -286,7 +286,7 @@ async def load_artifact_file(
     storage. On the API origin the grant alone names the artifact. A visitor's
     grant is checked against its link as well (``_visitor_file``). A bad
     grant, another artifact's, an unshared link, a version no longer the
-    latest, a missing version and a missing file all answer None, so the
+    shared one, a missing version and a missing file all answer None, so the
     response never says which. Raises ``ArtifactFileUnavailable`` when a read
     fails, which a caller answers with a 503. A file the browser already
     holds answers 304 before its bytes are read, and only once the grant has
