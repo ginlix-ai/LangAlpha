@@ -427,7 +427,8 @@ def create_filesystem_tools(
 
         Args:
             file_path: Path to the file.
-            old_string: Text to replace. Must match the file exactly, including
+            old_string: Text to replace, never empty (to create or overwrite a
+                whole file, use Write). Must match the file exactly, including
                 indentation, and must be unique unless replace_all is set.
             new_string: Replacement text.
             replace_all: Replace every occurrence instead of requiring a unique
@@ -447,6 +448,12 @@ def create_filesystem_tools(
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error("Access denied: path outside the allowed directories", file_path=logged_path(file_path))
                 return f"ERROR: {error_msg}"
+
+            # An empty string occurs between every character, so the backends
+            # would count it as a match: with replace_all the file came back
+            # with the new text spliced between each pair of characters.
+            if not old_string:
+                return "ERROR: old_string is empty. To create a file or replace all of it, use Write."
 
             stamp_sandbox_served(backend, normalized_path)
             result = await backend.aedit_text(normalized_path, old_string, new_string, replace_all=replace_all)
