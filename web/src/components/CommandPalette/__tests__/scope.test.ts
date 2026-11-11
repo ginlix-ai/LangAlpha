@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { back, canEnter, enterPlace, leave, openLens, PREFIXES, ROOT, scopeOf, searchWithin, typeInto, typeText, type Frame } from '../scope';
+import { PREFIXES } from '../prefixes';
+import { back, canEnter, enterPlace, leave, openLens, ROOT, scopeOf, searchWithin, typeInto, typeText, type Frame } from '../scope';
 import type { Kind, Lens, Place, ViewSpec } from '../types';
 
 const semis: Place = { kind: 'workspace', workspaceId: 'ws1', name: 'Semis' };

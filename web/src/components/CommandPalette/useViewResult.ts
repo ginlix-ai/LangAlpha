@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { SearchKind } from '@/api/search';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
@@ -126,7 +127,9 @@ export function useViewResult({ place, lens }: ViewSpec, query: string, v: Verbs
   const { t } = v;
   // A ticker's view searches for the symbol, and for what is typed with it.
   const text = lens?.kind === 'ticker' ? `${lens.symbol} ${query}`.trim() : query;
-  const words = queryWords(text);
+  // One array per query, not per render: the preview pane parses its turn
+  // again, and scrolls back to the first match, when its words change.
+  const words = useMemo(() => queryWords(text), [text]);
   const searching = words.length > 0;
   const within = searchWithin(place);
   const view = lens ? lens.kind : place?.kind === 'thread' ? 'thread' : 'all';

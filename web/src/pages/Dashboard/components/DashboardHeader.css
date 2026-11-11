@@ -30,11 +30,23 @@
   border-color: var(--color-accent-primary);
 }
 
-.dashboard-search-input::placeholder {
+.dashboard-search-input::placeholder,
+.dashboard-search-placeholder {
   color: var(--color-text-tertiary);
   font-size: var(--cs-text-menu, 1em);
   text-transform: var(--term-case);
   letter-spacing: calc(0.04em * var(--term-track));
+}
+
+/* The phone's field is a button that opens the palette (DashboardHeader):
+   its placeholder sits where the input's does. */
+.dashboard-search-button-text {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .dashboard-search-dropdown {

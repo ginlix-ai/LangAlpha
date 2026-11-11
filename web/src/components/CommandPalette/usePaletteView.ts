@@ -1,5 +1,6 @@
 import { useReducer, type Dispatch } from 'react';
-import { back, enterPlace, isDrill, leave, openLens, PREFIXES, ROOT, typeText, type Frame } from './scope';
+import { PREFIXES } from './prefixes';
+import { back, enterPlace, isDrill, leave, openLens, ROOT, typeText, type Frame } from './scope';
 import type { Lens, PaletteAction, Place } from './types';
 
 type EditAction = Extract<PaletteAction, { effect: 'edit' }>;

@@ -82,6 +82,7 @@
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
     "@types/dom-speech-recognition": "^0.0.12",
+    "@types/hast": "^3.0.5",
     "@types/node": "^24.19.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

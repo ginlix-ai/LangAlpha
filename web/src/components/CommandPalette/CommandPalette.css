@@ -248,18 +248,38 @@
   color: var(--color-text-tertiary);
 }
 .command-palette-pane-turn + .command-palette-pane-turn { margin-top: 16px; }
-.command-palette-pane-turn p {
-  white-space: pre-wrap;
+/* A turn's text: plain while the Markdown renderer loads, then rendered at
+   the same size, so the swap changes the marks' styling and nothing else. */
+.command-palette-pane-plain,
+.command-palette-pane-md {
   overflow-wrap: anywhere;
   font-size: 0.78125rem;
   line-height: 1.55;
-  color: var(--color-text-secondary);
 }
-.command-palette-pane-turn mark {
+/* In the ink the compact Markdown draws in (Markdown.tsx's variants). */
+.command-palette-pane-plain {
+  white-space: pre-wrap;
+  color: var(--color-text-primary);
+  opacity: 0.9;
+}
+.command-palette-pane-turn mark,
+.command-palette-pane-turn .markdown-root mark {
+  padding: 0;
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
   font-weight: 600;
   border-radius: 2px;
+}
+/* A link is shown, not followed (rehypePreview). */
+.command-palette-pane-link {
+  color: var(--color-accent-primary);
+  text-decoration: underline;
+}
+/* An image, and a cited source, by name. */
+.command-palette-pane-alt,
+.command-palette-pane-cite {
+  color: var(--color-text-tertiary);
+  font-style: italic;
 }
 .command-palette-pane-note {
   padding: 18px 16px;

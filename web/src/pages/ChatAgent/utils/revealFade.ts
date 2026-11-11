@@ -15,6 +15,8 @@ import { CATCH_UP_CHARS, LIVE_TAIL_CHARS, TICK_MS } from '@/components/ui/animat
 import { cssEase, DURATION, EASE_REVEAL } from '@/lib/motion';
 import { isPageUnseen } from '@/lib/pageVisibility';
 import { prefersReducedMotion } from '@/lib/reducedMotion';
+import type { Element as HastElement, ElementContent, Root, Text } from 'hast';
+import { OPAQUE, rewriteChildren } from './hast';
 
 export interface RevealMark {
   from: number;
@@ -137,23 +139,10 @@ export function parseFreshKey(key: string): RevealMark[] {
 
 // --- rehype pass ---
 
-interface Point { offset?: number }
-interface Position { start?: Point; end?: Point }
-interface HastText { type: 'text'; value: string; position?: Position }
-interface HastElement {
-  type: 'element';
-  tagName: string;
-  properties: Record<string, unknown>;
-  children: HastNode[];
-  position?: Position;
-}
-type HastNode = HastText | HastElement | { type: string; children?: HastNode[]; position?: Position };
-interface HastParent { children: HastNode[]; position?: Position }
-
-// Never descended into: a fence types its own line (CodeBlock), and the rest
-// hold no prose. KaTeX's visible half, beside its MathML, carries no source
+// What OPAQUE holds is never descended into: a fence types its own line
+// (CodeBlock). KaTeX's visible half, beside its MathML, carries no source
 // positions, so math is never marked either and pops in whole.
-const OPAQUE = new Set(['pre', 'script', 'style', 'svg', 'math', 'textarea']);
+
 // Faded whole and in place, from the reveal that began them: their components
 // read their children as a string, or have none, and pass the attribute on to
 // their own element. A wrapper would remount them when their mark goes, which
@@ -177,7 +166,7 @@ const glued = (a: string, b: string): boolean =>
 // letters, a surrogate pair. Cut apart, each half is drawn on its own.
 const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
-const freshSpan = (id: number, children: HastNode[]): HastElement => ({
+const freshSpan = (id: number, children: ElementContent[]): HastElement => ({
   type: 'element', tagName: 'span', properties: { dataFresh: String(id) }, children,
 });
 
@@ -229,7 +218,7 @@ function idCursor(ranges: readonly RevealMark[]): (offset: number) => number {
  * has no position of its own; it lies between its neighbours, and matching it
  * forward from the earlier bound can only read it as older.
  */
-function sourceSpan(parent: HastParent, i: number): { start?: number; end?: number; exact: boolean } {
+function sourceSpan(parent: Root | HastElement, i: number): { start?: number; end?: number; exact: boolean } {
   const own = parent.children[i].position;
   if (own?.start?.offset !== undefined && own.end?.offset !== undefined) {
     return { start: own.start.offset, end: own.end.offset, exact: true };
@@ -245,10 +234,10 @@ function sourceSpan(parent: HastParent, i: number): { start?: number; end?: numb
 export function rehypeFreshText(key: string) {
   const ranges = parseFreshKey(key);
 
-  return (tree: HastParent, file: { value?: unknown }) => {
+  return (tree: Root, file: { value?: unknown }) => {
     const source = typeof file.value === 'string' ? file.value : '';
 
-    const splitText = (node: HastText, { start, end, exact }: ReturnType<typeof sourceSpan>): HastNode[] | null => {
+    const splitText = (node: Text, { start, end, exact }: ReturnType<typeof sourceSpan>): ElementContent[] | null => {
       if (start === undefined || end === undefined || !node.value) return null;
       if (!ranges.some((r) => r.from < end && r.to > start)) return null;
       const offsets = exact && node.value.length === end - start ? null : sourceOffsets(node.value, source, start, end);
@@ -256,7 +245,7 @@ export function rehypeFreshText(key: string) {
       let clusters: Intl.Segments | undefined;
       const cuts = (j: number) => !glued(node.value[j - 1], node.value[j])
         && (clusters ??= GRAPHEMES.segment(node.value)).containing(j)?.index === j;
-      const pieces: HastNode[] = [];
+      const pieces: ElementContent[] = [];
       let from = 0;
       let id = idAt(offsets ? offsets[0] : start);
       const flush = (to: number) => {
@@ -275,27 +264,19 @@ export function rehypeFreshText(key: string) {
       return pieces.length === 1 && pieces[0].type === 'text' ? null : pieces;
     };
 
-    const walk = (parent: HastParent) => {
-      let out: HastNode[] | null = null;
-      parent.children.forEach((child, i) => {
-        let replaced: HastNode[] | null = null;
-        if (child.type === 'text') {
-          replaced = splitText(child as HastText, sourceSpan(parent, i));
-        } else if (child.type === 'element') {
-          const el = child as HastElement;
-          if (UNITS.has(el.tagName)) {
-            const at = el.position?.start?.offset;
-            const id = at === undefined ? 0 : idCursor(ranges)(at);
-            if (id) el.properties.dataFresh = String(id);
-          } else if (!OPAQUE.has(el.tagName)) {
-            walk(el);
-          }
+    const walk = (parent: Root | HastElement) =>
+      rewriteChildren(parent, (child, i) => {
+        if (child.type === 'text') return splitText(child, sourceSpan(parent, i));
+        if (child.type !== 'element') return null;
+        if (UNITS.has(child.tagName)) {
+          const at = child.position?.start.offset;
+          const id = at === undefined ? 0 : idCursor(ranges)(at);
+          if (id) child.properties.dataFresh = String(id);
+        } else if (!OPAQUE.has(child.tagName)) {
+          walk(child);
         }
-        if (replaced && !out) out = parent.children.slice(0, i);
-        if (out) out.push(...(replaced ?? [child]));
+        return null;
       });
-      if (out) parent.children = out;
-    };
 
     walk(tree);
   };
