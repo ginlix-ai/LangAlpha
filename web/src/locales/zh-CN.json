@@ -7161,7 +7161,8 @@
     },
     "preview": {
       "missing": "暂无可预览的内容。",
-      "failed": "无法加载预览。"
+      "failed": "无法加载预览。",
+      "today": "今日"
     },
     "scope": {
       "label": "在 {{scope}} 中搜索",

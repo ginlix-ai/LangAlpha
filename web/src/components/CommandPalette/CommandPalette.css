@@ -301,6 +301,17 @@
 .command-palette-pane-price > :last-child { font-size: 0.75rem; color: var(--color-text-secondary); }
 .command-palette-pane-price .is-up { color: var(--color-profit); }
 .command-palette-pane-price .is-down { color: var(--color-loss); }
+.command-palette-pane-spark { margin: 14px 0 0; }
+.command-palette-pane-spark svg { display: block; overflow: visible; }
+.command-palette-pane-spark figcaption {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.65625rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+}
 
 .command-palette kbd {
   display: inline-flex;

@@ -604,6 +604,21 @@ class TestRangeWalk:
         assert get_mock.await_count == 2
 
 
+class TestSearchMerge:
+    @pytest.mark.asyncio
+    async def test_name_matches_survive_a_full_symbol_answer(self):
+        """``search-symbol`` answering a whole page must not cut the name
+        matches: on ``nv`` they are what holds NVDA."""
+        by_endpoint = {
+            "search-symbol": [{"symbol": f"NV{i:02d}"} for i in range(3)],
+            "search-name": [{"symbol": "NVDA"}, {"symbol": "NV01"}],
+        }
+        client = FMPClient(api_key=_SECRET)
+        client._make_request = AsyncMock(side_effect=lambda endpoint, params: by_endpoint[endpoint])
+        rows = await client.search_stocks(query="nv", limit=3)
+        assert [r["symbol"] for r in rows] == ["NV00", "NV01", "NV02", "NVDA"]
+
+
 class TestPriceReadCaps:
     """An EOD answer holds at most 5,000 bars and an intraday one a fixed span
     of days ending at ``to``, the newest kept; a read that reaches either says so."""

@@ -1,4 +1,5 @@
-import React, { useId, useRef } from 'react';
+import React, { useRef } from 'react';
+import { Sparkline } from '@/components/charts/Sparkline';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import { cn } from '@/lib/utils';
 import { percentMove } from './termChange';
@@ -302,44 +303,15 @@ export function TermPriceLine({
   /** First, middle and last date labels. */
   dates?: readonly string[];
 }): React.ReactElement | null {
-  const gradientId = useId();
   if (values.length < 2) return null;
   const W = 600;
   const pad = 2;
-  const hi = Math.max(...values);
-  const lo = Math.min(...values);
-  const span = hi - lo || 1;
-  const y = (v: number) => pad + ((hi - v) / span) * (height - pad * 2);
-  const x = (i: number) => (i / (values.length - 1)) * W;
-  const line = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-  const area = `0,${height} ${line} ${W},${height}`;
   return (
     <div className="term-plot">
-      <svg
-        className="term-plot-svg"
-        viewBox={`0 0 ${W} ${height}`}
-        preserveAspectRatio="none"
-        style={{ height }}
-        aria-hidden="true"
-      >
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity={0.14} />
-            <stop offset="100%" stopColor={color} stopOpacity={0} />
-          </linearGradient>
-        </defs>
+      <Sparkline className="term-plot-svg" values={values} color={color} width={W} height={height} style={{ height }}>
         <line className="term-plot-grid" x1={0} x2={W} y1={pad} y2={pad} vectorEffect="non-scaling-stroke" />
         <line className="term-plot-grid" x1={0} x2={W} y1={height - pad} y2={height - pad} vectorEffect="non-scaling-stroke" />
-        <polygon points={area} fill={`url(#${gradientId})`} />
-        <polyline
-          points={line}
-          fill="none"
-          stroke={color}
-          strokeWidth={1.25}
-          strokeLinejoin="round"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
+      </Sparkline>
       <div className="term-plot-axis" style={{ height }}>
         <span>{axis[0]}</span>
         <span>{axis[1]}</span>

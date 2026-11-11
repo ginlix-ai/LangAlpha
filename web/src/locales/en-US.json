@@ -7250,7 +7250,8 @@
     },
     "preview": {
       "missing": "Nothing to preview yet.",
-      "failed": "Couldn't load the preview."
+      "failed": "Couldn't load the preview.",
+      "today": "Today"
     },
     "scope": {
       "label": "Search in {{scope}}",

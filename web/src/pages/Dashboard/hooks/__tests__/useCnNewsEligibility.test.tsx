@@ -10,9 +10,9 @@ vi.mock('../../utils/api', async (importOriginal) => {
   return {
     ...actual,
     getNews: vi.fn(),
-    getIndex: vi.fn(),
   };
 });
+vi.mock('../../utils/indices', () => ({ getIndex: vi.fn() }));
 
 vi.mock('@/lib/quotes/snapshotApi', () => ({
   getSnapshotIndexes: vi.fn(),
@@ -31,7 +31,8 @@ vi.mock('../useCnNewsEligibility', async (importOriginal) => ({
   useCnNewsEligibility: vi.fn(),
 }));
 
-import { getNews, getIndex } from '../../utils/api';
+import { getNews } from '../../utils/api';
+import { getIndex } from '../../utils/indices';
 import { getSnapshotIndexes } from '@/lib/quotes/snapshotApi';
 import { fetchMarketStatus } from '@/lib/marketUtils';
 import { useCnNewsEligibility } from '../useCnNewsEligibility';

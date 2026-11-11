@@ -50,6 +50,8 @@ export interface StockSearchHit {
   exchangeShortName?: string;
   stockExchange?: string;
   currency?: string;
+  /** How directly the row answers the query, as the server's ranking read it. */
+  match?: 'exact' | 'symbol_prefix' | 'name_word' | 'other';
 }
 
 interface StockSearchResult {

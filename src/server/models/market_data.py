@@ -4,7 +4,7 @@ Pydantic models for market data endpoints.
 This module provides request and response models for FMP intraday data proxy endpoints.
 """
 
-from typing import Annotated, Optional, List, Dict, Any
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Measured alongside the data it describes, so the model lives with the
@@ -372,6 +372,11 @@ class StockSearchResult(BaseModel):
     currency: Optional[str] = Field(None, description="Currency code")
     stockExchange: Optional[str] = Field(None, description="Stock exchange name")
     exchangeShortName: Optional[str] = Field(None, description="Short exchange name")
+    match: Optional[Literal["exact", "symbol_prefix", "name_word", "other"]] = Field(
+        None,
+        description="How directly the row answers the query: the symbol itself, a symbol starting "
+        "with it, a name word starting with it, or neither (closest first)",
+    )
 
 
 class StockSearchResponse(BaseModel):

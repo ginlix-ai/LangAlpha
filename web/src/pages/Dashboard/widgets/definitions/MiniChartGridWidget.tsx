@@ -29,6 +29,7 @@ import { SymbolListField } from '../framework/settings/SymbolListField';
 import { SettingsDoneButton } from '../framework/settings/SettingsDoneButton';
 import { grouped2 } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
+import { Sparkline } from '@/components/charts/Sparkline';
 import type { WidgetRenderProps, WidgetSettingsProps } from '../types';
 
 
@@ -107,35 +108,8 @@ async function loadSpark(
 }
 
 function MiniSparkline({ cell }: { cell: CellData }) {
-  const w = 110;
-  const h = 34;
-  const pad = 2;
-  const { closes } = cell;
-  let min = closes[0];
-  let max = closes[0];
-  for (const c of closes) {
-    if (c < min) min = c;
-    else if (c > max) max = c;
-  }
-  const range = max - min || 1;
-  const step = (w - pad * 2) / Math.max(1, closes.length - 1);
-  const pts = closes.map((c, i) => {
-    const x = pad + i * step;
-    const y = pad + (1 - (c - min) / range) * (h - pad * 2);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-  const d = `M${pts[0]} L${pts.slice(1).join(' ')}`;
-  const lastX = pad + (closes.length - 1) * step;
-  const lastY = pad + (1 - (cell.last - min) / range) * (h - pad * 2);
-  const up = cell.last >= cell.prev;
-  const stroke = up ? 'var(--color-profit)' : 'var(--color-loss)';
-
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden>
-      <path d={d} fill="none" stroke={stroke} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
-      <circle cx={lastX} cy={lastY} r={2} fill={stroke} />
-    </svg>
-  );
+  const stroke = cell.last >= cell.prev ? 'var(--color-profit)' : 'var(--color-loss)';
+  return <Sparkline values={cell.closes} color={stroke} width={110} height={34} stretch={false} fill={false} dot strokeWidth={1.5} />;
 }
 
 function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig>) {

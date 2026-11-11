@@ -4,7 +4,6 @@
  */
 import { api } from '@/api/client';
 import i18n from '@/i18n';
-import { utcMsToETDate, utcMsToETTime } from '@/lib/utils';
 import type { Profile } from '@/lib/appBridge/protocol';
 import { normalizeIndexKey } from '@/lib/marketUtils';
 import { snapshotRowSpellings, snapshotToStockPrice } from '@/lib/quotes/quoteAdapters';
@@ -22,19 +21,7 @@ export type { SnapshotEntry, SnapshotResponse };
 
 // --- Interfaces ---
 
-interface IntradayPoint {
-  time: number;
-  open: number;
-  close: number;
-  high?: number;
-  low?: number;
-  volume?: number;
-}
 
-interface IndicesResult {
-  indices: IndexData[];
-  failedCount: number;
-}
 
 interface NewsParams {
   tickers?: string[];
@@ -82,78 +69,9 @@ function fallbackIndex(norm: string): IndexData {
 }
 
 /**
- * GET /api/v1/market-data/intraday/indexes/:symbol (Index.yml)
- * Path uses normalized symbol (e.g. GSPC). Query: interval, from, to optional.
- * Returns the most recent data point for the index.
- */
-export async function getIndex(symbol: string, _opts: Record<string, unknown> = {}): Promise<IndexData> {
-  const norm = normalizeIndexSymbol(String(symbol).trim());
-  try {
-    const { data } = await api.get(`/api/v1/market-data/intraday/indexes/${encodeURIComponent(norm)}`);
-
-    const pts: IntradayPoint[] = data?.data ?? [];
-
-    if (!Array.isArray(pts) || !pts.length) {
-      throw new Error(`No intraday data for ${norm}`);
-    }
-
-    // Sort ascending by time (Unix ms)
-    const sorted = [...pts].sort((a: IntradayPoint, b: IntradayPoint) => a.time - b.time);
-
-    // Isolate regular-hours points (9:30–16:00 ET) first, then take the most
-    // recent date that actually has them. Some indices (e.g. VIX) carry
-    // overnight/pre-market bars, so the chronologically-last bar's date can have
-    // zero regular-hours points on a pre-open day — which would blank the
-    // sparkline. `sorted` is ascending, so the regular-hours slice is too.
-    const regularHours = sorted.filter((p: IntradayPoint) => {
-      const t = utcMsToETTime(p.time);
-      return t >= '09:30' && t <= '16:00';
-    });
-    const latestDate = regularHours.length
-      ? utcMsToETDate(regularHours[regularHours.length - 1].time)
-      : utcMsToETDate(sorted[sorted.length - 1].time);
-    const todayPoints = regularHours.length
-      ? regularHours.filter((p: IntradayPoint) => utcMsToETDate(p.time) === latestDate)
-      : sorted.filter((p: IntradayPoint) => utcMsToETDate(p.time) === latestDate);
-
-    const oldest = todayPoints[0];
-    const mostRecent = todayPoints[todayPoints.length - 1];
-
-    const open = Number(oldest?.open ?? 0);
-    const close = Number(mostRecent?.close ?? 0);
-    const change = close - open;
-    const changePercent = open ? (change / open) * 100 : 0;
-
-    const result: IndexData = {
-      symbol: norm,
-      name: INDEX_NAMES[norm] ?? norm,
-      price: Math.round(close * 100) / 100,
-      change: Math.round(change * 100) / 100,
-      changePercent: Math.round(changePercent * 100) / 100,
-      isPositive: change >= 0,
-      // Direct getIndex consumers get the same zero/invalid-close masking the
-      // dashboard applies via the snapshot: a non-positive close isn't a quote.
-      quoteAvailable: close > 0,
-      asOfDate: latestDate,
-      sparklineData: todayPoints
-        .filter((p: IntradayPoint) => Number(p.close) > 0)
-        .map((p: IntradayPoint) => ({ time: utcMsToETTime(p.time), val: Number(p.close) })),
-    };
-
-    return result;
-  } catch (e: unknown) {
-    const err = e as { response?: { status?: number; data?: { detail?: unknown } }; message?: string };
-    console.error(`[API] getIndex - ${norm}: Error:`, err?.message);
-    const msg = err.response?.data?.detail ?? err.message;
-    throw new Error(typeof msg === 'string' ? msg : String(msg));
-  }
-}
-
-/**
  * Build one IndexData card from a raw index snapshot + its sparkline.
  * Index prices are never legitimately 0; a zero/negative price means a partial
  * provider snapshot, so it's treated as no quote (renders N/A, not a fake 0.00).
- * Shared by getIndices and the quote-layer-driven useDashboardData.
  */
 export function buildIndexData(
   norm: string,
@@ -178,44 +96,6 @@ export function buildIndexData(
     };
   }
   return { ...fallbackIndex(norm), sparklineData, asOfDate };
-}
-
-/**
- * Fetches indices data: snapshot batch for price/change, intraday for sparklines.
- * Returns { indices, failedCount }.
- */
-export async function getIndices(symbols: string[] = INDEX_SYMBOLS, _opts: Record<string, unknown> = {}): Promise<IndicesResult> {
-  const list = symbols.map((s: string) => normalizeIndexSymbol(String(s).trim()));
-
-  // Fetch snapshot (price/change) and intraday (sparklines) in parallel
-  const [snapshots, sparklineResults] = await Promise.all([
-    getSnapshotIndexes(list),
-    Promise.all(list.map(async (norm: string) => {
-      try {
-        const result = await getIndex(norm);
-        return { symbol: norm, sparklineData: result.sparklineData, asOfDate: result.asOfDate };
-      } catch {
-        return { symbol: norm, sparklineData: [] as SparklinePoint[], asOfDate: undefined };
-      }
-    })),
-  ]);
-
-  const sparklineMap: Record<string, SparklinePoint[]> = Object.fromEntries(sparklineResults.map((r) => [r.symbol, r.sparklineData]));
-  const asOfMap: Record<string, string | undefined> = Object.fromEntries(sparklineResults.map((r) => [r.symbol, r.asOfDate]));
-  const snapshotList: SnapshotEntry[] = snapshots?.snapshots || snapshots?.results || snapshots?.data || [];
-  const snapshotMap: Record<string, SnapshotEntry> = Array.isArray(snapshotList)
-    ? Object.fromEntries(snapshotList.flatMap((s: SnapshotEntry) =>
-        snapshotRowSpellings(s).map((k) => [normalizeIndexSymbol(k), s])))
-    : {};
-
-  let failedCount = 0;
-  const indices: IndexData[] = list.map((norm: string) => {
-    const idx = buildIndexData(norm, snapshotMap[norm], sparklineMap[norm] || [], asOfMap[norm]);
-    if (!idx.quoteAvailable) failedCount++;
-    return idx;
-  });
-
-  return { indices, failedCount };
 }
 
 export { INDEX_NAMES, INDEX_SYMBOLS, fallbackIndex, normalizeIndexSymbol };
