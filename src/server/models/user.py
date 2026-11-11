@@ -294,6 +294,13 @@ class UserPreferencesUpdate(UserPreferencesBase):
         "old default to the new one, 'new_threads' leaves them. Never stored; "
         "absent, model_preference.default_model_scope decides.",
     )
+    expect_other_preference: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Keys of other_preference with the value each held when "
+        "the client read it (null = absent). The write applies only if every "
+        "named key still holds exactly that, else 409 with code "
+        "'preference_changed' and nothing written. Never stored.",
+    )
 
 
 class UserPreferencesResponse(UserPreferencesBase):

@@ -20,6 +20,7 @@ from src.server.auth.jwt_bearer import get_current_auth_info, AuthInfo
 from src.server.database.pool import get_db_connection
 from src.server.dependencies.principal import CurrentPrincipal, ReadUserId
 from src.server.database.user import (
+    PreferenceChanged,
     create_user as db_create_user,
     create_user_from_auth,
     delete_user_preferences as db_delete_user_preferences,
@@ -506,6 +507,10 @@ async def update_preferences(
     A write that changes the default model also moves the threads still on the
     old one when ``apply_default_to`` (or, without it, the saved
     ``default_model_scope``) says ``existing_threads``; the response counts them.
+
+    ``expect_other_preference`` makes the write conditional on the values its
+    client read, for a key written whole: a 409 ``preference_changed`` tells
+    the client to read again rather than overwrite another device's change.
     """
     user = await db_get_user(user_id)
     if not user:
@@ -656,6 +661,7 @@ async def update_preferences(
                 other_preference=other_pref,
                 model_preference=model_pref,
                 conn=conn,
+                expect_other_preference=request.expect_other_preference,
             )
             if (other_pref or {}).get("claude_code_plan_out") == "credits":
                 await credits_unknown(user_id, conn=conn)
@@ -669,6 +675,16 @@ async def update_preferences(
                 )
     except TuningError as exc:
         raise _tuning_400(exc) from exc
+    except PreferenceChanged as exc:
+        # The client reads the row again and rebuilds its write on it.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "preference_changed",
+                "message": "Preferences changed since they were read",
+                "keys": exc.keys,
+            },
+        ) from None
 
     await invalidate_user_prefs_cache(user_id)
     await invalidate_user_profile_cache(user_id)

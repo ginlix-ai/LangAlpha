@@ -560,6 +560,31 @@ _PREF_RETURNING = (
 )
 
 
+class PreferenceChanged(Exception):
+    """A write expected keys of ``other_preference`` to hold values they no
+    longer hold, so nothing was written."""
+
+    def __init__(self, keys: list[str]):
+        super().__init__(f"other_preference changed: {', '.join(keys)}")
+        self.keys = keys
+
+
+def _expectation_sql(expected: Dict[str, Any]) -> tuple[str, list[Any]]:
+    """The update's guard: each named key still holds what the caller read.
+
+    A stored JSON ``null`` reads as absent, as the merge never keeps one, so
+    an expectation of ``None`` matches a missing key either way.
+    """
+    clauses = [
+        "NULLIF(user_preferences.other_preference -> %s::text, 'null'::jsonb) IS NOT DISTINCT FROM %s::jsonb"
+        for _ in expected
+    ]
+    params: list[Any] = []
+    for key, value in expected.items():
+        params.extend([key, None if value is None else Json(value)])
+    return " AND ".join(clauses), params
+
+
 async def upsert_user_preferences(
     user_id: str,
     risk_preference: Optional[Dict[str, Any]] = None,
@@ -569,6 +594,7 @@ async def upsert_user_preferences(
     model_preference: Optional[Dict[str, Any]] = None,
     replace: bool = False,
     conn=None,
+    expect_other_preference: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Create or update a user's preferences, merging each column that is passed.
 
@@ -576,6 +602,12 @@ async def upsert_user_preferences(
     any depth, so ``{"profiles": {"m1": None}}`` drops one model's overrides and
     leaves its siblings, and clearing a key 034 moved clears its pre-move copy
     too. ``replace=True`` overwrites each provided column whole.
+
+    ``expect_other_preference`` names keys with the value each held when the
+    caller read it (``None`` = absent). The write lands only if all still do,
+    checked by the statement that writes, else ``PreferenceChanged``: a key
+    written whole from a stale read would otherwise drop another device's
+    change, a revoked grant coming back among them.
     """
     _validate_model_shape(model_preference)
     other_preference = _mirror_moved_deletes(model_preference, other_preference)
@@ -605,25 +637,43 @@ async def upsert_user_preferences(
             updates, deletes = _split_updates_and_deletes(patch)
             set_params.extend([deletes, Json(updates) if updates else None])
 
+    row_params = [str(uuid4()), user_id, *insert_params]
+    if expect_other_preference:
+        # With no row every key is absent, so a fresh row is made only when
+        # every expectation is None; an existing row goes to the update's guard.
+        guard, guard_params = _expectation_sql(expect_other_preference)
+        source = (
+            f"SELECT %s::uuid, %s, {_PREF_INSERT_VALUES}, NOW(), NOW()\n"
+            "        WHERE %s OR EXISTS (SELECT 1 FROM user_preferences WHERE user_id = %s)"
+        )
+        row_params += [
+            all(v is None for v in expect_other_preference.values()),
+            user_id,
+        ]
+        where = f"\n        WHERE {guard}"
+    else:
+        source = f"VALUES (%s, %s, {_PREF_INSERT_VALUES}, NOW(), NOW())"
+        guard_params, where = [], ""
+
     sql = f"""
         INSERT INTO user_preferences (
             user_preference_id, user_id, {_PREF_COLUMN_LIST}, created_at, updated_at
         )
-        VALUES (%s, %s, {_PREF_INSERT_VALUES}, NOW(), NOW())
+        {source}
         ON CONFLICT (user_id) DO UPDATE
         SET
                         {_PREF_REPLACE_SET if replace else _PREF_MERGE_SET},
-                        updated_at = NOW()
+                        updated_at = NOW(){where}
         RETURNING {_PREF_RETURNING}
     """
 
     async with get_db_connection(conn) as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
             await lock_user_profile(cur, user_id)
-            await cur.execute(
-                sql, [str(uuid4()), user_id, *insert_params, *set_params]
-            )
+            await cur.execute(sql, [*row_params, *set_params, *guard_params])
             result = await cur.fetchone()
+            if result is None:
+                raise PreferenceChanged(sorted(expect_other_preference or {}))
             logger.info(f"[user_db] upsert_user_preferences user_id={user_id} replace={replace}")
             return dict(result)
 
