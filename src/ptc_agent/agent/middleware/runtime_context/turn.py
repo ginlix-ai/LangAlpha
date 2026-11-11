@@ -345,23 +345,32 @@ class TurnContextMiddleware(AgentMiddleware):
                 and self._origin is None
                 and not self._is_subagent
             )
-            if handoff and key is None:
-                key = ATTENDED_KEY
-            # A turn with no rules of its own (the web app sends no surface
-            # for a plain turn; a channel may send its name and drop its
-            # text) after a turn that stated some would leave that paragraph
+            # A turn with no rules of its own (the mobile app sends no
+            # surface; a channel may send its name and drop its text) after a turn that stated some would leave that paragraph
             # as the last rule in view, so the return to the default shape is
             # stated as this turn's rule, keyed so that it too is said once.
-            # The handoff row already left the model on that shape, so it is
-            # not a rule to take back.
+            # Two paragraphs can stand: a surface's, and an automation's,
+            # which a person's turn takes back with the handoff instead.
+            standing = _standing_surface(state)
             reset = (
                 not _states_rules(key)
                 and key != last
-                and _states_rules(last)
-                and not handoff
+                and (standing is not None or (_is_automation_key(last) and not handoff))
             )
-            if key is None and (reset or last == DEFAULT_KEY):
-                key = DEFAULT_KEY
+            # A built-in surface's paragraph, its own line or a caller's
+            # rules for it, replaces a channel's without saying so, and the
+            # channel's told the model to reply with send_message, so the
+            # paragraph says the earlier rules no longer apply.
+            leaves_channel = (
+                standing is not None
+                and "#" in standing
+                and surface.name in BUILT_IN_SURFACES
+            )
+            if key is None:
+                if reset or last == DEFAULT_KEY:
+                    key = DEFAULT_KEY
+                elif handoff:
+                    key = ATTENDED_KEY
             rules = (
                 ""
                 if key is None or key == last
@@ -372,6 +381,7 @@ class TurnContextMiddleware(AgentMiddleware):
                     self._surface_rules,
                     handoff=handoff,
                     reset=reset,
+                    leaves_channel=leaves_channel,
                 )
             )
             provenance: dict[str, Any] = {
@@ -699,10 +709,51 @@ def _states_rules(key: str | None) -> bool:
     """
     if key is None or key in (DEFAULT_KEY, ATTENDED_KEY):
         return False
-    if key == "subagent" or _is_automation_key(key):
-        return True
+    return key == "subagent" or _is_automation_key(key) or _surface_states(key)
+
+
+def _surface_part(key: str) -> str | None:
+    """The surface a rules key names, with its symbol or digest, or None for
+    a key that names none: an automation's alone, a handoff's, a subagent's
+    and the return to the default."""
+    if key in (DEFAULT_KEY, ATTENDED_KEY, "subagent"):
+        return None
     head = key.split("+")[0]
-    return "#" in head or head.split(":")[0] in BUILT_IN_SURFACES
+    return None if head == "automation" else head
+
+
+def _surface_states(key: str) -> bool:
+    """Whether the key's surface states a paragraph: caller text (the digest)
+    or a built-in line. A bare surface only names itself on the run line."""
+    head = _surface_part(key)
+    return head is not None and ("#" in head or head.split(":")[0] in BUILT_IN_SURFACES)
+
+
+def _standing_surface(state: Any) -> str | None:
+    """The surface whose paragraph is still the last word on the surface
+    among the rows in view (its key's surface part), or None.
+
+    The last key alone does not say: an automation's paragraph, and the
+    handoff that takes it back, say nothing about the surface, so a channel's
+    paragraph from before them stays in force behind them. That holds for an
+    automation on a bare surface too, which states no surface rules and so
+    never resets. A return to the default, or a person's bare surface, leaves
+    none standing.
+    """
+    for row in reversed(rows_in_view(state)):
+        key = row.provenance.get("rules_key") if row.kind == TURN_ROW_KIND else None
+        if not isinstance(key, str):
+            continue
+        if key == DEFAULT_KEY:
+            return None
+        head = _surface_part(key)
+        if head is None:
+            continue
+        if _surface_states(key):
+            return head
+        if not _is_automation_key(key):
+            return None
+    return None
 
 
 def render_surface_rules(
@@ -713,6 +764,7 @@ def render_surface_rules(
     *,
     handoff: bool = False,
     reset: bool = False,
+    leaves_channel: bool = False,
 ) -> str:
     return render_template(
         "envelope/surface_rules.md.j2",
@@ -723,6 +775,7 @@ def render_surface_rules(
         surface_rules=surface_rules,
         handoff=handoff,
         reset=reset,
+        leaves_channel=leaves_channel,
     )
 
 

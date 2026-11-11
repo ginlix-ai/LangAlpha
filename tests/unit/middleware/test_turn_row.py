@@ -584,6 +584,111 @@ class TestTheDeliveryRulesRideWhenTheyAreNews:
         assert "waiting for the reply" not in again.content
 
     @pytest.mark.asyncio
+    async def test_a_follow_up_after_an_automation_takes_back_the_channel_too(self):
+        """A channel's turn, then an automation's run, then the person writes
+        from the app: the handoff takes back only the automation's paragraph,
+        so the channel's would stay the last word on the surface and the model
+        would keep answering through send_message."""
+        channel = await _row(platform="slack", surface_rules=SLACK_RULES)
+        auto = await _row(origin="automation", state=_state([channel]))
+        manual = await _row(state=_state([channel, auto]))
+
+        assert _provenance(manual)["rules_key"] == "default"
+        assert "no delivery rules of its own" in manual.content
+        assert "send_message" in manual.content
+        assert "A person sent this turn and is waiting for the reply." in manual.content
+
+        again = await _row(state=_state([channel, auto, manual]))
+        assert "rules_key" in _provenance(again)
+        assert "delivery rules" not in again.content
+        assert "waiting for the reply" not in again.content
+
+    @pytest.mark.asyncio
+    async def test_a_thread_left_on_a_bare_handoff_takes_the_channel_back_on_its_next_turn(self):
+        """A thread whose follow-up stated only the handoff, as earlier builds
+        did, still has the channel's paragraph standing behind it."""
+        channel = await _row(platform="slack", surface_rules=SLACK_RULES)
+        auto = await _row(origin="automation", state=_state([channel]))
+        bare_handoff = await _row(state=_state([auto]))
+        assert _provenance(bare_handoff)["rules_key"] == "attended"
+
+        manual = await _row(state=_state([channel, auto, bare_handoff]))
+        assert _provenance(manual)["rules_key"] == "default"
+        assert "no delivery rules of its own" in manual.content
+        assert "waiting for the reply" not in manual.content
+
+    @pytest.mark.asyncio
+    async def test_an_automation_on_a_bare_channel_leaves_the_channel_standing(self):
+        """An automation that names the channel but states no rules for it
+        does not reset, so the channel's paragraph stands behind it and the
+        person's next turn takes it back."""
+        channel = await _row(platform="slack", surface_rules=SLACK_RULES)
+        auto = await _row(
+            platform="slack", origin="automation", state=_state([channel])
+        )
+        assert _provenance(auto)["rules_key"] == "slack+automation"
+
+        manual = await _row(state=_state([channel, auto]))
+        assert "no delivery rules of its own" in manual.content
+        assert "waiting for the reply" in manual.content
+
+    @pytest.mark.asyncio
+    async def test_an_automation_after_a_channel_keeps_the_channel_paragraph(self):
+        """An automation's own run does not take the channel back: what it
+        delivers where is its own business."""
+        channel = await _row(platform="slack", surface_rules=SLACK_RULES)
+        auto = await _row(origin="automation", state=_state([channel]))
+
+        assert "no delivery rules of its own" not in auto.content
+        assert "started by an automation" in auto.content
+
+    @pytest.mark.asyncio
+    async def test_the_web_line_takes_back_a_channel_it_replaces(self):
+        """The web sends its surface on every turn, so it never reaches the
+        reset; its own line has to say the channel's rules are gone."""
+        channel = await _row(platform="slack", surface_rules=SLACK_RULES)
+        web = await _row(platform="web", state=_state([channel]))
+
+        assert "Surface web: full markdown" in web.content
+        assert "including any to reply with send_message" in web.content
+
+        again = await _row(platform="web", state=_state([channel, web]))
+        assert "delivery rules" not in again.content
+
+    @pytest.mark.asyncio
+    async def test_the_web_line_takes_back_a_channel_behind_an_automation(self):
+        channel = await _row(platform="slack", surface_rules=SLACK_RULES)
+        auto = await _row(origin="automation", state=_state([channel]))
+        web = await _row(platform="web", state=_state([channel, auto]))
+
+        assert "including any to reply with send_message" in web.content
+        assert "Your final answer is what the user reads.\n\nA person sent this turn" in web.content
+
+    @pytest.mark.asyncio
+    async def test_caller_rules_for_the_web_take_back_a_channel_they_replace(self):
+        """A client's own rules for the web replace the channel's paragraph as
+        the built-in line does, and say nothing of send_message either."""
+        channel = await _row(platform="slack", surface_rules=SLACK_RULES)
+        web = await _row(
+            platform="web",
+            surface_rules="Surface web: keep it to a page.",
+            state=_state([channel]),
+        )
+
+        assert (
+            "Surface web: keep it to a page.\n\nThe delivery rules stated earlier"
+            in web.content
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_web_thread_without_a_channel_states_no_take_back(self):
+        web = await _row(platform="web")
+        market = await _row(platform="market_view:AAPL", state=_state([web]))
+
+        assert "send_message" not in web.content
+        assert "send_message" not in market.content
+
+    @pytest.mark.asyncio
     async def test_a_turn_with_no_rules_after_a_channel_states_the_return_to_the_default(self):
         """A channel thread continued in the web app arrives with no surface;
         without a row of its own the channel's paragraph would stay the last
