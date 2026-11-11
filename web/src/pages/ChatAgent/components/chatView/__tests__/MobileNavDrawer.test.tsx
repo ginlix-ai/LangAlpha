@@ -4,6 +4,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from '@/test/utils';
 import { MobileNavDrawer } from '../MobileNavDrawer';
 import type { NavTreeAgents } from '../../../hooks/useNavTreeProps';
 
@@ -39,15 +41,17 @@ function renderDrawer() {
   const onMinimize = vi.fn();
   const agents: NavTreeAgents = { agents: [], activeAgentId: null, onSelectAgent: vi.fn() };
   render(
-    <MobileNavDrawer
-      visible
-      onMinimize={onMinimize}
-      isActive
-      workspaceId="ws-1"
-      threadId="current"
-      agents={agents}
-      workspaceName="Workspace"
-    />,
+    <QueryClientProvider client={createTestQueryClient()}>
+      <MobileNavDrawer
+        visible
+        onMinimize={onMinimize}
+        isActive
+        workspaceId="ws-1"
+        threadId="current"
+        agents={agents}
+        workspaceName="Workspace"
+      />
+    </QueryClientProvider>,
   );
   return { onMinimize, agents };
 }

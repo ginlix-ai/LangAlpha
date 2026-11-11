@@ -1880,7 +1880,10 @@
     "unarchive": "Unarchive",
     "archived": "Archived",
     "archivedTasks": "Archived tasks",
-    "noArchivedThreads": "No archived threads"
+    "noArchivedThreads": "No archived threads",
+    "failedPinThread": "Failed to pin thread. Please try again.",
+    "failedUnpinThread": "Failed to unpin thread. Please try again.",
+    "failedArchiveThread": "Failed to archive thread. Please try again."
   },
   "share": {
     "shareConversation": "Share conversation",
@@ -7283,7 +7286,8 @@
       "askOther": "Control Enter: ask the agent.",
       "back": "Left arrow or Escape: back.",
       "scope": "Tab: search in it.",
-      "leave": "Backspace or Escape: stop searching in {{scope}}."
+      "leave": "Backspace or Escape: stop searching in {{scope}}.",
+      "editBack": "Escape, or Backspace in the empty field: back."
     },
     "prefixes": {
       "label": "Type one of these first to search one kind:",
@@ -7293,6 +7297,12 @@
       "turns": "conversations",
       "workspaces": "workspaces",
       "actions": "actions"
+    },
+    "pinned": "Pinned",
+    "unpinned": "Unpinned",
+    "editLabel": "{{action}}: {{name}}",
+    "rename": {
+      "placeholder": "New title"
     }
   },
   "report": {

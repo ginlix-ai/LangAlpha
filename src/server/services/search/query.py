@@ -182,6 +182,8 @@ def _thread(row: db.ThreadMatch, terms: list[str]) -> ThreadHit:
         workspace_name=row.workspace_name,
         automation_name=row.automation_name,
         updated_at=row.updated_at,
+        is_pinned=row.is_pinned,
+        has_title=row.has_title,
         match=match_ranges(row.title, terms),
     )
 
@@ -198,6 +200,8 @@ def _turn(row: db.TurnMatch, terms: list[str]) -> TurnHit:
         snippet=text,
         matches=matches,
         turn_at=row.turn_at,
+        is_pinned=row.is_pinned,
+        has_title=row.has_title,
     )
 
 

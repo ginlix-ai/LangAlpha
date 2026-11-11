@@ -110,6 +110,8 @@ describe('narrowAnswer', () => {
     workspace_name: 'Semis',
     automation_name: null,
     updated_at: '2026-11-08',
+    is_pinned: false,
+    has_title: true,
     match: [],
   });
   const turnHit = (snippet: string, turn_index: number): SearchTurnHit => ({
@@ -122,6 +124,8 @@ describe('narrowAnswer', () => {
     snippet,
     matches: [],
     turn_at: '2026-11-07',
+    is_pinned: false,
+    has_title: true,
   });
   const fileHit = (path: string): SearchFileHit => ({
     workspace_id: 'ws',

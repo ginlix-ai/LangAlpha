@@ -35,7 +35,7 @@ import { computeSteeringBoundary } from '../session/stream/steeringRollback';
 import { isSteeringUserMessage, opensTurn } from '../components/messageList/messagePredicates';
 import { hasTurn, hiddenOpenerTurns, newestTurn, projectTurns, turnOf } from '../components/messageList/turnProjection';
 import { isSubagentEvent } from '../session/subagents/liveEventHandlers';
-import { bumpThreadNavOrder } from './useNavigationData';
+import { bumpThreadNavOrder } from './navOrderFreeze';
 import { invalidateNewWorkspace } from './workspaceRowActions';
 import { ensureThreadId } from '../session/threadCreation';
 export { removeStoredThreadId } from './utils/threadStorage';

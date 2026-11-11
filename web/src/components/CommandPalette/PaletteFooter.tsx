@@ -4,6 +4,8 @@ import { clientOs } from '@/lib/clientOs';
 export interface KeysOffered {
   /** What Enter does to the selected row. */
   enter?: string;
+  /** ↑↓ move the selection; not while the field edits a row. */
+  move: boolean;
   /** → opens the selected row's other actions. */
   actions: boolean;
   /** ⌘↵ asks the agent. */
@@ -14,6 +16,8 @@ export interface KeysOffered {
   scope: boolean;
   /** The scope Backspace (in the empty field), Shift+Tab and Esc leave, at its own results. */
   leave: string | null;
+  /** The field edits a row: Esc, and Backspace in the empty field, go back to its actions (← moves the caret). */
+  edit: boolean;
 }
 
 /**
@@ -33,6 +37,7 @@ export function PaletteFooter({ keys, describedId }: { keys: KeysOffered; descri
     keys.scope && t('palette.keys.scope'),
     keys.back && t('palette.keys.back'),
     keys.leave && t('palette.keys.leave', { scope: keys.leave }),
+    keys.edit && t('palette.keys.editBack'),
   ].filter(Boolean);
   return (
     <>
@@ -40,7 +45,7 @@ export function PaletteFooter({ keys, describedId }: { keys: KeysOffered; descri
         {said.join(' ')}
       </span>
       <div className="command-palette-footer" aria-hidden>
-        <span><kbd>↑↓</kbd>{t('palette.do.move')}</span>
+        {keys.move && <span><kbd>↑↓</kbd>{t('palette.do.move')}</span>}
         {keys.enter && <span><kbd>↵</kbd>{keys.enter}</span>}
         {keys.ask && <span><kbd>{mac ? '⌘↵' : 'Ctrl ↵'}</kbd>{t('palette.do.ask')}</span>}
         {keys.actions && <span><kbd>→</kbd>{t('palette.do.actions')}</span>}
@@ -48,7 +53,7 @@ export function PaletteFooter({ keys, describedId }: { keys: KeysOffered; descri
         {keys.back && <span><kbd>←</kbd>{t('palette.do.back')}</span>}
         <span className="command-palette-footer-end">
           <kbd>esc</kbd>
-          {keys.back || keys.leave ? t('palette.do.back') : t('palette.do.close')}
+          {keys.back || keys.leave || keys.edit ? t('palette.do.back') : t('palette.do.close')}
         </span>
       </div>
     </>

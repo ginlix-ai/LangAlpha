@@ -21,6 +21,7 @@
  * would be worse than a lib→pages import.
  */
 import type { QueryClient } from '@tanstack/react-query';
+import { markThreadArchived } from '@/lib/deletedThreads';
 import { isCacheOnlyMeta, queryKeys } from '@/lib/queryKeys';
 import { PING_STREAM_BEAT_MS } from '@/lib/streamSilence';
 import { ALL, refreshArtifactComments, refreshArtifactRecord, refreshArtifactThreads, refreshEveryArtifact } from '@/lib/artifactCache';
@@ -326,7 +327,10 @@ function onFeedEvent(raw: Record<string, unknown>): void {
         );
         refreshArtifactThreads(qc);
       }
-      if (evt.thread_id) pruneThread(evt.thread_id);
+      if (evt.thread_id) {
+        if (evt.type === 'thread_archived') markThreadArchived(evt.thread_id, true);
+        pruneThread(evt.thread_id);
+      }
       scheduleInvalidate(evt.workspace_id);
       return;
     }
@@ -334,6 +338,7 @@ function onFeedEvent(raw: Record<string, unknown>): void {
     // lists regain it via the invalidate refetch (which also re-seeds its
     // lifecycle fields — they were pruned when the archive event landed).
     case 'thread_unarchived': {
+      if (evt.thread_id) markThreadArchived(evt.thread_id, false);
       const qc = getLifecycleQueryClient();
       if (qc && evt.thread_id) {
         const tid = evt.thread_id;

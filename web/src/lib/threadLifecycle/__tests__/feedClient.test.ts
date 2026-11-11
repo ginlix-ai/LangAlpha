@@ -22,6 +22,7 @@ import {
   getEffectiveObservation,
   resetThreadLifecycle,
 } from '../store';
+import { isThreadRemoved } from '@/lib/deletedThreads';
 import { CACHE_ONLY_META, queryKeys } from '@/lib/queryKeys';
 import { threadFieldMutationKey } from '@/lib/threadFieldMutations';
 import {
@@ -308,6 +309,22 @@ describe('threadLifecycleFeed — thread_archived', () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: queryKeys.threads.byWorkspace('w1'),
     });
+  });
+
+  it('marks a thread archived in another tab removed, until one brings it back', async () => {
+    // The nav tree's reveal reads the mark: a thread open here and archived
+    // elsewhere is in no page, and one brought back is in one again.
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    const emit = (type: string) => conns[0].emit({ event: 'thread_lifecycle', type, thread_id: 't-x', workspace_id: 'w1' });
+
+    emit('thread_archived');
+    await flush(400);
+    expect(isThreadRemoved('t-x')).toBe(true);
+
+    emit('thread_unarchived');
+    await flush(400);
+    expect(isThreadRemoved('t-x')).toBe(false);
   });
 });
 

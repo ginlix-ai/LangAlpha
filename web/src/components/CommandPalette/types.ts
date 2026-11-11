@@ -27,7 +27,7 @@ export interface ViewSpec {
   lens: Lens | null;
 }
 
-/** Something a row can do: run (the palette closes first), or open another view of the palette over this one. */
+/** Something a row can do: run (the palette closes first), open another view of the palette over this one, or edit the row in the field. */
 export type PaletteAction = {
   /** Unique within its row: what waits for it names it by this, and the list keys it. */
   id: string;
@@ -41,6 +41,18 @@ export type PaletteAction = {
       startsThread?: boolean;
     }
   | { effect: 'open'; view: Lens }
+  | {
+      /** Edits a value of the row in the palette's field, over its actions: Enter saves it, Esc goes back to them. */
+      effect: 'edit';
+      /** What the field holds as the edit starts, selected. */
+      value: string;
+      /** What the field asks for once emptied. */
+      placeholder: string;
+      /** The longest value the server takes. */
+      maxLength?: number;
+      /** Runs once the palette has closed, with a value that changed and is not empty, trimmed. */
+      save: (value: string) => void;
+    }
 );
 
 export interface PaletteItem {
@@ -58,6 +70,8 @@ export interface PaletteItem {
   meta?: string;
   /** Amber glyph: only the row that hands work to the agent. */
   accent?: boolean;
+  /** A thread pinned to the top of its workspace: a quiet pin at the row's end. */
+  pinned?: boolean;
   /** A second line: the words a conversation matched, after who said them. */
   detail?: { label: string; text: string; spans?: [number, number][] };
   /** What the preview pane shows while the row is selected. */

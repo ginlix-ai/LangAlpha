@@ -1914,7 +1914,10 @@
     "unarchive": "取消归档",
     "archived": "已归档",
     "archivedTasks": "已归档任务",
-    "noArchivedThreads": "暂无已归档的对话"
+    "noArchivedThreads": "暂无已归档的对话",
+    "failedPinThread": "置顶对话失败，请重试。",
+    "failedUnpinThread": "取消置顶对话失败，请重试。",
+    "failedArchiveThread": "归档对话失败，请重试。"
   },
   "share": {
     "shareConversation": "分享对话",
@@ -7194,7 +7197,8 @@
       "askOther": "Ctrl 加回车：向 Agent 提问。",
       "back": "左方向键或 Esc：返回。",
       "scope": "Tab：在其中搜索。",
-      "leave": "退格键或 Esc：退出在 {{scope}} 中的搜索。"
+      "leave": "退格键或 Esc：退出在 {{scope}} 中的搜索。",
+      "editBack": "Esc，或在输入框为空时按退格键：返回。"
     },
     "prefixes": {
       "label": "先输入以下前缀，只搜索一类内容：",
@@ -7204,6 +7208,12 @@
       "turns": "对话内容",
       "workspaces": "工作区",
       "actions": "操作"
+    },
+    "pinned": "已置顶",
+    "unpinned": "已取消置顶",
+    "editLabel": "{{action}}：{{name}}",
+    "rename": {
+      "placeholder": "新标题"
     }
   },
   "report": {

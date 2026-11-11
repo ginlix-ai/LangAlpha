@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SearchFileHit, SearchThreadHit, SearchTurnHit } from '@/api/search';
 import type { Thread } from '@/types/api';
+import { formatQuoteBlock } from '@/components/ui/chat-input.wire';
 import { askRow, fileRow, threadOfHit, threadOfList, threadRow, tickerRow, turnRow, type Verbs } from '../rows';
 import type { PaletteAction } from '../types';
 
@@ -17,6 +18,9 @@ const verbs = (extra: Partial<Verbs> = {}): Verbs => ({
   openChart: vi.fn(),
   copy: vi.fn(),
   openInNewTab: vi.fn(),
+  renameThread: vi.fn(),
+  pinThread: vi.fn(),
+  archiveThread: vi.fn(),
   ...extra,
 });
 const ids = (actions: PaletteAction[]) => actions.map((action) => action.id);
@@ -29,6 +33,8 @@ const threadHit = (extra: Partial<SearchThreadHit> = {}): SearchThreadHit => ({
   workspace_name: 'Semis',
   automation_name: null,
   updated_at: '2026-11-08',
+  is_pinned: false,
+  has_title: true,
   match: [[5, 12]],
   ...extra,
 });
@@ -42,6 +48,8 @@ const turnHit = (extra: Partial<SearchTurnHit> = {}): SearchTurnHit => ({
   snippet: 'gross margin held at 75%',
   matches: [[6, 12]],
   turn_at: '2026-11-07',
+  is_pinned: false,
+  has_title: true,
   ...extra,
 });
 const fileHit = (path: string, match: SearchFileHit['match'] = []): SearchFileHit => ({
@@ -70,7 +78,7 @@ describe('threadRow', () => {
     const fromList = threadRow(threadOfList(thread, v), v);
     expect(fromList.id).toBe(fromHit.id);
     expect(fromList.meta).toBe('ws ws · at 2026-11-08');
-    expect(ids(fromList.actions)).toEqual(['open', 'new-tab', 'copy-link']);
+    expect(ids(fromList.actions)).toEqual(['open', 'new-tab', 'copy-link', 'rename', 'pin', 'archive']);
   });
 
   it('names an automation’s thread by its automation, and a thread with no title as untitled', () => {
@@ -81,7 +89,57 @@ describe('threadRow', () => {
 
   it('offers no new tab in the desktop shell', () => {
     const v = verbs({ openInNewTab: null });
-    expect(ids(threadRow(threadOfHit(threadHit(), v), v).actions)).toEqual(['open', 'copy-link']);
+    expect(ids(threadRow(threadOfHit(threadHit(), v), v).actions)).toEqual(['open', 'copy-link', 'rename', 'pin', 'archive']);
+  });
+
+  it('offers Pin to top on a thread that is not pinned, and Unpin on one that is, with its pin on the row', () => {
+    const v = verbs();
+    const pin = (row: { actions: PaletteAction[] }) => row.actions.find((action) => action.id === 'pin')!;
+    const loose = threadRow(threadOfHit(threadHit(), v), v);
+    expect(loose.pinned).toBeUndefined();
+    expect(pin(loose)).toMatchObject({ label: 'nav.pinToTop', effect: 'run' });
+    run(pin(loose));
+    expect(v.pinThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'a', workspaceId: 'ws', pinned: false }), true);
+
+    const pinned = threadRow(threadOfHit(threadHit({ is_pinned: true }), v), v);
+    expect(pinned.pinned).toBe(true);
+    expect(pin(pinned).label).toBe('nav.unpinThread');
+    expect(pin(pinned).icon).not.toBe(pin(loose).icon);
+    run(pin(pinned));
+    expect(v.pinThread).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: 'a' }), false);
+
+    // The app's own list carries the pin too.
+    const listed = { thread_id: 'a', title: 'NVDA margins', workspace_id: 'ws', updated_at: '2026-11-08', is_pinned: true } as Thread;
+    expect(pin(threadRow(threadOfList(listed, v), v)).label).toBe('nav.unpinThread');
+  });
+
+  it('renames the thread in the field, starting from the words its row shows, and archives it', () => {
+    const v = verbs();
+    const row = threadRow(threadOfHit(threadHit(), v), v);
+    const rename = row.actions.find((action) => action.id === 'rename')!;
+    expect(rename).toMatchObject({ label: 'nav.renameThread', effect: 'edit', value: 'NVDA margins' });
+    if (rename.effect === 'edit') rename.save('NVDA gross margins');
+    expect(v.renameThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'a', savedTitle: 'NVDA margins' }), 'NVDA gross margins');
+    run(row.actions.find((action) => action.id === 'archive')!);
+    expect(v.archiveThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'a', workspaceId: 'ws' }));
+  });
+
+  it('starts an untitled hit’s rename from its first message’s words, not the message as sent', () => {
+    const v = verbs();
+    const sent = `margins? ${formatQuoteBlock({ kind: 'quote', snippet: 'NVDA held 75%', reply: 'why', from: { kind: 'message', speaker: 'Analyst' } })}`;
+    const rename = (row: { actions: PaletteAction[] }) => row.actions.find((action) => action.id === 'rename')!;
+    expect(rename(threadRow(threadOfHit(threadHit({ title: sent, has_title: false }), v), v))).toMatchObject({ value: 'margins? why' });
+    expect(rename(turnRow(turnHit({ thread_title: sent, has_title: false }), v))).toMatchObject({ value: 'margins? why' });
+    // A title of its own is taken as it is.
+    expect(rename(threadRow(threadOfHit(threadHit({ title: 'NVDA <b>margins</b>' }), v), v))).toMatchObject({ value: 'NVDA <b>margins</b>' });
+  });
+
+  it('keeps an untitled thread untitled behind the first words its row shows, so a refused rename never saves them as its title', () => {
+    const v = verbs();
+    const listed = { thread_id: 'a', title: '', first_query_content: 'how did NVDA margins hold', workspace_id: 'ws', updated_at: '2026-11-08' } as Thread;
+    expect(threadOfList(listed, v)).toMatchObject({ title: 'how did NVDA margins hold', savedTitle: '' });
+    expect(threadOfHit(threadHit({ title: 'how did NVDA margins hold', has_title: false }), v)).toMatchObject({ savedTitle: '' });
+    expect(threadOfList({ ...listed, title: 'NVDA margins' }, v).savedTitle).toBe('NVDA margins');
   });
 });
 
@@ -97,9 +155,25 @@ describe('turnRow', () => {
       preview: { kind: 'turn', threadId: 't1', turnIndex: 4, side: 'agent' },
       place: { kind: 'thread', threadId: 't1' },
     });
-    expect(ids(row.actions)).toEqual(['open-at-turn', 'open-thread', 'new-tab', 'copy-link']);
+    expect(ids(row.actions)).toEqual(['open-at-turn', 'open-thread', 'new-tab', 'copy-link', 'rename', 'pin', 'archive']);
     run(row.actions[0]);
     expect(v.openThread).toHaveBeenCalledWith('t1', 'ws', { focusTurn: 4 });
+  });
+
+  it('changes the thread it is in: renames it under its title, and pins, unpins and archives it', () => {
+    const v = verbs();
+    const loose = turnRow(turnHit(), v);
+    const pinned = turnRow(turnHit({ is_pinned: true }), v);
+    expect(loose.pinned).toBeUndefined();
+    expect(pinned.pinned).toBe(true);
+    const action = (row: typeof loose, id: string) => row.actions.find((a) => a.id === id)!;
+    expect(action(loose, 'pin').label).toBe('nav.pinToTop');
+    expect(action(pinned, 'pin').label).toBe('nav.unpinThread');
+    expect(action(loose, 'rename')).toMatchObject({ effect: 'edit', value: 'NVDA Q3 preview' });
+    run(action(pinned, 'pin'));
+    expect(v.pinThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: 't1' }), false);
+    run(action(loose, 'archive'));
+    expect(v.archiveThread).toHaveBeenCalledWith(expect.objectContaining({ threadId: 't1', workspaceId: 'ws' }));
   });
 
   it('leads with the matched words in its own thread’s search, who said them after', () => {

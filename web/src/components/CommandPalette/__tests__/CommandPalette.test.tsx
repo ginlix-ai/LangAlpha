@@ -261,7 +261,7 @@ describe('drill-ins', () => {
   beforeEach(() => {
     vi.mocked(getRecentThreads).mockResolvedValue({ threads: [thread('r1', 'Rates outlook')] } as never);
     vi.mocked(searchConversations).mockImplementation(async ({ q }) => ({
-      threads: q ? [{ ...thread('s1', 'NVDA margins'), workspace_name: 'Semis', automation_name: null, match: [] }] : [],
+      threads: q ? [{ ...thread('s1', 'NVDA margins'), workspace_name: 'Semis', automation_name: null, is_pinned: false, has_title: true, match: [] }] : [],
       turns: [],
       files: [],
       next_cursor: { threads: 'next', turns: null, files: null },
@@ -311,7 +311,7 @@ describe('Enter while the server answers', () => {
   const EMPTY_ANSWER = { threads: [], turns: [], files: [], next_cursor: { threads: null, turns: null, files: null }, failed: [] };
   const found = {
     ...EMPTY_ANSWER,
-    threads: [{ thread_id: 's1', title: 'Zebra stripes', workspace_id: 'ws1', workspace_name: 'Semis', automation_name: null, updated_at: '2026-11-08T00:00:00Z', match: [] }],
+    threads: [{ thread_id: 's1', title: 'Zebra stripes', workspace_id: 'ws1', workspace_name: 'Semis', automation_name: null, updated_at: '2026-11-08T00:00:00Z', is_pinned: false, has_title: true, match: [] }],
   };
   /** The server's answer, held until the test lets it go. */
   function holdAnswer() {

@@ -68,7 +68,7 @@ const mockResetSharedWorkspaceThreads = vi.fn();
 vi.mock('@/pages/ChatAgent/components/navExpansionStore', () => ({
   resetNavPanelExpansion: () => mockResetNavPanelExpansion(),
 }));
-vi.mock('@/pages/ChatAgent/hooks/useNavigationData', () => ({
+vi.mock('@/pages/ChatAgent/hooks/navOrderFreeze', () => ({
   resetStableNavOrder: () => mockResetStableNavOrder(),
 }));
 vi.mock('@/lib/navThreadsStore', async (importOriginal) => ({

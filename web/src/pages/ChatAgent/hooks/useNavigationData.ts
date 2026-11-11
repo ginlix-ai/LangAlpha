@@ -1,14 +1,10 @@
 import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { isHomeWorkspace } from '@/lib/homeWorkspace';
 import { CACHE_ONLY_META, queryKeys } from '../../../lib/queryKeys';
-import { createEmitter } from '@/lib/emitter';
-import { authSessionCheck, registerAuthReset } from '@/lib/authResets';
-import { isArchivedThreadsKey, patchThreadRows, rollbackThreadRows } from '@/lib/threadRowActions';
-import type { ThreadRowMapper } from '@/lib/threadRowActions';
 import {
   getNavThreadsSnapshot,
   setSharedWorkspaceThreads,
@@ -17,12 +13,20 @@ import {
   type ThreadsData,
 } from '@/lib/navThreadsStore';
 import type { ResourceTier, ThreadsResponse, Workspace, WorkspacesResponse } from '@/types/api';
-import { holdThreadTitle, patchThreadTitle } from '@/lib/threadListCache';
-import { getThread, getWorkspaces, getWorkspaceThreads, reorderWorkspaces, updateThread, updateThreadTitle } from '../utils/api';
+import { getWorkspaces, getWorkspaceThreads, reorderWorkspaces } from '../utils/api';
 import { workspaceThreadsQuery } from '../utils/threadQueries';
 import { pinWorkspaceRow, rankCachedWorkspaces, renameWorkspaceRow, unrankCachedWorkspaces } from './workspaceRowActions';
-import { deleteThreadRow } from './deleteThreadRow';
-import { useNavPrefs } from '../utils/navPrefs';
+import {
+  absorbThreadOrder,
+  bumpNavOrder,
+  frozenThreadOrder,
+  getFrozenWorkspaceOrder,
+  getNavOrderVersion,
+  lastWorkspaceArrangement,
+  setFrozenWorkspaceOrder,
+  subscribeNavOrder,
+} from './navOrderFreeze';
+import { getNavPrefs, useNavPrefs } from '../utils/navPrefs';
 import { denialMessage } from '../utils/denialMessage';
 
 /**
@@ -46,110 +50,6 @@ export interface NavWorkspace extends Pick<Workspace, 'is_home'> {
 export type { ThreadRecord, ThreadsData } from '@/lib/navThreadsStore';
 
 const NAV_WS_PARAMS = { limit: 20, includeHome: true };
-
-// Session-stable nav ordering. The server sorts threads (and, within the
-// 'custom' workspace sort, unpinned workspaces) by updated_at DESC, so the item
-// being chatted in would hoist to the top on every refetch. We snapshot the
-// order seen first in this page session and reorder later responses to match.
-// The stores are module-level because ChatAgent caches one ChatView instance
-// per thread — hook-local refs would re-snapshot on every thread switch,
-// defeating the freeze. Reload starts a fresh session (fresh recency order).
-const _frozenThreadOrders: Record<string, string[]> = {};
-let _frozenWorkspaceOrder: string[] | null = null;
-
-// Last-seen manual arrangement (sort_order + pin state) per workspace. The
-// frozen order above neutralizes recency hoisting, but a reorder/pin made in
-// the workspace gallery also lands as a refetch — we must NOT freeze that out.
-// When an existing workspace's sort_order or pin state changes between
-// refetches, we re-snapshot so the nav tracks the gallery's 'custom' sort.
-// Recency (updated_at) bumps and newly paged-in workspaces don't change these
-// values, so the active workspace still never hoists itself.
-const _lastWorkspaceArrangement = new Map<string, { sortOrder: number | null; pinned: boolean }>();
-
-export function resetStableNavOrder() {
-  for (const key of Object.keys(_frozenThreadOrders)) delete _frozenThreadOrders[key];
-  _frozenWorkspaceOrder = null;
-  _lastWorkspaceArrangement.clear();
-}
-
-// Drop a deleted workspace from the frozen-order stores so they don't retain
-// ghost ids for the rest of the session. Deleted ids are already filtered out
-// of the rendered list (applyStableOrderBy drops map-misses), so this is
-// housekeeping, not a correctness fix — call it from the workspace delete path.
-export function forgetStableNavOrder(workspaceId: string) {
-  delete _frozenThreadOrders[workspaceId];
-  _lastWorkspaceArrangement.delete(workspaceId);
-  if (_frozenWorkspaceOrder) {
-    const idx = _frozenWorkspaceOrder.indexOf(workspaceId);
-    if (idx !== -1) _frozenWorkspaceOrder.splice(idx, 1);
-  }
-}
-
-// Each thread's latest rename. Module-level for the same reason as the
-// frozen orders: every cached ChatView on mobile mounts its own nav drawer,
-// and two drawers renaming one thread must share one count.
-const _renameSeq = new Map<string, number>();
-registerAuthReset(() => _renameSeq.clear());
-
-// Bump notifications: chatting in a thread moves it to the top of its
-// workspace's list (like normal chat apps), while clicking around never
-// reorders. Subscribed hooks re-apply the frozen orders when the version ticks.
-let _navOrderVersion = 0;
-const navOrderEmitter = createEmitter();
-
-/** Announce a deliberate reordering; every mounted nav panel re-applies the frozen orders. */
-function bumpNavOrder(): void {
-  _navOrderVersion++;
-  navOrderEmitter.emit();
-}
-
-/**
- * Release the WORKSPACE tier's session freeze and re-render every nav panel.
- * The pin path needs exactly this after its refetch: `resetStableNavOrder`
- * also clears the thread tier, `forgetStableNavOrder` is workspace-scoped, and
- * neither notifies — nothing re-renders on a bare module-store write.
- */
-export function resetWorkspaceOrderFreeze(): void {
-  _frozenWorkspaceOrder = null;
-  bumpNavOrder();
-}
-
-/**
- * Move a thread to the top of its workspace's frozen order. Called when the
- * user sends a message (new turn, steering, edit/regenerate/retry). No-op if
- * the workspace's order hasn't been snapshotted yet — the initial snapshot is
- * recency-sorted, so the thread lands on top anyway.
- */
-export function bumpThreadNavOrder(wsId: string, threadId: string | null | undefined) {
-  if (!wsId || !threadId || threadId === '__default__') return;
-  const frozen = _frozenThreadOrders[wsId];
-  if (!frozen) return;
-  const idx = frozen.indexOf(threadId);
-  if (idx === 0) return;
-  if (idx > 0) frozen.splice(idx, 1);
-  frozen.unshift(threadId);
-  bumpNavOrder();
-}
-
-/**
- * Commit-phase writer for the thread tier's frozen order: store the assembled
- * order whenever it carries ids the snapshot doesn't have (or there is no
- * snapshot yet). Silent — no version bump — because this is absorption, not a
- * reordering. It covers three roles the old render-phase write served: the
- * first-load snapshot (`bumpThreadNavOrder` no-ops without one), the re-freeze
- * after a pin deletes the snapshot, and continuous absorption of new ids —
- * without the last, `applyStableOrderBy` re-classifies an unfrozen id
- * positionally every render and sinks a fresh thread to the bottom of the tree
- * as soon as an older frozen thread sorts above it.
- */
-export function absorbThreadOrder(wsId: string, order: string[]): void {
-  const frozen = _frozenThreadOrders[wsId];
-  if (frozen) {
-    const known = new Set(frozen);
-    if (order.every((id) => known.has(id))) return;
-  }
-  _frozenThreadOrders[wsId] = order;
-}
 
 // Reorder `items` to a frozen id sequence. Unseen ids appearing before any
 // known id are genuinely new (the server lists them first) and surface on top;
@@ -224,17 +124,40 @@ export function partitionPinnedFirst(threads: ThreadRecord[]): ThreadRecord[] {
   return [...pinned, ...rest];
 }
 
+/** A workspace's threads in the tree's order: the frozen order, then the pinned block first. */
+function orderNavThreads(wsId: string, rows: ThreadRecord[]): { order: string[]; threads: ThreadRecord[] } {
+  const { order, threads } = applyStableOrder(frozenThreadOrder(wsId), rows);
+  return { order, threads: partitionPinnedFirst(threads) };
+}
+
+/** Page 0 with the "Show more" rows beneath it; page 0's copy wins on overlap. */
+function withShownMore(page: ThreadRecord[], stored: ThreadRecord[] | undefined): ThreadRecord[] {
+  const pageIds = new Set(page.map((t) => t.thread_id));
+  return [...page, ...(stored ?? []).filter((t) => !pageIds.has(t.thread_id))];
+}
+
+/**
+ * A workspace's threads as the nav tree lists them, read from the cache and
+ * the "Show more" store, so a surface that mounts no tree (the command
+ * palette, a phone's chat) still knows which thread sits next to which.
+ */
+export function navThreadRows(queryClient: QueryClient, wsId: string): ThreadRecord[] {
+  const stored = getNavThreadsSnapshot()[wsId]?.threads;
+  const page = queryClient.getQueryData(workspaceThreadsQuery(wsId, getNavPrefs().threadPageSize).queryKey);
+  if (!page) return stored ?? [];
+  return orderNavThreads(wsId, withShownMore(page.threads ?? [], stored)).threads;
+}
+
 export function useNavigationData(currentWorkspaceId: string) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { workspaceLimit, threadPageSize, orderBy } = useNavPrefs();
-  const orderVersion = useSyncExternalStore(navOrderEmitter.subscribe, () => _navOrderVersion);
+  const orderVersion = useSyncExternalStore(subscribeNavOrder, getNavOrderVersion);
 
   // Pure: assembles the frozen order without writing it. The commit-phase
   // effect below owns every write to the snapshot (see absorbThreadOrder).
   const orderThreads = useCallback((wsId: string, serverThreads: ThreadRecord[]) => {
-    const { order, threads } = applyStableOrder(_frozenThreadOrders[wsId], serverThreads);
-    return { order, threads: partitionPinnedFirst(threads) };
+    return orderNavThreads(wsId, serverThreads);
     // orderVersion isn't read in the body, but a bump rewrites the frozen
     // orders this callback closes over — its identity must change so the
     // memos downstream re-apply the new order.
@@ -317,22 +240,23 @@ export function useNavigationData(currentWorkspaceId: string) {
       for (const ws of allFetched) {
         const sortOrder = (ws.sort_order as number | null | undefined) ?? null;
         const pinned = Boolean(ws.is_pinned);
-        const prev = _lastWorkspaceArrangement.get(ws.workspace_id);
+        const prev = lastWorkspaceArrangement.get(ws.workspace_id);
         if (prev && (prev.sortOrder !== sortOrder || prev.pinned !== pinned)) manualOrderChanged = true;
-        _lastWorkspaceArrangement.set(ws.workspace_id, { sortOrder, pinned });
+        lastWorkspaceArrangement.set(ws.workspace_id, { sortOrder, pinned });
       }
-      if (manualOrderChanged) _frozenWorkspaceOrder = null;
-      const frozen = _frozenWorkspaceOrder && admitNewWorkspaces(_frozenWorkspaceOrder, allFetched);
+      if (manualOrderChanged) setFrozenWorkspaceOrder(null);
+      const previous = getFrozenWorkspaceOrder();
+      const frozen = previous && admitNewWorkspaces(previous, allFetched);
 
       const { order, items: stable } = applyStableOrderBy(frozen, allFetched, (ws) => ws.workspace_id);
-      _frozenWorkspaceOrder = order;
+      setFrozenWorkspaceOrder(order);
       ordered = stable;
     } else {
       // 'activity' / 'name': the server already returned the list in this order
       // (the query's sortBy). Trust it and don't freeze — recency hoisting is
       // the point of 'activity'. Drop any custom snapshot so switching back to
       // 'custom' re-snapshots fresh from the server's manual order.
-      _frozenWorkspaceOrder = null;
+      setFrozenWorkspaceOrder(null);
       ordered = allFetched;
     }
 
@@ -369,7 +293,7 @@ export function useNavigationData(currentWorkspaceId: string) {
   // refused (the server sort would undo it — is_pinned DESC dominates
   // sort_order); Home counts as pinned and reorders within that block.
   const reorderWorkspace = useCallback(async (activeId: string, overId: string) => {
-    const frozen = _frozenWorkspaceOrder;
+    const frozen = getFrozenWorkspaceOrder();
     if (!frozen || !activeId || !overId || activeId === overId) return;
     const byId = new Map(allFetched.map((ws) => [ws.workspace_id, ws]));
     const active = byId.get(activeId);
@@ -405,7 +329,7 @@ export function useNavigationData(currentWorkspaceId: string) {
     } catch (e) {
       console.warn('[useNavigationData] Failed to persist workspace order:', e);
       unrankCachedWorkspaces(queryClient, previous);
-      _frozenWorkspaceOrder = snapshot;
+      setFrozenWorkspaceOrder(snapshot);
       bumpNavOrder();
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.lists() });
     }
@@ -431,132 +355,6 @@ export function useNavigationData(currentWorkspaceId: string) {
       }),
     });
   }, [queryClient, t]);
-
-  // Optimistically patch (or, with `remove`, drop) one thread row across every
-  // cached list for the workspace — finite sidebar pages, the gallery's
-  // infinite entries, and the shared "Show more" store (patchThreadRows covers
-  // all three) — persist via PATCH /threads/{id}, then invalidate so the
-  // server truth lands. Rolls everything back on failure. Shared by pin and archive.
-  const patchThread = useCallback(async (
-    wsId: string,
-    threadId: string,
-    updates: { is_pinned?: boolean; archived?: boolean },
-    { remove = false }: { remove?: boolean } = {},
-  ) => {
-    const applyRows: ThreadRowMapper<ThreadRecord> = (rows) => {
-      if (!rows.some((t) => t.thread_id === threadId)) return rows;
-      return remove
-        ? rows.filter((t) => t.thread_id !== threadId)
-        : rows.map((t) => (t.thread_id === threadId ? { ...t, ...updates } : t));
-    };
-
-    const previousRows = patchThreadRows<ThreadRecord>(
-      queryClient,
-      queryKeys.threads.byWorkspace(wsId),
-      applyRows,
-      // Archiving drops the row from the default lists but it BELONGS in the
-      // archived view, so that entry is left to the invalidate below.
-      remove ? { skipKey: isArchivedThreadsKey } : {},
-    );
-    try {
-      await updateThread(threadId, updates);
-    } catch (e) {
-      rollbackThreadRows(queryClient, previousRows);
-      console.warn('[useNavigationData] Failed to update thread:', e);
-      // Surface failure to callers (archive gates navigation on it) without
-      // rejecting — pin/archive buttons call this fire-and-forget.
-      return false;
-    }
-    // Past this point the server has applied the change: a failure in the
-    // refresh below must NOT roll back the optimistic patch (it matches the
-    // durable state) and must still release the frozen order.
-    if ('is_pinned' in updates) {
-      // Pin-state changes drop the workspace's frozen order (same rule as
-      // the workspace tree's manualOrderChanged re-snapshot) so an unpinned
-      // row falls back to its recency slot instead of squatting at the top
-      // for the session. The reset must land AFTER a real refetch: any
-      // render while the cache is merely marked stale would re-freeze the
-      // OLD order and swallow the reset. The page-0 entry is fetched
-      // explicitly — this tree's cache-only observers make that query
-      // "disabled", and refetchQueries skips disabled queries — while the
-      // prefix invalidate covers the gallery views, which own live
-      // observers of their own.
-      queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(wsId) });
-      try {
-        await queryClient.fetchQuery({ ...workspaceThreadsQuery(wsId, threadPageSize), staleTime: 0 });
-      } catch (e) {
-        // Refetch failure: release the freeze anyway — re-snapshotting from
-        // the optimistically patched cache beats a stuck frozen order.
-        console.warn('[useNavigationData] Post-pin refetch failed:', e);
-      }
-      delete _frozenThreadOrders[wsId];
-      bumpNavOrder();
-    } else {
-      queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(wsId) });
-    }
-    return true;
-  }, [queryClient, threadPageSize]);
-
-  // Pin/unpin a thread. The pinned-first partition in orderThreads repositions
-  // the row from the optimistic is_pinned patch alone — no freeze reset needed.
-  const pinThread = useCallback((wsId: string, threadId: string, pinned: boolean) => {
-    return patchThread(wsId, threadId, { is_pinned: pinned });
-  }, [patchThread]);
-
-  // Archive a thread: the row leaves every default list immediately (archived
-  // rows only exist in the gallery's explicit archived view).
-  const archiveThread = useCallback((wsId: string, threadId: string) => {
-    return patchThread(wsId, threadId, { archived: true }, { remove: true });
-  }, [patchThread]);
-
-  // Rename a thread. The inline field closes at once, so the new title lands
-  // in every cache before the server answers, and a refusal puts the old one
-  // back and says so in a toast. A thread's renames reach the server one at a
-  // time (updateThreadTitle queues them), and only the latest one writes the
-  // caches when it answers: an earlier one answering must not show its title
-  // over a later one. A refusal puts back the title the server holds, read
-  // again, and only where the refused title still shows: a remembered one may
-  // be an earlier rename's that never saved, and an entry another writer has
-  // moved on since keeps its newer title. The count is the
-  // module's (_renameSeq), shared by every mounted panel; an answer that
-  // arrives after a sign-out belongs to the session before it and is dropped.
-  const renameThread = useCallback(async (wsId: string, threadId: string, title: string, previousTitle: string) => {
-    const seq = (_renameSeq.get(threadId) ?? 0) + 1;
-    _renameSeq.set(threadId, seq);
-    const isLatest = () => _renameSeq.get(threadId) === seq;
-    const sameSession = authSessionCheck();
-    patchThreadTitle(queryClient, threadId, title);
-    const hold = holdThreadTitle(queryClient, threadId, title);
-    try {
-      const updated = await updateThreadTitle(threadId, title).then(
-        (saved) => { hold.saved(); return saved; },
-        (e: unknown) => { hold.release(); throw e; },
-      );
-      if (!sameSession()) return;
-      if (isLatest()) patchThreadTitle(queryClient, threadId, updated.title ?? title, updated.updated_at);
-    } catch (e) {
-      if (!sameSession()) return;
-      console.warn('[useNavigationData] Failed to rename thread:', e);
-      toast({ variant: 'destructive', title: t('thread.failedRenameThread'), description: denialMessage(e, t) });
-      if (!isLatest()) return;
-      const held = await getThread(threadId).catch(() => null);
-      if (!sameSession() || !isLatest()) return;
-      patchThreadTitle(queryClient, threadId, held?.title ?? previousTitle, undefined, { from: title });
-    }
-    if (!isLatest()) return;
-    // A read already out when the field closed lands the title being saved
-    // (holdThreadTitle), not the server's, and a refused rename may have put
-    // back one that never saved: read the server's title again now that it
-    // has answered.
-    queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(wsId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.threads.detail(threadId) });
-  }, [queryClient, t]);
-
-  // Delete a thread for good. Rejects when the server refuses, so the
-  // confirm dialog can keep the row and show why.
-  const deleteThread = useCallback((wsId: string, threadId: string) => {
-    return deleteThreadRow(queryClient, wsId, threadId);
-  }, [queryClient]);
 
   const hasMore = useMemo(() => {
     if (showAll) return false;
@@ -626,10 +424,7 @@ export function useNavigationData(currentWorkspaceId: string) {
         threadsByWs[wsId] = keep(wsId, { threads: stored?.threads || [], loading, total: stored?.total });
         return;
       }
-      const pageThreads = page.threads || [];
-      const pageIds = new Set(pageThreads.map((t) => t.thread_id));
-      const extras = (stored?.threads || []).filter((t) => !pageIds.has(t.thread_id));
-      const { order, threads } = orderThreads(wsId, [...pageThreads, ...extras]);
+      const { order, threads } = orderThreads(wsId, withShownMore(page.threads || [], stored?.threads));
       orders[wsId] = order;
       threadsByWs[wsId] = keep(wsId, { threads, loading, total: page.total ?? stored?.total });
     });
@@ -754,5 +549,5 @@ export function useNavigationData(currentWorkspaceId: string) {
   // 'custom'-order action (a drop persists sort_order the view wouldn't
   // reflect), so the consumer withholds the handler to disable the affordance.
   // Mirrors the gallery, where reordering only applies to the custom arrangement.
-  return { workspaces, workspaceThreads: mergedThreads, loading: isLoading, hasMore, loadAll, expandWorkspace, loadMoreThreads, reorderWorkspace, canReorderWorkspaces: orderBy === 'custom', pinWorkspace, renameWorkspace, pinThread, archiveThread, renameThread, deleteThread };
+  return { workspaces, workspaceThreads: mergedThreads, loading: isLoading, hasMore, loadAll, expandWorkspace, loadMoreThreads, reorderWorkspace, canReorderWorkspaces: orderBy === 'custom', pinWorkspace, renameWorkspace };
 }

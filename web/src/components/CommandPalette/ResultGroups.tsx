@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, Pin } from 'lucide-react';
 import { quoteKey, useQuotes } from '@/lib/quotes';
 import { cn } from '@/lib/utils';
 import { PaletteRow, QuoteFigures } from './PaletteRow';
@@ -19,7 +19,7 @@ interface ResultGroupsProps {
   onMore: (item: PaletteItem) => void;
 }
 
-/** The results, in their groups, each ticker with its price and change. */
+/** The results, in their groups, each ticker with its price and change, and each pinned thread with its pin. */
 export function ResultGroups({ groups, flat, index, optionId, onOpen, onHover, onPick, onMore }: ResultGroupsProps) {
   const { t } = useTranslation();
   const symbols = useMemo(() => flat.flatMap((item) => (item.symbol ? [item.symbol] : [])), [flat]);
@@ -56,7 +56,18 @@ export function ResultGroups({ groups, flat, index, optionId, onOpen, onHover, o
               spans={item.spans}
               meta={item.meta}
               detail={item.detail}
-              trailing={item.symbol && <QuoteFigures symbol={item.symbol} quote={quote} className="command-palette-trailing command-palette-quote" />}
+              trailing={
+                item.symbol ? (
+                  <QuoteFigures symbol={item.symbol} quote={quote} className="command-palette-trailing command-palette-quote" />
+                ) : (
+                  item.pinned && (
+                    // The sidebar's resting pinned marker.
+                    <span className="command-palette-trailing command-palette-pin" role="img" aria-label={t('palette.pinned')}>
+                      <Pin aria-hidden fill="currentColor" />
+                    </span>
+                  )
+                )
+              }
               moreLabel={t('palette.do.actions')}
               onMore={item.actions.length > 1 ? () => onMore(item) : undefined}
               onHover={() => onHover(item)}
