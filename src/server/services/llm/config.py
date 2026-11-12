@@ -511,7 +511,6 @@ async def resolve_llm_config(
     workspace_id: str | None = None,
     user_facing: bool = True,
     role: AgentRole = "analyst",
-    checkpoint_id: str | None = None,
 ):
     """Resolve the final LLM config for one turn: which model runs, how it is
     tuned, what it is allowed to reach, and every client it can call.
@@ -522,10 +521,7 @@ async def resolve_llm_config(
     them, and ``role`` is the agent the turn builds, whose subagents alone get
     clients. ``user_facing=False`` is a call no user is waiting on (a title, memo
     metadata): nobody would see the ``model_removed`` CTA, so its own saved
-    model is read like a role and nothing is scrubbed. ``checkpoint_id``
-    is where an edit or a regenerate starts the turn on the thread, whose
-    history there decides whether the Chief of Staff runs a Claude Code
-    Default (``chief_of_staff_default_runs``).
+    model is read like a role and nothing is scrubbed.
     """
     reads: asyncio.Task | None = None
     try:
@@ -582,9 +578,7 @@ async def resolve_llm_config(
             and is_claude_code_model(model_pref.get(default_key) or "")
         ):
             if rows_available() and config.feature_enabled(FEATURE):
-                where = await chief_of_staff_default_runs(
-                    user_id, workspace_id, thread_id=thread_id, checkpoint_id=checkpoint_id,
-                )
+                where = await chief_of_staff_default_runs(user_id, workspace_id)
             if where is None:
                 model_pref, _ = drop_claude_code_roles(model_pref, [default_key])
         selection = select_model(config, model_pref, slot, request_model)

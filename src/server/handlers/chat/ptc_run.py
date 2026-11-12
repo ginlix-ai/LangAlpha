@@ -66,6 +66,7 @@ from src.server.utils.multimodal_context import (
 )
 
 from ptc_agent.agent.graph import build_ptc_graph_with_session
+from ptc_agent.agent.middleware.compaction.brief import BRIEF_CONFIG_KEY
 from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
 
 from .request_prep import (
@@ -109,7 +110,7 @@ from src.server.services.turn_runtime import TurnRoute
 from .admission_gate import agent_steer_of, steer_allowed, wait_or_steer
 from .attachments import attach_request_files
 from .error_handling import handle_workflow_error
-from .agent_change import cancel_tool_calls_it_lacks
+from .agent_change import cancel_tool_calls_it_lacks, opens_afresh
 from src.llms.claude_code import is_claude_code_model
 from src.server.services.llm.clients import is_own_key_turn
 from src.server.services.llm.config import apply_fetch_override, resolve_llm_config
@@ -117,6 +118,7 @@ from src.server.services.llm.thread_model import NamedModel
 from .steering import open_with_steers_ahead
 from .run_stream_reader import stream_from_log
 from .detached import fire_and_forget as _fire_and_forget
+from src.server.handlers.handoff_brief import brief_for_turn, brief_kept_at_head, brief_owed_at
 
 
 def _turn_held(data: dict) -> str:
@@ -410,7 +412,6 @@ async def astream_ptc_workflow(
                     enabled_subagents=request.subagents_enabled,
                     workspace_id=workspace_id,
                     role=route.role,
-                    checkpoint_id=request.checkpoint_id,
                 )
 
             # Persist query start
@@ -767,23 +768,34 @@ async def astream_ptc_workflow(
         base_checkpoint_id = await turn_start_checkpoint_id(
             thread_id, request, getattr(ptc_graph, "checkpointer", None)
         )
+        on_claude_code = is_claude_code_model(effective_model)
         cancelled_calls = []
-        if (
-            not is_claude_code_model(effective_model)
-            and request.hitl_response
-            and not request.checkpoint_id
-        ):
+        if request.hitl_response and not request.checkpoint_id:
             # A Home thread the retired Flash agent ran may be waiting on a
-            # step only Flash had, and a thread Claude Code paused on one only
-            # its graph runs. A resume has no base: the route refused one
+            # step only Flash had, a thread Claude Code paused on one only its
+            # graph runs, and a thread another model paused on one Claude
+            # Code's graph lacks. A resume has no base: the route refused one
             # whose pause is off the branch, so the newest checkpoint is the
             # pause it answers.
             cancelled_calls = await cancel_tool_calls_it_lacks(
                 ptc_graph,
                 thread_id,
                 user_id=user_id,
-                by_name=route.role == "chief_of_staff",
+                by_name=route.role == "chief_of_staff" and not on_claude_code,
+                claude_code=on_claude_code,
             )
+        # Read where the turn starts, so an edit or a regenerate is briefed
+        # on the history it runs from. The client shows the turn held while
+        # one is written, as at a switch.
+        handoff_brief = None
+        if on_claude_code and (
+            owed := await brief_owed_at(ptc_graph, thread_id, request.checkpoint_id or base_checkpoint_id)
+        ) is not None and (handoff_brief := await brief_kept_at_head(ptc_graph, thread_id, owed)) is None:
+            yield _turn_held({"status": "held", "reason": "brief"})
+            handoff_brief = await brief_for_turn(
+                owed, session, inputs, user_id=user_id, route=route, reader=effective_model
+            )
+            yield _turn_held({"status": "released"})
 
         if session.sandbox:
             sandbox_id = getattr(session.sandbox, "sandbox_id", None)
@@ -854,6 +866,14 @@ async def astream_ptc_workflow(
                 "current_agent": "ptc",  # For FileOperationMiddleware SSE events
             }
             # Skill tools auto-load via SkillsMiddleware (sets loaded_skills in state).
+        # A step another model's graph left is one Claude Code's cannot carry
+        # on: the turn opens afresh on the history there, on the brief, as a
+        # regenerate of a turn's start does, keeping a resume's update.
+        if on_claude_code and not isinstance(input_state, dict) and await opens_afresh(
+            ptc_graph, thread_id, request.checkpoint_id
+        ):
+            resumed = input_state.update if isinstance(input_state, Command) else None
+            input_state = {"messages": [], **(resumed or {})}
 
         # =====================================================================
         # Inline Context Injection (directive + widget + chart selection)
@@ -923,6 +943,8 @@ async def astream_ptc_workflow(
         # lands on ExecutionInfo.run_id and CheckpointMetadata.run_id so
         # LangSmith / checkpoint inspection can correlate by this UUID.
         graph_config["run_id"] = run_id
+        if handoff_brief is not None:
+            graph_config["configurable"][BRIEF_CONFIG_KEY] = handoff_brief
         steer_input_id = await open_with_steers_ahead(
             thread_id, run_id, request, input_state
         )

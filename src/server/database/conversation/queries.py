@@ -60,6 +60,29 @@ async def get_query_turn_indexes(conversation_thread_id: str) -> List[int]:
             return [row["turn_index"] for row in await cur.fetchall()]
 
 
+async def recent_turn_models(conversation_thread_id: str, limit: int = 50) -> List[str]:
+    """The models the thread's newest turns ran, newest first, as each
+    turn's query recorded it (``metadata.llm_model``). A failed read is
+    empty: the caller falls back to another model."""
+    try:
+        async with pool.get_db_connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT metadata->>'llm_model' AS llm_model
+                    FROM conversation_queries
+                    WHERE conversation_thread_id = %s AND metadata ? 'llm_model'
+                    ORDER BY turn_index DESC, created_at DESC
+                    LIMIT %s
+                """,
+                    (conversation_thread_id, limit),
+                )
+                return [row["llm_model"] for row in await cur.fetchall() if row["llm_model"]]
+    except Exception:
+        logger.warning(f"Reading the models of thread {conversation_thread_id}'s turns failed", exc_info=True)
+        return []
+
+
 async def get_query_at_turn(
     conversation_thread_id: str, turn_index: int
 ) -> Optional[Dict[str, Any]]:

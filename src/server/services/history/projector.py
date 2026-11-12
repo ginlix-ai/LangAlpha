@@ -25,6 +25,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMes
 from ptc_agent.agent.middleware.background_subagent.workflow.emitter import (
     WORKFLOW_FRAME_FIELDS,
 )
+from ptc_agent.agent.middleware.compaction.brief import HANDOFF_UI_NAME
 from ptc_agent.agent.middleware.compaction.utils import (
     compaction_summary,
     parse_summary_message,
@@ -710,6 +711,25 @@ def _summary_texts(
     if isinstance(message, HumanMessage) and message.id:
         texts[message.id] = parse_summary_message(message)
     return texts
+
+
+def handoff_items(thread_id: str, turn: SpanDelta) -> list[dict[str, Any]]:
+    """The mark of a turn that opened on another model's brief
+    (``handoff_mark``), as the ``context_window`` signal it streamed."""
+    return [
+        {
+            "event": "context_window",
+            "data": {
+                "thread_id": thread_id,
+                "agent": MAIN_AGENT,
+                "action": "brief",
+                "signal": "complete",
+                **(record.get("props") or {}),
+            },
+        }
+        for record in turn.new_ui_records
+        if record.get("name") == HANDOFF_UI_NAME
+    ]
 
 
 def context_signal_items(

@@ -57,6 +57,7 @@ from src.server.database.conversation.queries import (
     create_query,
     get_latest_turn_index,
     get_queries_for_thread,
+    recent_turn_models,
 )
 from src.server.database.conversation.responses import (
     get_recent_responses_for_thread,
@@ -95,6 +96,7 @@ __all__ = [
     "get_feedback_for_thread",
     "get_latest_turn_index",
     "get_queries_for_thread",
+    "recent_turn_models",
     "get_recent_responses_for_thread",
     "get_replay_responses",
     "get_replay_thread_data",

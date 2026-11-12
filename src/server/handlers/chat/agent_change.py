@@ -3,8 +3,9 @@
 Threads the retired Flash agent ran continue in Home. A step it left waiting
 on the user (dispatching work, deleting a workspace) can name a tool the Chief
 of Staff does not have. A step Claude Code left waiting runs in a node only
-its own graph has, so a turn on another model cannot resume any of it. Either
-is answered as cancelled before the thread
+its own graph has, so a turn on another model cannot resume any of it, and
+the same holds the other way for a step another model left waiting when the
+thread moved to Claude Code. Each is answered as cancelled before the thread
 resumes.
 """
 
@@ -17,7 +18,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, ToolMessage
 
 from ptc_agent.agent.state import ensure_message_ids
-from src.llms.claude_code import claude_replied_last
+from src.llms.claude_code import another_model_replied_last, claude_replied_last
 from src.server.database.order_reconciliation import refuse_cut_off_proposal
 
 logger = logging.getLogger(__name__)
@@ -29,20 +30,24 @@ _CANCELLED = (
 
 
 async def cancel_tool_calls_it_lacks(
-    graph: Any, thread_id: str, *, user_id: str, by_name: bool = True
+    graph: Any, thread_id: str, *, user_id: str, by_name: bool = True, claude_code: bool = False
 ) -> list[ToolMessage]:
     """Answer a waiting step the resuming agent cannot run, before a resume.
 
     ``by_name`` also answers the calls naming a tool the agent lacks, which
-    only a thread Flash ran holds. An order card among the calls is refused
-    for ``user_id`` first, since no answer will reach it now.
+    only a thread Flash ran holds. ``claude_code`` says ``graph`` is Claude
+    Code's, which cannot run a step another model left. An order card among
+    the calls is refused for ``user_id`` first, since no answer will reach it
+    now.
 
     Best effort: a failure leaves the step as it is, and the resume then
     answers the call as a tool the agent does not have. Returns the cancelled
     results, which the turn streams (see ``_cancel_tool_calls``).
     """
     try:
-        return await _cancel_tool_calls(graph, thread_id, user_id, _tool_names(graph) if by_name else None)
+        return await _cancel_tool_calls(
+            graph, thread_id, user_id, _tool_names(graph) if by_name else None, claude_code=claude_code
+        )
     except Exception:
         logger.warning(
             f"[CHAT] Cancelling another agent's waiting step failed: "
@@ -65,6 +70,8 @@ async def _cancel_tool_calls(
     thread_id: str,
     user_id: str,
     tool_names: Collection[str] | None,
+    *,
+    claude_code: bool = False,
 ) -> list[ToolMessage]:
     """Answer every call of the waiting step that the graph cannot resume.
 
@@ -76,9 +83,9 @@ async def _cancel_tool_calls(
     config = {"configurable": {"thread_id": thread_id}}
     state = await graph.aget_state(config)
     messages = state.values.get("messages") or []
-    # This graph sees no step of Claude Code's graph waiting: it lacks the node.
-    claude_waits = claude_replied_last(messages)
-    if not state.interrupts and not claude_waits:
+    # Neither graph sees a step of the other's waiting: it lacks the node.
+    unseen_wait = another_model_replied_last(messages) if claude_code else claude_replied_last(messages)
+    if not state.interrupts and not unseen_wait:
         return []
     last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
     if last_ai is None or not last_ai.tool_calls:
@@ -99,7 +106,7 @@ async def _cancel_tool_calls(
     # By name, as the resume runs a call: the agents share some names (a
     # question, the workspace tool), and each resumes those itself.
     if not unanswered or not (
-        claude_waits or (tool_names is not None and any(call["name"] not in tool_names for call in unanswered))
+        unseen_wait or (tool_names is not None and any(call["name"] not in tool_names for call in unanswered))
     ):
         return []
     # Before the update, so a failed write leaves no order an answer could
@@ -128,6 +135,19 @@ async def _cancel_tool_calls(
         f"waiting: thread_id={thread_id}"
     )
     return cancelled
+
+
+async def opens_afresh(graph: Any, thread_id: str, checkpoint_id: str | None) -> bool:
+    """Whether a turn on ``graph`` that would carry on from ``checkpoint_id``
+    (the head for None) has to open afresh there instead: another agent's
+    graph made it, so the step it runs next is one ``graph`` lacks (a
+    regenerate inside a resumed turn), or none is left (a step answered as
+    cancelled for it, which ``graph`` routes on from nowhere). Carried on, the
+    turn would run nothing."""
+    from src.server.utils.checkpoint_helpers import build_checkpoint_config
+
+    state = await graph.aget_state(build_checkpoint_config(thread_id, checkpoint_id))
+    return not state.next or any(node not in graph.nodes for node in state.next)
 
 
 def _as_list(value: Any) -> list:

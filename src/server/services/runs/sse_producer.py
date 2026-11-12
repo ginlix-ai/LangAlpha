@@ -571,7 +571,7 @@ class RunSSEProducer:
                                         "summary_tokens", "truncated_count", "error",
                                         "kind", "offloaded_args", "offloaded_reads",
                                         "threshold", "cached_tokens",
-                                        "context_limit"):
+                                        "context_limit", "from_model", "to_model"):
                                 if key in event_data:
                                     cw_data[key] = event_data[key]
                             if event_data.get("action") == "token_usage":
