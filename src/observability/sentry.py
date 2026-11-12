@@ -42,7 +42,12 @@ def init_sentry() -> None:
         return
     try:
         import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.httpx import HttpxIntegration
+        from sentry_sdk.integrations.httpx2 import Httpx2Integration
         from sentry_sdk.integrations.logging import LoggingIntegration
+        from sentry_sdk.integrations.redis import RedisIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
     except ImportError:
         logger.warning("SENTRY_DSN is set but sentry-sdk is not installed")
         return
@@ -58,12 +63,30 @@ def init_sentry() -> None:
             include_local_variables=False,
             max_request_body_size="never",
             traces_sample_rate=0.0,
+            # Integrations are named, not discovered. The SDK enables one for
+            # every library it finds installed, and the LangChain, LangGraph,
+            # OpenAI, Anthropic and MCP ones capture each error a callback or
+            # client sees as unhandled: a tool's bad arguments the agent is
+            # told about and retries, a subagent's credit stop, a provider's
+            # 429. None of those is a failed turn, and they leave without the
+            # turn's ids or its user's secrets scrubbed. Turns are captured at
+            # finalize instead (``capture_turn_failure``).
+            auto_enabling_integrations=False,
             # No log line reaches Sentry, not even as a breadcrumb: a log line
             # can quote the user's research (their todos, a tool's output),
             # which no scrub tells apart from ordinary text. Promoting error
             # logs to events would also spend the quota on the ~400K lines a
             # day this service writes, most of them handled and expected.
-            integrations=[LoggingIntegration(level=None, event_level=None)],
+            integrations=[
+                LoggingIntegration(level=None, event_level=None),
+                # A route's unhandled 5xx, and outgoing calls as breadcrumbs.
+                StarletteIntegration(),
+                FastApiIntegration(),
+                HttpxIntegration(),
+                # The OpenAI SDK's transport: the model call a turn failed on.
+                Httpx2Integration(),
+                RedisIntegration(),
+            ],
             before_send=_before_send,
         )
     except Exception:

@@ -2545,7 +2545,7 @@ requires-dist = [
     { name = "scipy" },
     { name = "scrapling", extras = ["fetchers"], specifier = "==0.4.7" },
     { name = "seaborn" },
-    { name = "sentry-sdk", extras = ["fastapi"], specifier = ">=2.44" },
+    { name = "sentry-sdk", extras = ["fastapi"], specifier = ">=2.62" },
     { name = "setuptools" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
     { name = "statsmodels" },

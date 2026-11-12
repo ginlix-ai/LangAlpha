@@ -27,7 +27,10 @@ export function usePublishFile(ownWorkspaceId: string | null): {
   const onPublishFile = useCallback(async (path: string, workspaceId?: string) => {
     const target = workspaceId ?? ownWorkspaceId;
     if (!target) return;
-    await PublishDialog.preload();
+    // Code that will not load opens nothing: a deploy removed it, and the
+    // stale-build notice offers the reload, or the network failed, and the
+    // next click asks again.
+    if (!(await PublishDialog.preload())) return;
     closedRef.current?.();
     setPublishing({ workspaceId: target, path, open: true });
     await new Promise<void>((resolve) => { closedRef.current = resolve; });

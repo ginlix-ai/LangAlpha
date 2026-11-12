@@ -174,8 +174,7 @@ function ComputersPanel({
   // imports it again, as the next opening does.
   const [formLoaded, setFormLoaded] = useState(false);
   useEffect(() => {
-    const done = () => setFormLoaded(true);
-    void CreateComputerDialog.preload().then(done, done);
+    void CreateComputerDialog.preload().then(() => setFormLoaded(true));
   }, []);
   const createReady = formLoaded && !providersLoading && !quotaLoading && thisMacKnown;
   // Either way in, the form waits until it can show and is known not to be

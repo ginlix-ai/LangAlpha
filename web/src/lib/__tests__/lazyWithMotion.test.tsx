@@ -27,7 +27,7 @@ describe.each([
   it('renders at once, with no fallback, once preloaded', async () => {
     const load = vi.fn(() => Promise.resolve({ default: Page }));
     const Lazy = lazyLoad(load);
-    await Lazy.preload();
+    await expect(Lazy.preload()).resolves.toBe(true);
     act(() => {
       mount(Lazy);
     });
@@ -43,7 +43,7 @@ describe.each([
       .mockRejectedValueOnce(new Error('chunk gone'))
       .mockResolvedValue({ default: Page });
     const Lazy = lazyLoad(load);
-    await expect(Lazy.preload()).rejects.toThrow('chunk gone');
+    await expect(Lazy.preload()).resolves.toBe(false);
     mount(Lazy);
     expect(await screen.findByText('page')).toBeInTheDocument();
     expect(load).toHaveBeenCalledTimes(2);

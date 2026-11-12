@@ -277,7 +277,7 @@ function AuthenticatedShell() {
   // this is free when the gate is already settled. Mount-only: later
   // navigations mount their lazy component directly.
   useEffect(() => {
-    if (window.location.pathname === WELCOME_PATH) void Welcome.preload().catch(() => {});
+    if (window.location.pathname === WELCOME_PATH) void Welcome.preload();
     else preloadRouteChunk(window.location.pathname);
   }, []);
 
