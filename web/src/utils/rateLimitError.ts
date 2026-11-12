@@ -8,7 +8,7 @@
  */
 
 import type { PlanRefusal } from '@/api/model';
-import type { UpstreamErrorHint, UpstreamPayer } from '@/lib/upstreamFailure';
+import type { PlanLimit, UpstreamErrorHint, UpstreamPayer } from '@/lib/upstreamFailure';
 
 /** A 429's `detail`, as it comes off the wire. Only the two fields this module
  *  acts on are named: the counts the quota service also sends are already folded
@@ -66,6 +66,11 @@ export interface StructuredError {
   /** The user's account the failure came from (``DeepSeek``, ``ChatGPT``),
    *  when they pay and the server could name it. */
   account?: string;
+  /** What the provider said went wrong, where the server could tell. */
+  reason?: string;
+  /** A subscription's usage limit, which reads as the plan working rather
+   *  than as a failure: its own headline and sentence, in the reader's zone. */
+  planLimit?: PlanLimit;
   /** User-configured (primary) model name, when the failure is model-attributable.
    *  Drives the model-aware error headline. */
   model?: string;

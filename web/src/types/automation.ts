@@ -34,10 +34,11 @@ export type SkipReason = 'user' | 'thread_busy' | 'interrupted';
 
 /** A failed run's cause, where the server knows it: a usage limit refused
  *  the firing or paused its run (`error_message` is then the quota service's
- *  own words), the model provider rejected the user's own key, the run failed
+ *  own words), a Claude plan's or another subscription's usage limit ended
+ *  it, the model provider rejected the user's own key, the run failed
  *  on the server's side, or the server cut it off. Only the first two are the
  *  reader's to act on. */
-export type FailureReason = 'usage_limit' | 'claude_plan' | 'provider_auth' | 'server_error' | 'interrupted';
+export type FailureReason = 'usage_limit' | 'claude_plan' | 'plan_limit' | 'provider_auth' | 'server_error' | 'interrupted';
 
 /** Why the server switched an automation off. Cleared by a resume. */
 export type DisableReason = 'provider_auth' | 'max_failures';

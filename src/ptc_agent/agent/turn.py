@@ -79,7 +79,6 @@ def build_model_resilience_middleware(
         primary_name=turn.name,
         primary_client=turn.client,
         fallbacks=build_fallback_pairs(config),
-        users_fallbacks=config.fallback_users_choice,
         max_retries=3,
         backoff_factor=2.0,
         initial_delay=1.0,

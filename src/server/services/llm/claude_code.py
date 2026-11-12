@@ -219,6 +219,17 @@ def reword_plan(detail: dict[str, Any], zone: str | None) -> str:
     )
 
 
+def reword_subscription_limit(detail: dict[str, Any], zone: str | None) -> str:
+    """Another subscription's used-up limit (``plan_limit_detail``) in words,
+    the reset on ``zone``'s clock."""
+    window, until = detail.get("window"), detail.get("until")
+    limit = f"{PLAN_WINDOW_WORDS[window]} limit" if window in PLAN_WINDOW_WORDS else "limit"
+    message = f"Your {detail['plan']} plan's {limit} is used up."
+    if until:
+        message += f" It resets at {_plan_time(datetime.fromisoformat(until), zone)}."
+    return message
+
+
 def _plan_fields(reason: str, window: PlanWindow | None, until: datetime | None) -> dict[str, Any]:
     """A plan refusal's words from the server, for a client that words none
     itself, and the window and its reset (ISO 8601) the frame carries, which

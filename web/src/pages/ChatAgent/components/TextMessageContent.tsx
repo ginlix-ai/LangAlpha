@@ -4,8 +4,6 @@ import { useTranslation } from 'react-i18next';
 import Markdown from './Markdown';
 import { useModelName } from '@/hooks/useModelName';
 import { usePlanClock } from '@/hooks/useClaudeCodePlan';
-import type { PlanRefusal } from '@/api/model';
-import { planRefusalText } from '@/lib/claudeCodePlan';
 import { useAnimatedText } from '@/components/ui/animated-text';
 import { visibleParagraphPrefix } from '@/lib/paragraphGate';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
@@ -13,7 +11,9 @@ import { parseErrorMessage, type ParsedError } from '../utils/parseErrorMessage'
 import type { OpenFileHandler } from '../utils/fileLocation';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { ErrorLink, NoticeLine } from '@/components/ui/error-banner';
-import { UPSTREAM_HINT_I18N_KEY, upstreamFailureCopy } from '@/lib/upstreamFailure';
+import {
+  planStopCopy, planStopOf, UPSTREAM_HINT_I18N_KEY, upstreamFailureCopy, type PlanStop,
+} from '@/lib/upstreamFailure';
 
 interface TextMessageContentProps {
   content: string;
@@ -80,12 +80,14 @@ function TextMessageContent({ content, isStreaming, onOpenFile, onRevealed }: Te
  * kind is the server's classification, so a classified failure gets its
  * headline from the kind rather than from keywords in its text; only a
  * failure nobody classified (a client-side send failure, an older server's
- * frame) is still read by `parseErrorMessage`. A Claude plan's limit has a
- * headline of its own, over the sentence that says until when.
+ * frame) is still read by `parseErrorMessage`. A Claude plan's limit, and a
+ * subscription's, has a headline of its own, over the sentence that says
+ * until when.
  */
 function TurnErrorCard({ err }: { err: StructuredError }): React.ReactElement {
   const { t } = useTranslation();
-  if (err.planRefusal) return <PlanRefusalCard refusal={err.planRefusal} />;
+  const stop = planStopOf(err);
+  if (stop) return <PlanStopCard stop={stop} />;
   if (err.kind === 'notice') return <NoticeLine message={err.message} className="py-1.5" />;
   if (err.kind === 'upstream') return <StructuredErrorDisplay err={err} />;
   if (err.kind === 'internal') {
@@ -94,14 +96,12 @@ function TurnErrorCard({ err }: { err: StructuredError }): React.ReactElement {
   return <ErrorDisplay parsed={parseErrorMessage(err.message)} />;
 }
 
-function PlanRefusalCard({ refusal }: { refusal: PlanRefusal }): React.ReactElement {
+/** A plan's limit, worded in the reader's zone. A leaf of its own, so the
+ *  plan clock's per-minute tick redraws only this. */
+function PlanStopCard({ stop }: { stop: PlanStop }): React.ReactElement {
   const { t } = useTranslation();
-  const clock = usePlanClock();
-  return (
-    <ErrorDisplay
-      parsed={{ title: t('claudeCodePlan.limitTitle'), detail: planRefusalText(t, refusal, clock), model: null, statusCode: null }}
-    />
-  );
+  const { title, text } = planStopCopy(t, stop, usePlanClock());
+  return <ErrorDisplay parsed={{ title, detail: text, model: null, statusCode: null }} />;
 }
 
 interface ErrorDisplayProps {
@@ -171,7 +171,7 @@ function StructuredErrorDisplay({ err }: StructuredErrorDisplayProps): React.Rea
   const { t } = useTranslation();
   const name = useModelName();
   // Worded by who pays the provider: see `upstreamFailureCopy`.
-  const { headline, detail, source } = upstreamFailureCopy(err, t, name);
+  const { headline, detail, source, providerWords } = upstreamFailureCopy(err, t, name);
   // Models other than the primary that were also tried before giving up. Only
   // shown when the middleware actually attempted more than one model.
   const alsoTried = (err.attemptedModels && err.attemptedModels.length > 1)
@@ -226,9 +226,8 @@ function StructuredErrorDisplay({ err }: StructuredErrorDisplayProps): React.Rea
             {alsoTried.map((m, i) => (
               <React.Fragment key={m.model}>
                 {i > 0 && ', '}
-                {/* Per-model error text lives in the tooltip, not inline, and
-                    only where the user pays: on credits it is the service's. */}
-                <span title={(err.payer !== 'credits' && m.error) || undefined}>{name(m.model)}</span>
+                {/* Per-model error text lives in the tooltip, not inline. */}
+                <span title={(providerWords && m.error) || undefined}>{name(m.model)}</span>
               </React.Fragment>
             ))}
           </div>

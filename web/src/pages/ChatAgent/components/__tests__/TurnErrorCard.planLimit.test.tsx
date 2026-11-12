@@ -43,3 +43,41 @@ describe('a Claude plan limit', () => {
     )).toBeInTheDocument();
   });
 });
+
+describe("a subscription's limit", () => {
+  const limited = (planLimit: StructuredError['planLimit']): StructuredError => ({
+    message: "Error code: 429 - {'error': {'type': 'usage_limit_reached'}}",
+    kind: 'upstream',
+    statusCode: 429,
+    payer: 'subscription',
+    account: 'ChatGPT',
+    reason: 'plan_limit',
+    hints: ['try_another_model'],
+    planLimit,
+  });
+
+  it('names the window and the reset when both are known', () => {
+    renderWithProviders(<TurnErrorCard err={limited({ plan: 'ChatGPT Plus', window: 'five_hour', until: '2026-11-06T20:40:00Z' })} />);
+    expect(screen.getByText('ChatGPT Plus plan limit reached')).toBeInTheDocument();
+    expect(screen.getByText(
+      "Your ChatGPT Plus plan's 5-hour limit is used up. It resets at 3:40 PM. Pick another model, or send this again after it resets.",
+    )).toBeInTheDocument();
+    // The plan working is not the provider's words, an account line or hints.
+    expect(screen.queryByText(/usage_limit_reached/)).toBeNull();
+    expect(screen.queryByText(/connected subscription/)).toBeNull();
+    expect(screen.queryByRole('listitem')).toBeNull();
+  });
+
+  it('names the reset alone when the window is unknown', () => {
+    renderWithProviders(<TurnErrorCard err={limited({ plan: 'Grok', window: null, until: '2026-11-12T14:00:00Z' })} />);
+    expect(screen.getByText(
+      "Your Grok plan's limit is used up. It resets at Thu, Nov 12, 9:00 AM. Pick another model, or send this again after it resets.",
+    )).toBeInTheDocument();
+  });
+
+  it('says only that it is used up when the reset is unknown', () => {
+    renderWithProviders(<TurnErrorCard err={limited({ plan: 'Claude', window: 'seven_day', until: null })} />);
+    expect(screen.getByText('Claude plan limit reached')).toBeInTheDocument();
+    expect(screen.getByText("Your Claude plan's limit is used up. Pick another model, or send this again later.")).toBeInTheDocument();
+  });
+});

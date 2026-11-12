@@ -7,6 +7,10 @@ import type { StructuredError } from '@/utils/rateLimitError';
 // The model's display name comes from the cached catalog, which the app's
 // query client holds; here the key stands for it.
 vi.mock('@/hooks/useModelName', () => ({ useModelName: () => (id: string) => id }));
+// A plan's reset is told in the reader's zone; here a fixed one.
+vi.mock('@/hooks/useClaudeCodePlan', () => ({
+  usePlanClock: () => ({ locale: 'en-US', zone: 'America/New_York', now: Date.parse('2026-11-06T19:05:00Z') }),
+}));
 
 function LocationProbe({ onPath }: { onPath: (path: string) => void }) {
   const loc = useLocation();
@@ -194,6 +198,28 @@ describe('ErrorBanner', () => {
     expect(row).toHaveTextContent(err.message);
     expect(row.getAttribute('style')).toContain('var(--color-text-tertiary)');
     expect(container.innerHTML).not.toContain('--color-loss');
+  });
+
+  it("shows a subscription's limit as the plan card, without the provider's words or hints", () => {
+    const err: StructuredError = {
+      message: "Error code: 429 - {'error': {'type': 'usage_limit_reached'}}",
+      kind: 'upstream',
+      statusCode: 429,
+      payer: 'subscription',
+      account: 'ChatGPT',
+      reason: 'plan_limit',
+      hints: ['try_another_model'],
+      planLimit: { plan: 'ChatGPT Plus', window: 'seven_day', until: '2026-11-06T20:40:00Z' },
+    };
+    renderInRouter(<ErrorBanner error={err} />);
+    expect(screen.getByText('ChatGPT Plus plan limit reached')).toBeInTheDocument();
+    expect(screen.getByText(
+      "Your ChatGPT Plus plan's weekly limit is used up. It resets at 3:40 PM. Pick another model, or send this again after it resets.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/usage_limit_reached/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/The model provider returned an error/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connected subscription/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('listitem')).not.toBeInTheDocument();
   });
 
   it('keeps the error style for a failure', () => {

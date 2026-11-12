@@ -145,6 +145,9 @@ describe('why an automation needs attention', () => {
     ['completed', null, 'usage_limit', 'usage_limit', 'stateUsageLimit'],
     // The Claude plan's limit leaves the schedule on too, and says whose limit it was.
     ['active', null, 'claude_plan', 'claude_plan', 'stateClaudePlan'],
+    // So does another subscription's.
+    ['active', null, 'plan_limit', 'plan_limit', 'statePlanLimit'],
+    ['completed', null, 'plan_limit', 'plan_limit', 'statePlanLimit'],
   ];
 
   it.each(cases)('%s, switched off for %s, failed with %s', (status, disable, reason, kind, label) => {
@@ -214,6 +217,7 @@ describe('describeRun', () => {
     expect(describeRun(run('timeout', { failure_reason: 'interrupted' })).noteKey).toBe('automation.failedInterrupted');
     expect(describeRun(run('failed', { failure_reason: 'usage_limit' })).noteKey).toBeNull();
     expect(describeRun(run('failed', { failure_reason: 'provider_auth' })).noteKey).toBeNull();
+    expect(describeRun(run('failed', { failure_reason: 'plan_limit' })).noteKey).toBeNull();
     // A newer server's reason has no word here yet.
     expect(describeRun(run('failed', { failure_reason: 'quota_v2' as FailureReason })).noteKey).toBeNull();
   });

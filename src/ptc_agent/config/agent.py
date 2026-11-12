@@ -470,10 +470,6 @@ class AgentConfig(BaseModel):
     # Display names aligned index-for-index with ``fallback_llm_clients``
     # (skipped fallbacks drop from both lists).
     fallback_llm_names: list[str] | None = Field(default=None, exclude=True)
-    # Whether the fallbacks are a list the user saved rather than the
-    # deployment's. Only the user's may move a call their own key or
-    # subscription pays for onto the platform's key.
-    fallback_users_choice: bool = Field(default=False, exclude=True)
     # Forwarded by ``get_llm_client()`` to ``create_llm(cache_key=...)`` for
     # the lazy factory path.
     cache_key: str | None = Field(default=None, exclude=True)

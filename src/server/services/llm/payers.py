@@ -73,6 +73,19 @@ def _plan_name(provider: str, mc) -> str:
     return subscription.account_name if subscription else mc.get_display_name(provider)
 
 
+#: A subscription tier as its maker sells it, where title case gets it wrong.
+_PLAN_TIERS = {"prolite": "Pro Lite"}
+
+
+def plan_display_name(account: str, tier: str | None) -> str:
+    """A subscription's plan as its maker sells it: the account and the tier
+    the provider reported (``ChatGPT`` and ``plus`` read ``ChatGPT Plus``),
+    or the account alone where it already names the tier or none was given."""
+    if not tier or tier.lower() in account.lower():
+        return account
+    return f"{account} {_PLAN_TIERS.get(tier.lower(), tier.replace('_', ' ').title())}"
+
+
 def source_payer(credential_source: object) -> CredentialPayer:
     """Who pays when only the credential's source is known.
 

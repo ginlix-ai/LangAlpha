@@ -164,8 +164,9 @@ you save a price alert.
   conversation the run posted to, and `excerpt` is the start of its answer once
   it completes. `error` is the start of a failed run's error. `failure_reason`
   `usage_limit` is a usage limit and never counts toward `max_failures`, nor
-  does `claude_plan`, the user's Claude plan used up until it resets;
-  `server_error` and `interrupted` mean the service failed or cut the run off,
+  does `claude_plan`, the user's Claude plan used up until it resets, or
+  `plan_limit`, another of their subscriptions (ChatGPT, Grok, a Claude
+  sign-in) used up until it resets; `server_error` and `interrupted` mean the service failed or cut the run off,
   so nothing in the automation needs changing. `skip_reason` says why a run was
   skipped: `user`, `thread_busy` (its thread was running another turn) or
   `interrupted`.

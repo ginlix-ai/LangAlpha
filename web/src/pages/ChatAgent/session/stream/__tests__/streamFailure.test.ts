@@ -56,3 +56,44 @@ describe('readStreamFailure: who pays for an upstream failure', () => {
     expect(readStreamFailure(upstream({ payer: 'someone' }), SERVER, 'ws-1', t)?.payer).toBeUndefined();
   });
 });
+
+describe("readStreamFailure: what the provider said and a subscription's limit", () => {
+  const upstream = (fields: Record<string, unknown>) => ({ event: 'error', error: SERVER, error_kind: 'upstream', ...fields });
+  const read = (fields: Record<string, unknown>) => readStreamFailure(upstream(fields), SERVER, 'ws-1', t);
+  const until = '2026-11-06T20:40:00Z';
+
+  it('passes the reason as sent, a new one included, for the report to name', () => {
+    expect(read({ reason: 'out_of_credit' })?.reason).toBe('out_of_credit');
+    expect(read({ reason: 'cosmic_rays' })?.reason).toBe('cosmic_rays');
+    expect(read({ reason: '' })?.reason).toBeUndefined();
+  });
+
+  it('reads a plan limit with its window and reset', () => {
+    expect(read({ reason: 'plan_limit', plan_limit: { plan: 'ChatGPT Plus', window: 'five_hour', until } })?.planLimit)
+      .toEqual({ plan: 'ChatGPT Plus', window: 'five_hour', until });
+  });
+
+  it('keeps the plan when the window is one it cannot word', () => {
+    expect(read({ plan_limit: { plan: 'Grok', window: 'fortnight', until } })?.planLimit)
+      .toEqual({ plan: 'Grok', window: null, until });
+  });
+
+  it('keeps the plan when the reset is not a time', () => {
+    expect(read({ plan_limit: { plan: 'Claude', window: 'seven_day', until: 'soon' } })?.planLimit)
+      .toEqual({ plan: 'Claude', window: 'seven_day', until: null });
+  });
+
+  it('drops a plan limit that names no plan', () => {
+    expect(read({ plan_limit: { window: 'five_hour', until } })?.planLimit).toBeUndefined();
+    expect(read({ plan_limit: { plan: '  ', window: 'five_hour', until } })?.planLimit).toBeUndefined();
+  });
+
+  it('reads neither on a failure of our own', () => {
+    const failure = readStreamFailure(
+      { event: 'error', error: SERVER, error_kind: 'internal', reason: 'overloaded', plan_limit: { plan: 'Claude', window: null, until: null } },
+      SERVER, 'ws-1', t,
+    );
+    expect(failure?.reason).toBeUndefined();
+    expect(failure?.planLimit).toBeUndefined();
+  });
+});

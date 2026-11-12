@@ -189,6 +189,7 @@ function AttentionRow({
       break;
     case 'usage_limit':
     case 'claude_plan':
+    case 'plan_limit':
       // No message means the limit paused the run midway, and its thread
       // holds the pause.
       quoted = !!last?.error_message;
