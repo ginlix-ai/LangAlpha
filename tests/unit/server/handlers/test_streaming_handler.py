@@ -494,32 +494,66 @@ class TestToolCallFiltering:
 
 
 # ---------------------------------------------------------------------------
-# RunSSEProducer — _extract_reasoning_summary_index
+# ReasoningSpacer + the producer's reasoning sections
 # ---------------------------------------------------------------------------
 
 
-class TestExtractReasoningSummaryIndex:
-    """Tests for _extract_reasoning_summary_index static method."""
+def _reasoning_part(item, part, text):
+    """A reasoning chunk as langchain-openai streams it (output_version responses/v1)."""
+    from langchain_core.messages import AIMessageChunk
 
-    def test_returns_index_from_reasoning_dict(self):
-        from src.server.services.runs.sse_producer import RunSSEProducer
-
-        content = {
+    return AIMessageChunk(
+        content=[{
             "type": "reasoning",
-            "summary": [{"type": "summary_text", "text": "thought", "index": 2}],
-        }
-        assert RunSSEProducer._extract_reasoning_summary_index(content) == 2
+            "index": item,
+            "summary": [{"index": part, "type": "summary_text", "text": text}],
+        }],
+        id="msg-1",
+    )
 
-    def test_returns_none_for_non_reasoning(self):
+
+class TestReasoningSections:
+    def test_spacer_breaks_where_item_or_part_changes(self):
+        from src.llms.content_utils import ReasoningSpacer
+
+        spacer = ReasoningSpacer()
+        sent = [
+            spacer.space(_reasoning_part(item, part, text).content, text)
+            for item, part, text in [(0, 0, "A"), (0, 0, "a"), (0, 1, "B"), (1, 0, "C")]
+        ]
+        assert sent == ["A", "a", "\n\nB", "\n\nC"]
+        spacer.reset()
+        assert spacer.space(_reasoning_part(2, 0, "D").content, "D") == "D"
+
+    def test_spacer_passes_through_non_reasoning(self):
+        from src.llms.content_utils import ReasoningSpacer
+
+        assert ReasoningSpacer().space("hello", "hello") == "hello"
+        assert ReasoningSpacer().space({"type": "reasoning", "status": "in_progress"}, "x") == "x"
+
+    @pytest.mark.asyncio
+    async def test_each_reasoning_item_starts_a_section(self):
+        """Every reasoning item numbers its summary parts from 0, so two
+        one-part items share a summary index: without the item in the key
+        their titles stream as ``**A****B**``."""
         from src.server.services.runs.sse_producer import RunSSEProducer
 
-        assert RunSSEProducer._extract_reasoning_summary_index("hello") is None
-
-    def test_returns_none_for_reasoning_without_summary(self):
-        from src.server.services.runs.sse_producer import RunSSEProducer
-
-        content = {"type": "reasoning", "status": "in_progress"}
-        assert RunSSEProducer._extract_reasoning_summary_index(content) is None
+        producer = RunSSEProducer(thread_id="t", run_id="r")
+        parts = [(0, 0, "**Researching partnerships**"), (1, 0, "**Refining scope**"),
+                 (2, 0, "**Checking sources**"), (2, 1, "**Mapping exposure**")]
+        reasoning = []
+        for item, part, text in parts:
+            async for frame in producer._process_message_chunk(_reasoning_part(item, part, text), "agent"):
+                event = producer._number_sse_event(frame)
+                if "event: message_chunk" not in event:
+                    continue
+                data = json.loads(event.split("data: ", 1)[1])
+                if data.get("content_type") == "reasoning":
+                    reasoning.append(data["content"])
+        assert "".join(reasoning) == (
+            "**Researching partnerships**\n\n**Refining scope**"
+            "\n\n**Checking sources**\n\n**Mapping exposure**"
+        )
 
 
 # ---------------------------------------------------------------------------
