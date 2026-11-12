@@ -85,12 +85,20 @@ class HostUnavailablePolicy(ABC):
     """
 
     @abstractmethod
-    async def rebuild_now(self, sandbox_id: str) -> datetime | None:
-        """The host refused to start *sandbox_id*.
+    async def rebuild_now(
+        self, sandbox_id: str, stuck_in: str | None = None
+    ) -> datetime | None:
+        """The host refused to start *sandbox_id*, or left it in *stuck_in*.
 
         When the outage that authorizes rebuilding instead began, or None to
-        keep waiting for the host.
+        keep waiting for the host. A sandbox stuck in a transition counts only
+        while it stays in that one, since a slow transition is also sighted.
         """
+
+    @abstractmethod
+    async def observed(self, sandbox_id: str, state: str) -> None:
+        """A read found *sandbox_id* in *state*: if a clock caught it stuck in
+        another transition, it moved on, and that outage is over."""
 
     @abstractmethod
     async def reconnected(self, sandbox_id: str) -> bool | None:
@@ -718,6 +726,15 @@ class SandboxProvider(ABC):
     async def close(self) -> None:
         """Release provider resources (HTTP clients, etc.)."""
         ...
+
+    async def remove_abandoned(self, ref: str) -> bool:
+        """Delete *ref*, a sandbox a create of this provider gave up on.
+
+        True once nothing answers to *ref*; False while the backend refuses to
+        delete it yet, as it does mid-transition. Only a provider that reports
+        abandoned sandboxes (``ptc_agent.core.sandbox.abandoned``) has any.
+        """
+        raise NotImplementedError(f"{type(self).__name__} reports no abandoned sandboxes")
 
     def is_transient_error(self, exc: Exception) -> bool:
         """Return True if *exc* is a transient error that may be retried.

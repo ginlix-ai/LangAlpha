@@ -886,32 +886,59 @@ async def try_bind_computer_provider_ref(
 
 
 async def stamp_computer_host_unavailable(
-    computer_id: str, sandbox_id: str
+    computer_id: str, sandbox_id: str, stuck_in: Optional[str] = None
 ) -> Optional[tuple[datetime, timedelta]]:
-    """Start the outage clock for the sandbox the row names, and read it.
+    """Run the outage clock for the sandbox the row names, and read it.
 
-    The first refused start stamps and every later one keeps that stamp, so the
-    answer is when the host started refusing and for how long, whichever worker
-    asked. None when the row names another sandbox, or none: a replacement has
-    its own clock, and this failure says nothing about it.
+    A refused start, or with *stuck_in* a sandbox left in that transition,
+    keeps a clock started the same way and starts it afresh otherwise, so the
+    answer is how long the host has failed the sandbox this way, whichever
+    worker asked. None when the row names another sandbox, or none: a
+    replacement has its own clock, and this failure says nothing about it.
     """
     async with _computer_cursor() as cur:
         await cur.execute(
             """
             UPDATE computers
-            SET host_unavailable_since = COALESCE(host_unavailable_since, NOW())
+            SET host_unavailable_since = CASE
+                    WHEN host_unavailable_stuck_in IS NOT DISTINCT FROM %(stuck_in)s
+                    THEN COALESCE(host_unavailable_since, NOW())
+                    ELSE NOW()
+                END,
+                host_unavailable_stuck_in = %(stuck_in)s
             WHERE computer_id = %(computer_id)s
               AND provider_ref = %(sandbox_id)s
               AND status != 'deleted'
             RETURNING host_unavailable_since,
                       NOW() - host_unavailable_since AS unavailable_for
             """,
-            {"computer_id": computer_id, "sandbox_id": sandbox_id},
+            {"computer_id": computer_id, "sandbox_id": sandbox_id, "stuck_in": stuck_in},
         )
         row = await cur.fetchone()
     if row is None:
         return None
     return row["host_unavailable_since"], row["unavailable_for"]
+
+
+async def end_moved_host_outage(computer_id: str, sandbox_id: str, state: str) -> None:
+    """End a stuck-transition clock once a read finds its sandbox in *state*.
+
+    A sandbox found out of the transition it was stuck in moved on, so a later
+    sighting is a new outage. A clock refused starts run is left alone: such a
+    sandbox reads as stopped between tries. A no-op while no clock runs.
+    """
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE computers
+            SET host_unavailable_since = NULL
+            WHERE computer_id = %(computer_id)s
+              AND provider_ref = %(sandbox_id)s
+              AND host_unavailable_since IS NOT NULL
+              AND host_unavailable_stuck_in <> %(state)s
+            """,
+            {"computer_id": computer_id, "sandbox_id": sandbox_id, "state": state},
+        )
 
 
 async def clear_computer_host_unavailable(

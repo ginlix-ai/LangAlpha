@@ -16,7 +16,7 @@ import functools
 import time
 from collections.abc import Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import structlog
 
@@ -128,6 +128,7 @@ async def _reconnect(
         sandbox.livefs = None
         if attaching_only():
             raise SandboxNotRunning(f"sandbox {sandbox_id} is {state_value}")
+        await _note_state(sandbox, sandbox_id, state_value)
     if state_value == "running":
         logger.debug("Sandbox already started, skipping start", sandbox_id=sandbox_id)
     elif state_value == "stopped":
@@ -144,14 +145,7 @@ async def _reconnect(
         )
         for _ in range(40):  # Max ~20 seconds
             await asyncio.sleep(0.5)
-            sandbox.runtime = await sandbox._runtime_call(
-                sandbox.provider.get,
-                sandbox_id,
-                retry_policy=RetryPolicy.SAFE,
-                allow_reconnect=False,
-            )
-            state = await sandbox.runtime.get_state()
-            state_value = state.value
+            state_value = await _poll(sandbox, sandbox_id, state_value)
             if state_value == "running":
                 break
         if state_value != "running":
@@ -160,11 +154,18 @@ async def _reconnect(
             # the authorization to replace, and its handlers in
             # ``workspace_manager`` call ``_clear_session`` first, which
             # deletes the runtime, so calling a slow boot "gone" destroys a
-            # live sandbox and restores it from a DB backup. The word
+            # live sandbox and restores it from a DB backup. Only the outage
+            # clock may call it lost, and then it is kept. The word
             # "starting" is load-bearing: it is what renders the retry card.
-            raise SandboxTransientError(
-                f"Sandbox {sandbox_id} is still starting "
-                f"(state '{state_value}' after ~20s)"
+            await _stuck(
+                sandbox,
+                sandbox_id,
+                "starting",
+                state_value,
+                SandboxTransientError(
+                    f"Sandbox {sandbox_id} is still starting "
+                    f"(state '{state_value}' after ~20s)"
+                ),
             )
         _mark_rc("wait_starting")
     elif state_value == "stopping":
@@ -175,14 +176,7 @@ async def _reconnect(
         )
         for _ in range(20):  # Max ~10 seconds
             await asyncio.sleep(0.5)
-            sandbox.runtime = await sandbox._runtime_call(
-                sandbox.provider.get,
-                sandbox_id,
-                retry_policy=RetryPolicy.SAFE,
-                allow_reconnect=False,
-            )
-            state = await sandbox.runtime.get_state()
-            state_value = state.value
+            state_value = await _poll(sandbox, sandbox_id, state_value)
             if state_value == "stopped":
                 break
         if state_value == "stopped":
@@ -194,9 +188,15 @@ async def _reconnect(
         else:
             # Same reasoning as the 'starting' wait above: still mid-stop is
             # a sandbox that exists, so this is a retry, not a replacement.
-            raise SandboxTransientError(
-                f"Sandbox {sandbox_id} has not finished stopping "
-                f"(state '{state_value}' after ~10s)"
+            await _stuck(
+                sandbox,
+                sandbox_id,
+                "stopping",
+                state_value,
+                SandboxTransientError(
+                    f"Sandbox {sandbox_id} has not finished stopping "
+                    f"(state '{state_value}' after ~10s)"
+                ),
             )
         _mark_rc("wait_stopping")
     elif state_value == "archived":
@@ -226,14 +226,7 @@ async def _reconnect(
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             await asyncio.sleep(0.5)
-            sandbox.runtime = await sandbox._runtime_call(
-                sandbox.provider.get,
-                sandbox_id,
-                retry_policy=RetryPolicy.SAFE,
-                allow_reconnect=False,
-            )
-            state = await sandbox.runtime.get_state()
-            state_value = state.value
+            state_value = await _poll(sandbox, sandbox_id, state_value)
             if state_value != "archiving":
                 break
         # A cancelled archive ends stopped, which starts like any other,
@@ -246,9 +239,15 @@ async def _reconnect(
                 sandbox_id=sandbox_id,
                 state=state_value,
             )
-            raise SandboxTransientError(
-                f"Sandbox {sandbox_id} is being archived "
-                f"(state '{state_value}' after ~45s); try again in a few minutes"
+            await _stuck(
+                sandbox,
+                sandbox_id,
+                "archiving",
+                state_value,
+                SandboxTransientError(
+                    f"Sandbox {sandbox_id} is being archived "
+                    f"(state '{state_value}' after ~45s); try again in a few minutes"
+                ),
             )
         if state_value != "running":
             await _start_runtime(
@@ -332,26 +331,105 @@ async def _start_runtime(
     except Exception as e:
         if not sandbox.provider.is_host_unavailable(e):
             raise
-        outage_since = None
-        if sandbox.host_unavailable_policy is not None:
-            try:
-                outage_since = await sandbox.host_unavailable_policy.rebuild_now(
-                    sandbox_id
-                )
-            except Exception:
-                logger.warning(
-                    "Host-unavailable policy failed; waiting for the host",
-                    sandbox_id=sandbox_id,
-                    exc_info=True,
-                )
-        if isinstance(outage_since, datetime):
-            sandbox._kept_for_salvage = True
-            raise SandboxHostLostError(
-                sandbox_id,
-                f"host unavailable: {e}",
-                outage_since=outage_since,
-            ) from e
-        raise SandboxHostUnavailableError(sandbox_id, str(e)) from e
+        await _wait_or_rebuild(
+            sandbox,
+            sandbox_id,
+            SandboxHostUnavailableError(sandbox_id, str(e)),
+            cause=e,
+        )
+
+
+async def _poll(sandbox: PTCSandbox, sandbox_id: str, previous: str) -> str:
+    """Read the sandbox's state again while waiting out a transition.
+
+    Every move the wait sees is told to the outage clock, running included,
+    or a sandbox that left its stuck transition and came back to it within
+    one wait would keep the clock its earlier sighting started.
+    """
+    sandbox.runtime = await sandbox._runtime_call(
+        sandbox.provider.get,
+        sandbox_id,
+        retry_policy=RetryPolicy.SAFE,
+        allow_reconnect=False,
+    )
+    state = (await sandbox.runtime.get_state()).value
+    if state != previous:
+        await _note_state(sandbox, sandbox_id, state)
+    return state
+
+
+async def _note_state(sandbox: PTCSandbox, sandbox_id: str, state: str) -> None:
+    """Tell the outage clock where the sandbox is, which ends one that caught
+    it stuck elsewhere.
+
+    Failing to fails the open: a clock that missed a move would count the
+    sandbox stuck since before it, so no stuck sighting may follow it.
+    """
+    if sandbox.host_unavailable_policy is None:
+        return
+    try:
+        await sandbox.host_unavailable_policy.observed(sandbox_id, state)
+    except Exception as e:
+        raise SandboxTransientError(
+            f"Could not record the state of sandbox {sandbox_id}"
+        ) from e
+
+
+async def _stuck(
+    sandbox: PTCSandbox,
+    sandbox_id: str,
+    transition: str,
+    state: str,
+    waiting: Exception,
+) -> NoReturn:
+    """The wait for *transition* to end ran out with the sandbox in *state*.
+
+    Only a sandbox still in that transition is stuck in it. One that moved
+    elsewhere, as a start falling back to stopped, was told to the clock on
+    the way and is the next open's to handle.
+    """
+    if state != transition:
+        raise waiting
+    await _wait_or_rebuild(sandbox, sandbox_id, waiting, stuck_in=transition)
+
+
+async def _wait_or_rebuild(
+    sandbox: PTCSandbox,
+    sandbox_id: str,
+    waiting: Exception,
+    *,
+    stuck_in: str | None = None,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    """Raise *waiting*, or, once the outage clock says so, call the sandbox lost.
+
+    A host that refuses starts, or one that stopped making progress and leaves
+    a sandbox mid-start or mid-stop (refusing every stop meanwhile), is waited
+    on until the computer's outage clock runs out; a sandbox *stuck_in* a
+    transition runs it only while it stays there. Lost to it, the start
+    rebuilds from the backup and the sandbox is kept: it may come back with
+    files the backup lacks. The policy failing is no answer, and waiting is
+    the default.
+    """
+    policy = sandbox.host_unavailable_policy
+    outage_since = None
+    if policy is not None:
+        try:
+            outage_since = await policy.rebuild_now(sandbox_id, stuck_in)
+        except Exception:
+            logger.warning(
+                "Host-unavailable policy failed; waiting for the host",
+                sandbox_id=sandbox_id,
+                exc_info=True,
+            )
+    if isinstance(outage_since, datetime):
+        sandbox._kept_for_salvage = True
+        raise SandboxHostLostError(
+            sandbox_id,
+            f"host unavailable: {cause or waiting}",
+            outage_since=outage_since,
+        ) from cause
+    raise waiting from cause
 
 
 async def _confirm_host_back(sandbox: PTCSandbox, sandbox_id: str) -> None:

@@ -177,6 +177,10 @@ class DaytonaConfig(CredentialedSandboxConfig):
     # How long a computer's starts may be refused by a recovering host before
     # it is rebuilt from its backup instead; the old sandbox is kept. 0 waits.
     host_unavailable_rebuild_after_minutes: int = Field(default=60, ge=0)
+    # How long a create may take before it is given up on. Daytona answers a
+    # create only once the sandbox runs, and a slow one still comes up after
+    # the caller stops waiting, so a short wait turns slowness into a leak.
+    create_timeout_seconds: int = Field(default=180, ge=10)
     python_version: str = "3.12"
 
     # Snapshot configuration for faster sandbox initialization

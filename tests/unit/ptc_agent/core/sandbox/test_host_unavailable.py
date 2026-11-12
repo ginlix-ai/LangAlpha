@@ -182,7 +182,7 @@ async def test_until_the_policy_says_rebuild_the_outage_is_transient(policy):
     assert str(raised.value) == str(failure)
     assert raised.value.__cause__ is failure
     if policy is not None:
-        policy.rebuild_now.assert_awaited_once_with(SANDBOX)
+        policy.rebuild_now.assert_awaited_once_with(SANDBOX, None)
         policy.reconnected.assert_not_awaited()
     await sandbox.cleanup()
     runtime.delete.assert_not_awaited()

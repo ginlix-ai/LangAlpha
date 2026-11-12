@@ -452,7 +452,9 @@ class TestDaytonaProvider:
         client = AsyncMock()
         client.delete = slow_delete
         provider = self._bare_provider(client)
-        task = asyncio.create_task(provider._delete_unusable(MagicMock(id="x")))
+        from ptc_agent.core.sandbox.providers.daytona import _shielded
+
+        task = asyncio.create_task(_shielded(provider._discard(MagicMock(id="x"), "test")))
         await started.wait()
         task.cancel()
 

@@ -58,7 +58,7 @@ async def test_inside_the_threshold_the_computer_keeps_waiting(caplog):
         with caplog.at_level(logging.WARNING):
             assert await policy.rebuild_now("sb-old") is None
 
-    stamp.assert_awaited_once_with("comp-1", "sb-old")
+    stamp.assert_awaited_once_with("comp-1", "sb-old", None)
     assert not caplog.records
 
 

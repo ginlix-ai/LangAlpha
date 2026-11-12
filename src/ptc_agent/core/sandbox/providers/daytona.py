@@ -3,7 +3,8 @@
 import asyncio
 import contextlib
 import contextvars
-from collections.abc import Callable, Sequence
+import uuid
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,6 +22,7 @@ from daytona import (
 from ptc_agent.config.core import DaytonaConfig, PlatformSecretDefinition
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
 from ptc_agent.core.sandbox._defaults import SANDBOX_FALLBACK_CPU
+from ptc_agent.core.sandbox.abandoned import report_abandoned
 from ptc_agent.core.sandbox.runtime import (
     MetricSample,
     SandboxFailureKind,
@@ -67,6 +69,26 @@ _REQUIRED_TOOLS = ("bash", "python3", "uv")
 _REQUIRED_TOOLS_CHECK = (
     f"for t in {' '.join(_REQUIRED_TOOLS)}; do command -v $t >/dev/null 2>&1 || echo $t; done"
 )
+
+
+# What a failed create may spend finding and deleting the sandbox it named,
+# past which the name goes to the abandoned-sandbox sweep instead.
+_RECLAIM_BUDGET_S = 30
+
+
+async def _shielded[T](work: Awaitable[T]) -> T:
+    """Run *work* to its end even when the caller is cancelled.
+
+    Waited on when cancelled, so a cancelled create still cleans up what it
+    made before the caller closes the Daytona client.
+    """
+    task = asyncio.ensure_future(work)
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.wait({task})
+        raise
 
 
 class SandboxImageBrokenError(RuntimeError):
@@ -189,11 +211,11 @@ class DaytonaProvider(SandboxProvider):
 
         missing: list[str] = []
         for attempt in (1, 2):
-            sdk_sandbox = await self._client.create(params)
+            sdk_sandbox = await self._create_named(params)
             try:
                 missing = await self._missing_tools(sdk_sandbox)
             except BaseException:
-                await self._delete_unusable(sdk_sandbox)
+                await _shielded(self._discard(sdk_sandbox, "its tools check failed"))
                 raise
             if not missing:
                 return DaytonaRuntime(
@@ -208,12 +230,93 @@ class DaytonaProvider(SandboxProvider):
                 missing=missing,
                 attempt=attempt,
             )
-            await self._delete_unusable(sdk_sandbox)
+            await _shielded(
+                self._discard(sdk_sandbox, f"image lacks {', '.join(missing)}")
+            )
         raise SandboxImageBrokenError(
             f"Daytona created two sandboxes from "
             f"{snapshot_name or 'its default snapshot'} without "
             f"{', '.join(missing)}: the image it serves for that snapshot is broken"
         )
+
+    async def _create_named(self, params: CreateSandboxFromSnapshotParams) -> Any:
+        """Create under a name of our own, so a create given up on can be found.
+
+        Daytona answers only once the sandbox runs and keeps building one the
+        caller stopped waiting for, which then runs with nothing holding it.
+        So any failure reclaims the name.
+        """
+        params.name = str(uuid.uuid4())
+        try:
+            return await self._client.create(
+                params, timeout=self._config.create_timeout_seconds
+            )
+        except BaseException as e:
+            # Even a client error: the SDK raises one from its wait for the
+            # start as well, after the sandbox exists.
+            await _shielded(
+                self._reclaim(params.name, f"create failed: {type(e).__name__}")
+            )
+            raise
+
+    async def _reclaim(self, name: str, reason: str) -> None:
+        """Discard the sandbox a failed create named, or report the name.
+
+        A name nothing answers to yet is reported too: a create the API took
+        late can still land after the lookup, and the sweep drops the name
+        once it stays absent.
+        """
+        try:
+            async with asyncio.timeout(_RECLAIM_BUDGET_S):
+                sdk_sandbox = await self._client.get(name)
+        except Exception as e:
+            await report_abandoned("daytona", name, f"{reason}; {type(e).__name__} on lookup")
+            return
+        await self._discard(sdk_sandbox, reason)
+
+    async def _discard(self, sdk_sandbox: Any, reason: str) -> None:
+        """Delete a sandbox nothing holds; one Daytona will not let go of yet
+        goes to the abandoned-sandbox sweep. Callers shield it from their own
+        cancellation, so it runs to its end."""
+        try:
+            async with asyncio.timeout(_RECLAIM_BUDGET_S):
+                if await self._delete(sdk_sandbox):
+                    return
+            reason = f"{reason}; Daytona refused to delete it yet"
+        except Exception as e:
+            reason = f"{reason}; delete failed: {type(e).__name__}"
+        logger.warning("Left a sandbox for the sweep", sandbox_id=sdk_sandbox.id, reason=reason)
+        await report_abandoned("daytona", sdk_sandbox.id, reason)
+
+    async def remove_abandoned(self, ref: str) -> bool:
+        try:
+            sdk_sandbox = await self._client.get(ref)
+        except Exception as e:
+            if self.classify_error(e) is SandboxFailureKind.SANDBOX_GONE:
+                return True
+            raise
+        # Daytona lists a deleted sandbox for a while before it 404s.
+        if _state_value(sdk_sandbox.state) in ("destroyed", "destroying"):
+            return True
+        return await self._delete(sdk_sandbox)
+
+    async def _delete(self, sdk_sandbox: Any) -> bool:
+        """Delete, retrying a transient refusal. False while Daytona refuses
+        because the sandbox is mid-transition (409), which only time settles."""
+        for delay in (1, 2, None):
+            try:
+                await self._client.delete(sdk_sandbox)
+                return True
+            except Exception as e:
+                if _daytona_error_status(e) == 409:
+                    return False
+                kind = self.classify_error(e)
+                if kind is SandboxFailureKind.SANDBOX_GONE:
+                    return True
+                if delay is None or kind is not SandboxFailureKind.TRANSIENT:
+                    raise
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
 
     async def _missing_tools(self, sdk_sandbox: Any) -> list[str]:
         """The required tools the sandbox lacks.
@@ -236,35 +339,6 @@ class DaytonaProvider(SandboxProvider):
                 return [f"a shell that runs the check (it exited {check.exit_code})"]
             return missing
         raise AssertionError("unreachable")
-
-    async def _delete_unusable(self, sdk_sandbox: Any) -> None:
-        # Shielded, and waited on when cancelled, so a cancelled create still
-        # removes the sandbox it made before the caller closes the client.
-        delete = asyncio.ensure_future(self._delete_retrying(sdk_sandbox))
-        delete.add_done_callback(lambda task: task.cancelled() or task.exception())
-        try:
-            await asyncio.shield(delete)
-        except asyncio.CancelledError:
-            await asyncio.wait({delete})
-            raise
-        except Exception as e:
-            logger.warning(
-                "Could not delete an unusable Daytona sandbox",
-                sandbox_id=sdk_sandbox.id,
-                error=str(e),
-            )
-
-    async def _delete_retrying(self, sdk_sandbox: Any) -> None:
-        """Delete, retrying a transient refusal: a sandbox left behind here is
-        one nothing else holds, billed until Daytona's own auto-stop."""
-        for delay in (1, 2, None):
-            try:
-                await self._client.delete(sdk_sandbox)
-                return
-            except Exception as e:
-                if delay is None or self.classify_error(e) is not SandboxFailureKind.TRANSIENT:
-                    raise
-                await asyncio.sleep(delay)
 
     async def get(self, sandbox_id: str) -> DaytonaRuntime:
         sdk_sandbox = await self._client.get(sandbox_id)
