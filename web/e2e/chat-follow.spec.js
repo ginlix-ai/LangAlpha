@@ -43,12 +43,12 @@ function shortReply() {
 }
 
 function viewport(page) {
-  return page.locator('main .max-w-3xl.overflow-x-hidden').locator('xpath=ancestor::div[contains(@class, "overflow-auto")][1]');
+  return page.locator('main [data-transcript-content]').locator('xpath=ancestor::div[contains(@class, "overflow-auto")][1]');
 }
 
 function view(page) {
   return page.evaluate(() => {
-    const vp = document.querySelector('main .max-w-3xl.overflow-x-hidden').closest('.overflow-auto');
+    const vp = document.querySelector('main [data-transcript-content]').closest('.overflow-auto');
     const floor = vp.querySelector('[data-transcript-floor]');
     const users = vp.querySelectorAll('[data-message-role="user"]');
     const user = users[users.length - 1];
@@ -96,7 +96,7 @@ test.describe('pin on send', () => {
     // Sampled every frame until the turn ends: the reply fills the room under
     // the message, and the view never moves.
     await sampleFrames(page, () => ({
-      top: document.querySelector('main .max-w-3xl.overflow-x-hidden').closest('.overflow-auto').scrollTop,
+      top: document.querySelector('main [data-transcript-content]').closest('.overflow-auto').scrollTop,
       live: !!document.querySelector('button[aria-label="Stop"]'),
     }));
     await expect(streaming(page)).toBeHidden({ timeout: 15000 });
@@ -142,7 +142,7 @@ test.describe('pin on send', () => {
     await page.waitForFunction((q) => [...document.querySelectorAll('[data-message-role="user"]')].some((el) => el.textContent.includes(q)), QUESTION);
     // The frame after the message renders already shows it pinned.
     const top = await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
-      const vp = document.querySelector('main .max-w-3xl.overflow-x-hidden').closest('.overflow-auto');
+      const vp = document.querySelector('main [data-transcript-content]').closest('.overflow-auto');
       const users = vp.querySelectorAll('[data-message-role="user"]');
       resolve(users[users.length - 1].getBoundingClientRect().top - vp.getBoundingClientRect().top);
     })));
@@ -157,7 +157,7 @@ test.describe('pin on send', () => {
  */
 async function interceptFollow(page, minMove, onFollow) {
   await page.evaluate(([minMove, body]) => {
-    const vp = document.querySelector('main .max-w-3xl.overflow-x-hidden').closest('.overflow-auto');
+    const vp = document.querySelector('main [data-transcript-content]').closest('.overflow-auto');
     const scrollTo = vp.scrollTo;
     const act = new Function('vp', 'top', body);
     window.__intercepted = false;
@@ -187,7 +187,7 @@ test.describe('streaming follow', () => {
     // The reply is well past the room under the message, and the glide
     // carries its end.
     await page.waitForFunction(() => {
-      const vp = document.querySelector('main .max-w-3xl.overflow-x-hidden')?.closest('.overflow-auto');
+      const vp = document.querySelector('main [data-transcript-content]')?.closest('.overflow-auto');
       return vp && vp.scrollTop > 400 && document.querySelector('button[aria-label="Stop"]');
     }, null, { timeout: 20000 });
   });
@@ -208,7 +208,7 @@ test.describe('streaming follow', () => {
     // The browser's scroll anchoring moves the view up by what closed, which
     // left from the end more than AT_END away reads as a reader's scroll up.
     const shrunk = await page.evaluate((atEnd) => new Promise((resolve) => {
-      const vp = document.querySelector('main .max-w-3xl.overflow-x-hidden').closest('.overflow-auto');
+      const vp = document.querySelector('main [data-transcript-content]').closest('.overflow-auto');
       const user = vp.querySelector('[data-message-role="user"]');
       const tick = () => {
         if (vp.scrollHeight - vp.scrollTop - vp.clientHeight <= atEnd * 2) {
@@ -249,7 +249,7 @@ test.describe('streaming follow', () => {
     // Sampled every frame for three seconds of streaming: the gap to the end
     // stays within a few lines, never a screen behind.
     await sampleFrames(page, () => {
-      const vp = document.querySelector('main .max-w-3xl.overflow-x-hidden').closest('.overflow-auto');
+      const vp = document.querySelector('main [data-transcript-content]').closest('.overflow-auto');
       return { gap: vp.scrollHeight - vp.scrollTop - vp.clientHeight };
     });
     await page.waitForTimeout(3000);

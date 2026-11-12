@@ -1625,7 +1625,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       <OlderHistorySkeleton isMobile={isMobile} />
                     )}
                     <div className={`${isMobile ? 'px-3 pt-3' : 'px-6 pt-4'} ${TRANSCRIPT_BOTTOM_PAD} flex justify-center`}>
-                      <div data-transcript-content="" className="w-full max-w-3xl overflow-x-hidden">
+                      {/* clip, not hidden: hidden makes overflow-y auto, and a sent bubble's
+                          rise would overflow this column and flash a scrollbar. */}
+                      <div data-transcript-content="" className="w-full max-w-3xl overflow-x-clip">
                         <OlderHistoryRow
                           getRoot={getMainScrollRoot}
                           status={olderHistory.status}
