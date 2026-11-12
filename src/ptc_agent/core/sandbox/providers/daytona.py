@@ -25,7 +25,10 @@ from ptc_agent.core.sandbox._defaults import SANDBOX_FALLBACK_CPU
 from ptc_agent.core.sandbox.abandoned import report_abandoned
 from ptc_agent.core.sandbox.runtime import (
     MetricSample,
+    RuntimeState,
+    SandboxAllocation,
     SandboxFailureKind,
+    SandboxGoneError,
     SandboxProvider,
     SandboxRateLimitedError,
 )
@@ -44,7 +47,11 @@ from ptc_agent.core.sandbox.providers._image_recipe import (
 )
 from ptc_agent.core.sandbox.providers._metrics import normalize_samples
 from ptc_agent.core.sandbox.providers._tiers import TierChoice, resolve_tier
-from ptc_agent.core.sandbox.providers.daytona_runtime import DaytonaRuntime
+from ptc_agent.core.sandbox.providers.daytona_runtime import (
+    _STATE_MAP,
+    DaytonaRuntime,
+    _raw_state,
+)
 from ptc_agent.core.sandbox.providers.daytona_secrets import (
     DaytonaSecretReconciler,
     daytona_error_code as _daytona_error_code,
@@ -99,6 +106,27 @@ def _state_value(state: Any) -> str:
     return state.value if hasattr(state, "value") else str(state)
 
 
+# What the usage ledger reads a Daytona state as. A paused VM holds its disk
+# as a stopped container does, and one still pausing bills as running, as a
+# stopping one does; only an outright failure reads as an error, which ends
+# the hold. Any other state (unknown, snapshotting, resizing, a delete still
+# settling) reads as None, which decides nothing.
+_ALLOCATION_STATES: dict[str, RuntimeState] = {
+    **_STATE_MAP,
+    "paused": RuntimeState.STOPPED,
+    "pausing": RuntimeState.STOPPING,
+    "build_failed": RuntimeState.ERROR,
+}
+_ALLOCATION_GONE_STATES = frozenset({"destroyed"})
+# The auto-archive interval an interval of 0 asks for, Daytona's longest
+# (its sandbox docs, read 2026-11-12).
+_LONGEST_ARCHIVE_S = 30 * 24 * 3600
+
+
+def _float_or_none(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 def _detach_event_dispatcher(client: AsyncDaytona) -> None:
     """Start the SDK's event-socket tasks outside the caller's context.
 
@@ -126,6 +154,7 @@ class DaytonaProvider(SandboxProvider):
     platform_secret_namespace_env = DaytonaConfig.ENV_FIELDS["secret_namespace"]
     scrubs_platform_secrets = True
     reports_metrics = True
+    reports_allocation = True
 
     def __init__(
         self,
@@ -345,6 +374,39 @@ class DaytonaProvider(SandboxProvider):
         return DaytonaRuntime(
             sdk_sandbox,
             default_working_dir=self._working_dir,
+        )
+
+    @property
+    def default_archive_after_s(self) -> int | None:
+        return self._config.auto_archive_interval or _LONGEST_ARCHIVE_S
+
+    async def allocation(self, sandbox_id: str) -> SandboxAllocation:
+        # A control-plane read, not the metrics backend, so it spends none of
+        # that backend's budget. Only a container is archived; stopping a VM
+        # already offloads its filesystem and frees its disk, as an archive
+        # does a container's, so a stopped VM reads as archived.
+        sdk_sandbox = await self._client.get(sandbox_id)
+        raw = _raw_state(sdk_sandbox) or ""
+        if raw in _ALLOCATION_GONE_STATES:
+            raise SandboxGoneError(sandbox_id, f"Daytona reports it {raw}")
+        archive_min = getattr(sdk_sandbox, "auto_archive_interval", None)
+        archivable = getattr(sdk_sandbox, "sandbox_class", None) in (
+            None,
+            "container",
+        )
+        stopped_vm = raw == "stopped" and not archivable
+        return SandboxAllocation(
+            state=(
+                RuntimeState.ARCHIVED if stopped_vm else _ALLOCATION_STATES.get(raw)
+            ),
+            cpu=_float_or_none(getattr(sdk_sandbox, "cpu", None)),
+            memory_gb=_float_or_none(getattr(sdk_sandbox, "memory", None)),
+            disk_gb=_float_or_none(getattr(sdk_sandbox, "disk", None)),
+            archive_after_s=(
+                int(archive_min) * 60 or _LONGEST_ARCHIVE_S
+                if archivable and isinstance(archive_min, (int, float))
+                else None
+            ),
         )
 
     async def metrics_since(

@@ -15,6 +15,7 @@ import pytest
 
 from ptc_agent.core.sandbox.providers import (
     METERED_KINDS,
+    ALLOCATION_KINDS,
     METRIC_KINDS,
     PROVIDER_KINDS,
     provider_class,
@@ -39,6 +40,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 def test_the_sets_name_only_known_kinds():
     assert set(METRIC_KINDS) <= set(METERED_KINDS) <= set(PROVIDER_KINDS)
+    assert set(ALLOCATION_KINDS) <= set(METERED_KINDS)
 
 
 @pytest.mark.parametrize("kind", PROVIDER_KINDS)
@@ -47,6 +49,7 @@ def test_the_registry_agrees_with_each_class(kind):
 
     assert (kind in METERED_KINDS) is cls.metered
     assert (kind in METRIC_KINDS) is (cls.metered and cls.reports_metrics)
+    assert (kind in ALLOCATION_KINDS) is (cls.metered and cls.reports_allocation)
 
 
 def test_the_ledgers_kinds_load_no_provider_module():

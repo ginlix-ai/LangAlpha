@@ -1073,3 +1073,97 @@ class TestDaytonaMetricsSince:
 
         assert sample.mem_used_bytes == 2**29
         assert sample.mem_cache_bytes == 2**28
+
+
+class TestDaytonaAllocation:
+    """What the usage ledger costs a run by, read without starting the sandbox."""
+
+    @staticmethod
+    def _provider(**fields):
+        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
+
+        values = {
+            "state": SimpleNamespace(value="stopped"),
+            "cpu": 4,
+            "memory": 8,
+            "disk": 10,
+            "auto_archive_interval": 10080,
+            "sandbox_class": "container",
+        }
+        sdk_sandbox = SimpleNamespace(**{**values, **fields}, start=AsyncMock())
+        provider = DaytonaProvider.__new__(DaytonaProvider)
+        provider._client = MagicMock()
+        provider._client.get = AsyncMock(return_value=sdk_sandbox)
+        return provider, sdk_sandbox
+
+    def test_reports_allocation(self):
+        from ptc_agent.core.sandbox.providers.daytona import DaytonaProvider
+
+        assert DaytonaProvider.reports_allocation is True
+
+    @pytest.mark.asyncio
+    async def test_reads_the_sandboxs_own_size_and_archive_interval(self):
+        provider, sdk_sandbox = self._provider()
+
+        found = await provider.allocation("sbx")
+
+        provider._client.get.assert_awaited_once_with("sbx")
+        sdk_sandbox.start.assert_not_awaited()
+        assert found.state is RuntimeState.STOPPED
+        assert (found.cpu, found.memory_gb, found.disk_gb) == (4.0, 8.0, 10.0)
+        assert found.archive_after_s == 7 * 24 * 3600
+
+    @pytest.mark.asyncio
+    async def test_an_archived_sandbox_reads_as_archived(self):
+        provider, _ = self._provider(state=SimpleNamespace(value="archived"))
+
+        assert (await provider.allocation("sbx")).state is RuntimeState.ARCHIVED
+
+    @pytest.mark.asyncio
+    async def test_an_interval_of_0_is_daytonas_longest(self):
+        provider, _ = self._provider(auto_archive_interval=0)
+
+        assert (await provider.allocation("sbx")).archive_after_s == 30 * 86400
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_vm_has_given_up_its_disk_and_is_never_archived(self):
+        provider, _ = self._provider(sandbox_class="linux-vm")
+
+        found = await provider.allocation("sbx")
+
+        assert found.state is RuntimeState.ARCHIVED
+        assert found.archive_after_s is None
+
+    @pytest.mark.asyncio
+    async def test_a_paused_vm_still_holds_its_disk(self):
+        provider, _ = self._provider(
+            sandbox_class="linux-vm", state=SimpleNamespace(value="paused")
+        )
+
+        assert (await provider.allocation("sbx")).state is RuntimeState.STOPPED
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw", "state"),
+        [
+            ("paused", RuntimeState.STOPPED),
+            ("pausing", RuntimeState.STOPPING),
+            ("resizing", None),
+            ("destroying", None),
+            ("unknown", None),
+            ("build_failed", RuntimeState.ERROR),
+        ],
+    )
+    async def test_only_a_failure_reads_as_an_error_and_the_unknown_as_nothing(
+        self, raw, state
+    ):
+        provider, _ = self._provider(state=SimpleNamespace(value=raw))
+
+        assert (await provider.allocation("sbx")).state is state
+
+    @pytest.mark.asyncio
+    async def test_a_destroyed_sandbox_is_gone(self):
+        provider, _ = self._provider(state=SimpleNamespace(value="destroyed"))
+
+        with pytest.raises(SandboxGoneError):
+            await provider.allocation("sbx")

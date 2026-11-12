@@ -29,9 +29,11 @@ PROVIDER_KINDS = tuple(_PROVIDERS)
 # answering imports no provider module: reading them off each class loaded every
 # vendor's SDK on the event loop (Daytona's alone about 3s) on a deployment that
 # uses none of them. Each class still declares its own (``SandboxProvider.metered``,
-# ``reports_metrics``) for the callers holding one kind, and a test holds the two equal.
+# ``reports_metrics``, ``reports_allocation``) for the callers holding one kind,
+# and a test holds the two equal.
 METERED_KINDS: tuple[str, ...] = ("daytona", "docker", "e2b")
 METRIC_KINDS: tuple[str, ...] = ("daytona", "e2b")
+ALLOCATION_KINDS: tuple[str, ...] = ("daytona", "e2b")
 
 
 def provider_class(kind: str) -> type[SandboxProvider]:

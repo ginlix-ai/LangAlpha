@@ -39,7 +39,7 @@ from ptc_agent.core.sandbox.providers._image_recipe import (
 )
 from ptc_agent.core.sandbox.providers._metrics import normalize_samples
 from ptc_agent.core.sandbox.providers._tiers import resolve_tier
-from ptc_agent.core.sandbox.providers.e2b_runtime import E2BRuntime, _window
+from ptc_agent.core.sandbox.providers.e2b_runtime import E2BRuntime, _state_of, _window
 from ptc_agent.core.sandbox.providers.e2b_secrets import (
     TLS_TRUST_ENV,
     E2BSecretReconciler,
@@ -48,6 +48,7 @@ from ptc_agent.core.sandbox.providers.e2b_secrets import (
 )
 from ptc_agent.core.sandbox.runtime import (
     MetricSample,
+    SandboxAllocation,
     SandboxFailureKind,
     SandboxProvider,
     SandboxRateLimitedError,
@@ -111,6 +112,7 @@ class E2BProvider(SandboxProvider):
     # every process, so only a replacement sandbox would be clean.
     scrubs_platform_secrets = False
     reports_metrics = True
+    reports_allocation = True
 
     @classmethod
     def platform_secret_name(cls, name: str) -> str:
@@ -255,6 +257,30 @@ class E2BProvider(SandboxProvider):
             secret_routes=self._secret_routes,
             public_traffic=self._config.public_traffic,
         )
+
+    async def allocation(self, sandbox_id: str) -> SandboxAllocation:
+        # The same lookup ``get`` makes, which leaves a paused sandbox paused.
+        # A template fixes cpu and memory. Disk comes with the plan, not the
+        # template, and only the sandbox's own samples report its size: an
+        # unranged read returns its latest run's, paused or not (checked
+        # 2026-11-12). A paused sandbox is kept until it is killed, never
+        # archived.
+        info = await self._client.AsyncSandbox.get_info(sandbox_id)
+        return SandboxAllocation(
+            state=_state_of(info),
+            cpu=float(info.cpu_count) if info.cpu_count else None,
+            memory_gb=info.memory_mb / 1024 if info.memory_mb else None,
+            disk_gb=await self._reported_disk_gb(sandbox_id),
+        )
+
+    async def _reported_disk_gb(self, sandbox_id: str) -> float | None:
+        try:
+            samples = await self._client.AsyncSandbox.get_metrics(sandbox_id)
+        except Exception as e:
+            logger.debug("No disk size read", sandbox_id=sandbox_id, error=str(e))
+            return None
+        sizes = [s.disk_total for s in samples if s.disk_total]
+        return sizes[-1] / 2**30 if sizes else None
 
     async def metrics_since(
         self,

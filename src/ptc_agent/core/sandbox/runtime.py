@@ -208,6 +208,25 @@ class MetricSample:
     disk_total_bytes: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SandboxAllocation:
+    """What the provider holds for a sandbox now: its state and its size.
+
+    A sandbox is never resized, so its size is the one every run on it had.
+    A size the provider does not report is None.
+    ``archive_after_s`` is how long the sandbox may sit stopped before the
+    provider archives it, which ends the hold on its disk; None where it is
+    never archived, or the provider does not say when.
+    """
+
+    # None for a state the provider names that says neither up nor down.
+    state: RuntimeState | None
+    cpu: float | None = None
+    memory_gb: float | None = None
+    disk_gb: float | None = None
+    archive_after_s: int | None = None
+
+
 # One ranged read of a streamed download. Large enough that a file costs few
 # execs, small enough that a stream holds little memory at any moment.
 STREAM_CHUNK_BYTES = 8 * 1024 * 1024
@@ -616,6 +635,8 @@ class SandboxProvider(ABC):
     # Whether ``metrics_since`` can answer, so a caller holding only the kind
     # skips building a provider for one that never will.
     reports_metrics: ClassVar[bool] = False
+    # Whether ``allocation`` can answer, read the same way.
+    reports_allocation: ClassVar[bool] = False
     # True where the machine outlives every create, so a change to the env
     # this deployment gives a new computer reaches it only by being written
     # again at each open (``SandboxRuntime.replace_env``).
@@ -703,6 +724,22 @@ class SandboxProvider(ABC):
         self, runtime: SandboxRuntime, *, tier: str | None = None
     ) -> None:
         """Providers with mutable limits can repair an existing runtime before use."""
+
+    async def allocation(self, sandbox_id: str) -> SandboxAllocation:
+        """The sandbox's state and size, read from the provider without connecting.
+
+        A lookup only, so a stopped or paused sandbox stays as it is. Raises
+        when the provider cannot answer, and as ``classify_error`` reads
+        ``SANDBOX_GONE`` when the sandbox no longer exists. Only a provider
+        with ``reports_allocation`` answers.
+        """
+        raise NotImplementedError(f"{type(self).__name__} reports no allocation")
+
+    @property
+    def default_archive_after_s(self) -> int | None:
+        """How long this provider is configured to keep a new sandbox stopped
+        before archiving it; None where it never archives one."""
+        return None
 
     async def metrics_since(
         self,

@@ -510,7 +510,11 @@ async def test_an_empty_machine_reads_its_metrics_before_its_session_deletes_it(
     )
     # The session's cleanup is what deletes a live sandbox.
     manager._clear_session = AsyncMock(side_effect=lambda _c: order.append("delete"))
-    manager._destroy_sandbox = AsyncMock()
+    manager._destroy_sandbox = AsyncMock(side_effect=lambda *a, **k: order.append("gone"))
+    # The confirmed delete ends the run and its disk, not the stop after it.
+    manager._end_replaced_usage_run = AsyncMock(
+        side_effect=lambda c, sb: order.append(f"ended {sb}")
+    )
 
     with (
         patch(f"{_SPEC}.get_live_workspace_ids_for_computer", AsyncMock(return_value=[])),
@@ -521,4 +525,4 @@ async def test_an_empty_machine_reads_its_metrics_before_its_session_deletes_it(
             {"computer_id": "c-1", "user_id": "u-1", "kind": "daytona"}, "sb-1"
         )
 
-    assert order == ["fold c-1", "delete"]
+    assert order == ["fold c-1", "delete", "gone", "ended sb-1"]

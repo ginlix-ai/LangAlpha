@@ -11,12 +11,14 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from ptc_agent.core.sandbox.runtime import (
     MetricSample,
+    RuntimeState,
+    SandboxAllocation,
     SandboxFailureKind,
     SandboxRateLimitedError,
 )
@@ -63,6 +65,11 @@ def runs_db():
         db.claim_runs_for_metrics = AsyncMock(side_effect=claim)
         db.close_orphaned_runs = AsyncMock(return_value=0)
         db.get_running_computers_without_run = AsyncMock(return_value=[])
+        db.settle_holds = AsyncMock(return_value=0)
+        db.get_sandboxes_due_allocation = AsyncMock(return_value=[])
+        db.store_allocation = AsyncMock()
+        db.store_sandbox_gone = AsyncMock()
+        db.mark_allocation_checked = AsyncMock()
         yield db
 
 
@@ -128,7 +135,8 @@ async def test_a_failed_read_records_the_error_and_keeps_the_aggregates(
 
     runs_db.store_run_metrics.assert_not_called()
     runs_db.store_run_metrics_error.assert_awaited_once_with(
-        "run-1", "RuntimeError: telemetry unavailable", final=False
+        "run-1", "RuntimeError: telemetry unavailable", final=False,
+        ended_at=ended_at,
     )
 
 
@@ -224,7 +232,7 @@ async def test_a_rate_limit_refusal_is_recorded_then_re_raised(runs_db):
 
     runs_db.store_run_metrics.assert_not_called()
     runs_db.store_run_metrics_error.assert_awaited_once_with(
-        "run-1", "SandboxRateLimitedError: slow down", final=False
+        "run-1", "SandboxRateLimitedError: slow down", final=False, ended_at=None
     )
 
 
@@ -555,6 +563,131 @@ async def test_a_sweep_read_that_lost_the_cursor_leaves_it_to_the_winner(runs_db
 
     runs_db.get_computer_run.assert_not_called()
     provider.metrics_since.assert_awaited_once()
+
+
+def _due(sandbox_id="sb-1", kind="daytona"):
+    return {
+        "provider_kind": kind,
+        "provider_sandbox_id": sandbox_id,
+        "computer_id": "c-1",
+        "provider_config": None,
+        "root_dir": None,
+    }
+
+
+def _allocating(answer=None, error=None, kind=SandboxFailureKind.UNKNOWN):
+    provider = MagicMock()
+    provider.allocation = AsyncMock(return_value=answer, side_effect=error)
+    provider.classify_error = MagicMock(return_value=kind)
+    return provider
+
+
+async def test_a_providers_answer_is_written_over_the_sandboxs_runs(runs_db):
+    runs_db.get_sandboxes_due_allocation.return_value = [_due()]
+    answer = SandboxAllocation(
+        state=RuntimeState.STOPPED, cpu=1.0, memory_gb=1.0, disk_gb=3.0,
+        archive_after_s=604800,
+    )
+    provider = _allocating(answer)
+
+    assert await sweep.check_allocations(lambda row: provider) == 1
+
+    provider.allocation.assert_awaited_once_with("sb-1")
+    runs_db.store_allocation.assert_awaited_once_with(
+        "daytona", "sb-1", answer, asked_at=ANY
+    )
+
+
+async def test_a_sandbox_the_provider_no_longer_has_is_stored_as_gone(runs_db):
+    runs_db.get_sandboxes_due_allocation.return_value = [_due()]
+    provider = _allocating(
+        error=RuntimeError("404"), kind=SandboxFailureKind.SANDBOX_GONE
+    )
+    provider.default_archive_after_s = 604800
+
+    assert await sweep.check_allocations(lambda row: provider) == 1
+
+    runs_db.store_sandbox_gone.assert_awaited_once_with(
+        "daytona", "sb-1", archive_after_s=604800, asked_at=ANY
+    )
+    runs_db.store_allocation.assert_not_called()
+
+
+async def test_a_failed_lookup_stores_nothing_and_spoils_no_other(runs_db):
+    runs_db.get_sandboxes_due_allocation.return_value = [_due("sb-1"), _due("sb-2")]
+    answer = SandboxAllocation(state=RuntimeState.RUNNING, cpu=2.0, memory_gb=4.0)
+
+    def provider_for(row):
+        if row["provider_sandbox_id"] == "sb-1":
+            return _allocating(error=RuntimeError("503"))
+        return _allocating(answer)
+
+    assert await sweep.check_allocations(provider_for) == 1
+
+    [call] = runs_db.store_allocation.await_args_list
+    assert call.args == ("daytona", "sb-2", answer)
+    # Stamped, so a sandbox that always fails waits its turn behind the rest.
+    runs_db.mark_allocation_checked.assert_awaited_once_with("daytona", "sb-1")
+
+
+async def test_a_slow_lookup_times_out_rather_than_holding_the_sweep(runs_db):
+    runs_db.get_sandboxes_due_allocation.return_value = [_due()]
+
+    async def hang(sandbox_id):
+        await asyncio.sleep(60)
+
+    provider = _allocating()
+    provider.allocation = hang
+    with patch.object(sweep, "FETCH_TIMEOUT_SECONDS", 0.01):
+        assert await sweep.check_allocations(lambda row: provider) == 0
+
+    runs_db.store_allocation.assert_not_called()
+
+
+async def test_lookups_that_hang_start_none_past_the_cycle_budget(runs_db):
+    runs_db.get_sandboxes_due_allocation.return_value = [
+        _due(f"sb-{i}") for i in range(5)
+    ]
+    asked = []
+
+    async def hang(sandbox_id):
+        asked.append(sandbox_id)
+        await asyncio.sleep(0.3)
+        raise TimeoutError
+
+    provider = _allocating()
+    provider.allocation = hang
+    # One at a time: lookups start at 0 and 0.3; the next would at 0.6, past
+    # the 0.45 budget, and the rest wait for the next cycle unstamped.
+    with (
+        patch.object(sweep, "ALLOCATION_CONCURRENCY", 1),
+        patch.object(sweep, "CYCLE_BUDGET_SECONDS", 0.45),
+    ):
+        assert await sweep.check_allocations(lambda row: provider) == 0
+
+    assert asked == ["sb-0", "sb-1"]
+    assert runs_db.mark_allocation_checked.await_count == 2
+
+
+async def test_the_lock_holder_looks_up_allocations_beside_the_metrics(runs_db):
+    with (
+        patch.object(sweep, "try_own_session_lock", _lock(True)),
+        patch.object(sweep, "collect_metrics", AsyncMock()) as collect,
+        patch.object(sweep, "check_allocations", AsyncMock()) as check,
+    ):
+        await sweep.run_usage_sweep(lambda run: _provider())
+
+    collect.assert_awaited_once()
+    check.assert_awaited_once()
+    runs_db.settle_holds.assert_awaited_once()
+
+
+async def test_holds_are_settled_even_when_reconcile_fails(runs_db):
+    runs_db.close_orphaned_runs.side_effect = RuntimeError("down")
+    with patch.object(sweep, "try_own_session_lock", _lock(False)):
+        await sweep.run_usage_sweep(lambda run: _provider())
+
+    runs_db.settle_holds.assert_awaited_once()
 
 
 async def test_a_slow_read_starts_no_read_past_the_budget(runs_db):

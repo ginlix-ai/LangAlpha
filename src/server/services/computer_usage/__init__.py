@@ -3,11 +3,13 @@
 ``transitions`` opens and closes a computer's run at its status boundaries,
 ``sweep`` reconciles the ledger and folds provider metrics in, and
 ``metrics`` is the fold itself. The table is ``computer_runs`` (migration
-088), whose docstring has the queries the ledger is for.
+088, with each run's provider-reported size and the disk hold after it from
+122); their docstrings have the queries the ledger is for.
 """
 
 from src.server.services.computer_usage.metrics import RunMetrics, fold_samples
 from src.server.services.computer_usage.sweep import (
+    check_allocations,
     collect_metrics,
     fold_run,
     fold_before_delete,
@@ -21,6 +23,7 @@ from src.server.services.computer_usage.transitions import (
 
 __all__ = [
     "RunMetrics",
+    "check_allocations",
     "collect_metrics",
     "fold_run",
     "fold_samples",

@@ -13,6 +13,7 @@ check, so a delete-time read racing the sweep counts nothing twice.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from typing import Any, Dict, Optional
 
 from ptc_agent.core.sandbox.runtime import (
     SandboxFailureKind,
+    SandboxGoneError,
     SandboxProvider,
     SandboxRateLimitedError,
 )
@@ -29,6 +31,7 @@ from src.server.database import computer_runs as runs_db
 from src.server.database.session_lock import try_own_session_lock
 from src.server.services.computer_usage.metrics import RunMetrics, fold_samples
 from src.server.services.computer_usage.transitions import (
+    allocation_kinds,
     metered_kinds,
     metric_kinds,
     note_computer_status,
@@ -72,6 +75,15 @@ SETTLE = timedelta(seconds=120)
 # and the writes after it, since a read cut short there is never asked again.
 DELETE_FOLD_TIMEOUT_SECONDS = FETCH_TIMEOUT_SECONDS + 5.0
 ERROR_TEXT_MAX = 300
+# Asking a provider what it holds for a sandbox is a control-plane lookup,
+# which no provider has refused at this pace. A run with no reported size is
+# asked about every cycle until one answers; a stopped sandbox whose disk a
+# run may still hold, hourly, so a hold the ledger saw no event end (a
+# delete outside the server, an error) is over-counted by at most that.
+ALLOCATION_SIZE_EVERY_SECONDS = 240
+ALLOCATION_HELD_EVERY_SECONDS = 3600
+ALLOCATION_LIMIT = 200
+ALLOCATION_CONCURRENCY = 4
 
 ProviderFor = Callable[[Dict[str, Any]], SandboxProvider]
 
@@ -122,6 +134,13 @@ def _gives_up(
     if provider is None:
         # Built from the run's own settings, which a retry reads the same.
         return isinstance(error, ValueError)
+    return _is_gone(provider, error)
+
+
+def _is_gone(provider: SandboxProvider, error: Exception) -> bool:
+    """Whether *error* says the provider no longer has the sandbox."""
+    if isinstance(error, SandboxGoneError):
+        return True
     try:
         return provider.classify_error(error) is SandboxFailureKind.SANDBOX_GONE
     except Exception:
@@ -135,7 +154,10 @@ async def _record_failure(
     logger.debug(f"Metrics for run {run_id} not read: {type(error).__name__}: {error}")
     text = f"{type(error).__name__}: {error}"[:ERROR_TEXT_MAX]
     await runs_db.store_run_metrics_error(
-        run_id, text, final=_gives_up(run, provider, error)
+        run_id,
+        text,
+        final=_gives_up(run, provider, error),
+        ended_at=run.get("ended_at"),
     )
 
 
@@ -185,6 +207,7 @@ async def _fold_once(
             expected_through=current.metrics_through,
             aggregates=current.as_columns(),
             final=True,
+            ended_at=ended_at,
         )
         return True
     until = ended_at
@@ -210,6 +233,7 @@ async def _fold_once(
         expected_through=current.metrics_through,
         aggregates=folded.as_columns(),
         final=closed,
+        ended_at=ended_at,
     )
     return True if stored else None
 
@@ -340,21 +364,102 @@ async def collect_metrics(
     return sum(results)
 
 
+async def _check_allocation(row: Dict[str, Any], provider_for: ProviderFor) -> bool:
+    """Ask the provider about one sandbox and write the answer; never raises.
+
+    A sandbox the provider no longer has is written as gone, bounded by the
+    archive interval the provider is configured for. Any other failure is
+    stamped as a check, so the sandbox waits its turn rather than heading
+    every batch.
+    """
+    kind = row["provider_kind"]
+    sandbox_id = row["provider_sandbox_id"]
+    try:
+        provider = provider_for(row)
+        asked_at = time.monotonic()
+        try:
+            found = await asyncio.wait_for(
+                provider.allocation(sandbox_id), timeout=FETCH_TIMEOUT_SECONDS
+            )
+        except Exception as e:
+            if not _is_gone(provider, e):
+                raise
+            await runs_db.store_sandbox_gone(
+                kind,
+                sandbox_id,
+                archive_after_s=provider.default_archive_after_s,
+                asked_at=asked_at,
+            )
+            return True
+        await runs_db.store_allocation(kind, sandbox_id, found, asked_at=asked_at)
+        return True
+    except Exception as e:
+        logger.debug(
+            f"Allocation of {kind} sandbox {sandbox_id} not recorded: "
+            f"{type(e).__name__}: {e}"
+        )
+        with contextlib.suppress(Exception):
+            await runs_db.mark_allocation_checked(kind, sandbox_id)
+        return False
+
+
+async def check_allocations(provider_for: ProviderFor) -> int:
+    """Ask the providers about every sandbox due; returns how many answered.
+
+    What makes each run's size the sandbox's own rather than its tier's, and
+    ends a disk hold that no event the server saw did. No lookup starts past
+    the cycle's budget, so lookups that hang in an outage hold the
+    collector lock no longer than the metrics reads beside them; what is
+    left is due again next cycle. Never raises.
+    """
+    kinds = allocation_kinds()
+    if not kinds:
+        return 0
+    try:
+        due = await runs_db.get_sandboxes_due_allocation(
+            kinds=kinds,
+            size_every_seconds=ALLOCATION_SIZE_EVERY_SECONDS,
+            held_every_seconds=ALLOCATION_HELD_EVERY_SECONDS,
+            limit=ALLOCATION_LIMIT,
+        )
+    except Exception as e:
+        logger.warning(f"Usage allocations not listed: {type(e).__name__}: {e}")
+        return 0
+    slots = asyncio.Semaphore(ALLOCATION_CONCURRENCY)
+    deadline = time.monotonic() + CYCLE_BUDGET_SECONDS
+
+    async def one(row: Dict[str, Any]) -> bool:
+        async with slots:
+            if time.monotonic() > deadline:
+                return False
+            return await _check_allocation(row, provider_for)
+
+    return sum(await asyncio.gather(*(one(row) for row in due)))
+
+
 async def run_usage_sweep(provider_for: ProviderFor) -> None:
     """One cycle: reconcile first, so a run opened here is read in the same pass.
 
-    Reconcile runs on every worker; the reads only on the one that holds the
-    collector lock, which it keeps for the cycle's spaced-out reads, on a
-    session of its own so the hold takes no pool slot.
+    Reconcile, and settling the holds a later run or an archive ended, run on
+    every worker; the provider reads only on the one that holds the collector
+    lock, which it keeps for the cycle's spaced-out metric reads, with the
+    allocation lookups beside them, on a session of its own so the hold takes
+    no pool slot.
     """
     try:
         await reconcile_runs()
     except Exception as e:
         logger.warning(f"Usage ledger not reconciled: {type(e).__name__}: {e}")
     try:
+        await runs_db.settle_holds()
+    except Exception as e:
+        logger.warning(f"Usage disk holds not settled: {type(e).__name__}: {e}")
+    try:
         async with try_own_session_lock(_COLLECTOR_LOCK) as held:
             if held:
-                await collect_metrics(provider_for)
+                await asyncio.gather(
+                    collect_metrics(provider_for), check_allocations(provider_for)
+                )
     except Exception as e:
         logger.warning(f"Usage metrics not collected: {type(e).__name__}: {e}")
 
