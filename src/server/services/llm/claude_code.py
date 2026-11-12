@@ -255,12 +255,14 @@ def plan_refusal(model_name: str | None, stopped: PlanStopped) -> dict[str, Any]
 #: with no perl or on musl, or the turn's workspace is not on an own computer
 #: where the backend runs none, or the user's choice for cloud computers
 #: changed since admission, or the computer is now below the tier Claude Code
-#: runs on, or the own computer picked to run the CLI is offline.
+#: runs on, or the own computer picked to run the CLI is offline, or another
+#: model last replied on the thread, which a turn admission never saw (an
+#: automation's firing, on the thread it continues) reaches only here.
 _ADMISSION_REASON = {
     "auth_failed": "signed_out", "token_refused": "token_refused", "policy_blocked": "policy_blocked",
     "needs_own_computer": "needs_own_computer", "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
     "choice_changed": "choice_changed", "needs_bigger_computer": "needs_bigger_computer",
-    "cli_computer_offline": "cli_computer_offline",
+    "cli_computer_offline": "cli_computer_offline", "other_model_history": "other_model",
 }
 
 
