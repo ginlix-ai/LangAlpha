@@ -1,6 +1,8 @@
 /**
- * The Claude sign-in's row in Model access says the day it stops working,
- * and offers a way to Claude Code's sheet where the server offers Claude Code.
+ * The Claude sign-in's row in Model access is marked Legacy once the
+ * deployment set it an end day, says that day until it passes and to use
+ * Claude Code after, and offers a way to Claude Code's sheet where the server
+ * offers Claude Code.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, within } from '@testing-library/react';
@@ -45,10 +47,11 @@ const setupOf = (over: Partial<ClaudeCodeSetup> = {}): ClaudeCodeSetup => ({
 });
 const claudeListItem = () => screen.getByText('Claude').closest('li') as HTMLElement;
 const SWITCH = { name: 'Switch to Claude Code' };
+const GA = /Native Claude Code mode is now generally available\. Use it instead of this sign-in\./;
 
 describe('ModelAccessSection: Claude sign-in end day', () => {
   beforeEach(() => {
-    state.oauth = { connected: true, ends_on: '2026-11-30' };
+    state.oauth = { connected: true, ends_on: '2026-11-30', lifecycle: 'ending' };
     state.setup = setupOf();
     state.unread = false;
   });
@@ -80,10 +83,41 @@ describe('ModelAccessSection: Claude sign-in end day', () => {
   });
 
   it('says nothing where the deployment set no end day', () => {
-    state.oauth = { connected: true, ends_on: null };
+    state.oauth = { connected: true, ends_on: null, lifecycle: 'active' };
     renderWithProviders(<ModelAccessSection />);
     expect(screen.queryByText(/This sign-in ends on/)).toBeNull();
+    expect(screen.queryByText('Legacy')).toBeNull();
     expect(screen.queryByRole('button', SWITCH)).toBeNull();
+  });
+
+  it('marks the row Legacy until the day', () => {
+    renderWithProviders(<ModelAccessSection />);
+    expect(within(claudeListItem()).getByText('Legacy')).toBeInTheDocument();
+    expect(screen.queryByText(GA)).toBeNull();
+  });
+
+  describe('once the day has passed', () => {
+    beforeEach(() => {
+      state.oauth = { connected: true, ends_on: null, lifecycle: 'legacy' };
+    });
+
+    it('keeps the mark and says to use Claude Code instead, with the way there', () => {
+      renderWithProviders(<ModelAccessSection />);
+      const row = within(claudeListItem());
+      expect(row.getByText('Legacy')).toBeInTheDocument();
+      expect(row.getByText(GA)).toBeInTheDocument();
+      expect(screen.queryByText(/This sign-in ends on/)).toBeNull();
+      fireEvent.click(row.getByRole('button', SWITCH));
+      expect(screen.getByRole('dialog', { name: 'Claude Code' })).toBeInTheDocument();
+    });
+
+    it('keeps the mark alone where the server does not offer Claude Code', () => {
+      state.setup = null;
+      renderWithProviders(<ModelAccessSection />);
+      expect(within(claudeListItem()).getByText('Legacy')).toBeInTheDocument();
+      expect(screen.queryByText(GA)).toBeNull();
+      expect(screen.queryByRole('button', SWITCH)).toBeNull();
+    });
   });
 
   it('says nothing while the sign-in status is unread', () => {
