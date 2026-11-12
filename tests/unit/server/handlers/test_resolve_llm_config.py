@@ -792,7 +792,7 @@ class TestCustomModelFallback:
                 side_effect=_batch_lookup,
             ),
         ):
-            byok_config, base_url, _ = await _resolve_custom_model_byok(
+            byok_config, base_url, _, _ = await _resolve_custom_model_byok(
                 "user-1",
                 "kimi-k2.6",
                 {"name": "kimi-k2.6", "model_id": "kimi-k2.6", "provider": "moonshot-coding"},
@@ -846,7 +846,7 @@ class TestCustomModelFallback:
                 side_effect=_batch_lookup,
             ),
         ):
-            byok_config, base_url, _ = await _resolve_custom_model_byok(
+            byok_config, base_url, _, _ = await _resolve_custom_model_byok(
                 "user-1",
                 "kimi-custom",
                 {"name": "kimi-custom", "model_id": "kimi-custom", "provider": "moonshot"},

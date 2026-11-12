@@ -18,6 +18,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from ptc_agent.config.agent import CredentialPayer, Payer
+from src.config import settings as app_settings
 from src.llms.claude_code import is_claude_code_model
 from src.llms.llm import LLM as LLMFactory
 from src.server.database.api_keys import get_byok_configs_for_providers, is_byok_active
@@ -59,10 +61,59 @@ class ModelPayer(BaseModel):
     name: str
     provider: str
     custom: bool
-    payer: Literal["subscription", "own_key", "credits", "server_key", "local"] | None
+    payer: Payer | None
     plan: str | None = None
     signed_in: bool | None = None
     needs: Literal["plan", "key"] | None = None
+
+
+def _plan_name(provider: str, mc) -> str:
+    """A subscription named as its maker sells it, a coding plan by its catalog name."""
+    subscription = SUBSCRIPTIONS.get(provider)
+    return subscription.account_name if subscription else mc.get_display_name(provider)
+
+
+def source_payer(credential_source: object) -> CredentialPayer:
+    """Who pays when only the credential's source is known.
+
+    ``platform`` means opposite things in the two host modes: self-hosted, the
+    key is the operator's own and the operator is the reader; hosted, the user
+    holds no key and the call bills credits. An unknown source on a hosted
+    deployment reads as credits, since telling a user to fix an account they
+    do not hold is worse than a generic failure.
+    """
+    source = str(credential_source)
+    if source == "oauth":
+        return CredentialPayer("subscription")
+    if source == "byok":
+        return CredentialPayer("own_key")
+    return CredentialPayer("server_key" if app_settings.HOST_MODE == "oss" else "credits")
+
+
+def route_payer(route: Route, mc) -> CredentialPayer | None:
+    """Who ``route`` bills when it is a credential of the user's, and the
+    account it bills, for the picker's badge and a failed turn's card alike:
+    a coding plan is a subscription bought with a key, and a local server is
+    nobody's account. None for the deployment's route, or no route, which
+    the caller words."""
+    if isinstance(route, ClaudeCodeRoute):
+        return CredentialPayer("subscription", _plan_name(CLAUDE_PROVIDER, mc))
+    if isinstance(route, SubscriptionRoute):
+        return CredentialPayer("subscription", route.subscription.account_name)
+    if isinstance(route, NoRoute):
+        return None
+    if route.provider and mc.get_provider_info(route.provider).get("access_type") == "local":
+        return CredentialPayer("local")
+    if isinstance(route, OwnKeyRoute):
+        # The key bills the account it was saved for, which is not the
+        # model's own provider where a base URL let a sibling's key serve.
+        holder = route.holding or route.provider
+        info = mc.get_provider_info(holder)
+        if info.get("access_type") == "coding_plan":
+            return CredentialPayer("subscription", _plan_name(holder, mc))
+        # A provider the user added is named as they named it.
+        return CredentialPayer("own_key", mc.get_display_name(holder) if info else holder)
+    return None
 
 
 async def _sign_ins(user_id: str) -> dict[str, dict | None]:
@@ -126,17 +177,12 @@ async def model_payers(user_id: str) -> list[ModelPayer]:
         found = await get_byok_configs_for_providers(user_id, sorted(slugs))
         byok_cache = {slug: found.get(slug) for slug in slugs}
 
-    def plan_name(provider: str) -> str:
-        """A subscription named as its maker sells it, a coding plan by its catalog name."""
-        subscription = SUBSCRIPTIONS.get(provider)
-        return subscription.account_name if subscription else mc.get_display_name(provider)
-
     async def bills(name: str, route: Route) -> dict:
+        paid = route_payer(route, mc)
         if isinstance(route, SubscriptionRoute):
-            provider = route.model_info["provider"]
-            connection = sign_ins.get(provider)
+            connection = sign_ins.get(route.model_info["provider"])
             signed_in = connection is not None and not connection.get("needs_reauth_at")
-            named = {"plan": plan_name(provider), "signed_in": signed_in}
+            named = {"plan": paid.account, "signed_in": signed_in}
             # The turn refuses a model the connected plan does not include
             # (``oauth_plan_unsupported``) rather than moving to a key.
             if signed_in and not plan_includes(route.model_info, connection.get("plan_type")):
@@ -144,24 +190,17 @@ async def model_payers(user_id: str) -> list[ModelPayer]:
             return {"payer": "subscription", **named}
 
         if isinstance(route, ClaudeCodeRoute):
-            return {"payer": "subscription", "plan": plan_name(CLAUDE_PROVIDER),
-                    "signed_in": claude_code_signed_in}
-
+            return {"payer": "subscription", "plan": paid.account, "signed_in": claude_code_signed_in}
+        if paid is not None:
+            # A key of the user's, a coding plan bought with one, or a server
+            # on their machine.
+            if paid.payer == "subscription":
+                return {"payer": "subscription", "plan": paid.account, "signed_in": True}
+            return {"payer": paid.payer}
         if isinstance(route, NoRoute):
             # Only the user's own credential runs a model they added.
             return {"payer": None, "needs": "key"}
         provider = route.provider
-        access = mc.get_provider_info(provider).get("access_type") if provider else None
-        if access == "local":
-            return {"payer": "local"}
-        if isinstance(route, OwnKeyRoute):
-            # The key bills the account it was saved for, which is not the
-            # model's own provider where a base URL let a sibling's key serve.
-            holder = route.holding or provider
-            # A coding plan is a subscription bought with a key.
-            if mc.get_provider_info(holder).get("access_type") == "coding_plan":
-                return {"payer": "subscription", "plan": plan_name(holder), "signed_in": True}
-            return {"payer": "own_key"}
         if gated:
             if name in exempt or await model_on_plan(
                 user_id, name, model_pref=model_pref, permits=permits,

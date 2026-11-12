@@ -655,6 +655,7 @@ class TestFailedRunRecordsItsModelCall:
         task_info = _make_task_info(thread_id="thread-fail", run_id="run-fail")
         handler = MagicMock()
         handler.agent_config.credential_source = credential_source
+        handler.agent_config.credential_payer = None  # recorded at turn start
         task_info.metadata = {
             "workspace_id": "ws-1",
             "user_id": "user-1",

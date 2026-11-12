@@ -4,6 +4,10 @@ import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 import { ErrorBanner } from '../error-banner';
 import type { StructuredError } from '@/utils/rateLimitError';
 
+// The model's display name comes from the cached catalog, which the app's
+// query client holds; here the key stands for it.
+vi.mock('@/hooks/useModelName', () => ({ useModelName: () => (id: string) => id }));
+
 function LocationProbe({ onPath }: { onPath: (path: string) => void }) {
   const loc = useLocation();
   onPath(loc.pathname);

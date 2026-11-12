@@ -45,6 +45,38 @@ describe('TurnErrorCard routing', () => {
     expect(screen.getByText('chat.errorHintTryAnotherModel')).toBeInTheDocument();
   });
 
+  it('words a failure on credits generically, without the provider text', () => {
+    // The account is the service's: its words are for the team, and the
+    // hints say what the user can do here.
+    renderWithProviders(<TurnErrorCard err={{
+      message: "Error code: 402 - {'error': {'message': 'Insufficient Balance'}}",
+      kind: 'upstream',
+      statusCode: 402,
+      payer: 'credits',
+      model: 'deepseek-flash',
+      hints: ['try_another_model', 'retry_later', 'new_thread'],
+    }} />);
+    expect(screen.getByText('chat.errorPlatformHeadlineModel')).toBeInTheDocument();
+    expect(screen.getByText('chat.errorPlatformDetail')).toBeInTheDocument();
+    expect(screen.queryByText(/Insufficient Balance/)).not.toBeInTheDocument();
+    expect(screen.getByText('chat.errorHintNewThread')).toBeInTheDocument();
+  });
+
+  it('shows a failure on the user\'s own key in the provider\'s words, as theirs', () => {
+    renderWithProviders(<TurnErrorCard err={{
+      message: "Error code: 402 - {'error': {'message': 'Insufficient Balance'}}",
+      kind: 'upstream',
+      statusCode: 402,
+      payer: 'own_key',
+      account: 'DeepSeek',
+      hints: ['provider_balance', 'try_another_model'],
+    }} />);
+    expect(screen.getByText('chat.errorUpstreamHeadlineStatus:402')).toBeInTheDocument();
+    expect(screen.getByText('chat.errorSourceOwnKeyNamed')).toBeInTheDocument();
+    expect(screen.getByText(/Insufficient Balance/)).toBeInTheDocument();
+    expect(screen.getByText('chat.errorHintProviderBalance')).toBeInTheDocument();
+  });
+
   it('parses an unclassified failure as before', () => {
     renderWithProviders(<TurnErrorCard err={{ message: "Error calling model 'gpt-5' (Bad Request): 400 Bad Request." }} />);
 

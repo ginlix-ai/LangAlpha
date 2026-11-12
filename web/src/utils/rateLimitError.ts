@@ -8,6 +8,7 @@
  */
 
 import type { PlanRefusal } from '@/api/model';
+import type { UpstreamErrorHint, UpstreamPayer } from '@/lib/upstreamFailure';
 
 /** A 429's `detail`, as it comes off the wire. Only the two fields this module
  *  acts on are named: the counts the quota service also sends are already folded
@@ -18,37 +19,6 @@ export interface RateLimitErrorInfo {
   [key: string]: unknown;
 }
 
-/** Hints the backend emits for upstream provider failures — each maps to an
- *  i18n-bound bullet the user sees ("check your API key", etc.). Keep in sync
- *  with the ``hints`` list in ``stream_errors.error_event_data``. */
-export type UpstreamErrorHint =
-  | 'api_key'
-  | 'model_access'
-  | 'provider_status'
-  | 'try_another_model'
-  | 'reconnect_account';
-
-/** The allowlist used to sanitize ``hints`` coming off the SSE wire. Any hint
- *  not in this set is dropped — protects renderers from rendering unknown
- *  strings as i18n keys. */
-export const UPSTREAM_HINT_KEYS: readonly UpstreamErrorHint[] = [
-  'api_key',
-  'model_access',
-  'provider_status',
-  'try_another_model',
-  'reconnect_account',
-];
-
-/** i18n key lookup for each hint. Keep renderers in sync by importing this
- *  rather than re-declaring the map at each call site. */
-export const UPSTREAM_HINT_I18N_KEY: Record<UpstreamErrorHint, string> = {
-  api_key: 'chat.errorHintApiKey',
-  model_access: 'chat.errorHintModelAccess',
-  provider_status: 'chat.errorHintProviderStatus',
-  try_another_model: 'chat.errorHintTryAnotherModel',
-  reconnect_account: 'chat.errorHintReconnectAccount',
-};
-
 /** Where a subscription whose sign-in lapsed is renewed. The server's refusal
  *  of a turn carries the same link already worded; a failure mid-stream names
  *  only the hint, so the client supplies the destination. */
@@ -57,10 +27,6 @@ export const RECONNECT_ACCOUNT_LINK: ErrorLinkSpec = {
   label: 'Reconnect',
   labelKey: 'chat.errorLinkReconnect',
 };
-
-export function isUpstreamHint(value: unknown): value is UpstreamErrorHint {
-  return UPSTREAM_HINT_KEYS.includes(value as UpstreamErrorHint);
-}
 
 export interface ErrorLinkSpec {
   url: string;
@@ -94,6 +60,12 @@ export interface StructuredError {
   statusCode?: number;
   /** Bulleted guidance to render under the message. */
   hints?: UpstreamErrorHint[];
+  /** Who the provider billed for an upstream failure. Absent on a frame from
+   *  before the server named it, which reads as it always did. */
+  payer?: UpstreamPayer;
+  /** The user's account the failure came from (``DeepSeek``, ``ChatGPT``),
+   *  when they pay and the server could name it. */
+  account?: string;
   /** User-configured (primary) model name, when the failure is model-attributable.
    *  Drives the model-aware error headline. */
   model?: string;

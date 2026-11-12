@@ -120,6 +120,9 @@ async def _resolve_custom_model_byok(
        Unlike a system model's walk, this one crosses a separate credential
        (``own_api_key``): the client is built against the endpoint of the slug
        that held the key, so the key still goes to the service that issued it.
+
+    Returns the key, its base URL, the entry to build from, and the slug that
+    held the key, whose account the calls bill.
     """
     provider = custom_config["provider"]
 
@@ -131,7 +134,7 @@ async def _resolve_custom_model_byok(
             parent = cp_by_name["parent_provider"]
             base_url = byok_config.get("base_url") or mc.get_provider_info(parent).get("base_url")
             custom_config = user_models.route_custom_entry(custom_config, cp_by_name, mc)
-            return byok_config, base_url, custom_config
+            return byok_config, base_url, custom_config, model_name
 
     # 2. Provider field is a custom sub-provider
     cp_by_provider = await user_models.get_custom_provider_config(user_id, provider, _pref_cache=_pref_cache)
@@ -141,7 +144,7 @@ async def _resolve_custom_model_byok(
             parent = cp_by_provider["parent_provider"]
             base_url = byok_config.get("base_url") or mc.get_provider_info(parent).get("base_url")
             custom_config = user_models.route_custom_entry(custom_config, cp_by_provider, mc)
-            return byok_config, base_url, custom_config
+            return byok_config, base_url, custom_config, provider
 
     # 3. System provider — walk [provider → parent → sibling variants] for a
     #    stored key. The sibling step covers the mirror case where a custom
@@ -159,9 +162,9 @@ async def _resolve_custom_model_byok(
         base_url = byok_config.get("base_url") or mc.get_provider_info(endpoint).get("base_url")
         if endpoint != provider:
             custom_config = {**custom_config, "provider": endpoint}
-        return byok_config, base_url, custom_config
+        return byok_config, base_url, custom_config, holding
 
-    return None, None, custom_config
+    return None, None, custom_config, None
 
 
 async def _custom_provider_model(
@@ -307,13 +310,13 @@ async def byok_key(
         if entry is None:
             return None
     if source in (ModelSource.CUSTOM, ModelSource.UNKNOWN):
-        byok_config, base_url, custom_config = await _resolve_custom_model_byok(
+        byok_config, base_url, custom_config, holding = await _resolve_custom_model_byok(
             user_id, model_name, entry, mc,
             _pref_cache=_pref_cache, _byok_cache=_byok_cache,
         )
         if not byok_config:
             return None
-        return OwnKeyRoute(byok_config, base_url, custom_config["provider"], custom_config)
+        return OwnKeyRoute(byok_config, base_url, custom_config["provider"], custom_config, holding=holding)
 
     provider = entry["provider"]
     byok_config, holding = await walk_byok_candidates(
@@ -1028,6 +1031,35 @@ async def _resolve_fallback_clients(
         )
 
 
+async def _stamp_credential_payer(
+    config, user_id: str, model_name: str, *, is_byok: bool, model_pref: dict, byok_cache: dict,
+) -> None:
+    """Record who the main model's credential bills, for a failed turn to name.
+
+    Asked of the same ladder that built the client, from the caches it read,
+    so no lookup repeats, as the picker's badge asks it. On the deployment's
+    credential only a local server answers from the route (a server on the
+    machine is nobody's account, as the badge says); otherwise, or failing
+    that, the source does.
+    """
+    from src.llms.llm import LLM as LLMFactory
+
+    from .payers import route_payer, source_payer  # lazy: payers imports this module
+
+    config.credential_payer = source_payer(config.credential_source)
+    own = config.credential_source in (CredentialSource.OAUTH, CredentialSource.BYOK)
+    try:
+        route = await credential_route(
+            user_id, model_name, is_byok=is_byok, _pref_cache=model_pref, _byok_cache=byok_cache,
+        )
+        named = route_payer(route, LLMFactory.get_model_config())
+        if named is not None and (own or named.payer == "local"):
+            config.credential_payer = named
+    except Exception:
+        # Naming the account is wording only; the turn runs without it.
+        logger.warning("[CHAT] Could not name the credential for %s", model_name, exc_info=True)
+
+
 async def resolve_clients(
     config, user_id: str, effective_model: str, model_pref: dict,
     subagent_roles: list[LLMRole], *, is_byok: bool, thread_id: str | None,
@@ -1080,6 +1112,10 @@ async def resolve_clients(
     # Always store credential_source (even NONE) — single source of truth
     # downstream (credit gate, materialization gate, billing signal).
     config.credential_source = main.credential_source
+    await _stamp_credential_payer(
+        config, user_id, effective_model, is_byok=is_byok,
+        model_pref=model_pref, byok_cache=byok_cache,
+    )
     if main.client is not None:
         _stamp(config, main.client, config.prompt_guidance)
         config.llm_client = main.client

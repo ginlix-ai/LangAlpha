@@ -4,9 +4,10 @@ and the ledger metadata a failed model call leaves on its run."""
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from src.config import settings as app_settings
+from ptc_agent.config.agent import CredentialPayer, Payer
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.services.llm.claude_code import claude_code_refusal
+from src.server.services.llm.payers import source_payer
 from src.server.services.oauth_health import subscription_token_refusal
 from src.server.utils.error_sanitization import sanitize_error_text
 
@@ -80,24 +81,22 @@ def _parse_status_from_message(text: str) -> Optional[int]:
 # branches; they are about access, not about the request body.
 _REQUEST_REFUSED_STATUSES: frozenset[int] = frozenset({400, 405, 413, 422})
 
-# Hints that ask the user to go fix a credential. Only truthful when the user
-# is the one holding it.
-_CREDENTIAL_HINTS: frozenset[str] = frozenset({"api_key", "model_access"})
+
+def failure_payer(config: Any) -> CredentialPayer:
+    """Who the provider billed for a failed call on the turn ``config``
+    resolved (``resolve_clients`` records it); a config that never resolved a
+    credential answers by its source alone."""
+    return getattr(config, "credential_payer", None) or source_payer(
+        getattr(config, "credential_source", None)
+    )
 
 
-def user_owns_credential(credential_source: Any) -> bool:
-    """Whether the reader of the error holds the credential that ran the call.
-
-    Both halves are load-bearing, because ``platform`` means opposite things in
-    the two host modes: in OSS the key is the operator's own ``.env`` entry and
-    the operator is the user, while on the hosted service the user has no key at
-    all and "check your API key" sends them to a page that is not the cause.
-    An unknown source fails closed, since a wrong credential hint is worse than
-    a missing one.
-    """
-    if app_settings.HOST_MODE == "oss":
-        return True
-    return str(credential_source) in ("oauth", "byok")
+def upstream_failure(config: Any) -> Dict[str, Any]:
+    """What an upstream failure carries beyond its status: ``payer``, and
+    ``account`` when the user pays. The frame and the run row carry the same
+    fields, so a reload reads as the live card did."""
+    named = failure_payer(config)
+    return {key: value for key, value in named._asdict().items() if value is not None}
 
 
 def find_resilience_trace(exc: BaseException) -> Optional[Dict[str, Any]]:
@@ -119,9 +118,7 @@ def find_resilience_trace(exc: BaseException) -> Optional[Dict[str, Any]]:
     return None
 
 
-def model_call_failure(
-    exc: BaseException, credential_source: Any
-) -> Dict[str, Any]:
+def model_call_failure(exc: BaseException, config: Any) -> Dict[str, Any]:
     """Ledger metadata for a run that failed on its model call; ``{}`` when
     the failure was anything else.
 
@@ -140,7 +137,7 @@ def model_call_failure(
         return {}
     return {
         "error_status_code": status,
-        "error_credential_owned": user_owns_credential(credential_source),
+        "error_credential_owned": failure_payer(config).payer != "credits",
     }
 
 
@@ -249,23 +246,86 @@ def plan_stop_metadata(exc: BaseException) -> Dict[str, Any]:
     return {"claude_plan": {k: refusal[k] for k in keep if k in refusal}}
 
 
+#: The guidance for a status the user can act on by their account or model.
+_STATUS_HINTS: Dict[int, Tuple[str, ...]] = {
+    401: ("api_key", "model_access", "try_another_model"),
+    403: ("api_key", "model_access", "try_another_model"),
+    # The account behind the key has no credit left (DeepSeek's and MiniMax's
+    # "insufficient balance"). The key is valid, so asking the user to check
+    # it misdirects them.
+    402: ("provider_balance", "try_another_model"),
+    404: ("model_access", "try_another_model"),
+}
+
+
+def _status_hints(status: Optional[int]) -> list[str]:
+    """5xx and 429 are the provider's health, not the user's credential, so a
+    key check never leads there."""
+    if status in _STATUS_HINTS:
+        return list(_STATUS_HINTS[status])
+    if status in _REQUEST_REFUSED_STATUSES:
+        return ["try_another_model"]
+    if status == 429 or (isinstance(status, int) and status >= 500):
+        return ["provider_status", "try_another_model"]
+    # No status (network error): could be anything, so show all.
+    return ["api_key", "model_access", "provider_status", "try_another_model"]
+
+
+def _upstream_hints(
+    info: Dict[str, Any], payer: Payer, trace: Optional[Dict[str, Any]], signed_in: bool
+) -> list[str]:
+    """The guidance under an upstream failure, most relevant first: the payer
+    says who can act on it, and the status what failed."""
+    status = info.get("status_code")
+    if payer == "local":
+        # A server on the user's machine: no key, plan or status page, and a
+        # failure there is most often the server not answering.
+        return ["local_server", "try_another_model"]
+    if payer == "credits":
+        # The account is the service's: nothing about it is the user's to
+        # check, and they do not know which vendor serves the model, so its
+        # status page is no lead either. What is left is what they can do
+        # here. A refused request is usually the thread itself (too long, a
+        # file the model cannot read), which a new thread leaves behind.
+        if status in _REQUEST_REFUSED_STATUSES:
+            return ["try_another_model", "new_thread"]
+        return ["try_another_model", "retry_later", "new_thread"]
+    hints = list(info["hints"]) if "hints" in info else _status_hints(status)
+    if signed_in:
+        # A subscription has no key to check. When its token was refused (any
+        # 401, or xAI's stale-token 403, whose other 403s are the plan's)
+        # reconnecting renews the sign-in, and a stale token says nothing
+        # about the model's access.
+        stale = status == 403 and subscription_token_refusal(trace) is not None
+        hints = [h for h in hints if h != "api_key" and not (stale and h == "model_access")]
+        if status == 401 or stale:
+            hints.insert(0, "reconnect_account")
+    return hints
+
+
 def error_event_data(
     thread_id: str,
     error_message: str,
     *,
     exc: Optional[BaseException] = None,
-    credential_source: Any = None,
     model: Optional[str] = None,
+    config: Any = None,
 ) -> Dict[str, Any]:
     """The ``error`` frame's data.
 
     With ``exc`` the frame carries ``error_kind`` (``upstream`` or
     ``internal``), ``status_code`` when available, and ``hints`` for the
     frontend to render user-actionable guidance; the legacy ``error`` and
-    ``message`` fields stay so older clients keep working. Hints are chosen by
-    status and then filtered by who holds the credential (see
-    ``user_owns_credential``), so a platform-billed turn never asks the user
-    to check a key they do not have.
+    ``message`` fields stay so older clients keep working.
+
+    An upstream failure also carries ``payer``, who the provider bills for the
+    call, because that decides what the user can do about it. A user who pays
+    (their own key or subscription) is shown the provider's own words and told
+    the account is theirs to fix, with ``account`` naming it as the turn
+    resolved it (``config``, see ``upstream_failure``). On credits the
+    account is the service's, so the client words the failure generically and
+    the hints offer only what the user can do here: another model, a new
+    thread, a later try.
 
     A Claude Code turn whose token Anthropic refused gets the admission
     refusal's shape instead, ``model`` naming the turn's row.
@@ -286,45 +346,9 @@ def error_event_data(
         if info["provider_module"]:
             data["provider_module"] = info["provider_module"]
         if info["kind"] == "upstream":
-            # Order matters — frontend renders the hints as a list, so the
-            # most relevant hint for this status goes first. 5xx/429 are
-            # provider outages, not the user's credentials; showing
-            # "check your API key" first on a 503 is misleading.
-            status = info.get("status_code")
-            if "hints" in info:
-                hints = info["hints"]
-            elif status in (401, 403):
-                hints = ["api_key", "model_access", "try_another_model"]
-            elif status == 404:
-                hints = ["model_access", "try_another_model"]
-            elif status in _REQUEST_REFUSED_STATUSES:
-                hints = ["try_another_model"]
-            elif status == 429 or (isinstance(status, int) and status >= 500):
-                hints = ["provider_status", "try_another_model"]
-            else:
-                # No status (network error) — could be anything; show all.
-                hints = [
-                    "api_key",
-                    "model_access",
-                    "provider_status",
-                    "try_another_model",
-                ]
-            # The status says what failed; the credential says who can act
-            # on it. Drop the hints that would send a user to fix a key
-            # they do not hold. Every branch above keeps
-            # "try_another_model", so the list never empties.
-            if not user_owns_credential(credential_source):
-                hints = [h for h in hints if h not in _CREDENTIAL_HINTS]
-            elif str(credential_source) == "oauth":
-                # A subscription has no key to check. When its token was
-                # refused (any 401, or xAI's stale-token 403, whose other
-                # 403s are the plan's) reconnecting renews the sign-in, and
-                # a stale token says nothing about the model's access.
-                stale = status == 403 and subscription_token_refusal(trace) is not None
-                hints = [h for h in hints if h != "api_key" and not (stale and h == "model_access")]
-                if status == 401 or stale:
-                    hints.insert(0, "reconnect_account")
-            data["hints"] = hints
+            data.update(upstream_failure(config))
+            signed_in = str(getattr(config, "credential_source", None)) == "oauth"
+            data["hints"] = _upstream_hints(info, data["payer"], trace, signed_in)
         if trace is not None:
             primary_model = trace.get("model")
             if isinstance(primary_model, str) and primary_model:

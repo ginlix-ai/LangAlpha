@@ -275,7 +275,7 @@ async def model_on_plan(
         if shadowed is None:
             return True
         if is_byok:
-            key, _, _ = await _resolve_custom_model_byok(
+            key, *_ = await _resolve_custom_model_byok(
                 user_id, model, entry, mc, _pref_cache=model_pref, _byok_cache=byok_cache,
             )
             if key:

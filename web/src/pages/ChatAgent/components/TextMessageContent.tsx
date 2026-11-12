@@ -11,8 +11,9 @@ import { visibleParagraphPrefix } from '@/lib/paragraphGate';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
 import { parseErrorMessage, type ParsedError } from '../utils/parseErrorMessage';
 import type { OpenFileHandler } from '../utils/fileLocation';
-import { UPSTREAM_HINT_I18N_KEY, type StructuredError } from '@/utils/rateLimitError';
+import type { StructuredError } from '@/utils/rateLimitError';
 import { ErrorLink, NoticeLine } from '@/components/ui/error-banner';
+import { UPSTREAM_HINT_I18N_KEY, upstreamFailureCopy } from '@/lib/upstreamFailure';
 
 interface TextMessageContentProps {
   content: string;
@@ -160,8 +161,8 @@ interface StructuredErrorDisplayProps {
  * StructuredErrorDisplay
  *
  * Inline error card for classified upstream-provider failures. Renders the
- * kind-aware headline (with status code when known), the raw error message,
- * and the hint list ("check your API key", etc.). Used instead of the
+ * headline, whose account the failure came from, the provider's message (or a
+ * generic line on credits), and the hint list ("check your API key", etc.). Used instead of the
  * regex-based ``ErrorDisplay`` when the backend has already classified the
  * error source — ``parseErrorMessage`` can't tell "Authentication error" from
  * the provider apart from the kind-routed message our own service returns.
@@ -169,15 +170,8 @@ interface StructuredErrorDisplayProps {
 function StructuredErrorDisplay({ err }: StructuredErrorDisplayProps): React.ReactElement {
   const { t } = useTranslation();
   const name = useModelName();
-  // When the failure is attributable to a specific model, name it in the
-  // headline; otherwise fall back to the generic "model provider" copy.
-  const headline = err.model
-    ? (err.statusCode
-        ? t('chat.errorUpstreamHeadlineModelStatus', { model: name(err.model), status: err.statusCode })
-        : t('chat.errorUpstreamHeadlineModel', { model: name(err.model) }))
-    : (err.statusCode
-        ? t('chat.errorUpstreamHeadlineStatus', { status: err.statusCode })
-        : t('chat.errorUpstreamHeadline'));
+  // Worded by who pays the provider: see `upstreamFailureCopy`.
+  const { headline, detail, source } = upstreamFailureCopy(err, t, name);
   // Models other than the primary that were also tried before giving up. Only
   // shown when the middleware actually attempted more than one model.
   const alsoTried = (err.attemptedModels && err.attemptedModels.length > 1)
@@ -199,9 +193,14 @@ function StructuredErrorDisplay({ err }: StructuredErrorDisplayProps): React.Rea
         <div className="font-medium" style={{ color: 'var(--color-loss)' }}>
           {headline}
         </div>
-        {err.message && (
+        {source && (
+          <div style={{ color: 'var(--color-text-secondary)' }}>
+            {source}
+          </div>
+        )}
+        {detail && (
           <div className="wrap-break-word" style={{ color: 'var(--color-text-tertiary)' }}>
-            {err.message}
+            {detail}
           </div>
         )}
         {err.links && err.links.length > 0 && (
@@ -227,8 +226,9 @@ function StructuredErrorDisplay({ err }: StructuredErrorDisplayProps): React.Rea
             {alsoTried.map((m, i) => (
               <React.Fragment key={m.model}>
                 {i > 0 && ', '}
-                {/* Per-model error text lives in the tooltip, not inline. */}
-                <span title={m.error || undefined}>{name(m.model)}</span>
+                {/* Per-model error text lives in the tooltip, not inline, and
+                    only where the user pays: on credits it is the service's. */}
+                <span title={(err.payer !== 'credits' && m.error) || undefined}>{name(m.model)}</span>
               </React.Fragment>
             ))}
           </div>

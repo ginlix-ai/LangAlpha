@@ -379,7 +379,7 @@ async def test_a_custom_model_follows_a_separate_credential_to_its_own_endpoint(
         ),
         patch(f"{DB_KEYS}.get_byok_configs_for_providers", side_effect=fetch),
     ):
-        byok, base_url, custom = await clients._resolve_custom_model_byok(
+        byok, base_url, custom, _ = await clients._resolve_custom_model_byok(
             "u", "my-model", {"name": "my-model", "provider": "vendor-y"}, mc,
         )
 

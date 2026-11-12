@@ -42,3 +42,17 @@ describe('readStreamFailure: a Claude Code refusal', () => {
     expect(readStreamFailure(refusal({ reason: 'plan_limited', window: 'five_hour' }), SERVER, 'ws-1', t)).toBeUndefined();
   });
 });
+
+describe('readStreamFailure: who pays for an upstream failure', () => {
+  const upstream = (fields: Record<string, unknown>) => ({ event: 'error', error: SERVER, error_kind: 'upstream', ...fields });
+
+  it('reads the payer and the account the server named', () => {
+    const failure = readStreamFailure(upstream({ payer: 'own_key', account: 'DeepSeek' }), SERVER, 'ws-1', t);
+    expect(failure?.payer).toBe('own_key');
+    expect(failure?.account).toBe('DeepSeek');
+  });
+
+  it('drops a payer it does not know, so the card reads as it always did', () => {
+    expect(readStreamFailure(upstream({ payer: 'someone' }), SERVER, 'ws-1', t)?.payer).toBeUndefined();
+  });
+});

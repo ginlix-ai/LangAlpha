@@ -212,3 +212,59 @@ async def test_the_route_leaves_out_what_a_row_has_no_answer_for():
          "plan": "Claude", "signed_in": False},
         {"name": "c", "provider": "openai", "custom": True, "payer": "own_key"},
     ]}
+
+
+def test_a_failed_turn_names_the_account_the_picker_names():
+    """``route_payer`` is what a failed turn's card names: the same payer the
+    picker's badge shows, and the account that bills, never the model's
+    provider when another account's key served it."""
+    from src.server.services.llm.clients import (
+        ClaudeCodeRoute,
+        DeploymentRoute,
+        OwnKeyRoute,
+        SubscriptionRoute,
+    )
+    from src.server.services.llm.payers import route_payer
+    from src.server.services.oauth_providers import SUBSCRIPTIONS
+
+    mc, key = _Manifest(), {"api_key": "k"}
+    assert route_payer(OwnKeyRoute(key, None, "anthropic"), mc) == ("own_key", "anthropic")
+    assert route_payer(OwnKeyRoute(key, None, "z-ai-coding", holding="z-ai-coding"), mc) == (
+        "subscription", "GLM Coding Plan",
+    )
+    # A pay-as-you-go key serving a coding plan's model bills its own account.
+    assert route_payer(OwnKeyRoute(key, None, "glm-coding", holding="glm"), mc) == ("own_key", "glm")
+    assert route_payer(OwnKeyRoute(key, None, "ollama"), mc) == ("local", None)
+    # A provider the user added is named as they named it.
+    assert route_payer(OwnKeyRoute(key, None, "my-gateway"), mc) == ("own_key", "my-gateway")
+    assert route_payer(SubscriptionRoute(SUBSCRIPTIONS["claude-oauth"], {}), mc) == ("subscription", "Claude")
+    assert route_payer(ClaudeCodeRoute({}), mc) == ("subscription", "Claude")
+    assert route_payer(DeploymentRoute({"provider": "openai"}), mc) is None
+    # A deployment's local server is nobody's account, as the badge says.
+    assert route_payer(DeploymentRoute({"provider": "ollama"}), mc) == ("local", None)
+    # A gateway the user added names itself, not the SDK it is built with.
+    assert route_payer(OwnKeyRoute(key, None, "anthropic", {}, holding="my-gateway"), mc) == ("own_key", "my-gateway")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "route", "payer"),
+    [
+        # The deployment's own local server: no key, so no key hints.
+        ("none", {"provider": "ollama"}, ("local", None)),
+        ("platform", {"provider": "ollama"}, ("local", None)),
+        # The deployment's key: the route names no account of the user's.
+        ("platform", {"provider": "openai"}, ("server_key", None)),
+    ],
+)
+async def test_a_turn_on_the_deployment_records_its_local_server(monkeypatch, source, route, payer):
+    from ptc_agent.config.agent import CredentialSource
+    from src.server.services.llm import clients
+
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
+    monkeypatch.setattr(clients, "credential_route", AsyncMock(return_value=clients.DeploymentRoute(route)))
+    monkeypatch.setattr("src.llms.llm.LLM.get_model_config", lambda: _Manifest())
+    config = SimpleNamespace(credential_source=CredentialSource(source), credential_payer=None)
+
+    await clients._stamp_credential_payer(config, "u", "m", is_byok=False, model_pref={}, byok_cache={})
+    assert config.credential_payer == payer
