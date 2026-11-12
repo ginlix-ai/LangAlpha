@@ -180,7 +180,7 @@ FEATURES: dict[str, FeatureSpec] = {
     # their turns run on one (``resolve_llm_config``).
     "claude_code_runtime": FeatureSpec(
         key="claude_code_runtime",
-        label="Claude Code runtime (preview)",
+        label="Claude Code mode",
         description=(
             "Runs your Claude threads through Claude Code on your own Claude "
             "plan. It signs in with a setup token made for LangAlpha. Claude "
@@ -217,8 +217,12 @@ FEATURES: dict[str, FeatureSpec] = {
     # sign-in already stored keeps working either way.
     "claude_oauth": FeatureSpec(
         key="claude_oauth",
-        label="Sign in with Claude",
-        description="Connect a Claude Pro or Max plan by signing in with your Claude account.",
+        label="Claude sign-in (legacy)",
+        description=(
+            "Uses a Claude Pro or Max plan through a sign-in to your Claude "
+            "account, with LangAlpha calling Claude directly. Claude Code mode "
+            "replaces it."
+        ),
         enabled=True,
         gate=FeatureGate.NONE,
     ),
