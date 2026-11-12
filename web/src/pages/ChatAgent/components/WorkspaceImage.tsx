@@ -1,26 +1,66 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { authSessionCheck, registerAuthReset } from '@/lib/authResets';
+import { createEmitter } from '@/lib/emitter';
 import { useWorkspaceId, useWorkspaceDownloadFile, useWorkspaceFolders, useWorkspaceImageScope } from '../contexts/WorkspaceContext';
 import { downloadWorkspaceFile } from '../utils/api';
 import { onOtherComputer, parseAgentHref } from '../utils/agentPaths';
 import { normalizeFilePath, parseFolderHref, parseWsPath } from '../utils/filePaths';
 import ImageLightbox from './ImageLightbox';
 
-// Module-level cache: key:path → blobUrl
+// key:path → blob URL of the copy last read. A path is not a version: the agent
+// rewrites a chart in place and shows it again, so the cache only paints at
+// once; every image that mounts reads the file again, and the copy that lands
+// replaces this one for every image of the path still on screen.
+// One emitter for the whole cache: each image reads its own key back, so only
+// the images of the key that changed redraw.
 const blobCache = new Map<string, string>();
+const inFlight = new Map<string, Promise<void>>();
+const changes = createEmitter();
+
+function publish(key: string, url: string): void {
+  const previous = blobCache.get(key);
+  if (previous === url) return;
+  blobCache.set(key, url);
+  changes.emit();
+  if (previous) URL.revokeObjectURL(previous);
+}
+
+/** One read of the file per key at a time, however many images of it mount together. */
+function readInto(key: string, fetcher: () => Promise<string>): Promise<void> {
+  const running = inFlight.get(key);
+  if (running) return running;
+  // A sign-out landing first makes the bytes the last account's.
+  const current = authSessionCheck();
+  const read = fetcher()
+    .then((url) => {
+      if (!current()) {
+        URL.revokeObjectURL(url);
+        throw new Error('signed out');
+      }
+      publish(key, url);
+    })
+    .finally(() => {
+      if (inFlight.get(key) === read) inFlight.delete(key);
+    });
+  inFlight.set(key, read);
+  return read;
+}
+
 // Its bytes are the account's files, so a sign-out or account switch revokes
 // and forgets them.
 registerAuthReset(() => {
   blobCache.forEach((url) => URL.revokeObjectURL(url));
   blobCache.clear();
+  inFlight.clear();
+  changes.emit();
 });
 
 function isExternalUrl(src: string): boolean {
   return /^(https?:\/\/|data:|blob:)/i.test(src);
 }
 
-type LoadState = 'idle' | 'loading' | 'loaded' | 'error';
+type LoadState = 'loading' | 'loaded' | 'error';
 
 interface WorkspaceImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src?: string;
@@ -37,13 +77,12 @@ function ImageLoadFailed({ name }: { name: string | undefined }) {
 }
 
 function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
-  const { t } = useTranslation();
+  const folders = useWorkspaceFolders();
   const [lightboxOpen, setLightboxOpen] = useState(false);
   // Safari draws a broken image as a small question mark and drops its alt text.
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const contextWorkspaceId = useWorkspaceId();
   const downloadFileFn = useWorkspaceDownloadFile();
-  const folders = useWorkspaceFolders();
   const imageScope = useWorkspaceImageScope();
 
   // Support __wsref__/{workspaceId}/path for cross-workspace file references,
@@ -76,55 +115,30 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   const normalizedPath = canFetch ? other?.path ?? normalizeFilePath(src!, folders) : '';
   const cacheKey = canFetch ? `${imageScope || workspaceId || 'shared'}:${normalizedPath}` : '';
 
-  const [state, setState] = useState<LoadState>(() =>
-    cacheKey && blobCache.has(cacheKey) ? 'loaded' : 'idle'
-  );
-  const [blobUrl, setBlobUrl] = useState<string | null>(() =>
-    cacheKey ? blobCache.get(cacheKey) || null : null
-  );
+  const readCached = () => (cacheKey ? blobCache.get(cacheKey) ?? null : null);
+  const blobUrl = useSyncExternalStore(changes.subscribe, readCached, readCached);
+  // What failed: a read that left nothing to show (no url), or a copy the
+  // browser could not draw. A new copy of the key, which any later mount reads,
+  // clears it, and so does another path.
+  const [failed, setFailed] = useState<{ key: string; url: string | null } | null>(null);
 
   useEffect(() => {
     if (!canFetch) return;
-
-    const cached = blobCache.get(cacheKey);
-    if (cached) {
-      setBlobUrl(cached);
-      setState('loaded');
-      return;
-    }
-
     let cancelled = false;
-    setState('loading');
-
-    const fetcher = effectiveDownloadFn
-      ? effectiveDownloadFn(normalizedPath)
-      : downloadWorkspaceFile(workspaceId!, normalizedPath);
-
-    const current = authSessionCheck();
-    (fetcher as Promise<string>)
-      .then((url) => {
-        // Nothing will show it, or a sign-out landed first and the file is the
-        // last account's.
-        if (cancelled || !current()) {
-          URL.revokeObjectURL(url);
-          if (!cancelled) setState('error');
-          return;
-        }
-        // Two images of one file fetch at once, and only the cached copy is
-        // revoked at sign-out, so the second to land shows the first's.
-        const landed = blobCache.get(cacheKey);
-        if (landed) URL.revokeObjectURL(url);
-        else blobCache.set(cacheKey, url);
-        setBlobUrl(landed ?? url);
-        setState('loaded');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setState('error');
-      });
-
+    readInto(cacheKey, () => {
+      const fetcher = effectiveDownloadFn
+        ? effectiveDownloadFn(normalizedPath)
+        : downloadWorkspaceFile(workspaceId!, normalizedPath);
+      return fetcher as Promise<string>;
+    })
+      // A copy already on screen stays when the new read fails.
+      .catch(() => { if (!cancelled && !blobCache.has(cacheKey)) setFailed({ key: cacheKey, url: null }); });
     return () => { cancelled = true; };
   }, [canFetch, cacheKey, workspaceId, normalizedPath, effectiveDownloadFn]);
+
+  const state: LoadState = failed?.key === cacheKey && failed.url === blobUrl
+    ? 'error'
+    : blobUrl ? 'loaded' : 'loading';
 
   if (elsewhere) return <span>{alt || src!.split('/').pop()}</span>;
 
@@ -151,7 +165,7 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
     );
   }
 
-  if (state === 'loading' || state === 'idle') {
+  if (state === 'loading') {
     return (
       <span
         className="rounded-lg my-2 animate-pulse"
@@ -178,14 +192,9 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
         src={blobUrl!}
         alt={alt}
         onClick={() => setLightboxOpen(true)}
-        onError={() => {
-          // Out of the cache too, or the next view of a repaired file shows these bytes.
-          if (blobCache.get(cacheKey) === blobUrl) {
-            blobCache.delete(cacheKey);
-            URL.revokeObjectURL(blobUrl!);
-          }
-          setState('error');
-        }}
+        // The copy stays cached for the other images of the file, each of
+        // which fails on its own; the next mount reads the file again.
+        onError={() => setFailed({ key: cacheKey, url: blobUrl })}
         {...props}
       />
       <ImageLightbox src={blobUrl!} alt={alt} open={lightboxOpen} onClose={() => setLightboxOpen(false)} />
