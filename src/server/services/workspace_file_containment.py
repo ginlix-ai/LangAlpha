@@ -38,6 +38,8 @@ READ_CONTAINMENT = 3
 READ_TOO_LARGE = 5
 # A ranged read whose offset is at or past the file's end.
 READ_UNSATISFIABLE = 6
+# A versioned whole read of a file still at the version the caller holds.
+READ_NOT_MODIFIED = 7
 # The read returns the file as base64 on the exec's stdout. Daytona fails an
 # exec whose output passes ~128 MiB (a ~95 MiB file) with a 502 and stops the
 # sandbox, so a read stays well under that; larger files go through the
@@ -116,6 +118,22 @@ class FileTooLargeToServe(Exception):
         super().__init__(canonical)
         self.canonical = canonical
         self.size = size
+
+
+@dataclass(frozen=True)
+class ContainedFile:
+    """A contained file read whole, with the version it was read at.
+
+    ``content`` is None when the file is still at the version the caller
+    named, which the read then leaves unread. ``version`` is None when the
+    file has none that tells it from its next write, or it changed while it
+    was read.
+    """
+
+    canonical: str
+    size: int
+    version: str | None
+    content: bytes | None
 
 
 @dataclass(frozen=True)
@@ -383,8 +401,14 @@ def contained_read_command(
     denied_roots: Sequence[str] = (),
     byte_range: tuple[int, int] | None = None,
     read_max: int | None = None,
+    versioned: bool = False,
+    unless: Sequence[str] = (),
 ) -> str:
-    """``byte_range`` is ``(offset, length)``: the read prints the file's
+    """``versioned`` has a whole read print the file's version line and the
+    sandbox clock ahead of its base64, on one line, and the version line again
+    after it; with ``unless``, version lines as stat printed them, a file still
+    at one of them exits ``READ_NOT_MODIFIED`` before a byte is read.
+    ``byte_range`` is ``(offset, length)``: the read prints the file's
     version line and the sandbox clock, then its first ``UTF8_SNIFF_BYTES`` and
     at most ``length`` bytes from ``offset``, each base64 on a line of its own,
     then the version line again. It skips the size limit, since a range is how
@@ -412,7 +436,26 @@ def contained_read_command(
         if denied_patterns
         else ""
     )
-    if byte_range is None:
+    if byte_range is None and versioned:
+        limit = EXEC_READ_MAX_BYTES if read_max is None else read_max
+        read = [
+            _VERSION_LINE,
+            'printf "%s\\n%s\\n" "$v" "$(date +%s 2>/dev/null)"; ',
+            *(
+                [
+                    f'case "$v" in {"|".join(shlex.quote(line) for line in unless)}) '
+                    f"exit {READ_NOT_MODIFIED} ;; esac; "
+                ]
+                if unless
+                else []
+            ),
+            f'sz=$(wc -c < "$tt"); [ "$sz" -le {limit} ] ',
+            f'|| {{ printf %s "$sz"; exit {READ_TOO_LARGE}; }}; ',
+            'base64 < "$tt" | tr -d "\\n"; printf "\\n"; ',
+            _VERSION_LINE,
+            'printf "%s\\n" "$v"',
+        ]
+    elif byte_range is None:
         limit = EXEC_READ_MAX_BYTES if read_max is None else read_max
         read = [
             f'sz=$(wc -c < "$tt"); [ "$sz" -le {limit} ] ',
@@ -462,6 +505,8 @@ async def _contained_read(
     *,
     work_dir: str,
     byte_range: tuple[int, int] | None = None,
+    versioned: bool = False,
+    unless: Sequence[str] = (),
 ) -> tuple[int, str, str] | None:
     """Run the contained read and recheck where it landed.
 
@@ -484,6 +529,8 @@ async def _contained_read(
                 denied_roots=denied_roots,
                 byte_range=byte_range,
                 read_max=_exec_read_max(runtime),
+                versioned=versioned,
+                unless=unless,
             ),
             timeout=_PROBE_TIMEOUT_S,
         )
@@ -498,7 +545,9 @@ async def _contained_read(
     if exit_code in (READ_MISSING, READ_CONTAINMENT):
         return None
     stopped = READ_TOO_LARGE if byte_range is None else READ_UNSATISFIABLE
-    if exit_code not in (0, stopped):
+    if exit_code not in (0, stopped) and not (
+        versioned and exit_code == READ_NOT_MODIFIED
+    ):
         raise SandboxTransientError(
             f"Contained file read failed with exit code {exit_code}"
         )
@@ -538,6 +587,77 @@ async def read_contained_sandbox_file(
     if exit_code == READ_TOO_LARGE:
         raise FileTooLargeToServe(canonical, size)
     return canonical, content
+
+
+async def read_contained_sandbox_file_versioned(
+    sandbox: Any, absolute_path: str, *, work_dir: str, unless: Sequence[str] = ()
+) -> ContainedFile | None:
+    """``read_contained_sandbox_file`` with the version the file was read at,
+    and, given ``unless`` (``stamps_of_etag``), no read of a file still at it.
+
+    Raises :class:`FileTooLargeToServe` as the plain read does.
+    """
+    read = await _contained_read(
+        sandbox, absolute_path, work_dir=work_dir, versioned=True, unless=unless
+    )
+    if read is None:
+        return None
+    exit_code, canonical, rest = read
+    lines = rest.split("\n")
+    before = _size_and_stamps(lines[0])
+    if before is None or len(lines) < 3:
+        return None
+    size, stamps = before
+    version = _version(stamps, lines[1])
+    if exit_code == READ_NOT_MODIFIED:
+        return ContainedFile(canonical, size, version, None)
+    if exit_code == READ_TOO_LARGE:
+        try:
+            raise FileTooLargeToServe(canonical, int(lines[2].strip()))
+        except ValueError:
+            return None
+    try:
+        content = base64.b64decode(lines[2], validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    after = _size_and_stamps(lines[3]) if len(lines) > 3 else None
+    if after != before or len(content) != size:
+        # Rewritten while it was read: the bytes are good, the version is not
+        # theirs.
+        version = None
+    return ContainedFile(canonical, len(content), version, content)
+
+
+def version_etag(size: int, version: str) -> str:
+    """The validator a file's version gives a download, ranged or whole."""
+    return f"{size}-{version}"
+
+
+# One entity-tag of an If-None-Match list: quoted, so a comma inside one is
+# part of it rather than the start of the next.
+_ENTITY_TAG = re.compile(r'(?:W/)?"([^"]*)"')
+
+
+def stamps_of_etag(if_none_match: str | None) -> tuple[str, ...]:
+    """The version line each ``version_etag`` in ``if_none_match`` was made
+    from, as stat prints it, for a versioned read to compare; none for any
+    other tag."""
+    lines: list[str] = []
+    for tag in _ENTITY_TAG.findall(if_none_match or ""):
+        parts = tag.split("-")
+        if len(parts) != 4:
+            continue
+        size, mtime, ctime, inode = parts
+        if (
+            size.isascii()
+            and size.isdigit()
+            and _TIMESTAMP.fullmatch(mtime)
+            and _TIMESTAMP.fullmatch(ctime)
+            and inode.isascii()
+            and inode.isdigit()
+        ):
+            lines.append(f"{size} {mtime} {ctime} {inode}")
+    return tuple(lines)
 
 
 async def read_contained_sandbox_range(
