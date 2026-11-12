@@ -2,18 +2,14 @@ import { useId } from 'react';
 import { Link } from 'react-router';
 import { ExternalLink, Sparkles, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ClaudeCodeSetupState } from '@/api/model';
 import { Button } from '@/components/ui/button';
 import { buttonClass } from '@/components/ui/button-class';
 import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
-import { readSignInNoticeDismissed, signInNoticeDismissedPatch, useClaudeSignInEnd } from '@/hooks/useClaudeSignInEnd';
+import { useClaudeSignInEnd } from '@/hooks/useClaudeSignInEnd';
+import { readSignInNoticeDismissed, signInNoticeDismissedPatch } from '@/lib/claudeSignInNotice';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
-import { CLAUDE_CODE_CHOICE_URL, CLAUDE_CODE_DOCS } from '@/lib/claudeCode';
-
-/** Where a user's Claude Code stands once they have added a token: what is
- *  left is in its own view, not this announcement. */
-const SET_UP = new Set<ClaudeCodeSetupState>(['connected', 'checking', 'refused', 'offline']);
+import { CLAUDE_CODE_CHOICE_URL, CLAUDE_CODE_DOCS, claudeCodeTokenAdded } from '@/lib/claudeCode';
 
 /**
  * App-wide announcement of Claude Code mode to the users signed in with the
@@ -34,7 +30,7 @@ export default function ClaudeCodeAnnouncement() {
   const updatePreferences = useUpdatePreferences();
   const due = !!end && isLoaded && readSignInNoticeDismissed(preferences) !== end.endsOn;
   const { setup } = useClaudeCodeSetup({ enabled: due });
-  if (!due || !setup || (setup.on && SET_UP.has(setup.state))) return null;
+  if (!due || !setup || claudeCodeTokenAdded(setup)) return null;
 
   return (
     <section

@@ -33,7 +33,9 @@ vi.mock('@/hooks/useClaudeCode', async (importOriginal) => ({
 }));
 vi.mock('@/components/modelAccess/tokenLine', () => ({ useClaudeCodeTokenRows: () => [] }));
 vi.mock('@/components/modelAccess/ClaudeCodeToken', () => ({ RemoveClaudeCodeTokenDialog: () => null }));
-vi.mock('@/pages/Settings/panels/modelAccess/ClaudeCodeSheet', () => ({ ClaudeCodeSheet: () => <p>Claude Code sheet</p> }));
+vi.mock('@/pages/Settings/panels/modelAccess/ClaudeCodeSheet', () => ({
+  ClaudeCodeSheet: ({ onLeave }: { onLeave?: () => void }) => <button type="button" onClick={onLeave}>Claude Code sheet</button>,
+}));
 vi.mock('@/hooks/useProviderCatalog', () => ({ useProviderCatalog: () => ({ keyGroups: [], planGroups: [], localEntries: [], isLoading: false }) }));
 vi.mock('@/hooks/usePreferences', () => ({ usePreferences: () => ({ preferences: null }) }));
 vi.mock('@/hooks/useConfiguredProviders', async (importOriginal) => ({
@@ -122,5 +124,14 @@ describe('ClaudeCodeStep', () => {
 
     expect(h.returnFromSetup).toHaveBeenCalledWith('claude-code');
     expect(screen.queryByText(/models from/)).toBeNull();
+  });
+
+  it('leaves setup for the session when the sheet goes to the computers panel in the app', async () => {
+    sessionStorage.removeItem('ginlix_setup_skipped');
+    h.setup = { on: true, state: 'not_connected', computers: [] };
+    renderAt('/setup/claude-code');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Claude Code sheet' }));
+    expect(sessionStorage.getItem('ginlix_setup_skipped')).toBe('1');
+    sessionStorage.removeItem('ginlix_setup_skipped');
   });
 });

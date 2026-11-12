@@ -7,7 +7,8 @@ import { RemoveClaudeCodeTokenDialog } from '@/components/modelAccess/ClaudeCode
 import { useClaudeCodeTokenRows } from '@/components/modelAccess/tokenLine';
 import type { TokenTarget } from '@/components/modelAccess/tokenTarget';
 import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
-import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION } from '@/lib/claudeCode';
+import { skipSetup } from '@/hooks/useSetupGate';
+import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION, claudeCodeConnected } from '@/lib/claudeCode';
 import { ClaudeCodeSheet } from '@/pages/Settings/panels/modelAccess/ClaudeCodeSheet';
 import { SetupFooter } from '../SetupFooter';
 import { useProviderConnected } from './connectStep/shared';
@@ -29,7 +30,6 @@ export default function ClaudeCodeStep() {
   const tokenRows = useClaudeCodeTokenRows();
   const [removing, setRemoving] = useState<TokenTarget | null>(null);
   const name = CLAUDE_CODE_CONNECTION.display_name;
-  const ready = !!setup?.on && setup.state === 'connected';
 
   return (
     <div>
@@ -39,14 +39,14 @@ export default function ClaudeCodeStep() {
           <Loader size={20} className="text-(--color-text-tertiary)" label={t('common.loading')} />
         </div>
       ) : (
-        <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} onRemoveToken={setRemoving} onCover={noCover} />
+        <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} onRemoveToken={setRemoving} onCover={noCover} onLeave={skipSetup} />
       )}
       {removing && <RemoveClaudeCodeTokenDialog target={removing} onClose={() => setRemoving(null)} />}
       <SetupFooter
         back={{ label: t('setup.back'), onClick: () => navigate('/setup/provider', { state: { list: 'oauth' } }) }}
         primary={{
           label: t('setup.continue'),
-          disabled: !ready,
+          disabled: !claudeCodeConnected(setup),
           onClick: () => connected({
             method: 'oauth', list: 'oauth', provider: CLAUDE_CODE, displayName: name, modelsFrom: CLAUDE_CODE, justConnected: true,
           }),

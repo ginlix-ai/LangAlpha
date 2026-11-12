@@ -15,7 +15,7 @@ import { SubscriptionChoices } from '@/components/modelAccess/SubscriptionChoice
 import { QuietNote } from '@/components/modelAccess/parts';
 import { NO_FILTER, startingOption, type KeyFilter, type ProviderGroup } from '@/components/modelAccess/providerOptions';
 import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
-import { CLAUDE_CODE_SETUP_STATUS } from '@/lib/claudeCode';
+import { claudeCodeChoice } from '@/lib/claudeCode';
 import { useProviderConnected, type LocationState, type ProviderList } from './connectStep/shared';
 
 // ---------------------------------------------------------------------------
@@ -119,9 +119,7 @@ export default function ProviderStep() {
             configured={configuredSet}
             onPickSignIn={(p) => goOn({ method: 'oauth', list: 'oauth', provider: p, displayName: t(`modelAccess.${subscriptionKey(p)}.name`), modelsFrom: p })}
             onPickPlan={pickKeyGroup('oauth')}
-            claudeCode={claudeCode || claudeCodeUnread
-              ? { status: claudeCode ? CLAUDE_CODE_SETUP_STATUS[claudeCode.state] : 'unknown', onPick: () => navigate('/setup/claude-code') }
-              : undefined}
+            claudeCode={claudeCodeChoice(claudeCode, claudeCodeUnread, () => navigate('/setup/claude-code'))}
           />
         )}
 

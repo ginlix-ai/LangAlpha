@@ -9,11 +9,11 @@ import { screen } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 import type { OAuthStatus } from '@/api/oauth';
 
-const status = vi.hoisted(() => ({ data: undefined as unknown, provider: vi.fn() }));
+const status = vi.hoisted(() => ({ data: undefined as unknown, isError: false, provider: vi.fn() }));
 vi.mock('@/hooks/useConfiguredProviders', () => ({
   useOAuthStatus: (provider: string) => {
     status.provider(provider);
-    return { data: status.data };
+    return { data: status.data, isError: status.isError };
   },
 }));
 vi.mock('@/config/hostMode', async (original) => ({
@@ -34,14 +34,21 @@ const render = (configured: string[] = [], claudeCode = false) => renderWithProv
     configured={new Set(configured)}
     onPickSignIn={vi.fn()}
     onPickPlan={vi.fn()}
-    claudeCode={claudeCode ? { status: 'not_connected', onPick: vi.fn() } : undefined}
+    claudeCode={claudeCode ? { status: 'not_connected', note: 'modelAccess.claudeCode.setup.pickNote', onPick: vi.fn() } : undefined}
   />,
 );
 
 describe('SubscriptionChoices: Claude sign-in', () => {
   beforeEach(() => {
     status.data = undefined;
+    status.isError = false;
     status.provider.mockClear();
+  });
+
+  it('lists it when its status could not be read, which the sign-in routes still guard', () => {
+    status.isError = true;
+    render();
+    expect(names()).toEqual(['ChatGPT', 'Claude', 'Grok']);
   });
 
   it('reads the status of the Claude sign-in', () => {

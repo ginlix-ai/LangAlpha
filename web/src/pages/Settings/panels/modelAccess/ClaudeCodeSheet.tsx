@@ -172,11 +172,14 @@ const ROWS = 'grid grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-3 gap-y-5';
  * it; what opens is portaled out of its panel, which goes inert and fades
  * while covered.
  */
-export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
+export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLeave }: {
   setup: ClaudeCodeSetup | null;
   tokenRows: TokenRow[];
   onRemoveToken: (target: TokenTarget) => void;
   onCover: (covered: boolean) => void;
+  /** Called before a computer action leaves for the computers panel in the
+   *  app: setup passes its exit, so the user is not sent back to it. */
+  onLeave?: () => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -215,8 +218,12 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
     if (!on && !(await turn(true))) return;
     setToken({ target, action });
   };
-  const onComputers = (panel: Parameters<typeof openComputersPanel>[0]) => {
+  const toChat = () => {
+    onLeave?.();
     navigate('/chat');
+  };
+  const onComputers = (panel: Parameters<typeof openComputersPanel>[0]) => {
+    toChat();
     openComputersPanel(panel);
   };
   const viewComputer = (computerId: string) => (
@@ -320,6 +327,10 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
     || setup.cloud
     || (!offeredSaved && !setup.computers.some((c) => c.state === 'off' && c.source !== 'machine'))
   );
+  // The ways to connect a computer, where none can run it yet, and where the
+  // user chose to run it on their own computers and has none.
+  const offerComputers = setup?.state === 'no_computer' || setup?.state === 'unsupported'
+    || (on && custody?.mode === 'local' && setup?.computers.length === 0);
   const remoteControl = canRemoteControl();
   const bigger = biggerComputer(false);
   const tooSmall = setup?.too_small ?? [];
@@ -342,7 +353,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
       size="sm"
       className={ROW_BUTTON}
       onClick={() => {
-        navigate('/chat');
+        toChat();
         openComputerSpec(computerId);
       }}
     >
@@ -437,7 +448,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
         </div>
       )}
 
-      {(setup?.state === 'no_computer' || setup?.state === 'unsupported') && (
+      {offerComputers && (
         <div className={ROWS}>
           <Group subgrid title={t(S + '.waysTitle')} empty="">
             {[

@@ -6903,6 +6903,8 @@
       },
       "setup": {
         "pickNote": "Claude Pro or Max, run on your computer",
+        "pickNoteCloud": "Claude Pro or Max, run on your computer or a cloud computer",
+        "pickNoteServer": "Claude Pro or Max, run on this server or your computer",
         "lead": "Runs Claude Code on your Claude plan.",
         "learnMore": "Learn more",
         "waysTitle": "Ways to connect a computer",

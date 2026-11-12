@@ -72,10 +72,10 @@ function Where() {
   return <span>{`at:${useLocation().pathname}`}</span>;
 }
 
-function show(setup: ClaudeCodeSetup | null, tokenRows: TokenRow[] = []) {
+function show(setup: ClaudeCodeSetup | null, tokenRows: TokenRow[] = [], onLeave?: () => void) {
   return renderWithProviders(
     <>
-      <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} onRemoveToken={vi.fn()} onCover={vi.fn()} />
+      <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} onRemoveToken={vi.fn()} onCover={vi.fn()} onLeave={onLeave} />
       <Where />
     </>,
     { route: '/settings?tab=model' },
@@ -342,6 +342,26 @@ describe('ClaudeCodeSheet', () => {
     show(setupOf({ state: 'checking', on: true, computers: [mac('checking')] }));
     expect(screen.getByRole('heading', { name: 'Checking your setup tokens' })).toBeInTheDocument();
     expect(screen.getByText('LangAlpha is asking Claude whether each token works.')).toBeInTheDocument();
+  });
+
+  it('offers the ways to connect a computer where the user chose their own computers and has none', () => {
+    h.custody = { mode: 'local' };
+    const onLeave = vi.fn();
+    show(setupOf({ state: 'not_connected', on: true, cloud: true }), [], onLeave);
+    fireEvent.click(screen.getByRole('button', { name: 'Add SSH computer' }));
+    expect(h.opened).toEqual([{ view: 'create' }]);
+    expect(screen.getByText('at:/chat')).toBeInTheDocument();
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['their token is stored for cloud computers', { mode: 'stored' }, [], true],
+    ['they have a computer of their own', { mode: 'local' }, [mac('offline')], true],
+    ['Claude Code is off, so where it runs is not chosen yet', { mode: 'local' }, [], false],
+  ])('offers no way to connect a computer where %s', (_, custody, computers, on) => {
+    h.custody = custody;
+    show(setupOf({ state: 'not_connected', on, cloud: true, computers }));
+    expect(screen.queryByText('Ways to connect a computer')).toBeNull();
   });
 
   it('warns that turning off removes the token stored for cloud computers', () => {

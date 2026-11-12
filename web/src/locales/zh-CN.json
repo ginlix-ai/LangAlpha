@@ -6814,6 +6814,8 @@
       },
       "setup": {
         "pickNote": "Claude Pro 或 Max，在你的电脑上运行",
+        "pickNoteCloud": "Claude Pro 或 Max，在你的电脑或云端计算机上运行",
+        "pickNoteServer": "Claude Pro 或 Max，在此服务器或你的电脑上运行",
         "lead": "用你的 Claude 套餐运行 Claude Code。",
         "learnMore": "了解更多",
         "waysTitle": "连接电脑的方式",

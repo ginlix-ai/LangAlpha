@@ -17,7 +17,7 @@ describe('SubscriptionChoices', () => {
   it('lists Claude Code right under Claude, with its own subtitle and status', () => {
     const onPick = vi.fn();
     renderWithProviders(
-      <SubscriptionChoices planGroups={[]} configured={new Set()} onPickSignIn={vi.fn()} onPickPlan={vi.fn()} claudeCode={{ status: 'needs_computer', onPick }} />,
+      <SubscriptionChoices planGroups={[]} configured={new Set()} onPickSignIn={vi.fn()} onPickPlan={vi.fn()} claudeCode={{ status: 'needs_computer', note: 'modelAccess.claudeCode.setup.pickNote', onPick }} />,
     );
     const names = screen.getAllByRole('button').map((b) => b.querySelector('.truncate')?.textContent);
     expect(names).toEqual(['ChatGPT', 'Claude', 'Claude Code', 'Grok']);

@@ -51,9 +51,9 @@ export interface OAuthStatus {
   expires_at: string | null;
   needs_reauth_at: string | null;
   last_error_code: string | null;
-  /** Claude's only: whether the user may start a sign-in (null from a server
-   *  that does not say, which lets everyone), and the day (YYYY-MM-DD) it
-   *  stops working here, where the deployment set one. */
+  /** Whether the user may start a sign-in (null from a server that does not
+   *  say, which lets everyone), and the day (YYYY-MM-DD) signing in stops
+   *  working here, where the deployment set one. */
   can_sign_in: boolean | null;
   ends_on: string | null;
 }
