@@ -83,7 +83,9 @@ let pendingAbsorbed: Array<{ error: DOMException; translated: boolean }> = [];
 
 export function initSentry(entryUrl: string): void {
   const dsn = import.meta.env.VITE_SENTRY_DSN as string | undefined;
-  if (!dsn) return;
+  // Not from the dev server: it reads the same `.env` a release build does,
+  // so its errors would land in the release's environment.
+  if (!dsn || import.meta.env.DEV) return;
   const start = (): void => {
     void import('@sentry/react').then((mod) => {
       mod.init({
