@@ -206,7 +206,7 @@ class TestSentAhead:
             self_summary=False,
         )
         mw._cutoff = lambda view, model: len(view) - 1
-        return mw.with_baseline(lambda state: "b" * 300) if baseline else mw
+        return mw.with_baseline(lambda state: {"workspace": "b" * 300}) if baseline else mw
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

@@ -51,7 +51,7 @@ def test_effective_default_follows_the_composer_rule(pref, system, expected):
 # ---------------------------------------------------------------------------
 
 
-async def _turn_model(catalog, *, named=None, held=None, pref=None, cleared=True, now=None):
+async def _turn_model(catalog, *, named=None, held=None, pref=None, cleared=True, now=None, **kwargs):
     """``cleared`` is whether the conditional clear won; ``now`` is what the
     thread holds when it is read again after losing."""
     clear = AsyncMock(return_value=cleared)
@@ -66,7 +66,7 @@ async def _turn_model(catalog, *, named=None, held=None, pref=None, cleared=True
         ),
     ):
         result = await thread_model.turn_model(
-            "user-1", "thread-1", named=named, held=held
+            "user-1", "thread-1", named=named, held=held, **kwargs
         )
     return result, clear, get_pref
 
@@ -92,6 +92,13 @@ async def test_a_dead_thread_model_is_cleared_and_the_default_runs():
     assert result is None
     # Conditional on the name read, so a model named since is never lost.
     clear.assert_awaited_once_with("thread-1", "retired")
+
+
+@pytest.mark.asyncio
+async def test_a_read_answers_the_default_and_leaves_the_dead_model_on_the_thread():
+    result, clear, _ = await _turn_model(["m-a"], held="retired", clear_dead=False)
+    assert result is None
+    clear.assert_not_awaited()
 
 
 @pytest.mark.asyncio

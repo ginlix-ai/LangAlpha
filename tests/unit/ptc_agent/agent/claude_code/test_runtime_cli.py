@@ -433,7 +433,7 @@ async def test_the_cli_compacts_before_a_request_only_at_the_threshold_it_was_gi
 async def test_each_reply_carries_and_streams_the_threshold_the_cli_compacts_at():
     """The live ring reads the event and replay reads the stamp, so both show
     the thread's threshold rather than a default."""
-    from ptc_agent.agent.middleware.compaction.utils import context_threshold
+    from ptc_agent.agent.middleware.compaction.usage_event import context_threshold
 
     graph = new_graph()
     async with FakeMessagesAPI() as api:
