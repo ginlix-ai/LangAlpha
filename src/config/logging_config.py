@@ -62,6 +62,8 @@ THIRD_PARTY_LIBRARIES = [
     'anthropic',
     'httpx',
     'httpcore',
+    'httpx2',  # the OpenAI SDK's transport: an INFO line per model call
+    'httpcore2',
     'urllib3',
     'requests',
     'litellm',
