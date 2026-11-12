@@ -5,7 +5,7 @@ import { TranscriptStatus } from '../chatView/TranscriptStatus';
 
 vi.mock('../QueuedAutomationNotice', () => ({ QueuedAutomationNotice: () => null }));
 
-function renderStatus(props: { turnHeld: string | null; workspaceStarting?: false | 'starting' }) {
+function renderStatus(props: { turnHeld: string | null; workspaceStarting?: false | 'starting'; model?: string | null }) {
   return renderWithProviders(
     <TranscriptStatus
       modelStatus={null}
@@ -13,6 +13,7 @@ function renderStatus(props: { turnHeld: string | null; workspaceStarting?: fals
       retired={null}
       workspaceStarting={props.workspaceStarting ?? false}
       turnHeld={props.turnHeld}
+      model={props.model ?? null}
       isCompacting={false}
       compactionTokens={null}
       queuedSend={false}
@@ -33,6 +34,19 @@ describe('TranscriptStatus – turn held line', () => {
     expect(
       screen.getByText('Waiting for the previous model to write out its summary...'),
     ).toBeInTheDocument();
+  });
+
+  // Who writes the brief is settled only once one is written, so the wait
+  // names only the model the thread goes to.
+  it('a brief names the model the thread goes to', () => {
+    renderStatus({ turnHeld: 'brief', model: 'claude-sonnet-5-5-code' });
+    expect(screen.getByText('Handing off context to Sonnet 5.5 Code...')).toBeInTheDocument();
+    expect(screen.queryByText(/previous model/)).not.toBeInTheDocument();
+  });
+
+  it('a brief with no model known yet says the new model', () => {
+    renderStatus({ turnHeld: 'brief' });
+    expect(screen.getByText('Handing off context to the new model...')).toBeInTheDocument();
   });
 
   it.each(['offload', '', 'something-new'])('"%s" falls back to the generic wait copy', (reason) => {
