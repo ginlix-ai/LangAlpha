@@ -1,5 +1,6 @@
-"""GET /claude-code/chief-of-staff: the Chief of Staff's answer for one Home
-thread, read only for that thread's owner and only where Claude Code is on."""
+"""GET /claude-code/chief-of-staff: the Chief of Staff's answer, asked for one
+Home thread by older web builds, read only for that thread's owner and only
+where Claude Code is on."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -39,11 +40,11 @@ async def _read(client, *, owner=USER, on=True):
 
 
 @pytest.mark.asyncio
-async def test_the_owner_reads_the_answer_for_that_thread(client):
+async def test_the_owner_reads_the_answer_every_home_thread_shares(client):
     response, answer = await _read(client)
     assert response.status_code == 200
     assert response.json() == ANSWER.model_dump()
-    answer.assert_awaited_once_with(USER, thread_id="t-1")
+    answer.assert_awaited_once_with(USER)
 
 
 @pytest.mark.asyncio

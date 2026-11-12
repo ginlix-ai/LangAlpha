@@ -129,7 +129,7 @@ def test_a_pin_is_counted_as_claude_counts_its_prompt_and_tools(monkeypatch):
     from ptc_agent.agent.middleware.compaction.utils import count_tokens_claude, count_tokens_tiktoken
 
     # tiktoken fetches its encoding over the network on first use.
-    fake = SimpleNamespace(encode=lambda text: [0] * (len(text) // 4 + 1))
+    fake = SimpleNamespace(encode=lambda text, **_: [0] * (len(text) // 4 + 1))
     monkeypatch.setattr(utils, "_get_tiktoken_encoder", lambda: fake)
 
     prompt = "You research equities and keep the deliverables in the workspace. " * 40

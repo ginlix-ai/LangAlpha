@@ -36,6 +36,7 @@ from ptc_agent.agent.claude_code.runtime import (
     build_claude_code_graph,
     token_works,
 )
+from ptc_agent.agent.middleware.compaction.brief import BRIEF_CONFIG_KEY, BRIEF_KEY, BRIEF_PREFIX, HANDOFF_UI_NAME, THREAD_PREFIX
 from ptc_agent.agent.middleware.steering import ALL_KINDS, SteeredReport, SteeringMiddleware, TaskResume, steers_ahead_message
 from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, render_update_row
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
@@ -58,9 +59,9 @@ BIG_PDF = base64.b64encode(b"%PDF-1.4\n%" + b"x" * 1_200_000 + b"\n1 0 obj<<>>en
 
 
 async def turn(api: FakeMessagesAPI, graph, thread: str, messages: list, callbacks: list | None = None,
-               baseline=None) -> dict:
+               baseline=None, configurable: dict | None = None) -> dict:
     launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN if api.first_party else None)
-    return await run_turn(SPEC, launcher, graph, thread, messages, callbacks, baseline)
+    return await run_turn(SPEC, launcher, graph, thread, messages, callbacks, baseline, configurable=configurable)
 
 
 async def test_a_tool_call_runs_through_the_tool_node_under_its_own_name():
@@ -1370,3 +1371,78 @@ async def test_a_task_left_a_message_resumes_as_the_turn_opens_with_no_request_o
         {"type": "text", "text": "Follow-up instructions arrived."},
         {"type": "text", "text": frame_reminder("Resumed **Task-1** in background with new instructions.")},
     ]
+
+
+def _sent_text(body: dict) -> str:
+    return json.dumps(body["messages"])
+
+
+async def test_a_thread_another_model_replied_on_last_opens_a_session_of_its_own_on_the_brief_it_was_handed():
+    graph = new_graph()
+    async with FakeMessagesAPI() as api:
+        first = await turn(api, graph, "t-brief", [HumanMessage("FACT: claude was here")])
+        before = len(api.model_requests)
+        brief = {"text": BRIEF_PREFIX + "BRIEF BODY", "through": "other-1", "source": "model", "from_model": "deepseek-flash"}
+        values = await turn(api, graph, "t-brief", [AIMessage("another model's reply", id="other-1"), HumanMessage("new")],
+                            configurable={BRIEF_CONFIG_KEY: brief})
+        sent = _sent_text(api.model_requests[before])
+    assert "BRIEF BODY" in sent and "new" in sent
+    assert "claude was here" not in sent and "another model's reply" not in sent
+    assert values["claude_session"]["session_id"] != first["claude_session"]["session_id"]
+    assert values[BRIEF_KEY] == brief
+    assert values["messages"][-1].text == "ECHO new"
+    [mark] = [r for r in values["ui"] if r["name"] == HANDOFF_UI_NAME]
+    assert mark["props"]["from_model"] == "deepseek-flash" and mark["props"]["summary_text"] == "BRIEF BODY"
+
+
+async def test_a_turn_handed_no_brief_after_another_models_reply_opens_on_one_put_together_without_a_model():
+    graph = new_graph()
+    old = [HumanMessage("what is the plan"), AIMessage("another model's plan", id="other-1"), HumanMessage("go on")]
+    async with FakeMessagesAPI() as api:
+        values = await turn(api, graph, "t-digest", old)
+        sent = _sent_text(api.model_requests[0])
+    assert BRIEF_PREFIX.splitlines()[0] in sent and "what is the plan" in sent
+    assert values[BRIEF_KEY]["through"] == "other-1" and values[BRIEF_KEY]["source"] != "model"
+    assert values["messages"][-1].text == "ECHO go on"
+
+
+async def test_a_brief_of_the_thread_itself_is_kept_without_its_text_and_rendered_again_where_read():
+    graph = new_graph()
+    old = [HumanMessage("what is the plan"), AIMessage("another model's plan", id="other-1"), HumanMessage("go on")]
+    handed = {"text": THREAD_PREFIX + "THE THREAD AS TEXT", "through": "other-1", "source": "thread",
+              "from_model": "deepseek-flash", "room": 50_000}
+    slim = {key: value for key, value in handed.items() if key != "text"}
+    async with FakeMessagesAPI() as api:
+        values = await turn(api, graph, "t-thread", old, configurable={BRIEF_CONFIG_KEY: handed})
+        sent = _sent_text(api.model_requests[0])
+        again = await turn(api, new_graph(), "t-thread-again", old, configurable={BRIEF_CONFIG_KEY: slim})
+        rendered = _sent_text(api.model_requests[1])
+    assert "THE THREAD AS TEXT" in sent and values[BRIEF_KEY] == slim
+    assert "the conversation so far is below as" in rendered and "another model's plan" in rendered
+    assert again[BRIEF_KEY] == slim and again["messages"][-1].text == "ECHO go on"
+
+
+async def test_once_claude_replies_after_the_brief_the_next_turn_resumes_its_session():
+    graph = new_graph()
+    async with FakeMessagesAPI() as api:
+        briefed = await turn(api, graph, "t-after", [AIMessage("another model's reply", id="other-1"), HumanMessage("one")])
+        before = len(api.model_requests)
+        values = await turn(api, graph, "t-after", [HumanMessage("two")])
+        sent = _sent_text(api.model_requests[before])
+    assert values["claude_session"]["session_id"] == briefed["claude_session"]["session_id"]
+    assert "ECHO one" in sent and sent.count(BRIEF_PREFIX.splitlines()[0]) == 1
+    assert [r["name"] for r in values["ui"]].count(HANDOFF_UI_NAME) == 1
+
+
+async def test_a_call_another_model_left_open_is_answered_without_asking_the_cli():
+    graph = new_graph()
+    call = {"name": "Bash", "args": {"command": "sleep 1"}, "id": "call-other", "type": "tool_call"}
+    old = [HumanMessage("start"), AIMessage("", tool_calls=[call], id="other-1"), HumanMessage("go on")]
+    async with FakeMessagesAPI() as api:
+        started = time.monotonic()
+        values = await turn(api, graph, "t-open", old)
+        took = time.monotonic() - started
+    _, ai, answer, again, reply = values["messages"]
+    assert isinstance(answer, ToolMessage) and answer.tool_call_id == "call-other" and answer.status == "error"
+    assert again.content == "go on" and reply.text == "ECHO go on"
+    assert took < 8

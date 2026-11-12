@@ -12,7 +12,7 @@ import pytest
 def _offline_token_counter(monkeypatch):
     from ptc_agent.agent.middleware.compaction import utils
 
-    fake = SimpleNamespace(encode=lambda text: [0] * (len(text) // 4 + 1))
+    fake = SimpleNamespace(encode=lambda text, **_: [0] * (len(text) // 4 + 1))
     monkeypatch.setattr(utils, "_get_tiktoken_encoder", lambda: fake)
 
 

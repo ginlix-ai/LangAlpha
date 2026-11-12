@@ -24,6 +24,7 @@ THREADS_MOD = "src.server.app.threads.crud"
 AUTH_MOD = "src.server.utils.api"
 
 USER = "test-user-123"
+RUNS_CLAUDE_CODE = "src.server.services.llm.thread_model.next_turn_runs_claude_code"
 
 # Sentinel so _stamp_app() can distinguish "use the default user-scoped caller"
 # from an explicit ``None`` (the privileged service caller, resolved user_id None).
@@ -435,6 +436,7 @@ async def test_patch_model_keeps_a_runnable_model():
         patch(
             f"{THREADS_MOD}.update_thread_fields", new=AsyncMock(return_value=row)
         ) as update,
+        patch(RUNS_CLAUDE_CODE, new=AsyncMock(return_value=False)),
     ):
         resp = await _patch(app, {"llm_model": "m-a"})
 
@@ -497,6 +499,7 @@ async def test_patch_model_empty_name_is_422():
 
 
 HAND_OFF = "src.server.handlers.thread_maintenance.hand_off_on_switch"
+BRIEF = "src.server.handlers.handoff_brief.brief_on_switch"
 
 
 @pytest.mark.asyncio
@@ -522,6 +525,7 @@ async def test_patch_model_says_whether_the_summary_is_handed_off(before, after,
             new=AsyncMock(return_value=_thread_row(llm_model=after)),
         ) as update,
         patch(HAND_OFF, new=AsyncMock(return_value=handed_off)) as hand_off,
+        patch(RUNS_CLAUDE_CODE, new=AsyncMock(return_value=False)),
     ):
         resp = await _patch(app, {"llm_model": after})
 
@@ -529,6 +533,62 @@ async def test_patch_model_says_whether_the_summary_is_handed_off(before, after,
     assert resp.json()["summary_handoff"] is handed_off
     update.assert_awaited_once_with("t-1", llm_model=after)
     hand_off.assert_awaited_once_with("t-1", USER, before)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("briefed", [True, False])
+async def test_patch_onto_claude_code_has_the_model_it_leaves_write_a_brief_instead(briefed):
+    """Claude Code reads none of the thread's messages, so a switch onto it
+    asks for a brief of the whole thread, not a summary only the old
+    provider can read."""
+    app = _title_app()
+    with (
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        patch(f"{THREADS_MOD}.require_selectable_model", new=AsyncMock()),
+        patch(
+            f"{THREADS_MOD}.get_thread_auth_meta",
+            new=AsyncMock(return_value={"llm_model": "m-a", "workspace_id": "ws-1"}),
+        ),
+        patch(
+            f"{THREADS_MOD}.update_thread_fields",
+            new=AsyncMock(return_value=_thread_row(llm_model="claude-sonnet-5-5-code")),
+        ),
+        patch(HAND_OFF, new=AsyncMock()) as hand_off,
+        patch(BRIEF, new=AsyncMock(return_value=briefed)) as brief,
+        patch(RUNS_CLAUDE_CODE, new=AsyncMock(return_value=True)),
+    ):
+        resp = await _patch(app, {"llm_model": "claude-sonnet-5-5-code"})
+
+    assert resp.status_code == 200
+    assert resp.json()["brief_handoff"] is briefed and resp.json()["summary_handoff"] is None
+    brief.assert_awaited_once_with("t-1", USER, "claude-sonnet-5-5-code")
+    hand_off.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_committed_switch_whose_routing_cannot_be_read_still_succeeds():
+    app = _title_app()
+    with (
+        patch(f"{AUTH_MOD}.require_thread_owner", new=AsyncMock()),
+        patch(f"{THREADS_MOD}.require_selectable_model", new=AsyncMock()),
+        patch(
+            f"{THREADS_MOD}.get_thread_auth_meta",
+            new=AsyncMock(return_value={"llm_model": "m-a", "workspace_id": "ws-1"}),
+        ),
+        patch(
+            f"{THREADS_MOD}.update_thread_fields",
+            new=AsyncMock(return_value=_thread_row(llm_model="claude-sonnet-5-5-code")),
+        ),
+        patch(HAND_OFF, new=AsyncMock()) as hand_off,
+        patch(BRIEF, new=AsyncMock()) as brief,
+        patch(RUNS_CLAUDE_CODE, new=AsyncMock(side_effect=RuntimeError("pool closed"))),
+    ):
+        resp = await _patch(app, {"llm_model": "claude-sonnet-5-5-code"})
+
+    assert resp.status_code == 200
+    assert resp.json()["brief_handoff"] is None and resp.json()["summary_handoff"] is None
+    brief.assert_not_awaited()
+    hand_off.assert_not_awaited()
 
 
 @pytest.mark.asyncio

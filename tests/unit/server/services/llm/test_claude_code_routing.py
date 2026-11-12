@@ -127,30 +127,8 @@ async def test_chief_of_staff_runs_the_deployment_model_beside_a_claude_code_def
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     with patch(f"{HANDLER}.chief_of_staff_default_runs", new_callable=AsyncMock, return_value=None) as placed:
         config = await _resolve({"preferred_model": CODE}, role="chief_of_staff")
-    placed.assert_awaited_once_with("user-1", None, thread_id=None, checkpoint_id=None)
+    placed.assert_awaited_once_with("user-1", None)
     assert config.llm.name == "claude-sonnet-5-5" and not isinstance(config.llm_client, ClaudeCodeTarget)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("replied", "at", "claude_code"),
-    [
-        ({None: True, "cp-before": False}, "cp-before", True),
-        ({None: False, "cp-after": True}, "cp-after", False),
-        ({None: True, "cp-before": False}, None, False),
-    ],
-    ids=["a-fork-from-before-another-models-reply", "a-fork-from-after-it", "the-head"],
-)
-async def test_chief_of_staff_reads_whether_another_model_replied_where_its_turn_starts(monkeypatch, replied, at, claude_code):
-    """An edit or a regenerate starts from its checkpoint, the one
-    ``require_claude_code_continues`` reads, not the thread's head."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    read = AsyncMock(side_effect=lambda _thread, checkpoint=None: replied[checkpoint])
-    with patch("src.server.services.llm.claude_code.another_model_replied", read):
-        config = await _resolve({"preferred_model": CODE}, role="chief_of_staff", thread_id="t-1", checkpoint_id=at)
-    read.assert_awaited_once_with("t-1", at)
-    assert isinstance(config.llm_client, ClaudeCodeTarget) is claude_code
-    assert config.llm.name == (CODE if claude_code else "claude-sonnet-5-5")
 
 
 @pytest.mark.asyncio

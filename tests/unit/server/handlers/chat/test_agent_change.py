@@ -22,7 +22,7 @@ from langgraph.types import Command, interrupt
 from ptc_agent.agent.state import DeltaAgentState
 from src.llms.claude_code import MESSAGE_ID_KEY
 from src.server.handlers.chat import agent_change
-from src.server.handlers.chat.agent_change import cancel_tool_calls_it_lacks
+from src.server.handlers.chat.agent_change import cancel_tool_calls_it_lacks, opens_afresh
 
 CONFIG = {"configurable": {"thread_id": "thread-1"}}
 
@@ -251,3 +251,62 @@ async def test_an_order_card_claude_code_holds_is_refused_when_a_turn_on_another
     assert [m.tool_call_id for m in cancelled] == ["call-order"]
     assert refused == [("user-1", "a-1", "call-order")]
 
+
+
+def _claude_shaped(saver):
+    """A graph wired as Claude Code's is (``build_claude_code_graph``): its
+    opening nodes lead to ``model``, and ``model`` and ``tools`` route only by
+    ``Command``, so a step answered as ``tools`` leaves nothing to run."""
+    def model(state):
+        return Command(update={"messages": [AIMessage("claude", id="c-1")]}, goto=END)
+
+    def tools(state):
+        return Command(goto="model")
+
+    graph = StateGraph(DeltaAgentState)
+    graph.add_node("resume", lambda s: {})
+    graph.add_node("model", model, destinations=("tools", END))
+    graph.add_node("tools", tools, destinations=("model",))
+    graph.add_edge(START, "resume")
+    graph.add_edge("resume", "model")
+    return graph.compile(checkpointer=saver)
+
+
+@pytest.mark.asyncio
+async def test_a_question_another_model_left_waiting_opens_claude_codes_turn_afresh():
+    """Answered as cancelled for Claude Code, the step leaves its graph no
+    node to carry on in, so a resume would run nothing; a fresh input at the
+    same checkpoint opens Claude's turn on that history."""
+    saver = InMemorySaver()
+    await _flash_waiting_on(saver, {"name": "ask_user", "args": {"question": "Which?"}, "id": "call-ask"})
+    claude = _claude_shaped(saver)
+
+    cancelled = await cancel_tool_calls_it_lacks(claude, "thread-1", user_id="user-1", by_name=False, claude_code=True)
+
+    assert [m.tool_call_id for m in cancelled] == ["call-ask"]
+    assert await opens_afresh(claude, "thread-1", None)
+    out = await claude.ainvoke({"messages": []}, CONFIG)
+    assert [m.content for m in out["messages"][-2:]] == [cancelled[0].content, "claude"]
+
+
+@pytest.mark.asyncio
+async def test_a_checkpoint_inside_another_models_turn_opens_claude_codes_turn_afresh():
+    """A regenerate inside a resumed turn starts where the other model's
+    graph runs a node Claude Code's lacks; a step Claude's graph has carries
+    on as it is."""
+    saver = InMemorySaver()
+    other = StateGraph(DeltaAgentState)
+    other.add_node("model", lambda s: {"messages": [AIMessage("r", id="a-1")]})
+    other.add_node("Guard.before_model", lambda s: {})
+    other.add_edge(START, "model")
+    other.add_edge("model", "Guard.before_model")
+    other.add_edge("Guard.before_model", END)
+    other = other.compile(checkpointer=saver, interrupt_before=["model", "Guard.before_model"])
+    await other.ainvoke({"messages": [HumanMessage("go", id="h-1")]}, CONFIG)
+    at_model = (await other.aget_state(CONFIG)).config["configurable"]["checkpoint_id"]
+    await other.ainvoke(None, CONFIG)
+    inside = (await other.aget_state(CONFIG)).config["configurable"]["checkpoint_id"]
+    claude = _claude_shaped(saver)
+
+    assert await opens_afresh(claude, "thread-1", inside)
+    assert not await opens_afresh(claude, "thread-1", at_model)

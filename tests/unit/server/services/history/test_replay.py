@@ -1672,6 +1672,23 @@ async def test_model_fallback_projected_from_ui_records(monkeypatch):
     assert data["turn_index"] == 0
 
 
+async def test_a_turn_that_opened_on_a_brief_replays_its_mark_ahead_of_the_reply(monkeypatch):
+    from ptc_agent.agent.middleware.compaction.brief import BRIEF_PREFIX, handoff_mark
+
+    brief = {"text": BRIEF_PREFIX + "BRIEF BODY", "through": "other-1", "source": "model", "from_model": "deepseek-flash"}
+    turn = _turn(
+        0,
+        [AIMessage(content="picking up", id="ai-1")],
+        new_ui_records=[handoff_mark(brief, to="claude-sonnet-5-5-code")],
+    )
+    _mock_reader(monkeypatch, ThreadHistory(thread_id=THREAD, turns=[turn]))
+    items = await build_checkpoint_replay_items(thread_rows([_query(0)], {0: _response(0)}))
+    assert [i["event"] for i in items] == ["user_message", "context_window", "message_chunk"]
+    data = items[1]["data"]
+    assert (data["action"], data["from_model"], data["to_model"]) == ("brief", "deepseek-flash", "claude-sonnet-5-5-code")
+    assert data["summary_text"] == "BRIEF BODY" and data["turn_index"] == 0
+
+
 def _fallback_record(record_id, after=None):
     return {
         "type": "ui",
