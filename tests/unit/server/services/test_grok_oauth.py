@@ -11,6 +11,7 @@ import base64
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -319,5 +320,5 @@ def test_error_frame_hints_for_a_grok_403(error, hints):
         "src.server.services.runs.stream_errors.failure_kind",
         return_value={"kind": "upstream", "status_code": 403, "provider_module": None},
     ):
-        data = error_event_data("t1", "boom", exc=exc, credential_source="oauth")
+        data = error_event_data("t1", "boom", exc=exc, config=SimpleNamespace(credential_source="oauth"))
     assert data["hints"] == hints

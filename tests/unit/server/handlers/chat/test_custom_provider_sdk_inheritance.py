@@ -67,10 +67,12 @@ async def test_path2_anthropic_parent_rewrites_provider_to_parent():
 
     p1, p2, p3 = _patches(provider_def)
     with p1, p2, p3:
-        byok, base_url, out = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
+        byok, base_url, out, held = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
 
     # SDK now resolves via the parent's manifest entry, not the (absent) slug.
     assert out["provider"] == "vendor-parent"
+    # The key still bills the gateway it was saved for, which a failure names.
+    assert held == "my-anthropic-gw"
     sdk = mc.get_provider_info(out["provider"]).get("sdk") or "openai"
     assert sdk == "anthropic"
     assert base_url == "https://gw.example/anthropic"
@@ -85,7 +87,7 @@ async def test_path1_anthropic_parent_rewrites_provider_to_parent():
 
     p1, p2, p3 = _patches(provider_def)
     with p1, p2, p3:
-        byok, base_url, out = await _resolve_custom_model_byok("u", "my-anthropic-gw", dict(custom_model), mc)
+        byok, base_url, out, _ = await _resolve_custom_model_byok("u", "my-anthropic-gw", dict(custom_model), mc)
 
     assert out["provider"] == "vendor-parent"
 
@@ -102,7 +104,7 @@ async def test_openai_parent_does_not_rewrite_or_force_response_api():
 
     p1, p2, p3 = _patches(provider_def)
     with p1, p2, p3:
-        byok, base_url, out = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
+        byok, base_url, out, _ = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
 
     # Provider unchanged → from_custom_config sees {} → sdk defaults to openai,
     # use_response_api stays False (the safe gateway default).
@@ -126,7 +128,7 @@ async def test_dashscope_parent_is_matched_in_full():
 
     p1, p2, p3 = _patches(provider_def)
     with p1, p2, p3:
-        byok, base_url, out = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
+        byok, base_url, out, _ = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
 
     assert out["provider"] == "vendor-parent"
 
@@ -143,7 +145,7 @@ async def test_custom_provider_explicit_use_response_api_opt_in_preserved():
 
     p1, p2, p3 = _patches(provider_def)
     with p1, p2, p3:
-        byok, base_url, out = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
+        byok, base_url, out, _ = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
 
     assert out.get("_use_response_api") is True
 
@@ -168,7 +170,7 @@ async def test_an_explicit_responses_opt_out_survives_the_inheritance():
 
     p1, p2, p3 = _patches(provider_def)
     with p1, p2, p3:
-        byok, base_url, out = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
+        byok, base_url, out, _ = await _resolve_custom_model_byok("u", "eval-model", dict(custom_model), mc)
 
     # Still the parent's dialect: the opt-out is about the route, not the client.
     assert out["provider"] == "vendor-parent"

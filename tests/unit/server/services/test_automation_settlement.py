@@ -1049,11 +1049,11 @@ def test_what_a_failed_model_call_records_decides_the_outcome(
     two halves are pinned together rather than each against a copy."""
     from src.server.services.runs import stream_errors
 
-    monkeypatch.setattr(stream_errors.app_settings, "HOST_MODE", host_mode)
+    monkeypatch.setattr("src.config.settings.HOST_MODE", host_mode)
     exc = RuntimeError("refused")
     exc.__model_resilience__ = {"attempted_models": [{"status_code": status}]}
 
-    metadata = stream_errors.model_call_failure(exc, source)
+    metadata = stream_errors.model_call_failure(exc, SimpleNamespace(credential_source=source))
     assert ledger_outcome({"status": "error", "metadata": metadata}) is outcome
 
 

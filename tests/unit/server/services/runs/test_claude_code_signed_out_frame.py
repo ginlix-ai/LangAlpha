@@ -1,5 +1,7 @@
 """A Claude Code token refused after admission reads as the admission refusal, not as this service failing."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.llms.claude_code import ClaudeTurnFailed
@@ -47,7 +49,7 @@ def test_a_turn_the_machines_claude_code_stopped_is_shown_in_its_own_words():
     for kind, detail in [("model_unavailable", "claude-opus-5-5"), ("startup_failed", "an enterprise MCP config is present")]:
         failed = ClaudeTurnFailed(kind, detail)
         exc = _raised(failed)
-        frame = error_event_data("t-1", str(failed), exc=exc, credential_source="oauth", model="claude-opus-5-5-code")
+        frame = error_event_data("t-1", str(failed), exc=exc, config=SimpleNamespace(credential_source="oauth"), model="claude-opus-5-5-code")
         assert frame["error"] == ClaudeTurnFailed.TEMPLATES[kind].format(detail)
         assert (frame["error_kind"], frame.get("status_code"), frame["hints"]) == ("upstream", None, ["try_another_model"])
     assert "policy" not in ClaudeTurnFailed.TEMPLATES["startup_failed"]

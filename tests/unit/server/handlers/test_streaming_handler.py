@@ -17,13 +17,20 @@ import pytest
 class TestRunSSEProducerFormatting:
     """Tests for RunSSEProducer SSE formatting methods."""
 
-    def _make_handler(self, thread_id="test-thread", credential_source=None):
+    def _make_handler(
+        self, thread_id="test-thread", credential_source=None, model=None, payer=None, account=None
+    ):
         from types import SimpleNamespace
 
+        from ptc_agent.config.agent import CredentialPayer
         from src.server.services.runs.sse_producer import RunSSEProducer
 
         config = (
-            SimpleNamespace(credential_source=credential_source)
+            SimpleNamespace(
+                credential_source=credential_source,
+                credential_payer=CredentialPayer(payer, account) if payer else None,
+                llm=SimpleNamespace(name=model) if model else None,
+            )
             if credential_source is not None
             else None
         )
@@ -85,9 +92,11 @@ class TestRunSSEProducerFormatting:
         assert "error_kind" not in parsed
         assert "hints" not in parsed
 
-    def test_build_error_event_with_upstream_exc(self):
+    def test_build_error_event_with_upstream_exc(self, monkeypatch):
         """Upstream 5xx exceptions classify as upstream with provider-outage hints."""
         from anthropic import InternalServerError
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
 
         # Fabricate an anthropic.InternalServerError the way the SDK would
         # raise it on a 500 response. We just need the exception type and
@@ -169,17 +178,75 @@ class TestRunSSEProducerFormatting:
         monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
         assert self._hints(self._upstream(status)) == ["try_another_model"]
 
-    def test_platform_billed_turn_drops_credential_hints(self, monkeypatch):
-        """The user holds no key on a platform-billed turn, so do not name one."""
+    def _frame(self, exc, credential_source=None, model=None, payer=None, account=None):
+        handler = self._make_handler(
+            thread_id="err-thread", credential_source=credential_source, model=model,
+            payer=payer, account=account,
+        )
+        return handler._build_error_event(str(exc), exc=exc).data
+
+    def test_own_key_failure_names_the_account_it_came_from(self, monkeypatch):
+        """A 402 on the user's own key is their provider balance, theirs to fix.
+
+        It used to fall through to the no-status branch, so a user whose
+        DeepSeek balance ran out was told to check their key and the provider's
+        status page, and reported the failure as a bug.
+        """
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        assert self._hints(self._upstream(401), credential_source="platform") == [
-            "try_another_model"
-        ]
-        # 5xx never named a credential, so it is unchanged.
-        assert self._hints(self._upstream(503), credential_source="platform") == [
-            "provider_status",
+        frame = self._frame(
+            self._upstream(402), credential_source="byok", model="deepseek-flash",
+            payer="own_key", account="DeepSeek",
+        )
+        assert frame["payer"] == "own_key"
+        assert frame["account"] == "DeepSeek"
+        assert frame["hints"] == ["provider_balance", "try_another_model"]
+        assert frame["error"] == "Error code: 402"
+
+    def test_a_coding_plan_key_reads_as_the_plan_it_is(self, monkeypatch):
+        """The turn's recorded payer wins over the bare source: a coding plan
+        is a subscription bought with a key, as the picker badges it."""
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        frame = self._frame(
+            self._upstream(429), credential_source="byok", payer="subscription", account="GLM Coding Plan",
+        )
+        assert (frame["payer"], frame["account"]) == ("subscription", "GLM Coding Plan")
+
+    def test_a_local_server_is_nobodys_account(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        frame = self._frame(self._upstream(None), credential_source="byok", payer="local")
+        assert frame["payer"] == "local"
+        assert "account" not in frame
+        assert frame["hints"] == ["local_server", "try_another_model"]
+
+    def test_without_a_recorded_payer_the_source_answers_and_names_nothing(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        frame = self._frame(self._upstream(401), credential_source="oauth", model="gpt-5.3-codex-spark-oauth")
+        assert frame["payer"] == "subscription"
+        assert "account" not in frame
+
+    @pytest.mark.parametrize("status", [401, 402, 404, 429, 503, None])
+    def test_platform_billed_turn_offers_only_what_the_user_can_do(self, monkeypatch, status):
+        """On credits the account is the service's: no key, balance or status
+        page of the user's to check, and no account to name."""
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        frame = self._frame(self._upstream(status), credential_source="platform", model="deepseek-flash")
+        assert frame["payer"] == "credits"
+        assert "account" not in frame
+        assert frame["hints"] == ["try_another_model", "retry_later", "new_thread"]
+
+    def test_platform_billed_refusal_suggests_a_new_thread(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        assert self._hints(self._upstream(413), credential_source="platform") == [
             "try_another_model",
+            "new_thread",
         ]
+
+    def test_oss_server_key_reads_as_the_operators_own(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
+        frame = self._frame(self._upstream(402), credential_source="platform", model="deepseek-flash")
+        assert frame["payer"] == "server_key"
+        assert "account" not in frame
+        assert frame["hints"] == ["provider_balance", "try_another_model"]
 
     def test_user_owned_credential_keeps_its_hints(self, monkeypatch):
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
@@ -220,7 +287,11 @@ class TestRunSSEProducerFormatting:
     def test_unknown_credential_fails_closed_on_the_hosted_service(self, monkeypatch):
         """No agent_config: a wrong credential hint is worse than a missing one."""
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        assert self._hints(self._upstream(401)) == ["try_another_model"]
+        assert self._hints(self._upstream(401)) == [
+            "try_another_model",
+            "retry_later",
+            "new_thread",
+        ]
 
     def test_build_error_event_with_internal_exc(self):
         """Bare Exception from our code is classified as internal, no hints."""

@@ -204,7 +204,7 @@ class TestResolveBYOKCustomModel:
             patch(
                 f"{CLIENTS}._resolve_custom_model_byok",
                 new_callable=AsyncMock,
-                return_value=({"api_key": "user-key"}, "https://custom.com", custom_config),
+                return_value=({"api_key": "user-key"}, "https://custom.com", custom_config, "custom-provider"),
             ),
             patch(
                 "src.llms.llm.create_llm_from_custom",
@@ -234,7 +234,7 @@ class TestResolveBYOKCustomModel:
             patch(
                 f"{CLIENTS}._resolve_custom_model_byok",
                 new_callable=AsyncMock,
-                return_value=(None, None, custom_config),
+                return_value=(None, None, custom_config, None),
             ),
         ):
             result = await resolve_byok_llm_client("user-1", "my-gpt", True)
