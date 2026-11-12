@@ -40,8 +40,8 @@ export function readStreamFailure(
         }))
         .filter((m) => m.model)
     : undefined;
-  // Hints, payer and account are the provider's failure only: an internal
-  // error gets none even if a future server sends them.
+  // What only the provider's failure carries: an internal error gets none
+  // even if a future server sends it.
   const upstream = kind === 'upstream' ? readUpstreamDetail(event) : {};
   return {
     message,

@@ -62,18 +62,18 @@ export function needsAttention(a: Automation): boolean {
 /**
  * Why an automation wants a person, which decides what it is called and what
  * it offers. A rejected key and a run of failures both switch it off, so
- * either is resumed. A usage limit, the LangAlpha plan's or the Claude plan's,
- * never switches it off: a schedule carries on and a one-shot price alert
+ * either is resumed. A usage limit, the LangAlpha plan's, the Claude plan's or
+ * another subscription's, never switches it off: a schedule carries on and a one-shot price alert
  * ends, and the reader gets the choice any failed run gets, another try, or a
  * pause while there is still one to pause.
  */
-export type AttentionKind = 'key_rejected' | 'switched_off' | 'usage_limit' | 'claude_plan' | 'failed';
+export type AttentionKind = 'key_rejected' | 'switched_off' | 'usage_limit' | 'claude_plan' | 'plan_limit' | 'failed';
 
 export function attentionKind(a: Automation): AttentionKind | null {
   if (!needsAttention(a)) return null;
   if (a.status === 'disabled') return isKeyRejected(a) ? 'key_rejected' : 'switched_off';
   const reason = a.last_execution?.failure_reason;
-  return reason === 'usage_limit' || reason === 'claude_plan' ? reason : 'failed';
+  return reason === 'usage_limit' || reason === 'claude_plan' || reason === 'plan_limit' ? reason : 'failed';
 }
 
 function isKeyRejected(a: Automation): boolean {
@@ -184,6 +184,7 @@ const STATE_UI: Record<AutomationState, StatusUi> = {
   switched_off: { labelKey: 'automation.stateDisabled', Icon: AlertCircle, color: DANGER, danger: true },
   usage_limit: { labelKey: 'automation.stateUsageLimit', Icon: AlertCircle, color: DANGER, danger: true },
   claude_plan: { labelKey: 'automation.stateClaudePlan', Icon: AlertCircle, color: DANGER, danger: true },
+  plan_limit: { labelKey: 'automation.statePlanLimit', Icon: AlertCircle, color: DANGER, danger: true },
   failed: { labelKey: 'automation.stateLastRunFailed', Icon: AlertCircle, color: DANGER, danger: true },
   paused: { labelKey: 'automation.statePaused', Icon: Pause, color: 'var(--color-text-tertiary)' },
   off: { labelKey: 'automation.stateDisabled', Icon: Pause, color: 'var(--color-text-tertiary)' },
@@ -251,7 +252,7 @@ const MODEL_SETTINGS_LINK: ErrorLinkSpec = {
 
 /** Where the reader fixes what stopped an automation's newest run: model
  *  settings for a rejected key, the plan pages for a usage limit, and none
- *  for the Claude plan's, which no page here lifts. Read from
+ *  for the Claude plan's or another subscription's, which no page here lifts. Read from
  *  the automation, not its attention, so a dismissal keeps the way back. */
 export function attentionLinks(a: Automation): ErrorLinkSpec[] {
   if (isKeyRejected(a)) return [MODEL_SETTINGS_LINK];
@@ -317,6 +318,7 @@ const SKIP_REASON_NOTE: Record<SkipReason, string | null> = {
 const FAILURE_REASON_NOTE: Record<FailureReason, string | null> = {
   usage_limit: null,
   claude_plan: null,
+  plan_limit: null,
   provider_auth: null,
   server_error: 'automation.failedServerError',
   interrupted: 'automation.failedInterrupted',

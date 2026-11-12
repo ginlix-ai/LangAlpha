@@ -10,6 +10,7 @@ import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
 import { CitationMetadataProvider } from '../CitationMetadataContext';
 import TextMessageContent, { TurnErrorCard } from '../TextMessageContent';
 import { ReportFailure } from '@/components/ui/error-banner';
+import { isReportable } from '@/lib/upstreamFailure';
 import { SentMessageBody } from './SentMessageBody';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { countDedupedSources, type CreditPauseState, type MessageProvenance, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState } from '@/types/chat';
@@ -568,8 +569,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
       {failure && (
         <div className={hasBody ? 'mt-3' : undefined}>
           <TurnErrorCard err={failure} />
-          {/* A plan's limit is the plan working, not a failure to report. */}
-          {reportThreadId && (failure.kind === 'upstream' || failure.kind === 'internal') && !failure.planRefusal && (
+          {reportThreadId && isReportable(failure) && (
             <div className="mt-1.5 flex">
               <ReportFailure error={failure} threadId={reportThreadId} />
             </div>

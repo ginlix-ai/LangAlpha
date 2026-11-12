@@ -43,8 +43,10 @@ const WINDOWS: ReadonlySet<unknown> = new Set<ClaudeCodePlanWindow>([
   'five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet', 'seven_day_overage_included',
 ]);
 
-const isWindow = (value: unknown): value is ClaudeCodePlanWindow => WINDOWS.has(value);
-const isTime = (value: unknown): value is string => typeof value === 'string' && !Number.isNaN(Date.parse(value));
+/** A plan window the app has words for, as a frame names it. */
+export const isPlanWindow = (value: unknown): value is ClaudeCodePlanWindow => WINDOWS.has(value);
+/** A reset time the app can read (ISO 8601). */
+export const isPlanTime = (value: unknown): value is string => typeof value === 'string' && !Number.isNaN(Date.parse(value));
 
 const windowName = (t: Translate, window: ClaudeCodePlanWindow) => t(`claudeCodePlan.window.${window}`);
 
@@ -226,7 +228,7 @@ export function pickerPlanHold(
  *  ones it carries. */
 function frameReset(window: unknown, until: unknown): ClaudeCodePlanLimit | null {
   if (window == null && until == null) return { window: null, until: null };
-  return isWindow(window) && isTime(until) ? { window, until } : null;
+  return isPlanWindow(window) && isPlanTime(until) ? { window, until } : null;
 }
 
 /** A `claude_code_off` refusal's plan limit. Null for another reason, and for
