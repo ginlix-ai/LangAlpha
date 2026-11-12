@@ -29,7 +29,10 @@ const h = vi.hoisted(() => ({
   pollDevice: vi.fn(),
 }));
 
-vi.mock('@/config/supportLinks', () => ({ PLATFORM_URL: '/account' }));
+vi.mock('@/config/supportLinks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config/supportLinks')>()),
+  PLATFORM_URL: '/account',
+}));
 vi.mock('@/hooks/useApiKeys', () => ({
   useApiKeys: () => ({ apiKeys: null, isLoading: false }),
   useUpdateApiKeys: () => ({ mutateAsync: h.mutateAsync }),

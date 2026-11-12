@@ -21,6 +21,7 @@ const CODES = new Set([
   'upstream_unavailable',
   'save_failed',
   'redis_unavailable',
+  'unavailable',
 ]);
 
 /** Refusals after which the same sign-in can still finish: fix the paste, or send it again. */
@@ -167,15 +168,19 @@ export function ClaudeConnect({
     const raw = phase.kind === 'failed' ? phase.code : 'no_pending_flow';
     const code = CODES.has(raw) ? raw : 'unknown';
     const transient = code === 'redis_unavailable' || code === 'upstream_unavailable';
+    // Starting again cannot help a user the server does not let sign in.
+    const closed = code === 'unavailable';
     return (
       <FlowFailure
         title={t(`modelAccess.claude.fail.${code}`)}
-        detail={t(transient ? 'modelAccess.claude.failNextTransient' : 'modelAccess.claude.failNext')}
+        detail={closed ? undefined : t(transient ? 'modelAccess.claude.failNextTransient' : 'modelAccess.claude.failNext')}
         action={
           <>
-            <Button type="button" size="sm" onClick={start}>
-              {t(transient ? 'modelAccess.tryAgain' : 'modelAccess.claude.restart')}
-            </Button>
+            {!closed && (
+              <Button type="button" size="sm" onClick={start}>
+                {t(transient ? 'modelAccess.tryAgain' : 'modelAccess.claude.restart')}
+              </Button>
+            )}
             {onCancel && (
               <Button type="button" size="sm" variant="ghost" onClick={cancel}>
                 {t('common.cancel')}

@@ -8,7 +8,7 @@ import type { ClaudeCodeCustodyMode } from '@/api/model';
 import { readOAuthError } from '@/api/oauth';
 import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
-import { CLAUDE_CODE_DISCLOSURE, CLAUDE_CODE_MODE_LABELS } from '@/lib/claudeCode';
+import { CLAUDE_CODE_DISCLOSURE, CLAUDE_CODE_DOCS, CLAUDE_CODE_MODE_LABELS } from '@/lib/claudeCode';
 import { useSaveFailedToast } from '../usePreferenceWrite';
 import { ModeCard } from './ModeCard';
 
@@ -91,7 +91,18 @@ export function ClaudeCodeHostedChoice({ onAddToken, onAsking }: {
         <h3 id={headingId} className="text-xs font-medium" style={{ color: 'var(--color-text-tertiary)' }}>
           {t('modelAccess.claudeCode.hosted.heading')}
         </h3>
-        {choosing && <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('common.saving')}</span>}
+        {choosing ? <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('common.saving')}</span> : (
+          <a
+            href={CLAUDE_CODE_DOCS.whereItRuns}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="tap-target inline-flex items-center gap-0.5 text-xs underline underline-offset-2 hover:opacity-80"
+            style={{ color: 'var(--color-text-tertiary)' }}
+          >
+            {t('modelAccess.claudeCode.setup.learnMore')}
+            <ExternalLink aria-hidden="true" className="h-3 w-3" />
+          </a>
+        )}
       </div>
       <div role="radiogroup" aria-labelledby={headingId} className="flex flex-col gap-2">
         {modes.map(({ mode, label, detail }) => (

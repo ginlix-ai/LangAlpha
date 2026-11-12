@@ -25,7 +25,7 @@ import type { TokenAction, TokenRow } from '@/components/modelAccess/tokenLine';
 import { SAVED_TOKEN, computerTokenTarget, type SheetAction, type TokenTarget } from '@/components/modelAccess/tokenTarget';
 import { canRemoteControl } from '@/lib/desktop';
 import { cn } from '@/lib/utils';
-import { CLAUDE_CODE_DOCS_URL, CLAUDE_CODE_FEATURE, CLAUDE_CODE_REQUIREMENTS_URL, biggerComputer } from '@/lib/claudeCode';
+import { CLAUDE_CODE_DOCS, CLAUDE_CODE_FEATURE, biggerComputer } from '@/lib/claudeCode';
 import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
 import { openComputerSpec, openComputersPanel } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import { useSaveFailedToast } from '../usePreferenceWrite';
@@ -37,8 +37,14 @@ import { claudeCodeHeadline } from './claudeCodeHeadline';
 
 const S = 'modelAccess.claudeCode.setup';
 
-/** The states where nothing the user has can run Claude Code yet. */
-const CANNOT_RUN_YET = new Set<ClaudeCodeSetup['state']>(['no_computer', 'unsupported', 'offline']);
+/** The docs section the view's Learn more opens, by what the view asks of
+ *  the user: what a computer needs, where it runs while one is out of reach,
+ *  else how it runs. */
+const LEARN_MORE: Partial<Record<ClaudeCodeSetup['state'], string>> = {
+  no_computer: CLAUDE_CODE_DOCS.requirements,
+  unsupported: CLAUDE_CODE_DOCS.requirements,
+  offline: CLAUDE_CODE_DOCS.whereItRuns,
+};
 
 const glyph = (Icon: typeof Laptop) => <Icon aria-hidden="true" className="h-4 w-4" style={{ color: 'var(--color-text-secondary)' }} />;
 const iconOf = (kind: ClaudeCodeComputer['kind'] | undefined) => glyph(kind === 'helper' ? Laptop : SquareTerminal);
@@ -349,7 +355,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
       <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
         {t(S + '.lead')}{' '}
         <a
-          href={setup && CANNOT_RUN_YET.has(setup.state) ? CLAUDE_CODE_REQUIREMENTS_URL : CLAUDE_CODE_DOCS_URL}
+          href={(setup && LEARN_MORE[setup.state]) ?? CLAUDE_CODE_DOCS.howItRuns}
           target="_blank"
           rel="noopener noreferrer"
           className="tap-target inline-flex items-center gap-0.5 underline underline-offset-2 hover:opacity-80"

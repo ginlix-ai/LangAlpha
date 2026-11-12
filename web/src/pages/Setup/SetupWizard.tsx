@@ -16,42 +16,33 @@ import React from 'react';
 const MethodStep = React.lazy(() => import('./steps/MethodStep'));
 const ProviderStep = React.lazy(() => import('./steps/ProviderStep'));
 const ConnectStep = React.lazy(() => import('./steps/ConnectStep'));
+const ClaudeCodeStep = React.lazy(() => import('./steps/ClaudeCodeStep'));
 const ModelPickStep = React.lazy(() => import('./steps/ModelPickStep'));
 const DefaultsStep = React.lazy(() => import('./steps/DefaultsStep'));
 const DoneStep = React.lazy(() => import('./steps/DoneStep'));
 
 // ---------------------------------------------------------------------------
-// Step metadata — 4 macro dots, 6 micro routes
+// Step metadata — 4 macro dots, 7 micro routes
 // ---------------------------------------------------------------------------
-
-const ROUTES = [
-  '/setup/method',
-  '/setup/provider',
-  '/setup/connect',
-  '/setup/models',
-  '/setup/defaults',
-  '/setup/ready',
-] as const;
 
 /** Macro stepper i18n keys (4 dots for user clarity) */
 const STEPPER_KEYS = ['stepMethod', 'stepProvider', 'stepModels', 'stepReady'] as const;
 
-/** Map route index → stepper dot index */
-function stepperDot(routeIdx: number): number {
-  // method(0),provider(1),connect(2) → dot 0-1
-  // models(3) → dot 2
-  // defaults(4) → dot 2
-  // ready(5) → dot 3
-  if (routeIdx <= 1) return routeIdx;
-  if (routeIdx === 2) return 1;
-  if (routeIdx <= 4) return 2;
-  return 3;
-}
+/** Each route's place in the flow (`index`), its stepper dot, and whether the
+ *  note on keys shows under it: `keys` while keys are entered, not on a
+ *  subscription's sign-in, which has its own note on the tokens it stores.
+ *  Claude Code's step stands where a sign-in's connect step does. */
+const STEPS: readonly { path: string; index: number; dot: number; securityNote: 'always' | 'keys' | false }[] = [
+  { path: '/setup/method', index: 0, dot: 0, securityNote: 'always' },
+  { path: '/setup/provider', index: 1, dot: 1, securityNote: 'always' },
+  { path: '/setup/connect', index: 2, dot: 1, securityNote: 'keys' },
+  { path: '/setup/claude-code', index: 2, dot: 1, securityNote: false },
+  { path: '/setup/models', index: 3, dot: 2, securityNote: false },
+  { path: '/setup/defaults', index: 4, dot: 2, securityNote: false },
+  { path: '/setup/ready', index: 5, dot: 3, securityNote: false },
+];
 
-function routeIndex(pathname: string): number {
-  const idx = ROUTES.findIndex((r) => pathname.startsWith(r));
-  return idx === -1 ? 0 : idx;
-}
+const stepOf = (pathname: string) => STEPS.find((s) => pathname.startsWith(s.path)) ?? STEPS[0];
 
 // ---------------------------------------------------------------------------
 // SetupWizard
@@ -73,9 +64,10 @@ export default function SetupWizard() {
   const showExit = canExit || hasReturn;
   const stepperLabels = STEPPER_KEYS.map((k) => t(`setup.${k}`));
 
-  const current = routeIndex(location.pathname);
+  const step = stepOf(location.pathname);
+  const current = step.index;
   const connectMethod = (location.state as { method?: string } | null)?.method;
-  const currentDot = stepperDot(current);
+  const securityNote = step.securityNote === 'always' || (step.securityNote === 'keys' && connectMethod !== 'oauth');
 
   // Where the steps draw their buttons; see SetupFooter.
   const [footerSlot, setFooterSlot] = useState<HTMLElement | null>(null);
@@ -109,7 +101,7 @@ export default function SetupWizard() {
       stepKey={String(current)}
       stepIndex={current}
       progress={
-        <WizardProgress steps={stepperLabels} current={currentDot} label={t('setup.progressLabel')} />
+        <WizardProgress steps={stepperLabels} current={step.dot} label={t('setup.progressLabel')} />
       }
       // Shown when the user already has model access configured, or when
       // another page sent them here and expects them back.
@@ -128,6 +120,7 @@ export default function SetupWizard() {
             <Route path="method" element={<MethodStep />} />
             <Route path="provider" element={<ProviderStep />} />
             <Route path="connect" element={<ConnectStep />} />
+            <Route path="claude-code" element={<ClaudeCodeStep />} />
             <Route path="models" element={<ModelPickStep />} />
             <Route path="defaults" element={<DefaultsStep />} />
             <Route path="ready" element={<DoneStep />} />
@@ -135,9 +128,7 @@ export default function SetupWizard() {
           </Routes>
         </Suspense>
       </SetupFooterSlot>
-      {/* Said while keys are being chosen and entered, not after. A
-          subscription sign-in has its own note about the tokens it stores. */}
-      {(current <= 1 || (current === 2 && connectMethod !== 'oauth')) && (
+      {securityNote && (
         <p className="mt-8 flex items-center gap-1.5 text-xs text-(--color-text-tertiary)">
           <Shield aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
           <span>{t('setup.securityNote')}</span>

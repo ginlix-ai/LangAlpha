@@ -14,6 +14,8 @@ import { ProviderChoices } from '@/components/modelAccess/ProviderChoices';
 import { SubscriptionChoices } from '@/components/modelAccess/SubscriptionChoices';
 import { QuietNote } from '@/components/modelAccess/parts';
 import { NO_FILTER, startingOption, type KeyFilter, type ProviderGroup } from '@/components/modelAccess/providerOptions';
+import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
+import { CLAUDE_CODE_SETUP_STATUS } from '@/lib/claudeCode';
 import { useProviderConnected, type LocationState, type ProviderList } from './connectStep/shared';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +41,7 @@ export default function ProviderStep() {
     [providers],
   );
   const [filter, setFilter] = useState<KeyFilter>(NO_FILTER);
+  const { setup: claudeCode, unread: claudeCodeUnread } = useClaudeCodeSetup({ enabled: list === 'oauth' });
 
   // The user's own providers, which the key method also offers.
   const userCustomProviders = useMemo(() => {
@@ -116,6 +119,9 @@ export default function ProviderStep() {
             configured={configuredSet}
             onPickSignIn={(p) => goOn({ method: 'oauth', list: 'oauth', provider: p, displayName: t(`modelAccess.${subscriptionKey(p)}.name`), modelsFrom: p })}
             onPickPlan={pickKeyGroup('oauth')}
+            claudeCode={claudeCode || claudeCodeUnread
+              ? { status: claudeCode ? CLAUDE_CODE_SETUP_STATUS[claudeCode.state] : 'unknown', onPick: () => navigate('/setup/claude-code') }
+              : undefined}
           />
         )}
 

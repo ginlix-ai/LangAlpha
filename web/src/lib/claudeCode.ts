@@ -1,6 +1,6 @@
 import type { ClaudeCodeComputer, ClaudeCodeCustodyMode, ClaudeCodeSetup, ClaudeCodeSetupState, PlanRefusal } from '@/api/model';
 import type { RowStatus } from '@/components/modelAccess/parts';
-import { PLAN_URL } from '@/config/supportLinks';
+import { DOCS_URL, PLAN_URL } from '@/config/supportLinks';
 import { readPlanRefusal } from '@/lib/claudeCodePlan';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import type { WorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
@@ -26,10 +26,16 @@ export const CLAUDE_CODE_CONNECTION: ConfiguredProvider = {
   state: 'connected',
 };
 
-/** Where the user docs explain Claude Code mode, and the anchor of its
- *  requirements, which the states that cannot run it yet point at. */
-export const CLAUDE_CODE_DOCS_URL = 'https://docs.langalpha.ai/concepts/claude-code/';
-export const CLAUDE_CODE_REQUIREMENTS_URL = `${CLAUDE_CODE_DOCS_URL}#requirements`;
+/** Where the user docs explain Claude Code mode, and the sections its
+ *  surfaces link to in place of explaining it themselves. */
+export const CLAUDE_CODE_DOCS_URL = `${DOCS_URL}/concepts/claude-code/`;
+export const CLAUDE_CODE_DOCS = {
+  howItRuns: `${CLAUDE_CODE_DOCS_URL}#how-it-runs`,
+  requirements: `${CLAUDE_CODE_DOCS_URL}#requirements`,
+  whereItRuns: `${CLAUDE_CODE_DOCS_URL}#where-it-runs-and-when-it-can-run`,
+  setUp: `${CLAUDE_CODE_DOCS_URL}#set-it-up`,
+  fromClaudeSignIn: `${CLAUDE_CODE_DOCS_URL}#moving-from-the-claude-sign-in`,
+} as const;
 
 /** Claude Code's status word on its row under Connect a subscription and in
  *  Model access, by where it stands as a whole. */

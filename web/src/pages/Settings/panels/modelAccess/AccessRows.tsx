@@ -30,6 +30,7 @@ export function AccessRow({
   limited = false,
   status,
   action,
+  notice,
 }: {
   provider: string;
   name: string;
@@ -46,9 +47,13 @@ export function AccessRow({
   limited?: boolean;
   status: RowStatus;
   action: React.ReactNode;
+  /** A sentence under the detail that the user should act on, such as the
+   *  day the connection stops working. */
+  notice?: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const steps = useContext(UsageTableContext);
+  const noticeLine = notice && <span className="text-xs text-pretty wrap-break-word" style={{ color: 'var(--color-text-secondary)' }}>{notice}</span>;
   const nameLine = (
     <span className="flex min-w-0 items-baseline gap-2">
       <span className="truncate text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
@@ -69,6 +74,7 @@ export function AccessRow({
               {plan ? <UsageDetail text={detail} plan={plan} tail="bars" whole={limited} /> : detail}
             </span>
           )}
+          {noticeLine}
         </div>
         {plan && <UsageCells plan={plan} />}
         <div className={cn('ml-auto flex shrink-0 items-center gap-3', steps.tail)}>
@@ -86,6 +92,7 @@ export function AccessRow({
       <div className="flex min-w-0 flex-[1_1_12rem] flex-col gap-0.5">
         {nameLine}
         {detail && <span className={detailClass} style={{ color: 'var(--color-text-tertiary)' }}>{detail}</span>}
+        {noticeLine}
       </div>
       <StatusActions status={status}>
         <div className="shrink-0">{action}</div>

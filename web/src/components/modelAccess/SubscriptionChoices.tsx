@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { SUBSCRIPTIONS, type SubscriptionProvider } from '@/api/oauth';
+import { useOAuthStatus } from '@/hooks/useConfiguredProviders';
 import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION } from '@/lib/claudeCode';
 import { ProviderRow } from './KeyProviderPicker';
 import { ProviderChoice } from './ProviderChoices';
@@ -9,8 +10,10 @@ import type { ProviderGroup } from './providerOptions';
 /**
  * Every subscription the account can connect: the plans it signs in to, then
  * the coding plans it adds with a key. Settings and the setup wizard list them
- * the same way. Settings also lists Claude Code under the Claude sign-in
+ * the same way, and both list Claude Code where the Claude sign-in is
  * (`claudeCode`), with where it stands, whenever the server offers it.
+ * The Claude sign-in itself is listed once its status is read, unless the
+ * server says the user may not start one and none is connected.
  */
 export function SubscriptionChoices({
   planGroups,
@@ -26,6 +29,9 @@ export function SubscriptionChoices({
   claudeCode?: { status: RowStatus; onPick: () => void };
 }) {
   const { t } = useTranslation();
+  const { data: claude } = useOAuthStatus('claude-oauth');
+  const offered = (provider: SubscriptionProvider) => provider !== 'claude-oauth'
+    || configured.has(provider) || (!!claude && claude.can_sign_in !== false);
   return (
     <div className="flex flex-col gap-3">
       <section className="flex flex-col gap-1">
@@ -34,14 +40,16 @@ export function SubscriptionChoices({
         </h4>
         <ul className="flex flex-col gap-1">
           {SUBSCRIPTIONS.flatMap((s) => [
-            <ProviderChoice
-              key={s.provider}
-              markProvider={s.provider}
-              name={t(`modelAccess.${s.key}.name`)}
-              note={t(`modelAccess.${s.key}.pickNote`)}
-              connected={configured.has(s.provider)}
-              onPick={() => onPickSignIn(s.provider)}
-            />,
+            ...(offered(s.provider) ? [(
+              <ProviderChoice
+                key={s.provider}
+                markProvider={s.provider}
+                name={t(`modelAccess.${s.key}.name`)}
+                note={t(`modelAccess.${s.key}.pickNote`)}
+                connected={configured.has(s.provider)}
+                onPick={() => onPickSignIn(s.provider)}
+              />
+            )] : []),
             ...(claudeCode && s.provider === 'claude-oauth' ? [(
               <ProviderChoice
                 key={CLAUDE_CODE}
