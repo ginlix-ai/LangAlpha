@@ -23,6 +23,7 @@ from ptc_agent.core.sandbox.runtime import (
 from src.server.database.computer import (
     DEFAULT_ROOT_DIR,
     clear_computer_host_unavailable,
+    end_moved_host_outage,
     get_computer,
     record_computer_disk,
     stamp_computer_host_unavailable,
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 class HostOutageClock(HostUnavailablePolicy):
-    """Rebuild a computer once its sandbox's host has refused starts too long.
+    """Rebuild a computer once its sandbox's host has not started it for too long.
 
     The clock lives on the computer row, so every worker and every restart
     measures the same outage. A handle only calls a sandbox replaced once the
@@ -57,8 +58,12 @@ class HostOutageClock(HostUnavailablePolicy):
         self.threshold = threshold
         self._named = {sandbox_id} if sandbox_id else set()
 
-    async def rebuild_now(self, sandbox_id: str) -> Optional[datetime]:
-        clock = await stamp_computer_host_unavailable(self.computer_id, sandbox_id)
+    async def rebuild_now(
+        self, sandbox_id: str, stuck_in: str | None = None
+    ) -> Optional[datetime]:
+        clock = await stamp_computer_host_unavailable(
+            self.computer_id, sandbox_id, stuck_in
+        )
         if clock is None:
             return None
         self._named.add(sandbox_id)
@@ -66,7 +71,7 @@ class HostOutageClock(HostUnavailablePolicy):
         if unavailable_for < self.threshold:
             return None
         logger.warning(
-            f"Host of sandbox {sandbox_id} has refused starts of computer "
+            f"Host of sandbox {sandbox_id} has not started computer "
             f"{self.computer_id} for {unavailable_for}; rebuilding it from the "
             "backup and keeping the old sandbox for salvage",
             extra={
@@ -76,6 +81,9 @@ class HostOutageClock(HostUnavailablePolicy):
             },
         )
         return since
+
+    async def observed(self, sandbox_id: str, state: str) -> None:
+        await end_moved_host_outage(self.computer_id, sandbox_id, state)
 
     def bound(self, sandbox_id: str) -> None:
         """A sandbox this handle built and published is the row's from then on,

@@ -85,12 +85,20 @@ class HostUnavailablePolicy(ABC):
     """
 
     @abstractmethod
-    async def rebuild_now(self, sandbox_id: str) -> datetime | None:
-        """The host refused to start *sandbox_id*.
+    async def rebuild_now(
+        self, sandbox_id: str, stuck_in: str | None = None
+    ) -> datetime | None:
+        """The host refused to start *sandbox_id*, or left it in *stuck_in*.
 
         When the outage that authorizes rebuilding instead began, or None to
-        keep waiting for the host.
+        keep waiting for the host. A sandbox stuck in a transition counts only
+        while it stays in that one, since a slow transition is also sighted.
         """
+
+    @abstractmethod
+    async def observed(self, sandbox_id: str, state: str) -> None:
+        """A read found *sandbox_id* in *state*: if a clock caught it stuck in
+        another transition, it moved on, and that outage is over."""
 
     @abstractmethod
     async def reconnected(self, sandbox_id: str) -> bool | None:
