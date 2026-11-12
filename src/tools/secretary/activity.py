@@ -82,6 +82,7 @@ _RUN_STATUS = {"completed": "finished", "failed": "failed", "timeout": "timed ou
 _RUN_FAILURE = {
     "usage_limit": "a usage limit stopped it",
     "claude_plan": "the Claude plan's limit stopped it",
+    "plan_limit": "a subscription's usage limit stopped it",
     "provider_auth": "the provider rejected the user's own key",
 }
 

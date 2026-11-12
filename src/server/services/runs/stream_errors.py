@@ -6,8 +6,9 @@ from typing import Any, Dict, Optional, Tuple
 
 from ptc_agent.config.agent import CredentialPayer, Payer
 from src.llms.claude_code import ClaudeTurnFailed
+from src.llms.provider_errors import ProviderRefusal, Reason, read_refusal
 from src.server.services.llm.claude_code import claude_code_refusal
-from src.server.services.llm.payers import source_payer
+from src.server.services.llm.payers import plan_display_name, source_payer
 from src.server.services.oauth_health import subscription_token_refusal
 from src.server.utils.error_sanitization import sanitize_error_text
 
@@ -91,12 +92,38 @@ def failure_payer(config: Any) -> CredentialPayer:
     )
 
 
-def upstream_failure(config: Any) -> Dict[str, Any]:
-    """What an upstream failure carries beyond its status: ``payer``, and
-    ``account`` when the user pays. The frame and the run row carry the same
-    fields, so a reload reads as the live card did."""
+def upstream_failure(exc: BaseException, config: Any) -> Dict[str, Any]:
+    """What an upstream failure carries beyond its status: ``payer``,
+    ``account`` when the user pays, the ``reason`` the provider gave, and
+    ``plan_limit`` for a subscription's used-up limit. The frame and the run
+    row carry the same fields, so a reload reads as the live card did."""
     named = failure_payer(config)
-    return {key: value for key, value in named._asdict().items() if value is not None}
+    refusal = read_refusal(exc)
+    fields = {
+        "payer": named.payer,
+        "account": named.account,
+        "reason": refusal.reason if refusal else None,
+        "plan_limit": plan_limit_detail(refusal, named),
+    }
+    return {key: value for key, value in fields.items() if value is not None}
+
+
+def plan_limit_detail(
+    refusal: Optional[ProviderRefusal], named: CredentialPayer
+) -> Optional[Dict[str, Any]]:
+    """A subscription's used-up limit: the plan as its maker sells it
+    (``ChatGPT Plus``), the window and its reset when the provider said. None
+    for anything else, and for a plan the turn could not name, which the card
+    would have to word as no one's."""
+    if refusal is None or refusal.reason != "plan_limit":
+        return None
+    if named.payer != "subscription" or not named.account:
+        return None
+    return {
+        "plan": plan_display_name(named.account, refusal.tier),
+        "window": refusal.window,
+        "until": refusal.until.isoformat() if refusal.until else None,
+    }
 
 
 def find_resilience_trace(exc: BaseException) -> Optional[Dict[str, Any]]:
@@ -246,13 +273,32 @@ def plan_stop_metadata(exc: BaseException) -> Dict[str, Any]:
     return {"claude_plan": {k: refusal[k] for k in keep if k in refusal}}
 
 
+#: Guidance for a refusal whose reason the provider named, most relevant
+#: first, for a user who holds the account. A reason not here falls back to
+#: the status.
+_REASON_HINTS: Dict[Reason, Tuple[str, ...]] = {
+    # The key is valid, so asking the user to check it misdirects them.
+    "out_of_credit": ("provider_balance", "try_another_model"),
+    "quota_exceeded": ("provider_quota", "try_another_model"),
+    "plan_limit": ("try_another_model",),
+    "plan_excludes": ("model_access", "try_another_model"),
+    "invalid_key": ("api_key", "try_another_model"),
+    "rate_limited": ("rate_limited", "try_another_model"),
+    "overloaded": ("provider_overloaded", "try_another_model"),
+    "content_blocked": ("content_blocked", "try_another_model"),
+    "context_too_long": ("new_thread", "try_another_model"),
+}
+
+#: Reasons that are about the request, not the account, so they are the
+#: user's to act on whoever pays.
+_REQUEST_REASONS: frozenset[Reason] = frozenset({"content_blocked", "context_too_long"})
+
 #: The guidance for a status the user can act on by their account or model.
 _STATUS_HINTS: Dict[int, Tuple[str, ...]] = {
     401: ("api_key", "model_access", "try_another_model"),
     403: ("api_key", "model_access", "try_another_model"),
-    # The account behind the key has no credit left (DeepSeek's and MiniMax's
-    # "insufficient balance"). The key is valid, so asking the user to check
-    # it misdirects them.
+    # A 402 read from the message alone, which names no reason: the account
+    # behind the key has no credit, and the key itself is valid.
     402: ("provider_balance", "try_another_model"),
     404: ("model_access", "try_another_model"),
 }
@@ -272,11 +318,19 @@ def _status_hints(status: Optional[int]) -> list[str]:
 
 
 def _upstream_hints(
-    info: Dict[str, Any], payer: Payer, trace: Optional[Dict[str, Any]], signed_in: bool
+    info: Dict[str, Any],
+    payer: Payer,
+    trace: Optional[Dict[str, Any]],
+    signed_in: bool,
+    reason: Optional[Reason],
 ) -> list[str]:
-    """The guidance under an upstream failure, most relevant first: the payer
-    says who can act on it, and the status what failed."""
+    """The guidance under an upstream failure, most relevant first: the
+    reason the provider gave, or else its status, says what failed, and the
+    payer who can act on it."""
     status = info.get("status_code")
+    if reason in _REQUEST_REASONS:
+        # The request itself: what the user sent, or how long the thread got.
+        return list(_REASON_HINTS[reason])
     if payer == "local":
         # A server on the user's machine: no key, plan or status page, and a
         # failure there is most often the server not answering.
@@ -290,7 +344,7 @@ def _upstream_hints(
         if status in _REQUEST_REFUSED_STATUSES:
             return ["try_another_model", "new_thread"]
         return ["try_another_model", "retry_later", "new_thread"]
-    hints = list(info["hints"]) if "hints" in info else _status_hints(status)
+    hints = list(info.get("hints") or _REASON_HINTS.get(reason) or _status_hints(status))
     if signed_in:
         # A subscription has no key to check. When its token was refused (any
         # 401, or xAI's stale-token 403, whose other 403s are the plan's)
@@ -327,6 +381,10 @@ def error_event_data(
     the hints offer only what the user can do here: another model, a new
     thread, a later try.
 
+    ``reason`` is why the provider refused, when it said (``read_refusal``),
+    and a subscription whose usage limit is used up adds ``plan_limit`` (the
+    plan, window and reset) for the client to word as a plan card.
+
     A Claude Code turn whose token Anthropic refused gets the admission
     refusal's shape instead, ``model`` naming the turn's row.
     """
@@ -346,9 +404,9 @@ def error_event_data(
         if info["provider_module"]:
             data["provider_module"] = info["provider_module"]
         if info["kind"] == "upstream":
-            data.update(upstream_failure(config))
+            data.update(upstream_failure(exc, config))
             signed_in = str(getattr(config, "credential_source", None)) == "oauth"
-            data["hints"] = _upstream_hints(info, data["payer"], trace, signed_in)
+            data["hints"] = _upstream_hints(info, data["payer"], trace, signed_in, data.get("reason"))
         if trace is not None:
             primary_model = trace.get("model")
             if isinstance(primary_model, str) and primary_model:

@@ -173,7 +173,7 @@ async def assemble_finalize_artifacts(
             if kind.get("error_kind") == "upstream":
                 # Who pays decides the card, so a reload of a run that sent
                 # no frame words it as the live one would have.
-                persist_metadata["upstream"] = upstream_failure(config)
+                persist_metadata["upstream"] = upstream_failure(exc, config)
             persist_metadata.update(plan_stop_metadata(exc))
     # The pause's own words, which settling the run's automation relays. A
     # pause without words is stamped null, so settling knows there is
