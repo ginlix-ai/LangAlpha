@@ -73,13 +73,9 @@ def iter_exception_chain(exc: BaseException):
         current = current.__cause__ or current.__context__
 
 
-def extract_status_code(exc: BaseException) -> int | None:
-    """Best-effort HTTP status extraction from an exception chain.
-
-    Checks ``status_code`` / ``response.status_code`` attributes on every
-    exception in the chain, then falls back to parsing a 4xx/5xx code out of
-    the exception messages.
-    """
+def sdk_status_code(exc: BaseException) -> int | None:
+    """The status an SDK set on an exception in the chain, or on its response;
+    never one read out of a message."""
     for current in iter_exception_chain(exc):
         status = getattr(current, "status_code", None)
         if isinstance(status, int):
@@ -88,7 +84,17 @@ def extract_status_code(exc: BaseException) -> int | None:
         status = getattr(response, "status_code", None) if response is not None else None
         if isinstance(status, int):
             return status
+    return None
 
+
+def extract_status_code(exc: BaseException) -> int | None:
+    """Best-effort HTTP status extraction from an exception chain.
+
+    The status an SDK set (``sdk_status_code``), else a 4xx/5xx code parsed
+    out of the exception messages.
+    """
+    if (status := sdk_status_code(exc)) is not None:
+        return status
     for current in iter_exception_chain(exc):
         # A timeout never carries a provider status, and its message can carry
         # numbers that look like one: ``chunks_received=413`` read as a 413

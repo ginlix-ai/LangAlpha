@@ -56,6 +56,7 @@ from src.llms.error_classification import (
     is_stalled_stream,
     refuses_input,
 )
+from src.llms.provider_errors import is_terminal_refusal
 from src.llms.input_transformations import INPUT_TRANSFORMATIONS, REPEATED, thinking_drops
 from src.llms.provider_compaction import is_compaction_request
 from src.llms.reasoning_payload import (
@@ -531,7 +532,9 @@ class ModelResilienceMiddleware(AgentMiddleware):
 
     def _classify(self, exc: Exception) -> tuple[int | None, bool]:
         status = extract_status_code(exc)
-        return status, is_retryable_error(exc, status)
+        # A used-up plan or balance arrives as a 429 like any burst limit, but
+        # no retry in the next seconds gets past it: move on to the fallback.
+        return status, not is_terminal_refusal(exc) and is_retryable_error(exc, status)
 
     @staticmethod
     def _escalate_reasoning(
@@ -619,6 +622,9 @@ class ModelResilienceMiddleware(AgentMiddleware):
             not escalated
             and (status == 400 or missing_item)
             and not is_mid_stream_error(exc)
+            # A 400 that names the account (Anthropic's low credit balance,
+            # DashScope's overdue account) refuses the stripped request too.
+            and not is_terminal_refusal(exc)
             and not _as_sent.get()
         ):
             stripped = self._escalate_reasoning(req, references_only=missing_item)
