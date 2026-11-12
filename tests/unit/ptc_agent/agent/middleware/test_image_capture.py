@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 import ptc_agent.agent.middleware.image_capture as ic
 from ptc_agent.agent.middleware.image_capture import (
+    CAPTURED_IMAGES_KEY,
     ImageCaptureMiddleware,
     image_storage_key,
     is_sandbox_image_path,
@@ -93,23 +94,50 @@ async def _run(mw, response):
     return await mw.awrap_model_call(None, handler)
 
 
+def _recorded(message) -> dict:
+    return message.response_metadata.get(CAPTURED_IMAGES_KEY, {})
+
+
 @pytest.mark.asyncio
-async def test_rewrites_sandbox_image_to_storage_url(storage):
+async def test_captures_a_sandbox_image_and_keeps_its_path_in_the_text(storage):
+    """A URL in the agent's own history is one it copies the next time it
+    shows the chart, with an earlier capture's hash or one it made up."""
     sandbox = _FakeSandbox({"/home/workspace/work/charts/rev.png": PNG})
     msg = AIMessage(content="Result: ![rev](work/charts/rev.png) done", id="m1")
 
     out = await _run(_mw(sandbox), _response(msg))
 
-    assert out.result[0].content == (
-        f"Result: ![rev](https://cdn.test/response-images/{PNG_SHA16}/rev.png) done"
-    )
+    assert out.result[0].content == "Result: ![rev](work/charts/rev.png) done"
+    assert _recorded(out.result[0]) == {
+        "work/charts/rev.png": f"https://cdn.test/response-images/{PNG_SHA16}/rev.png",
+    }
     assert out.result[0].id == "m1"  # id preserved → same message upserted
     assert storage[0][0] == f"response-images/{PNG_SHA16}/rev.png"
     assert storage[0][2] == "image/png"
 
 
 @pytest.mark.asyncio
-async def test_rewrites_text_blocks_only(storage):
+async def test_a_message_records_only_what_was_captured(storage):
+    """A path whose capture missed is the run's end to catch."""
+    sandbox = _FakeSandbox({"/home/workspace/work/charts/rev.png": PNG})
+    msg = AIMessage(
+        content="![rev](work/charts/rev.png) ![gone](work/charts/gone.png)",
+        id="m1",
+        response_metadata={"model_name": "m"},
+    )
+
+    out = await _run(_mw(sandbox), _response(msg))
+
+    assert out.result[0].response_metadata == {
+        "model_name": "m",
+        CAPTURED_IMAGES_KEY: {
+            "work/charts/rev.png": f"https://cdn.test/response-images/{PNG_SHA16}/rev.png",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_records_images_named_in_text_blocks(storage):
     sandbox = _FakeSandbox({"/home/workspace/a.png": PNG})
     msg = AIMessage(
         content=[
@@ -121,9 +149,10 @@ async def test_rewrites_text_blocks_only(storage):
 
     out = await _run(_mw(sandbox), _response(msg))
 
-    blocks = out.result[0].content
-    assert f"https://cdn.test/response-images/{PNG_SHA16}/a.png" in blocks[0]["text"]
-    assert blocks[1] == {"type": "tool_use", "id": "t1", "name": "x", "input": {}}
+    assert out.result[0].content == msg.content
+    assert _recorded(out.result[0]) == {
+        "a.png": f"https://cdn.test/response-images/{PNG_SHA16}/a.png",
+    }
 
 
 @pytest.mark.asyncio
@@ -157,6 +186,7 @@ async def test_noop_without_sandbox(storage):
         _response(AIMessage(content="![a](a.png)")),
     )
     assert out.result[0].content == "![a](a.png)"
+    assert not _recorded(out.result[0])
     assert not storage
 
 
@@ -167,7 +197,7 @@ async def test_download_failure_leaves_path(storage):
 
     out = await _run(_mw(sandbox), _response(msg))
 
-    assert out.result[0].content == "![a](work/a.png)"
+    assert out.result[0] is msg
     assert not storage
 
 
@@ -181,7 +211,7 @@ async def test_upload_failure_leaves_path(monkeypatch):
 
     out = await _run(_mw(sandbox), _response(msg))
 
-    assert out.result[0].content == "![a](a.png)"
+    assert out.result[0] is msg
 
 
 @pytest.mark.asyncio
@@ -214,9 +244,10 @@ async def test_multiple_images_and_non_ai_messages(storage):
 
     out = await _run(_mw(sandbox), _response(ai, tool))
 
-    content = out.result[0].content
-    assert content.count(f"https://cdn.test/response-images/{PNG_SHA16}/a.png") == 2
-    assert f"https://cdn.test/response-images/{other_sha16}/b.jpg" in content
+    assert _recorded(out.result[0]) == {
+        "work/a.png": f"https://cdn.test/response-images/{PNG_SHA16}/a.png",
+        "work/b.jpg": f"https://cdn.test/response-images/{other_sha16}/b.jpg",
+    }
     assert len(storage) == 2  # dedup: a.png downloaded/uploaded once
     assert out.result[1] is tool  # non-AIMessage untouched
 
@@ -228,9 +259,9 @@ async def test_absolute_work_dir_path_normalized(storage):
 
     out = await _run(_mw(sandbox), _response(msg))
 
-    assert (
-        f"https://cdn.test/response-images/{PNG_SHA16}/a.png" in out.result[0].content
-    )
+    assert _recorded(out.result[0]) == {
+        "/home/workspace/work/a.png": f"https://cdn.test/response-images/{PNG_SHA16}/a.png",
+    }
 
 
 def test_is_sandbox_image_path():
@@ -246,18 +277,16 @@ async def test_an_image_under_an_allowed_root_outside_the_work_dir_is_captured(s
     # /tmp is an allowed_directories default and matplotlib's savefig target, so
     # this is the ordinary case, not an exotic one. Folding the path to a
     # work-dir-relative form before normalize_path re-rooted it under the work
-    # dir: the download missed, and the markdown silently kept a sandbox path
-    # the browser cannot load.
+    # dir: the download missed, and nothing was captured.
     sandbox = _FakeSandbox({"/tmp/chart.png": PNG})
     msg = AIMessage(content="![chart](/tmp/chart.png)")
 
     out = await _run(_mw(sandbox), _response(msg))
 
     assert sandbox.downloads == ["/tmp/chart.png"]
-    assert (
-        f"https://cdn.test/response-images/{PNG_SHA16}/chart.png"
-        in out.result[0].content
-    )
+    assert _recorded(out.result[0]) == {
+        "/tmp/chart.png": f"https://cdn.test/response-images/{PNG_SHA16}/chart.png",
+    }
 
 
 @pytest.mark.asyncio
@@ -271,7 +300,9 @@ async def test_a_path_that_repeats_the_work_dir_keeps_its_segments(storage):
     out = await _run(_mw(sandbox), _response(AIMessage(content=f"![c]({path})")))
 
     assert sandbox.downloads == [path]
-    assert f"https://cdn.test/response-images/{PNG_SHA16}/c.png" in out.result[0].content
+    assert _recorded(out.result[0]) == {
+        path: f"https://cdn.test/response-images/{PNG_SHA16}/c.png",
+    }
 
 
 def test_image_storage_key_thread_scoping():

@@ -174,7 +174,7 @@ class TestDownloadFile:
             f"{BASE}/download", params={"path": "results/chart.png"}
         )
         assert resp.status_code == 200
-        assert resp.headers["cache-control"] == "private, max-age=300"
+        assert resp.headers["cache-control"] == "private, no-cache"
         assert "etag" in resp.headers
 
     async def test_download_etag_304(self, files_client):

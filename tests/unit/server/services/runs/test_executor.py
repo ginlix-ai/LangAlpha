@@ -2399,6 +2399,55 @@ class TestAppendRunEndEvent:
         ) as read:
             yield read
 
+    @pytest.fixture(autouse=True)
+    def images(self):
+        with patch(
+            "src.server.services.runs.finalization.settled_images",
+            new_callable=AsyncMock,
+            return_value={},
+        ) as read:
+            yield read
+
+    @pytest.mark.asyncio
+    async def test_terminal_frame_carries_the_runs_image_urls(self, images):
+        """The reply streamed each image as a path; the frame says where each
+        one was captured, which the live view shows in its place."""
+        import json as _json
+
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        images.return_value = {"charts/a.png": "https://cdn.example/a.png"}
+        calls: list = []
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=_sentinel_cache(calls),
+        ):
+            await btm.append_run_end_event("t-1", "r-1", "completed")
+
+        images.assert_awaited_once_with("r-1")
+        wire = next(c for c in calls if c[0] == "xadd")[2][b"event"].decode("utf-8")
+        assert _json.loads(wire.split("data: ", 1)[1])["images"] == {
+            "charts/a.png": "https://cdn.example/a.png",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_images_sends_no_image_field(self):
+        import json as _json
+
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        calls: list = []
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=_sentinel_cache(calls),
+        ):
+            await btm.append_run_end_event("t-1", "r-1", "completed")
+
+        wire = next(c for c in calls if c[0] == "xadd")[2][b"event"].decode("utf-8")
+        assert "images" not in _json.loads(wire.split("data: ", 1)[1])
+
     @pytest.mark.asyncio
     async def test_returned_chat_app_steers_close_the_stream_ahead_of_run_end(
         self, returned

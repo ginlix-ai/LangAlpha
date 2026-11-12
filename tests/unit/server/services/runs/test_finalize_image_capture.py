@@ -13,6 +13,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.types import Overwrite
 
+from ptc_agent.agent.middleware.image_capture import CAPTURED_IMAGES_KEY
 from src.server.services.runs.finalization import assemble_finalize_artifacts
 from src.server.services.runs.sse_producer import RunSSEProducer
 
@@ -31,8 +32,10 @@ class _ScriptedGraph:
         return _gen()
 
 
-def _saved(node, message_id, text, namespace=()):
-    return (namespace, "updates", {node: {"messages": [AIMessage(text, id=message_id)]}})
+def _saved(node, message_id, text, namespace=(), captured=None):
+    meta = {CAPTURED_IMAGES_KEY: captured} if captured else {}
+    message = AIMessage(text, id=message_id, response_metadata=meta)
+    return (namespace, "updates", {node: {"messages": [message]}})
 
 
 async def _streamed(*script):
@@ -111,3 +114,31 @@ async def test_no_capture_runs_without_a_saved_path():
     hook.assert_not_awaited()
     assert outcome.images == {}
 
+
+
+@pytest.mark.asyncio
+async def test_the_row_holds_the_model_time_captures_too():
+    """The live reply streamed every image as a path, captured early or late,
+    and its run_end reads the URLs from the row."""
+    handler = await _streamed(
+        _saved(
+            "model", "ai-1", "![b](charts/b.png)",
+            captured={"charts/b.png": "https://cdn.example/b.png"},
+        ),
+        _saved("model", "ai-2", "![a](charts/a.png)"),
+        # A subagent's captures are its lane's.
+        _saved(
+            "model", "ai-3", "![c](charts/c.png)", namespace=("task:k1",),
+            captured={"charts/c.png": "https://cdn.example/c.png"},
+        ),
+    )
+
+    hook, outcome = await _finalize(handler, "completed")
+
+    # Caught at model time, as the file was then: not read again.
+    hook.assert_awaited_once_with({"charts/a.png"})
+
+    assert outcome.images == {
+        "charts/a.png": "https://cdn.example/a.png",
+        "charts/b.png": "https://cdn.example/b.png",
+    }
