@@ -62,7 +62,7 @@ let layout: Record<string, number> = {};
 let observers: { cb: ResizeObserverCallback; targets: Element[] }[] = [];
 
 /** The main transcript's scrolling element: the ScrollArea's inner div. */
-const content = () => document.querySelector<HTMLElement>('.max-w-3xl.overflow-x-hidden')!;
+const content = () => document.querySelector<HTMLElement>('[data-transcript-content]')!;
 const viewport = () => content().closest<HTMLElement>('.overflow-auto')!;
 const floor = () => viewport().querySelector<HTMLElement>('[data-transcript-floor]')!;
 /** The scroll height a browser would give it: the transcript, or the floor
