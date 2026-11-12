@@ -335,9 +335,10 @@ class TurnContextMiddleware(AgentMiddleware):
                 # turn an automation's handoff waits for either.
                 key = last
             # An automation's thread can take a manual follow-up. The last
-            # rules the model can read then say nobody is waiting, and a turn
-            # with no rules of its own would leave that standing, so the
-            # handoff is stated as this turn's rule and keyed so it is said once.
+            # rules the model can read then say the user may not be watching,
+            # and a turn with no rules of its own would leave that standing, so
+            # the handoff is stated as this turn's rule and keyed so it is said
+            # once.
             # Only a turn with no origin is a person's: an agent or system
             # origin changes the key and restates the surface, without the line.
             handoff = (

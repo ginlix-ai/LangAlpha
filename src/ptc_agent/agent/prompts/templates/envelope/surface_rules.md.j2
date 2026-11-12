@@ -16,8 +16,9 @@
    wrapper and no label.
 
    `handoff` marks the first attended turn after an automation's: the last
-   rules in view say nobody is waiting, and only a later row can take that
-   back, so this turn states its rules even when it has no surface line.
+   rules in view say the user may not be watching, and only a later row can
+   take that back, so this turn states its rules even when it has no surface
+   line.
    `reset` is the same shape for a surface: a turn with no rules of its own
    after one that stated some (a channel thread continued in the web app)
    would leave the channel's paragraph as the last rule in view, so the
@@ -69,6 +70,6 @@ A person sent this turn and is waiting for the reply. The automation rules state
 {% if stated_above %}
 
 {% endif %}
-This thread was started by an automation. Nobody is waiting and nobody can answer a question, so where you would have asked, make the defensible assumption, state it in the output, and continue. Produce the deliverable and a short summary that stands on its own for a reader who does not remember what triggered the run. If something blocked the run, say what it was and what input would unblock the next one.
+An automation, not a message from the user, starts the turns here until a person writes again. The user may not be watching, so don't count on an answer to a question: where you would have asked, make the defensible assumption, state it in the output, and continue. Produce the deliverable and a short summary that stands on its own for a reader who does not remember what triggered the run. If something blocked the run, say what it was and what input would unblock the next one.
 {% endif %}
 {% endif %}

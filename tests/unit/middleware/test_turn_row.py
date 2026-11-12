@@ -545,18 +545,18 @@ class TestTheDeliveryRulesRideWhenTheyAreNews:
 
         assert _provenance(message)["rules_key"] == "web+automation"
         assert "Surface web: full markdown, no length cap" in message.content
-        assert "This thread was started by an automation." in message.content
+        assert "An automation, not a message from the user, starts the turns here" in message.content
 
     @pytest.mark.asyncio
     async def test_a_manual_follow_up_takes_the_thread_back_from_the_automation(self):
-        """The automation row says nobody is waiting; the person's turn has to say otherwise, once."""
+        """The automation row says the user may not be watching; the person's turn has to say otherwise, once."""
         auto = await _row(platform="web", origin="automation")
         manual = await _row(platform="web", state=_state([auto]))
 
         assert _provenance(manual)["rules_key"] == "web"
         assert "A person sent this turn and is waiting for the reply." in manual.content
         assert "Surface web: full markdown" in manual.content
-        assert "started by an automation" not in manual.content
+        assert "starts the turns here" not in manual.content
 
         again = await _row(platform="web", state=_state([auto, manual]))
         assert "waiting for the reply" not in again.content
@@ -640,7 +640,7 @@ class TestTheDeliveryRulesRideWhenTheyAreNews:
         auto = await _row(origin="automation", state=_state([channel]))
 
         assert "no delivery rules of its own" not in auto.content
-        assert "started by an automation" in auto.content
+        assert "starts the turns here" in auto.content
 
     @pytest.mark.asyncio
     async def test_the_web_line_takes_back_a_channel_it_replaces(self):
