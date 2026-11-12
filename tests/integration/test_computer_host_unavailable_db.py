@@ -1,7 +1,8 @@
 """The host-outage clock on the computer row, against a real Postgres.
 
-It is stamped only for the sandbox the row still names, kept across refusals,
-and cleared when that sandbox comes up: by every write that marks the computer
+It is stamped only for the sandbox the row still names, kept across refusals
+or across sightings of the sandbox stuck in one transition, ended by a read
+that finds a stuck sandbox elsewhere, and cleared when that sandbox comes up: by every write that marks the computer
 running (a status transition, the workspace mirror of one, the provider-ref
 bind) and by a reconnect that finds the row already running. A rebuild the
 outage authorized binds only while that outage is still running, so whichever
@@ -15,6 +16,7 @@ import pytest
 from src.server.database.computer import (
     clear_computer_host_unavailable,
     create_computer,
+    end_moved_host_outage,
     stamp_computer_host_unavailable,
     try_bind_computer_provider_ref,
     update_computer_status,
@@ -82,6 +84,49 @@ async def test_a_later_refusal_keeps_the_first_stamp(seed_user, test_db_pool):
     assert unavailable_for >= timedelta(minutes=90)
     assert since == stamped
     assert await _since(test_db_pool, computer_id) == stamped
+
+
+async def test_a_stuck_transition_runs_the_clock_only_while_it_stays(
+    seed_user, test_db_pool
+):
+    """Two slow moments hours apart are not one outage: a sighting in another
+    transition, or a refusal, starts the clock afresh."""
+    computer_id = await _computer(seed_user, test_db_pool)
+    await stamp_computer_host_unavailable(computer_id, "sb-old", "starting")
+    await _backdate(test_db_pool, computer_id, 90)
+
+    _, unavailable_for = await stamp_computer_host_unavailable(
+        computer_id, "sb-old", "starting"
+    )
+    assert unavailable_for >= timedelta(minutes=90)
+
+    _, unavailable_for = await stamp_computer_host_unavailable(
+        computer_id, "sb-old", "archiving"
+    )
+    assert unavailable_for < timedelta(seconds=5)
+
+    await _backdate(test_db_pool, computer_id, 90)
+    _, unavailable_for = await stamp_computer_host_unavailable(computer_id, "sb-old")
+    assert unavailable_for < timedelta(seconds=5)
+
+
+async def test_a_read_elsewhere_ends_a_stuck_clock_and_never_a_refusal_clock(
+    seed_user, test_db_pool
+):
+    computer_id = await _computer(seed_user, test_db_pool)
+    await stamp_computer_host_unavailable(computer_id, "sb-old", "starting")
+
+    await end_moved_host_outage(computer_id, "sb-other", "stopped")
+    await end_moved_host_outage(computer_id, "sb-old", "starting")
+    assert await _since(test_db_pool, computer_id) is not None
+
+    await end_moved_host_outage(computer_id, "sb-old", "stopped")
+    assert await _since(test_db_pool, computer_id) is None
+
+    # A refused sandbox reads as stopped between tries.
+    await stamp_computer_host_unavailable(computer_id, "sb-old")
+    await end_moved_host_outage(computer_id, "sb-old", "stopped")
+    assert await _since(test_db_pool, computer_id) is not None
 
 
 async def test_running_clears_it_and_a_revert_to_stopped_keeps_it(
