@@ -12,6 +12,11 @@ from typing import Any, NamedTuple, Optional
 
 from langchain_core.messages import AIMessage
 
+from ptc_agent.agent.middleware.image_capture import (
+    recorded_images,
+    resolve_image_paths,
+)
+
 # Markup is stripped from this raw head, so it leaves room for links and
 # tables to collapse and still fill the excerpt, and a long answer never
 # reaches the patterns whole.
@@ -130,6 +135,8 @@ async def read_run_answer(thread_id: str, run_id: str) -> RunAnswer:
             continue
         written, _, _ = split_content_blocks(message.content)
         if written and written.strip():
-            text = written
+            # The chats it goes to have no sandbox: the images show as their
+            # captures.
+            text = resolve_image_paths(written, recorded_images(message))
             break
     return RunAnswer(text=text, sent=_result_sent(turn.messages))

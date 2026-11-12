@@ -112,15 +112,18 @@ def project_turn(
     task_items, sealed, watermarks = lane.project(turn, settled_at(response))
     turn_items.extend(task_items)
     # A turn's image map is its own: its row's, or the ui record in its state
-    # delta for a turn settled before its row held one. A thread-global map is
-    # incorrect when a sandbox filename is reused later: last-write-wins would
-    # rewrite the older turn's image to the newer content-addressed object.
+    # delta for a turn settled before its row held one. A thread-global map
+    # is incorrect when a sandbox filename is reused later: last-write-wins
+    # would rewrite the older turn's image to the newer content-addressed
+    # object. For the same reason each message's own captures win within the
+    # turn, and they also cover a run recovery settled, whose row has none.
     replay_facts.apply_image_url_map(
         turn_items,
         {
             **_collect_image_url_map(turn.new_ui_records),
             **replay_facts.images_of((response or {}).get("replay_facts")),
         },
+        by_message=replay_facts.recorded_by_message(turn.messages),
     )
     # Table-sourced synthesis rides ahead of the legacy facts: a turn whose
     # facts carry stored copies drops these and places those instead (the

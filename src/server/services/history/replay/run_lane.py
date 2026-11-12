@@ -138,7 +138,10 @@ def _run_items(thread_id: str, run: SpanDelta, agent: str) -> list[dict[str, Any
             agent=agent,
         )
     )
-    return out
+    # Each message's own captures first; the run's row fills what they miss.
+    return replay_facts.apply_image_url_map(
+        out, {}, by_message=replay_facts.recorded_by_message(run.messages)
+    )
 
 
 def _opener_text(messages: list[Any]) -> str | None:

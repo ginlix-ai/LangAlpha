@@ -1004,6 +1004,7 @@ class LocalRunExecutor:
 
         token_totals = None
         next_summary = UNREAD
+        images = None
         closing_frames: list[str] = []
         if outcome is not None:
             from src.server.database.conversation.usage import (
@@ -1011,9 +1012,10 @@ class LocalRunExecutor:
             )
 
             # An interrupted run resumes where it stopped, past its turn start.
-            token_totals, next_summary = await asyncio.gather(
+            token_totals, next_summary, images = await asyncio.gather(
                 get_thread_token_totals(thread_id),
                 read_next_summary(thread_id) if outcome != "interrupted" else asyncio.sleep(0),
+                finalization.settled_images(run_id),
             )
             # Ahead of ``run_end``: a gateway stops reading there, and every
             # reader of the stream, a reconnect included, then sees it once.
@@ -1025,6 +1027,7 @@ class LocalRunExecutor:
             error_frame=error_frame,
             token_totals=token_totals,
             next_summary=next_summary,
+            images=images,
             closing_frames=closing_frames,
             redis_event_ttl=self.redis_event_ttl,
             max_stored_messages=self.max_stored_messages,

@@ -4,8 +4,9 @@ A run's row carries them in ``replay_facts``. The turn's response row holds
 how long the main agent thought over each message it committed
 (``reasoning_ms``), the fallback notices a stopped or failed run streamed
 (``model_fallbacks``), the error frame a failed run sent (``error_frame``),
-and the URL each sandbox image its saved text still named at its end was
-captured to (``images``). A subagent run's
+and the URL each sandbox image its text named was captured to (``images``:
+those caught at model time, which each message also records, and those
+captured as the run ended). A subagent run's
 ``subagent_runs`` row holds the URL each sandbox image it referenced was
 captured to (``images``), the steering it handed back unread
 (``steering_returned``), and the model it ran when that was not its
@@ -25,7 +26,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Required, TypedDict
 
-from ptc_agent.agent.middleware.image_capture import IMAGE_MD_RE
+from ptc_agent.agent.middleware.image_capture import (
+    recorded_images,
+    resolve_image_paths,
+)
 from ptc_agent.config.agent import SubagentModel
 from src.server.services.history.replay.lanes import MAIN_LANE, agent_lane
 from src.server.services.history.slices import SpanDelta
@@ -41,7 +45,7 @@ class ResponseFacts(TypedDict, total=False):
     model_fallbacks: list[dict[str, Any]]
     # A failed run's last main-lane error frame, as streamed, less its thread.
     error_frame: dict[str, Any]
-    # Sandbox image path -> the URL it was captured to as the run ended.
+    # Sandbox image path -> the URL it was captured to.
     images: dict[str, str]
 
 
@@ -180,19 +184,26 @@ def images_of(facts: Any) -> dict[str, str]:
     return {str(k): str(v) for k, v in images.items() if k and v}
 
 
+def recorded_by_message(messages: list[Any]) -> dict[str, dict[str, str]]:
+    """What each message recorded at model time, by its id."""
+    return {
+        m.id: captured
+        for m in messages
+        if getattr(m, "id", None) and (captured := recorded_images(m))
+    }
+
+
 def apply_image_url_map(
-    turn_items: list[dict[str, Any]], url_map: dict[str, str]
+    turn_items: list[dict[str, Any]],
+    url_map: dict[str, str],
+    by_message: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Resolve sandbox image paths in text chunks to their captured URLs."""
-    if not url_map:
+    """Resolve sandbox image paths in text chunks to their captured URLs.
+    ``by_message`` holds what each message recorded, which wins over the
+    turn's map: a chart rewritten within the turn has a capture per message
+    that showed it."""
+    if not url_map and not by_message:
         return turn_items
-
-    def replacer(match):
-        alt, path = match.group(1), match.group(2)
-        if path in url_map:
-            return f"![{alt}]({url_map[path]})"
-        return match.group(0)
-
     for item in turn_items:
         if item.get("event") != "message_chunk":
             continue
@@ -201,7 +212,10 @@ def apply_image_url_map(
             continue
         content = data.get("content")
         if content:
-            data["content"] = IMAGE_MD_RE.sub(replacer, content)
+            own = (by_message or {}).get(data.get("id") or "")
+            data["content"] = resolve_image_paths(
+                content, {**url_map, **own} if own else url_map
+            )
     return turn_items
 
 

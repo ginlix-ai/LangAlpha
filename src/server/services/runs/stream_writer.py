@@ -180,6 +180,7 @@ async def append_run_end_event(
     error_frame: Optional[Dict[str, Any]] = None,
     token_totals: Optional[Dict[str, int]] = None,
     next_summary: Optional[Dict[str, Any]] | object = UNREAD,
+    images: Optional[Dict[str, str]] = None,
     closing_frames: Sequence[str] = (),
     redis_event_ttl: int,
     max_stored_messages: int,
@@ -265,6 +266,10 @@ async def append_run_end_event(
         # field could not tell, and the client reads the status for it.
         if next_summary is not UNREAD:
             frame_data["next_summary"] = next_summary
+        # The URL each image path the reply streamed was captured to: the
+        # live view swaps them in, as a reload of the turn would show it.
+        if images:
+            frame_data["images"] = images
         data = json.dumps(frame_data, ensure_ascii=False)
         payload = f"event: {RUN_END_EVENT_TYPE}\ndata: {data}\n\n".encode(
             "utf-8"

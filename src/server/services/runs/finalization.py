@@ -21,7 +21,11 @@ from src.server.contracts.status import (
     is_user_stop,
 )
 from src.server.database.runs.hook_jobs import WAKEUP_QUIET_META
-from src.server.database.runs.lifecycle import ProducerRecord, RunOutcome
+from src.server.database.runs.lifecycle import (
+    ProducerRecord,
+    RunOutcome,
+    get_run_replay_facts,
+)
 from src.server.services.runs.stream_errors import (
     failure_kind_metadata,
     model_call_failure,
@@ -203,7 +207,7 @@ async def assemble_finalize_artifacts(
         per_call_records=per_call_records,
         tool_usage=tool_usage,
         record=await _producer_record(key, handler, stop_events, status),
-        images=await _late_images(key, metadata, handler),
+        images=await _turn_images(key, metadata, handler),
     )
 
 
@@ -223,9 +227,34 @@ async def _delivered_steering_inputs(key: tuple) -> list[str]:
     return [row["content"] for row in rows if row.get("content")]
 
 
+async def _turn_images(key: tuple, metadata: dict, handler) -> dict[str, str]:
+    """The URL of every sandbox image the run's saved text names: those the
+    model-time capture caught, and those it missed, captured now. The text
+    keeps the paths, so the live view (through run_end) and a replay show
+    these in their place."""
+    return {
+        **(handler.captured_images if handler is not None else {}),
+        **await _late_images(key, metadata, handler),
+    }
+
+
+async def settled_images(run_id: str) -> dict[str, str]:
+    """The image URLs the finalize recorded on the run's row, for its
+    ``run_end``. Empty on a failed read, which costs the live view its
+    pinned images rather than the frame they ride on."""
+    from src.server.services.history.replay.facts import images_of
+
+    try:
+        facts = await get_run_replay_facts(run_id)
+    except Exception:
+        logger.warning(f"[Finalize] images of run {run_id} unreadable", exc_info=True)
+        return {}
+    return images_of(facts)
+
+
 async def _late_images(key: tuple, metadata: dict, handler) -> dict[str, str]:
-    """The URLs of the sandbox images the run's saved text still names,
-    which the model-time capture left as paths. Captured on every ending,
+    """The URLs of the sandbox images the run's saved text names that the
+    model-time capture missed. Captured on every ending,
     since a stopped, failed or paused run kept its earlier steps' text, and
     bounded like that capture: a run whose sandbox died must still settle."""
     artifact_hook = metadata.get("artifact_hook")

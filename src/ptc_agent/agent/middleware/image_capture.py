@@ -35,13 +35,45 @@ logger = logging.getLogger(__name__)
 
 IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"}
 IMAGE_MD_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+# An embed or a plain link: a reply often lists the file beside its picture.
+_IMAGE_REF_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)]+)\)")
 
-# Capture rides the live turn-completion path (paths are rewritten pre-commit so
-# checkpointed truth carries durable URLs), and the late capture rides the
-# run's finalize. Both are bounded so a hung sandbox or storage backend can't
-# stall the turn: a path the model-time capture leaves in place is retried
-# late, at the same content-addressed keys.
+# Capture rides each model call, and the late capture rides the run's
+# finalize. Both are bounded so a hung sandbox or storage backend can't stall
+# the turn: a path the model-time capture misses is retried late, at the same
+# content-addressed keys.
 CAPTURE_TIMEOUT_SECONDS = 30.0
+
+# Where a message keeps the URL each sandbox image it names was captured to,
+# by the path as written. The text keeps the path: a URL in the agent's own
+# history is one it copies, and a copied URL names some earlier capture, or
+# one it made up, instead of the file. Readers show the URL in its place: the
+# live view from the run's row, a replay from the row or from here.
+CAPTURED_IMAGES_KEY = "captured_images"
+
+
+def recorded_images(message: Any) -> dict[str, str]:
+    """The captures an AI message recorded, by path; none for any other."""
+    if not isinstance(message, AIMessage):
+        return {}
+    captured = (message.response_metadata or {}).get(CAPTURED_IMAGES_KEY)
+    if not isinstance(captured, dict):
+        return {}
+    return {str(k): str(v) for k, v in captured.items() if k and v}
+
+
+def resolve_image_paths(text: str, url_map: dict[str, str]) -> str:
+    """``text`` with each embed of and link to a captured path pointing at its
+    capture, for a reader with no sandbox to resolve the path against."""
+    if not url_map:
+        return text
+
+    def replacer(match: re.Match) -> str:
+        bang, label, path = match.groups()
+        url = url_map.get(path)
+        return f"{bang}[{label}]({url})" if url else match.group(0)
+
+    return _IMAGE_REF_RE.sub(replacer, text)
 
 
 def is_sandbox_image_path(path: str) -> bool:
@@ -105,18 +137,6 @@ async def capture_sandbox_images(
     return dict(r for r in results if r is not None)
 
 
-def rewrite_image_paths(text: str, url_map: dict[str, str]) -> str:
-    """Rewrite markdown image paths present in *url_map* to their URLs."""
-
-    def replacer(match: re.Match) -> str:
-        alt, path = match.group(1), match.group(2)
-        if path in url_map:
-            return f"![{alt}]({url_map[path]})"
-        return match.group(0)
-
-    return IMAGE_MD_RE.sub(replacer, text)
-
-
 def collect_sandbox_paths(messages: list[Any]) -> set[str]:
     """The sandbox image paths the AI messages' text names."""
     paths: set[str] = set()
@@ -141,39 +161,13 @@ def _iter_text_segments(messages: list[Any]):
                     yield block.get("text") or ""
 
 
-def _rewrite_content(content: Any, url_map: dict[str, str]) -> tuple[Any, bool]:
-    if isinstance(content, str):
-        rewritten = rewrite_image_paths(content, url_map)
-        return rewritten, rewritten != content
-    if isinstance(content, list):
-        new_blocks: list[Any] = []
-        changed = False
-        for block in content:
-            if isinstance(block, str):
-                rewritten = rewrite_image_paths(block, url_map)
-                changed = changed or rewritten != block
-                new_blocks.append(rewritten)
-            elif isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text") or ""
-                rewritten = rewrite_image_paths(text, url_map)
-                if rewritten != text:
-                    changed = True
-                    new_blocks.append({**block, "text": rewritten})
-                else:
-                    new_blocks.append(block)
-            else:
-                new_blocks.append(block)
-        return (new_blocks, True) if changed else (content, False)
-    return content, False
-
-
 class ImageCaptureMiddleware(AgentMiddleware):
-    """Rewrite sandbox image paths to storage URLs in model responses.
+    """Capture the sandbox images a model response names, as the file is when
+    the response is written, and record each one's URL on its message.
 
     Runs on the final response only (place outside retry/fallback middleware);
-    no-op when storage is disabled or the session has no sandbox. Failures
-    leave the sandbox path in place — the post-stream capture safety net
-    (content-addressed to the same keys) covers them.
+    no-op when storage is disabled or the session has no sandbox. A failure
+    records nothing, and the run's finalize captures what is left.
     """
 
     def __init__(self, *, session: Any) -> None:
@@ -187,17 +181,17 @@ class ImageCaptureMiddleware(AgentMiddleware):
         response = await handler(request)
         try:
             result = await asyncio.wait_for(
-                self._arewrite(response.result), CAPTURE_TIMEOUT_SECONDS
+                self._arecord(response.result), CAPTURE_TIMEOUT_SECONDS
             )
         except TimeoutError:
             logger.warning(
-                "[ImageCapture] capture exceeded %ss; sandbox paths left in place",
+                "[ImageCapture] capture exceeded %ss; left to the run's end",
                 CAPTURE_TIMEOUT_SECONDS,
             )
             return response
         except Exception:
             logger.warning(
-                "[ImageCapture] capture failed; sandbox paths left in place",
+                "[ImageCapture] capture failed; left to the run's end",
                 exc_info=True,
             )
             return response
@@ -205,8 +199,9 @@ class ImageCaptureMiddleware(AgentMiddleware):
             return response
         return replace(response, result=result)
 
-    async def _arewrite(self, messages: list[Any]) -> list[Any] | None:
-        """Return rewritten messages, or None when nothing needs rewriting."""
+    async def _arecord(self, messages: list[Any]) -> list[Any] | None:
+        """The messages with their captures recorded, or None when nothing
+        was captured."""
         sandbox = getattr(self._session, "sandbox", None)
         if sandbox is None or not is_storage_enabled():
             return None
@@ -218,15 +213,24 @@ class ImageCaptureMiddleware(AgentMiddleware):
         if not url_map:
             return None
 
-        rewritten: list[Any] = []
+        recorded: list[Any] = []
         for message in messages:
             if isinstance(message, AIMessage):
-                new_content, changed = _rewrite_content(message.content, url_map)
-                if changed:
-                    rewritten.append(message.model_copy(update={"content": new_content}))
+                captured = {
+                    path: url_map[path]
+                    for path in collect_sandbox_paths([message])
+                    if path in url_map
+                }
+                if captured:
+                    recorded.append(message.model_copy(update={
+                        "response_metadata": {
+                            **message.response_metadata,
+                            CAPTURED_IMAGES_KEY: captured,
+                        },
+                    }))
                     continue
-            rewritten.append(message)
-        return rewritten
+            recorded.append(message)
+        return recorded
 
     @staticmethod
     def _thread_id() -> str:
