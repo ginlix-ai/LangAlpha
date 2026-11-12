@@ -130,7 +130,8 @@ class TestRunSSEProducerFormatting:
         parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["status_code"] == 401
-        assert parsed["hints"] == ["api_key", "model_access", "try_another_model"]
+        assert parsed["reason"] == "invalid_key"
+        assert parsed["hints"] == ["api_key", "try_another_model"]
 
     def test_build_error_event_upstream_no_status_falls_back(self, monkeypatch):
         """Unknown status (network error) shows all hints."""
@@ -167,7 +168,7 @@ class TestRunSSEProducerFormatting:
         )
         return handler._build_error_event(str(exc), exc=exc).data["hints"]
 
-    @pytest.mark.parametrize("status", [400, 405, 413, 422])
+    @pytest.mark.parametrize("status", [400, 405, 422])
     def test_request_refused_offers_only_a_model_switch(self, monkeypatch, status):
         """A refused request is neither a bad credential nor a provider outage.
 
@@ -201,6 +202,17 @@ class TestRunSSEProducerFormatting:
         assert frame["account"] == "DeepSeek"
         assert frame["hints"] == ["provider_balance", "try_another_model"]
         assert frame["error"] == "Error code: 402"
+
+    def test_a_402_only_in_the_message_still_reads_as_a_balance(self, monkeypatch):
+        """A wrapper that keeps the status only in its text names no reason,
+        so the status alone has to say the account is out of credit."""
+        from anthropic import APIStatusError
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        exc = APIStatusError.__new__(APIStatusError)
+        Exception.__init__(exc, "Error code: 402 - payment required")
+        frame = self._frame(exc, credential_source="byok", model="deepseek-flash", payer="own_key", account="DeepSeek")
+        assert frame["hints"] == ["provider_balance", "try_another_model"]
 
     def test_a_coding_plan_key_reads_as_the_plan_it_is(self, monkeypatch):
         """The turn's recorded payer wins over the bare source: a coding plan
@@ -236,10 +248,69 @@ class TestRunSSEProducerFormatting:
 
     def test_platform_billed_refusal_suggests_a_new_thread(self, monkeypatch):
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
-        assert self._hints(self._upstream(413), credential_source="platform") == [
+        assert self._hints(self._upstream(400), credential_source="platform") == [
             "try_another_model",
             "new_thread",
         ]
+
+    @pytest.mark.parametrize("source", ["platform", "byok"])
+    def test_a_thread_too_long_points_at_a_new_thread_whoever_pays(self, monkeypatch, source):
+        """413 is the request over the model's window: the thread, not the account."""
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        frame = self._frame(self._upstream(413), credential_source=source)
+        assert frame["reason"] == "context_too_long"
+        assert frame["hints"] == ["new_thread", "try_another_model"]
+
+    @staticmethod
+    def _codex_limit():
+        import httpx
+        import openai
+
+        body = {"error": {
+            "type": "usage_limit_reached", "plan_type": "plus",
+            "resets_at": 1793116811, "limit_window_minutes": 300,
+        }}
+        request = httpx.Request("POST", "https://chatgpt.example/backend-api/codex/responses")
+        response = httpx.Response(429, request=request, json=body)
+        return openai.RateLimitError("Error code: 429", response=response, body=body)
+
+    def test_a_subscription_at_its_limit_sends_the_plan_card(self, monkeypatch):
+        """The plan, its window and its reset, for the client to word in the
+        reader's zone, and no status-page hint for a limit that resets."""
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        frame = self._frame(
+            self._codex_limit(), credential_source="oauth", payer="subscription", account="ChatGPT",
+        )
+        assert frame["reason"] == "plan_limit"
+        assert frame["plan_limit"] == {
+            "plan": "ChatGPT Plus", "window": "five_hour", "until": "2026-10-27T16:00:11+00:00",
+        }
+        assert frame["hints"] == ["try_another_model"]
+
+    def test_a_claude_code_plan_with_no_window_known_is_still_the_plans(self, monkeypatch):
+        from src.llms.claude_code import ClaudeTurnFailed
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        frame = self._frame(
+            ClaudeTurnFailed("plan_exhausted", "API Error: 429"),
+            credential_source="oauth", payer="subscription", account="Claude",
+        )
+        assert frame["plan_limit"] == {"plan": "Claude", "window": None, "until": None}
+
+    def test_a_plan_limit_on_credits_names_no_plan_and_stays_generic(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        frame = self._frame(self._codex_limit(), credential_source="platform")
+        assert "plan_limit" not in frame
+        assert frame["hints"] == ["try_another_model", "retry_later", "new_thread"]
+
+    def test_a_named_reason_beats_the_status(self, monkeypatch):
+        """GLM sends an empty balance as 429: it reads as the balance."""
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        exc = self._upstream(429)
+        Exception.__init__(exc, "Error code: 429 - {'error': {'code': '1113', 'message': 'Insufficient balance'}}")
+        frame = self._frame(exc, credential_source="byok", payer="own_key", account="Z.ai")
+        assert frame["reason"] == "out_of_credit"
+        assert frame["hints"] == ["provider_balance", "try_another_model"]
 
     def test_oss_server_key_reads_as_the_operators_own(self, monkeypatch):
         monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
@@ -252,7 +323,6 @@ class TestRunSSEProducerFormatting:
         monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
         assert self._hints(self._upstream(401), credential_source="byok") == [
             "api_key",
-            "model_access",
             "try_another_model",
         ]
 
@@ -262,7 +332,6 @@ class TestRunSSEProducerFormatting:
         monkeypatch.setattr("src.config.settings.HOST_MODE", host_mode)
         assert self._hints(self._upstream(401), credential_source="oauth") == [
             "reconnect_account",
-            "model_access",
             "try_another_model",
         ]
         assert self._hints(self._upstream(403), credential_source="oauth") == [
@@ -280,7 +349,6 @@ class TestRunSSEProducerFormatting:
         monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
         assert self._hints(self._upstream(401), credential_source="platform") == [
             "api_key",
-            "model_access",
             "try_another_model",
         ]
 

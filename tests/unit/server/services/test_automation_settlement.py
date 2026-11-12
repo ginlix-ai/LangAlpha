@@ -71,6 +71,7 @@ EXPECTED = {
     Outcome.KEY_REJECTED: ("failed", _ANY, "fuse", REARMS, "automation.failed", None, "provider_auth", "failure"),
     Outcome.LIMITED: ("failed", _ANY, None, CLOSES_ALERT, "automation.failed", None, "usage_limit", "limited"),
     Outcome.PLAN_LIMITED: ("failed", _ANY, None, CLOSES_ALERT, "automation.failed", None, "claude_plan", "limited"),
+    Outcome.SUBSCRIPTION_LIMITED: ("failed", _ANY, None, CLOSES_ALERT, "automation.failed", None, "plan_limit", "limited"),
     Outcome.FAILED_OURS: ("failed", _ANY, None, REARMS, "automation.failed", None, "server_error", "failure"),
     Outcome.INTERRUPTED: ("failed", ("pending", "running"), None, REARMS, "automation.failed", None, "interrupted", "interrupted"),
     Outcome.STOPPED: ("skipped", ("running",), None, CLOSES, "automation.failed", "user", None, "stopped"),
@@ -243,6 +244,7 @@ FINISHES = {
     Outcome.KEY_REJECTED: "failed",
     Outcome.LIMITED: "failed",
     Outcome.PLAN_LIMITED: "failed",
+    Outcome.SUBSCRIPTION_LIMITED: "failed",
     Outcome.FAILED_OURS: "failed",
     Outcome.INTERRUPTED: "failed",
     Outcome.STOPPED: "stopped",
@@ -1013,6 +1015,20 @@ def _failed_call(status_code, *, owned, **metadata):
         # The Claude plan stopped it: a limit, the plan's own.
         ({"status": "error", "metadata": {"claude_plan": {"reason": "plan_stopped"}}}, Outcome.PLAN_LIMITED),
         ({"status": "error", "metadata": {"claude_plan": {"reason": "plan_stopped"}, "recovery": "scanner"}}, Outcome.INTERRUPTED),
+        # Another subscription's limit refused the model call: a limit to
+        # wait out, whatever status carried it (Grok sends a 403).
+        ({"status": "error", "metadata": {"upstream": {
+            "payer": "subscription", "reason": "plan_limit", "plan_limit": {"plan": "ChatGPT Plus"},
+        }}}, Outcome.SUBSCRIPTION_LIMITED),
+        ({"status": "error", "metadata": {
+            "upstream": {"payer": "subscription", "reason": "plan_limit"},
+            "error_status_code": 403, "error_credential_owned": True,
+        }}, Outcome.SUBSCRIPTION_LIMITED),
+        ({"status": "error", "metadata": {"upstream": {"payer": "subscription", "reason": "rate_limited"}}},
+         Outcome.FAILED),
+        # A coding plan's key or our credits at a limit is not a subscription's.
+        ({"status": "error", "metadata": {"upstream": {"payer": "own_key", "reason": "plan_limit"}}},
+         Outcome.FAILED),
         # A model call refused the credential: the user's key (only a 401
         # rejects it), or ours.
         (_failed_call(401, owned=True), Outcome.KEY_REJECTED),
@@ -1514,3 +1530,24 @@ async def test_a_run_the_claude_plan_stopped_settles_with_no_strike_in_its_owner
     assert written["error_message"] == words
     assert fx.fire.await_args.kwargs["error"] == words
 
+
+
+@pytest.mark.asyncio
+async def test_a_run_another_subscription_refused_at_its_limit_settles_as_that_plans_limit():
+    """ChatGPT, a Claude sign-in or Grok: a wait for the reset, no strike,
+    and the report words the plan and its reset on the owner's clock."""
+    limit = {"plan": "ChatGPT Plus", "window": "five_hour", "until": "2030-01-03T20:40:00+00:00"}
+    run = _ended(
+        "error", ["Error code: 429 - {'error': {'type': 'usage_limit_reached'}}"],
+        upstream={"payer": "subscription", "reason": "plan_limit", "plan_limit": limit},
+    )
+    with (
+        _finished(run, _automation("cron")) as fx,
+        patch("src.server.database.automation.get_user_timezone", new=AsyncMock(return_value="America/New_York")),
+    ):
+        await _settle_finished_run(_finalize_job())
+
+    written = fx.db.settle_execution.await_args.kwargs
+    words = "Your ChatGPT Plus plan's 5-hour limit is used up. It resets at Thu Jan 3, 3:40 PM EST."
+    assert (written["to"], written["strike"], written["failure_reason"]) == ("failed", None, "plan_limit")
+    assert written["error_message"] == words

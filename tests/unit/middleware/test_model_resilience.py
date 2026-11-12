@@ -462,34 +462,33 @@ class TestFallbackChain:
         assert tried == ["sub-model-id", "primary-model"]
 
     @pytest.mark.parametrize(
-        ("billing", "users_fallbacks", "expected"),
+        ("billing", "expected"),
         [
-            # On the user's own key, the deployment's list may not move it
-            # onto the platform's key, only onto another key of the user's.
-            ("byok", False, ["sub-model-id", "fallback-b"]),
-            ("oauth", False, ["sub-model-id", "fallback-b"]),
-            # A list the user saved is billed as they picked it.
-            ("byok", True, ["sub-model-id", "fallback-a", "fallback-b"]),
-            # On credits already, credits is no move at all.
-            ("platform", False, ["sub-model-id", "fallback-a", "fallback-b"]),
+            # The user's own key moves only to another of their keys.
+            ("byok", ["sub-model-id", "fallback-b"]),
+            # Our credits move only to another model on credits.
+            ("platform", ["sub-model-id", "fallback-a"]),
+            # A subscription answers for itself: its card, and the user picks
+            # the next model.
+            ("oauth", ["sub-model-id"]),
         ],
     )
     @pytest.mark.asyncio
-    async def test_a_subagent_falls_back_only_onto_a_payer_the_user_chose(
-        self, events, billing, users_fallbacks, expected
+    async def test_a_call_falls_back_only_onto_a_model_its_payer_bills(
+        self, events, billing, expected
     ):
-        # The turn's list was built for a main model on credits.
         client = _FakeModel("primary-model")
         fb_a = _FakeModel("fallback-a")
         fb_a.metadata = {"billing_type": "platform"}
         fb_b = _FakeModel("fallback-b")
         fb_b.metadata = {"billing_type": "byok"}
+        fb_c = _FakeModel("fallback-c")
+        fb_c.metadata = {"billing_type": "oauth"}
         sub = _FakeModel("sub-model-id")
         sub.metadata = {"manifest_model": "sub-model", "billing_type": billing}
         mw = _make_middleware(
             client,
-            fallbacks=[("fallback-a", fb_a), ("fallback-b", fb_b)],
-            users_fallbacks=users_fallbacks,
+            fallbacks=[("fallback-a", fb_a), ("fallback-b", fb_b), ("fallback-c", fb_c)],
         )
         tried = []
 
@@ -658,7 +657,6 @@ class TestFallbackChain:
         cfg = SimpleNamespace(
             fallback_llm_clients=[fallback],
             fallback_llm_names=["fallback-a"],
-            fallback_users_choice=False,
             llm=SimpleNamespace(fallback=None),
             compaction=SimpleNamespace(enabled=compaction_enabled),
         )
