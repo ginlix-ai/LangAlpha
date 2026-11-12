@@ -380,9 +380,10 @@ class CompactionMiddleware(AgentMiddleware):
         context reaches the threshold, or when the model refuses the view as
         too long, and taking attachments out of what is kept until it fits.
         A call made between turns (``between_turns``) is answered with what
-        it asks instead. Each answer is stamped with when its request
-        started (``stamp_request_start``)."""
-        handler = stamping(handler)
+        it asks instead. With the turn's user on idle compaction, each answer
+        is stamped with when its request started (``stamp_request_start``)."""
+        if isinstance(self._rebuilds, TurnStartRebuilds) and self._rebuilds.idle_compaction:
+            handler = stamping(handler)
         ensure_message_ids(request.messages)
         between = asked()
         if between is not None:

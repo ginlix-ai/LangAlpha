@@ -20,7 +20,7 @@ from src.server.contracts.status import (
     classify_interrupts,
     is_user_stop,
 )
-from src.server.database.runs.hook_jobs import WAKEUP_QUIET_META
+from src.server.database.runs.hook_jobs import IDLE_COMPACTION_META, WAKEUP_QUIET_META
 from src.server.database.runs.lifecycle import (
     ProducerRecord,
     RunOutcome,
@@ -185,6 +185,11 @@ async def assemble_finalize_artifacts(
     quiet = getattr(handler, "quiet", None)
     if quiet is not None:
         persist_metadata[WAKEUP_QUIET_META] = {"changed": quiet["changed"]}
+    # Whether the completed turn owes the idle compaction job: only for a
+    # user who opted in, so no one else's turn writes or reads anything for it.
+    agent_config = getattr(handler, "agent_config", None)
+    if agent_config is not None and agent_config.feature_enabled("idle_compaction"):
+        persist_metadata[IDLE_COMPACTION_META] = True
     # Steering inputs archive on the owning response (v4 identity model:
     # steering = no run, no turn), from the steer rows this run confirmed
     # delivered.

@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, NotRequired, Optional, TypedDict
 
 from src.config import env
-from src.config.features import is_feature_enabled_system
 from src.server.contracts.status import is_restart_interrupted, to_public
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
 
@@ -168,6 +167,10 @@ SURFACE_META = "surface"
 #: Run metadata key for how a wake turn ended quietly: {"changed"}.
 WAKEUP_QUIET_META = "wakeup_quiet"
 
+#: Run metadata key, true when the turn ran for a user with the
+#: ``idle_compaction`` feature on; stamped by the finalize.
+IDLE_COMPACTION_META = "idle_compaction"
+
 
 def is_unchanged_quiet(meta: Mapping[str, Any]) -> bool:
     """Whether the run was a wakeup's check that ended quietly and set or
@@ -195,6 +198,7 @@ def build_finalize_jobs(
     last_seen_run_seq: Optional[int] = None,
     push_enabled: bool = False,
     restart_interrupted: bool = False,
+    idle_compaction: bool = False,
 ) -> Callable[[str], List[HookJob]]:
     """The one decision table mapping a run's final status to its hook jobs.
 
@@ -282,13 +286,13 @@ def build_finalize_jobs(
                 )
             )
 
-        if user_id and final_status == "completed" and is_feature_enabled_system("idle_compaction"):
+        if user_id and final_status == "completed" and idle_compaction:
             # A completed turn may leave its thread idle on a warm prompt
             # cache, which an idle compaction summarizes before it expires.
             # Whether it does is read off the checkpoint the turn committed,
             # so the job runs after the commit. No ordering_key: the executor
-            # arms only for the thread's latest run. With the feature off no
-            # job is written, so a turn costs nothing.
+            # arms only for the thread's latest run. With the feature off for
+            # the turn's user no job is written, so a turn costs nothing.
             jobs.append(
                 HookJob(
                     hook_type=IDLE_COMPACT_HOOK,
@@ -418,6 +422,7 @@ def build_finalize_jobs_from_run_row(
         last_seen_run_seq=last_seen_run_seq,
         push_enabled=env.APNS_ENABLED,
         restart_interrupted=not as_ordinary_stop and is_restart_interrupted(run),
+        idle_compaction=meta.get(IDLE_COMPACTION_META) is True,
     )
 
 

@@ -217,6 +217,8 @@ class TurnStartRebuilds(StalePinRebuilds):
             them at the call.
         idle_tokens: The least context an idle thread is summarized at
             keeping its tail (``CompactionConfig.idle_tokens``); 0 never.
+        idle_compaction: The turn's user has the feature on, so its answers
+            are stamped and the last leaves the idle clock.
     """
 
     reads_first_call: ClassVar[bool] = True
@@ -227,6 +229,7 @@ class TurnStartRebuilds(StalePinRebuilds):
     keep_full_context: bool = False
     sent_at: float | None = None
     idle_tokens: int = 0
+    idle_compaction: bool = False
 
     def due(self, request: ModelRequest, view: Sequence[AnyMessage]) -> bool:
         return due(request, view)

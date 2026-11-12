@@ -25,8 +25,9 @@ from ptc_agent.agent.middleware.compaction.rebuild import IDLE_TTL_SECONDS, Rebu
 from ptc_agent.agent.middleware.compaction.types import IdleClock
 from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY
 
-#: The deployment switch (``src.config.features``), off by default: off, no
-#: answer is stamped or leaves a clock, and nothing arms or fires.
+#: The feature (``src.config.features``), which each user opts in to. Off for
+#: the deployment, nothing arms or fires; off for a user, their answers are
+#: not stamped and leave no clock (``TurnStartRebuilds.idle_compaction``).
 FEATURE = "idle_compaction"
 
 
@@ -54,10 +55,7 @@ def request_started_at(message: Any) -> float | None:
 def stamping(
     handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
 ) -> Callable[[ModelRequest], Awaitable[ModelResponse]]:
-    """``handler``, stamping each answer with when its request started, with
-    the feature on."""
-    if not enabled():
-        return handler
+    """``handler``, stamping each answer with when its request started."""
 
     async def call(request: ModelRequest) -> ModelResponse:
         started = time.time()
