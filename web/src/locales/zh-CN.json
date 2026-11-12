@@ -120,6 +120,12 @@
     "marketView": "行情中心",
     "automations": "自动化",
     "settings": "设置",
+    "help": "帮助",
+    "whatsNew": "新功能",
+    "changelog": "更新日志",
+    "documentation": "文档",
+    "opensInNewTab": "（在新标签页中打开）",
+    "contactSupport": "联系支持",
     "account": "用量与套餐",
     "integrations": "集成",
     "newChat": "新对话",
@@ -623,15 +629,13 @@
     "searchPlaceholder": "搜索股票代码或公司名称...",
     "searching": "搜索中...",
     "noResults": "未找到结果",
-    "contactMessage": "如有任何问题或建议，请通过以下方式联系我们",
     "prefIncomplete": "偏好信息不完整",
     "prefIncompleteMsg": "您的偏好信息尚未完善。请完善偏好设置以获得最佳体验。",
     "ignoreFor24h": "24小时内忽略",
     "proceed": "继续",
     "header": {
       "editLayout": "编辑布局",
-      "exitEditLayout": "退出编辑",
-      "emailLabel": "邮箱"
+      "exitEditLayout": "退出编辑"
     },
     "widgets": {
       "common": {

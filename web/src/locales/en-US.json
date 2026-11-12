@@ -120,6 +120,12 @@
     "marketView": "Market View",
     "automations": "Automations",
     "settings": "Settings",
+    "help": "Help",
+    "whatsNew": "What's new",
+    "changelog": "Changelog",
+    "documentation": "Documentation",
+    "opensInNewTab": "(opens in a new tab)",
+    "contactSupport": "Contact support",
     "account": "Usage & Plan",
     "integrations": "Integrations",
     "newChat": "New chat",
@@ -585,15 +591,13 @@
     "searchPlaceholder": "Search by symbol or company name...",
     "searching": "Searching...",
     "noResults": "No results found",
-    "contactMessage": "If you have any questions or suggestions, please contact us through the following methods",
     "prefIncomplete": "Preference Information Incomplete",
     "prefIncompleteMsg": "Your preference information is not complete. Please complete your preferences to get the best experience with the agent.",
     "ignoreFor24h": "Ignore for 24 hours",
     "proceed": "Proceed",
     "header": {
       "editLayout": "Edit layout",
-      "exitEditLayout": "Exit edit layout",
-      "emailLabel": "Email"
+      "exitEditLayout": "Exit edit layout"
     },
     "widgets": {
       "common": {

@@ -15,7 +15,11 @@ cd cli && pnpm install && pnpm build   # dist/la.mjs, one file, no dependencies
 node dist/la.mjs --help
 ```
 
+Guides for each part of the CLI are in the [CLI docs](https://docs.langalpha.ai/cli/overview/), and each section below links its page.
+
 ## Signing in
+
+The [signing in](https://docs.langalpha.ai/cli/signing-in/) and [sign-in commands](https://docs.langalpha.ai/cli/auth/) pages walk through each route.
 
 `langalpha` takes the first credential it finds:
 
@@ -70,7 +74,9 @@ server.
 
 From the command spec (`src/commands/`), which `langalpha --help` and each
 `langalpha <command> --help` also print; an option a command does not declare is
-refused.
+refused. The docs cover [computers](https://docs.langalpha.ai/cli/computers/), [workspaces](https://docs.langalpha.ai/cli/workspaces/),
+[threads](https://docs.langalpha.ai/cli/threads/), [automations](https://docs.langalpha.ai/cli/automations/) and [models](https://docs.langalpha.ai/cli/models/), with
+[scripting recipes](https://docs.langalpha.ai/cli/scripting/).
 
 ```
 langalpha login [--with-token] [--no-browser]
@@ -120,6 +126,8 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 not signed in or not allowed (401/403), 4 
 5 conflict, 6 the turn is waiting for approval, 7 the turn failed or was cancelled.
 
 ## Inside a computer
+
+The [inside a computer](https://docs.langalpha.ai/cli/inside-a-computer/) page is the user-facing version of this section.
 
 Every computer gets the bundle with its internal packages, a shim on every
 agent command's `PATH` answering to both `la` and `langalpha`, and a token of

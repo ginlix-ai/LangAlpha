@@ -1,4 +1,4 @@
-import { User, Settings, LogOut, CreditCard, ChevronRight, Plug, MessageSquareWarning } from 'lucide-react';
+import { User, Settings, LogOut, CreditCard, ChevronRight, Plug, MessageSquareWarning, BookOpen, CircleHelp, Sparkles, History, LifeBuoy } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -10,14 +10,25 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
-import { INTEGRATIONS_URL, PLATFORM_URL } from '@/config/supportLinks';
+import { DOCS_URL, INTEGRATIONS_URL, PLATFORM_URL, SUPPORT_URL } from '@/config/supportLinks';
+import { useLocale } from '@/hooks/useLocale';
 import { ReportDialog, type ReportSubject } from '@/components/report/ReportDialog';
 import { useReportsEnabled } from '@/hooks/useReportsEnabled';
 
 const MENU_REPORT: ReportSubject = { event: 'user_report', source: 'button' };
+
+/** The documentation site's pages the Help submenu opens. */
+const HELP_ITEMS = [
+  { href: `${DOCS_URL}/whats-new/`, icon: Sparkles, labelKey: 'sidebar.whatsNew' },
+  { href: `${DOCS_URL}/changelog/`, icon: History, labelKey: 'sidebar.changelog' },
+  { href: `${DOCS_URL}/`, icon: BookOpen, labelKey: 'sidebar.documentation' },
+];
 
 /** The account console's pages the menu opens; none on a self-hosted build. */
 const CONSOLE_ITEMS = [
@@ -37,6 +48,7 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
   const { logout } = useAuth();
   const { user } = useUser();
   const { t } = useTranslation();
+  const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showReport, setShowReport] = useState(false);
@@ -78,6 +90,10 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
 
   const [avatarError, setAvatarError] = useState(false);
   useEffect(() => setAvatarError(false), [avatarUrl]);
+
+  // The portal picks the support channels for the language it is told, and
+  // it has no cookie of this app's to read.
+  const supportHref = SUPPORT_URL && (locale === 'zh-CN' ? `${SUPPORT_URL}?lang=zh-CN` : SUPPORT_URL);
 
   const isSettingsActive = location.pathname === '/settings';
   const isTriggerActive = open || isSettingsActive;
@@ -235,7 +251,6 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
                 <span className="flex-1" style={{ color: 'var(--color-text-primary)' }}>
                   {t(labelKey)}
                 </span>
-                <ChevronRight className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
               </a>
             </DropdownMenuItem>
           ))}
@@ -245,12 +260,43 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
             {t('sidebar.settings', 'Settings')}
           </DropdownMenuItem>
 
-          {reportsEnabled && (
-            <DropdownMenuItem onSelect={() => setShowReport(true)}>
-              <MessageSquareWarning className="h-4 w-4" />
-              {t('report.menuItem')}
-            </DropdownMenuItem>
-          )}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <CircleHelp className="h-4 w-4" />
+              <span className="flex-1">{t('sidebar.help', 'Help')}</span>
+              <ChevronRight className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              {/* A new tab in every build: the desktop shell hands a window.open to
+                  the system browser, so the site never loads inside the app window. */}
+              {HELP_ITEMS.map(({ href, icon: Icon, labelKey }) => (
+                <DropdownMenuItem key={labelKey} asChild>
+                  <a href={href} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
+                    <Icon className="h-4 w-4" />
+                    <span className="flex-1">
+                      {t(labelKey)}
+                      <span className="sr-only"> {t('sidebar.opensInNewTab')}</span>
+                    </span>
+                  </a>
+                </DropdownMenuItem>
+              ))}
+              {(reportsEnabled || supportHref) && <DropdownMenuSeparator />}
+              {reportsEnabled && (
+                <DropdownMenuItem onSelect={() => setShowReport(true)}>
+                  <MessageSquareWarning className="h-4 w-4" />
+                  {t('report.menuItem')}
+                </DropdownMenuItem>
+              )}
+              {supportHref && (
+                <DropdownMenuItem asChild>
+                  <a href={supportHref} className="flex items-center gap-2">
+                    <LifeBuoy className="h-4 w-4" />
+                    <span className="flex-1">{t('sidebar.contactSupport')}</span>
+                  </a>
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
 
           <DropdownMenuSeparator />
 

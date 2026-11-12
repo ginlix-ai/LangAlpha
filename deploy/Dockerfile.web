@@ -26,6 +26,7 @@ ENV VITE_CDN_BASE=${VITE_CDN_BASE}
 # Declared without a default or an ENV, so a build that passes nothing still
 # reads the value from web/.env, which an empty variable here would override.
 ARG VITE_PRIVACY_URL
+ARG VITE_SUPPORT_CONTACT_ENABLED
 RUN pnpm run build
 
 FROM alpine:3.20

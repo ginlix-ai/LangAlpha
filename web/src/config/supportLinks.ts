@@ -35,4 +35,12 @@ export const SUPPORT_EMAIL: string | null =
  *  and the one that connects to a self-hosted server, so one link serves every build. */
 export const DESKTOP_DOWNLOAD_URL = 'https://langalpha.ai/download';
 
+/** The documentation site: getting started, self-hosting, the CLI and the concepts behind the app. */
+export const DOCS_URL = 'https://docs.langalpha.ai';
+
+/** The portal's support page, where the contact channels live behind sign-in. Null unless the build sets
+ *  `VITE_SUPPORT_CONTACT_ENABLED=true` in platform mode, so the Help menu offers it only where a channel is open. */
+export const SUPPORT_URL: string | null =
+  import.meta.env.VITE_SUPPORT_CONTACT_ENABLED === 'true' ? consoleUrl('support/contact') : null;
+
 export const PRIVACY_URL: string | null = import.meta.env.VITE_PRIVACY_URL || null;
