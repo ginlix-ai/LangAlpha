@@ -81,7 +81,9 @@ let userId: string | null = null;
 const absorbedReported = { translated: false, untranslated: false };
 let pendingAbsorbed: Array<{ error: DOMException; translated: boolean }> = [];
 
-export function initSentry(entryUrl: string): void {
+/** `isStaleBuildError` is the stale-build recovery's, handed in so this
+ *  module stays free of that one's UI. */
+export function initSentry(entryUrl: string, isStaleBuildError: (error: unknown) => boolean): void {
   const dsn = import.meta.env.VITE_SENTRY_DSN as string | undefined;
   // Not from the dev server: it reads the same `.env` a release build does,
   // so its errors would land in the release's environment.
@@ -100,8 +102,16 @@ export function initSentry(entryUrl: string): void {
         beforeBreadcrumb: (crumb) => redactCrumb(crumb),
         // A translated page rewrites the DOM under React, so an error from one
         // is told apart from a bug in our own markup.
-        beforeSend: (event) => {
+        beforeSend: (event, hint) => {
           event.tags = { page_translated: pageIsTranslated() ? 'yes' : 'no', ...event.tags };
+          // A chunk a deploy removed, met by a tab still on the build before
+          // it: every deploy brings some, and the tab was offered a reload. One
+          // warning issue, whose rate still shows a build missing its own
+          // chunks, rather than a new error issue per chunk per deploy.
+          if (isStaleBuildError(hint.originalException)) {
+            event.level = 'warning';
+            event.fingerprint = ['stale-build-chunk'];
+          }
           return redactEvent(event);
         },
       });

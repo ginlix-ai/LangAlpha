@@ -15,6 +15,7 @@ import { trackVisualViewport } from './lib/visualViewport'
 import { Toaster } from './components/ui/toaster'
 import { StaleBuildBoundary } from './components/StaleBuildBoundary'
 import { captureException, initSentry, reportAbsorbedDomError } from './lib/sentry'
+import { isStaleBuildError } from './lib/staleBuild'
 import { tolerateTranslatedDom } from './lib/translatedDom'
 
 // Initialize a global QueryClient for data fetching and caching
@@ -32,7 +33,7 @@ tolerateTranslatedDom(reportAbsorbedDomError)
 applyCardStyle(getCardStyle())
 trackVisualViewport()
 // This module is the entry chunk once built, so its URL names the release.
-initSentry(import.meta.url)
+initSentry(import.meta.url, isStaleBuildError)
 
 // Nothing renders until the active locale's catalog is in, or the first paint
 // shows raw keys. A catalog that fails leaves #root to index.html's pre-boot
