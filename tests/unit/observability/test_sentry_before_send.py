@@ -123,3 +123,38 @@ def test_a_report_links_sentry_only_for_an_org_slug(monkeypatch, org, linked):
 def test_a_capability_quoted_in_an_error_leaves_without_its_secret():
     out = _send(_event(exception={"values": [{"value": "GET https://x/api/v1/wsfiles/g/GRANT-SECRET/a.csv failed"}]}))
     assert "GRANT-SECRET" not in out["exception"]["values"][0]["value"]
+
+
+def test_an_error_a_tool_raises_inside_a_turn_is_not_sent(monkeypatch):
+    """The AI libraries' integrations would capture it where it is raised; a
+    subagent's credit stop reached Sentry that way."""
+    import sentry_sdk
+    from langchain_core.tools import StructuredTool
+    from sentry_sdk.transport import Transport
+
+    sent = []
+
+    class _Recorder(Transport):
+        def capture_envelope(self, envelope):
+            sent.append(envelope)
+
+    async def _raise(x: int) -> str:
+        raise RuntimeError("tool refused")
+
+    monkeypatch.setenv("SENTRY_DSN", "https://key@o1.ingest.sentry.io/1")
+    monkeypatch.setattr(sentry, "_enabled", False)
+    sentry.init_sentry()
+    try:
+        client = sentry_sdk.get_client()
+        assert {"fastapi", "starlette"} <= set(client.integrations)
+        client.transport = _Recorder()
+        tool = StructuredTool.from_function(coroutine=_raise, name="t", description="d")
+        with pytest.raises(RuntimeError):
+            asyncio.run(tool.ainvoke({"x": 1}))
+        sentry_sdk.flush()
+        assert sent == []
+    finally:
+        # Back to no client, as the session began. Not ``init()``: it reads
+        # the DSN still set here and starts a live one for every test after.
+        sentry_sdk.get_client().close()
+        sentry_sdk.get_global_scope().set_client(None)
