@@ -45,13 +45,25 @@ def test_scratchpad_is_on_unless_the_user_stored_false():
     assert default_feature_enabled("scratchpad") is True
 
 
-def test_claude_code_runtime_is_off_until_a_deployment_enables_it_and_a_user_opts_in(monkeypatch):
+def test_claude_code_runtime_is_on_for_everyone_unless_a_deployment_gates_it(monkeypatch):
     _stub_config(monkeypatch)
-    assert FEATURES["claude_code_runtime"].enabled is False
-    assert effective_flags({"claude_code_runtime": True})["claude_code_runtime"] is False
-    _stub_config(monkeypatch, claude_code_runtime={"enabled": True})
+    assert effective_flags(None)["claude_code_runtime"] is True
+    assert effective_flags({"claude_code_runtime": False})["claude_code_runtime"] is True
+    _stub_config(monkeypatch, claude_code_runtime={"gate": "opt_in"})
     assert effective_flags(None)["claude_code_runtime"] is False
     assert effective_flags({"claude_code_runtime": True})["claude_code_runtime"] is True
+    _stub_config(monkeypatch, claude_code_runtime={"enabled": False})
+    assert is_feature_enabled_system("claude_code_runtime") is False
+
+
+def test_idle_compaction_is_off_until_the_user_opts_in(monkeypatch):
+    _stub_config(monkeypatch)
+    spec = FEATURES["idle_compaction"]
+    assert spec.gate is FeatureGate.OPT_IN
+    assert spec.tradeoffs
+    assert is_feature_enabled_system("idle_compaction") is True
+    assert effective_flags(None)["idle_compaction"] is False
+    assert effective_flags({"idle_compaction": True})["idle_compaction"] is True
 
 
 def test_system_flag_partial_override_merges_with_catalog(monkeypatch):
@@ -125,9 +137,10 @@ def test_gate_plan_without_min_tier_fails_closed_in_platform(monkeypatch):
 def test_reset_preferences_keeps_only_the_overrides_on_the_grant_gate(monkeypatch):
     from src.server.services.features import granted_override_keys
 
-    assert granted_override_keys() == []
-    _stub_config(monkeypatch, claude_oauth={"gate": "grant"})
+    _stub_config(monkeypatch)
     assert granted_override_keys() == ["claude_oauth"]
+    _stub_config(monkeypatch, claude_oauth={"gate": "none"})
+    assert granted_override_keys() == []
 
 
 def test_gate_grant_is_off_until_granted_and_takes_only_true(monkeypatch):
@@ -138,12 +151,12 @@ def test_gate_grant_is_off_until_granted_and_takes_only_true(monkeypatch):
     assert default_feature_enabled("market_watch") is False
 
 
-def test_claude_sign_in_is_open_to_everyone_until_a_deployment_gates_it(monkeypatch):
+def test_claude_sign_in_is_only_for_users_granted_it_unless_a_deployment_opens_it(monkeypatch):
     _stub_config(monkeypatch)
-    assert effective_flags(None)["claude_oauth"] is True
-    _stub_config(monkeypatch, claude_oauth={"gate": "grant"})
     assert effective_flags(None)["claude_oauth"] is False
     assert effective_flags({"claude_oauth": True})["claude_oauth"] is True
+    _stub_config(monkeypatch, claude_oauth={"gate": "none"})
+    assert effective_flags(None)["claude_oauth"] is True
 
 
 def test_unknown_override_keys_are_ignored(monkeypatch):

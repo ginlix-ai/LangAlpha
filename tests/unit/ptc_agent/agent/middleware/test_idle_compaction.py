@@ -7,7 +7,6 @@ only on the request the turn cached.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from types import SimpleNamespace
 
@@ -34,7 +33,6 @@ from ptc_agent.agent.middleware.runtime_context.frozen_prompt import STATE_SYSTE
 from ptc_agent.agent.middleware.tool_surface import ToolSurfaceMiddleware
 from ptc_agent.agent.prompts import release
 from ptc_agent.config.agent import CompactionConfig
-from src.config import features
 from src.server.services.idle_compaction import plan_firing
 from tests.unit.ptc_agent.agent.prefix_stability import (
     Wire,
@@ -183,17 +181,6 @@ class _Clock:
         return self.now
 
 
-def _feature(monkeypatch, on: bool) -> None:
-    spec = features.FEATURES["idle_compaction"]
-    monkeypatch.setitem(features.FEATURES, "idle_compaction", dataclasses.replace(spec, enabled=on))
-
-
-@pytest.fixture(autouse=True)
-def feature_on(monkeypatch):
-    """The deployment turned the idle_compaction feature on."""
-    _feature(monkeypatch, True)
-
-
 @pytest.fixture
 def clock(monkeypatch) -> _Clock:
     clock = _Clock()
@@ -213,6 +200,7 @@ def _agent(
     skip: bool = False,
     main: bool = True,
     tools=(get_data,),
+    opted_in: bool = True,
 ):
     compaction = CompactionMiddleware(
         Summarizer(GenericFakeChatModel(messages=iter([])), limit=100_000),
@@ -222,7 +210,11 @@ def _agent(
     )
     if main:
         compaction = compaction.with_turn_start_rebuilds(TurnStartRebuilds(
-                FLOOR, cold_tokens=cold, keep_full_context=skip, idle_tokens=cold if idle is None else idle
+                FLOOR,
+                cold_tokens=cold,
+                keep_full_context=skip,
+                idle_tokens=cold if idle is None else idle,
+                idle_compaction=opted_in,
             )
         )
     return create_agent(
@@ -302,10 +294,9 @@ async def test_a_final_claude_answer_leaves_the_idle_clock_from_its_requests_sta
 
 
 @pytest.mark.asyncio
-async def test_with_the_feature_off_an_answer_is_neither_stamped_nor_leaves_a_clock(monkeypatch, clock):
-    _feature(monkeypatch, False)
+async def test_for_a_user_not_opted_in_an_answer_is_neither_stamped_nor_leaves_a_clock(monkeypatch, clock):
     Wire(_turn(clock, 6_000)).install(monkeypatch)
-    agent = _agent(InMemorySaver(), "Prompt A.", cold=COLD)
+    agent = _agent(InMemorySaver(), "Prompt A.", cold=COLD, opted_in=False)
     await agent.ainvoke({"messages": [HumanMessage("Get a.")]}, CFG)
 
     values = await _state(agent)
