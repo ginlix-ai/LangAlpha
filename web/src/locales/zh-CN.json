@@ -2031,6 +2031,28 @@
     "changeFailed": "无法更改分享设置，请重试。"
   },
   "chat": {
+    "contextPanel": {
+      "trigger": "上下文已用 {{percent}}",
+      "title": "上下文",
+      "used": "已用 {{used}} / {{threshold}}（{{percent}}）",
+      "compactAt": "压缩阈值",
+      "thread": "本对话",
+      "input": "输入",
+      "output": "输出",
+      "cacheHitRate": "缓存命中率",
+      "lastCall": "最近一次 {{percent}}",
+      "counting": "正在统计上下文",
+      "computerStopped": "计算机运行时才能查看明细。",
+      "parts": {
+        "system": "系统提示词",
+        "tools": "工具",
+        "mcp": "MCP 服务器",
+        "skills": "技能",
+        "memory": "记忆",
+        "environment": "环境",
+        "conversation": "对话"
+      }
+    },
     "artifactComments": {
       "sendFailed": "这些评论未能发送，仍在待发送中。",
       "message": {

@@ -1997,6 +1997,28 @@
     "changeFailed": "Couldn't change sharing. Please try again."
   },
   "chat": {
+    "contextPanel": {
+      "trigger": "Context window, {{percent}} used",
+      "title": "Context",
+      "used": "{{used}} / {{threshold}} used ({{percent}})",
+      "compactAt": "Compact at",
+      "thread": "This thread",
+      "input": "Input",
+      "output": "Output",
+      "cacheHitRate": "Cache hit rate",
+      "lastCall": "last call {{percent}}",
+      "counting": "Counting context",
+      "computerStopped": "Breakdown is available while the computer is running.",
+      "parts": {
+        "system": "System prompt",
+        "tools": "Tools",
+        "mcp": "MCP servers",
+        "skills": "Skills",
+        "memory": "Memory",
+        "environment": "Environment",
+        "conversation": "Conversation"
+      }
+    },
     "artifactComments": {
       "sendFailed": "These did not send, so they are still queued.",
       "message": {

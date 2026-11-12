@@ -1858,6 +1858,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         isCompacting={!!isCompacting}
                         files={mentionFiles}
                         tokenUsage={tokenUsage}
+                        threadId={panelThreadId}
                         onAction={handleAction}
                         model={threadModel.model}
                         sendModel={threadModel.sendModel}

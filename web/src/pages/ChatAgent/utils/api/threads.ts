@@ -120,6 +120,30 @@ export async function fetchCommands(threadId: string): Promise<CommandsResponse>
   return data;
 }
 
+/** Why a thread's context could not be broken down: its computer is not
+ *  running, the agent keeps no count, or the thread's model could not be
+ *  resolved. The panel words only the first; the rest show the window alone. */
+export type ThreadContextUnavailable = 'computer_stopped' | 'no_compaction' | 'refused';
+
+/** The parts the thread's next model call sends ahead of its messages. */
+export type ThreadContextPart = 'system' | 'tools' | 'mcp' | 'skills' | 'memory' | 'environment';
+
+/** Tokens per part; a part may be absent. `parts` is null when they cannot
+ *  be counted, and `reason` says why. */
+export interface ThreadContextResponse {
+  thread_id: string;
+  parts: Partial<Record<ThreadContextPart, number>> | null;
+  reason?: ThreadContextUnavailable;
+}
+
+/** Counted on request, which takes the server about half a second, so it is
+ *  read when the context panel opens rather than with every call. */
+export async function fetchThreadContext(threadId: string): Promise<ThreadContextResponse> {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.get<ThreadContextResponse>(`/api/v1/threads/${threadId}/context`);
+  return data;
+}
+
 /** Stop a background command. A stopped command does not report back. */
 export async function stopCommand(threadId: string, commandId: string): Promise<CommandStopResponse> {
   if (!threadId) throw new Error('Thread ID is required');

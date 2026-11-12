@@ -29,7 +29,8 @@ import {
   buildModelFallbackSegment, appendNotificationSegmentOnce,
   isWorkspaceChangingToolSuccess, mapToolCallIdToAgentId,
 } from '../../hooks/utils/messageFinalizers';
-import { handleContextWindowEvent, withServerTotals } from '../../hooks/utils/contextWindowEvent';
+import { handleContextWindowEvent } from '../../hooks/utils/contextWindowEvent';
+import { withServerTotals } from '../tokenUsage';
 import { BUSY_REPLY_KEYS, isBusyCode } from '../../hooks/utils/forkRefusal';
 import {
   handleReasoningSignal, handleReasoningContent, handleTextContent,

@@ -3,7 +3,8 @@ import { Plus, ChartCandlestick } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
+import { TokenUsageRing } from './token-usage-ring';
+import type { TokenUsage } from '@/pages/ChatAgent/session/tokenUsage';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useTurnModels } from '@/hooks/useTurnModels';
 import { useEffectiveTuning, useModelProfileWriter } from '@/hooks/useModelProfile';
@@ -151,7 +152,10 @@ export interface ChatInputProps {
    * sendable — the selection carries its own instruction.
    */
   hasExternalContext?: boolean;
-  tokenUsage?: TokenUsageData | null;
+  tokenUsage?: TokenUsage | null;
+  /** The thread the context panel breaks down; absent for a chat with no
+   *  thread yet. */
+  threadId?: string | null;
   onAction?: ((cmd: SlashCommand) => void) | null;
   /**
    * The model the pill shows and a send names, owned by the host's thread
@@ -236,6 +240,7 @@ function ChatInput({
   hasExternalContext = false,
   // Token usage (context window progress)
   tokenUsage = null,
+  threadId,
   // Action commands (e.g. /compact) — dispatched on send, not on selection
   onAction = null,
   // Model selector
@@ -1075,7 +1080,7 @@ function ChatInput({
 
               {/* Token Usage Ring */}
               {ringVisible && tokenUsage && (
-                <TokenUsageRing tokenUsage={tokenUsage} />
+                <TokenUsageRing tokenUsage={tokenUsage} threadId={threadId} />
               )}
 
               {/* Chart Capture (trading only) */}

@@ -19,7 +19,8 @@ import type { HtmlWidgetData, MessageRecord } from '../../hooks/utils/types';
 import {
   buildModelFallbackSegment, appendNotificationSegmentOnce, mapToolCallIdToAgentId,
 } from '../../hooks/utils/messageFinalizers';
-import { applyCallUsage, handleContextWindowEvent } from '../../hooks/utils/contextWindowEvent';
+import { handleContextWindowEvent } from '../../hooks/utils/contextWindowEvent';
+import { applyCallUsage } from '../tokenUsage';
 import { handlePlanBilled, handleProvenance } from '../stream/mainEventHandlers';
 import {
   handleHistoryUserMessage,

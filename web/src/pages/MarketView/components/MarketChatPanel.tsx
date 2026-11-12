@@ -970,6 +970,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         }
         threadModels={threadModels}
         tokenUsage={tokenUsage}
+        threadId={threadId}
       />
 
       <MarketDetailDialog payload={dialogPayload} onClose={handleCloseDialog} getToolCallProcess={getToolCallProcess} />
