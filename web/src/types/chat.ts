@@ -106,17 +106,32 @@ export interface ModelFallbackNotice {
   provider?: string;
 }
 
+/** A thread moved onto a model that keeps a session of its own (Claude
+ *  Code), which opened on a brief of everything before. Manifest keys,
+ *  named when shown as a fallback's are. */
+export interface HandOffNotice {
+  /** The model the thread was on, absent when the server put the brief
+   *  together without a model. */
+  from?: string;
+  to: string;
+}
+
+/** Which expander toggle label a notification's detail takes. */
+export type NotificationDetailKind = 'summary' | 'brief' | 'error';
+
 export interface NotificationSegment {
   type: 'notification';
-  /** The label. A model switch has none: its label is written from `fallback`. */
+  /** The label. A model switch has none: its label is written from
+   *  `fallback`, and a hand-off's from `handoff`. */
   content?: string;
   fallback?: ModelFallbackNotice;
+  handoff?: HandOffNotice;
   order: number;
   /** Optional longer text (e.g. the compaction summary) shown in an
    *  expandable panel beneath the notification label. */
   detail?: string;
-  /** Picks the expander toggle label — 'summary' (default) or 'error'. */
-  detailKind?: 'summary' | 'error';
+  /** Picks the expander toggle label, 'summary' by default. */
+  detailKind?: NotificationDetailKind;
   /** A reply whose last request was billed to usage credits at a Claude
    *  plan's limit: drawn as the quiet notice line under it, not a divider. */
   planBilled?: PlanBilled;

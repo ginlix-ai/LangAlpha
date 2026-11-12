@@ -7,6 +7,7 @@ import { AnimatePresence, motion, useReducedMotion } from '@/lib/framer';
 import { compactNumber } from '@/lib/format';
 import { DURATION, EASE_COLLAPSE, TWEEN } from '@/lib/motion';
 import { useLocale } from '@/hooks/useLocale';
+import { useModelName } from '@/hooks/useModelName';
 import type { ModelStatus } from '../../session/types';
 import type { RetiredModel } from '../../hooks/useThreadModel';
 import type { WarmingDisplay } from '../../utils/warmWorkspace';
@@ -26,6 +27,8 @@ interface TranscriptStatusProps {
   workspaceStarting: WarmingDisplay;
   /** Why this send waits on a thread mutation, null when it is not held. */
   turnHeld: string | null;
+  /** The model the thread runs, which a hand-off's wait names. */
+  model: string | null;
   isCompacting: string | false;
   /** About how many tokens the summary being written has written. */
   compactionTokens: number | null;
@@ -54,6 +57,7 @@ export function TranscriptStatus({
   retired,
   workspaceStarting,
   turnHeld,
+  model,
   isCompacting,
   compactionTokens,
   queuedSend,
@@ -71,7 +75,7 @@ export function TranscriptStatus({
   if (workspaceStarting) {
     lines.push({ key: 'workspace', node: <WorkspaceStartingLine archived={workspaceStarting === 'archived'} /> });
   }
-  if (turnHeld !== null) lines.push({ key: 'turnHeld', node: <TurnHeldLine reason={turnHeld} /> });
+  if (turnHeld !== null) lines.push({ key: 'turnHeld', node: <TurnHeldLine reason={turnHeld} model={model} /> });
   if (isCompacting) {
     lines.push({
       key: 'compacting',
@@ -138,11 +142,19 @@ function turnHeldKey(reason: string): string {
   return 'chat.turnHeld.other';
 }
 
-function TurnHeldLine({ reason }: { reason: string }): React.ReactElement {
+/** The wait's line. A hand-off names the model it goes to, never who writes
+ *  the brief, which is settled only once one is written. */
+function TurnHeldLine({ reason, model }: { reason: string; model: string | null }): React.ReactElement {
   const { t } = useTranslation();
+  const name = useModelName();
+  const text = reason !== 'brief'
+    ? t(turnHeldKey(reason))
+    : model
+      ? t('chat.turnHeld.brief', { model: name(model) })
+      : t('chat.turnHeld.briefNoModel');
   return (
     <StatusLine glyph={<Loader size={12} className="text-(--color-accent-primary)" />}>
-      {t(turnHeldKey(reason))}
+      {text}
     </StatusLine>
   );
 }

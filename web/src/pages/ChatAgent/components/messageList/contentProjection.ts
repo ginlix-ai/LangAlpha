@@ -60,7 +60,9 @@ const RETAINED_TYPES = new Set<RenderBlock['type']>([
  *  already left for another app, where the turn cannot take it back. An
  *  answer to a file comment has left for the file in the same way, and its
  *  line is the chat's only way there. A reply billed to usage credits keeps
- *  its notice too, since it is what the answer cost.
+ *  its notice too, since it is what the answer cost, and a turn that opened
+ *  on another model's brief keeps its mark, which says what the reply was
+ *  written from.
  *
  *  Every other entry in `INLINE_ARTIFACT_MAP` is a lookup and folds. Adding a
  *  card type here is a product decision, so `contentProjection.foldRole.test.ts`
@@ -71,7 +73,7 @@ function foldRole(block: RenderBlock): FoldRole {
   if (block.type === 'text') return 'text';
   if (RETAINED_TYPES.has(block.type)) return 'retain';
   if (block.type === 'compact_artifact' && block.card && RETAINED_ARTIFACTS.has(block.card.type)) return 'retain';
-  if (block.type === 'notification' && block.segment.planBilled) return 'retain';
+  if (block.type === 'notification' && (block.segment.planBilled || block.segment.handoff)) return 'retain';
   return 'process';
 }
 

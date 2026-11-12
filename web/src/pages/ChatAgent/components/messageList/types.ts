@@ -1,4 +1,4 @@
-import type { ModelFallbackNotice, TextChunkMark } from '@/types/chat';
+import type { HandOffNotice, ModelFallbackNotice, NotificationDetailKind, TextChunkMark } from '@/types/chat';
 import type { PlanBilled } from '@/api/model';
 import type { ThreadFeedback } from '../../utils/api/feedback';
 
@@ -32,10 +32,12 @@ export interface ContentSegmentRecord {
   widgetId?: string;
   /** Notification-only: a model switch, labeled when shown. */
   fallback?: ModelFallbackNotice;
-  /** Notification-only: longer text (compaction summary / fallback error) shown under toggle. */
+  /** Notification-only: a hand-off to Claude Code, labeled when shown. */
+  handoff?: HandOffNotice;
+  /** Notification-only: longer text (compaction summary, hand-off brief, fallback error) shown under toggle. */
   detail?: string;
   /** Notification-only: expander toggle label flavor. */
-  detailKind?: 'summary' | 'error';
+  detailKind?: NotificationDetailKind;
   /** Notification-only: a reply billed to usage credits, drawn as a notice line. */
   planBilled?: PlanBilled;
 }

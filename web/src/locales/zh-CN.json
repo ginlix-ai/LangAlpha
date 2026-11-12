@@ -2287,6 +2287,7 @@
       "lapsed": "你的 {{account}} 登录已过期。重新连接后即可使用 {{model}}。",
       "offer": "此对话使用 {{model}}，新对话默认使用 {{defaultModel}}。",
       "handoff": "OpenAI 已将此对话的一部分压缩成只有其模型能读取的摘要。之前的模型正在为 {{model}} 把它写成文字，下一条消息可能要稍等片刻才会开始。",
+      "brief": "正在把这段对话的上下文交接给 {{model}}，好让它接着往下做。下一条消息可能要稍等片刻才会开始。",
       "makeDefault": "将 {{model}} 设为默认"
     },
     "backgroundTasksRunning": "后台任务仍在运行",
@@ -2570,6 +2571,8 @@
     "offloading": "正在转存上下文...",
     "turnHeld": {
       "handoff": "正在等待上一个模型写出摘要...",
+      "brief": "正在把上下文交接给 {{model}}...",
+      "briefNoModel": "正在把上下文交接给新模型...",
       "other": "正在等待此对话上的当前操作完成..."
     },
     "compactionStopped": "压缩已停止",
@@ -2610,12 +2613,16 @@
       "chart-annotationDesc": "将分析作为图层绘制在价格图表上：价位、线条、区间、指标和预测，实时显示在 MarketView，或作为聊天中的图表卡片"
     },
     "compactedNotification": "上下文已压缩 · {{from}} 条消息 → 摘要",
+    "handOffNotification": "上下文已交接 · {{from}} → {{to}}",
+    "handOffNotificationDigest": "上下文已交接 → {{to}}",
     "taskErrorNotification": "子任务运行失败",
     "taskStoppedNotification": "子任务运行已停止",
     "taskSteeringReturnedNotification": "引导消息已退回 · 运行在送达前已结束",
     "taskSteeringNotSentNotification": "引导消息未发送",
     "viewSummary": "查看摘要",
     "hideSummary": "隐藏摘要",
+    "viewBrief": "查看交接摘要",
+    "hideBrief": "隐藏交接摘要",
     "offloadedArgsNotification": "工具参数已转存 · {{count}} 个工具",
     "offloadedReadsNotification": "过期读取结果已转存 · {{count}} 个读取",
     "offloadedNotification": "上下文已转存 · {{args}} 个工具参数, {{reads}} 个读取",
