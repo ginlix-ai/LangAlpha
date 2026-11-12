@@ -304,6 +304,27 @@ async def test_a_lost_run_is_finalized_with_its_saved_messages_durations():
     assert [e["data"]["tool_call_id"] for e in outcome.record.provenance] == ["tc-1"]
 
 
+@pytest.mark.asyncio
+async def test_a_lost_run_keeps_where_its_images_were_captured():
+    """Regression: no finalize of its own gathered the captures, so the
+    run_end the recovery sent left the live view on the file as it is now."""
+    reader = _reader(_SAVED_STATE)
+    reader.aget_run_turn = AsyncMock(return_value=SimpleNamespace(messages=[
+        AIMessage(
+            "![chart](charts/a.png)", id="ai-9",
+            response_metadata={"captured_images": {"charts/a.png": "https://cdn/a.png"}},
+        ),
+    ]))
+    with patch(
+        "src.server.services.history.reader.CheckpointHistoryReader.get_instance",
+        return_value=reader,
+    ):
+        images = await RecoveryScanner()._salvage_images(THREAD, RUN)
+
+    assert images == {"charts/a.png": "https://cdn/a.png"}
+    reader.aget_run_turn.assert_awaited_once_with(THREAD, RUN)
+
+
 # ─── Fallback notices ─────────────────────────────────────────────────
 
 

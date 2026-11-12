@@ -80,6 +80,18 @@ async def test_a_sign_off_after_a_send_leaves_the_send_as_what_it_sent():
 
 
 @pytest.mark.asyncio
+async def test_an_answer_shows_its_images_as_their_captures():
+    """Regression: the saved text keeps sandbox paths, which a chat cannot
+    show, so the answer it is handed points at each capture."""
+    answer = await _read(AIMessage(
+        "Markets rose.\n\n![chart](charts/spx.png)",
+        response_metadata={"captured_images": {"charts/spx.png": "https://cdn/spx.png"}},
+    ))
+
+    assert answer.text == "Markets rose.\n\n![chart](https://cdn/spx.png)"
+
+
+@pytest.mark.asyncio
 async def test_a_run_that_sent_nothing_has_only_its_answer():
     answer = await _read(AIMessage("Markets rose."))
 

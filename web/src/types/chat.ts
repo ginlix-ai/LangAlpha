@@ -591,6 +591,9 @@ export type AssistantMessage = {
    *  was writing when it dropped (`session/stream/continuedBubbles.ts`). */
   continues?: string;
   contentSegments: ContentSegment[];
+  /** Where each sandbox image path the reply streamed was captured, from its
+   *  run's `run_end`; a replayed reply has the URLs in its text instead. */
+  capturedImages?: Record<string, string>;
   reasoningProcesses: Record<string, ReasoningProcess>;
   toolCallProcesses: Record<string, ToolCallProcess>;
   provenanceRecords?: Record<string, ProvenanceRecord>;

@@ -106,17 +106,6 @@ async def http_file_text(file_record: dict[str, Any], *, user_id: str) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-# Image MIME types that benefit from HTTP caching
-_CACHEABLE_IMAGE_TYPES = frozenset(
-    {
-        "image/png",
-        "image/jpeg",
-        "image/gif",
-        "image/svg+xml",
-        "image/webp",
-    }
-)
-
 # DB-backed virtual files: rows the agent reaches through a composite route
 # (UserDataBackend, AutomationsBackend, SubagentsBackend), never files on the
 # sandbox FS. These paths bypass the system-path filter and route to the DB

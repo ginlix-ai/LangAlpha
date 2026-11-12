@@ -10,6 +10,7 @@ out of the root entirely, and one pointing at the root's reserved ``_internal``.
 from __future__ import annotations
 
 import base64
+import hashlib
 import math
 import os
 import re
@@ -1085,12 +1086,15 @@ async def _ranged_download(
     warm=None,
     folder_now=None,
     events=None,
+    if_none_match=None,
 ):
     """The owner route's answer. ``warm`` is the sandbox of a session this
     worker already holds, ``folder_now`` the row the recheck after a warm read
     finds, and ``events`` notes an acquisition."""
     request = MagicMock()
     request.headers = {"range": range_header} if range_header else {}
+    if if_none_match:
+        request.headers["if-none-match"] = if_none_match
     with (
         patch(_CRUD_DBWS, AsyncMock(return_value=_workspace())),
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
@@ -1104,6 +1108,57 @@ async def _ranged_download(
         return await download_workspace_file(
             WS_ID, OWNER, request, path=path, attachment=False
         )
+
+
+@pytest.mark.usefixtures("settled")
+@pytest.mark.asyncio
+async def test_an_image_asked_for_again_at_its_version_is_not_read(tree) -> None:
+    """Every chat image asks again each time it shows, so a file still at the
+    version the browser holds is answered 304 by the sandbox, with nothing
+    read; a rewrite moves the version and goes out whole."""
+    first = await _ranged_download(tree, None)
+    etag = first.headers["etag"]
+    assert first.status_code == 200
+    assert re.fullmatch(r'"\d+-[\d.]+-[\d.]+-\d+"', etag)
+
+    again = await _ranged_download(tree, None, if_none_match=etag)
+    assert again.status_code == 304
+    assert again.headers["etag"] == etag
+    assert not again.body
+
+    # Any tag of a list matches, and a comma inside a quoted tag is its own.
+    decoy = f'"other,{etag.strip(chr(34))}"'
+    assert (await _ranged_download(tree, None, if_none_match=decoy)).status_code == 200
+    listed = await _ranged_download(tree, None, if_none_match=f'"abc", {etag}')
+    assert listed.status_code == 304
+
+    # Another size, so the version moves even where both writes share a tick.
+    Path(tree.root, "work/chart.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x01\x02")
+    rewritten = await _ranged_download(tree, None, if_none_match=etag)
+    assert rewritten.status_code == 200
+    assert rewritten.body == b"\x89PNG\r\n\x1a\n\x00\x01\x02"
+    assert rewritten.headers["etag"] != etag
+
+
+@pytest.mark.asyncio
+async def test_a_file_too_fresh_for_a_version_is_told_by_its_bytes(tree) -> None:
+    """Two writes within one clock step share every stamp, so a file written
+    just now goes out under a validator of its bytes."""
+    # Fresh however long the run takes to get here.
+    with patch(_VERSION_MIN_AGE, math.inf):
+        response = await _ranged_download(tree, None)
+    assert response.headers["etag"].strip('"') == hashlib.md5(
+        b"\x89PNG\r\n\x1a\n\xff\xfe"
+    ).hexdigest()
+
+
+@pytest.mark.usefixtures("settled")
+@pytest.mark.asyncio
+async def test_redacted_text_is_not_sent_under_the_files_version(tree) -> None:
+    Path(tree.root, "work/settings.bin").write_text(f"key={VAULT_SECRET}\n")
+    response = await _ranged_download(tree, None, path="work/settings.bin")
+    assert VAULT_SECRET.encode() not in response.body
+    assert response.headers["etag"].strip('"') == hashlib.md5(response.body).hexdigest()
 
 
 @pytest.mark.usefixtures("settled")
@@ -1439,7 +1494,8 @@ async def test_a_file_that_changed_mid_read_is_a_503_to_retry(tree) -> None:
 
 
 def _ranged_commands(sandbox) -> list[str]:
-    return [c for c in sandbox.runtime.commands if "date +%s" in c]
+    # A whole read prints the version too; only a range reads from an offset.
+    return [c for c in sandbox.runtime.commands if "tail -c +" in c]
 
 
 @pytest.mark.usefixtures("settled")

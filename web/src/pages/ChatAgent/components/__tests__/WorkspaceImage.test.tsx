@@ -5,6 +5,7 @@ import '@testing-library/jest-dom';
 import { runAuthResets } from '@/lib/authResets';
 import WorkspaceImage from '../WorkspaceImage';
 import { WorkspaceProvider } from '../../contexts/WorkspaceContext';
+import { CapturedImagesContext } from '../../contexts/CapturedImagesContext';
 import type { ComputerFolders } from '../../utils/agentPaths';
 
 // WorkspaceImage's only utils/api dependency is the authenticated downloader.
@@ -221,19 +222,110 @@ describe('WorkspaceImage forgets the account on sign-out', () => {
     await waitFor(() => expect(downloadWorkspaceFile).toHaveBeenCalledTimes(2));
   });
 
-  // One chart referenced twice fetches twice; the copy that lands second would
-  // have replaced the first in the cache and left it past the sign-out.
-  it('shows the cached copy when a second load of the file lands', async () => {
-    downloadWorkspaceFile.mockResolvedValueOnce('blob:first').mockResolvedValueOnce('blob:second');
+  // One chart referenced twice in one message reads the file once.
+  it('shares one read between images of the file that mount together', async () => {
+    downloadWorkspaceFile.mockResolvedValueOnce('blob:first');
     renderInWorkspace('charts/twice.png', { workspaceId: 'ws-1', downloadFile: null });
     renderInWorkspace('charts/twice.png', { workspaceId: 'ws-1', downloadFile: null });
-    await waitFor(() => expect(downloadWorkspaceFile).toHaveBeenCalledTimes(2));
 
     await waitFor(() =>
       expect(screen.getAllByAltText('chart').map((img) => img.getAttribute('src'))).toEqual(['blob:first', 'blob:first']),
     );
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:second');
+    expect(downloadWorkspaceFile).toHaveBeenCalledTimes(1);
     runAuthResets();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first');
+  });
+
+  // Regression: the agent rewrote a chart at the same path and showed it again
+  // in a later turn, which drew the first copy from the cache without a read.
+  it('reads the file again when a later message shows it, and every image moves to that copy', async () => {
+    downloadWorkspaceFile.mockResolvedValueOnce('blob:before').mockResolvedValueOnce('blob:after');
+    renderInWorkspace('charts/rewritten.png', { workspaceId: 'ws-1', downloadFile: null });
+    await waitFor(() => expect(screen.getByAltText('chart')).toHaveAttribute('src', 'blob:before'));
+
+    renderInWorkspace('charts/rewritten.png', { workspaceId: 'ws-1', downloadFile: null });
+    await waitFor(() =>
+      expect(screen.getAllByAltText('chart').map((img) => img.getAttribute('src'))).toEqual(['blob:after', 'blob:after']),
+    );
+    expect(downloadWorkspaceFile).toHaveBeenCalledTimes(2);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:before');
+  });
+
+  // Regression: a read landed while the agent was rewriting the chart, the
+  // first image to fail took the copy out of the cache, and the other image of
+  // the file was left on its placeholder with nothing to read again.
+  it('shows the failure on every image of a copy that will not draw, until a new copy lands', async () => {
+    downloadWorkspaceFile.mockResolvedValueOnce('blob:truncated').mockResolvedValueOnce('blob:whole');
+    renderInWorkspace('charts/midwrite.png', { workspaceId: 'ws-1', downloadFile: null });
+    renderInWorkspace('charts/midwrite.png', { workspaceId: 'ws-1', downloadFile: null });
+    const drawn = await screen.findAllByAltText('chart');
+    drawn.forEach((img) => fireEvent.error(img));
+    expect(screen.getAllByText('midwrite.png could not be loaded')).toHaveLength(2);
+
+    renderInWorkspace('charts/midwrite.png', { workspaceId: 'ws-1', downloadFile: null });
+    await waitFor(() =>
+      expect(screen.getAllByAltText('chart').map((img) => img.getAttribute('src'))).toEqual(['blob:whole', 'blob:whole', 'blob:whole']),
+    );
+  });
+});
+
+describe('WorkspaceImage shows the copy its reply was captured with', () => {
+  beforeEach(() => {
+    downloadWorkspaceFile.mockClear();
+  });
+
+  // Regression: the reply named a path the agent then rewrote, and a reply
+  // that names a path shows whatever the file holds now.
+  it('draws the captured URL in place of the path, without reading the file', () => {
+    render(
+      <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
+        <CapturedImagesContext.Provider value={{ 'charts/drop_cn.png': 'https://cdn.example/0e2d/drop_cn.png' }}>
+          <WorkspaceImage src="charts/drop_cn.png" alt="chart" />
+        </CapturedImagesContext.Provider>
+      </WorkspaceProvider>,
+    );
+
+    expect(screen.getByAltText('chart')).toHaveAttribute('src', 'https://cdn.example/0e2d/drop_cn.png');
+    expect(downloadWorkspaceFile).not.toHaveBeenCalled();
+  });
+
+  it('reads the file for a path the reply was not captured with', async () => {
+    render(
+      <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
+        <CapturedImagesContext.Provider value={{ 'charts/other.png': 'https://cdn.example/other.png' }}>
+          <WorkspaceImage src="charts/uncaptured.png" alt="chart" />
+        </CapturedImagesContext.Provider>
+      </WorkspaceProvider>,
+    );
+
+    await waitFor(() => expect(downloadWorkspaceFile).toHaveBeenCalledWith('ws-1', 'charts/uncaptured.png'));
+  });
+
+  // The map holds the path as the agent wrote it; markdown hands the image its
+  // destination encoded.
+  it('finds the capture of a name markdown encoded', () => {
+    render(
+      <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
+        <CapturedImagesContext.Provider value={{ 'charts/Q3 图表.png': 'https://cdn.example/q3.png' }}>
+          <WorkspaceImage src="charts/Q3%20%E5%9B%BE%E8%A1%A8.png" alt="chart" />
+        </CapturedImagesContext.Provider>
+      </WorkspaceProvider>,
+    );
+
+    expect(screen.getByAltText('chart')).toHaveAttribute('src', 'https://cdn.example/q3.png');
+    expect(downloadWorkspaceFile).not.toHaveBeenCalled();
+  });
+
+  // Another workspace's file at the same path is a different chart.
+  it('keeps a capture to its own workspace', async () => {
+    render(
+      <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
+        <CapturedImagesContext.Provider value={{ 'charts/a.png': 'https://cdn.example/local.png' }}>
+          <WorkspaceImage src="__wsref__/ws-other/charts/a.png" alt="chart" />
+        </CapturedImagesContext.Provider>
+      </WorkspaceProvider>,
+    );
+
+    await waitFor(() => expect(downloadWorkspaceFile).toHaveBeenCalledWith('ws-other', 'charts/a.png'));
   });
 });

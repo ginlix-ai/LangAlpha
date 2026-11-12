@@ -279,6 +279,64 @@ async def test_task_namespace_transcript():
     assert len(history.turns) == 1
 
 
+async def test_project_task_transcript_shows_each_image_as_captured(monkeypatch):
+    # Regression: a subagent's text keeps the sandbox path and records its
+    # capture, and the drill-in read the path, which names the file as it is now.
+    saver = InMemorySaver()
+    graph = _echo_graph(saver)
+    await _run_turns(graph, 1)
+    sub_graph = (
+        StateGraph(MainAgentState)
+        .add_node(
+            "agent",
+            lambda s: {
+                "messages": [AIMessage(
+                    content="![chart](charts/a.png)", id="sub-ai-1",
+                    response_metadata={
+                        "captured_images": {"charts/a.png": "https://cdn/a.png"}
+                    },
+                )]
+            },
+        )
+        .add_edge(START, "agent")
+        .compile(checkpointer=saver)
+    )
+    await sub_graph.ainvoke(
+        {"messages": [HumanMessage(content="child prompt", id="sub-h-1")]},
+        {
+            "configurable": {
+                "thread_id": THREAD,
+                "checkpoint_ns": "task:wf1",
+                CONFIG_KEY_TASK_ID: "parent-task",
+            }
+        },
+    )
+    reader = CheckpointHistoryReader(saver)
+    monkeypatch.setattr(
+        CheckpointHistoryReader, "get_instance", classmethod(lambda cls: reader)
+    )
+    from src.server.services.history.replay import run_lane as task_lane
+    from src.server.services.history.replay.run_lane import (
+        project_task_transcript,
+    )
+
+    monkeypatch.setattr(
+        task_lane,
+        "resolve_task_details",
+        AsyncMock(return_value={"wf1": {"status": "completed"}}),
+    )
+    monkeypatch.setattr(task_lane.sr_db, "get_task", AsyncMock(return_value=None))
+
+    items = await project_task_transcript(THREAD, "wf1")
+
+    texts = [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("content_type") == "text"
+    ]
+    assert texts == ["![chart](https://cdn/a.png)"]
+
+
 async def test_project_task_transcript_serves_unprojected_lanes(monkeypatch):
     # On-demand transcript for tasks replay never projects as lanes (workflow
     # children have no Task-tool launch artifact): the endpoint's projection

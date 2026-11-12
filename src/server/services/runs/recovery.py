@@ -408,7 +408,10 @@ class RecoveryScanner:
         status, interrupt_reason, errors, newest, stamped = (
             await self._classify(run, run_id, thread_id)
         )
-        record, quality = await self._salvage(thread_id, run_id, status)
+        (record, quality), images = await asyncio.gather(
+            self._salvage(thread_id, run_id, status),
+            self._salvage_images(thread_id, run_id),
+        )
 
         from src.server.services.runs.coordinator import RunCoordinator, RunOutcome
 
@@ -432,6 +435,7 @@ class RecoveryScanner:
                 # The stream is the only record of what the dead run fetched,
                 # how long it thought, and which fallbacks it streamed.
                 record=record,
+                images=images,
             ),
             newest=newest,
             error_frame={
@@ -549,6 +553,29 @@ class RecoveryScanner:
         )
 
     # --------------------------------------------------------------- salvage
+
+    async def _salvage_images(self, thread_id: str, run_id: str) -> Dict[str, str]:
+        """Where the images the dead run's saved messages name were captured,
+        which its row holds for the run_end and a replay: no finalize of its
+        own gathered them. None on a failed read, which leaves the live view
+        the file as it is now."""
+        from ptc_agent.agent.middleware.image_capture import recorded_images
+        from src.server.services.history.reader import CheckpointHistoryReader
+
+        try:
+            turn = await CheckpointHistoryReader.get_instance().aget_run_turn(
+                thread_id, run_id
+            )
+        except Exception:
+            logger.warning(
+                f"[RecoveryScanner] images of run {run_id} unreadable", exc_info=True
+            )
+            return {}
+        return {
+            path: url
+            for message in (turn.messages if turn else ())
+            for path, url in recorded_images(message).items()
+        }
 
     async def _salvage(
         self, thread_id: str, run_id: str, status: str

@@ -68,6 +68,9 @@ from src.server.services.workspace_file_containment import (
     is_within,
     normalize_requested_path,
     read_contained_sandbox_file,
+    read_contained_sandbox_file_versioned,
+    stamps_of_etag,
+    version_etag,
     read_contained_sandbox_range,
 )
 from src.server.services.served_paths import (
@@ -96,7 +99,6 @@ from ._shared import (
     DEFAULT_READ_LIMIT_LINES,
     TOO_LARGE_DETAIL,
     MAX_UPLOAD_BYTES,
-    _CACHEABLE_IMAGE_TYPES,
     _decode_file_text,
     previous_roots_of,
     _is_binary,
@@ -721,17 +723,21 @@ def _build_download_response(
     mime: str,
     request: Request,
     disposition: str = "inline",
+    etag: str | None = None,
 ) -> Response:
-    """Build a download response with caching headers for image types."""
-    etag = hashlib.md5(content).hexdigest()
+    """A download the browser revalidates on every read.
+
+    The agent rewrites a file in place (a chart re-rendered at the same path),
+    so a max-age would hand a later read the bytes it replaced; the ETag keeps
+    an unchanged file to a bodiless 304. ``etag`` is the file's version when
+    the bytes go as the file holds them; anything else is told by its bytes.
+    """
+    etag = etag or hashlib.md5(content).hexdigest()
     headers: dict[str, str] = {
         "Content-Disposition": content_disposition(filename, disposition=disposition),
         "ETag": f'"{etag}"',
+        "Cache-Control": "private, no-cache",
     }
-    if mime in _CACHEABLE_IMAGE_TYPES:
-        headers["Cache-Control"] = "private, max-age=300"
-    else:
-        headers["Cache-Control"] = "private, no-cache"
 
     # Return 304 if client already has this version
     if_none_match = request.headers.get("if-none-match")
@@ -852,7 +858,7 @@ async def _live_range_response(
         sliced.content,
         first,
         sliced.size,
-        f"{sliced.size}-{sliced.version}",
+        version_etag(sliced.size, sliced.version),
         filename,
         mime,
         disposition,
@@ -1054,16 +1060,20 @@ async def download_workspace_file(
             )
             if ranged is not None:
                 return ranged
+        # A browser asking again names the version it holds, and a file still
+        # at it is answered without a byte of it read or sent.
+        if_none_match = request.headers.get("if-none-match")
         try:
-            resolved = await read_contained_sandbox_file(
-                sandbox, candidate, work_dir=work_dir
+            read = await read_contained_sandbox_file_versioned(
+                sandbox, candidate, work_dir=work_dir, unless=stamps_of_etag(if_none_match)
             )
             too_large = None
         except FileTooLargeToServe as e:
-            resolved, too_large = (e.canonical, b""), e
-        if resolved is None:
+            read, too_large = None, e
+        if read is None and too_large is None:
             raise HTTPException(status_code=404, detail="File not found")
-        normalized, content = resolved
+        normalized = too_large.canonical if too_large is not None else read.canonical
+        content = (read.content if read is not None else None) or b""
 
         client_path = to_client_path(sandbox, normalized, work_dir)
         if is_always_hidden_path(client_path):
@@ -1072,18 +1082,44 @@ async def download_workspace_file(
         filename = client_path.split("/")[-1] if client_path else "download"
         mime = resolve_content_type(filename)
 
+        if read is not None and read.content is None:
+            return Response(
+                status_code=304,
+                headers={
+                    "Content-Disposition": content_disposition(
+                        filename, disposition=disposition
+                    ),
+                    # Its stamps matched one of ours, aged before it went out.
+                    "ETag": f'"{version_etag(read.size, read.version)}"'
+                    if read.version
+                    else (if_none_match or ""),
+                    "Cache-Control": "private, no-cache",
+                },
+            )
+
         if too_large is not None:
             return await _stream_large_file(
                 workspace_id, sandbox, too_large, filename, mime, disposition, folder=folder
             )
 
+        # Redacted bytes are not the file's, so only the file's own go out
+        # under its version.
+        version = read.version if read is not None else None
         if is_text_content_type(mime) or is_utf8(content):
             vault_secrets = await get_vault_secrets_for_redaction(workspace["user_id"])
             content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
+            version = None
 
         record_fs_bytes("download", len(content))
 
-        return _build_download_response(content, filename, mime, request, disposition)
+        return _build_download_response(
+            content,
+            filename,
+            mime,
+            request,
+            disposition,
+            etag=version_etag(len(content), version) if version else None,
+        )
 
 
 async def _stream_large_file(

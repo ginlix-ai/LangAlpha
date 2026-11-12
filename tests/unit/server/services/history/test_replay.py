@@ -8,6 +8,8 @@ import psycopg
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from ptc_agent.agent.middleware.image_capture import CAPTURED_IMAGES_KEY
+
 from src.server.services.history.reader import TaskHistory
 from src.server.services.history.replay import (
     CheckpointReplayUnavailable,
@@ -806,6 +808,72 @@ async def test_image_map_applied_from_the_rows_replay_facts(monkeypatch):
 
     chunks = [i["data"]["content"] for i in items if i["event"] == "message_chunk"]
     assert chunks == ["![old](https://cdn/old.png)", "![new](https://cdn/new.png)"]
+
+
+async def test_image_map_applied_from_what_each_message_recorded(monkeypatch):
+    """The text keeps the path; each message records where its images were
+    captured at model time, so a turn recovery settled, with no map on its
+    row, still shows its own copy of a chart a later turn rewrote."""
+    def captured(url):
+        return {CAPTURED_IMAGES_KEY: {"work/chart.png": url}}
+
+    history = ThreadHistory(
+        thread_id=THREAD,
+        turns=[
+            _turn(0, [AIMessage(
+                content="![v1](work/chart.png)", id="ai-1",
+                response_metadata=captured("https://cdn/v1.png"),
+            )]),
+            _turn(1, [AIMessage(
+                content="![v2](work/chart.png)", id="ai-2",
+                response_metadata=captured("https://cdn/v2.png"),
+            )]),
+        ],
+    )
+    _mock_reader(monkeypatch, history)
+
+    items = await build_checkpoint_replay_items(
+        thread_rows([_query(0), _query(1, content="next")], {0: _response(0), 1: _response(1)}),
+    )
+
+    chunks = [i["data"]["content"] for i in items if i["event"] == "message_chunk"]
+    assert chunks == ["![v1](https://cdn/v1.png)", "![v2](https://cdn/v2.png)"]
+
+
+async def test_each_message_of_a_turn_shows_its_own_capture(monkeypatch):
+    """Regression: the agent showed a chart, rewrote it and showed it again in
+    one turn, and the turn's map (last capture wins) gave both messages the
+    second copy. A link to the file goes to its capture too, so a reply that
+    lists the file beside its picture still shows the picture once."""
+    def captured(url):
+        return {CAPTURED_IMAGES_KEY: {"work/chart.png": url}}
+
+    history = ThreadHistory(
+        thread_id=THREAD,
+        turns=[_turn(0, [
+            AIMessage(
+                content="![v1](work/chart.png)", id="ai-1",
+                response_metadata=captured("https://cdn/v1.png"),
+            ),
+            AIMessage(
+                content="- [chart.png](work/chart.png)\n\n![v2](work/chart.png)", id="ai-2",
+                response_metadata=captured("https://cdn/v2.png"),
+            ),
+        ])],
+    )
+    _mock_reader(monkeypatch, history)
+    row = {
+        **_response(0),
+        "replay_facts": {"images": {"work/chart.png": "https://cdn/v2.png"}},
+    }
+
+    items = await build_checkpoint_replay_items(thread_rows([_query(0)], {0: row}))
+
+    chunks = [i["data"]["content"] for i in items if i["event"] == "message_chunk"]
+    assert chunks == [
+        "![v1](https://cdn/v1.png)",
+        "- [chart.png](https://cdn/v2.png)\n\n![v2](https://cdn/v2.png)",
+    ]
 
 
 async def test_subagent_transcript_projected_once_with_image_map(monkeypatch):

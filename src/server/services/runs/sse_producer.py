@@ -16,7 +16,10 @@ import json_repair
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from langgraph.types import Overwrite
 
-from ptc_agent.agent.middleware.image_capture import collect_sandbox_paths
+from ptc_agent.agent.middleware.image_capture import (
+    collect_sandbox_paths,
+    recorded_images,
+)
 
 from ptc_agent.agent.middleware.runtime_context.turn import (
     TURN_DEADLINE_KEY,
@@ -257,10 +260,11 @@ class RunSSEProducer:
         # The last error frame the main agent's stream sent, for the finalize
         # of a failed run to keep.
         self._error_frame: Optional[Dict[str, Any]] = None
-        # The sandbox image paths each message the main graph saved still
-        # names, by message id: a later write of the message replaces its
-        # entry.
-        self._saved_image_paths: Dict[str, Set[str]] = {}
+        # The sandbox image paths each message the main graph saved names,
+        # by message id, each with the URL its model-time capture went to, or
+        # None where that capture missed it: a later write of the message
+        # replaces its entry.
+        self._saved_images: Dict[str, Dict[str, Optional[str]]] = {}
 
         # Track reasoning block index per agent to detect block transitions
         # When index changes (e.g., 0→1), a separator (\n\n) is needed between blocks
@@ -1714,15 +1718,33 @@ class RunSSEProducer:
                 messages = [messages]
             for message in messages:
                 if isinstance(message, AIMessage) and message.id:
-                    self._saved_image_paths[message.id] = collect_sandbox_paths(
-                        [message]
-                    )
+                    captured = recorded_images(message)
+                    self._saved_images[message.id] = {
+                        path: captured.get(path)
+                        for path in collect_sandbox_paths([message])
+                    }
 
     @property
     def saved_image_paths(self) -> Set[str]:
-        """The sandbox images the main agent's saved messages name, which
-        the model-time capture left as paths."""
-        return set().union(*self._saved_image_paths.values())
+        """The sandbox images the main agent's saved messages name that the
+        model-time capture did not capture."""
+        return {
+            path
+            for images in self._saved_images.values()
+            for path, url in images.items()
+            if url is None
+        }
+
+    @property
+    def captured_images(self) -> Dict[str, str]:
+        """The URL each sandbox image the main agent's saved messages name
+        was captured to at model time."""
+        return {
+            path: url
+            for images in self._saved_images.values()
+            for path, url in images.items()
+            if url is not None
+        }
 
     def record(self, stop_events: Optional[List[Dict[str, Any]]] = None) -> ProducerRecord:
         """What the finalize stores beside the status that the checkpoint

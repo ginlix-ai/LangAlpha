@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as z from 'zod/mini';
 import { INTERVALS } from '@/lib/bars/chartConstants';
 import { readTypedTicker } from '@/lib/marketUtils';
@@ -506,19 +506,20 @@ export function useFileTabs(
   // A thread switch is a different strip, not a reordering of this one. A
   // thread with nothing saved keeps what is on screen when the workspace is the
   // same (that is the seed, and keeping it in memory keeps its locations too);
-  // a new workspace reads its own seed.
-  const lastKey = useRef(key);
-  const lastSeed = useRef(seedKey);
-  useEffect(() => {
-    if (lastKey.current === key) return;
-    const sameWorkspace = lastSeed.current === seedKey;
-    lastKey.current = key;
-    lastSeed.current = seedKey;
+  // a new workspace reads its own seed. Switched during render, not in an
+  // effect: the panel's target opens its file in a layout effect of the same
+  // update (a link to another workspace's file moves the panel and opens the
+  // file at once), and a switch landing after it would replace that tab with
+  // the new workspace's strip.
+  const [shown, setShown] = useState({ key, seedKey });
+  if (shown.key !== key) {
+    const sameWorkspace = shown.seedKey === seedKey;
+    setShown({ key, seedKey });
     setState((prev) => ({
       ...(readPersisted(store) ?? (sameWorkspace ? prev : (readPersisted(seedStore) ?? blankStrip()))),
       key,
     }));
-  }, [key, seedKey, store, seedStore]);
+  }
 
   // Written only once the strip on screen is the one this key names; the
   // render between a key change and the switch above still holds the old strip.

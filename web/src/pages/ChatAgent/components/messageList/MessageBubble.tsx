@@ -40,6 +40,7 @@ import { projectMessageContent, type ContentProjection } from './contentProjecti
 import { isImeComposing } from '@/lib/ime';
 import { onScreenKeyboardUp } from '@/lib/visualViewport';
 import { EMPTY_OBJ } from './types';
+import { CapturedImagesContext } from '../../contexts/CapturedImagesContext';
 import type { ContentSegmentRecord, FeedbackResult, FoldState, MessageRecord, ToolCallProcessRecord } from './types';
 
 // --- MessageBubble ---
@@ -549,15 +550,17 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   const bubbleContent = (
     <>
       <OverflowCollapse enabled={isUser} maxHeight={USER_MESSAGE_COLLAPSE_PX}>
-      {artifactComments ? (
-        <CommentSendBody
-          shown={artifactComments}
-          pending={isPendingDelivery}
-          refused={!!message.queueError || !!message.unadmitted}
-        >
-          {words}
-        </CommentSendBody>
-      ) : words}
+        <CapturedImagesContext.Provider value={(message.capturedImages as Record<string, string> | undefined) ?? null}>
+          {artifactComments ? (
+            <CommentSendBody
+              shown={artifactComments}
+              pending={isPendingDelivery}
+              refused={!!message.queueError || !!message.unadmitted}
+            >
+              {words}
+            </CommentSendBody>
+          ) : words}
+        </CapturedImagesContext.Provider>
       </OverflowCollapse>
 
       {/* The failure, once, after what the turn produced, which still reads as

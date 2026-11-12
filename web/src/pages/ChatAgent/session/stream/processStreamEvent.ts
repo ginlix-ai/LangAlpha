@@ -55,6 +55,7 @@ import type { StreamRuntime } from '../runtime';
 import { preapprovedReportBack } from '../../utils/preapprovedCards';
 import { dispatchResultFields } from '../../utils/dispatchResult';
 import { applySideChannelArtifact } from './sideChannelArtifact';
+import { pinCapturedImages } from './capturedImages';
 
 type RefreshOnResult = 'refreshMarketWatch' | 'refreshWakeups' | 'refreshCommands';
 
@@ -310,6 +311,12 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       const told = 'next_summary' in event;
       if (told) rt.setNextSummary(event.next_summary ?? null);
       rt.nextSummaryOwedRef.current = !told;
+      // Each image the reply streamed as a path, and where it was captured:
+      // the copy the reply showed, which a later rewrite of the file leaves.
+      const images = event.images;
+      if (images && Object.keys(images).length) {
+        queueMessagesForHandlers((prev) => pinCapturedImages(prev, assistantMessageId, images));
+      }
       if (event.outcome === 'cancelled') {
         settleStoppedBubble({ assistantMessageId, refs, setMessages: setMessagesForHandlers });
       } else if (event.outcome === 'error' && !refs.retryNotice && !turnShowsFailure()) {

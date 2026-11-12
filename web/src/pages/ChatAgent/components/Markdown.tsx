@@ -665,6 +665,19 @@ interface MarkdownProps {
   rehypeAfter?: RehypePlugins;
 }
 
+// An image the source embeds, by its destination as written: `<...>` or bare.
+// Each part is bounded and kept to its line, so a line of `![` with no `]`
+// costs one short look per opener rather than a scan to the end of the reply.
+const IMAGE_EMBED_RE = /!\[[^\]\n]{0,500}\]\(\s*(?:<([^>\n]{0,2048})>|([^)\s]{1,2048}))/g;
+
+/** The images `source` embeds, as one key: the link components close over it,
+ *  and a key that holds while streamed text adds no embed keeps them stable. */
+function embeddedImagesKey(source: string): string {
+  const found = new Set<string>();
+  for (const match of source.matchAll(IMAGE_EMBED_RE)) found.add(match[1] ?? match[2]);
+  return [...found].sort().join('\n');
+}
+
 function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, onAnchorLink, codeTheme, streaming = false, rehypeAfter }: MarkdownProps): React.ReactElement {
   const config = VARIANTS[variant];
   const folders = useWorkspaceFolders();
@@ -673,6 +686,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
   const processed = useMemo(() => prepareMarkdownSource(content, rootDir, otherRoots), [content, rootDir, otherRoots]);
 
   const split = useMemo(() => splitMarkdownBlocks(processed), [processed]);
+  const embeddedImages = useMemo(() => embeddedImagesKey(processed), [processed]);
   // The block still being written renders with its tail held to the shape it
   // will settle in (utils/streamingTail): a lone `-` under a line is not a
   // heading, a link being typed is not a run of brackets.
@@ -735,6 +749,9 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
       result = { ...result, code: fileAwareCode };
     }
 
+    const embedded = new Set(
+      embeddedImages ? embeddedImages.split('\n').map((src) => normalizeFilePath(src, folders)) : [],
+    );
     const fileAwareA = ({ node: _node, href, children, ...props }: MarkdownComponentProps) => {
       if (onAnchorLink && href?.startsWith('#') && href.length > 1 && !isFootnoteLink(props)) {
         return (
@@ -748,10 +765,12 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
         );
       }
       if (isFilePath(href, folders)) {
-        // Image file linked as [name](path.png) -- render as embedded image.
-        // The destination goes over raw: WorkspaceImage reads it the same way
-        // this link does, and normalizing here would decode it twice.
-        if (isImagePath(href)) {
+        // Image file linked as [name](path.png) -- render as embedded image,
+        // unless the text embeds it as well: a list of the files beside the
+        // picture itself would show it twice. The destination goes over raw:
+        // WorkspaceImage reads it the same way this link does, and
+        // normalizing here would decode it twice.
+        if (isImagePath(href) && !embedded.has(normalizeFilePath(href!, folders))) {
           return <WorkspaceImage src={href} alt={textOf(children)} />;
         }
         if (onOpenFile) {
@@ -786,7 +805,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
       return <DefaultA node={_node} href={href} {...props}>{children}</DefaultA>;
     };
     return { ...result, a: fileAwareA };
-  }, [onOpenFile, onAnchorLink, variant, config.components, codeTheme, folders]);
+  }, [onOpenFile, onAnchorLink, variant, config.components, codeTheme, folders, embeddedImages]);
 
   // Rendered markdown is always long-form reading content — every call site
   // (transcript, detail panels, memos) gets the content face here.

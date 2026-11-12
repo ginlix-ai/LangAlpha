@@ -98,6 +98,9 @@ interface SSEEvent {
   token_totals?: ThreadTokenTotals | null;
   /** What the thread's next send summarizes first, on a `run_end` frame. */
   next_summary?: NextSummary | null;
+  /** Where each sandbox image the run's reply named was captured, by the path
+   *  as written, on a `run_end` frame. */
+  images?: Record<string, string>;
   [key: string]: unknown;
 }
 

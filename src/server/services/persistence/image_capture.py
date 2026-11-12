@@ -1,9 +1,9 @@
 """Late image capture: sandbox images a turn's text still names at its end.
 
-``ImageCaptureMiddleware`` rewrites checkpointed messages at model time and
-leaves a path in place when its capture fails or times out. The main turn's
-leftovers are captured as its run ends and their URLs recorded on its
-response row; a subagent lane's, from its captured events, onto its runs. Keys
+``ImageCaptureMiddleware`` records on each message the URL its images were
+captured to at model time, and records nothing when its capture fails or
+times out. The main turn's leftovers are captured as its run ends and every
+URL recorded on its response row; a subagent lane's, from its captured events, onto its runs. Keys
 are content-addressed (shared helpers), so every pass converges on identical
 URLs and re-uploads are idempotent PUTs of the same bytes.
 

@@ -1023,6 +1023,18 @@ async def get_run(run_id: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
+async def get_run_replay_facts(run_id: str) -> Optional[Dict[str, Any]]:
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT replay_facts FROM conversation_responses "
+                "WHERE conversation_response_id = %s",
+                (run_id,),
+            )
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
 async def cancel_requested_runs(run_ids: list[str]) -> set[str]:
     """Of ``run_ids``, the runs still in progress that carry cancel intent."""
     if not run_ids:

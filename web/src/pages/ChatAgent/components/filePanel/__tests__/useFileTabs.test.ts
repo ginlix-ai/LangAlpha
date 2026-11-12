@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { userLocalStorage } from '@/lib/userStorage';
 import { useFileTabs, lastChartSymbol, lastChartStorageKey, tabsStorageKey, threadTabsStorageKey, type FileTab } from '../useFileTabs';
@@ -545,6 +545,25 @@ describe('useFileTabs thread scope', () => {
     expect(paths(result.current.tabs)).toEqual([null]);
     expect(stored(tabsStorageKey('ws2')).tabs).toEqual([{ kind: 'file', path: 'z.md', preview: false }]);
     expect(userLocalStorage.getItem(tabsStorageKey('ws'))).toBeNull();
+  });
+});
+
+describe('useFileTabs opens a file in the workspace it moves to', () => {
+  // Regression: a file row naming another workspace (a sent message's
+  // attachment) moves the panel there and opens the file in one update. The
+  // open ran in a layout effect and the strip switch after it, which replaced
+  // the new tab with a blank strip.
+  it('keeps a file opened in the same update that changes the workspace', () => {
+    const { result, rerender } = renderHook(
+      ({ ws, open }: { ws: string; open: string | null }) => {
+        const tabs = useFileTabs(ws, null, { persist: false });
+        useLayoutEffect(() => { if (open) tabs.openFile(open); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+        return tabs;
+      },
+      { initialProps: { ws: 'home', open: null as string | null } },
+    );
+    rerender({ ws: 'nvidia', open: 'charts/drop_cn.png' });
+    expect(activePath(result.current)).toBe('charts/drop_cn.png');
   });
 });
 
