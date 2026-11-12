@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Info } from 'lucide-react';
-import { UPSTREAM_HINT_I18N_KEY, type ErrorLinkSpec, type StructuredError } from '@/utils/rateLimitError';
+import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
 import { parseErrorMessage } from '@/pages/ChatAgent/utils/parseErrorMessage';
 import { usePlanClock } from '@/hooks/useClaudeCodePlan';
 import type { PlanRefusal } from '@/api/model';
 import { planRefusalText } from '@/lib/claudeCodePlan';
 import { cn } from '@/lib/utils';
+import { useModelName } from '@/hooks/useModelName';
+import { UPSTREAM_HINT_I18N_KEY, upstreamFailureCopy, type UpstreamFailureCopy } from '@/lib/upstreamFailure';
 import { ReportDialog } from '@/components/report/ReportDialog';
 import { useReportsEnabled } from '@/hooks/useReportsEnabled';
 
@@ -78,11 +80,14 @@ function PlanRefusalWords({ refusal }: { refusal: PlanRefusal }): React.ReactEle
 
 /** The banner's headline over a failure the server classified, or over a
  *  Claude plan's limit; none for any other, whose message says it all. */
-function headlineOf(err: StructuredError, t: (key: string, opts?: Record<string, unknown>) => string): string | null {
+function headlineOf(
+  err: StructuredError,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  upstream: UpstreamFailureCopy | null,
+): string | null {
   if (err.planRefusal) return t('claudeCodePlan.limitTitle');
   if (err.kind === 'internal') return t('chat.errorInternalHeadline');
-  if (err.kind !== 'upstream') return null;
-  return err.statusCode ? t('chat.errorUpstreamHeadlineStatus', { status: err.statusCode }) : t('chat.errorUpstreamHeadline');
+  return upstream?.headline ?? null;
 }
 
 /** "Report this" and its dialog, for a turn that failed. */
@@ -91,8 +96,10 @@ export function ReportFailure({ error, threadId }: { error: StructuredError; thr
   const enabled = useReportsEnabled();
   const [open, setOpen] = useState(false);
   if (!enabled) return null;
+  // The payer rides on the type so whoever reads the report sees at once
+  // whether the account that failed is the user's own or the service's.
   const type = error.kind === 'upstream'
-    ? `upstream_error${error.statusCode ? ` ${error.statusCode}` : ''}`
+    ? `upstream_error${error.statusCode ? ` ${error.statusCode}` : ''}${error.payer ? ` · ${error.payer}` : ''}`
     : 'internal_error';
   return (
     <>
@@ -120,6 +127,7 @@ export function ReportFailure({ error, threadId }: { error: StructuredError; thr
 
 export function ErrorBanner({ error, className, style, reportThreadId }: ErrorBannerProps): React.ReactElement | null {
   const { t } = useTranslation();
+  const name = useModelName();
   if (!error) return null;
 
   // Nothing failed: the same quiet row as the thread's other notices.
@@ -141,18 +149,22 @@ export function ErrorBanner({ error, className, style, reportThreadId }: ErrorBa
 
   if (typeof error === 'object' && 'message' in error) {
     const err = error as StructuredError;
-    const headline = headlineOf(err, t);
+    // Worded by who pays the provider: see `upstreamFailureCopy`.
+    const upstream = err.kind === 'upstream' && !err.planRefusal ? upstreamFailureCopy(err, t, name) : null;
+    const headline = headlineOf(err, t, upstream);
+    const message = upstream ? (upstream.detail ?? '') : err.message;
     const hasHints = err.kind === 'upstream' && err.hints && err.hints.length > 0;
     return (
       <div className={baseClass} style={baseStyle}>
         <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" style={{ color: 'var(--color-loss)' }} />
         <div className="flex flex-col gap-1 min-w-0">
           {headline && <span className="font-medium">{headline}</span>}
+          {upstream?.source && <span>{upstream.source}</span>}
           {/* A failure the server reports by its outcome alone has no text,
               and its headline is the whole message. */}
-          {(err.message || (err.links && err.links.length > 0)) && (
+          {(message || (err.links && err.links.length > 0)) && (
             <span className="wrap-break-word">
-              {err.planRefusal ? <PlanRefusalWords refusal={err.planRefusal} /> : err.message}
+              {err.planRefusal ? <PlanRefusalWords refusal={err.planRefusal} /> : message}
               {err.links?.map((l, i) => (
                 <React.Fragment key={`${l.url}|${l.label}`}>
                   {i === 0 ? ' ' : <span aria-hidden="true"> · </span>}
