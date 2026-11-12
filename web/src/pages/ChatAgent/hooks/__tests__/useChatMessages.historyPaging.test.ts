@@ -445,7 +445,10 @@ describe('useChatMessages – paging older history', () => {
     mockReplay.mockImplementation(threadWithCallsOf(() => latest));
     const { result } = await mount();
     // The window is the newest call's, turn 80's.
-    const opened = { totalInput: 9000, totalOutput: 700, fromServer: true, lastOutput: 80, total: 880, threshold: 1000 };
+    const opened = {
+      totalInput: 9000, totalOutput: 700, totalCached: null, fromServer: true,
+      lastInput: 800, lastCached: null, total: 880, threshold: 1000, contextLimit: null,
+    };
     expect(result.current.tokenUsage).toEqual(opened);
 
     await act(async () => {
@@ -464,7 +467,8 @@ describe('useChatMessages – paging older history', () => {
     });
     await waitFor(() => expect(result.current.messages.some((m) => m.id === 'history-user-82')).toBe(true));
     expect(result.current.tokenUsage).toEqual({
-      totalInput: 10_640, totalOutput: 862, fromServer: true, lastOutput: 82, total: 902, threshold: 1000,
+      totalInput: 10_640, totalOutput: 862, totalCached: null, fromServer: true,
+      lastInput: 820, lastCached: null, total: 902, threshold: 1000, contextLimit: null,
     });
   });
 
@@ -513,7 +517,7 @@ describe('useChatMessages – paging older history', () => {
       await result.current.handleSendMessage('next question');
     });
     expect(result.current.tokenUsage).toMatchObject({
-      totalInput: 9900, totalOutput: 790, lastOutput: 50, total: 550,
+      totalInput: 9900, totalOutput: 790, lastInput: 500, total: 550,
     });
 
     // The turn's row has landed, and another turn finished elsewhere: the
@@ -550,7 +554,8 @@ describe('useChatMessages – paging older history', () => {
       await result.current.handleSendMessage('next question');
     });
     expect(result.current.tokenUsage).toEqual({
-      totalInput: 12_500, totalOutput: 920, fromServer: true, lastOutput: 50, total: 550, threshold: 1000,
+      totalInput: 12_500, totalOutput: 920, totalCached: null, fromServer: true,
+      lastInput: 500, lastCached: null, total: 550, threshold: 1000, contextLimit: null,
     });
     expect(mockReplay.mock.calls.length).toBe(replays);
   });
@@ -573,7 +578,7 @@ describe('useChatMessages – paging older history', () => {
     await settleMountEffect();
     expect(mockReconnect.mock.calls[0][1]).toBe('run-live');
     await waitFor(() => expect(result.current.tokenUsage).toMatchObject({
-      totalInput: 9900, totalOutput: 790, lastOutput: 50, total: 550,
+      totalInput: 9900, totalOutput: 790, lastInput: 500, total: 550,
     }));
   });
 
