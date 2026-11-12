@@ -37,7 +37,7 @@ class SubscriptionProvider:
     every call the token makes. ``sign_in_feature``, where set, is the feature
     that lets a user start a new sign-in; a connection already stored may
     always sign in again. ``ends_on()`` is the day the deployment set for
-    signing in with it to stop working, until that day passes.
+    signing in with it to stop working.
     """
 
     id: str

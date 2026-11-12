@@ -388,7 +388,7 @@ class ClaudeCodeConfig(BaseModel):
     claude_oauth_ends_on: Optional[date] = Field(
         default=None,
         description="The day the Claude sign-in (claude-oauth) stops working on this deployment; set, the app "
-        "asks the users signed in with it to move to Claude Code",
+        "marks it legacy and asks the users signed in with it to move to Claude Code",
     )
 
 
