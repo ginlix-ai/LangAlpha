@@ -7038,7 +7038,10 @@
       "stepConnect": "Connecting your plan",
       "paste": "Paste",
       "endsOn": "This sign-in ends on {{date}}.",
-      "switchToClaudeCode": "Switch to Claude Code"
+      "switchToClaudeCode": "Switch to Claude Code",
+      "legacy": "Legacy",
+      "legacyName": "{{name}} (legacy)",
+      "useClaudeCode": "Native Claude Code mode is now generally available. Use it instead of this sign-in."
     },
     "grok": {
       "name": "Grok",

@@ -11,7 +11,7 @@ import { useClaudeCodeSetup, useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
-import { useClaudeSignInEnd } from '@/hooks/useClaudeSignInEnd';
+import { useClaudeSignInEnd, useClaudeSignInLifecycle } from '@/hooks/useClaudeSignInEnd';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import {
   CLAUDE_CODE, CLAUDE_CODE_CHOICE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_MODE_LABELS, CLAUDE_CODE_SETUP_STATUS,
@@ -125,6 +125,7 @@ export function ModelAccessSection() {
   const { custody, isLoading: custodyLoading, unread: custodyUnread } = useClaudeCodeCustody();
   const { setup, unread: setupUnread } = useClaudeCodeSetup();
   const signInEnd = useClaudeSignInEnd();
+  const signInLifecycle = useClaudeSignInLifecycle();
   const locale = useLocale();
   const now = useNow();
   const [opened, setSheet] = useState<Sheet | null>(null);
@@ -238,26 +239,35 @@ export function ModelAccessSection() {
     return t('modelAccess.claudeCode.detail');
   };
 
-  /** The Claude sign-in's row says the day it stops working here, with a
-   *  way to Claude Code's view where the server offers Claude Code. */
-  const signInNotice = (p: ConfiguredProvider) => signInEnd && p.provider === 'claude-oauth' && (
-    <>
-      {t('modelAccess.claude.endsOn', { date: signInEnd.date })}
-      {(setup || setupUnread) && (
-        <>
-          {' '}
-          <button
-            type="button"
-            className="tap-target underline underline-offset-2 hover:opacity-80"
-            style={{ color: 'var(--color-text-primary)' }}
-            onClick={() => setSheet({ kind: 'claude-code' })}
-          >
-            {t('modelAccess.claude.switchToClaudeCode')}
-          </button>
-        </>
-      )}
-    </>
-  );
+  /** The Claude sign-in's row says the day it stops working here, and once
+   *  that day has passed, to use Claude Code instead; each with a way to
+   *  Claude Code's view where the server offers Claude Code, and the second
+   *  only there. */
+  const claudeCodeOffered = !!setup || setupUnread;
+  const signInNotice = (p: ConfiguredProvider) => {
+    if (p.provider !== 'claude-oauth') return null;
+    const line = signInEnd ? t('modelAccess.claude.endsOn', { date: signInEnd.date })
+      : signInLifecycle === 'legacy' && claudeCodeOffered ? t('modelAccess.claude.useClaudeCode')
+      : null;
+    return line && (
+      <>
+        {line}
+        {claudeCodeOffered && (
+          <>
+            {' '}
+            <button
+              type="button"
+              className="tap-target underline underline-offset-2 hover:opacity-80"
+              style={{ color: 'var(--color-text-primary)' }}
+              onClick={() => setSheet({ kind: 'claude-code' })}
+            >
+              {t('modelAccess.claude.switchToClaudeCode')}
+            </button>
+          </>
+        )}
+      </>
+    );
+  };
 
   const rowStatus = (p: ConfiguredProvider): AccessStatus =>
     p.state === 'needs_reauth' ? 'needs_reauth' : 'connected';
@@ -277,6 +287,7 @@ export function ModelAccessSection() {
               key={p.provider}
               provider={p.provider}
               name={nameOf(p)}
+              tag={p.provider === 'claude-oauth' && signInLifecycle !== 'active' ? t('modelAccess.claude.legacy') : null}
               detail={subscriptionDetail(p)}
               notice={signInNotice(p)}
               status={rowStatus(p)}

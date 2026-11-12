@@ -6953,7 +6953,10 @@
       "stepConnect": "正在连接您的套餐",
       "paste": "粘贴",
       "endsOn": "此登录方式将于 {{date}} 停用。",
-      "switchToClaudeCode": "切换到 Claude Code"
+      "switchToClaudeCode": "切换到 Claude Code",
+      "legacy": "旧版",
+      "legacyName": "{{name}}（旧版）",
+      "useClaudeCode": "原生 Claude Code 模式已正式上线，请用它替换此登录方式。"
     },
     "grok": {
       "name": "Grok",

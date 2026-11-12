@@ -15,7 +15,8 @@ import type { ProviderGroup } from './providerOptions';
  * server says the user may not start one (`can_sign_in`, which counts a
  * stored sign-in, one waiting to be signed in again included) and none is
  * connected. A status that could not be read lists it: the sign-in routes
- * refuse a user the gate leaves out, with words of their own.
+ * refuse a user the gate leaves out, with words of their own. Once the
+ * deployment set it an end day, it is marked legacy.
  */
 export function SubscriptionChoices({
   planGroups,
@@ -32,6 +33,7 @@ export function SubscriptionChoices({
 }) {
   const { t } = useTranslation();
   const { data: claude, isError: claudeUnread } = useOAuthStatus('claude-oauth');
+  const signInLifecycle = claude?.lifecycle ?? 'active';
   const offered = (provider: SubscriptionProvider) => provider !== 'claude-oauth'
     || configured.has(provider) || claudeUnread || (!!claude && claude.can_sign_in !== false);
   return (
@@ -48,6 +50,7 @@ export function SubscriptionChoices({
                 key={s.provider}
                 markProvider={s.provider}
                 name={t(`modelAccess.${s.key}.name`)}
+                tag={s.provider === 'claude-oauth' && signInLifecycle !== 'active' ? t('modelAccess.claude.legacy') : undefined}
                 note={t(`modelAccess.${s.key}.pickNote`)}
                 connected={configured.has(s.provider)}
                 onPick={() => onPickSignIn(s.provider)}
