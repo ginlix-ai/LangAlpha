@@ -7,6 +7,7 @@ import { downloadWorkspaceFile } from '../utils/api';
 import { onOtherComputer, parseAgentHref } from '../utils/agentPaths';
 import { normalizeFilePath, parseFolderHref, parseWsPath } from '../utils/filePaths';
 import ImageLightbox from './ImageLightbox';
+import { useCapturedImageUrl } from '../contexts/CapturedImagesContext';
 
 // key:path → blob URL of the copy last read. A path is not a version: the agent
 // rewrites a chart in place and shows it again, so the cache only paints at
@@ -76,8 +77,11 @@ function ImageLoadFailed({ name }: { name: string | undefined }) {
   );
 }
 
-function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
+function WorkspaceImage({ src: written, alt, ...props }: WorkspaceImageProps) {
   const folders = useWorkspaceFolders();
+  // The copy the reply showed, once its run says where it was captured; until
+  // then the path, which reads the file as it is now.
+  const src = useCapturedImageUrl(written, folders) ?? written;
   const [lightboxOpen, setLightboxOpen] = useState(false);
   // Safari draws a broken image as a small question mark and drops its alt text.
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
