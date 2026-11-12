@@ -87,16 +87,6 @@ def is_own_key_turn(config: Any) -> bool:
     )
 
 
-def may_use_platform_key(config: Any, *, users_choice: bool) -> bool:
-    """May a client this turn builds run on the platform's key?
-
-    A turn moves onto the platform's key only for a model the user picked, or
-    when the platform already pays for it, so a refused key or subscription
-    never quietly becomes the same model on credits.
-    """
-    return users_choice or not is_own_key_turn(config)
-
-
 async def _resolve_custom_model_byok(
     user_id: str,
     model_name: str,
@@ -803,9 +793,8 @@ async def _resolve_role_clients(
     gets ``main_model`` at the summary level instead, so a summary keeps its
     level, and a keyless role with a set effort gets it at that effort.
     """
-    # A role is never the user's pick of a stand-in, so it stays on the key
-    # the turn runs on.
-    platform_ok = may_use_platform_key(config, users_choice=False)
+    # A turn on the user's own key or subscription never moves onto credits.
+    platform_ok = not is_own_key_turn(config)
 
     def _needs_own_client(role: LLMRole) -> bool:
         """Whether this role has to be materialized rather than left to its name.
@@ -933,33 +922,32 @@ async def _resolve_role_clients(
 
 async def _resolve_fallback_clients(
     config, user_id: str, model_pref: dict, byok_cache: dict,
-    *, is_byok: bool, cache_key: str | None, users_fallbacks: bool,
+    *, is_byok: bool, cache_key: str | None,
     reasoning_effort: str | None = None, fast_mode: bool | None = None,
 ) -> None:
     """Resolve ``config.llm.fallback`` names into client instances in place.
 
-    A turn never moves onto a payer the user did not choose. Fallbacks the
-    user saved (``users_fallbacks``) are their choice, each running as they
-    picked it, on credits included. The deployment's own list is not: on a
-    turn the user's key or subscription pays for, a default fallback they
-    hold no credential for is skipped rather than built on the platform's
-    key (``may_use_platform_key``). On any other turn a SYSTEM fallback
-    without a user key yields a platform client. Custom/unknown fallbacks
-    without a usable key warn + skip.
+    A fallback never mixes our bill with the user's, whoever saved the list.
+    On a turn the user's key or subscription pays for, a fallback they hold no
+    credential for is skipped rather than built on the platform's key
+    (``is_own_key_turn``). On a platform turn a SYSTEM fallback without a
+    user key yields a platform client; one the user holds a key for is still
+    built on it, for a subagent on their key, and the resilience middleware
+    keeps each call to fallbacks its own payer bills. Custom/unknown
+    fallbacks without a usable key warn + skip.
 
     A fallback takes the turn-level overrides, unlike a role: it stands in for
     the model the request named, so "think harder this turn" still applies.
     Everything under that resolves on the fallback's own name, so the primary's
     speed is not charged to a model whose profile did not ask for it.
     """
-    config.fallback_users_choice = users_fallbacks
     fallback_models = config.llm.fallback or []
     if not fallback_models:
         config.fallback_llm_clients = []
         config.fallback_llm_names = []
         return
 
-    platform_ok = may_use_platform_key(config, users_choice=users_fallbacks)
+    platform_ok = not is_own_key_turn(config)
 
     async def _resolve_one(model_name: str):
         try:
@@ -1064,7 +1052,6 @@ async def resolve_clients(
     config, user_id: str, effective_model: str, model_pref: dict,
     subagent_roles: list[LLMRole], *, is_byok: bool, thread_id: str | None,
     reasoning_effort: str | None, fast_mode: bool | None, user_defined: bool,
-    users_fallbacks: bool,
 ) -> None:
     """Build every client this turn can reach, tuned and stamped as it is built.
 
@@ -1080,8 +1067,7 @@ async def resolve_clients(
 
     ``subagent_roles`` are the roles of the subagents this build compiles;
     the role list is built here because both things that read it, the BYOK
-    prefetch and the role resolver, are below this line. ``users_fallbacks``
-    says the fallback list is one the user saved (``select_model``).
+    prefetch and the role resolver, are below this line.
     """
     main_tuning = resolve_turn_tuning(
         model_pref, effective_model,
@@ -1141,7 +1127,7 @@ async def resolve_clients(
         ),
         _resolve_fallback_clients(
             config, user_id, model_pref, byok_cache,
-            is_byok=is_byok, cache_key=thread_id, users_fallbacks=users_fallbacks,
+            is_byok=is_byok, cache_key=thread_id,
             reasoning_effort=reasoning_effort, fast_mode=fast_mode,
         ),
     )

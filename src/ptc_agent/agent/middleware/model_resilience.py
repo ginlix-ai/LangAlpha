@@ -192,10 +192,6 @@ def _model_display_name(model: Any) -> str:
     return type(model).__name__
 
 
-# The ``billing_type`` of a call the user's own credential pays for.
-_OWN_BILLING = frozenset({"byok", "oauth"})
-
-
 def _stamped(model: Any, key: str) -> str | None:
     """A fact ``LLM.get_llm()`` stamped in a client's metadata: its models.json
     name (``manifest_model``), the namespace fallback names are in, or who
@@ -297,7 +293,6 @@ class ModelResilienceMiddleware(AgentMiddleware):
         max_delay: float = 60.0,
         jitter: bool = True,
         compacts_overflow: bool = False,
-        users_fallbacks: bool = False,
     ) -> None:
         super().__init__()
         self.primary_name = primary_name
@@ -305,8 +300,6 @@ class ModelResilienceMiddleware(AgentMiddleware):
         # Repeats only; the model a request targets is dropped per request,
         # as the instance is shared into subagents on other models.
         self.fallbacks = _distinct(list(fallbacks or []), None)
-        # Whether the fallbacks are a list the user saved (see _on_its_payer).
-        self.users_fallbacks = users_fallbacks
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
         self.initial_delay = initial_delay
@@ -518,17 +511,25 @@ class ModelResilienceMiddleware(AgentMiddleware):
     def _on_its_payer(
         self, model: Any, fallbacks: list[tuple[str, Any]]
     ) -> list[tuple[str, Any]]:
-        """A call the user's own key or subscription pays for moves onto the
-        platform's key only through fallbacks the user saved.
+        """A call falls back only onto a model the same party pays for, and a
+        call a subscription pays for falls back nowhere.
 
-        The turn's fallbacks were built for the main model, so on a turn the
-        platform pays for they may run on its key; a subagent on a model of the
-        user's own would otherwise fail over onto credits.
+        The user's own key moves to another of their keys, our credits to
+        another model on credits, never across, whoever saved the list: who
+        pays for a turn stays what the user chose. The turn's list was built
+        for the main model, so a subagent on another payer's model filters it
+        too. A subscription (a ChatGPT, Claude or Grok sign-in, or Claude Code)
+        answers for itself: its limit or outage ends the call with its own
+        card, and the user picks the next model, as Claude Code's plan limit
+        always has.
         """
-        if self.users_fallbacks or _stamped(model, "billing_type") not in _OWN_BILLING:
+        billing = _stamped(model, "billing_type")
+        if billing == "oauth":
+            return []
+        if billing is None:
             return fallbacks
         return [(name, client) for name, client in fallbacks
-                if _stamped(client, "billing_type") != "platform"]
+                if _stamped(client, "billing_type") == billing]
 
     def _classify(self, exc: Exception) -> tuple[int | None, bool]:
         status = extract_status_code(exc)
