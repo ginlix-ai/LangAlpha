@@ -132,7 +132,7 @@ class SubagentContext:
             return entry["provider"] in self.oauth_accounts
         if not self.is_byok:
             return False
-        found, _, _ = await _resolve_custom_model_byok(
+        found, *_ = await _resolve_custom_model_byok(
             self.user_id, name, entry, LLM.get_model_config(),
             _pref_cache=self.model_pref, _byok_cache=self._byok_cache,
         )

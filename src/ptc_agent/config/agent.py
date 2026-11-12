@@ -55,6 +55,19 @@ class CredentialSource(StrEnum):
     NONE = "none"
 
 
+#: Who a model call bills, as the model picker and a failed turn's card name
+#: it. ``local`` is a server on the user's machine, which nobody bills.
+Payer = Literal["subscription", "own_key", "credits", "server_key", "local"]
+
+
+class CredentialPayer(NamedTuple):
+    """Who the turn's credential bills, and the user's account it bills when
+    it is theirs (``DeepSeek``, ``ChatGPT``, ``GLM Coding Plan``)."""
+
+    payer: Payer
+    account: str | None = None
+
+
 class IdleCompactConfig(BaseModel):
     """Compaction of a thread idle after a turn, while its prompt cache is
     warm, on routes whose cache entries live an hour (see
@@ -429,6 +442,8 @@ class AgentConfig(BaseModel):
     credential_source: CredentialSource = Field(
         default=CredentialSource.NONE, exclude=True
     )
+    # Who that credential bills, as a failed turn names it; set beside it.
+    credential_payer: CredentialPayer | None = Field(default=None, exclude=True)
     subsidiary_llm_clients: dict[str, Any] = Field(default_factory=dict, exclude=True)
     # Scaffolding level per role key, for the model that role actually runs.
     # Written alongside the clients above, because a role without a client of

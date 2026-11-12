@@ -30,6 +30,7 @@ from src.server.services.runs.stream_errors import (
     failure_kind_metadata,
     model_call_failure,
     plan_stop_metadata,
+    upstream_failure,
 )
 from src.server.utils.persistence_utils import (
     calculate_execution_time,
@@ -164,17 +165,15 @@ async def assemble_finalize_artifacts(
         if restart:
             persist_metadata[RESTART_INTERRUPTED_META] = True
     if exc is not None:
-        persist_metadata.update(
-            model_call_failure(
-                exc,
-                getattr(
-                    getattr(handler, "agent_config", None), "credential_source", None
-                ),
-            )
-        )
+        config = getattr(handler, "agent_config", None)
+        persist_metadata.update(model_call_failure(exc, config))
         if status == "error":
             kind = failure_kind_metadata(exc)
             persist_metadata.update(kind)
+            if kind.get("error_kind") == "upstream":
+                # Who pays decides the card, so a reload of a run that sent
+                # no frame words it as the live one would have.
+                persist_metadata["upstream"] = upstream_failure(config)
             persist_metadata.update(plan_stop_metadata(exc))
     # The pause's own words, which settling the run's automation relays. A
     # pause without words is stamped null, so settling knows there is

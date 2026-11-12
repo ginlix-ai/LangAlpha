@@ -299,6 +299,8 @@ def _error_item(
         status = metadata.get("error_status_code")
         if kind == "upstream" and isinstance(status, int):
             data["status_code"] = status
+        if kind == "upstream" and isinstance(metadata.get("upstream"), dict):
+            data.update(metadata["upstream"])
     return {"event": "error", "data": data}
 
 
