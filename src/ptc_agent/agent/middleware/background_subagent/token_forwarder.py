@@ -10,7 +10,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
 from ptc_agent.agent.middleware.background_subagent.outcomes import Outcome
-from src.llms.content_utils import extract_reasoning_summary_index
+from src.llms.content_utils import ReasoningSpacer
 from src.server.models.chart_layer import CHART_LAYER_FORWARDED_KEYS
 from src.server.utils.content_normalizer import normalize_text_content
 
@@ -60,12 +60,7 @@ class _SubagentTokenForwarder:
         self.agent_id = agent_id
         self._reasoning_active = False
         self._last_msg_id: str | None = None
-        # Track the OpenAI reasoning summary_text index to separate sections.
-        # When it changes (0→1) a new reasoning section starts; we prepend a
-        # blank line so its `**Title**` header doesn't glue onto the previous
-        # section's prose. Mirrors RunSSEProducer's main-agent path.
-        self._reasoning_block_index: int | None = None
-        self._reasoning_separator_pending = False
+        self._reasoning_spacer = ReasoningSpacer()
         # Whitespace-only reasoning deltas seen before the reasoning section
         # opened, held until visible reasoning follows.
         self._reasoning_whitespace_held = ""
@@ -143,27 +138,11 @@ class _SubagentTokenForwarder:
         msg_id = message_chunk.id or f"sg-{self.tool_call_id}"
 
         # A new assistant message begins a fresh reasoning stream — drop any
-        # carried-over section index / pending separator / held whitespace so
+        # carried-over reasoning section / held whitespace so
         # the first chunk of the new message isn't falsely prefixed.
         if self._last_msg_id is not None and msg_id != self._last_msg_id:
-            self._reasoning_block_index = None
-            self._reasoning_separator_pending = False
+            self._reasoning_spacer.reset()
             self._reasoning_whitespace_held = ""
-
-        # Detect reasoning summary_text index transitions (mirror of the main
-        # streaming handler): when the OpenAI summary index changes (0→1) a new
-        # reasoning section started — queue a separator so its `**Title**` header
-        # lands on its own line instead of gluing onto the previous section's
-        # prose. The flag is pending because the index can arrive before the
-        # chunk that carries the new section's first emittable text.
-        reasoning_idx = extract_reasoning_summary_index(message_chunk.content)
-        if reasoning_idx is not None:
-            if (
-                self._reasoning_block_index is not None
-                and reasoning_idx != self._reasoning_block_index
-            ):
-                self._reasoning_separator_pending = True
-            self._reasoning_block_index = reasoning_idx
 
         # Reasoning content can ride on either ``content`` or
         # ``additional_kwargs.reasoning[_content]`` depending on provider.
@@ -213,14 +192,10 @@ class _SubagentTokenForwarder:
                     self.tool_call_id, self._signal_record(msg_id, "complete")
                 )
                 self._reasoning_active = False
-                # Reasoning ended — reset section tracking for the next stream.
-                self._reasoning_block_index = None
-                self._reasoning_separator_pending = False
+                self._reasoning_spacer.reset()
 
-            # Prepend the blank-line separator queued by a section transition.
-            if content_type == "reasoning" and self._reasoning_separator_pending:
-                text = "\n\n" + text
-                self._reasoning_separator_pending = False
+            if content_type == "reasoning":
+                text = self._reasoning_spacer.space(message_chunk.content, text)
 
             await self.registry.append_captured_event(
                 self.tool_call_id,

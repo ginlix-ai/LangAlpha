@@ -215,20 +215,8 @@ def _extract_text_from_summary(summary: Any) -> Optional[str]:
     return combined_text if combined_text else None
 
 
-def extract_reasoning_summary_index(content: Any) -> Optional[int]:
-    """Extract the summary_text item index from reasoning content.
-
-    OpenAI Response API streams reasoning chunks where each ``summary_text``
-    item carries an ``index`` (0, 1, 2…) identifying its reasoning "thought
-    step". When that index changes across chunks (e.g. 0→1) a new reasoning
-    section has started, so streaming callers insert a blank-line separator
-    before it — otherwise the next section's ``**Title**`` glues onto the end
-    of the previous section's prose. Returns None when the content is not
-    reasoning or carries no summary index.
-
-    Note: the top-level reasoning dict also has an ``index`` field, but that is
-    the position in the content array (always 0) — NOT the thought-step index.
-    """
+def _reasoning_section(content: Any) -> Optional[tuple[Any, int]]:
+    """The (reasoning item, summary part) a streamed chunk belongs to, or None."""
     items = [content] if isinstance(content, dict) else (content if isinstance(content, list) else [])
     for item in items:
         if not isinstance(item, dict) or item.get("type") != "reasoning":
@@ -237,8 +225,37 @@ def extract_reasoning_summary_index(content: Any) -> Optional[int]:
         if isinstance(summary, list):
             for s in summary:
                 if isinstance(s, dict) and "index" in s:
-                    return s["index"]
+                    return item.get("index"), s["index"]
     return None
+
+
+class ReasoningSpacer:
+    """Starts each streamed reasoning section on its own paragraph.
+
+    The OpenAI Responses API splits reasoning into summary parts, each opening
+    with its own ``**Title**``, and one response can hold several reasoning
+    items. ``summary_index`` numbers the parts within one item and starts over
+    at 0 in the next, so a section is the pair (item, part): langchain-openai
+    gives each item its own block ``index``. Without a blank line where the
+    pair changes, the next title glues onto the previous section
+    (``**A****B**``). Decided on the text actually sent, so a chunk that opens
+    a part with no text, or text the stream drops, leaves no state behind.
+    One per reasoning stream; ``reset`` when the stream's reasoning closes.
+    """
+
+    def __init__(self) -> None:
+        self._section: Optional[tuple[Any, int]] = None
+
+    def space(self, content: Any, text: str) -> str:
+        """``text``, the reasoning sent from chunk ``content``, spaced from the last section."""
+        section = _reasoning_section(content)
+        if section is None:
+            return text
+        previous, self._section = self._section, section
+        return "\n\n" + text if previous is not None and section != previous else text
+
+    def reset(self) -> None:
+        self._section = None
 
 
 # ============================================================================
