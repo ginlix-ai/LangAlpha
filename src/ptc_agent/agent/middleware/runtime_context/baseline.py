@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from html import escape
@@ -66,6 +66,8 @@ from ptc_agent.agent.middleware.runtime_context.epoch import (
 )
 from ptc_agent.agent.middleware.runtime_context.harness_blocks import (
     HARNESS_BLOCKS,
+    MCP_SERVERS_BLOCK,
+    SKILLS_BLOCK,
     harness_update_kind,
 )
 from ptc_agent.agent.middleware.runtime_context.profile import (
@@ -99,6 +101,11 @@ from ptc_agent.core.paths import (
 logger = logging.getLogger(__name__)
 
 AGENT_MD_PATH = "/agent.md"
+
+# The sections rendered from a file read, keyed by its read kind: agent.md's,
+# and one per memory tier, ``memory:<tier>``.
+SECTION_AGENT_MD = "agent_md"
+SECTION_MEMORY_PREFIX = "memory:"
 
 
 
@@ -308,13 +315,13 @@ class BaselineContextMiddleware(AgentMiddleware):
         self._model_name = model_name
         self._rebuild_after_updates = max(0, rebuild_after_updates)
         self._read_timeout_s = read_timeout_s
-        # Rendered blocks, memoized per epoch. The memo is what makes
+        # Each block's rendered sections, memoized per epoch. The memo is what makes
         # byte-identity a property of the code rather than of the templates
         # happening to be deterministic. More than one entry because a
         # subagent's instance renders for every run of its definition at once,
         # and the scratchpad is in the key because it is what tells two runs'
         # blocks apart.
-        self._block_cache: dict[tuple[Any, ...], str] = {}
+        self._block_cache: dict[tuple[Any, ...], dict[str, str]] = {}
 
     # -- rendering inputs ---------------------------------------------------
 
@@ -599,7 +606,7 @@ class BaselineContextMiddleware(AgentMiddleware):
         Reads the frozen epoch and nothing else, which is what makes the block
         byte-identical for the life of that epoch.
         """
-        return "\n\n".join(self._render_sections(epoch).values())
+        return block_of(self._render_sections(epoch))
 
     def _render_sections(self, epoch: BaselineEpoch) -> dict[str, str]:
         """Each section of the block, in its fixed order, keyed by what it states.
@@ -644,7 +651,7 @@ class BaselineContextMiddleware(AgentMiddleware):
             )
 
         if epoch.agent_md is not None:
-            parts["agent_md"] = render_template(
+            parts[SECTION_AGENT_MD] = render_template(
                 "envelope/baseline_agentmd.md.j2",
                 path=epoch.agent_md.path or AGENT_MD_PATH,
                 content=epoch.agent_md.text,
@@ -656,7 +663,7 @@ class BaselineContextMiddleware(AgentMiddleware):
             entry = epoch.memory.get(tier)
             if entry is None:
                 continue
-            parts[f"memory:{tier}"] = render_template(
+            parts[f"{SECTION_MEMORY_PREFIX}{tier}"] = render_template(
                 "envelope/baseline_memory.md.j2",
                 path=entry.path or tier,
                 content=entry.text,
@@ -748,33 +755,62 @@ class BaselineContextMiddleware(AgentMiddleware):
         """The block a call is sent for the epoch frozen in ``state``, or ""
         when it fails to render, so the call goes without it: context is never
         worth failing a turn for."""
+        return block_of(self.sent_sections(state))
+
+    def sent_sections(self, state: Any) -> dict[str, str]:
+        """The sections of the block a call is sent, keyed as
+        ``_render_sections`` keys them, for a reader that sizes each; empty
+        where ``sent_block`` is."""
         try:
-            return self.frozen_block(state)[1]
+            epoch = BaselineEpoch.from_state(state_get(state, STATE_BASELINE))
+            return self._cached_sections(epoch)
         except Exception:  # noqa: BLE001
             logger.warning("[Baseline] render failed; sending the call without it", exc_info=True)
-            return ""
+            return {}
 
     def frozen_block(self, state: Any) -> tuple[str, str]:
         """The epoch frozen in ``state`` as one block, and a key naming that
         epoch, for a carrier that has to know whether the model already holds it."""
         epoch = BaselineEpoch.from_state(state_get(state, STATE_BASELINE))
-        return f"{epoch.epoch}:{epoch.built_at}", self._cached_block(epoch)
+        return f"{epoch.epoch}:{epoch.built_at}", block_of(self._cached_sections(epoch))
 
-    def _cached_block(self, epoch: BaselineEpoch) -> str:
+    def _cached_sections(self, epoch: BaselineEpoch) -> dict[str, str]:
         scratchpad = epoch.blocks.get("scratchpad")
         key = (epoch.epoch, epoch.built_at, scratchpad.text if scratchpad else None)
-        block = self._block_cache.get(key)
-        if block is None:
-            block = self._render_block(epoch)
+        sections = self._block_cache.get(key)
+        if sections is None:
+            sections = self._render_sections(epoch)
             if len(self._block_cache) >= _BLOCK_CACHE_SIZE:
                 self._block_cache.pop(next(iter(self._block_cache)))
-            self._block_cache[key] = block
-        return block
+            self._block_cache[key] = sections
+        return sections
 
 
 # ---------------------------------------------------------------------------
 # Reading and rendering helpers (kept out of the class: pure over their inputs)
 # ---------------------------------------------------------------------------
+
+
+def block_of(sections: Mapping[str, str]) -> str:
+    """The one block ``sections`` are sent as."""
+    return "\n\n".join(sections.values())
+
+
+#: The part of the context panel a section counts under, by its key; any other
+#: section is the environment the agent runs in.
+_SECTION_PARTS = {
+    MCP_SERVERS_BLOCK: "mcp",
+    SKILLS_BLOCK: "skills",
+    SECTION_AGENT_MD: "memory",
+    SECTION_MEMO: "memory",
+}
+
+
+def section_part(key: str) -> str:
+    """The part of the context a section keyed ``key`` (``_render_sections``) is shown under."""
+    if key.startswith(SECTION_MEMORY_PREFIX):
+        return "memory"
+    return _SECTION_PARTS.get(key, "environment")
 
 
 

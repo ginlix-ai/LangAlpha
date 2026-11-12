@@ -45,6 +45,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolCall, ToolMessage
+from langchain_core.messages import SystemMessage as PromptMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
@@ -90,7 +91,8 @@ from ptc_agent.agent.claude_code.tools_bridge import (
     tool_specs,
 )
 from ptc_agent.agent.main_state import MainAgentState
-from ptc_agent.agent.middleware.compaction.utils import stamp_compaction_summary
+from ptc_agent.agent.middleware.compaction import parts as context_parts
+from ptc_agent.agent.middleware.compaction.utils import count_tokens_claude, stamp_compaction_summary
 from ptc_agent.agent.pending_calls import pending_calls
 from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
@@ -813,6 +815,31 @@ class ClaudeTurn:
                                transcript_note=self.compaction.transcript_note(self.thread_key, state, self.checkpoint_ns))
         return _pinned_after(writes, self.current_pin())
 
+    async def ahead_parts(self, state: ClaudeCodeState) -> dict[str, int]:
+        """What the thread's next run sends ahead of its messages, in tokens
+        by part: the prompt and tools of the pin it launches on, which are all
+        the CLI is given ahead of them.
+
+        Estimated as Claude counts (``count_tokens_claude``) rather than asked
+        of the CLI, whose ``/context`` answers either from character counts,
+        about a third low on this prompt, or by sending each category to the
+        token-count API on the user's login from a CLI started for the
+        purpose. The baseline is no part here: it goes in a turn's prompt,
+        among the messages.
+        """
+        pin, _ = self._launch_pin(state)
+        prompt = pin.get("system_prompt")
+        return await context_parts.ahead_parts(PromptMessage(prompt) if prompt else None, pin.get("tools"), {},
+                                               model=None, counter=count_tokens_claude)
+
+    def _launch_pin(self, state: ClaudeCodeState) -> tuple[SessionPin, SessionPin | None]:
+        """The pin the next run launches on, and the session's own, if it has
+        a session: its own, unless it has none or it sends this build's prefix."""
+        records = state.get("claude_session") or {}
+        kept = records.get("pinned") if records.get("session_id") else None
+        current = self.current_pin()
+        return (current if not kept or same_pin(kept, current) else kept), kept
+
     def opening(self, state: ClaudeCodeState) -> tuple[SessionPin, Prompt | None]:
         """What the run starts Claude on: the session's own pin, unless the
         session has none (a new session, or one from before sessions kept
@@ -823,9 +850,7 @@ class ClaudeTurn:
         key, block = self._baseline_due(state)
         prompt = turn_prompt(state, baseline=block)
         self._session = records.get("session_id")
-        kept = records.get("pinned") if self._session else None
-        current = self.current_pin()
-        pin = current if not kept or same_pin(kept, current) else kept
+        pin, kept = self._launch_pin(state)
         sent = {"baseline": key} if prompt is not None and block else {}
         self._fresh = {"pinned": pin, **sent}
         self._owed = sent if pin == kept else self._fresh

@@ -1424,6 +1424,16 @@ async def offload_thread(thread_id: str, x_user_id: CurrentUserId):
     return await trigger_offload(thread_id, user_id=x_user_id)
 
 
+@router.get("/{thread_id}/context")
+async def get_thread_context(thread_id: str, x_user_id: ReadUserId):
+    """What the thread's next model call sends ahead of its messages, in
+    tokens by part. Counted on request, for the composer's context panel."""
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    from src.server.handlers.thread_context import read_context_parts
+
+    return await read_context_parts(thread_id, user_id=x_user_id)
+
+
 @router.get("/{thread_id}/turns")
 async def get_thread_turns(thread_id: str, x_user_id: ReadUserId):
     """

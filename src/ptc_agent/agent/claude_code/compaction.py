@@ -66,14 +66,14 @@ from ptc_agent.agent.claude_code.session import (
 )
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
 from ptc_agent.agent.middleware.compaction.rebuild import NextSummary, cold_threshold
-from ptc_agent.agent.middleware.compaction.utils import attachment_tokens, stamp_context_threshold
+from ptc_agent.agent.middleware.compaction.usage_event import stamp_usage
+from ptc_agent.agent.middleware.compaction.utils import attachment_tokens
 from ptc_agent.agent.prompts import release
 from ptc_agent.agent.transcript import Window
 from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_note, transcript_target
 from src.config.settings import get_compaction_timeout
 from src.llms.cache_markers import ttl_seconds
 from src.llms.claude_code import ClaudeTurnFailed, PlanStopped
-from src.llms.token_counter import extract_token_usage
 from src.server.utils.error_sanitization import sanitize_error_text
 
 if TYPE_CHECKING:
@@ -567,10 +567,6 @@ def report_usage(ai: AIMessage, threshold: int) -> None:
     call, so the live ring and replay show the threshold the CLI compacts at."""
     if not threshold:
         return
-    usage = extract_token_usage(ai)
-    input_tokens, output_tokens = usage.get("input_tokens", 0), usage.get("output_tokens", 0)
-    if input_tokens <= 0:
-        return
-    stamp_context_threshold(ai, threshold)
-    context_signal("token_usage", "complete", input_tokens=input_tokens, output_tokens=output_tokens,
-                   total_tokens=input_tokens + output_tokens, threshold=threshold)
+    fields = stamp_usage(ai, threshold)
+    if fields is not None:
+        context_signal("token_usage", "complete", **fields)

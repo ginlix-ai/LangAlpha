@@ -26,7 +26,7 @@ to be migrated.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
@@ -38,6 +38,9 @@ from src.llms.endpoints import (
 from src.llms.anthropic_betas import client_betas
 from src.llms.operator_channel import tool_change_betas
 from src.llms.reasoning_lineage import ROUTE_ENDPOINT_SEP, lineage_for_route
+
+if TYPE_CHECKING:
+    from langchain_anthropic import ChatAnthropic
 
 COMPACTION_BETA = "compact-2026-09-04"
 
@@ -106,8 +109,7 @@ def native_kind(model: Any) -> NativeKind | None:
     request that carries a block, so a client that does not send it can never
     take one.
     """
-    route = (getattr(model, "metadata", None) or {}).get("provider_route")
-    if isinstance(route, str) and ROUTE_ENDPOINT_SEP in route:
+    if _repointed(model):
         return None
     from langchain_anthropic import ChatAnthropic
     from langchain_openai import ChatOpenAI
@@ -115,7 +117,7 @@ def native_kind(model: Any) -> NativeKind | None:
     from src.llms.extension.codex import ChatCodexOpenAI
 
     if isinstance(model, ChatAnthropic):
-        if not is_official_anthropic_endpoint(model.anthropic_api_url):
+        if not _on_anthropic_api(model):
             return None
         return "anthropic" if COMPACTION_BETA in client_betas(model) else None
     if not (isinstance(model, ChatOpenAI) and model.output_version == "responses/v1"):
@@ -127,6 +129,44 @@ def native_kind(model: Any) -> NativeKind | None:
     if type(model) is ChatCodexOpenAI and url_host(model.openai_api_base) == _CODEX_HOST:
         return "openai"
     return None
+
+
+def token_counting_client(model: Any, *, timeout: float) -> ChatAnthropic | None:
+    """A client that counts a request's tokens as ``model``'s provider does,
+    or None where the provider counts none: Claude on Anthropic's own API
+    under an API key, where the count endpoint is free and exact. Not another
+    host that speaks the same wire, which may not serve it, and not a
+    subscription's token, whose requests carry an identity block the count
+    would go without.
+
+    A copy of ``model`` with a client of its own, because a turn's client
+    retries a request for minutes and a count is waited on: each is sent
+    once and gives up within ``timeout`` seconds.
+    """
+    from src.llms.extension.anthropic_oauth import ChatAnthropicOAuth
+
+    if _repointed(model) or isinstance(model, ChatAnthropicOAuth) or not _on_anthropic_api(model):
+        return None
+    if "claude" not in (model.model or "").lower():
+        return None
+    counting = model.model_copy(update={"max_retries": 0, "default_request_timeout": timeout})
+    # A copy carries the clients its source has built, with their retries.
+    for built in ("_client", "_async_client", "_client_params"):
+        counting.__dict__.pop(built, None)
+    return counting
+
+
+def _repointed(model: Any) -> bool:
+    """Whether a ``base_url`` override stamped ``model``'s route elsewhere."""
+    route = (getattr(model, "metadata", None) or {}).get("provider_route")
+    return isinstance(route, str) and ROUTE_ENDPOINT_SEP in route
+
+
+def _on_anthropic_api(model: Any) -> bool:
+    """Whether ``model`` is an Anthropic client sent to Anthropic's own host."""
+    from langchain_anthropic import ChatAnthropic
+
+    return isinstance(model, ChatAnthropic) and is_official_anthropic_endpoint(model.anthropic_api_url)
 
 
 def compaction_settings(
