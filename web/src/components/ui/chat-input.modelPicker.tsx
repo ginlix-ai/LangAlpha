@@ -472,7 +472,7 @@ function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, 
           <span className="flex min-w-0 flex-1 items-center gap-2">
             <MarkedModelName provider={provider} name={name} nameClassName="min-w-0 truncate" />
           </span>
-          <PayerBadge payer={payer} />
+          <PayerBadge payer={payer} markLegacy={false} />
           {tag && <span className="flex-none text-xs text-(--color-text-tertiary)">{tag}</span>}
           <Check aria-hidden className={cn('h-4 w-4 flex-none text-(--color-accent-primary)', !selected && 'invisible')} />
           {selected && <span className="sr-only">{t('chat.modelSelector.current')}</span>}

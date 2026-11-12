@@ -320,8 +320,8 @@ claude_code:
   # set in Settings.
   cli_memory_mb: 800
   # The day (YYYY-MM-DD) the Claude sign-in stops working on this deployment.
-  # Set, the app tells the users signed in with it and points them at Claude
-  # Code; unset, it says nothing.
+  # Set, the app marks the sign-in legacy, tells the users signed in with it
+  # and points them at Claude Code; unset, it says nothing.
   claude_oauth_ends_on: null
 
 

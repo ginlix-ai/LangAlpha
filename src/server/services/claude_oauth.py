@@ -55,10 +55,8 @@ SETUP_TOKEN_MIN_LIFETIME_S = 360 * 86_400
 
 
 def sign_in_ends_on() -> date | None:
-    """The day the deployment set for the Claude sign-in to stop working,
-    until that day has passed."""
-    ends_on = get_claude_code_config().claude_oauth_ends_on
-    return ends_on if ends_on and ends_on >= datetime.now(timezone.utc).date() else None
+    """The day the deployment set for the Claude sign-in to stop working."""
+    return get_claude_code_config().claude_oauth_ends_on
 
 
 # --- PKCE ---

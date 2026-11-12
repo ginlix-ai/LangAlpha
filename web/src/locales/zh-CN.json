@@ -225,8 +225,12 @@
         "tradeoffs": "OpenAI 的摘要是加密的，只有 OpenAI 模型能读取，所以压缩卡片显示的是对话的简要记录。把这样的对话切换到其他服务商的模型后，新模型拿到的就是这份记录，其中不含早先的工具结果。"
       },
       "claude_code_runtime": {
-        "label": "Claude Code 运行时（预览版）",
+        "label": "Claude Code 模式",
         "description": "通过 Claude Code 运行你的 Claude 对话，用量计入你自己的 Claude 套餐。它用专为 LangAlpha 生成的 setup token 登录。Claude Code 在你自己的电脑上运行；如果此服务器提供该选项，也可以在云端计算机上运行，使用你的 setup token。请在设置的“模型接入”中选择运行位置。"
+      },
+      "claude_oauth": {
+        "label": "Claude 登录（旧版）",
+        "description": "通过登录你的 Claude 账户使用 Claude Pro 或 Max 套餐，由 LangAlpha 直接调用 Claude。Claude Code 模式将取代它。"
       },
       "a_share_pack": {
         "label": "A 股市场包",
@@ -6949,7 +6953,10 @@
       "stepConnect": "正在连接您的套餐",
       "paste": "粘贴",
       "endsOn": "此登录方式将于 {{date}} 停用。",
-      "switchToClaudeCode": "切换到 Claude Code"
+      "switchToClaudeCode": "切换到 Claude Code",
+      "legacy": "旧版",
+      "legacyName": "{{name}}（旧版）",
+      "useClaudeCode": "原生 Claude Code 模式已正式上线，请用它替换此登录方式。"
     },
     "grok": {
       "name": "Grok",

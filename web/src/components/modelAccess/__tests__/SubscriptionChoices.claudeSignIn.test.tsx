@@ -112,6 +112,20 @@ describe('SubscriptionChoices: Claude sign-in', () => {
     expect(names()).toEqual(['ChatGPT', 'Claude Code', 'Grok']);
   });
 
+  it.each(['ending', 'legacy'] as const)('marks the Claude sign-in Legacy once the deployment set it an end day (%s)', (lifecycle) => {
+    status.data = { ...claude(true), lifecycle };
+    render([], true);
+    const row = screen.getByText('Claude', { selector: '.truncate' }).closest('button') as HTMLElement;
+    expect(row).toHaveTextContent('Legacy');
+    expect(screen.getAllByText('Legacy')).toHaveLength(1);
+  });
+
+  it('marks nothing where the deployment set no end day', () => {
+    status.data = { ...claude(true), lifecycle: 'active' };
+    render([], true);
+    expect(screen.queryByText('Legacy')).toBeNull();
+  });
+
   it('lists Claude Code right under the Claude sign-in where both show', () => {
     status.data = claude(true);
     render([], true);

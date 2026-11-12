@@ -52,11 +52,16 @@ export interface OAuthStatus {
   needs_reauth_at: string | null;
   last_error_code: string | null;
   /** Whether the user may start a sign-in (null from a server that does not
-   *  say, which lets everyone), and the day (YYYY-MM-DD) signing in stops
-   *  working here, where the deployment set one. */
+   *  say, which lets everyone), where signing in stands here, and while it is
+   *  `ending` the day (YYYY-MM-DD) it stops working. */
   can_sign_in: boolean | null;
   ends_on: string | null;
+  lifecycle: SignInLifecycle;
 }
+
+/** `active` where the deployment set no end day, `ending` until it passes,
+ *  `legacy` after. */
+export type SignInLifecycle = 'active' | 'ending' | 'legacy';
 
 export interface DeviceCode {
   user_code: string;
@@ -103,6 +108,7 @@ function normalizeStatus(data: Partial<OAuthStatus> | null | undefined): OAuthSt
     last_error_code: data?.last_error_code ?? null,
     can_sign_in: data?.can_sign_in ?? null,
     ends_on: data?.ends_on ?? null,
+    lifecycle: data?.lifecycle ?? 'active',
   };
 }
 

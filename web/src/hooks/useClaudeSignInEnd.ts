@@ -1,3 +1,4 @@
+import type { SignInLifecycle } from '@/api/oauth';
 import { useOAuthStatus } from '@/hooks/useConfiguredProviders';
 import { useLocale } from '@/hooks/useLocale';
 import { formatCalendarDay } from '@/lib/format';
@@ -13,4 +14,11 @@ export function useClaudeSignInEnd(): { endsOn: string; date: string } | null {
   const locale = useLocale();
   const endsOn = data?.connected ? data.ends_on : null;
   return endsOn ? { endsOn, date: formatCalendarDay(endsOn, locale) } : null;
+}
+
+/** Where the Claude sign-in stands here, whether or not the user is signed in
+ *  with it: once the deployment set an end day, every place that shows it
+ *  marks it legacy. */
+export function useClaudeSignInLifecycle(): SignInLifecycle {
+  return useOAuthStatus('claude-oauth').data?.lifecycle ?? 'active';
 }

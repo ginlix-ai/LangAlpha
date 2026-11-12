@@ -87,8 +87,20 @@ async def test_the_claude_status_carries_the_day_it_ends_until_it_passes(flag, s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "day, lifecycle",
+    [(None, "active"), (_TODAY + timedelta(days=18), "ending"), (_TODAY, "ending"), (_TODAY - timedelta(days=1), "legacy")],
+)
+@pytest.mark.parametrize("row", [None, {"account_id": "a"}])
+async def test_the_claude_status_says_where_the_sign_in_stands(flag, stored, monkeypatch, day, lifecycle, row):
+    stored.return_value = row
+    _ends_on(monkeypatch, day)
+    assert (await oauth_app.oauth_status("claude", "u1")).lifecycle == lifecycle
+
+
+@pytest.mark.asyncio
 async def test_other_sign_ins_are_open_to_everyone_and_carry_no_end(flag, stored, monkeypatch):
     _ends_on(monkeypatch, _TODAY + timedelta(days=18))
     status = await oauth_app.oauth_status("codex", "u1")
-    assert status.can_sign_in is True and status.ends_on is None
+    assert status.can_sign_in is True and status.ends_on is None and status.lifecycle == "active"
     flag.assert_not_awaited()
