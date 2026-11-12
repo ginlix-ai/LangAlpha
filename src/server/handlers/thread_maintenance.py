@@ -53,6 +53,8 @@ class ThreadAgent:
     #: Pinned to the thread's workspace folder; None without a sandbox.
     backend: Any
     project: ProjectContext | None
+    #: Whether the thread runs on Claude Code, whose graph runs a CLI session.
+    claude_code: bool = False
 
     async def ask(self, ask, values: dict | None = None):
         """``ask`` answered by the agent's own model chain
@@ -80,6 +82,19 @@ class ThreadAgent:
         with project_bound(self.project):
             turn = self.graph.turn({"configurable": {"thread_id": self.thread_id}})
             return await turn.compact_between_turns(self.state.values)
+
+    async def ahead_parts(self) -> dict[str, int]:
+        """What the thread's next call sends ahead of its messages, in tokens
+        by part: its Claude Code session's (``ClaudeTurn.ahead_parts``), else
+        as the agent's own model chain counts them (``Parts``)."""
+        from ptc_agent.agent.middleware.compaction import Parts
+        from ptc_agent.core.project_context import project_bound
+
+        if not self.claude_code:
+            return await self.ask(Parts())
+        with project_bound(self.project):
+            turn = self.graph.turn({"configurable": {"thread_id": self.thread_id}})
+        return await turn.ahead_parts(self.state.values)
 
     async def write(self, values: dict, verb: str, *, saver: Any = None) -> bool:
         """Write ``values`` where the state was read (``_update_graph_state``),
@@ -243,6 +258,7 @@ async def _thread_agent(
         workspace_id=workspace_id,
         backend=backend,
         project=inputs.project,
+        claude_code=isinstance(getattr(effective_config, "llm_client", None), ClaudeCodeTarget),
     )
 
 
@@ -554,12 +570,16 @@ def _claude_code_failure(e: ClaudeTurnFailed, model: str) -> HTTPException:
     return HTTPException(status_code=status, detail=f"Failed to trigger compaction: {sanitize_error_text(str(e))}")
 
 
-async def _compaction_config(thread_id: str, user_id: str | None) -> tuple[Any, AgentRole]:
+async def _compaction_config(
+    thread_id: str, user_id: str | None, *, clear_dead: bool = True
+) -> tuple[Any, AgentRole]:
     """The config and role a manual compaction runs on, resolved as the
     thread's next turn would be. A summary changes no answer, so it runs on
     the default rather than wait on a reconnect, except that only Claude Code
     compacts a Claude Code session: a thread holding one of its models falls
-    back neither to the default nor to the base config."""
+    back neither to the default nor to the base config. A read passes
+    ``clear_dead=False`` and leaves a removed model on the thread
+    (``thread_model.turn_model``)."""
     agent_cfg = setup.agent_config
     if not (user_id and agent_cfg is not None):
         return agent_cfg, "analyst"
@@ -575,6 +595,7 @@ async def _compaction_config(thread_id: str, user_id: str | None) -> tuple[Any, 
             held=meta.get("llm_model"),
             fall_back=not on_claude_code,
             resolve=await _resolver(user_id, thread_id, meta, route),
+            clear_dead=clear_dead,
         )
     except HTTPException:
         # 402 insufficient credits, 403 revoked key, etc. are intentional

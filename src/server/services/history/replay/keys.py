@@ -65,6 +65,8 @@ def projection_sources() -> list[Path]:
             _SRC / "server/contracts/turn_kinds.py",
             _SRC / "llms/content_utils.py",
             _SRC / "llms/token_counter.py",
+            # The token_usage payload, built where the live emitter builds it.
+            _SRC / "ptc_agent/agent/middleware/compaction/usage_event.py",
         ]
     )
 

@@ -48,7 +48,7 @@ import type { ComposerDraft } from '@/components/ui/chat-input.types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
 import { createRequestKeyTracker, sendFingerprint, type SendOutcome } from './utils/requestKey';
 import { commentSendOf, openerMatchText, readArtifactCommentsShown } from '../components/artifactComments/artifactCommentSend';
-import { withServerTotals, withoutServerTotals } from './utils/contextWindowEvent';
+import { withServerTotals, withoutServerTotals } from '../session/tokenUsage';
 import { BUSY_REFUSAL_KEYS, admissionRefusalWords, createForkRefusalRecovery, forkRefusalMessage, isBusyCode, isRecoverableRetryRefusal, isStaleForkRefusal, type BusyCode, type ForkCut } from './utils/forkRefusal';
 import { createEditDraftStore, sameDraftMessage, type EditDraft } from './utils/editDrafts';
 import { settleStoppedBubble } from '../session/stream/stopBubble';

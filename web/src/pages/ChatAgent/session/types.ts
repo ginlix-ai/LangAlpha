@@ -13,25 +13,12 @@ import type { DecisionTarget } from './interrupts/toolApprovalCard';
 import type { StreamRefs, UpdateSubagentCard } from './streamRefs';
 import type { RetryNotice } from './stream/autoRetry';
 import type { NextSummary, ThreadTokenTotals } from '../utils/api/messages';
+import type { TokenUsage } from './tokenUsage';
 
 // --- Internal types for useChatMessages ---
 
 /** React state setter for messages array. */
 type SetMessages = React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-
-/** Token usage state for context window progress ring. The totals are the
- *  thread's: the server's count when it loaded, plus live calls since. The
- *  rest is the newest call's. */
-interface TokenUsage {
-  totalInput: number;
-  totalOutput: number;
-  /** Whether the totals started from the server's count. Without one they
-   *  sum the calls the view has loaded, the closest it can come. */
-  fromServer: boolean;
-  lastOutput: number;
-  total: number;
-  threshold: number;
-}
 
 /** Pending HITL interrupt state. */
 interface PendingInterrupt {
@@ -80,6 +67,10 @@ interface SSEEvent {
   output_tokens?: number;
   total_tokens?: number;
   threshold?: number;
+  /** Cache-read input tokens of a `token_usage` call, held in `input_tokens`. */
+  cached_tokens?: number;
+  /** The model's context window, on a `token_usage` call. */
+  context_limit?: number;
   original_message_count?: number;
   /** About how many tokens a summary being written has written so far. */
   summary_tokens?: number;

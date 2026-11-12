@@ -221,6 +221,17 @@ html {
   --color-ext-post: #60A5FA;
   --color-success: #3FB950;
   --color-success-soft: rgba(63, 185, 80, 0.12);
+  /* The parts of the context window, in the composer's context panel: a hue
+     each, in the order the context is sent, so a legend row finds its stretch
+     of the bar. Identity only, never state. Neighbours are checked apart for
+     color-deficient readers on bg-elevated, each theme with its own steps. */
+  --color-context-system: #3987E5;
+  --color-context-tools: #D95926;
+  --color-context-mcp: #199E70;
+  --color-context-skills: #C98500;
+  --color-context-memory: #D55181;
+  --color-context-environment: #008300;
+  --color-context-conversation: #9085E9;
   --color-accent-light: #F2B67C;
   --color-btn-primary-bg: #ECECEA;
   --color-btn-primary-text: #1A1B1D;
@@ -435,6 +446,13 @@ html {
   --color-ext-post: #2563EB;
   --color-success: #1A7F37;
   --color-success-soft: rgba(26, 127, 55, 0.08);
+  --color-context-system: #2A78D6;
+  --color-context-tools: #EB6834;
+  --color-context-mcp: #1BAF7A;
+  --color-context-skills: #EDA100;
+  --color-context-memory: #E87BA4;
+  --color-context-environment: #008300;
+  --color-context-conversation: #6250D6;
   --color-accent-light: #E09A57;
   /* Confirm/approve buttons in chat — deliberately ink, not the accent, so
      approving a request never reads as the same affordance as a brand action. */

@@ -72,7 +72,7 @@ from src.llms.provider_compaction import (
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY
-from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, IdleCompact, IdleSkipped, Measure, asked
+from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, IdleCompact, IdleSkipped, Measure, Parts, asked
 from ptc_agent.agent.middleware.compaction.types import CompactionState, OffloadSettings
 from ptc_agent.agent.middleware.compaction.fitting import Fit, Fitted, reported_usage
 from ptc_agent.agent.middleware.compaction.compact import (
@@ -92,6 +92,9 @@ from ptc_agent.agent.middleware.compaction.measure import (
     sent_ahead,
     stamp_context_growth,
 )
+from ptc_agent.agent.middleware.compaction.model import max_input_tokens
+from ptc_agent.agent.middleware.compaction.parts import ahead_parts
+from ptc_agent.agent.middleware.runtime_context.baseline import block_of
 from ptc_agent.agent.middleware.compaction.summarize import (
     is_other_model,
     summary_text,
@@ -121,10 +124,10 @@ from ptc_agent.agent.middleware.compaction.utils import (
     provider_cutoff,
     read_ahead,
     stamp_compaction_summary,
-    stamp_context_threshold,
     target_cost,
     with_summary_text,
 )
+from ptc_agent.agent.middleware.compaction.usage_event import stamp_usage
 from ptc_agent.agent.middleware.compaction.offloading import (
     is_idle,
     offload_view,
@@ -325,8 +328,8 @@ class CompactionMiddleware(AgentMiddleware):
         self._carries: tuple[WindowCarry, ...] = ()
         # When a due prompt is rebuilt; see with_turn_start_rebuilds.
         self._rebuilds: StalePinRebuilds = StalePinRebuilds()
-        # The baseline block a call is sent; see with_baseline.
-        self._baseline: Callable[[Any], str] | None = None
+        # The baseline sections a call is sent; see with_baseline.
+        self._sections: Callable[[Any], Mapping[str, str]] | None = None
 
     @classmethod
     def for_agent(
@@ -381,14 +384,13 @@ class CompactionMiddleware(AgentMiddleware):
         started (``stamp_request_start``)."""
         handler = stamping(handler)
         ensure_message_ids(request.messages)
-        view = await self.view(request.messages, request.state)
-        await read_ahead(view)
         between = asked()
         if between is not None:
-            between.answer = await self._between_turns(request, handler, view, between.ask)
+            between.answer = await self._between_turns(request, handler, between.ask)
             between.answered = True
             return ModelResponse(result=[])
 
+        view = await self._read_view(request)
         estimate = self._estimate(request.model)
         reading = await context_tokens(request.state, view, estimate, functools.partial(self._ahead, request))
         tokens = reading.tokens
@@ -585,7 +587,11 @@ class CompactionMiddleware(AgentMiddleware):
         its system message too, where the stack has one (``with_baseline``).
         Built off the loop, since every tool schema is converted and
         serialized."""
-        return sent_ahead(request, self._baseline(request.state) if self._baseline is not None else "")
+        return sent_ahead(request, block_of(self._baseline_sections(request.state)))
+
+    def _baseline_sections(self, state: Any) -> Mapping[str, str]:
+        """The baseline's sections a call with ``state`` is sent (``with_baseline``)."""
+        return self._sections(state) if self._sections is not None else {}
 
     def _cutoff(self, view: list[AnyMessage], model: Any) -> int:
         """Where a summary of ``view`` for ``model`` ends (``keep_cutoff``)."""
@@ -603,10 +609,19 @@ class CompactionMiddleware(AgentMiddleware):
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-        view: list[AnyMessage],
         ask: Ask,
-    ) -> Compaction | HumanMessage | int | None:
+    ) -> Compaction | HumanMessage | dict[str, int] | int | None:
         """What a call between turns asks for (see ``between_turns``)."""
+        if isinstance(ask, Parts):
+            # Ahead of the view: the parts are of what is sent before it.
+            return await ahead_parts(
+                request.system_message,
+                request.tools,
+                self._baseline_sections(request.state),
+                model=request.model,
+                counter=self._estimate(request.model).counter,
+            )
+        view = await self._read_view(request)
         if isinstance(ask, Measure):
             ahead = functools.partial(self._ahead, request)
             return (await context_tokens(request.state, view, self._estimate(request.model), ahead)).tokens
@@ -863,7 +878,7 @@ class CompactionMiddleware(AgentMiddleware):
         first call is past once it answers (see ``abefore_agent``), an arm lasts one
         call (see ``rebuild``) unless ``update`` sets it again, and the main agent's
         final answer leaves the idle clock (``idle.idle_clock``)."""
-        answer, input_tokens, output_tokens = self._extract_token_usage(response, reading)
+        answer, input_tokens, output_tokens = self._extract_token_usage(request, response, reading)
         opened = {"_run_first_call": False} if request.state.get("_run_first_call") else {}
         disarmed = {"_rebuild_armed": None} if request.state.get("_rebuild_armed") else {}
         cached_input = max(input_tokens - spared, 0)
@@ -898,28 +913,29 @@ class CompactionMiddleware(AgentMiddleware):
         )
 
     def _extract_token_usage(
-        self, response: ModelResponse, reading: ContextReading | None = None
+        self,
+        request: ModelRequest,
+        response: ModelResponse,
+        reading: ContextReading | None = None,
     ) -> tuple[AIMessage | None, int, int]:
         """The newest AI message that reports usage and its (input, output)
-        tokens, emitted to the frontend with the threshold they fill and
-        stamped with it for replay, and with its growth from ``reading``, or
-        (None, 0, 0) when none does."""
+        tokens, or (None, 0, 0) when none does. The message is stamped with
+        what replay shows of its call and emitted to the frontend as replay
+        will read it (``stamp_usage``), and with its growth from ``reading``."""
         usage = reported_usage(response)
         if usage is None:
             return (None, 0, 0)
         msg, input_tokens, output_tokens = usage
         logger.debug("[Compaction] Token usage: input=%d, output=%d", input_tokens, output_tokens)
-        stamp_context_threshold(msg, self._token_threshold)
+        # A fallback's answer came from another model than ``request``'s, whose
+        # window is not known here, so it carries none.
+        fallback = FALLBACK_KEY in (msg.response_metadata or {})
+        limit = None if fallback else max_input_tokens(request.model)
+        fields = stamp_usage(msg, self._token_threshold, limit)
         if reading is not None:
             stamp_context_growth(msg, reading, input_tokens)
-        self._emit_context_signal(
-            "token_usage",
-            "complete",
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens,
-            threshold=self._token_threshold,
-        )
+        if fields is not None:
+            self._emit_context_signal("token_usage", "complete", **fields)
         return (msg, input_tokens, output_tokens)
 
     # =========================================================================
@@ -1031,15 +1047,17 @@ class CompactionMiddleware(AgentMiddleware):
         main._rebuilds = rebuilds
         return main
 
-    def with_baseline(self, block: Callable[[Any], str]) -> CompactionMiddleware:
+    def with_baseline(self, sections: Callable[[Any], Mapping[str, str]]) -> CompactionMiddleware:
         """This middleware, counting the baseline block a call is sent,
-        ``block`` of the state, where nothing measured the context: the
-        context stack appends it to the system message further in, so the
-        request this middleware reads does not hold it yet. For the main
-        agent's stack, whose baseline sits inside compaction.
+        ``sections`` of the state joined, where nothing measured the
+        context: the context stack appends it to the system message further
+        in, so the request this middleware reads does not hold it yet. A
+        ``Parts`` ask counts each under the part of the context it belongs
+        to. For the main agent's stack, whose baseline sits inside
+        compaction.
         """
         main = copy.copy(self)
-        main._baseline = block
+        main._sections = sections
         return main
 
     def with_scratchpad_notes(self, notes_dir: str) -> CompactionMiddleware:
@@ -1063,6 +1081,13 @@ class CompactionMiddleware(AgentMiddleware):
             transcript=self._transcript_target(),
             shell=shell_reads_transcripts(self._backend),
         )
+
+    async def _read_view(self, request: ModelRequest) -> list[AnyMessage]:
+        """The view of ``request``'s messages, read ahead for the counts
+        taken of it (``read_ahead``)."""
+        view = await self.view(request.messages, request.state)
+        await read_ahead(view)
+        return view
 
     def _transcript_target(self) -> TranscriptTarget | None:
         """This agent's transcript, or None where nothing serves one."""

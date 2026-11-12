@@ -741,16 +741,55 @@ def test_token_usage_projected_after_message_content():
 def test_token_usage_carries_the_threshold_its_call_ran_under():
     # The turn's own preset, not the deployment default: the threshold is per
     # turn and only the checkpoint outlives it.
-    from ptc_agent.agent.middleware.compaction.utils import stamp_context_threshold
+    from ptc_agent.agent.middleware.compaction.usage_event import stamp_usage
 
     message = AIMessage(
         content="answer",
         id="ai-1",
         usage_metadata={"input_tokens": 900, "output_tokens": 100, "total_tokens": 1000},
     )
-    stamp_context_threshold(message, 300000)
+    stamp_usage(message, 300000)
     items = _sse([message])
     assert items[1]["data"]["threshold"] == 300000
+
+
+def test_token_usage_carries_what_its_call_read_from_cache_and_its_models_window():
+    # The ring's cache rate and window are all replay has of the call: the
+    # cache read from the message's own usage, the window stamped on it.
+    from ptc_agent.agent.middleware.compaction.usage_event import stamp_usage
+
+    message = AIMessage(
+        content="answer",
+        id="ai-1",
+        usage_metadata={
+            "input_tokens": 900,
+            "output_tokens": 100,
+            "total_tokens": 1000,
+            "input_token_details": {"cache_read": 700},
+        },
+    )
+    live = stamp_usage(message, 300_000, 200_000)
+    data = _sse([message])[1]["data"]
+    assert data["cached_tokens"] == 700
+    assert data["context_limit"] == 200_000
+    # The live event is what replay reads back.
+    assert live.items() <= data.items()
+
+
+def test_a_call_reporting_no_input_is_neither_stamped_nor_emitted():
+    from ptc_agent.agent.middleware.compaction.usage_event import stamp_usage
+
+    message = AIMessage(content="answer", id="ai-1")
+
+    assert stamp_usage(message, 300_000, 200_000) is None
+    assert message.response_metadata == {}
+
+
+def test_token_usage_of_a_call_saved_before_the_stamp_has_no_window():
+    usage = {"input_tokens": 900, "output_tokens": 100, "total_tokens": 1000}
+    data = _sse([AIMessage(content="answer", id="ai-1", usage_metadata=usage)])[1]["data"]
+    assert data["cached_tokens"] == 0
+    assert "context_limit" not in data
 
 
 def _compacted(message, summary_id, text="condensed", count=30):

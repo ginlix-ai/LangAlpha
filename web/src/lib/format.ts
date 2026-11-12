@@ -133,6 +133,8 @@ export const compactNumber = createFormatter({ notation: 'compact', maximumFract
 export const grouped = createFormatter({ maximumFractionDigits: 3 });
 export const grouped2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 export const integer = createFormatter({ maximumFractionDigits: 0 });
+// A share as a whole percent, from a ratio: `0.284 → "28%"`.
+export const percent = createFormatter({ style: 'percent', maximumFractionDigits: 0 });
 
 // The quote-strip variants. Two fixed decimals so a column of figures keeps
 // its width from one tick to the next; grouping off because a stock price

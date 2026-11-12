@@ -315,8 +315,9 @@ export { decodeReportBackSignal, shouldArmReportBack } from '../reportBackSignal
 
 export type { ReportBackSignal } from '../reportBackSignal';
 
-/** Tokens a thread has used, as the server counts them. */
-export type ThreadTokenTotals = { input_tokens: number; output_tokens: number };
+/** Tokens a thread has used, as the server counts them. `cached_tokens`, the
+ *  cache reads within `input_tokens`, is absent from a server before it. */
+export type ThreadTokenTotals = { input_tokens: number; output_tokens: number; cached_tokens?: number };
 
 /**
  * What a thread's next send summarizes before it runs (`next_summary` on the

@@ -45,7 +45,12 @@ class NamedModel:
 
 
 async def turn_model(
-    user_id: str, thread_id: str, *, named: str | None, held: str | None
+    user_id: str,
+    thread_id: str,
+    *,
+    named: str | None,
+    held: str | None,
+    clear_dead: bool = True,
 ) -> str | None:
     """The model this turn runs: the one it names, else the one the thread
     holds; None runs the account default.
@@ -58,6 +63,9 @@ async def turn_model(
     shows the default rather than resending it. A clear that loses to a pick
     saved since the send read the thread runs the pick, as the send's own
     write would yield to it.
+
+    A read of what the next turn would run passes ``clear_dead=False``: it
+    gets the same answer and leaves the clearing to that turn.
     """
     if named and named != held:
         return named  # nothing of the thread's at stake; the resolver judges it
@@ -67,6 +75,8 @@ async def turn_model(
     prefs = await user_models.get_model_preference(user_id)
     if model_resolves(prefs, model):
         return model
+    if not clear_dead:
+        return named
     if await threads_write.clear_thread_llm_model(thread_id, model):
         logger.info(
             f"[CHAT] Cleared thread {thread_id}'s model {model!r}: no longer available"
@@ -120,6 +130,7 @@ async def resolve_turn_config(
     held: str | None,
     fall_back: bool,
     resolve: Callable[[str | None], Awaitable[_Config]],
+    clear_dead: bool = True,
 ) -> _Config:
     """Resolve what a turn on this thread runs: ``turn_model``'s choice, or,
     with ``fall_back``, the account default when the thread's own model cannot
@@ -129,9 +140,10 @@ async def resolve_turn_config(
     reconnect the account or add the key; a person gets the refusal, which says
     what to fix. A send and a manual compaction both come through here, so a
     summary runs on the model and credential the thread's turns do. ``resolve``
-    maps a model name (None for the account default) to the caller's config.
+    maps a model name (None for the account default) to the caller's config,
+    and ``clear_dead`` is ``turn_model``'s.
     """
-    model = await turn_model(user_id, thread_id, named=named, held=held)
+    model = await turn_model(user_id, thread_id, named=named, held=held, clear_dead=clear_dead)
     try:
         return await resolve(model)
     except HTTPException as exc:

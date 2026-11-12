@@ -13,6 +13,9 @@ from dataclasses import dataclass
 
 _CHANGED = "_changed"
 
+MCP_SERVERS_BLOCK = "mcp_servers"
+SKILLS_BLOCK = "skills"
+
 
 @dataclass(frozen=True, slots=True)
 class HarnessBlock:
@@ -26,12 +29,12 @@ class HarnessBlock:
 #: Every harness block, keyed by read kind, in the order the baseline renders
 #: them. Adding one is an entry here plus its template.
 HARNESS_BLOCKS: dict[str, HarnessBlock] = {
-    "mcp_servers": HarnessBlock(
+    MCP_SERVERS_BLOCK: HarnessBlock(
         template="envelope/baseline_mcp_servers.md.j2",
         label="<mcp-servers>",
         subject="MCP server list",
     ),
-    "skills": HarnessBlock(
+    SKILLS_BLOCK: HarnessBlock(
         template="envelope/baseline_skills.md.j2",
         label="<skills>",
         subject="skills manifest",

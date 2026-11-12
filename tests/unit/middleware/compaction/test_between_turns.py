@@ -25,6 +25,7 @@ from ptc_agent.agent.middleware.compaction import (
     Compaction,
     HandOff,
     Measure,
+    Parts,
     ask_between_turns,
     record_offloads,
 )
@@ -322,7 +323,7 @@ class TestMeasure:
         summarizer = Summarizer(_model(), limit=100_000, counter=_chars)
         compaction = CompactionMiddleware(summarizer, token_threshold=10**9, keep_tokens=2)
         if baseline:
-            compaction = compaction.with_baseline(lambda state: baseline)
+            compaction = compaction.with_baseline(lambda state: {"workspace": baseline})
         agent = create_agent(model=_model(), tools=list(tools), middleware=[compaction])
         after = {**state, **record_offloads(state, set(), {"r1"})}
         tokens = await ask_between_turns(agent, after, Measure(), thread_id="t-1")
@@ -364,3 +365,24 @@ class TestMeasure:
         summarized = {**after, "_summarization_event": {"summary_message": HumanMessage("s", id="s-1"), "cutoff_index": 4}}
 
         assert next_summary(summarized, settled_at=None) is None
+
+
+class TestParts:
+    """The context panel's count of what the next call sends ahead of its
+    messages, asked for between turns and answered without a model call."""
+
+    async def test_the_parts_are_counted_from_the_agents_own_request(self):
+        lookup = StructuredTool.from_function(lambda query: query, name="lookup", description="d" * 300)
+        summarizer = Summarizer(_model(), limit=100_000, counter=_chars)
+        compaction = CompactionMiddleware(summarizer, token_threshold=10**9, keep_tokens=2)
+        compaction = compaction.with_baseline(lambda state: {"workspace": "w" * 40, "skills": "k" * 70})
+        model = _model(AIMessage("never sent for"))
+        agent = create_agent(model=model, tools=[lookup], system_prompt="s" * 200, middleware=[compaction])
+        state = {"messages": [HumanMessage("q0", id="h0"), AIMessage("r0", id="a0")]}
+
+        parts = await ask_between_turns(agent, state, Parts(), thread_id="t-1")
+
+        assert list(parts) == ["system", "tools", "skills", "environment"]
+        assert parts["tools"] > 300
+        # Nothing was sent to the model for it.
+        assert len(list(model.messages)) == 1

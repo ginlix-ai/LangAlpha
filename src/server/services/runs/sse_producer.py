@@ -568,7 +568,8 @@ class RunSSEProducer:
                                         "original_message_count", "source",
                                         "summary_tokens", "truncated_count", "error",
                                         "kind", "offloaded_args", "offloaded_reads",
-                                        "threshold"):
+                                        "threshold", "cached_tokens",
+                                        "context_limit"):
                                 if key in event_data:
                                     cw_data[key] = event_data[key]
                             if event_data.get("action") == "token_usage":

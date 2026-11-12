@@ -10,11 +10,15 @@ import pytest_asyncio
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-def _call(model: str, input_tokens: int, output_tokens: int) -> dict:
+def _call(model: str, input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> dict:
     """One model call, as the per-call tracker records it."""
     return {
         "model_name": model,
-        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_tokens": cached_tokens,
+        },
         "run_id": str(uuid.uuid4()),
     }
 
@@ -57,10 +61,10 @@ async def test_totals_sum_every_usage_row_of_the_thread(thread):
     # later cut, a tool-only run and a second turn.
     await _write(
         thread_id, ws_id, user_id, run_1,
-        [_call("model-a", 1000, 50), _call("model-a", 1200, 70), _call("model-b", 300, 9)],
+        [_call("model-a", 1000, 50), _call("model-a", 1200, 70, 900), _call("model-b", 300, 9)],
     )
     await _write(
-        thread_id, ws_id, user_id, run_1, [_call("model-b", 400, 20)], msg_type="task"
+        thread_id, ws_id, user_id, run_1, [_call("model-b", 400, 20, 250)], msg_type="task"
     )
     await _write(
         thread_id, ws_id, user_id, run_cut, [_call("model-a", 2000, 5)], status="error"
@@ -75,6 +79,7 @@ async def test_totals_sum_every_usage_row_of_the_thread(thread):
     assert totals == {
         "input_tokens": 1000 + 1200 + 300 + 400 + 2000 + 5000,
         "output_tokens": 50 + 70 + 9 + 20 + 5 + 300,
+        "cached_tokens": 900 + 250,
     }
 
 
@@ -92,10 +97,12 @@ async def test_totals_leave_out_the_live_runs_own_row(thread):
     assert await get_thread_token_totals(thread_id, live_run_id=live) == {
         "input_tokens": 1060,
         "output_tokens": 16,
+        "cached_tokens": 0,
     }
     assert await get_thread_token_totals(thread_id) == {
         "input_tokens": 1460,
         "output_tokens": 20,
+        "cached_tokens": 0,
     }
 
 
@@ -106,4 +113,5 @@ async def test_a_thread_without_usage_rows_reads_zero(thread):
     assert await get_thread_token_totals(thread_id) == {
         "input_tokens": 0,
         "output_tokens": 0,
+        "cached_tokens": 0,
     }

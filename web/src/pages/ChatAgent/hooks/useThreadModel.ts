@@ -139,6 +139,8 @@ export function useThreadModel({
     // summary only it can read: that model writes it out for the new one
     // first, which the next send waits for.
     onSaved: (saved) => {
+      // What the next call sends is the new model's.
+      if (liveThreadId) void queryClient.invalidateQueries({ queryKey: queryKeys.threads.context(liveThreadId) });
       const to = saved.llm_model || startsOn;
       if (!saved.summary_handoff || !to) return;
       toast({ description: t('chat.threadModel.handoff', { model: modelLabel(to, metadata) }) });
@@ -175,6 +177,8 @@ export function useThreadModel({
     // The turn may have been another model's reply, which moves the Default
     // a Home thread starts on.
     void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeChiefOfStaff(liveThreadId) });
+    // A turn can change what its next call sends ahead of the messages.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.threads.context(liveThreadId) });
   }, [isLoading, liveThreadId, queryClient]);
 
   const dismissOffer = useCallback(() => {

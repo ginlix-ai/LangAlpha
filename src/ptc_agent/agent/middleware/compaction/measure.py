@@ -94,10 +94,19 @@ def sent_ahead(request: ModelRequest, appended: str = "") -> list[Any]:
     ahead = [request.system_message] if request.system_message is not None else []
     if appended:
         ahead.append(SystemMessage(appended))
-    if request.tools:
-        schemas = [tool if isinstance(tool, dict) else convert_to_anthropic_tool(tool) for tool in request.tools]
-        ahead.append(SystemMessage(json.dumps(schemas, ensure_ascii=False, default=str)))
+    schemas = tool_schemas(request.tools)
+    if schemas is not None:
+        ahead.append(schemas)
     return ahead
+
+
+def tool_schemas(tools: Sequence[Any] | None) -> SystemMessage | None:
+    """``tools``' schemas as one message of their JSON, in the shape Claude
+    is sent them, or None without tools."""
+    if not tools:
+        return None
+    schemas = [tool if isinstance(tool, dict) else convert_to_anthropic_tool(tool) for tool in tools]
+    return SystemMessage(json.dumps(schemas, ensure_ascii=False, default=str))
 
 
 def measured_tokens(state: Mapping[str, Any]) -> int | None:

@@ -27,15 +27,14 @@ from ptc_agent.agent.middleware.background_subagent.workflow.emitter import (
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     compaction_summary,
-    context_threshold,
     parse_summary_message,
 )
+from ptc_agent.agent.middleware.compaction.usage_event import token_usage_fields
 from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from ptc_agent.agent.tools.computer_reach import ran_elsewhere
 from ptc_agent.agent.transcript.classify import STEERING_MARKERS, human_kind
 from src.llms.claude_code import PLAN_NOTICE_KEY
 from src.llms.content_utils import extract_content_with_type
-from src.llms.token_counter import extract_token_usage
 from src.server.utils.content_normalizer import normalize_text_content
 from src.server.utils.error_sanitization import (
     sanitize_error_text as _sanitize_error_text,
@@ -331,22 +330,11 @@ def _project_ai_message(
             HistoryEvent("tool-call", agent, message_id, {"tool_calls": tool_calls})
         )
 
-    # Mirror the live token_usage emitter (compaction middleware): same
-    # extractor, same >0 gate, same total — parity by construction.
-    usage = extract_token_usage(message)
-    input_tokens = usage.get("input_tokens", 0)
-    if input_tokens > 0:
-        output_tokens = usage.get("output_tokens", 0)
-        usage_data: dict[str, Any] = {
-            "action": "token_usage",
-            "signal": "complete",
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        }
-        threshold = context_threshold(message)
-        if threshold is not None:
-            usage_data["threshold"] = threshold
+    # The live token_usage emitter (compaction middleware) builds its event
+    # from the same fields, so the two cannot part.
+    usage = token_usage_fields(message)
+    if usage is not None:
+        usage_data = {"action": "token_usage", "signal": "complete", **usage}
         events.append(HistoryEvent("context-window", agent, message_id, usage_data))
     # A reply the Claude plan ran out during: its notice, after it, as live.
     notice = (message.response_metadata or {}).get(PLAN_NOTICE_KEY)
