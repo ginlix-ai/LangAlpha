@@ -38,7 +38,10 @@ from src.server.contracts.turn_kinds import (
 from src.server.database import conversation as qr_db
 from src.server.database.conversation.threads_write import remember_thread_llm_model
 from src.server.services.llm.thread_model import NamedModel
-from src.server.services.runs.pending_input import cache_clock_attempt
+from src.server.services.runs.pending_input import (
+    PENDING_INPUT_KEY,
+    cache_clock_attempt,
+)
 from src.server.database.runs import lifecycle as tl_db
 from src.server.database.runs.hook_jobs import SURFACE_META
 from src.server.models.chat import CommandReport, summarize_hitl_response_map
@@ -398,12 +401,11 @@ class PriorThread(NamedTuple):
     """
 
     last_turn_at: Optional[datetime] = None
-    # The surface the thread is bound to (the one it was created on, or a
-    # channel identity stamped onto it later). Stands in for the turn's own
-    # surface on a notification, which arrives without one (``turn_surface``).
-    platform: Optional[str] = None
     # The surface the latest attempt recorded it ran on (``surface_stamp``).
-    # Stands in for a resume's, which continues that attempt.
+    # Stands in for a resume's, which continues that attempt, and for a
+    # notification's, which reports where the user last was: for one, the
+    # latest attempt that stated its rules into the history the notification
+    # inherits (``_VOICELESS_ATTEMPT_KEYS``).
     attempt_platform: Optional[str] = None
     # When the thread's newest attempt settled, by the run ledger, passing over
     # one whose input never reached the graph (``cache_clock_attempt``). A
@@ -411,6 +413,13 @@ class PriorThread(NamedTuple):
     # stamped nothing in the checkpoint, so compaction's cold-cache estimate
     # reads this as well.
     last_run_settled_at: Optional[datetime] = None
+
+
+#: Attempts a notification's surface passes over. An automation's run states
+#: no surface and records none, and an attempt whose input never reached the
+#: graph stated nothing at all, so the rules a notification inherits are those
+#: of the attempt before either, and its surface has to agree with them.
+_VOICELESS_ATTEMPT_KEYS = ("automation_execution_id", PENDING_INPUT_KEY)
 
 
 def _fork_predecessor_turn(request: ChatRequest) -> Optional[int]:
@@ -421,10 +430,9 @@ def _fork_predecessor_turn(request: ChatRequest) -> Optional[int]:
 
 
 async def _read_prior_thread(
-    thread_id: str, *, before_turn: Optional[int] = None
+    thread_id: str, *, before_turn: Optional[int] = None, notification: bool = False
 ) -> PriorThread:
-    """The prior-turn time, the surface the thread is bound to, and the
-    surface its latest attempt ran on.
+    """The prior-turn time and the surface the thread's latest attempt ran on.
 
     The time is the latest attempt row's, never the thread's ``updated_at``: a
     rename or a share bumps the thread stamp between turns, a concurrent POST
@@ -436,6 +444,9 @@ async def _read_prior_thread(
     An edit or a regenerate forks from an earlier turn, and the history the
     model reads ends there, so its prior turn is the attempt before the fork
     rather than the newest attempt on the thread.
+
+    A ``notification`` takes its surface from the latest attempt that stated
+    the rules it inherits (``_VOICELESS_ATTEMPT_KEYS``).
     """
     reads = [
         qr_db.get_thread_by_id(thread_id),
@@ -448,6 +459,14 @@ async def _read_prior_thread(
     try:
         row, attempt, *newest = await asyncio.gather(*reads)
         clock = await cache_clock_attempt(thread_id, newest[0] if newest else attempt)
+        voiced = attempt
+        if notification and any(
+            key in ((attempt or {}).get("metadata") or {})
+            for key in _VOICELESS_ATTEMPT_KEYS
+        ):
+            voiced = await tl_db.get_latest_attempt(
+                thread_id, before_turn=before_turn, without_key=_VOICELESS_ATTEMPT_KEYS
+            )
     except Exception:
         logger.debug("thread runtime-context read failed", exc_info=True)
         return PriorThread()
@@ -460,12 +479,10 @@ async def _read_prior_thread(
         # A naive stamp would raise against the envelope's aware clock.
         last_turn_at = stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
 
-    platform = row.get("platform")
-    ran_on = ((attempt or {}).get("metadata") or {}).get(SURFACE_META)
+    ran_on = ((voiced or {}).get("metadata") or {}).get(SURFACE_META)
     attempt_platform = ran_on.get("platform") if isinstance(ran_on, dict) else None
     return PriorThread(
         last_turn_at=last_turn_at,
-        platform=platform if isinstance(platform, str) and platform else None,
         attempt_platform=(
             attempt_platform
             if isinstance(attempt_platform, str) and attempt_platform
@@ -494,7 +511,9 @@ async def ensure_thread(
     status to resume and nothing to create or title.
     """
     prior = await _read_prior_thread(
-        thread_id, before_turn=_fork_predecessor_turn(request)
+        thread_id,
+        before_turn=_fork_predecessor_turn(request),
+        notification=is_notification_turn(request),
     )
     if row_ensured:
         await qr_db.update_thread_status(thread_id, "in_progress")
@@ -645,9 +664,14 @@ def turn_surface(request: ChatRequest, prior: PriorThread) -> Optional[str]:
     arrive without one, and continues the attempt it answers, so it runs where
     that attempt ran, as a retry does: the thread's bound surface would make
     the answer to a web turn's question on a channel's thread the channel's.
-    A notification arrives without one too and continues work the thread
-    already had in hand, so it takes the surface the thread is bound to. Any
-    other turn without a surface is a plain web-app turn, which has none.
+    A notification arrives without one too and reports to the user where they
+    last were, so it takes the latest attempt's surface as well. Each
+    notification records the surface it took, so a chain of them keeps the
+    surface of the last turn a person sent, rather than the one the thread
+    was born on: the rules it runs under are the last ones stated, and the two
+    have to agree, so it passes over an automation's run and an attempt that
+    never reached the graph, neither of which stated a surface's rules. Any other turn without a surface is a plain web-app turn,
+    which has none.
     """
     return parse_surface(_turn_platform(request, prior)).name
 
@@ -656,10 +680,8 @@ def _turn_platform(request: ChatRequest, prior: PriorThread) -> Optional[str]:
     """The surface :func:`turn_surface` names, as the request spells it."""
     if request.platform:
         return request.platform
-    if request.hitl_response:
+    if request.hitl_response or is_notification_turn(request):
         return prior.attempt_platform
-    if is_notification_turn(request):
-        return prior.platform
     return None
 
 

@@ -47,6 +47,18 @@ async def test_a_fork_predecessor_is_the_latest_attempt_of_an_earlier_turn(
 
 
 @pytest.mark.asyncio
+async def test_several_keys_each_pass_over_the_attempts_holding_them(
+    mock_db_connection, mock_cursor
+):
+    await tl_db.get_latest_attempt("t-1", without_key=("a", "b"))
+
+    sql = _executed_sql(mock_cursor)
+    params = mock_cursor.execute.call_args.args[1]
+    assert sql.count("NOT (COALESCE(metadata, '{}'::jsonb) ? %s)") == 2
+    assert params == ("t-1", "a", "b")
+
+
+@pytest.mark.asyncio
 async def test_batch_variant_picks_per_thread_row_by_run_seq(
     mock_db_connection, mock_cursor
 ):

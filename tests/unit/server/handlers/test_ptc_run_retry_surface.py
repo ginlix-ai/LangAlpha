@@ -125,7 +125,7 @@ async def test_a_retry_of_a_channel_turn_runs_on_the_channel():
 @pytest.mark.asyncio
 async def test_a_retry_of_a_web_turn_on_a_channel_thread_stays_on_the_web():
     stamped, context, _ = await _start(
-        _retry(), PriorThread(platform="slack"), failed_run={"metadata": {}}
+        _retry(), PriorThread(attempt_platform="slack"), failed_run={"metadata": {}}
     )
 
     assert (context.platform, context.surface_rules) == (None, None)
