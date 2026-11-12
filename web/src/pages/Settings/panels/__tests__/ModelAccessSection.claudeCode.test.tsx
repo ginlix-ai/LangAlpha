@@ -30,6 +30,7 @@ vi.mock('@/hooks/useProviderCatalog', () => ({
 }));
 vi.mock('@/hooks/useConfiguredProviders', () => ({
   useConfiguredProviders: () => ({ providers: [], withdrawn: [], configuredSet: new Set(), statusLoading: false, statusError: false }),
+  useOAuthStatus: () => ({ data: undefined }),
 }));
 vi.mock('@/api/model', () => ({ saveClaudeCodeToken: vi.fn(), removeClaudeCodeToken: vi.fn() }));
 // Pinned, since the no-token detail differs by mode and VITE_HOST_MODE can come from web/.env or another file's stub.
@@ -78,7 +79,7 @@ describe('ModelAccessSection: Claude Code', () => {
     expect(within(row()).getByText('Not connected')).toBeInTheDocument();
     fireEvent.click(within(row()).getByRole('button', { name: 'Add setup token' }));
     expect(screen.getByRole('dialog', { name: 'Add a setup token' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Setup token')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sign in with Claude' })).toBeInTheDocument();
   });
 
   // A check that never answers must not hold the token out of reach.
@@ -106,8 +107,7 @@ describe('ModelAccessSection: Claude Code', () => {
     openView();
     expect(within(row()).getByText('Connected')).toBeInTheDocument();
     fireEvent.click(within(row()).getByRole('button', { name: 'Replace' }));
-    expect(screen.getByRole('dialog', { name: 'Replace setup token' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Replace setup token' })).getByRole('button', { name: 'Close' }));
     clickRemove(row());
     expect(screen.getByRole('dialog', { name: 'Remove the Claude Code setup token?' })).toBeInTheDocument();
   });
@@ -196,8 +196,7 @@ describe('ModelAccessSection: Claude Code', () => {
 
   it('opens the sheet from a link, and closing it drops the link', () => {
     renderWithProviders(<ModelAccessSection />, { route: CLAUDE_CODE_TOKEN_URL });
-    expect(screen.getByRole('dialog', { name: 'Add a setup token' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Add a setup token' })).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 

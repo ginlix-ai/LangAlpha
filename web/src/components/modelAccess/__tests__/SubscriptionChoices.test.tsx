@@ -1,10 +1,16 @@
 /**
- * Settings lists Claude Code under the Claude sign-in, with where it stands;
- * the setup wizard, which passes nothing for it, does not.
+ * Settings lists Claude Code under the Claude sign-in (listed here as the
+ * server lets the user start one), with where it stands; the setup wizard,
+ * which passes nothing for it, does not.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
+
+vi.mock('@/hooks/useConfiguredProviders', () => ({
+  useOAuthStatus: () => ({ data: { connected: false, state: 'disconnected', can_sign_in: true } }),
+}));
+
 import { SubscriptionChoices } from '../SubscriptionChoices';
 
 describe('SubscriptionChoices', () => {

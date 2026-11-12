@@ -45,6 +45,12 @@ def _connection_locks(monkeypatch):
     monkeypatch.setattr(oauth_app, "connection_change", change)
 
 
+@pytest.fixture(autouse=True)
+def _claude_sign_in_granted(monkeypatch):
+    """Every user here may start a Claude sign-in (the ``claude_oauth`` flag)."""
+    monkeypatch.setattr(oauth_app, "user_feature_enabled", AsyncMock(return_value=True))
+
+
 # --- Reading the device token endpoint -----------------------------------------
 
 

@@ -25,6 +25,7 @@ vi.mock('@/hooks/useProviderCatalog', () => ({
 }));
 vi.mock('@/hooks/useConfiguredProviders', () => ({
   useConfiguredProviders: () => ({ providers: [], withdrawn: [], configuredSet: new Set(), statusLoading: false, statusError: false }),
+  useOAuthStatus: () => ({ data: undefined }),
 }));
 vi.mock('@/api/model', () => ({ getClaudeCodeCustody: vi.fn(), setClaudeCodeCustody: vi.fn() }));
 
@@ -85,9 +86,11 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     await openClaudeCode();
     expect(await screen.findByRole('radiogroup', { name: 'Where Claude Code runs' })).toBeInTheDocument();
     expect(ownComputers()).toBeChecked();
-    expect(ownComputers()).toHaveAccessibleDescription(/^Claude Code runs on a computer of yours with its own setup token, for every workspace, including those on cloud computers\..*LangAlpha keeps no copy of the token\.$/);
+    expect(ownComputers()).toHaveAccessibleDescription("A computer of yours runs it, with a setup token LangAlpha doesn't keep.");
+    expect(within(screen.getByRole('region', { name: 'Where Claude Code runs' })).getByRole('link', { name: /Learn more/ }))
+      .toHaveAttribute('href', 'https://docs.langalpha.ai/concepts/claude-code/#where-it-runs-and-when-it-can-run');
     expect(stored()).not.toBeChecked();
-    expect(stored()).toHaveAccessibleDescription(/^For workspaces on Medium or larger cloud computers, Claude Code runs on the cloud computer itself.*Usage counts against your Claude plan\.$/);
+    expect(stored()).toHaveAccessibleDescription('Medium or larger cloud computers run it. LangAlpha keeps your setup token encrypted.');
   });
 
   it('shows the pick as made, and that it is saving, until the server answers', async () => {
@@ -105,7 +108,7 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     await openClaudeCode();
     await screen.findByRole('radiogroup', { name: 'Where Claude Code runs' });
     expect(stored()).not.toBeChecked();
-    expect(stored()).toHaveAccessibleDescription(/^For workspaces on Medium or larger cloud computers, Claude Code runs on the cloud computer itself\. .*LangAlpha sends your setup token/);
+    expect(stored()).toHaveAccessibleDescription(/^Medium or larger cloud computers run it\./);
     unmount();
     render({ mode: 'stored', offered: [] });
     await openClaudeCode();
@@ -117,7 +120,7 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     saved.current = true;
     render({ mode: 'stored', offered: [], refusal: 'needs_own_computer' });
     await openClaudeCode();
-    expect(await screen.findByText(/^Claude Code on cloud computers is paused on this server\./)).toBeInTheDocument();
+    expect(await screen.findByText(/^Paused on cloud computers on this server\./)).toBeInTheDocument();
     expect(stored()).toBeChecked();
     fireEvent.click(screen.getByText('On your own computers'));
     expect(leaveDialog()).toBeInTheDocument();
@@ -182,7 +185,7 @@ describe('ModelAccessSection: Claude Code on cloud computers', () => {
     render({ mode: 'stored' });
     await openClaudeCode();
     fireEvent.click(await screen.findByText('On your own computers'));
-    expect(leaveDialog()).toHaveTextContent(/LangAlpha deletes your stored setup token now, and Claude Code turns using it stop\./);
+    expect(leaveDialog()).toHaveTextContent(/LangAlpha deletes it now, and turns using it stop\./);
     expect(leaveDialog()!.closest('[inert]')).toBeNull();
     expect(setClaudeCodeCustody).not.toHaveBeenCalled();
     fireEvent.click(within(leaveDialog()!).getByRole('button', { name: 'Delete token' }));

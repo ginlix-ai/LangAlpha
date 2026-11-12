@@ -361,6 +361,8 @@ def test_status_disconnected():
         "expires_at": None,
         "needs_reauth_at": None,
         "last_error_code": None,
+        "can_sign_in": True,
+        "ends_on": None,
     }
 
 
