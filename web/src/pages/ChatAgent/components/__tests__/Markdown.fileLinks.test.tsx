@@ -68,6 +68,29 @@ describe('Markdown file links', () => {
  * sibling's folder opens that workspace, and a rooted path through the
  * workspace's own folder is a path in the workspace itself.
  */
+describe('Markdown image links', () => {
+  const images = (html: string) => html.match(/<img /g)?.length ?? 0;
+
+  it('shows an image linked without the `!` as the image', () => {
+    expect(images(renderHtml('[chart](charts/drop_cn.png)'))).toBe(1);
+  });
+
+  // Regression: a reply listed its files as links and embedded the chart
+  // below them, and the chart showed twice.
+  it('keeps a link to an image the text also embeds a link', () => {
+    const html = renderHtml(
+      '- [drop_cn.png](charts/drop_cn.png)\n- [drop_cn.html](charts/drop_cn.html)\n\n![chart](charts/drop_cn.png)',
+    );
+    expect(images(html)).toBe(1);
+    expect(html).toContain('>drop_cn.png</a>');
+  });
+
+  it('matches a name with a space, written in angle brackets', () => {
+    const html = renderHtml('- [Q3 chart.png](<charts/Q3 chart.png>)\n\n![chart](<charts/Q3 chart.png>)');
+    expect(images(html)).toBe(1);
+  });
+});
+
 describe('Markdown links through a workspace folder', () => {
   const folders: ComputerFolders = {
     dirName: 'Home',
