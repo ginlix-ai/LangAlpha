@@ -107,6 +107,10 @@ class SessionWrite(TypedDict):
     repin_due: NotRequired[bool]
 
 
+#: The write that ends the session held, so the next run starts one of its own.
+ENDED: SessionWrite = {"session_id": "", "entries": []}
+
+
 def compacted(entry: Mapping[str, Any]) -> bool:
     """Whether a record is the CLI compacting the session, which summarizes
     away the turn its baseline was sent in."""
@@ -124,7 +128,8 @@ def session_records_reducer(
     the same value, which ``DeltaChannel`` requires to replay its writes.
     A write naming another session id starts that session over, pin and
     baseline included: the CLI mints a new id only when it starts a new
-    session, and nothing of the old one is resumed after that. A write's pin
+    session, and nothing of the old one is resumed after that. ``ENDED``
+    names none, which leaves no session for the next run to resume. A write's pin
     and baseline apply ahead of its records, and a compaction among them
     voids the baseline. The pin holds: the CLI records the prompt and tools
     of the launch that compacted on its next request and replays that record

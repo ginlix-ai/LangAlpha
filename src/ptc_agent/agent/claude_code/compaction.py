@@ -65,6 +65,8 @@ from ptc_agent.agent.claude_code.session import (
     compacted,
 )
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
+from ptc_agent.agent.middleware.compaction import brief
+from ptc_agent.agent.middleware.compaction.brief import HandOffBrief
 from ptc_agent.agent.middleware.compaction.rebuild import NextSummary, cold_threshold
 from ptc_agent.agent.middleware.compaction.usage_event import stamp_usage
 from ptc_agent.agent.middleware.compaction.utils import attachment_tokens
@@ -265,6 +267,26 @@ class CompactionRules:
             workspace_id=self.workspace_id, window=Window.of(state),
         )
         return transcript_note(exported) if exported else ""
+
+    async def digest_brief(self, thread_id: str, state: Mapping[str, Any], checkpoint_ns: str = "") -> HandOffBrief | None:
+        """The brief a turn opens on when no model wrote one for it
+        (``brief.digest_brief``), pointing at the transcript where the file
+        tools reach it; None when Claude replied last."""
+        return await brief.digest_brief(
+            state["messages"], backend=self.backend, workspace_id=self.workspace_id,
+            transcript=transcript_target(self.backend, thread_id, checkpoint_ns), window=Window.of(state),
+        )
+
+    async def thread_brief(
+        self, thread_id: str, state: Mapping[str, Any], room: int, checkpoint_ns: str = ""
+    ) -> HandOffBrief | None:
+        """The thread itself as the brief a turn opens on, fitted to ``room``
+        (``brief.thread_brief``): state keeps such a brief without its text
+        (``brief.kept``)."""
+        return await brief.thread_brief(
+            state["messages"], room, backend=self.backend, workspace_id=self.workspace_id,
+            transcript=transcript_target(self.backend, thread_id, checkpoint_ns), window=Window.of(state),
+        )
 
     def repin_plan(self, records: SessionRecords, current: SessionPin, now: float,
                    pending: int = 0) -> tuple[bool, str] | None:

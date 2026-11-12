@@ -70,6 +70,7 @@ from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, TaskStee
 from ptc_agent.agent.claude_code.plan import PlanWatch
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
 from ptc_agent.agent.claude_code.session import (
+    ENDED,
     RULES_KEY,
     SETTLE_TIMEOUT_S,
     CheckpointSessionStore,
@@ -92,6 +93,15 @@ from ptc_agent.agent.claude_code.tools_bridge import (
 )
 from ptc_agent.agent.main_state import MainAgentState
 from ptc_agent.agent.middleware.compaction import parts as context_parts
+from ptc_agent.agent.middleware.compaction.brief import (
+    BRIEF_CONFIG_KEY,
+    kept,
+    BRIEF_KEY,
+    brief_cut,
+    brief_due,
+    handoff_mark,
+    stored_brief,
+)
 from ptc_agent.agent.middleware.compaction.utils import count_tokens_claude, stamp_compaction_summary
 from ptc_agent.agent.pending_calls import pending_calls
 from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
@@ -103,7 +113,7 @@ from ptc_agent.agent.transcript.classify import ORCHESTRATOR_SOURCE, reentry_tri
 from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.agent.prompts import release
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
-from src.llms.claude_code import ClaudeTurnFailed, PlanStopped, another_model_replied_last
+from src.llms.claude_code import ClaudeTurnFailed, PlanStopped, another_model_replied_last, last_reply_index
 from src.tools.secretary.approvals import StandingApprovalState
 
 TURN_KEY = "claude_turn"
@@ -178,7 +188,9 @@ async def token_works(launcher: Launcher, model: str) -> bool:
 class ClaudeCodeState(StandingApprovalState, MainAgentState):
     """A Claude Code thread's checkpoint: a main-agent thread's, plus Claude's
     session, the compaction rules its last turn ran under (``RULES_KEY``),
-    and the calls approved in advance that the approval step marks. The
+    and the calls approved in advance that the approval step marks. The brief
+    a turn opens on after another model's reply (``BRIEF_KEY``) is the main
+    agent's, which writes it between turns. The
     main-agent state comes last, so its channels (``messages`` a
     ``DeltaChannel``) win over the plain agent state the approval one extends."""
 
@@ -234,7 +246,7 @@ class _Run:
 
     def __init__(self, launcher: Launcher, prepared: Prepared, store: CheckpointSessionStore,
                  client: ClaudeSDKClient, results: ToolResults, spec: RuntimeSpec,
-                 before_tool: BeforeTool, after_tool: AfterTool, plan: PlanWatch) -> None:
+                 before_tool: BeforeTool, after_tool: AfterTool, plan: PlanWatch, *, resumed: bool) -> None:
         self.launcher = launcher
         self.prepared = prepared
         self.store = store
@@ -243,6 +255,8 @@ class _Run:
         self.before_tool = before_tool
         self.after_tool = after_tool
         self.model = spec.model
+        #: Whether the CLI resumed a session, rather than starting one of its own.
+        self.resumed = resumed
         self.result: ResultMessage | None = None
         #: What the turn's responses said of the Claude plan, and the stop at its limit.
         self.plan = plan
@@ -285,7 +299,8 @@ class _Run:
             results=results, query=query, before_tool=before_tool, compact_at=compact_at, auto_compact=auto_compact,
             transcript_note=transcript_note, plan=plan,
         )
-        return cls(launcher, prepared, store, client, results, spec, before_tool, after_tool, plan)
+        return cls(launcher, prepared, store, client, results, spec, before_tool, after_tool, plan,
+                   resumed=bool((records or {}).get("session_id")))
 
     @property
     def deferred(self) -> bool:
@@ -465,19 +480,22 @@ class _Run:
         """The results the CLI recorded, resuming, for calls a run before it
         cut off, as ToolMessages, and their records. It records them as it
         loads the session, without a word on its stream. A call it recorded
-        none for (it started the session over) is answered as a langalpha
-        turn answers one (``PatchToolCallsMiddleware``), with no record."""
+        none for (it started the session over, or another model made it) is
+        answered as a langalpha turn answers one (``PatchToolCallsMiddleware``),
+        with no record; a session the CLI starts holds none to wait for."""
+        if not self.resumed:
+            return [_unrecorded_answer(c) for c in calls], []
         ids = [c["id"] for c in calls]
         with contextlib.suppress(SessionDrift):
             await self._unless_crashed(self.store.results.wait(ids, SETTLE_TIMEOUT_S))
         answers, uuids = [], []
         for c in calls:
             if (recorded := self.store.result_blocks.get(c["id"])) is None:
-                given = ToolResultBlock(tool_use_id=c["id"], content=_unrecorded(c), is_error=True)
-            else:
-                uuid, block = recorded
-                uuids.append(uuid)
-                given = ToolResultBlock(tool_use_id=c["id"], content=block.get("content"), is_error=block.get("is_error"))
+                answers.append(_unrecorded_answer(c))
+                continue
+            uuid, block = recorded
+            uuids.append(uuid)
+            given = ToolResultBlock(tool_use_id=c["id"], content=block.get("content"), is_error=block.get("is_error"))
             answers.append(_as_given(ToolMessage(content="", tool_call_id=c["id"], name=c["name"]), given))
         return answers, uuids
 
@@ -588,6 +606,9 @@ class ClaudeTurn:
         #: The boundary of a compaction the CLI made whose records have not arrived yet.
         self._unsettled: str | None = None
         self._run: _Run | None = None
+        #: The text of the brief the turn opened on, by the reply it ends
+        #: on, where state keeps it without (``brief.kept``).
+        self._brief_text: tuple[str, str] | None = None
         #: The queries the turn sent on a run it ended to move its session to
         #: this build's pin ahead of the next; none while it has not.
         self._sent_before = 0
@@ -639,7 +660,7 @@ class ClaudeTurn:
             entries, answered = resume_from(records, state["messages"])
             if records:
                 state = {**state, "claude_session": {**records, "entries": entries}}
-            pin, prompt = self.opening(state)
+            pin, prompt = self.opening(await self._briefed(state))
             self._run = await _Run.start(
                 self.spec, pin, self.launcher, self.run_key, self.identity, state.get("claude_session"), prompt,
                 answered, plan=await self.watch(), compact_at=self.compaction.threshold,
@@ -682,6 +703,61 @@ class ClaudeTurn:
             await run.again(prompt)
         self.steering.delivered(config, message)
         return sent
+
+    async def _briefed(self, state: ClaudeCodeState) -> ClaudeCodeState:
+        """``state`` with the text of the brief it keeps, which it keeps none
+        of where the brief is the thread itself (``kept``): the text the turn
+        was handed, else the thread rendered again."""
+        brief = stored_brief(state)
+        if brief is None or "text" in brief:
+            return state
+        through, text = self._brief_text or (None, None)
+        if through != brief["through"]:
+            # Kept for one Claude model, it may open a turn on another
+            # (a regenerate or an edit), which is handed no more of the
+            # thread than half the context its own CLI compacts at.
+            room = min(brief["room"], self.compaction.threshold // 2) if self.compaction.threshold else brief["room"]
+            rendered = await self.compaction.thread_brief(self.thread_key, state, room, self.checkpoint_ns)
+            text = rendered.get("text") if rendered else None
+            if text:
+                self._brief_text = (brief["through"], text)
+            else:
+                logger.warning("[ClaudeCode] the thread brief through %s rendered empty", brief["through"])
+        return {**state, BRIEF_KEY: {**brief, "text": text}} if text else state
+
+    async def hand_off(self, state: ClaudeCodeState, config: RunnableConfig) -> dict[str, Any]:
+        """The update that takes a thread another model replied on last onto
+        a session of Claude's own, opened on a brief of everything before
+        (``turn_prompt``): it ends the session Claude held, which has none of
+        that, and keeps the brief, the one the run was handed
+        (``BRIEF_CONFIG_KEY``) else one put together without a model
+        (``CompactionRules.digest_brief``).
+
+        The turn is marked as opening on the brief (``handoff_mark``),
+        streamed as it happens and kept for the history to show.
+
+        Saved in a step of its own, so a launch that fails after it leaves
+        the retry nothing to redo. Empty when none is due or it is saved.
+        """
+        if (due := brief_due(state["messages"])) is None:
+            return {}
+        update: dict[str, Any] = {}
+        if (brief := stored_brief(state)) is None:
+            given = (config.get("configurable") or {}).get(BRIEF_CONFIG_KEY)
+            brief = given if given and given["through"] == due else await self.compaction.digest_brief(
+                self.thread_key, state, self.checkpoint_ns
+            )
+            logger.info("[ClaudeCode] hand-off brief=%s", brief["source"])
+            update[BRIEF_KEY] = kept(brief)
+            if "text" in brief:
+                self._brief_text = (brief["through"], brief["text"])
+        mark = handoff_mark(brief, to=self.spec.billing.get("manifest_model") or self.spec.model)
+        if all(record.get("id") != mark["id"] for record in state.get("ui") or []):
+            update["ui"] = [mark]
+            get_stream_writer()({"type": "context_window", "action": "brief", "signal": "complete", **mark["props"]})
+        if (state.get("claude_session") or {}).get("session_id"):
+            update["claude_session"] = ENDED
+        return update
 
     async def ended(self, state: ClaudeCodeState, run: _Run) -> dict[str, Any]:
         """What the turn's end adds: the reply it ended on, under Stop,
@@ -938,30 +1014,32 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
     Any other checkpoint without one (after an assistant message) is not
     something the CLI resumes, so it fails the turn.
 
-    A thread whose last reply another model wrote fails too: Claude's session
-    holds only what Claude said, so it would carry on without that reply and
-    everything before it that another model saw.
+    A thread whose last reply another model wrote opens on the brief it
+    keeps for that reply (``ClaudeTurn.hand_off``), which stands in for
+    everything up to it, as a reminder after the baseline; it fails without
+    one: Claude's session holds only what Claude said, so it would carry on
+    without that reply and everything before it. With nothing after the reply
+    (its pause was answered as cancelled), the brief is all the turn sends.
 
     A task the turn resumed as it opened (``resume`` in
     ``build_claude_code_graph``) is told as the result of each resume, as a
     reminder after the messages ahead of it: Claude made no call for it, and
     its session holds none.
     """
-    if another_model_replied_last(state["messages"]):
+    brief = (stored_brief(state) or {}).get("text")
+    if brief is None and another_model_replied_last(state["messages"]):
         raise ClaudeTurnFailed("other_model_history", "the thread's last reply is another model's, which Claude's session does not hold")
-    window: list[BaseMessage] = []
-    for msg in reversed(state["messages"]):
-        if isinstance(msg, AIMessage) and (msg.additional_kwargs or {}).get("lc_source") != "steering":
-            break
-        window.append(msg)
-    window.reverse()
+    messages = state["messages"]
+    start = 0 if (at := last_reply_index(messages)) is None else at + 1
+    # A brief also stands in for the summary a thread with no reply opens on.
+    window = messages[max(start, brief_cut(messages)) if brief is not None else start :]
     resumed = {c["id"] for m in window if isinstance(m, AIMessage) for c in m.tool_calls}
     added = [
         m if isinstance(m, HumanMessage) else HumanMessage(frame_reminder(m.text), id=m.id)
         for m in window
         if isinstance(m, HumanMessage) or (isinstance(m, ToolMessage) and m.tool_call_id in resumed)
     ]
-    if not added:
+    if not added and brief is None:
         last = state["messages"][-1] if state["messages"] else None
         if isinstance(last, ToolMessage) and (state.get("claude_session") or {}).get("session_id"):
             return None
@@ -969,10 +1047,12 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
             "nothing_to_resume",
             f"a Claude Code run resumes from a user message or after its tool results, not after a {type(last).__name__}",
         )
-    carried = compose_request(added, Carrier("reminder")).messages
-    if baseline is None and len(carried) == 1 and isinstance(carried[0].content, str):
+    carried = compose_request(added, Carrier("reminder")).messages if added else []
+    if baseline is None and brief is None and len(carried) == 1 and isinstance(carried[0].content, str):
         return carried[0].content
-    blocks: list[dict[str, Any]] = [{"type": "text", "text": frame_reminder(baseline)}] if baseline else []
+    blocks: list[dict[str, Any]] = [
+        {"type": "text", "text": frame_reminder(ahead)} for ahead in (baseline, brief) if ahead
+    ]
     for msg in carried:
         content = anthropic_content(msg)
         blocks.extend([{"type": "text", "text": content}] if isinstance(content, str) else content)
@@ -1039,6 +1119,8 @@ def build_claude_code_graph(
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:
         turn = _turn(config)
         opening = not turn.started
+        if opening and (handed := await turn.hand_off(state, config)):
+            return Command(update=handed, goto="model")
         if opening and (compacted := await turn._repin(state)):
             asked = state["messages"][-1].model_copy()
             turn.stamp(asked)
@@ -1200,6 +1282,11 @@ def _unrecorded(call: ToolCall) -> str:
         f"Tool call {call['name'] or 'unknown'} with id {call['id']} did not complete - no result was recorded. "
         "It may have been cancelled or interrupted."
     )
+
+
+def _unrecorded_answer(call: ToolCall) -> ToolMessage:
+    given = ToolResultBlock(tool_use_id=call["id"], content=_unrecorded(call), is_error=True)
+    return _as_given(ToolMessage(content="", tool_call_id=call["id"], name=call["name"]), given)
 
 
 def _given_instead(update: _Update, results: ToolResults, call: ToolCall) -> _Update:
