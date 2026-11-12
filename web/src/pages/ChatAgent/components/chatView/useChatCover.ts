@@ -84,7 +84,9 @@ export function useChatCover({ isMobile, filePanel, panelExpanded, panelWidth, t
   const commentsQueued = queuedComments.length > 0;
   useEffect(() => {
     if (!commentsQueued) return;
-    const timer = setTimeout(() => { void import('../viewers/HtmlViewer'); }, 1500);
+    // Caught: a tab left on the previous build fails this routinely, and the
+    // viewer's own mount retries it where the stale-build recovery takes it.
+    const timer = setTimeout(() => { void import('../viewers/HtmlViewer').catch(() => {}); }, 1500);
     return () => clearTimeout(timer);
   }, [commentsQueued]);
 

@@ -87,7 +87,7 @@ const CHUNK_ERROR_PATTERNS = [
  * immediately means one event produces two notices and `silent` arrives too
  * late to stop it. Waiting is only correct because the toast is ambient by
  * definition: nothing is waiting on it, and not every dead chunk reaches a
- * boundary (Main.tsx prefetches one and swallows the rejection), so it still
+ * boundary (a preload warms one that may never mount), so it still
  * has to fire on its own when no card claims it.
  */
 const BOUNDARY_CLAIM_MS = 250;

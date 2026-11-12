@@ -61,12 +61,7 @@ const routePreloads = {
 export function preloadRouteChunk(pathname: string): void {
   const chunkFor: Record<string, () => Promise<unknown>> = routePreloads;
   const segment = pathname.split('/')[1] || 'dashboard';
-  // Swallowed on purpose, but it must be caught: a deploy deletes the previous
-  // build's chunks, so this rejects routinely for a stale tab, and an unhandled
-  // rejection is noise that hides real ones. The failure still surfaces — Vite
-  // fires vite:preloadError (index.html reports it), and React.lazy retries the
-  // same import at mount, where StaleBuildBoundary catches it.
-  void (chunkFor[segment] ?? routePreloads.dashboard)().catch(() => {});
+  void (chunkFor[segment] ?? routePreloads.dashboard)();
 }
 
 // Warmed in the order the rail lists them, the likeliest next stops first.
@@ -86,10 +81,7 @@ function useWarmSections(): void {
     };
     const warm = (i: number) => {
       if (cancelled || i >= WARM_ORDER.length) return;
-      // A failed warm is the mount's to retry (see preloadRouteChunk).
-      void routePreloads[WARM_ORDER[i]]()
-        .catch(() => {})
-        .then(() => idle(() => warm(i + 1)));
+      void routePreloads[WARM_ORDER[i]]().then(() => idle(() => warm(i + 1)));
     };
     idle(() => warm(0));
     return () => {

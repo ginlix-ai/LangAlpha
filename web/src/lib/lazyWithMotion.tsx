@@ -3,8 +3,11 @@ import { lazy, type ComponentProps, type ComponentType, type LazyExoticComponent
 /** A component from `lazyWithMotion`, which can be loaded before it renders. */
 export type PreloadableLazy<T extends ComponentType<any>> = LazyExoticComponent<T> & {
   /** Loads the component and framer beside it, so its first render does not
-   *  suspend. Rejects as the load does. */
-  preload: () => Promise<unknown>;
+   *  suspend. Never rejects: it settles `false` when the load failed, which a
+   *  deploy that removed the chunk does routinely to a stale tab. The failure
+   *  is the mount's, which imports again and raises it to its boundary, and
+   *  index.html's preload listener has already seen it. */
+  preload: () => Promise<boolean>;
 };
 
 /**
@@ -80,5 +83,6 @@ export function preloadableLazy<
     // React reads any thenable here, though the type asks for a promise.
     return { then: (fulfil: (m: { default: T }) => void) => fulfil(ready) } as unknown as Promise<{ default: T }>;
   });
-  return Object.assign(component, { preload: resolve });
+  const preload = () => resolve().then(() => true, () => false);
+  return Object.assign(component, { preload });
 }
