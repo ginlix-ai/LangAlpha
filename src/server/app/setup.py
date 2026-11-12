@@ -140,6 +140,9 @@ _REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
     # Takes tunnels no computer uses off their machines; a claim on each
     # tunnel's row in Postgres dedups it across workers.
     ("TunnelSweeper", "src.server.services.ssh_tunnel_sweep"),
+    # Deletes sandboxes a create gave up on once their provider lets it; a
+    # claim on each row in Postgres dedups it across workers.
+    ("AbandonedSandboxSweeper", "src.server.services.abandoned_sandbox_sweep"),
     # Ends uploads their browser abandoned and takes over pulls whose worker
     # died; a claim on each upload's row in Postgres dedups it across workers.
     ("UploadSweeper", "src.server.services.workspace_upload_pull"),
@@ -438,6 +441,14 @@ async def lifespan(app: FastAPI):
 
         install_client_key_loader()
         install_gateway_loader()
+
+        # A create that fails may still leave a sandbox running; the provider
+        # records it for the sweep, in whichever worker the create ran.
+        from src.server.services.abandoned_sandbox_sweep import (
+            install_abandoned_sink,
+        )
+
+        install_abandoned_sink()
 
         # Platform-secret migration sweep: converges running sandboxes left
         # behind the fleet generation (always-on sandboxes never re-init, so
