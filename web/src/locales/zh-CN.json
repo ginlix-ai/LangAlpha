@@ -226,7 +226,7 @@
       },
       "claude_code_runtime": {
         "label": "Claude Code 运行时（预览版）",
-        "description": "通过 Claude Code 运行你的 Claude 对话，用量计入你自己的 Claude 套餐。它用 setup token 登录，这是专为 LangAlpha 生成的独立凭据，不会影响你自己的 Claude Code 登录。Claude Code 在你自己的电脑上运行；如果此服务器提供该选项，也可以在云端计算机上运行，使用你的 setup token。请在设置的“模型接入”中选择运行位置。"
+        "description": "通过 Claude Code 运行你的 Claude 对话，用量计入你自己的 Claude 套餐。它用专为 LangAlpha 生成的 setup token 登录。Claude Code 在你自己的电脑上运行；如果此服务器提供该选项，也可以在云端计算机上运行，使用你的 setup token。请在设置的“模型接入”中选择运行位置。"
       },
       "a_share_pack": {
         "label": "A 股市场包",
@@ -4118,7 +4118,7 @@
     "methodTitle": "你想如何连接？",
     "methodSubtitle": "选择访问 AI 模型的方式。你可以稍后添加更多提供商。",
     "methodOAuth": "使用订阅",
-    "methodOAuthDesc": "登录 ChatGPT、Claude 或 Grok，或添加 Kimi、GLM、MiniMax 或 OpenCode 的编程套餐。",
+    "methodOAuthDesc": "使用 Claude Code，登录 ChatGPT 或 Grok，或添加 Kimi、GLM、MiniMax 或 OpenCode 的编程套餐。",
     "methodApiKey": "我有 API 密钥",
     "methodApiKeyDesc": "按用量付费，支持任意提供商。",
     "methodLocal": "我在本地运行模型",
@@ -6694,7 +6694,7 @@
       "open": "打开 OpenAI"
     },
     "claudeCode": {
-      "detail": "专用的 setup token，不使用你的 Claude Code 登录",
+      "detail": "专用的 setup token",
       "rejected": "Claude 拒绝了此 token，它可能已过期或被撤销。",
       "add": "添加 setup token",
       "addNew": "添加新 token",
@@ -6703,14 +6703,13 @@
       "moreActions": "更多操作",
       "addTitle": "添加 setup token",
       "replaceTitle": "替换 setup token",
-      "intro": "Claude Code 模式让你的 Claude 对话使用你自己的 Claude 套餐运行。它通过专为 LangAlpha 生成的 setup token 登录。",
-      "separate": "此 token 是专为 LangAlpha 生成的独立凭据，绝不是你的 Claude Code 登录。用量计入你的 Claude 套餐。它经加密存储，仅用于你自己的请求。",
+      "separate": "LangAlpha 会加密保存此 token。",
       "stepInstall": "如果尚未安装 Claude Code，请先安装。",
       "installLink": "安装指南",
       "stepRun": "在本机或任意一台电脑的终端中运行：",
       "stepSignIn": "在它打开的浏览器窗口中登录 Claude。",
-      "stepCopy": "复制它输出的 token。较长的 token 可能换到第二行，请完整复制。",
-      "stepPaste": "粘贴到下方并保存。",
+      "stepCopy": "完整复制它输出的 token，换行的部分也要复制。",
+      "stepPaste": "粘贴到下方。",
       "fieldLabel": "Setup token",
       "fieldPlaceholder": "粘贴你的 setup token",
       "save": "保存 token",
@@ -6730,7 +6729,7 @@
         "unknown": "无法保存 token，请重试。"
       },
       "removeTitle": "移除 Claude Code 的 setup token？",
-      "removeBody": "LangAlpha 将删除此 token。Claude Code 模型仍会列出，但在你添加新 token 前无法运行。你自己的 Claude Code 登录不受影响。",
+      "removeBody": "在你添加新 token 前，使用此 token 的 Claude Code 无法运行。",
       "removeConfirm": "移除 token",
       "removeFailed": "无法移除 token，请重试。",
       "turnsRunning": "你的 token 已删除，但仍有一个使用它的 Claude Code 对话未能停止。请在该对话中手动停止。",
@@ -6739,7 +6738,7 @@
       "expired": "此 token 最晚已于 <date>{{date}}</date> 过期。请添加新的 token 以继续使用 Claude Code。",
       "expiresSoon": "此 token 最晚将于 <date>{{date}}</date> 过期。请在此之前添加新的 token，让 Claude Code 继续运行。",
       "signIn": {
-        "intro": "在新标签页中登录 Claude，LangAlpha 随后会为自己生成 setup token，无需在终端中运行任何命令。",
+        "intro": "登录 Claude，LangAlpha 会为你生成 token。",
         "start": "使用 Claude 登录",
         "codeHint": "批准后，Claude 会显示一段代码。请完整复制并粘贴到这里。",
         "fieldLabel": "来自 Claude 的代码",
@@ -6766,14 +6765,13 @@
         }
       },
       "computer": {
-        "intro": "Claude Code 在 {{name}} 上运行你的 Claude 对话，使用你自己的 Claude 套餐。它通过专为 LangAlpha 生成的 setup token 登录，token 保存在这台电脑上。",
-        "separate": "此 token 是专为 LangAlpha 生成的独立凭据，绝不是你的 Claude Code 登录。用量计入你的 Claude 套餐。它只保存在 {{name}} 上，LangAlpha 不保留副本。",
-        "signInIntro": "在新标签页中登录 Claude，LangAlpha 随后会生成 setup token 并放到 {{name}} 上，无需在终端中运行任何命令。",
+        "separate": "此 token 只保存在 {{name}} 上。",
+        "signInIntro": "登录 Claude，LangAlpha 会把 token 放到 {{name}} 上。",
         "addTitle": "为 {{name}} 添加 setup token",
         "replaceTitle": "替换 {{name}} 上的 setup token",
         "removeTitle": "从 {{name}} 移除 setup token？",
-        "removeBody": "LangAlpha 将从 {{name}} 删除此 token。在你添加新 token 前，Claude Code 无法在这台电脑上运行。你自己的 Claude Code 登录不受影响。",
-        "removeBodySaved": "LangAlpha 将从 {{name}} 删除此 token，之后这台电脑上的 Claude Code 将使用你已保存的 token。你自己的 Claude Code 登录不受影响。",
+        "removeBody": "在你添加新 token 前，Claude Code 无法在这台电脑上运行。",
+        "removeBodySaved": "之后这台电脑上的 Claude Code 将使用你已保存的 token。",
         "ownToken": "使用这台电脑自己的 token",
         "savedToken": "使用你已保存的 token",
         "noToken": "这台电脑还没有 setup token",
@@ -6793,10 +6791,10 @@
       "hosted": {
         "heading": "Claude Code 在哪里运行",
         "local": "在你自己的电脑上",
-        "localDetail": "Claude Code 在你自己的、有独立 setup token 的电脑上运行，所有工作区都是如此，包括云端计算机上的工作区。这些工作区的文件和命令仍在云端计算机上运行，LangAlpha 不会保留 token 的副本。",
+        "localDetail": "由你自己的电脑运行，LangAlpha 不保留 setup token。",
         "stored": "在云端计算机上，使用 LangAlpha 为你保存的 setup token",
-        "storedDetail": "在中型及以上规格的云端计算机上，工作区的 Claude Code 直接在这台计算机上运行；没有独立 token 的你自己的电脑也在本机运行 Claude Code。每轮对话由 LangAlpha 把加密保存的 setup token 发给运行它的计算机。用量计入你的 Claude 套餐。",
-        "paused": "此服务器已暂停在云端计算机上运行 Claude Code。你的选择会保留，Claude Code 在你自己的电脑上照常运行。",
+        "storedDetail": "由中型及以上的云端计算机运行，LangAlpha 加密保存你的 setup token。",
+        "paused": "此服务器已暂停在云端计算机上运行，你自己的电脑照常运行。",
         "blocked": "你的账户无法保存 setup token。Claude Code 在你自己的电脑上照常运行。"
       },
       "consent": {
@@ -6810,13 +6808,15 @@
       },
       "leaveStored": {
         "title": "停止保存你的 setup token？",
-        "body": "LangAlpha 会立即删除你已保存的 setup token，正在使用它的 Claude Code 会停止运行。在你重新保存 token 之前，云端计算机上的对话不会使用你的 Claude 套餐运行。有自己 token 的电脑不受影响。",
+        "body": "LangAlpha 会立即删除它，正在使用它的对话会停止。有自己 token 的电脑不受影响。",
         "confirm": "删除 token",
         "failed": "切换失败，你的 token 仍处于保存状态。请重试。"
       },
       "setup": {
         "pickNote": "Claude Pro 或 Max，在你的电脑上运行",
-        "lead": "Claude Code 模式通过 Anthropic 的 Claude Agent SDK 运行 Claude Code，并接入 LangAlpha 的 Agent 框架和工具。用量计入你的 Claude 套餐。",
+        "pickNoteCloud": "Claude Pro 或 Max，在你的电脑或云端计算机上运行",
+        "pickNoteServer": "Claude Pro 或 Max，在此服务器或你的电脑上运行",
+        "lead": "用你的 Claude 套餐运行 Claude Code。",
         "learnMore": "了解更多",
         "waysTitle": "连接电脑的方式",
         "yourComputers": "你的电脑",
@@ -6838,8 +6838,7 @@
         },
         "noComputer": {
           "title": "请先连接一台你自己的电脑",
-          "body": "Claude Code 在你自己的电脑上运行，但你还没有把任何电脑连接到 LangAlpha。用下面任一方式连接一台，再回到这里登录 Claude。",
-          "bodyCloud": "Claude Code 在你自己的电脑或中型及以上的云端计算机上运行，但你目前还没有能运行它的计算机。用下面任一方式连接一台你自己的电脑，再回到这里登录 Claude。"
+          "body": "用下面任一方式连接一台，再回到这里登录 Claude。"
         },
         "unsupported": {
           "title": "你的电脑无法运行 Claude Code",
@@ -6848,7 +6847,8 @@
         "offline": {
           "title": "{{name}} 处于离线状态",
           "titleMany": "你的电脑都处于离线状态",
-          "body": "Claude Code 在你自己的电脑上运行，但 LangAlpha 现在连接不到你的电脑。等其中一台重新上线，就可以在这里登录 Claude。",
+          "body": "等它重新上线，就可以在这里登录 Claude。",
+          "bodyMany": "等其中一台重新上线，就可以在这里登录 Claude。",
           "helper": "在这台 Mac 上打开 LangAlpha，确认远程控制已开启。",
           "ssh": "确认它已开机，并允许 LangAlpha 通过 SSH 连接。"
         },
@@ -6858,17 +6858,17 @@
           "titleKept": "重新开启 Claude Code",
           "bodyKept": "{{name}} 上仍保留着 setup token。开启 Claude Code 即可再次使用。",
           "bodyKeptMany": "下面的电脑上仍保留着 setup token。开启 Claude Code 即可再次使用。",
-          "body": "Claude Code 可以在 {{name}} 上运行。为它添加 setup token 后，Claude Code 模型就会出现在模型选择器中。",
-          "bodyMany": "Claude Code 可以在下面的电脑上运行。在你想使用它的每台电脑上添加 setup token。",
-          "bodySaved": "在下面添加 setup token 后，Claude Code 模型就会出现在模型选择器中。",
-          "bodyCloud": "在下面选择 Claude Code 在云端计算机上的运行方式后，它的模型就会出现在模型选择器中。",
-          "bodyTurnOn": "开启 Claude Code 后，即可选择它在云端计算机上的运行方式。"
+          "body": "在下面为 {{name}} 添加 setup token。",
+          "bodyMany": "为你想使用它的每台电脑添加 setup token。",
+          "bodySaved": "在下面添加 setup token。",
+          "bodyCloud": "在下面选择它的运行位置。",
+          "bodyTurnOn": "开启后即可选择它的运行位置。"
         },
         "connected": {
           "title": "Claude Code 已可使用",
-          "body": "模型选择器里已有 Claude Code 模型。",
-          "cliOwn": "你的云端工作区和 Chief of Staff Agent 都在 {{name}} 上运行 Claude Code。",
-          "cliHome": "你的 Chief of Staff Agent 在 Home 所在的计算机 {{name}} 上运行 Claude Code。"
+          "body": "它的模型已在模型选择器中。",
+          "cliOwn": "你的云端工作区和 Chief of Staff Agent 都在 {{name}} 上运行它。",
+          "cliHome": "你的 Chief of Staff Agent 在 {{name}} 上运行它。"
         },
         "checking": {
           "title": "正在检查 setup token",
@@ -6876,15 +6876,15 @@
         },
         "refused": {
           "title": "请重新登录 Claude",
-          "body": "Claude 拒绝了 {{name}} 上的 setup token，它可能已过期或被撤销。添加新的 token 即可继续使用 Claude Code。",
-          "bodyAny": "Claude 拒绝了一个 setup token，它可能已过期或被撤销。添加新的 token 即可继续使用 Claude Code。"
+          "body": "Claude 拒绝了 {{name}} 上的 setup token。请添加新的 token。",
+          "bodyAny": "Claude 拒绝了一个 setup token。请添加新的 token。"
         },
         "turnOff": {
           "action": "关闭 Claude Code",
           "title": "关闭 Claude Code？",
-          "body": "Claude Code 模型将从模型选择器中移除。电脑上的 setup token 会一直保留到你将其移除，因此你随时可以在这里重新开启。",
+          "body": "它的模型将从模型选择器中移除。电脑上的 setup token 会保留，直到你将其移除。",
           "confirm": "关闭",
-          "bodyStored": "Claude Code 模型将从模型选择器中移除，用于云端计算机的 setup token 也会被移除。你自己电脑上的 token 会一直保留，直到你将其移除。"
+          "bodyStored": "它的模型将从模型选择器中移除，LangAlpha 会删除为云端计算机保存的 token。"
         },
         "savedName": "你的 setup token",
         "savedDetailCloud": "用于在你的云端计算机上运行 Claude Code",
@@ -6924,13 +6924,16 @@
         "upstream_unavailable": "无法连接到 Claude，请再次提交代码。",
         "save_failed": "无法保存您的账户。",
         "redis_unavailable": "暂时无法连接账户，请稍后再次提交代码。",
+        "unavailable": "此账户无法使用 Claude 登录。",
         "unknown": "连接时出现问题。"
       },
       "signInLabel": "在 claude.ai 上登录",
       "open": "打开 claude.ai",
       "expiresIn": "登录链接将在 {{time}} 后过期",
       "stepConnect": "正在连接您的套餐",
-      "paste": "粘贴"
+      "paste": "粘贴",
+      "endsOn": "此登录方式将于 {{date}} 停用。",
+      "switchToClaudeCode": "切换到 Claude Code"
     },
     "grok": {
       "name": "Grok",
@@ -7116,6 +7119,14 @@
       "computerUnreached": "无法连接这台电脑查看用量，请稍后再试。",
       "unsaved": "Claude 已响应，但用量未能更新，请稍后再试。"
     }
+  },
+  "claudeCodeAnnouncement": {
+    "title": "原生 Claude Code 模式上线了",
+    "body": "它直接运行 Claude Code，和你自己运行一样，也是我们推荐的用法。",
+    "endsOn": "旧的登录方式将于 {{date}} 停用。如需继续使用你的 Claude 套餐，请在此之前切换。",
+    "switch": "切换到 Claude Code",
+    "learnMore": "了解更多",
+    "dismiss": "关闭"
   },
   "palette": {
     "copyFailed": "无法复制到剪贴板",

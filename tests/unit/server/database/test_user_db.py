@@ -334,6 +334,34 @@ async def test_delete_user_preferences(user_mock_db, mock_cursor):
 
 
 @pytest.mark.asyncio
+async def test_delete_user_preferences_keeps_the_overrides_it_is_told_to(user_mock_db, mock_cursor):
+    """Reset keeps a server-written grant, and nothing else of the row."""
+    from src.server.database.user import delete_user_preferences
+
+    mock_cursor.rowcount = 1
+    mock_cursor.fetchone.return_value = {
+        "other_preference": {"theme": "dark", "feature_overrides": {"claude_oauth": True, "market_watch": True}},
+    }
+
+    assert await delete_user_preferences("user-1", keep_overrides=["claude_oauth"]) is True
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "INSERT INTO user_preferences" in sql
+    assert params[0] == "user-1"
+    assert params[1].obj == {"feature_overrides": {"claude_oauth": True}}
+
+
+@pytest.mark.asyncio
+async def test_delete_user_preferences_writes_nothing_back_without_a_kept_override(user_mock_db, mock_cursor):
+    from src.server.database.user import delete_user_preferences
+
+    mock_cursor.rowcount = 1
+    mock_cursor.fetchone.return_value = {"other_preference": {"feature_overrides": {"market_watch": True}}}
+
+    await delete_user_preferences("user-1", keep_overrides=["claude_oauth"])
+    assert "DELETE FROM user_preferences" in mock_cursor.execute.call_args[0][0]
+
+
+@pytest.mark.asyncio
 async def test_delete_user_preferences_not_found(user_mock_db, mock_cursor):
     """delete_user_preferences returns False when no row exists."""
     from src.server.database.user import delete_user_preferences
@@ -392,7 +420,7 @@ async def test_get_user_preferences_cache_hit():
 
     assert result is not None
     assert result["user_id"] == "user-1"
-    cache.client.get.assert_awaited_once_with("user_prefs:v2:user-1")
+    cache.client.get.assert_awaited_once_with("user_prefs:v3:user-1")
     # DB should NOT have been called
     cursor.execute.assert_not_awaited()
 
@@ -434,7 +462,7 @@ async def test_get_user_preferences_cache_miss():
     # Cache was populated with JSON
     cache.client.set.assert_awaited_once()
     set_call = cache.client.set.call_args
-    assert set_call[0][0] == "user_prefs:v2:user-1"
+    assert set_call[0][0] == "user_prefs:v3:user-1"
     # The second positional arg is JSON; verify it round-trips
     stored = json.loads(set_call[0][1])
     assert stored["user_id"] == "user-1"
@@ -484,4 +512,4 @@ async def test_invalidate_user_prefs_cache():
 
         await invalidate_user_prefs_cache("user1")
 
-    cache.client.delete.assert_awaited_once_with("user_prefs:v2:user1")
+    cache.client.delete.assert_awaited_once_with("user_prefs:v3:user1")

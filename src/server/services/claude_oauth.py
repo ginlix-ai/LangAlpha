@@ -24,11 +24,12 @@ import hashlib
 import logging
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
+from src.config.settings import get_claude_code_config
 from src.server.services.oauth_protocol import TokenSet, upstream_error_code
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 # --- Constants ---
 
 CLAUDE_PROVIDER = "claude-oauth"
+# The feature that lets a user start a new Claude sign-in (src/config/features.py).
+SIGN_IN_FEATURE = "claude_oauth"
 CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -49,6 +52,13 @@ SETUP_TOKEN_LIFETIME_S = 31_536_000
 #: Shorter than this and the grant is not the one asked for: the token would
 #: lapse long before the user is told to sign in again.
 SETUP_TOKEN_MIN_LIFETIME_S = 360 * 86_400
+
+
+def sign_in_ends_on() -> date | None:
+    """The day the deployment set for the Claude sign-in to stop working,
+    until that day has passed."""
+    ends_on = get_claude_code_config().claude_oauth_ends_on
+    return ends_on if ends_on and ends_on >= datetime.now(timezone.utc).date() else None
 
 
 # --- PKCE ---

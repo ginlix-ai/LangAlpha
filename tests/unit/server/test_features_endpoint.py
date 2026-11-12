@@ -193,6 +193,22 @@ class TestPutFeatureOverride:
             )
         assert resp.status_code == 403
 
+    @pytest.mark.asyncio
+    async def test_a_grant_is_not_the_users_to_set(self, features_client):
+        from src.config.features import FeatureGate, SystemFlag
+
+        granted_only = SystemFlag(enabled=True, gate=FeatureGate.GRANT, min_tier=None)
+        upsert = AsyncMock()
+        with (
+            patch("src.server.services.features.system_flag", lambda key: granted_only),
+            patch("src.server.services.features.upsert_user_preferences", new=upsert),
+        ):
+            resp = await features_client.put(
+                "/api/v1/features/claude_oauth", json={"enabled": True}
+            )
+        assert resp.status_code == 403
+        upsert.assert_not_awaited()
+
 
 class TestPlanGate:
     @pytest.mark.asyncio

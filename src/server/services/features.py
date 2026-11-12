@@ -19,6 +19,7 @@ from src.config import settings
 from src.config.features import (
     FEATURES,
     USER_CONTROLLABLE_GATES,
+    FeatureGate,
     effective_flags,
     has_plan_gated_features,
     system_flag,
@@ -44,7 +45,7 @@ class FeatureState(BaseModel):
     description: str
     tradeoffs: str | None = None
     enabled: bool
-    gate: Literal["none", "opt_in", "opt_out", "plan"]
+    gate: Literal["none", "opt_in", "opt_out", "plan", "grant"]
     min_tier: int | None = None
     user_override: bool | None = None
     #: Where the user turns it on, when not in Experiments (``FeatureSpec.home``).
@@ -96,6 +97,12 @@ async def effective_flags_for_user(
     else:
         access_tier = await _access_tier(user_id)
     return effective_flags(overrides, access_tier=access_tier)
+
+
+def granted_override_keys() -> list[str]:
+    """The features on the ``grant`` gate, whose override only the server
+    writes: Reset preferences keeps them, since the user never set them."""
+    return [key for key in FEATURES if system_flag(key).gate is FeatureGate.GRANT]
 
 
 async def user_feature_enabled(user_id: str, key: str) -> bool:

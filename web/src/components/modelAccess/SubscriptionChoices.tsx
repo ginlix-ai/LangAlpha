@@ -1,16 +1,21 @@
 import { useTranslation } from 'react-i18next';
 import { SUBSCRIPTIONS, type SubscriptionProvider } from '@/api/oauth';
-import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION } from '@/lib/claudeCode';
+import { useOAuthStatus } from '@/hooks/useConfiguredProviders';
+import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION, type ClaudeCodeChoice } from '@/lib/claudeCode';
 import { ProviderRow } from './KeyProviderPicker';
 import { ProviderChoice } from './ProviderChoices';
-import type { RowStatus } from './parts';
 import type { ProviderGroup } from './providerOptions';
 
 /**
  * Every subscription the account can connect: the plans it signs in to, then
  * the coding plans it adds with a key. Settings and the setup wizard list them
- * the same way. Settings also lists Claude Code under the Claude sign-in
+ * the same way, and both list Claude Code where the Claude sign-in is
  * (`claudeCode`), with where it stands, whenever the server offers it.
+ * The Claude sign-in itself is listed once its status is read, unless the
+ * server says the user may not start one (`can_sign_in`, which counts a
+ * stored sign-in, one waiting to be signed in again included) and none is
+ * connected. A status that could not be read lists it: the sign-in routes
+ * refuse a user the gate leaves out, with words of their own.
  */
 export function SubscriptionChoices({
   planGroups,
@@ -23,9 +28,12 @@ export function SubscriptionChoices({
   configured: ReadonlySet<string>;
   onPickSignIn: (provider: SubscriptionProvider) => void;
   onPickPlan: (group: ProviderGroup) => void;
-  claudeCode?: { status: RowStatus; onPick: () => void };
+  claudeCode?: ClaudeCodeChoice;
 }) {
   const { t } = useTranslation();
+  const { data: claude, isError: claudeUnread } = useOAuthStatus('claude-oauth');
+  const offered = (provider: SubscriptionProvider) => provider !== 'claude-oauth'
+    || configured.has(provider) || claudeUnread || (!!claude && claude.can_sign_in !== false);
   return (
     <div className="flex flex-col gap-3">
       <section className="flex flex-col gap-1">
@@ -33,27 +41,31 @@ export function SubscriptionChoices({
           {t('modelAccess.signInPlans')}
         </h4>
         <ul className="flex flex-col gap-1">
-          {SUBSCRIPTIONS.flatMap((s) => [
-            <ProviderChoice
-              key={s.provider}
-              markProvider={s.provider}
-              name={t(`modelAccess.${s.key}.name`)}
-              note={t(`modelAccess.${s.key}.pickNote`)}
-              connected={configured.has(s.provider)}
-              onPick={() => onPickSignIn(s.provider)}
-            />,
-            ...(claudeCode && s.provider === 'claude-oauth' ? [(
+          {SUBSCRIPTIONS.flatMap((s) => {
+            const rows = [];
+            if (offered(s.provider)) rows.push(
+              <ProviderChoice
+                key={s.provider}
+                markProvider={s.provider}
+                name={t(`modelAccess.${s.key}.name`)}
+                note={t(`modelAccess.${s.key}.pickNote`)}
+                connected={configured.has(s.provider)}
+                onPick={() => onPickSignIn(s.provider)}
+              />,
+            );
+            if (claudeCode && s.provider === 'claude-oauth') rows.push(
               <ProviderChoice
                 key={CLAUDE_CODE}
                 markProvider={CLAUDE_CODE}
                 name={CLAUDE_CODE_CONNECTION.display_name}
-                note={t('modelAccess.claudeCode.setup.pickNote')}
+                note={t(claudeCode.note)}
                 connected={claudeCode.status === 'connected'}
                 status={claudeCode.status === 'connected' ? undefined : claudeCode.status}
                 onPick={claudeCode.onPick}
-              />
-            )] : []),
-          ])}
+              />,
+            );
+            return rows;
+          })}
         </ul>
       </section>
       {planGroups.length > 0 && (

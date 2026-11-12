@@ -8,7 +8,10 @@ import { screen } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 import { SETUP_RETURN_KEY } from '@/lib/setupReturn';
 
-vi.mock('@/config/supportLinks', () => ({ PLATFORM_URL: '/account' }));
+vi.mock('@/config/supportLinks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config/supportLinks')>()),
+  PLATFORM_URL: '/account',
+}));
 vi.mock('@/hooks/usePreferences', () => ({ usePreferences: () => ({ preferences: {} }) }));
 vi.mock('@/hooks/useApiKeys', () => ({ useApiKeys: () => ({ apiKeys: null }) }));
 vi.mock('@/components/model/useModelSlotCopy', () => ({

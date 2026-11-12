@@ -1,6 +1,7 @@
 import type { ClaudeCodeComputer, ClaudeCodeCustodyMode, ClaudeCodeSetup, ClaudeCodeSetupState, PlanRefusal } from '@/api/model';
 import type { RowStatus } from '@/components/modelAccess/parts';
-import { PLAN_URL } from '@/config/supportLinks';
+import { isPlatformMode } from '@/config/hostMode';
+import { DOCS_URL, PLAN_URL } from '@/config/supportLinks';
 import { readPlanRefusal } from '@/lib/claudeCodePlan';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import type { WorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
@@ -26,10 +27,30 @@ export const CLAUDE_CODE_CONNECTION: ConfiguredProvider = {
   state: 'connected',
 };
 
-/** Where the user docs explain Claude Code mode, and the anchor of its
- *  requirements, which the states that cannot run it yet point at. */
-export const CLAUDE_CODE_DOCS_URL = 'https://docs.langalpha.ai/concepts/claude-code/';
-export const CLAUDE_CODE_REQUIREMENTS_URL = `${CLAUDE_CODE_DOCS_URL}#requirements`;
+/** Where the user docs explain Claude Code mode, and the sections its
+ *  surfaces link to in place of explaining it themselves. */
+export const CLAUDE_CODE_DOCS_URL = `${DOCS_URL}/concepts/claude-code/`;
+export const CLAUDE_CODE_DOCS = {
+  howItRuns: `${CLAUDE_CODE_DOCS_URL}#how-it-runs`,
+  requirements: `${CLAUDE_CODE_DOCS_URL}#requirements`,
+  whereItRuns: `${CLAUDE_CODE_DOCS_URL}#where-it-runs-and-when-it-can-run`,
+  setUp: `${CLAUDE_CODE_DOCS_URL}#set-it-up`,
+  fromClaudeSignIn: `${CLAUDE_CODE_DOCS_URL}#moving-from-the-claude-sign-in`,
+} as const;
+
+const TOKEN_ADDED: ReadonlySet<ClaudeCodeSetupState> = new Set(['connected', 'checking', 'refused', 'offline']);
+
+/** Whether the user turned Claude Code on and added a token: what is left to
+ *  do is in its own view, not in setup or the announcement. */
+export const claudeCodeTokenAdded = (setup: ClaudeCodeSetup | null | undefined): boolean =>
+  !!setup?.on && TOKEN_ADDED.has(setup.state);
+
+/** Whether Claude Code is on and a token of the user's works: its models
+ *  can run now. */
+export const claudeCodeConnected = (
+  setup: ClaudeCodeSetup | null | undefined,
+): setup is ClaudeCodeSetup & { on: true; state: 'connected' } =>
+  !!setup?.on && setup.state === 'connected';
 
 /** Claude Code's status word on its row under Connect a subscription and in
  *  Model access, by where it stands as a whole. */
@@ -42,6 +63,28 @@ export const CLAUDE_CODE_SETUP_STATUS: Readonly<Record<ClaudeCodeSetupState, Row
   unsupported: 'unavailable',
   no_computer: 'needs_computer',
 };
+
+/** Claude Code's row under Connect a subscription. */
+export interface ClaudeCodeChoice {
+  status: RowStatus;
+  note: string;
+  onPick: () => void;
+}
+
+/** Claude Code's choice under Connect a subscription, in Settings and the
+ *  setup wizard alike: its status word, and a note naming where this server
+ *  runs it (the user's own computer, and a cloud computer or this server
+ *  where it offers one). None where the server offers no Claude Code. */
+export function claudeCodeChoice(setup: ClaudeCodeSetup | null, unread: boolean, onPick: () => void): ClaudeCodeChoice | undefined {
+  if (!setup && !unread) return undefined;
+  const onCloud = isPlatformMode ? setup?.cloud : setup?.saved_token_runs && setup.cli_in_sandbox;
+  const note = onCloud ? 'pickNoteCloud' : !isPlatformMode && setup?.saved_token_runs ? 'pickNoteServer' : 'pickNote';
+  return {
+    status: setup ? CLAUDE_CODE_SETUP_STATUS[setup.state] : 'unknown',
+    note: `modelAccess.claudeCode.setup.${note}`,
+    onPick,
+  };
+}
 
 /** The version of the consent copy this bundle shows before a user stores
  *  their setup token, which the store sends: a tab still showing an older

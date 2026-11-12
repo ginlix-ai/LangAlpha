@@ -25,7 +25,7 @@ import type { TokenAction, TokenRow } from '@/components/modelAccess/tokenLine';
 import { SAVED_TOKEN, computerTokenTarget, type SheetAction, type TokenTarget } from '@/components/modelAccess/tokenTarget';
 import { canRemoteControl } from '@/lib/desktop';
 import { cn } from '@/lib/utils';
-import { CLAUDE_CODE_DOCS_URL, CLAUDE_CODE_FEATURE, CLAUDE_CODE_REQUIREMENTS_URL, biggerComputer } from '@/lib/claudeCode';
+import { CLAUDE_CODE_DOCS, CLAUDE_CODE_FEATURE, biggerComputer } from '@/lib/claudeCode';
 import { IdentityTile } from '@/pages/ChatAgent/components/mcp/IdentityTile';
 import { openComputerSpec, openComputersPanel } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import { useSaveFailedToast } from '../usePreferenceWrite';
@@ -37,8 +37,14 @@ import { claudeCodeHeadline } from './claudeCodeHeadline';
 
 const S = 'modelAccess.claudeCode.setup';
 
-/** The states where nothing the user has can run Claude Code yet. */
-const CANNOT_RUN_YET = new Set<ClaudeCodeSetup['state']>(['no_computer', 'unsupported', 'offline']);
+/** The docs section the view's Learn more opens, by what the view asks of
+ *  the user: what a computer needs, where it runs while one is out of reach,
+ *  else how it runs. */
+const LEARN_MORE: Partial<Record<ClaudeCodeSetup['state'], string>> = {
+  no_computer: CLAUDE_CODE_DOCS.requirements,
+  unsupported: CLAUDE_CODE_DOCS.requirements,
+  offline: CLAUDE_CODE_DOCS.whereItRuns,
+};
 
 const glyph = (Icon: typeof Laptop) => <Icon aria-hidden="true" className="h-4 w-4" style={{ color: 'var(--color-text-secondary)' }} />;
 const iconOf = (kind: ClaudeCodeComputer['kind'] | undefined) => glyph(kind === 'helper' ? Laptop : SquareTerminal);
@@ -166,11 +172,14 @@ const ROWS = 'grid grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-3 gap-y-5';
  * it; what opens is portaled out of its panel, which goes inert and fades
  * while covered.
  */
-export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
+export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover, onLeave }: {
   setup: ClaudeCodeSetup | null;
   tokenRows: TokenRow[];
   onRemoveToken: (target: TokenTarget) => void;
   onCover: (covered: boolean) => void;
+  /** Called before a computer action leaves for the computers panel in the
+   *  app: setup passes its exit, so the user is not sent back to it. */
+  onLeave?: () => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -209,8 +218,12 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
     if (!on && !(await turn(true))) return;
     setToken({ target, action });
   };
-  const onComputers = (panel: Parameters<typeof openComputersPanel>[0]) => {
+  const toChat = () => {
+    onLeave?.();
     navigate('/chat');
+  };
+  const onComputers = (panel: Parameters<typeof openComputersPanel>[0]) => {
+    toChat();
     openComputersPanel(panel);
   };
   const viewComputer = (computerId: string) => (
@@ -314,6 +327,10 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
     || setup.cloud
     || (!offeredSaved && !setup.computers.some((c) => c.state === 'off' && c.source !== 'machine'))
   );
+  // The ways to connect a computer, where none can run it yet, and where the
+  // user chose to run it on their own computers and has none.
+  const offerComputers = setup?.state === 'no_computer' || setup?.state === 'unsupported'
+    || (on && custody?.mode === 'local' && setup?.computers.length === 0);
   const remoteControl = canRemoteControl();
   const bigger = biggerComputer(false);
   const tooSmall = setup?.too_small ?? [];
@@ -336,7 +353,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
       size="sm"
       className={ROW_BUTTON}
       onClick={() => {
-        navigate('/chat');
+        toChat();
         openComputerSpec(computerId);
       }}
     >
@@ -349,7 +366,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
       <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
         {t(S + '.lead')}{' '}
         <a
-          href={setup && CANNOT_RUN_YET.has(setup.state) ? CLAUDE_CODE_REQUIREMENTS_URL : CLAUDE_CODE_DOCS_URL}
+          href={(setup && LEARN_MORE[setup.state]) ?? CLAUDE_CODE_DOCS.howItRuns}
           target="_blank"
           rel="noopener noreferrer"
           className="tap-target inline-flex items-center gap-0.5 underline underline-offset-2 hover:opacity-80"
@@ -431,7 +448,7 @@ export function ClaudeCodeSheet({ setup, tokenRows, onRemoveToken, onCover }: {
         </div>
       )}
 
-      {(setup?.state === 'no_computer' || setup?.state === 'unsupported') && (
+      {offerComputers && (
         <div className={ROWS}>
           <Group subgrid title={t(S + '.waysTitle')} empty="">
             {[

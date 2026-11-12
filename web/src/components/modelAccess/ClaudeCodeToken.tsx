@@ -1,17 +1,20 @@
 import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { ExternalLink, MoreHorizontal, Shield } from 'lucide-react';
+import { ChevronDown, ExternalLink, MoreHorizontal, Shield } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Loader } from '@/components/ui/loader';
+import { Disclosure } from '@/components/ui/Disclosure';
 import { ModalShell } from '@/components/ui/ModalShell';
 import { useNow } from '@/hooks/useNow';
 import { apiErrorStatus } from '@/api/errors';
 import { readOAuthError } from '@/api/oauth';
 import { useClaudeCodeComputers, useClaudeCodeStatus } from '@/hooks/useClaudeCode';
-import { CLAUDE_CODE_UNRUNNABLE } from '@/lib/claudeCode';
+import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_DOCS, CLAUDE_CODE_UNRUNNABLE } from '@/lib/claudeCode';
+import { cn } from '@/lib/utils';
 import { countdown } from './countdown';
+import { ProviderTitle } from './KeyProviderPicker';
 import { CopyButton, OpenProviderLink, ROW_BUTTON } from './parts';
 import { TOKEN_ACTIONS, type TokenAction } from './tokenLine';
 import { SAVED_TOKEN, tokenCopy, tokenSheetTitle, useTokenRoutes, type SheetAction, type TokenRoutes, type TokenTarget } from './tokenTarget';
@@ -66,11 +69,12 @@ const sayRemoveFailed = (t: (key: string) => string, r: Refusal) => {
 const FALLBACK_LIFETIME_MS = 10 * 60_000;
 
 /**
- * Adds or replaces the setup token Claude Code signs in with: what the token
- * is, then each way to get one in, top to bottom: signing in to Claude, which
- * makes the token here, or pasting one made with the CLI. Each way is a
- * section that saves on its own and calls `onSaved`. For one of the user's
- * own computers the token goes onto that computer, and the copy says so.
+ * Adds or replaces the setup token Claude Code signs in with: one line on
+ * what the token is, with the rest in the docs, then each way to get one in:
+ * signing in to Claude, which makes the token here, or, folded until asked
+ * for, pasting one made with the CLI. Each way saves on its own and calls
+ * `onSaved`. For one of the user's own computers the token goes onto that
+ * computer, and the copy says so.
  */
 export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel }: {
   target?: TokenTarget;
@@ -80,31 +84,62 @@ export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel }
   const { t } = useTranslation();
   const routes = useTokenRoutes(target);
   const { keys, values } = tokenCopy(target);
+  const pasteId = useId();
+  const [pasting, setPasting] = useState(false);
+  const [pasteSaving, setPasteSaving] = useState(false);
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-2">
-        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t(keys.intro, values)}</p>
-        <p className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-          <Shield aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{t(keys.separate, values)}</span>
-        </p>
-      </div>
+      <p className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+        <Shield aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>
+          {t(keys.separate, values)}{' '}
+          <a
+            href={CLAUDE_CODE_DOCS.setUp}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-0.5 underline underline-offset-2 hover:opacity-80"
+          >
+            {t('modelAccess.claudeCode.setup.learnMore')}
+            <ExternalLink aria-hidden="true" className="h-3 w-3" />
+          </a>
+        </span>
+      </p>
       <SignInSection routes={routes} intro={t(keys.signInIntro, values)} onSaved={onSaved} />
-      <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('modelAccess.claudeCode.pasteHeading')}</h3>
-        <PastedTokenForm routes={routes} onSaved={onSaved} onCancel={onCancel} />
+      <section className="flex flex-col">
+        <button
+          type="button"
+          aria-expanded={pasting}
+          aria-controls={pasteId}
+          disabled={pasteSaving}
+          onClick={() => setPasting((v) => !v)}
+          className="tap-target inline-flex items-center gap-1 self-start text-sm font-medium hover:opacity-80"
+          style={{ color: 'var(--color-text-primary)' }}
+        >
+          <ChevronDown aria-hidden="true" className={cn('h-4 w-4 transition-transform', pasting && 'rotate-180')} />
+          {t('modelAccess.claudeCode.pasteHeading')}
+        </button>
+        <Disclosure open={pasting} id={pasteId}>
+          <div className="pt-3">
+            <PastedTokenForm routes={routes} onSaved={onSaved} onCancel={onCancel} saving={pasteSaving} setSaving={setPasteSaving} />
+          </div>
+        </Disclosure>
       </section>
     </div>
   );
 }
 
+/** The token sheet's title beside Claude Code's mark, as its view's title is. */
+export function ClaudeCodeTokenTitle({ target, action }: { target: TokenTarget; action: SheetAction }) {
+  const { t } = useTranslation();
+  return <ProviderTitle name={CLAUDE_CODE_CONNECTION.display_name} markProvider={CLAUDE_CODE} title={tokenSheetTitle(t, target, action)} />;
+}
+
 /** The sheet in a dialog of its own, for a surface with no sheet to open it
  *  in, stacked over the dialog it was opened from. */
 export function ClaudeCodeTokenModal({ target, action, onClose }: { target: TokenTarget; action: SheetAction; onClose: () => void }) {
-  const { t } = useTranslation();
   const titleId = useId();
   return (
-    <ModalShell labelId={titleId} title={tokenSheetTitle(t, target, action)} onClose={onClose} stacked>
+    <ModalShell labelId={titleId} title={<ClaudeCodeTokenTitle target={target} action={action} />} onClose={onClose} stacked>
       <ClaudeCodeTokenSheet target={target} onSaved={onClose} onCancel={onClose} />
     </ModalShell>
   );
@@ -327,12 +362,19 @@ function SignInSection({ routes, intro, onSaved }: { routes: TokenRoutes; intro:
  * Anthropic taking the token, so a refused one is never saved. The token
  * lives in this form's field alone, and leaves with it.
  */
-function PastedTokenForm({ routes, onSaved, onCancel }: { routes: TokenRoutes; onSaved: () => void; onCancel: () => void }) {
+function PastedTokenForm({ routes, onSaved, onCancel, saving, setSaving }: {
+  routes: TokenRoutes;
+  onSaved: () => void;
+  onCancel: () => void;
+  /** Whether a save is in flight, held by the sheet, which keeps the form
+   *  from folding away while one is. */
+  saving: boolean;
+  setSaving: (saving: boolean) => void;
+}) {
   const { t } = useTranslation();
   const fieldId = useId();
   const errorId = useId();
   const [token, setToken] = useState('');
-  const [saving, setSaving] = useState(false);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const run = useRef(0);
   useEffect(() => () => { run.current += 1; }, []);

@@ -51,6 +51,11 @@ export interface OAuthStatus {
   expires_at: string | null;
   needs_reauth_at: string | null;
   last_error_code: string | null;
+  /** Whether the user may start a sign-in (null from a server that does not
+   *  say, which lets everyone), and the day (YYYY-MM-DD) signing in stops
+   *  working here, where the deployment set one. */
+  can_sign_in: boolean | null;
+  ends_on: string | null;
 }
 
 export interface DeviceCode {
@@ -96,6 +101,8 @@ function normalizeStatus(data: Partial<OAuthStatus> | null | undefined): OAuthSt
     expires_at: data?.expires_at ?? null,
     needs_reauth_at: data?.needs_reauth_at ?? null,
     last_error_code: data?.last_error_code ?? null,
+    can_sign_in: data?.can_sign_in ?? null,
+    ends_on: data?.ends_on ?? null,
   };
 }
 

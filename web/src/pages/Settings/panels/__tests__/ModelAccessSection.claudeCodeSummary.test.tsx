@@ -16,6 +16,7 @@ vi.mock('@/hooks/useProviderCatalog', () => ({
 }));
 vi.mock('@/hooks/useConfiguredProviders', () => ({
   useConfiguredProviders: () => ({ providers: [], withdrawn: [], configuredSet: new Set(), statusLoading: false, statusError: false }),
+  useOAuthStatus: () => ({ data: undefined }),
 }));
 vi.mock('@/api/model', () => ({
   getClaudeCodeSetup: vi.fn(),

@@ -20,11 +20,13 @@ export function claudeCodeHeadline(
   const only = own.length === 1 ? own[0].name : null;
   switch (setup.state) {
     case 'no_computer':
-      return { title: t(S + '.noComputer.title'), body: t(setup.cloud ? S + '.noComputer.bodyCloud' : S + '.noComputer.body') };
+      return { title: t(S + '.noComputer.title'), body: t(S + '.noComputer.body') };
     case 'unsupported':
       return { title: t(S + '.unsupported.title'), body: t(S + '.unsupported.body') };
     case 'offline':
-      return { title: only ? t(S + '.offline.title', { name: only }) : t(S + '.offline.titleMany'), body: t(S + '.offline.body') };
+      return only
+        ? { title: t(S + '.offline.title', { name: only }), body: t(S + '.offline.body') }
+        : { title: t(S + '.offline.titleMany'), body: t(S + '.offline.bodyMany') };
     case 'not_connected': {
       // Where no own computer can take a token, the saved token or the choice
       // for cloud computers is what is left to set.

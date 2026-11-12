@@ -64,7 +64,7 @@ describe('ClaudeCodeTokenSheet for a computer', () => {
       <ClaudeCodeTokenSheet target={{ kind: 'computer', computerId: 'cmp-mac', name: 'Studio Mac' }} onSaved={onSaved} onCancel={() => {}} />,
       { queryClient: client() },
     );
-    expect(screen.getByText(/It stays on Studio Mac, and LangAlpha doesn't keep a copy/)).toBeInTheDocument();
+    expect(screen.getByText(/This token stays on Studio Mac\./)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Claude' }));
     fireEvent.change(await screen.findByLabelText('Code from Claude'), { target: { value: CODE } });
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
@@ -86,6 +86,7 @@ describe('ClaudeCodeTokenSheet for a computer', () => {
     queryClient.setQueryData(LIST_KEY, { computers: [MAC, { ...BOX, check_in: 120 }], cloud_refusals: CLOUD_REFUSALS }, { updatedAt: 1_000 });
     const onSaved = vi.fn();
     renderWithProviders(<ClaudeCodeTokenSheet target={BOX_TARGET} onSaved={onSaved} onCancel={() => {}} />, { queryClient });
+    fireEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     fireEvent.change(screen.getByLabelText('Setup token'), { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
@@ -99,6 +100,7 @@ describe('ClaudeCodeTokenSheet for a computer', () => {
     queryClient.setQueryData(LIST_KEY, { computers: [MAC, BOX], cloud_refusals: CLOUD_REFUSALS }, { updatedAt: listAt });
     const onSaved = vi.fn();
     renderWithProviders(<ClaudeCodeTokenSheet target={BOX_TARGET} onSaved={onSaved} onCancel={() => {}} />, { queryClient });
+    fireEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     fireEvent.change(screen.getByLabelText('Setup token'), { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
     const answeredAt = Date.now();
@@ -112,6 +114,7 @@ describe('ClaudeCodeTokenSheet for a computer', () => {
     (saveClaudeCodeToken as Mock).mockResolvedValue({ ...STATUS, state: 'signed_in', saved: true });
     const onSaved = vi.fn();
     const { queryClient } = renderWithProviders(<ClaudeCodeTokenSheet onSaved={onSaved} onCancel={() => {}} />, { queryClient: client() });
+    fireEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     fireEvent.change(screen.getByLabelText('Setup token'), { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
@@ -132,6 +135,7 @@ describe('ClaudeCodeTokenSheet for a computer', () => {
       <ClaudeCodeTokenSheet target={BOX_TARGET} onSaved={() => {}} onCancel={() => {}} />,
       { queryClient: client() },
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Already have a setup token? Paste it' }));
     fireEvent.change(screen.getByLabelText('Setup token'), { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
     await screen.findByRole('alert');

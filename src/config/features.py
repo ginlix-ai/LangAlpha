@@ -11,6 +11,8 @@ Each feature carries two orthogonal controls:
     * ``plan``    — requires a platform plan whose access tier meets the
       feature's ``min_tier`` (OSS/self-hosted deployments bypass plan gates,
       matching the search-provider tier-gating convention)
+    * ``grant``   — off unless granted to the user: an override the server
+      or a migration writes, which the user can neither see nor set
 
 Three definition layers, resolved in order:
 
@@ -23,7 +25,8 @@ Three definition layers, resolved in order:
    override of ``enabled`` / ``gate`` / ``min_tier``; unset fields inherit
    the catalog.
 3. **User override** (``user_preferences.other_preference.feature_overrides``,
-   server-side): honored only for ``opt_in``/``opt_out`` gates.
+   server-side): honored only for ``opt_in``/``opt_out``/``grant`` gates,
+   and set by the user only for the first two.
 
 Server code resolves per-user via ``src.server.services.features``; this
 module stays user-agnostic so the agent library can consult defaults.
@@ -42,6 +45,7 @@ class FeatureGate(StrEnum):
     OPT_IN = "opt_in"
     OPT_OUT = "opt_out"
     PLAN = "plan"
+    GRANT = "grant"
 
 
 # Gates whose features accept a per-user override (the Settings toggle).
@@ -179,9 +183,8 @@ FEATURES: dict[str, FeatureSpec] = {
         label="Claude Code runtime (preview)",
         description=(
             "Runs your Claude threads through Claude Code on your own Claude "
-            "plan. It signs in with a setup token, a separate credential you "
-            "make for LangAlpha that never touches your own Claude Code "
-            "sign-in. Claude Code runs on your own computers, and where this "
+            "plan. It signs in with a setup token made for LangAlpha. Claude "
+            "Code runs on your own computers, and where this "
             "server offers it, also on cloud computers, with your setup token. "
             "Choose where it runs in Settings under Model access."
         ),
@@ -205,6 +208,18 @@ FEATURES: dict[str, FeatureSpec] = {
             "where the cache lasts an hour, such as a Claude subscription."
         ),
         enabled=False,
+        gate=FeatureGate.NONE,
+    ),
+    # Who may sign in with Claude (the ``claude-oauth`` provider), which
+    # Claude Code replaces. Everyone by default; a deployment retiring it for
+    # new sign-ins sets the gate to ``grant``, and migration 121 granted it to
+    # every user with a Claude sign-in stored, who keep reconnecting it. A
+    # sign-in already stored keeps working either way.
+    "claude_oauth": FeatureSpec(
+        key="claude_oauth",
+        label="Sign in with Claude",
+        description="Connect a Claude Pro or Max plan by signing in with your Claude account.",
+        enabled=True,
         gate=FeatureGate.NONE,
     ),
     "a_share_pack": FeatureSpec(
@@ -291,7 +306,7 @@ def effective_flags(
         override = override if isinstance(override, bool) else None
         if flag.gate is FeatureGate.NONE:
             resolved[key] = True
-        elif flag.gate is FeatureGate.OPT_IN:
+        elif flag.gate in (FeatureGate.OPT_IN, FeatureGate.GRANT):
             resolved[key] = override is True
         elif flag.gate is FeatureGate.OPT_OUT:
             resolved[key] = override is not False

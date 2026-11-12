@@ -72,10 +72,10 @@ function Where() {
   return <span>{`at:${useLocation().pathname}`}</span>;
 }
 
-function show(setup: ClaudeCodeSetup | null, tokenRows: TokenRow[] = []) {
+function show(setup: ClaudeCodeSetup | null, tokenRows: TokenRow[] = [], onLeave?: () => void) {
   return renderWithProviders(
     <>
-      <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} onRemoveToken={vi.fn()} onCover={vi.fn()} />
+      <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} onRemoveToken={vi.fn()} onCover={vi.fn()} onLeave={onLeave} />
       <Where />
     </>,
     { route: '/settings?tab=model' },
@@ -158,15 +158,26 @@ describe('ClaudeCodeSheet', () => {
     expect(screen.getByRole('link', { name: /Get the Mac app/ })).toHaveAttribute('href', 'https://langalpha.ai/download');
     fireEvent.click(screen.getByRole('button', { name: 'Add SSH computer' }));
     expect(h.opened).toEqual([{ view: 'create' }]);
-    expect(screen.getByText(/runs Anthropic's Claude Code through the Claude Agent SDK/)).toBeInTheDocument();
+    expect(screen.getByText(/^Runs Claude Code on your Claude plan\./)).toBeInTheDocument();
     expect(screen.queryByText(/differs from the other sign-ins/)).toBeNull();
     expect(screen.getByRole('link', { name: /Learn more/ })).toHaveAttribute('href', 'https://docs.langalpha.ai/concepts/claude-code/#requirements');
     expect(screen.queryByRole('button', { name: 'Turn off Claude Code' })).toBeNull();
   });
 
-  it('where cloud computers run it too, says so instead of saying they cannot yet', () => {
+  it.each([
+    ['no_computer', '#requirements'],
+    ['unsupported', '#requirements'],
+    ['offline', '#where-it-runs-and-when-it-can-run'],
+    ['not_connected', '#how-it-runs'],
+    ['connected', '#how-it-runs'],
+  ] as const)('while %s, links the docs section on it', (state, anchor) => {
+    show(setupOf({ state, on: true, computers: state === 'offline' ? [mac('offline')] : [] }));
+    expect(screen.getAllByRole('link', { name: /Learn more/ })[0]).toHaveAttribute('href', 'https://docs.langalpha.ai/concepts/claude-code/' + anchor);
+  });
+
+  it('where cloud computers could run it, does not say they cannot yet', () => {
     show(setupOf({ cloud: true }));
-    expect(screen.getByText(/or a Medium or larger cloud computer, and none of yours can run it yet/)).toBeInTheDocument();
+    expect(screen.getByText('Connect one below, then come back here to sign in to Claude.')).toBeInTheDocument();
     expect(screen.queryByText(/Cloud computers can't run Claude Code yet/)).toBeNull();
   });
 
@@ -212,7 +223,7 @@ describe('ClaudeCodeSheet', () => {
     cloud.unmount();
     show(setupOf({ state: 'not_connected', saved_token_runs: true }));
     expect(screen.getByText('Your setup token')).toBeInTheDocument();
-    expect(screen.queryByText(/^Runs Claude Code on/)).toBeNull();
+    expect(screen.queryByText(/^Runs Claude Code on (this server|your cloud computers)/)).toBeNull();
   });
 
   it('names no cloud computer where none is too small', () => {
@@ -237,7 +248,7 @@ describe('ClaudeCodeSheet', () => {
   it('where only a cloud computer would run it, asks to set it up rather than to sign in', () => {
     show(setupOf({ state: 'not_connected', cloud: true }));
     expect(screen.getByText('Set up Claude Code to start')).toBeInTheDocument();
-    expect(screen.getByText('Turn on Claude Code to choose how it runs on cloud computers.')).toBeInTheDocument();
+    expect(screen.getByText('Turn it on to choose where it runs.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Turn on Claude Code' })).toBeInTheDocument();
   });
 
@@ -304,10 +315,10 @@ describe('ClaudeCodeSheet', () => {
   const lab = (state: ClaudeCodeComputer['state'], extra: Partial<ClaudeCodeComputer> = {}) =>
     mac(state, { computer_id: 'lab', name: 'Lab box', source: 'machine', ...extra });
   const HOME_LAB = cos({ kind: 'own', computer_id: 'lab', name: 'Lab box' });
-  const HOME_SAYS = "Your Chief of Staff runs Claude Code on Home's computer, Lab box.";
+  const HOME_SAYS = 'Your Chief of Staff runs it on Lab box.';
   it.each([
-    ['both on the picked computer', cos({}), PICKED, [], 'Claude Code for your cloud workspaces and your Chief of Staff runs on MacBook Pro.'],
-    ["Home's own cloud computer", cos({ kind: 'home_cloud', computer_id: 'cmp-home', name: 'Home desk' }), null, [], "Your Chief of Staff runs Claude Code on Home's computer, Home desk."],
+    ['both on the picked computer', cos({}), PICKED, [], 'It runs on MacBook Pro for your cloud workspaces and Chief of Staff.'],
+    ["Home's own cloud computer", cos({ kind: 'home_cloud', computer_id: 'cmp-home', name: 'Home desk' }), null, [], 'Your Chief of Staff runs it on Home desk.'],
     ["Home's own computer, the cloud workspaces on a picked one", HOME_LAB, PICKED, [lab('signed_in')], HOME_SAYS],
     ["Home's own computer on a token not checked yet", HOME_LAB, PICKED, [lab('unverified')], HOME_SAYS],
     ["Home's own computer with no token, another one connected", HOME_LAB, PICKED, [lab('no_token', { source: null })], null],
@@ -324,7 +335,7 @@ describe('ClaudeCodeSheet', () => {
     h.cliComputer = cliComputer;
     show(setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' }), ...more], chief_of_staff: chiefOfStaff }));
     expect(screen.getByText('Claude Code is ready')).toBeInTheDocument();
-    expect(screen.queryByText(/Chief of Staff runs/)?.textContent ?? null).toBe(words);
+    expect(screen.queryByText(/Chief of Staff/)?.textContent ?? null).toBe(words);
   });
 
   it('while a token is checked, leads with a title and a sentence as every other state does', () => {
@@ -333,11 +344,31 @@ describe('ClaudeCodeSheet', () => {
     expect(screen.getByText('LangAlpha is asking Claude whether each token works.')).toBeInTheDocument();
   });
 
+  it('offers the ways to connect a computer where the user chose their own computers and has none', () => {
+    h.custody = { mode: 'local' };
+    const onLeave = vi.fn();
+    show(setupOf({ state: 'not_connected', on: true, cloud: true }), [], onLeave);
+    fireEvent.click(screen.getByRole('button', { name: 'Add SSH computer' }));
+    expect(h.opened).toEqual([{ view: 'create' }]);
+    expect(screen.getByText('at:/chat')).toBeInTheDocument();
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['their token is stored for cloud computers', { mode: 'stored' }, [], true],
+    ['they have a computer of their own', { mode: 'local' }, [mac('offline')], true],
+    ['Claude Code is off, so where it runs is not chosen yet', { mode: 'local' }, [], false],
+  ])('offers no way to connect a computer where %s', (_, custody, computers, on) => {
+    h.custody = custody;
+    show(setupOf({ state: 'not_connected', on, cloud: true, computers }));
+    expect(screen.queryByText('Ways to connect a computer')).toBeNull();
+  });
+
   it('warns that turning off removes the token stored for cloud computers', () => {
     h.custody = { mode: 'stored' };
     show(setupOf({ state: 'connected', on: true }));
     fireEvent.click(screen.getByRole('button', { name: 'Turn off Claude Code' }));
-    expect(screen.getByText(/the setup token for cloud computers is removed/)).toBeInTheDocument();
+    expect(screen.getByText(/LangAlpha deletes the token stored for cloud computers/)).toBeInTheDocument();
   });
 
   // An operator's gate the user cannot override offers no switch either way.

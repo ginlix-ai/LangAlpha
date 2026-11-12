@@ -19,6 +19,7 @@ vi.mock('@/hooks/useProviderCatalog', () => ({
 }));
 vi.mock('@/hooks/useConfiguredProviders', () => ({
   useConfiguredProviders: () => ({ providers: [], withdrawn: [], configuredSet: new Set(), statusLoading: false, statusError: false }),
+  useOAuthStatus: () => ({ data: undefined }),
 }));
 vi.mock('@/api/model', () => ({
   getClaudeCodeSetup: vi.fn(),
@@ -239,10 +240,11 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     const { queryClient } = render();
     fireEvent.click(within(await rowOf('Lab box')).getByRole('button', { name: 'Add setup token' }));
     const dialog = screen.getByRole('dialog', { name: 'Add a setup token for Lab box' });
-    expect(within(dialog).getByText(/runs your Claude threads on Lab box/)).toBeInTheDocument();
-    expect(within(dialog).getByText(/puts it on Lab box/)).toBeInTheDocument();
-    // Sign in leads; paste follows under it.
+    expect(within(dialog).getByText(/This token stays on Lab box\./)).toBeInTheDocument();
+    expect(within(dialog).getByText(/puts a token on Lab box/)).toBeInTheDocument();
+    // Sign in leads; paste follows under it, folded until asked for.
     const signIn = within(dialog).getByRole('button', { name: 'Sign in with Claude' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Already have a setup token? Paste it' }));
     const paste = within(dialog).getByLabelText('Setup token');
     expect(signIn.compareDocumentPosition(paste) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.change(paste, { target: { value: TOKEN } });

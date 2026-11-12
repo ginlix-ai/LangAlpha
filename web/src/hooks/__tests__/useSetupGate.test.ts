@@ -6,15 +6,21 @@ import { useSetupGate, skipSetup } from '../useSetupGate';
 vi.mock('../useUser', () => ({
   useUser: vi.fn(),
 }));
+vi.mock('../useClaudeCode', () => ({
+  useClaudeCodeSetup: vi.fn(),
+}));
 
 import { useUser } from '../useUser';
+import { useClaudeCodeSetup } from '../useClaudeCode';
 
 const mockUseUser = useUser as Mock;
+const mockUseClaudeCodeSetup = useClaudeCodeSetup as Mock;
 
 describe('useSetupGate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionStorage.clear();
+    mockUseClaudeCodeSetup.mockReturnValue({ setup: null, isLoading: false, unread: false });
   });
 
   it('returns needsSetup=false when user has_api_key=true', () => {
@@ -62,6 +68,46 @@ describe('useSetupGate', () => {
     const { result } = renderHookWithProviders(() => useSetupGate());
 
     expect(result.current.needsSetup).toBe(false);
+  });
+
+  // Claude Code runs on the user's own Claude plan, from a token the profile
+  // cannot name; on is not enough, since a server can turn it on for everyone.
+  const NONE = { user_id: 'u-cc', email: 'c@c.c', has_api_key: false, has_oauth_token: false, access_tier: -1 };
+  it.each([
+    ['connected', true, false],
+    ['refused', true, false],
+    ['offline', true, false],
+    ['not_connected', true, true],
+    ['no_computer', true, true],
+    ['connected', false, true],
+  ] as const)('with a Claude Code setup %s (on: %s), needsSetup is %s', (state, on, needsSetup) => {
+    mockUseUser.mockReturnValue({ user: NONE, isLoading: false });
+    mockUseClaudeCodeSetup.mockReturnValue({ setup: { state, on }, isLoading: false, unread: false });
+
+    const { result } = renderHookWithProviders(() => useSetupGate());
+
+    expect(result.current).toEqual({ isLoading: false, needsSetup });
+    expect(mockUseClaudeCodeSetup).toHaveBeenLastCalledWith({ enabled: true });
+  });
+
+  it('sends no one to setup on a Claude Code setup read that failed', () => {
+    mockUseUser.mockReturnValue({ user: NONE, isLoading: false });
+    mockUseClaudeCodeSetup.mockReturnValue({ setup: null, isLoading: false, unread: true });
+
+    const { result } = renderHookWithProviders(() => useSetupGate());
+
+    expect(result.current).toEqual({ isLoading: false, needsSetup: false });
+  });
+
+  it('waits on the Claude Code setup read only for a user nothing else lets through', () => {
+    mockUseUser.mockReturnValue({ user: NONE, isLoading: false });
+    mockUseClaudeCodeSetup.mockReturnValue({ setup: null, isLoading: true, unread: false });
+    expect(renderHookWithProviders(() => useSetupGate()).result.current.isLoading).toBe(true);
+
+    mockUseUser.mockReturnValue({ user: { ...NONE, has_api_key: true }, isLoading: false });
+    const { result } = renderHookWithProviders(() => useSetupGate());
+    expect(result.current).toEqual({ isLoading: false, needsSetup: false });
+    expect(mockUseClaudeCodeSetup).toHaveBeenLastCalledWith({ enabled: false });
   });
 
   it('returns needsSetup=true when user has none of the three', () => {

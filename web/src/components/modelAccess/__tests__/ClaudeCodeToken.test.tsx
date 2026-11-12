@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
+import { CLAUDE_CODE_DOCS } from '@/lib/claudeCode';
 import { queryKeys } from '@/lib/queryKeys';
 
 const clock = vi.hoisted(() => ({ now: 0 }));
@@ -30,10 +31,13 @@ const TOKEN = 'sk-ant-oat01-placeholder';
 const refusal = (code: string, message = 'server words', retryable = true) =>
   Object.assign(new Error('Request failed'), { response: { status: 400, data: { detail: message, error: { code, message, retryable } } } });
 
-function setup() {
+const PASTE = 'Already have a setup token? Paste it';
+
+function setup({ paste = true } = {}) {
   const onSaved = vi.fn();
   const view = renderWithProviders(<ClaudeCodeTokenSheet onSaved={onSaved} onCancel={() => {}} />);
-  const field = screen.getByLabelText('Setup token') as HTMLInputElement;
+  if (paste) fireEvent.click(screen.getByRole('button', { name: PASTE }));
+  const field = screen.queryByLabelText('Setup token') as HTMLInputElement;
   const submit = () => fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
   return { ...view, onSaved, field, submit };
 }
@@ -41,9 +45,10 @@ function setup() {
 describe('ClaudeCodeTokenSheet', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('says the token is its own credential, and links the install guide', () => {
+  it('says the token is its own credential, and links the docs and the install guide', () => {
     setup();
-    expect(screen.getByText(/never your Claude Code sign-in/)).toBeInTheDocument();
+    expect(screen.getByText(/^LangAlpha keeps this token encrypted\./)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Learn more/ })).toHaveAttribute('href', CLAUDE_CODE_DOCS.setUp);
     expect(screen.getByRole('link', { name: /Install guide/ })).toHaveAttribute('href', 'https://code.claude.com/docs/en/setup');
     expect(screen.getByText('claude setup-token')).toBeInTheDocument();
   });
@@ -70,6 +75,8 @@ describe('ClaudeCodeTokenSheet', () => {
     expect(save).toHaveBeenCalledWith(TOKEN);
     expect(screen.getByRole('button', { name: /Checking with Claude…/ })).toBeDisabled();
     expect(field).toBeDisabled();
+    // Folding the form away mid-save would drop the answer.
+    expect(screen.getByRole('button', { name: PASTE })).toBeDisabled();
     const status = { state: 'signed_in', email: null, expires_at: '2027-10-29T12:00:00Z' };
     await act(async () => { resolve(status); });
     expect(onSaved).toHaveBeenCalledTimes(1);
@@ -202,11 +209,16 @@ describe('ClaudeCodeTokenSheet: Sign in with Claude', () => {
     return { ...view, codeField: field, connect };
   }
 
-  it('sits above the paste path, which keeps its own heading', () => {
-    setup();
-    const heading = screen.getByRole('heading', { name: 'Already have a setup token? Paste it' });
-    expect(startButton().compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByText(/makes a setup token for itself/)).toBeInTheDocument();
+  it('sits above the paste path, which stays folded until asked for', () => {
+    setup({ paste: false });
+    const toggle = screen.getByRole('button', { name: PASTE });
+    expect(startButton().compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText(/LangAlpha makes the token for you/)).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByLabelText('Setup token')).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('Setup token')).toBeInTheDocument();
   });
 
   // The user's own click opens Claude, which no popup blocker stops; a

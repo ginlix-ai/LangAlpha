@@ -122,6 +122,30 @@ def test_gate_plan_without_min_tier_fails_closed_in_platform(monkeypatch):
     )
 
 
+def test_reset_preferences_keeps_only_the_overrides_on_the_grant_gate(monkeypatch):
+    from src.server.services.features import granted_override_keys
+
+    assert granted_override_keys() == []
+    _stub_config(monkeypatch, claude_oauth={"gate": "grant"})
+    assert granted_override_keys() == ["claude_oauth"]
+
+
+def test_gate_grant_is_off_until_granted_and_takes_only_true(monkeypatch):
+    _stub_config(monkeypatch, market_watch={"gate": "grant"})
+    assert effective_flags(None)["market_watch"] is False
+    assert effective_flags({"market_watch": True})["market_watch"] is True
+    assert effective_flags({"market_watch": "yes"})["market_watch"] is False
+    assert default_feature_enabled("market_watch") is False
+
+
+def test_claude_sign_in_is_open_to_everyone_until_a_deployment_gates_it(monkeypatch):
+    _stub_config(monkeypatch)
+    assert effective_flags(None)["claude_oauth"] is True
+    _stub_config(monkeypatch, claude_oauth={"gate": "grant"})
+    assert effective_flags(None)["claude_oauth"] is False
+    assert effective_flags({"claude_oauth": True})["claude_oauth"] is True
+
+
 def test_unknown_override_keys_are_ignored(monkeypatch):
     _stub_config(monkeypatch)
     resolved = effective_flags({"no_such_feature": True})

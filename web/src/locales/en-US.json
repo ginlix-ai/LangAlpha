@@ -4134,7 +4134,7 @@
     "methodTitle": "How would you like to connect?",
     "methodSubtitle": "Choose how you'll access AI models. You can add more providers later.",
     "methodOAuth": "Use a subscription",
-    "methodOAuthDesc": "Sign in to ChatGPT, Claude or Grok, or add a coding plan from Kimi, GLM, MiniMax or OpenCode.",
+    "methodOAuthDesc": "Use Claude Code, sign in to ChatGPT or Grok, or add a coding plan from Kimi, GLM, MiniMax or OpenCode.",
     "methodApiKey": "I have an API key",
     "methodApiKeyDesc": "Pay per token, from any provider.",
     "methodLocal": "I run models locally",
@@ -6783,7 +6783,7 @@
       "open": "Open OpenAI"
     },
     "claudeCode": {
-      "detail": "Its own setup token, not your Claude Code sign-in",
+      "detail": "Its own setup token",
       "rejected": "Claude refused this token. It may have expired or been revoked.",
       "add": "Add setup token",
       "addNew": "Add new token",
@@ -6792,14 +6792,13 @@
       "moreActions": "More actions",
       "addTitle": "Add a setup token",
       "replaceTitle": "Replace setup token",
-      "intro": "Claude Code mode runs your Claude threads on your own Claude plan. It signs in with a setup token made for LangAlpha.",
-      "separate": "This token is a separate credential made for LangAlpha, never your Claude Code sign-in. Usage counts against your Claude plan. It's stored encrypted and used only for your requests.",
+      "separate": "LangAlpha keeps this token encrypted.",
       "stepInstall": "Install Claude Code if you don't have it yet.",
       "installLink": "Install guide",
       "stepRun": "In a terminal, on this computer or any other, run:",
       "stepSignIn": "Sign in to Claude in the browser window it opens.",
-      "stepCopy": "Copy the token it prints. A long token can wrap onto a second line, so copy all of it.",
-      "stepPaste": "Paste it below and save.",
+      "stepCopy": "Copy the whole token it prints, even if it wraps.",
+      "stepPaste": "Paste it below.",
       "fieldLabel": "Setup token",
       "fieldPlaceholder": "Paste your setup token",
       "save": "Save token",
@@ -6819,7 +6818,7 @@
         "unknown": "Couldn't save the token. Try again."
       },
       "removeTitle": "Remove the Claude Code setup token?",
-      "removeBody": "LangAlpha deletes the token. Claude Code models stay listed but won't run until you add a new token. Your own Claude Code sign-in isn't affected.",
+      "removeBody": "Claude Code won't run where it uses this token until you add a new one.",
       "removeConfirm": "Remove token",
       "removeFailed": "Couldn't remove the token. Try again.",
       "turnsRunning": "Your token is deleted, but a Claude Code turn using it couldn't be stopped. Stop it in its thread.",
@@ -6828,7 +6827,7 @@
       "expired": "This token expired by <date>{{date}}</date>. Add a new one to keep using Claude Code.",
       "expiresSoon": "This token expires by <date>{{date}}</date>. Add a new one before then so Claude Code keeps running.",
       "signIn": {
-        "intro": "Sign in to Claude in a new tab. LangAlpha then makes a setup token for itself, so there's nothing to run in a terminal.",
+        "intro": "Sign in to Claude, and LangAlpha makes the token for you.",
         "start": "Sign in with Claude",
         "codeHint": "After you approve, Claude shows a code. Copy all of it and paste it here.",
         "fieldLabel": "Code from Claude",
@@ -6855,14 +6854,13 @@
         }
       },
       "computer": {
-        "intro": "Claude Code runs your Claude threads on {{name}}, on your own Claude plan. It signs in with a setup token made for LangAlpha, kept on that computer.",
-        "separate": "This token is a separate credential made for LangAlpha, never your Claude Code sign-in. Usage counts against your Claude plan. It stays on {{name}}, and LangAlpha doesn't keep a copy.",
-        "signInIntro": "Sign in to Claude in a new tab. LangAlpha then makes a setup token and puts it on {{name}}, so there's nothing to run in a terminal.",
+        "separate": "This token stays on {{name}}.",
+        "signInIntro": "Sign in to Claude, and LangAlpha puts a token on {{name}}.",
         "addTitle": "Add a setup token for {{name}}",
         "replaceTitle": "Replace the setup token on {{name}}",
         "removeTitle": "Remove the setup token from {{name}}?",
-        "removeBody": "LangAlpha deletes the token from {{name}}. Claude Code won't run there until you add a new one. Your own Claude Code sign-in isn't affected.",
-        "removeBodySaved": "LangAlpha deletes the token from {{name}}. Claude Code there then uses your saved token. Your own Claude Code sign-in isn't affected.",
+        "removeBody": "Claude Code won't run there until you add a new one.",
+        "removeBodySaved": "Claude Code there then uses your saved token.",
         "ownToken": "Uses its own token",
         "savedToken": "Uses your saved token",
         "noToken": "No setup token for this computer yet",
@@ -6882,10 +6880,10 @@
       "hosted": {
         "heading": "Where Claude Code runs",
         "local": "On your own computers",
-        "localDetail": "Claude Code runs on a computer of yours with its own setup token, for every workspace, including those on cloud computers. Their files and commands stay on the cloud computer, and LangAlpha keeps no copy of the token.",
+        "localDetail": "A computer of yours runs it, with a setup token LangAlpha doesn't keep.",
         "stored": "On cloud computers, with your setup token stored by LangAlpha",
-        "storedDetail": "For workspaces on Medium or larger cloud computers, Claude Code runs on the cloud computer itself. Your own computers without a token of their own run Claude Code themselves too. For each turn, LangAlpha sends your setup token, kept encrypted, to the computer that runs it. Usage counts against your Claude plan.",
-        "paused": "Claude Code on cloud computers is paused on this server. Your choice is kept, and Claude Code still runs on your own computers.",
+        "storedDetail": "Medium or larger cloud computers run it. LangAlpha keeps your setup token encrypted.",
+        "paused": "Paused on cloud computers on this server. It still runs on your own computers.",
         "blocked": "Storing a setup token isn't available for your account. Claude Code still runs on your own computers."
       },
       "consent": {
@@ -6899,13 +6897,15 @@
       },
       "leaveStored": {
         "title": "Stop storing your setup token?",
-        "body": "LangAlpha deletes your stored setup token now, and Claude Code turns using it stop. Threads on cloud computers won't run on your Claude plan until you store a token again. Computers with their own token aren't affected.",
+        "body": "LangAlpha deletes it now, and turns using it stop. Computers with their own token aren't affected.",
         "confirm": "Delete token",
         "failed": "Couldn't switch. Your token is still stored. Try again."
       },
       "setup": {
         "pickNote": "Claude Pro or Max, run on your computer",
-        "lead": "Claude Code mode runs Anthropic's Claude Code through the Claude Agent SDK, inside LangAlpha's harness and tools. Usage counts against your Claude plan.",
+        "pickNoteCloud": "Claude Pro or Max, run on your computer or a cloud computer",
+        "pickNoteServer": "Claude Pro or Max, run on this server or your computer",
+        "lead": "Runs Claude Code on your Claude plan.",
         "learnMore": "Learn more",
         "waysTitle": "Ways to connect a computer",
         "yourComputers": "Your computers",
@@ -6927,8 +6927,7 @@
         },
         "noComputer": {
           "title": "Connect a computer of your own first",
-          "body": "Claude Code runs on a computer of your own, and none is connected to LangAlpha yet. Connect one either way below, then come back here to sign in to Claude.",
-          "bodyCloud": "Claude Code runs on a computer of your own or a Medium or larger cloud computer, and none of yours can run it yet. Connect a computer of your own either way below, then come back here to sign in to Claude."
+          "body": "Connect one below, then come back here to sign in to Claude."
         },
         "unsupported": {
           "title": "Claude Code can't run on your computers",
@@ -6937,7 +6936,8 @@
         "offline": {
           "title": "{{name}} is offline",
           "titleMany": "Your computers are offline",
-          "body": "Claude Code runs on a computer of your own, and LangAlpha can't reach yours right now. Once one is back online, you can sign in to Claude here.",
+          "body": "You can sign in to Claude here once it's back online.",
+          "bodyMany": "You can sign in to Claude here once one is back online.",
           "helper": "Open LangAlpha on this Mac and check that Remote control is on.",
           "ssh": "Check that it's on and accepts SSH from LangAlpha."
         },
@@ -6947,17 +6947,17 @@
           "titleKept": "Turn Claude Code back on",
           "bodyKept": "{{name}} still has its setup token. Turn on Claude Code to use it again.",
           "bodyKeptMany": "Your computers below still have their setup tokens. Turn on Claude Code to use them again.",
-          "body": "Claude Code can run on {{name}}. Add a setup token for it, and Claude Code models join your model picker.",
-          "bodyMany": "Claude Code can run on the computers below. Add a setup token on each one you want it on.",
-          "bodySaved": "Add a setup token below, and Claude Code models join your model picker.",
-          "bodyCloud": "Choose how Claude Code runs on cloud computers below, and its models join your model picker.",
-          "bodyTurnOn": "Turn on Claude Code to choose how it runs on cloud computers."
+          "body": "Add a setup token for {{name}} below.",
+          "bodyMany": "Add a setup token for each computer you want it on.",
+          "bodySaved": "Add a setup token below.",
+          "bodyCloud": "Choose where it runs below.",
+          "bodyTurnOn": "Turn it on to choose where it runs."
         },
         "connected": {
           "title": "Claude Code is ready",
-          "body": "Claude Code models are in your model picker.",
-          "cliOwn": "Claude Code for your cloud workspaces and your Chief of Staff runs on {{name}}.",
-          "cliHome": "Your Chief of Staff runs Claude Code on Home's computer, {{name}}."
+          "body": "Its models are in your model picker.",
+          "cliOwn": "It runs on {{name}} for your cloud workspaces and Chief of Staff.",
+          "cliHome": "Your Chief of Staff runs it on {{name}}."
         },
         "checking": {
           "title": "Checking your setup tokens",
@@ -6965,15 +6965,15 @@
         },
         "refused": {
           "title": "Sign in to Claude again",
-          "body": "Claude refused the setup token on {{name}}. It may have expired or been revoked. Add a new token to keep using Claude Code.",
-          "bodyAny": "Claude refused a setup token. It may have expired or been revoked. Add a new token to keep using Claude Code."
+          "body": "Claude refused the setup token on {{name}}. Add a new one.",
+          "bodyAny": "Claude refused a setup token. Add a new one."
         },
         "turnOff": {
           "action": "Turn off Claude Code",
           "title": "Turn off Claude Code?",
-          "body": "Claude Code models leave your model picker. Setup tokens on your computers stay until you remove them, so you can turn it back on here at any time.",
+          "body": "Its models leave your model picker. Setup tokens on your computers stay until you remove them.",
           "confirm": "Turn off",
-          "bodyStored": "Claude Code models leave your model picker, and the setup token for cloud computers is removed. Tokens on your own computers stay until you remove them."
+          "bodyStored": "Its models leave your model picker, and LangAlpha deletes the token stored for cloud computers."
         },
         "savedName": "Your setup token",
         "savedDetailCloud": "Runs Claude Code on your cloud computers",
@@ -7013,13 +7013,16 @@
         "upstream_unavailable": "Claude couldn't be reached. Send the code again.",
         "save_failed": "Your account couldn't be saved.",
         "redis_unavailable": "Connecting accounts isn't available right now. Send the code again in a moment.",
+        "unavailable": "Signing in with Claude isn't available for this account.",
         "unknown": "Something went wrong while connecting."
       },
       "signInLabel": "Sign in on claude.ai",
       "open": "Open claude.ai",
       "expiresIn": "Sign-in link expires in {{time}}",
       "stepConnect": "Connecting your plan",
-      "paste": "Paste"
+      "paste": "Paste",
+      "endsOn": "This sign-in ends on {{date}}.",
+      "switchToClaudeCode": "Switch to Claude Code"
     },
     "grok": {
       "name": "Grok",
@@ -7205,6 +7208,14 @@
       "computerUnreached": "Couldn't reach this computer to check usage. Try again later.",
       "unsaved": "Claude answered, but the usage couldn't be updated. Try again later."
     }
+  },
+  "claudeCodeAnnouncement": {
+    "title": "Native Claude Code mode is here",
+    "body": "It runs Claude Code itself, the same as running it yourself, and it's the way we recommend.",
+    "endsOn": "The old sign-in ends on {{date}}. To keep using your Claude plan, switch before then.",
+    "switch": "Switch to Claude Code",
+    "learnMore": "Learn more",
+    "dismiss": "Dismiss"
   },
   "palette": {
     "copyFailed": "Couldn't copy to the clipboard",

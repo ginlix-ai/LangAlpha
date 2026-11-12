@@ -4,6 +4,7 @@ Pydantic models for infrastructure configuration.
 These models define the schema for config.yaml (infrastructure settings).
 """
 
+from datetime import date
 from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -334,11 +335,11 @@ class FeatureFlagOverride(BaseModel):
     enabled: Optional[bool] = Field(
         default=None, description="Kill switch: false turns the feature off for everyone"
     )
-    gate: Optional[Literal["none", "opt_in", "opt_out", "plan"]] = Field(
+    gate: Optional[Literal["none", "opt_in", "opt_out", "plan", "grant"]] = Field(
         default=None,
         description=(
             "Access model while enabled: everyone / user opt-in / user opt-out "
-            "/ platform plan tier"
+            "/ platform plan tier / granted to the user"
         ),
     )
     min_tier: Optional[int] = Field(
@@ -383,6 +384,11 @@ class ClaudeCodeConfig(BaseModel):
         ge=256,
         description="Memory each Claude Code CLI on a cloud computer is counted at: its size's memory over this "
         "is how many it runs at once",
+    )
+    claude_oauth_ends_on: Optional[date] = Field(
+        default=None,
+        description="The day the Claude sign-in (claude-oauth) stops working on this deployment; set, the app "
+        "asks the users signed in with it to move to Claude Code",
     )
 
 

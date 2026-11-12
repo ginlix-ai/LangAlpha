@@ -5,6 +5,7 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { useSyncUserLocale } from '@/hooks/useSyncUserLocale';
 import { ContextOverflowPill } from '@/components/ui/ContextOverflowPill';
 import NetworkBanner from '@/components/NetworkBanner/NetworkBanner';
+import ClaudeCodeAnnouncement from '@/components/ClaudeCodeAnnouncement/ClaudeCodeAnnouncement';
 import { StaleBuildBoundary } from '@/components/StaleBuildBoundary';
 import { lazyWithMotion, preloadableLazy } from '@/lib/lazyWithMotion';
 import type { AppSection } from '@/lib/appRoutes';
@@ -166,6 +167,7 @@ function Main() {
     return (
       <div className="main" style={{ height: '100%' }}>
         <NetworkBanner />
+        <ClaudeCodeAnnouncement />
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
           {routes}
         </div>
@@ -177,6 +179,7 @@ function Main() {
   return (
     <div className="main">
       <NetworkBanner />
+      <ClaudeCodeAnnouncement />
       {/* Keyed on the section so a new one mounts fresh. It swaps in at once:
           the page under it draws in its final frame, and a fade over that
           only delays it. */}

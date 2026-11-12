@@ -23,7 +23,6 @@ export const computerTokenTarget = (c: Pick<ClaudeCodeComputer, 'computer_id' | 
 export type SheetAction = 'add' | 'replace';
 
 const SAVED_COPY = {
-  intro: 'modelAccess.claudeCode.intro',
   separate: 'modelAccess.claudeCode.separate',
   signInIntro: 'modelAccess.claudeCode.signIn.intro',
   addTitle: 'modelAccess.claudeCode.addTitle',
@@ -33,7 +32,6 @@ const SAVED_COPY = {
 };
 
 const COMPUTER_COPY: typeof SAVED_COPY = {
-  intro: 'modelAccess.claudeCode.computer.intro',
   separate: 'modelAccess.claudeCode.computer.separate',
   signInIntro: 'modelAccess.claudeCode.computer.signInIntro',
   addTitle: 'modelAccess.claudeCode.computer.addTitle',

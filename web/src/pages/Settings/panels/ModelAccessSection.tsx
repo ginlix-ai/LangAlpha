@@ -11,18 +11,19 @@ import { useClaudeCodeSetup, useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
+import { useClaudeSignInEnd } from '@/hooks/useClaudeSignInEnd';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import {
   CLAUDE_CODE, CLAUDE_CODE_CHOICE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_MODE_LABELS, CLAUDE_CODE_SETUP_STATUS,
-  CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM, computerTokenWorks,
+  CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM, claudeCodeChoice, claudeCodeConnected, computerTokenWorks,
 } from '@/lib/claudeCode';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
 import type { ProviderCatalogEntry } from '@/components/model/types';
 import { isSubscriptionProvider, subscriptionKey, type SubscriptionProvider } from '@/api/oauth';
 import { RemoveAccessDialog } from '@/components/modelAccess/RemoveAccessDialog';
-import { ClaudeCodeTokenSheet, RemoveClaudeCodeTokenDialog } from '@/components/modelAccess/ClaudeCodeToken';
+import { ClaudeCodeTokenSheet, ClaudeCodeTokenTitle, RemoveClaudeCodeTokenDialog } from '@/components/modelAccess/ClaudeCodeToken';
 import { linkedSheetAction, useClaudeCodeTokenRows } from '@/components/modelAccess/tokenLine';
-import { tokenSheetTitle, type SheetAction, type TokenTarget } from '@/components/modelAccess/tokenTarget';
+import type { SheetAction, TokenTarget } from '@/components/modelAccess/tokenTarget';
 import { planLabel } from '@/components/modelAccess/planLabel';
 import { regionTag } from '@/components/modelAccess/optionLabels';
 import { StatusLabel, type AccessStatus } from '@/components/modelAccess/parts';
@@ -123,6 +124,7 @@ export function ModelAccessSection() {
   const tokenRows = useClaudeCodeTokenRows();
   const { custody, isLoading: custodyLoading, unread: custodyUnread } = useClaudeCodeCustody();
   const { setup, unread: setupUnread } = useClaudeCodeSetup();
+  const signInEnd = useClaudeSignInEnd();
   const locale = useLocale();
   const now = useNow();
   const [opened, setSheet] = useState<Sheet | null>(null);
@@ -197,7 +199,7 @@ export function ModelAccessSection() {
       case 'key': return providerTitle(sheet.group.name, sheet.group.markProvider);
       case 'local-key': return providerTitle(sheet.entry.display_name, sheet.entry.provider);
       case 'manage': return managed ? nameOf(managed) : null;
-      case 'claude-code-token': return tokenSheetTitle(t, sheet.target, sheet.action);
+      case 'claude-code-token': return <ClaudeCodeTokenTitle target={sheet.target} action={sheet.action} />;
       case 'claude-code': return <ProviderTitle name={CLAUDE_CODE_CONNECTION.display_name} markProvider={CLAUDE_CODE} title={CLAUDE_CODE_CONNECTION.display_name} />;
     }
   })();
@@ -208,7 +210,7 @@ export function ModelAccessSection() {
   // The token whose plan Claude Code's row shows: of those that work and
   // reported use, the one nearest a limit, a limit held first.
   const clock = usePlanClock();
-  const summary = setup?.on && setup.state === 'connected' ? [
+  const summary = claudeCodeConnected(setup) ? [
     ...setup.computers.filter((c) => computerTokenWorks(c, now)).map((c) => ({ name: c.name, email: c.email, plan: c.plan })),
     ...(claudeCode.runsHere && claudeCode.state !== 'rejected'
       ? [{ name: t('modelAccess.claudeCode.setup.savedName'), email: claudeCode.email, plan: claudeCode.plan }] : []),
@@ -236,6 +238,27 @@ export function ModelAccessSection() {
     return t('modelAccess.claudeCode.detail');
   };
 
+  /** The Claude sign-in's row says the day it stops working here, with a
+   *  way to Claude Code's view where the server offers Claude Code. */
+  const signInNotice = (p: ConfiguredProvider) => signInEnd && p.provider === 'claude-oauth' && (
+    <>
+      {t('modelAccess.claude.endsOn', { date: signInEnd.date })}
+      {(setup || setupUnread) && (
+        <>
+          {' '}
+          <button
+            type="button"
+            className="tap-target underline underline-offset-2 hover:opacity-80"
+            style={{ color: 'var(--color-text-primary)' }}
+            onClick={() => setSheet({ kind: 'claude-code' })}
+          >
+            {t('modelAccess.claude.switchToClaudeCode')}
+          </button>
+        </>
+      )}
+    </>
+  );
+
   const rowStatus = (p: ConfiguredProvider): AccessStatus =>
     p.state === 'needs_reauth' ? 'needs_reauth' : 'connected';
 
@@ -255,6 +278,7 @@ export function ModelAccessSection() {
               provider={p.provider}
               name={nameOf(p)}
               detail={subscriptionDetail(p)}
+              notice={signInNotice(p)}
               status={rowStatus(p)}
               action={
                 <Button type="button" variant={p.state === 'needs_reauth' ? 'outline' : 'ghost'} size="sm" onClick={() => manage(p.provider)}>
@@ -352,9 +376,7 @@ export function ModelAccessSection() {
               configured={configuredSet}
               onPickSignIn={(p) => setSheet(configuredSet.has(p) ? { kind: 'manage', provider: p, from: 'list' } : { kind: 'connect-subscription', provider: p })}
               onPickPlan={pickKeyGroup('pick-subscription')}
-              claudeCode={setup || setupUnread
-                ? { status: setup ? CLAUDE_CODE_SETUP_STATUS[setup.state] : 'unknown', onPick: () => setSheet({ kind: 'claude-code' }) }
-                : undefined}
+              claudeCode={claudeCodeChoice(setup, setupUnread, () => setSheet({ kind: 'claude-code' }))}
             />
           )}
           {sheet.kind === 'connect-subscription' && (

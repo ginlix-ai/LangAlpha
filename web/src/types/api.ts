@@ -79,7 +79,7 @@ export interface FeatureState {
   /** Honest cost of opting in to an experimental feature, null when none. */
   tradeoffs: string | null;
   enabled: boolean;
-  gate: 'none' | 'opt_in' | 'opt_out' | 'plan';
+  gate: 'none' | 'opt_in' | 'opt_out' | 'plan' | 'grant';
   min_tier: number | null;
   user_override: boolean | null;
   /** Where the user turns it on when not in Experiments: Claude Code's

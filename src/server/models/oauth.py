@@ -1,6 +1,6 @@
 """The status a client reads for a subscription connection."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Mapping, Optional
 
 from pydantic import BaseModel
@@ -23,13 +23,20 @@ class OAuthStatus(BaseModel):
     expires_at: Optional[str] = None
     needs_reauth_at: Optional[str] = None
     last_error_code: Optional[str] = None
+    # Whether the user may start a sign-in, and the day signing in stops
+    # working on this deployment, where it set one.
+    can_sign_in: bool = True
+    ends_on: Optional[str] = None
 
     @classmethod
-    def from_row(cls, row: Optional[Mapping[str, Any]]) -> "OAuthStatus":
+    def from_row(
+        cls, row: Optional[Mapping[str, Any]], *, can_sign_in: bool = True, ends_on: Optional[date] = None,
+    ) -> "OAuthStatus":
         """From a ``user_oauth_tokens`` row, or None when nothing is stored."""
         state = connection_state(row)
+        day = ends_on.isoformat() if ends_on else None
         if not row:
-            return cls(connected=False, state=state)
+            return cls(connected=False, state=state, can_sign_in=can_sign_in, ends_on=day)
         flagged = state == "needs_reauth"
         return cls(
             connected=True,
@@ -41,4 +48,6 @@ class OAuthStatus(BaseModel):
             needs_reauth_at=_iso(row.get("needs_reauth_at")),
             # Only meaningful while flagged.
             last_error_code=row.get("last_error_code") if flagged else None,
+            can_sign_in=can_sign_in,
+            ends_on=day,
         )

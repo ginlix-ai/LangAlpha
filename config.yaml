@@ -60,6 +60,8 @@ langsmith_full_payloads: false
 #                opt_out — on unless the user opts out (Settings toggle)
 #                plan    — requires a platform plan with access tier >=
 #                          min_tier (OSS deployments bypass plan gates)
+#                grant   — off unless granted to the user, which the user
+#                          cannot set (a migration or the server writes it)
 #   min_tier:  plan gate only — minimum platform access tier
 features:
   market_watch:
@@ -317,6 +319,10 @@ claude_code:
   # leaves room for them. A computer of the user's own counts its own number,
   # set in Settings.
   cli_memory_mb: 800
+  # The day (YYYY-MM-DD) the Claude sign-in stops working on this deployment.
+  # Set, the app tells the users signed in with it and points them at Claude
+  # Code; unset, it says nothing.
+  claude_oauth_ends_on: null
 
 
 # =============================================================================
