@@ -49,6 +49,7 @@ from src.server.services.llm.thread_model import (
 )
 from src.server.services.llm.user_models import model_preference_of
 from src.server.services.claude_code.plan import credits_unknown
+from src.server.services.features import granted_override_keys
 from src.server.services.onboarding import maybe_complete_onboarding
 from src.server.models.profile_vocabulary import STRUCTURED_PREFERENCES, check_profile
 from src.server.models.user import (
@@ -465,6 +466,14 @@ def _refuse_renamed_model_keys(*bags: dict | None) -> None:
                 )
 
 
+def _refuse_server_owned_keys(other_pref: dict | None) -> None:
+    """Refuse ``feature_overrides``, which only the server writes: a user sets
+    a feature through PUT /features, which refuses the gates they may not set
+    (a ``grant`` among them)."""
+    if other_pref and "feature_overrides" in other_pref:
+        raise HTTPException(status_code=422, detail="feature_overrides is set through /api/v1/features.")
+
+
 def _validate_default_model_choices(model_pref: dict) -> None:
     """Refuse a ``default_model_scope`` or ``background_follows`` no reader
     acts on. None = key deletion."""
@@ -526,6 +535,7 @@ async def update_preferences(
     model_pref = request.model_preference.model_dump(exclude_unset=True) if request.model_preference else None
 
     _refuse_renamed_model_keys(model_pref, other_pref)
+    _refuse_server_owned_keys(other_pref)
 
     # The model keys live in their own column now. A client still
     # sending them under other_preference is honored for one release so an old
@@ -699,12 +709,14 @@ async def update_preferences(
 @router.delete("/users/me/preferences", status_code=200)
 @handle_api_exceptions("delete preferences", logger)
 async def delete_preferences(user_id: CurrentUserId):
-    """Delete all user preferences and reset onboarding_completed to false."""
+    """Delete all user preferences and reset onboarding_completed to false.
+    A feature the server granted (``granted_override_keys``) stays granted: the
+    user never set it, and a grant lost here could not be given back."""
     user = await db_get_user(user_id)
     if not user:
         raise_not_found("User")
 
-    await db_delete_user_preferences(user_id)
+    await db_delete_user_preferences(user_id, keep_overrides=granted_override_keys())
     await invalidate_user_prefs_cache(user_id)
     await invalidate_user_profile_cache(user_id)
     await db_update_user(user_id=user_id, onboarding_completed=False)

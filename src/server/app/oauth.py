@@ -30,6 +30,7 @@ from src.server.services.oauth_protocol import (
     DeviceUpstreamUnavailable,
     TokenSet,
 )
+from src.server.services.features import user_feature_enabled
 from src.server.services.oauth_providers import SUBSCRIPTIONS
 from src.server.services.oauth_signin import (
     OAuthRefusal,
@@ -292,6 +293,21 @@ def _claude_key(user_id: str) -> str:
     return f"oauth:claude:{user_id}"
 
 
+async def _sign_in_feature_allows(user_id: str, provider: str) -> bool:
+    """Whether the provider's ``sign_in_feature``, where it has one, lets the
+    user start a new sign-in. A stored connection may always sign in again as
+    it lapses, whatever became of the grant, so every caller ORs that in."""
+    feature = SUBSCRIPTIONS[provider].sign_in_feature
+    return feature is None or await user_feature_enabled(user_id, feature)
+
+
+async def _require_claude_sign_in(user_id: str) -> None:
+    provider = claude_oauth.CLAUDE_PROVIDER
+    if await _sign_in_feature_allows(user_id, provider) or await get_oauth_connection(user_id, provider) is not None:
+        return
+    raise _fail(403, "unavailable", "Signing in with Claude isn't available for this account.")
+
+
 @router.post("/claude/initiate")
 async def claude_initiate(user_id: CurrentUserId):
     """Generate a PKCE pair and return the authorize URL.
@@ -299,6 +315,7 @@ async def claude_initiate(user_id: CurrentUserId):
     The frontend opens it in a new tab; once the user authorizes, Anthropic's
     page shows a code they paste back via POST /claude/callback.
     """
+    await _require_claude_sign_in(user_id)
     started = await PendingSignIn(_claude_key(user_id)).start(claude_oauth.generate_authorize_url)
     logger.info(f"[oauth] Claude OAuth initiated for user_id={user_id}")
     return started
@@ -316,6 +333,7 @@ async def claude_callback(user_id: CurrentUserId, body: ClaudeCallbackRequest):
     second waits instead, and answers as the first did when that one connected
     this same sign-in.
     """
+    await _require_claude_sign_in(user_id)
     flow = PendingSignIn(_claude_key(user_id))
     cache = flow.cache
     lock_key = f"{flow.key}:callback"
@@ -373,8 +391,16 @@ async def _claude_exchange(flow: PendingSignIn, user_id: str, body: ClaudeCallba
 
 @router.get("/{key}/status", response_model=OAuthStatus)
 async def oauth_status(key: str, user_id: CurrentUserId) -> OAuthStatus:
-    """The connection's status, read without decrypting its tokens."""
-    return OAuthStatus.from_row(await get_oauth_connection(user_id, _subscription(key)))
+    """The connection's status, read without decrypting its tokens. It says
+    whether the user may start a sign-in, so the web never guesses from a
+    flags read that can fail or lag."""
+    provider = _subscription(key)
+    row = await get_oauth_connection(user_id, provider)
+    return OAuthStatus.from_row(
+        row,
+        can_sign_in=row is not None or await _sign_in_feature_allows(user_id, provider),
+        ends_on=SUBSCRIPTIONS[provider].ends_on(),
+    )
 
 
 def _pending_flow_key(key: str, user_id: str) -> str | None:

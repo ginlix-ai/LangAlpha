@@ -40,9 +40,9 @@ function deepMerge(
   return merged;
 }
 
-/** Mirrors `(existing - nulls) || updates` for the columns whose callers
- *  rewrite nested bags whole: `other_preference.feature_overrides` shrinks by
- *  exactly that shallow write. */
+/** Mirrors `(existing - nulls) || updates` for the columns the server merges
+ *  one level deep: a nested bag written under one of their keys replaces the
+ *  stored one whole. */
 function shallowMerge(
   base: Record<string, unknown>,
   patch: Record<string, unknown>,

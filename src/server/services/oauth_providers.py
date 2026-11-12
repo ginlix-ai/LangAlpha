@@ -7,7 +7,7 @@ is constant configuration, the same in every worker.
 """
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Mapping, Optional
 
@@ -34,7 +34,10 @@ class SubscriptionProvider:
     error_text)`` says a model call refused the access token itself, which a
     refresh may fix; ``plan_refused`` that it refused the account's plan,
     which nothing on our side fixes. ``request_headers(tokens)`` are sent with
-    every call the token makes.
+    every call the token makes. ``sign_in_feature``, where set, is the feature
+    that lets a user start a new sign-in; a connection already stored may
+    always sign in again. ``ends_on()`` is the day the deployment set for
+    signing in with it to stop working, until that day passes.
     """
 
     id: str
@@ -45,6 +48,8 @@ class SubscriptionProvider:
     token_refused: Callable[[Any, str], bool] = _refused_on_401
     plan_refused: Callable[[Any, str], bool] = _never
     request_headers: Callable[[TokenSet], dict[str, str]] = lambda _tokens: {}
+    sign_in_feature: Optional[str] = None
+    ends_on: Callable[[], Optional[date]] = lambda: None
 
 
 SUBSCRIPTIONS: Mapping[str, SubscriptionProvider] = MappingProxyType({
@@ -60,6 +65,8 @@ SUBSCRIPTIONS: Mapping[str, SubscriptionProvider] = MappingProxyType({
             id=claude_oauth.CLAUDE_PROVIDER,
             account_name="Claude",
             refresh=claude_oauth.refresh_tokens,
+            sign_in_feature=claude_oauth.SIGN_IN_FEATURE,
+            ends_on=claude_oauth.sign_in_ends_on,
         ),
         SubscriptionProvider(
             id=grok_oauth.GROK_PROVIDER,
