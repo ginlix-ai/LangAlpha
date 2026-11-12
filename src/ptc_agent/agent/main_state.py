@@ -11,6 +11,7 @@ declares this schema.
 
 from __future__ import annotations
 
+from ptc_agent.agent.middleware.compaction.brief import BriefState
 from ptc_agent.agent.middleware.compaction.notes import NotesDueState
 from ptc_agent.agent.middleware.compaction.types import CompactionState
 from ptc_agent.agent.middleware.file_operations.multimodal_strip import ImageSideState
@@ -26,6 +27,7 @@ from ptc_agent.agent.state import DeltaAgentState
 # declares it, and only DeltaAgentState gives ``messages`` its DeltaChannel.
 class MainAgentState(
     CompactionState,
+    BriefState,
     NotesDueState,
     SubagentSwitchState,
     LoadedSkillsState,

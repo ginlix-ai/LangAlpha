@@ -47,6 +47,24 @@ class HandOff:
 
 
 @dataclass(frozen=True)
+class WriteBrief:
+    """Have the view, through its last reply, written out as text for a
+    model that keeps a session of its own (Claude Code) and has seen none of
+    it. Nothing stays after it, and what follows the reply (the user's newest
+    messages) is left for that model to read as it is.
+
+    The agent's model writes it from its own request where ``by_own`` and it
+    reads the thread cheaply there, else the compaction model; when that
+    writes none, the reader is handed the history itself, fitted to
+    ``room`` tokens (``thread_summary``): half the 200k a Claude Code CLI
+    compacts at by default, when the reader's own threshold is not known.
+    """
+
+    by_own: bool = True
+    room: int = 100_000
+
+
+@dataclass(frozen=True)
 class Measure:
     """The context the next turn start reads (``context_tokens``), of the
     view the state makes now."""
@@ -66,7 +84,7 @@ class IdleCompact:
     expires, natively, or nothing (see ``rebuild.TurnStartRebuilds.idle``)."""
 
 
-Ask = Compact | HandOff | Measure | Parts | IdleCompact
+Ask = Compact | HandOff | WriteBrief | Measure | Parts | IdleCompact
 
 
 class NoCompaction(RuntimeError):
@@ -113,7 +131,8 @@ async def ask_between_turns(
 
     A ``Compact`` answers with the compaction to install, a ``HandOff`` with
     the summary message to put in place of the view's opening one, or None
-    when that summary is not one only its provider can read, a ``Measure``
+    when that summary is not one only its provider can read, a ``WriteBrief``
+    with the compaction whose summary message is the brief, a ``Measure``
     with the context's size and a ``Parts`` with what is sent ahead of the
     messages by part, neither calling a model. The calls made
     for it report to the callbacks of the caller's runnable config, which bill

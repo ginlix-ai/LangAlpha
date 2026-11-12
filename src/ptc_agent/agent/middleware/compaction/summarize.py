@@ -33,14 +33,12 @@ from langchain_core.runnables.base import RunnableBindingBase
 from langgraph.constants import TAG_NOSTREAM
 
 from src.llms.content_utils import format_llm_content
-from src.llms.provider_compaction import is_opaque
-
 from ptc_agent.agent.middleware.compaction.model import max_input_tokens
-from ptc_agent.agent.middleware.compaction.summary_request import trim_for_summary
+from ptc_agent.agent.middleware.compaction.summary_request import render_history, trim_for_summary
 from ptc_agent.agent.middleware.compaction.types import _DEFAULT_FALLBACK_MESSAGE_COUNT
 from ptc_agent.agent.middleware.compaction.utils import (
-    handed_off,
     parse_summary_message,
+    provider_only,
     summary_source,
 )
 from ptc_agent.agent.transcript.classify import (
@@ -59,7 +57,7 @@ logger = logging.getLogger(__name__)
 #: (``provider``), the agent's model writing it from its own request
 #: (``self``), the summary model or its fallback reading the transcript, or
 #: the server listing each request and reply.
-SummarySource = Literal["provider", "self", "model", "fallback", "server"]
+SummarySource = Literal["provider", "self", "model", "fallback", "server", "thread"]
 
 #: The summary model's share of the budget when another model waits behind
 #: it, so a hung summary model still leaves the fallback a real call. A
@@ -299,9 +297,7 @@ def server_summary(
         # last, so it keeps its end where a model's summary, which opens on
         # the goal, keeps its start.
         text = parse_summary_message(head[0])
-        by_server = summary_source(head[0]) == "server" or (
-            is_opaque(head[0]) and not handed_off(head[0])
-        )
+        by_server = summary_source(head[0]) == "server" or provider_only(head[0])
         body = text.partition("\n\n")[2] if by_server else text
         cut = (_cut_start if by_server else _cut)(body, _EARLIER_CHARS)
         if cut == body and head[0].id:
@@ -345,6 +341,25 @@ def server_summary(
     )
 
 
+def thread_summary(
+    to_summarize: Sequence[AnyMessage],
+    *,
+    turns: TranscriptTurns | None,
+    limit: int | None,
+    counter: Callable[[list[AnyMessage]], int],
+) -> Summary:
+    """No summary, for a model that keeps a session of its own and is to
+    read the history itself: the history as text, its newest messages first
+    to stay under ``limit`` tokens. What does not fit is named, for the
+    transcript the summary ends pointing at; all of it, when the history
+    cannot be measured, rather than hand the reader more than ``limit``."""
+    trimmed = _trim(list(to_summarize), limit, counter, fallback=0)
+    text = render_history(trimmed, turns)
+    if left_out := len(to_summarize) - len(trimmed):
+        text = f"({left_out} earlier message{'s are' if left_out > 1 else ' is'} not shown here.)\n\n{text}"
+    return Summary(text, "thread", trimmed)
+
+
 def _room(model: Any) -> int | None:
     window = max_input_tokens(model)
     if window is None or window <= _WINDOW_RESERVE:
@@ -359,7 +374,11 @@ def _limit(limit: int | None, room: int | None) -> int | None:
 
 
 def _trim(
-    messages: list[AnyMessage], limit: int | None, counter: Callable[[list[AnyMessage]], int]
+    messages: list[AnyMessage],
+    limit: int | None,
+    counter: Callable[[list[AnyMessage]], int],
+    *,
+    fallback: int = _DEFAULT_FALLBACK_MESSAGE_COUNT,
 ) -> list[AnyMessage]:
     if limit is None or not messages:
         return messages
@@ -367,7 +386,7 @@ def _trim(
         return trim_for_summary(messages, limit, counter)
     except Exception as e:
         logger.warning("[Compaction] trimming the summary input failed (%s)", type(e).__name__)
-        return messages[-_DEFAULT_FALLBACK_MESSAGE_COUNT:]
+        return messages[-fallback:] if fallback else []
 
 
 def _checked(response: Any) -> str:

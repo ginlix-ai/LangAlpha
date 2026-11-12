@@ -49,6 +49,7 @@ from ptc_agent.agent.middleware.compaction.summarize import (
     is_other_model,
     preparer,
     server_summary,
+    thread_summary,
 )
 from ptc_agent.agent.middleware.compaction.measure import (
     estimate_for,
@@ -59,6 +60,7 @@ from ptc_agent.agent.middleware.compaction.utils import (
     build_compaction_event,
     build_summary_message,
     compacted_skills,
+    count_tokens_claude,
     count_tokens_tiktoken,
     get_effective_messages,
     partition_at_cutoff,
@@ -246,6 +248,7 @@ class Summarizer:
         own: Own | None = None,
         carried: bool = False,
         own_only: bool = False,
+        brief_room: int | None = None,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, ``messages`` being the
         agent's checkpoint list (what ``window`` trimmed of it aside), by
@@ -262,6 +265,11 @@ class Summarizer:
         summary is written, and the summary names them after its pointer.
         ``progress`` hears how much of the summary has been written.
         ``carried`` says the step it ends on is sent after it (see ``carry``).
+
+        A ``brief_room`` makes it a brief for a model that keeps a session of
+        its own: no model is tried past this one, and when it writes none the
+        reader is handed the history itself, fitted to that many tokens
+        (``thread_summary``), not the server's digest.
         """
         to_summarize, preserved = partition_at_cutoff(view, cutoff)
         kept = keeps_turns(preserved)
@@ -287,13 +295,18 @@ class Summarizer:
         # the listing never holds the compaction past it, and it is dropped
         # with a summary that fails.
         listing = asyncio.create_task(anotes_pointer(backend, notes_dir, remaining))
-        server = functools.partial(
-            server_summary,
-            to_summarize,
-            preserved,
-            raw_messages=messages,
-            turns=turns,
-            window=window,
+        # The history itself goes to Claude Code, whose room is in Claude's tokens.
+        server = (
+            functools.partial(thread_summary, to_summarize, turns=turns, limit=brief_room, counter=count_tokens_claude)
+            if brief_room is not None
+            else functools.partial(
+                server_summary,
+                to_summarize,
+                preserved,
+                raw_messages=messages,
+                turns=turns,
+                window=window,
+            )
         )
         try:
             # The agent's model gets the summary model's share, leaving the
@@ -306,7 +319,7 @@ class Summarizer:
             remaining = budget - (time.monotonic() - started)
             summary = summary or await awrite_summary(
                 model=self.model,
-                fallback=self._next(fallback),
+                fallback=None if brief_room is not None else self._next(fallback),
                 prepare=preparer(
                     to_summarize, limit=self.limit, counter=self.counter, render=render
                 ),
