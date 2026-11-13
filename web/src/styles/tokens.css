@@ -774,6 +774,15 @@ html {
   background-color: var(--color-text-tertiary);
 }
 
+/* Tailwind's scrollbar-none sets only scrollbar-width, which Safari reads from
+   18.2; before that the styled bar above still draws. This adds a second rule
+   under the same name, after the built-in one. */
+@utility scrollbar-none {
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* Monaco's own scrollbar, inset through CodeEditor's options. Its arrows are
    there only to hold the track short of both ends. */
 .monaco-editor .scrollbar > .scra,

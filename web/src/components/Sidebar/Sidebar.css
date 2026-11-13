@@ -10,7 +10,8 @@
   left: 0;
   top: 0;
   /* The open card styles lay it on the page's ground beside their edge. */
-  background: var(--color-shell-float, hsl(var(--sidebar-bg)));
+  --sidebar-surface: var(--color-shell-float, hsl(var(--sidebar-bg)));
+  background: var(--sidebar-surface);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -358,6 +359,7 @@ html.desktop-mac .sidebar-history {
 /* NavigationPanel doubles as the overlay drawer on mobile chat; embedded in
    the sidebar it must not repaint its own surface or edge. */
 .sidebar--panel .nav-panel {
+  --nav-panel-surface: var(--sidebar-surface);
   background: transparent;
   border-right: none;
 }
