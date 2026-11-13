@@ -27,10 +27,7 @@ from ptc_agent.core.sandbox.runtime import STREAM_CHUNK_BYTES
 from src.server.database.blob_keys import RELAY_MAX_BYTES
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.database.workspace_folders import is_top_level
-from src.server.services.persistence.transfer import (
-    INPROCESS_MAX_INFLIGHT_BYTES,
-    ByteBudget,
-)
+from src.server.services.persistence.transfer import ByteBudget
 from src.server.services.persistence.resolve import (
     FileBytesUnavailable,
     resolve_file_byte_range,
@@ -175,32 +172,10 @@ DEFAULT_READ_LIMIT_LINES = 20_000
 # whichever is tighter, so an upload is never accepted only to be dropped.
 MAX_UPLOAD_BYTES = RELAY_MAX_BYTES
 
-_FILES_HELD_AT_ONCE = 8
-_held_budgets: dict[asyncio.AbstractEventLoop, ByteBudget] = {}
 # A streamed download holds about one ranged read at a time, but it holds it
 # for as long as its client takes to read, so it is bounded by count.
 _STREAMS_AT_ONCE = 16
 _stream_budgets: dict[asyncio.AbstractEventLoop, ByteBudget] = {}
-
-
-def held_bytes_budget() -> ByteBudget:
-    """This worker's allowance for whole files held in memory at once.
-
-    Upload bodies are read whole before they reach the sandbox, and nothing
-    else bounds how many a worker holds at once.
-
-    Memory is the one thing a worker owns alone, so the bound is per process
-    by design. Keyed by loop because an asyncio primitive belongs to the loop
-    that first waits on it.
-    """
-    loop = asyncio.get_running_loop()
-    budget = _held_budgets.get(loop)
-    if budget is None:
-        _held_budgets.clear()
-        budget = _held_budgets[loop] = ByteBudget(
-            INPROCESS_MAX_INFLIGHT_BYTES, _FILES_HELD_AT_ONCE
-        )
-    return budget
 
 
 def streamed_download_budget() -> ByteBudget:

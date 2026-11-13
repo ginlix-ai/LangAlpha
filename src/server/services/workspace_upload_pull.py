@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import shlex
-from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
@@ -44,24 +42,22 @@ from src.server.services.workspace_files import (
     record_fs_bytes,
 )
 from src.server.services.workspace_manager import WorkspaceManager
+from src.server.services.store_multipart import (
+    Assembly,
+    MultipartUpload,
+    assemble_parts,
+    discard_upload,
+)
+from src.server.services.sweep_loop import JitteredSweeper
 from src.server.utils.error_sanitization import single_line
 from src.utils.concurrency import cancel_and_join
-from src.utils.storage import (
-    abort_multipart_upload,
-    complete_multipart_upload,
-    delete_object,
-    get_signed_url,
-    is_storage_enabled,
-    list_uploaded_parts,
-    object_size,
-)
+from src.utils.storage import get_signed_url, is_storage_enabled
 
 logger = logging.getLogger(__name__)
 
 _MB = 1024 * 1024
 
 UPLOAD_FAILED = "Upload failed"
-STORE_UNREACHABLE = "Could not reach file storage. Try again."
 
 # Long enough to list the parts and assemble two gigabytes, which the store
 # does without moving the bytes.
@@ -149,59 +145,19 @@ def has_room(free_bytes: int, size: int) -> bool:
     return free_bytes - CRITICAL_FREE_BYTES >= size
 
 
-def part_size_of(row: dict[str, Any], number: int) -> int:
-    """Every part but the last is ``part_size``; the last is what remains."""
-    if number < row["part_count"]:
-        return int(row["part_size"])
-    return int(row["size"]) - int(row["part_size"]) * (int(row["part_count"]) - 1)
-
-
 # --- assembling ----------------------------------------------------------------
 
 
-@dataclass
-class Assembly:
-    """How assembling went: ``ok``, or the parts still owed, or a store failure
-    worth retrying (``unreachable``), or an object that is not what was sent
-    (``mismatch``)."""
-
-    ok: bool = False
-    missing: list[int] = field(default_factory=list)
-    unreachable: bool = False
-    mismatch: bool = False
-
-
 def _assemble(row: dict[str, Any]) -> Assembly:
-    """Assemble the parts the store holds, checked against the row, not the client.
-
-    The parts and their sizes come from the store's own listing, so a client
-    cannot finish an upload short, long, or with parts it was never granted.
-    An upload the store no longer knows may be one an earlier attempt
-    assembled before its answer was lost, so the object's size settles it.
-    """
-    key, store_upload_id, size = row["object_key"], row["store_upload_id"], int(row["size"])
-    parts = list_uploaded_parts(key, store_upload_id)
-    if parts is None:
-        held = object_size(key)
-        if held is None:
-            return Assembly(unreachable=True)
-        return Assembly(ok=held == size, mismatch=held != size)
-    by_number = {p["part_number"]: p for p in parts}
-    missing = [
-        n
-        for n in range(1, int(row["part_count"]) + 1)
-        if n not in by_number or by_number[n]["size"] != part_size_of(row, n)
-    ]
-    if missing:
-        return Assembly(missing=missing)
-    numbered = [(n, by_number[n]["etag"]) for n in range(1, int(row["part_count"]) + 1)]
-    completed = complete_multipart_upload(key, store_upload_id, numbered)
-    held = object_size(key)
-    if held is None:
-        return Assembly(unreachable=True)
-    if held != size:
-        return Assembly(mismatch=True) if completed else Assembly(unreachable=True)
-    return Assembly(ok=True)
+    return assemble_parts(
+        MultipartUpload(
+            key=row["object_key"],
+            upload_id=row["store_upload_id"],
+            size=row["size"],
+            part_size=row["part_size"],
+            part_count=row["part_count"],
+        )
+    )
 
 
 async def assemble_and_pull(row: dict[str, Any]) -> tuple[dict[str, Any] | None, Assembly]:
@@ -548,24 +504,19 @@ async def _remove(sandbox: Any, path: str) -> None:
 # --- cleaning up ---------------------------------------------------------------
 
 
-def _clean_store(row: dict[str, Any]) -> bool:
-    """Remove what the upload left in the store; whether nothing is left.
-
-    An upload never assembled holds parts under its open upload, which only
-    an abort removes, so an abort the store did not confirm leaves the row
-    for the sweep to try again. The object itself goes either way, since an
-    attempt may have assembled it unrecorded.
-    """
-    key = row["object_key"]
-    if row["attempts"] == 0 and not abort_multipart_upload(key, row["store_upload_id"]):
-        return False
-    return delete_object(key)
-
-
 async def clean_up(row: dict[str, Any]) -> None:
-    """Clean an ended row's store bytes now; the sweep retries one that fails."""
+    """Clean an ended row's store bytes now; the sweep retries one that fails.
+
+    Only a pull assembles the parts, so an upload no pull was started for
+    still holds them.
+    """
     try:
-        cleaned = await asyncio.to_thread(_clean_store, row)
+        cleaned = await asyncio.to_thread(
+            discard_upload,
+            row["object_key"],
+            row["store_upload_id"],
+            assembled=row["attempts"] > 0,
+        )
     except Exception as e:
         logger.warning(f"Upload {row['upload_id']} cleanup failed: {e}")
         return
@@ -575,9 +526,7 @@ async def clean_up(row: dict[str, Any]) -> None:
 
 # --- sweep ---------------------------------------------------------------------
 
-SWEEP_INTERVAL_S = 60.0
 SWEEP_BATCH_LIMIT = 25
-STOP_GRACE = 30.0
 
 
 async def sweep_once() -> None:
@@ -634,60 +583,13 @@ async def _sweep_step(row: dict[str, Any], what: str, step) -> None:
         logger.error(f"Upload {row['upload_id']} {what} failed in the sweep", exc_info=True)
 
 
-class UploadSweeper:
-    _instance: UploadSweeper | None = None
+class UploadSweeper(JitteredSweeper):
+    name = "UploadSweeper"
+    interval = 60.0
 
-    def __init__(self, *, interval: float = SWEEP_INTERVAL_S) -> None:
-        self._interval = interval
-        self._loop_task: asyncio.Task | None = None
-        self._stop_event = asyncio.Event()
+    def enabled(self) -> bool:
+        """Inert without object storage, where no upload goes through it."""
+        return is_storage_enabled()
 
-    @classmethod
-    def get_instance(cls) -> UploadSweeper:
-        if cls._instance is None:
-            cls._instance = UploadSweeper()
-        return cls._instance
-
-    @classmethod
-    def reset_instance(cls) -> None:
-        cls._instance = None
-
-    def start(self) -> None:
-        """Start the sweep loop; inert without object storage, where no upload goes through it."""
-        if not is_storage_enabled():
-            return
-        if self._loop_task is not None and not self._loop_task.done():
-            return
-        self._stop_event = asyncio.Event()
-        self._loop_task = asyncio.create_task(self._loop(), name="upload-sweeper")
-        logger.info(f"[UploadSweeper] started (interval={self._interval:.0f}s)")
-
-    async def stop(self) -> None:
-        if self._loop_task is None:
-            return
-        self._stop_event.set()
-        try:
-            await asyncio.wait_for(self._loop_task, timeout=STOP_GRACE)
-        except TimeoutError:
-            await cancel_and_join(self._loop_task)
-        except Exception:
-            logger.warning("[UploadSweeper] loop ended with an error at shutdown", exc_info=True)
-        self._loop_task = None
-        self._stop_event = asyncio.Event()
-
-    async def _loop(self) -> None:
-        while not self._stop_event.is_set():
-            # Jitter first, so workers started by one deploy do not all claim
-            # at once.
-            jitter = self._interval * (0.8 + 0.4 * random.random())
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=jitter)
-                return
-            except TimeoutError:
-                pass
-            try:
-                await sweep_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.error("[UploadSweeper] sweep failed", exc_info=True)
+    async def sweep_once(self) -> None:
+        await sweep_once()

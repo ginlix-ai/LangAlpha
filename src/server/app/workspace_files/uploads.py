@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -25,7 +24,7 @@ from src.server.database.blob_keys import upload_key
 from src.server.models.workspace import served_from_mirror
 from src.server.services.background_starts import schedule_start
 from src.server.services.computer_disk import CRITICAL_FREE_BYTES
-from src.server.services.persistence.transfer import scan_cap_bytes
+from src.server.services.persistence.transfer import sandbox_pulls_from_store, scan_cap_bytes
 from src.server.services.workspace_file_containment import normalize_requested_path
 from src.server.services.workspace_files import (
     acquire_sandbox_to_change,
@@ -35,26 +34,33 @@ from src.server.services.workspace_files import (
     owner_work_dir,
     previous_dir_names_of,
 )
+from src.server.services.store_multipart import (
+    DIRECT_UPLOAD_MIN_BYTES,
+    MAX_DIRECT_UPLOAD_BYTES,
+    MAX_PARTS_PER_SIGN,
+    PART_URL_TTL_S,
+    PARTS_MISSING,
+    STORE_UNREACHABLE,
+    UPLOAD_PART_BYTES,
+    MultipartUpload,
+    StoreUnreachable,
+    opened_upload,
+    part_count_for,
+    shown_state,
+    sign_parts,
+)
 from src.server.services.workspace_upload_pull import (
     COMPLETE_LEASE,
     KEEP_ALIVE_EVERY,
-    STORE_UNREACHABLE,
     assemble_and_pull,
     clean_up,
     count_as_use,
     free_disk_bytes,
     not_enough_disk,
-    part_size_of,
 )
 from src.server.utils.api import CurrentUserId
 from src.server.utils.uploads import _too_large
-from src.utils.storage import (
-    abort_multipart_upload,
-    browser_uploads_enabled,
-    is_storage_enabled,
-    open_multipart_upload,
-    sign_upload_part,
-)
+from src.utils.storage import browser_uploads_enabled, is_storage_enabled
 
 from ._shared import MAX_UPLOAD_BYTES, _virtual_file
 
@@ -63,23 +69,12 @@ logger = logging.getLogger(__name__)
 # No prefix of its own: mounted on the file routes' router, which carries it.
 router = APIRouter(tags=["Workspace Files"])
 
-_MB = 1024 * 1024
-
-MAX_DIRECT_UPLOAD_BYTES = 2 * 1024 * _MB
-# Below this the one-request path is quicker than a round of parts, and stays
-# under the request-body limit an edge proxy commonly sets.
-DIRECT_UPLOAD_MIN_BYTES = 32 * _MB
-# What a failed part costs to send again. Fixed, so a 2 GB file is 128 parts.
-UPLOAD_PART_BYTES = 16 * _MB
-PART_URL_TTL_S = 900
-MAX_PARTS_PER_SIGN = 32
 # Each holds up to MAX_DIRECT_UPLOAD_BYTES in the store until it ends.
 MAX_OPEN_UPLOADS_PER_USER = 8
 
 UPLOAD_ENDED = "This upload has ended. Start it again."
 TOO_MANY_UPLOADS = "Too many uploads in progress. Wait for one to finish."
 ALREADY_SAVING = "This upload is already being saved to the workspace."
-PARTS_MISSING = "Some parts of the file did not arrive."
 
 
 class BeginUploadRequest(BaseModel):
@@ -99,25 +94,25 @@ class SignPartsRequest(BaseModel):
 
 
 def direct_available(sandbox: Any) -> bool:
-    """Whether this sandbox can take an upload through the store.
+    """Whether this sandbox can take an upload through the store: a store the
+    browser may send parts to, and a sandbox that fetches from it."""
+    return browser_uploads_enabled() and sandbox_pulls_from_store(sandbox)
 
-    That needs a store the browser may send parts to, and a sandbox that
-    pulls from the store itself, which is what the direct transfer mode says.
-    A machine its owner brought keeps the one-request path.
-    """
-    if not browser_uploads_enabled() or scan_cap_bytes(sandbox, blobs_on=True) is not None:
-        return False
-    provider = getattr(getattr(getattr(sandbox, "config", None), "sandbox", None), "provider", None)
-    return provider != "ssh"
+
+def _multipart(row: dict[str, Any]) -> MultipartUpload:
+    return MultipartUpload(
+        key=row["object_key"],
+        upload_id=row["store_upload_id"],
+        size=row["size"],
+        part_size=row["part_size"],
+        part_count=row["part_count"],
+    )
 
 
 def _status(row: dict[str, Any]) -> dict[str, Any]:
-    state = row["state"]
-    if state == "uploading" and row["expires_at"] <= datetime.now(UTC):
-        state = "aborted"
     return {
         "upload_id": row["upload_id"],
-        "state": state,
+        "state": shown_state(row["state"], row["expires_at"]),
         "path": row["path"],
         "size": row["size"],
         "error": row["error"],
@@ -175,39 +170,30 @@ async def begin_workspace_upload(
 
         upload_id = str(uuid.uuid4())
         key = upload_key(x_user_id, upload_id)
-        store_upload_id = await asyncio.to_thread(
-            open_multipart_upload, key, content_type="application/octet-stream"
-        )
-        if store_upload_id is None:
-            raise HTTPException(status_code=503, detail=STORE_UNREACHABLE)
         try:
-            row = await db.create_upload(
-                upload_id=upload_id,
-                user_id=x_user_id,
-                workspace_id=workspace_id,
-                path=rel,
-                size=body.size,
-                part_size=UPLOAD_PART_BYTES,
-                part_count=-(-body.size // UPLOAD_PART_BYTES),
-                sha256=body.sha256,
-                object_key=key,
-                store_upload_id=store_upload_id,
-                sandbox_id=getattr(sandbox, "sandbox_id", None),
-                max_open=MAX_OPEN_UPLOADS_PER_USER,
-                free_bytes=free,
-                keep_free_bytes=CRITICAL_FREE_BYTES,
-            )
-        except BaseException as e:
-            # Nothing was sent yet; an upload left open would only wait for
-            # the bucket's lifecycle rule.
-            await asyncio.to_thread(abort_multipart_upload, key, store_upload_id)
-            if isinstance(e, db.TooManyOpenUploads):
-                raise HTTPException(status_code=429, detail=TOO_MANY_UPLOADS) from None
-            if isinstance(e, db.NotEnoughRoom):
-                raise HTTPException(
-                    status_code=507, detail=not_enough_disk(e.free_bytes)
-                ) from None
-            raise
+            async with opened_upload(key, content_type="application/octet-stream") as store_upload_id:
+                row = await db.create_upload(
+                    upload_id=upload_id,
+                    user_id=x_user_id,
+                    workspace_id=workspace_id,
+                    path=rel,
+                    size=body.size,
+                    part_size=UPLOAD_PART_BYTES,
+                    part_count=part_count_for(body.size),
+                    sha256=body.sha256,
+                    object_key=key,
+                    store_upload_id=store_upload_id,
+                    sandbox_id=getattr(sandbox, "sandbox_id", None),
+                    max_open=MAX_OPEN_UPLOADS_PER_USER,
+                    free_bytes=free,
+                    keep_free_bytes=CRITICAL_FREE_BYTES,
+                )
+        except StoreUnreachable:
+            raise HTTPException(status_code=503, detail=STORE_UNREACHABLE) from None
+        except db.TooManyOpenUploads:
+            raise HTTPException(status_code=429, detail=TOO_MANY_UPLOADS) from None
+        except db.NotEnoughRoom as e:
+            raise HTTPException(status_code=507, detail=not_enough_disk(e.free_bytes)) from None
 
     logger.info(
         f"Upload {upload_id} started into workspace {workspace_id}: "
@@ -221,33 +207,6 @@ async def begin_workspace_upload(
         "part_count": row["part_count"],
         "expires_at": row["expires_at"].isoformat(),
     }
-
-
-def _sign_parts(row: dict[str, Any], numbers: list[int]) -> list[dict[str, Any]] | None:
-    """Off the event loop: signing makes no request, but the first one in a
-    process builds the store's client, which takes a while."""
-    parts = []
-    for number in numbers:
-        size = part_size_of(row, number)
-        url = sign_upload_part(
-            row["object_key"],
-            row["store_upload_id"],
-            part_number=number,
-            size=size,
-            expires_in=PART_URL_TTL_S,
-            for_browser=True,
-        )
-        if url is None:
-            return None
-        parts.append(
-            {
-                "part_number": number,
-                "offset": (number - 1) * row["part_size"],
-                "size": size,
-                "url": url,
-            }
-        )
-    return parts
 
 
 @router.post("/{workspace_id}/files/uploads/{upload_id}/parts")
@@ -270,7 +229,7 @@ async def sign_workspace_upload_parts(
     if row is None:
         raise HTTPException(status_code=409, detail=UPLOAD_ENDED)
 
-    parts = await asyncio.to_thread(_sign_parts, row, numbers)
+    parts = await asyncio.to_thread(sign_parts, _multipart(row), numbers)
     if parts is None:
         raise HTTPException(status_code=503, detail=STORE_UNREACHABLE)
 

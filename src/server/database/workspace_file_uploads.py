@@ -16,15 +16,10 @@ from psycopg.rows import dict_row
 
 from src.server.database.pool import get_db_connection
 from src.server.database.sql_fences import advisory_key
+from src.server.services.store_multipart import EXTEND_PARAMS, IDLE_TTL, MAX_AGE, extend_sql
 
 OPEN_STATES = ("uploading", "completing", "pulling")
 TERMINAL_STATES = ("done", "failed", "aborted")
-
-# An upload nobody signs parts for in this long is given up. Each batch of
-# parts moves it, so it bounds a stalled upload, not a slow one.
-IDLE_TTL = timedelta(hours=1)
-# However often it signs, an upload ends by this age.
-MAX_AGE = timedelta(hours=24)
 
 _COLUMNS = (
     "upload_id::text AS upload_id, user_id, workspace_id::text AS workspace_id, "
@@ -186,17 +181,9 @@ async def _update_many(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]
 
 
 async def extend_upload(upload_id: str) -> dict[str, Any] | None:
-    """Move an uploading row's idle deadline out; None once it has none left."""
     return await _update_one(
-        f"""
-        UPDATE workspace_file_uploads
-        SET expires_at = LEAST(NOW() + %(idle_ttl)s, created_at + %(max_age)s),
-            updated_at = NOW()
-        WHERE upload_id = %(upload_id)s AND state = 'uploading'
-          AND expires_at > NOW() AND created_at > NOW() - %(max_age)s
-        RETURNING {_COLUMNS}
-        """,
-        {"upload_id": upload_id, "idle_ttl": IDLE_TTL, "max_age": MAX_AGE},
+        extend_sql("workspace_file_uploads", "upload_id", _COLUMNS),
+        {"id": upload_id, **EXTEND_PARAMS},
     )
 
 
