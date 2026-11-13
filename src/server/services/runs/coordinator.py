@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional
 from uuid import uuid4
 
+from src.server.contracts.turn_kinds import RUN_ORIGIN_META, classify_origin
 from src.server.database.runs import lifecycle as tl_db
 from src.server.database.runs.lifecycle import (  # re-exported for callers
     AttemptConflictError,
@@ -237,6 +238,12 @@ class RunCoordinator:
             metadata["user_id"] = user_id
         if workspace_id:
             metadata["workspace_id"] = workspace_id
+        # Classified here, the one place that knows whether the run asks a
+        # query of its own; the settle reads the stamp back (``run_origin``).
+        origin = classify_origin(
+            metadata, query.query_type if query is not None else None
+        )
+        metadata[RUN_ORIGIN_META] = origin
 
         guard = None
         handle = None
@@ -286,6 +293,7 @@ class RunCoordinator:
             #   (unlike run_settled, which rides the outbox). Time-bounded, and
             #   a timeout is swallowed HERE so it can't reach the guard-release
             #   below and fail the turn over a hint.
+            from src.server.services.notices import compose_started
             from src.server.services.thread_control_stream import (
                 announce_run_started,
             )
@@ -302,6 +310,12 @@ class RunCoordinator:
                             workspace_id=metadata.get("workspace_id"),
                             run_id=run_id,
                             run_seq=row.get("run_seq"),
+                            origin=origin,
+                            notification=compose_started(
+                                origin,
+                                row.get("thread_title"),
+                                metadata.get("automation_name"),
+                            ),
                         ),
                         timeout=1.0,
                     )

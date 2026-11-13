@@ -782,6 +782,10 @@ class AutomationExecutor:
                 "automation_execution_id": execution_id,
                 "automation_id": str(automation["automation_id"]),
             }
+            if name := (automation.get("name") or "").strip():
+                # What the run's start and settle notices call it
+                # (``services/notices``).
+                run_metadata["automation_name"] = name
             extra_configurable = None
             if firing.held:
                 additional_context = [

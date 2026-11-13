@@ -373,7 +373,8 @@ async def start_run(
     """The START transaction: fork cleanup + query row + in_progress run row +
     thread projection.
 
-    Returns the run row. Raises DuplicateRequestError / RunSlotBusyError /
+    Returns the run row, with the thread's ``thread_title`` (None for a
+    thread gone). Raises DuplicateRequestError / RunSlotBusyError /
     AttemptConflictError, each backed by a DB constraint, so two workers
     racing the same admission cannot both win regardless of what they read,
     and, for a fork, StaleForkError when the branch tip moved. A HITL answer
@@ -568,15 +569,20 @@ async def start_run(
                     run_row = dict(await cur.fetchone())
                 await land_fork_steers(conn, kept_steers, run_id)
 
-                async with conn.cursor() as cur:
+                async with conn.cursor(row_factory=dict_row) as cur:
                     await cur.execute(
                         """
                         UPDATE conversation_threads
                         SET current_status = 'in_progress', updated_at = NOW()
                         WHERE conversation_thread_id = %s
+                        RETURNING title
                         """,
                         (thread_id,),
                     )
+                    thread = await cur.fetchone()
+                # What a background run's start notice names, from the write
+                # START makes anyway, so the notice waits on no read of its own.
+                run_row["thread_title"] = thread["title"] if thread else None
 
                 if before_commit is not None:
                     await before_commit(conn)
