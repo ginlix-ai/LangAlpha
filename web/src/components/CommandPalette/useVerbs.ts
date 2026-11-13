@@ -74,6 +74,29 @@ export function usePlace(): NewWork {
 }
 
 /**
+ * Open a new thread, in `fallbackWorkspaceId` unless told another, carrying
+ * the workspace's name and status so the chat draws it before its own lookup
+ * lands. The palette and the shell's New Thread menu item both start one here.
+ */
+export function useNewThread(fallbackWorkspaceId: string | undefined): Verbs['newThread'] {
+  const navigate = useNavigate();
+  const label = useWorkspaceLabel();
+  const { byId } = useWorkspaces();
+  return (workspaceId = fallbackWorkspaceId, draft = {}) => {
+    const ws = workspaceId ? byId.get(workspaceId) : undefined;
+    navigate('/chat/t/__default__', {
+      state: {
+        workspaceId,
+        workspaceName: label(ws),
+        workspaceStatus: ws?.status ?? null,
+        draftMessage: draft.message,
+        draftCommands: draft.commands,
+      },
+    });
+  };
+}
+
+/**
  * Archiving a thread from the palette, which outlives the palette's own
  * content: a thread with a run going asks first, in a dialog that opens
  * after the palette has closed (a turn later, or the palette's focus trap
@@ -110,6 +133,7 @@ export function useVerbs(archiveThread: Verbs['archiveThread']): Verbs {
   const { byId } = useWorkspaces();
   const names = useNames();
   const newWork = usePlace();
+  const newThread = useNewThread(newWork.workspaceId);
 
   return {
     ...names,
@@ -118,18 +142,7 @@ export function useVerbs(archiveThread: Verbs['archiveThread']): Verbs {
     // A thread opens in its workspace without looking it up, as a restored
     // session does; a match opens it at the turn (ChatView reads `focusTurn`).
     openThread: (threadId, workspaceId, also = {}) => navigate(`/chat/t/${threadId}`, { state: { workspaceId, ...also } }),
-    newThread: (workspaceId = newWork.workspaceId, draft = {}) => {
-      const ws = workspaceId ? byId.get(workspaceId) : undefined;
-      navigate('/chat/t/__default__', {
-        state: {
-          workspaceId,
-          workspaceName: label(ws),
-          workspaceStatus: ws?.status ?? null,
-          draftMessage: draft.message,
-          draftCommands: draft.commands,
-        },
-      });
-    },
+    newThread,
     // In the chat on screen when the file is in its workspace, else on the workspace's page.
     openFile: (workspaceId, path) => {
       if (currentThreadId && currentWorkspaceId === workspaceId) {

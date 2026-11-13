@@ -33,7 +33,16 @@
     "failed": "失败",
     "language": "语言",
     "languageCurrent": "语言：{{language}}",
-    "optional": "（可选）"
+    "optional": "（可选）",
+    "sortable": {
+      "handle": "移动 {{name}}",
+      "instructions": "按空格键或回车键拿起一项，用方向键移动，再按空格键或回车键放下，按 Esc 取消。",
+      "pickedUp": "已拿起 {{name}}。",
+      "over": "{{name}} 位于 {{over}} 上方。",
+      "inPlace": "{{name}} 回到原位。",
+      "dropped": "{{name}} 已放到 {{over}} 的位置。",
+      "cancelled": "已取消移动 {{name}}。"
+    }
   },
   "auth": {
     "login": "登录",
@@ -516,6 +525,7 @@
       "appearance": "外观",
       "chat": "对话",
       "artifacts": "Artifact",
+      "desktop": "桌面应用",
       "agent": "行为",
       "model": "模型",
       "integrations": "集成",
@@ -530,6 +540,7 @@
       "appearance": "主题（样式与浅色或深色）和字号。",
       "chat": "回复如何呈现，以及 Agent 工作时对话里显示什么。",
       "artifacts": "评论 Agent 生成的文件时的默认设置。",
+      "desktop": "这台电脑上的通知、菜单栏，以及应用如何启动。",
       "agent": "Agent 如何作答、哪些操作无需询问，以及如何搜索网页。",
       "model": "你可用的模型，以及 Agent 实际使用的模型。",
       "integrations": "在聊天应用中与你的 Agent 对话，并管理用你的账户登录的应用。",
@@ -630,6 +641,78 @@
       "open": "打开",
       "connectedApps": "已连接的应用",
       "connectedAppsDesc": "你用 LangAlpha 账户登录过的应用。"
+    },
+    "desktop": {
+      "notificationsGroup": "通知",
+      "notificationsGroupDesc": "当你没在看对应对话时，由系统弹出通知。",
+      "notifyTurn": "回复完成",
+      "notifyTurnDesc": "你发起的回复准备好时。",
+      "notifyNeedsInput": "需要你的输入",
+      "notifyNeedsInputDesc": "Agent 停下来向你提问时。",
+      "notifyWakeup": "唤醒与价格提醒",
+      "notifyWakeupDesc": "Agent 按约定回来查看，或价格提醒触发时。",
+      "notifyAutomation": "自动化",
+      "notifyAutomationDesc": "自动化完成一次运行时。",
+      "notifyStarted": "后台任务开始时也通知",
+      "notifyStartedDesc": "价格提醒或自动化开始时静默显示一条通知，完成后替换为结果。唤醒只在有发现时通知你。",
+      "menubarGroup": "菜单栏",
+      "menubarIcon": "在菜单栏显示图标",
+      "menubarIconDesc": "行情、持仓和 Agent 动态，一键可见。",
+      "menubarItems": "菜单栏显示",
+      "menubarItemsDesc": "显示在图标旁边。拖动可调整顺序。",
+      "menubarItemsDescTooltip": "显示在托盘图标的提示中。拖动可调整顺序。",
+      "menubarItemsDescMenu": "显示在托盘菜单顶部。拖动可调整顺序。",
+      "itemPortfolio": "持仓",
+      "addSymbol": "添加代码",
+      "addPortfolio": "添加持仓",
+      "addTile": "添加",
+      "itemsFull": "最多 {{count}} 个",
+      "removeItem": "移除 {{name}}",
+      "menubarStyle": "多于一项时",
+      "menubarStyleDesc": "轮播时宽度保持不变。",
+      "menubarStyleRotate": "轮播",
+      "menubarStyleSide": "并排",
+      "rotateEvery": "轮播间隔",
+      "rotateSeconds_other": "每 {{count}} 秒",
+      "menubarShow": "显示",
+      "menubarShowDesc": "每一项显示的内容。",
+      "menubarShowChange": "涨跌幅",
+      "menubarShowPrice": "价格",
+      "menubarShowBoth": "两者",
+      "menubarExtended": "盘前盘后",
+      "menubarExtendedDesc": "有盘前或盘后变动时显示。",
+      "panelGroup": "面板",
+      "panelGroupDesc": "点击图标时打开的内容。",
+      "panelSections": "板块",
+      "panelSectionsDesc": "按此顺序显示。拖动可调整顺序。",
+      "section": {
+        "market": "市场",
+        "portfolio": "持仓",
+        "watchlist": "自选",
+        "agent": "Agent"
+      },
+      "panelTiles": "行情卡片",
+      "panelTilesDesc": "最多 4 个：指数、ETF、加密货币或股票均可。",
+      "panelWatchlist": "自选列表",
+      "panelWatchlistDesc": "显示哪个列表，以及显示几行。",
+      "watchlistWhich": "选择自选列表",
+      "watchlistDefault": "默认",
+      "watchlistDefaultNamed": "{{name}}（默认）",
+      "watchlistRowsLabel": "行数",
+      "watchlistRows_other": "{{count}} 行",
+      "shortcut": "快捷键",
+      "shortcutDesc": "在任何应用中打开菜单栏面板。点击后按下按键。",
+      "shortcutNone": "录制快捷键",
+      "shortcutRecording": "请按键…",
+      "shortcutClear": "清除",
+      "shortcutError": "无法使用此快捷键：{{error}}",
+      "startupGroup": "启动",
+      "openAtLogin": "登录时打开",
+      "openAtLoginDesc": "登录这台电脑时在后台启动 LangAlpha。",
+      "openAtLoginWindowDesc": "登录这台电脑时打开 LangAlpha 窗口。开启图标后，改为在后台启动。",
+      "keepRunning": "关闭窗口后在托盘中继续运行",
+      "keepRunningDesc": "关闭窗口后，通知和托盘图标仍会继续工作。",
+      "unavailable": "桌面应用没有响应，请重启后再试。"
     }
   },
   "dashboard": {
@@ -7534,5 +7617,88 @@
       "inHours": "{{n}} 小时后",
       "inDays": "{{n}} 天后"
     }
+  },
+  "menubar": {
+    "open": "打开 LangAlpha",
+    "settings": "桌面应用设置",
+    "market": {
+      "title": "市场",
+      "open": "交易中",
+      "pre": "盘前",
+      "after": "盘后",
+      "closed": "已休市",
+      "unknown": "市场",
+      "closesIn": "{{time}}后收盘",
+      "opensIn": "{{time}}后开盘",
+      "endsIn": "{{time}}后结束"
+    },
+    "duration": {
+      "hoursMinutes": "{{h}} 小时 {{m}} 分钟",
+      "minutes": "{{m}} 分钟"
+    },
+    "portfolio": {
+      "title": "投资组合 · 今日",
+      "showValues": "显示数值",
+      "hideValues": "隐藏数值",
+      "weight": "{{pct}}%",
+      "manualNote": "基于您手动录入的持仓",
+      "otherCurrencies": "未计入 {{list}}",
+      "empty": "还没有持仓。",
+      "add": "在 LangAlpha 中添加持仓"
+    },
+    "watchlist": {
+      "title": "自选股",
+      "count": "{{shown}} / {{total}}",
+      "empty": "自选列表为空。",
+      "add": "在 LangAlpha 中添加股票"
+    },
+    "agent": {
+      "title": "Agent",
+      "running": "运行中",
+      "needsInput": "等待输入",
+      "finished": "已完成，未查看",
+      "untitled": "未命名对话",
+      "empty": "没有正在运行或等待您处理的任务。",
+      "more": "还有 {{count}} 个"
+    },
+    "signedOut": {
+      "title": "登录 LangAlpha",
+      "body": "登录后，这里会显示市场行情、您的投资组合和 Agent 的工作进度。",
+      "action": "登录"
+    },
+    "tray": {
+      "portfolio": "持仓"
+    },
+    "feed": {
+      "offline": "离线",
+      "overdue": "未在更新",
+      "updated": "更新于 {{time}}",
+      "more": "另 {{count}} 个"
+    }
+  },
+  "marketIndex": {
+    "GSPC": {
+      "long": "标普 500",
+      "short": "标普"
+    },
+    "IXIC": {
+      "long": "纳斯达克",
+      "short": "纳指"
+    },
+    "DJI": {
+      "long": "道琼斯",
+      "short": "道指"
+    },
+    "RUT": {
+      "long": "罗素 2000",
+      "short": "罗素"
+    },
+    "VIX": {
+      "long": "VIX",
+      "short": "VIX"
+    }
+  },
+  "desktopApp": {
+    "untitledThread": "未命名对话"
   }
 }

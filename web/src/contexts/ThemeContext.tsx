@@ -64,7 +64,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     // live resize the frame outruns the paint and that colour fills the gap.
     // Optional call: an older shell predates this method and simply does not
     // get told, which is the browser's behaviour and costs nothing.
-    desktop?.setTheme?.(theme);
+    desktop?.setTheme?.(theme, preference);
   }, [theme, preference]);
 
   const setTheme = (value: ThemePreference) => setPreference(value);

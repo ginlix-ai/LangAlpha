@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react';
 import {
+  AppWindow,
   Bot,
   CandlestickChart,
   CircleUser,
@@ -14,6 +15,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import { isPlatformMode } from '@/config/hostMode';
+import { canDesktopSettings } from '@/lib/desktop';
 import { TRADING_PERMISSION_ANCHOR } from '@/lib/tradingPermission';
 
 interface SectionMeta {
@@ -23,6 +25,8 @@ interface SectionMeta {
   icon: ComponentType<{ className?: string }>;
   /** Points into the hosted account console, which a self-hosted build has none of. */
   platformOnly?: boolean;
+  /** Settings the desktop shell keeps, so drawn only in a shell that can read and write them. */
+  desktopOnly?: boolean;
 }
 
 /**
@@ -39,6 +43,7 @@ export const SECTIONS = {
   chat: { labelKey: 'settings.section.chat', descKey: 'settings.definition.chat', icon: MessageSquare },
   // An HTML file's glyph everywhere else in the app (`fileKindIcon('page')`).
   artifacts: { labelKey: 'settings.section.artifacts', descKey: 'settings.definition.artifacts', icon: Globe },
+  desktop: { labelKey: 'settings.section.desktop', descKey: 'settings.definition.desktop', icon: AppWindow, desktopOnly: true },
   agent: { labelKey: 'settings.section.agent', descKey: 'settings.definition.agent', icon: Bot },
   model: { labelKey: 'settings.section.model', descKey: 'settings.definition.model', icon: Cpu },
   integrations: { labelKey: 'settings.section.integrations', descKey: 'settings.definition.integrations', icon: Plug, platformOnly: true },
@@ -51,12 +56,13 @@ export type Section = keyof typeof SECTIONS;
 /** Whether this build draws the section. */
 export function sectionShown(section: Section): boolean {
   const meta: SectionMeta = SECTIONS[section];
+  if (meta.desktopOnly && !canDesktopSettings()) return false;
   return isPlatformMode || !meta.platformOnly;
 }
 
 export const GROUPS: readonly { labelKey: string; sections: readonly Section[] }[] = [
   { labelKey: 'settings.group.account', sections: ['account', 'preferences', 'plan'] },
-  { labelKey: 'settings.group.app', sections: ['general', 'appearance', 'chat', 'artifacts'] },
+  { labelKey: 'settings.group.app', sections: ['general', 'appearance', 'chat', 'artifacts', 'desktop'] },
   { labelKey: 'settings.group.agent', sections: ['agent', 'model', 'integrations', 'trading'] },
   { labelKey: 'settings.group.labs', sections: ['experiments'] },
 ];
@@ -71,7 +77,8 @@ export interface SettingEntry {
   anchor: string;
   labelKey: string;
   descKey?: string;
-  /** Drawn only in the desktop app, so only found there. */
+  /** Drawn only in the desktop app, so only found there. A whole section's
+   *  rows are kept out by the section's own flag. */
   desktopOnly?: boolean;
   /** Drawn only in the Models section's advanced view, which opening it turns on. */
   advanced?: boolean;
@@ -107,6 +114,22 @@ export const SETTINGS = {
   commentDestination: { section: 'artifacts', anchor: 'comment-destination', labelKey: 'settings.artifacts.destination', descKey: 'settings.artifacts.destinationDesc' },
   commentEnter: { section: 'artifacts', anchor: 'comment-enter', labelKey: 'settings.artifacts.enter', descKey: 'settings.artifacts.enterDesc' },
   artifactAnswers: { section: 'artifacts', anchor: 'artifact-answers', labelKey: 'settings.artifacts.answers', descKey: 'settings.artifacts.answersDesc' },
+  notifyTurn: { section: 'desktop', anchor: 'notify-turn', labelKey: 'settings.desktop.notifyTurn', descKey: 'settings.desktop.notifyTurnDesc', alsoKeys: ['settings.desktop.notificationsGroup'] },
+  notifyNeedsInput: { section: 'desktop', anchor: 'notify-needs-input', labelKey: 'settings.desktop.notifyNeedsInput', descKey: 'settings.desktop.notifyNeedsInputDesc', alsoKeys: ['settings.desktop.notificationsGroup'] },
+  notifyWakeup: { section: 'desktop', anchor: 'notify-wakeup', labelKey: 'settings.desktop.notifyWakeup', descKey: 'settings.desktop.notifyWakeupDesc', alsoKeys: ['settings.desktop.notificationsGroup'] },
+  notifyAutomation: { section: 'desktop', anchor: 'notify-automation', labelKey: 'settings.desktop.notifyAutomation', descKey: 'settings.desktop.notifyAutomationDesc', alsoKeys: ['settings.desktop.notificationsGroup'] },
+  notifyStarted: { section: 'desktop', anchor: 'notify-started', labelKey: 'settings.desktop.notifyStarted', descKey: 'settings.desktop.notifyStartedDesc', alsoKeys: ['settings.desktop.notificationsGroup'] },
+  // The rows under it are drawn only where the platform can do them.
+  menubarIcon: { section: 'desktop', anchor: 'menubar-icon', labelKey: 'settings.desktop.menubarIcon', descKey: 'settings.desktop.menubarIconDesc', alsoKeys: ['settings.desktop.shortcut', 'settings.desktop.keepRunning', 'settings.desktop.openAtLogin'] },
+  // Drawn while the icon is on, which it is by default. Rotate / side by side
+  // is drawn only where the text sits beside the icon (macOS), so it is found
+  // through the list it lays out.
+  menubarItems: { section: 'desktop', anchor: 'menubar-items', labelKey: 'settings.desktop.menubarItems', descKey: 'settings.desktop.menubarItemsDesc', alsoKeys: ['settings.desktop.menubarStyle', 'settings.desktop.menubarStyleRotate', 'settings.desktop.menubarStyleSide', 'settings.desktop.addSymbol'] },
+  menubarShow: { section: 'desktop', anchor: 'menubar-show', labelKey: 'settings.desktop.menubarShow', descKey: 'settings.desktop.menubarShowDesc', alsoKeys: ['settings.desktop.menubarGroup'] },
+  menubarExtendedHours: { section: 'desktop', anchor: 'menubar-extended-hours', labelKey: 'settings.desktop.menubarExtended', descKey: 'settings.desktop.menubarExtendedDesc', alsoKeys: ['settings.desktop.menubarGroup'] },
+  panelSections: { section: 'desktop', anchor: 'panel-sections', labelKey: 'settings.desktop.panelSections', descKey: 'settings.desktop.panelSectionsDesc', alsoKeys: ['settings.desktop.panelGroup'] },
+  panelTiles: { section: 'desktop', anchor: 'panel-tiles', labelKey: 'settings.desktop.panelTiles', descKey: 'settings.desktop.panelTilesDesc', alsoKeys: ['settings.desktop.panelGroup'] },
+  panelWatchlist: { section: 'desktop', anchor: 'panel-watchlist', labelKey: 'settings.desktop.panelWatchlist', descKey: 'settings.desktop.panelWatchlistDesc', alsoKeys: ['settings.desktop.panelGroup'] },
   outputFormat: { section: 'agent', anchor: 'output-format', labelKey: 'settings.outputFormat', descKey: 'settings.outputFormatDesc' },
   researchDepth: { section: 'agent', anchor: 'research-depth', labelKey: 'settings.researchDepth', descKey: 'settings.researchDepthDesc' },
   reachingOut: { section: 'agent', anchor: 'reaching-out', labelKey: 'settings.reachingOut', descKey: 'settings.reachingOutDesc' },

@@ -33,7 +33,16 @@
     "failed": "Failed",
     "language": "Language",
     "languageCurrent": "Language: {{language}}",
-    "optional": "(Optional)"
+    "optional": "(Optional)",
+    "sortable": {
+      "handle": "Move {{name}}",
+      "instructions": "To pick up an item, press Space or Enter. Use the arrow keys to move it, Space or Enter again to drop it, or Escape to cancel.",
+      "pickedUp": "Picked up {{name}}.",
+      "over": "{{name}} is over {{over}}.",
+      "inPlace": "{{name}} is back in its place.",
+      "dropped": "{{name}} was dropped over {{over}}.",
+      "cancelled": "Moving {{name}} was cancelled."
+    }
   },
   "auth": {
     "login": "Sign in",
@@ -469,6 +478,7 @@
       "appearance": "Appearance",
       "chat": "Chat",
       "artifacts": "Artifacts",
+      "desktop": "Desktop app",
       "agent": "Behavior",
       "model": "Models",
       "integrations": "Integrations",
@@ -483,6 +493,7 @@
       "appearance": "The theme, its style and light or dark, and the text size.",
       "chat": "How replies come in and what the chat shows while the agent works.",
       "artifacts": "Defaults for your comments on the files the agent makes.",
+      "desktop": "Notifications, the menu bar and how the app starts on this computer.",
       "agent": "How the agent answers, what it may do without asking, and how it searches the web.",
       "model": "The models you can reach and the ones the agent runs on.",
       "integrations": "Talk to your agent from your chat apps, and manage the apps signed in with your account.",
@@ -583,6 +594,80 @@
       "open": "Open",
       "connectedApps": "Connected apps",
       "connectedAppsDesc": "Apps you've signed in to with your LangAlpha account."
+    },
+    "desktop": {
+      "notificationsGroup": "Notifications",
+      "notificationsGroupDesc": "Shown by your computer when you are not looking at the thread.",
+      "notifyTurn": "Finished turns",
+      "notifyTurnDesc": "When a reply you asked for is ready.",
+      "notifyNeedsInput": "Needs your input",
+      "notifyNeedsInputDesc": "When the agent stops to ask you something.",
+      "notifyWakeup": "Wakeups and price alerts",
+      "notifyWakeupDesc": "When the agent checks back in on its own, or a price alert fires.",
+      "notifyAutomation": "Automations",
+      "notifyAutomationDesc": "When an automation finishes a run.",
+      "notifyStarted": "Show when a background run starts",
+      "notifyStartedDesc": "A silent notice as a price alert or automation begins, replaced by its result. A wakeup tells you only when it found something.",
+      "menubarGroup": "Menu bar",
+      "menubarIcon": "Show icon in the menu bar",
+      "menubarIconDesc": "Markets, your portfolio and the agent's activity, a click away.",
+      "menubarItems": "In the menu bar",
+      "menubarItemsDesc": "Shown next to the icon. Drag to reorder.",
+      "menubarItemsDescTooltip": "Shown in the tray icon's tooltip. Drag to reorder.",
+      "menubarItemsDescMenu": "Shown at the top of the tray menu. Drag to reorder.",
+      "itemPortfolio": "Portfolio",
+      "addSymbol": "Add symbol",
+      "addPortfolio": "Add portfolio",
+      "addTile": "Add",
+      "itemsFull": "Up to {{count}}",
+      "removeItem": "Remove {{name}}",
+      "menubarStyle": "With more than one",
+      "menubarStyleDesc": "Rotate keeps the width fixed.",
+      "menubarStyleRotate": "Rotate",
+      "menubarStyleSide": "Side by side",
+      "rotateEvery": "Rotate every",
+      "rotateSeconds_one": "Every {{count}}s",
+      "rotateSeconds_other": "Every {{count}}s",
+      "menubarShow": "Show",
+      "menubarShowDesc": "What each item shows.",
+      "menubarShowChange": "Change",
+      "menubarShowPrice": "Price",
+      "menubarShowBoth": "Both",
+      "menubarExtended": "Extended hours",
+      "menubarExtendedDesc": "Show the pre-market or after-hours move when there is one.",
+      "panelGroup": "Panel",
+      "panelGroupDesc": "What opens when you click the icon.",
+      "panelSections": "Sections",
+      "panelSectionsDesc": "Shown in this order. Drag to reorder.",
+      "section": {
+        "market": "Market",
+        "portfolio": "Portfolio",
+        "watchlist": "Watchlist",
+        "agent": "Agent"
+      },
+      "panelTiles": "Market tiles",
+      "panelTilesDesc": "Up to 4: any index, ETF, crypto or stock.",
+      "panelWatchlist": "Watchlist",
+      "panelWatchlistDesc": "Which list, and how many rows.",
+      "watchlistWhich": "Which watchlist",
+      "watchlistDefault": "Default",
+      "watchlistDefaultNamed": "{{name}} (default)",
+      "watchlistRowsLabel": "Rows",
+      "watchlistRows_one": "{{count}} row",
+      "watchlistRows_other": "{{count}} rows",
+      "shortcut": "Keyboard shortcut",
+      "shortcutDesc": "Opens the menu bar panel from any app. Click, then press the keys.",
+      "shortcutNone": "Record shortcut",
+      "shortcutRecording": "Press keys…",
+      "shortcutClear": "Clear",
+      "shortcutError": "Could not use this shortcut: {{error}}",
+      "startupGroup": "Startup",
+      "openAtLogin": "Open at login",
+      "openAtLoginDesc": "Start LangAlpha in the background when you sign in to this computer.",
+      "openAtLoginWindowDesc": "Open LangAlpha when you sign in to this computer. With the icon on, it starts in the background instead.",
+      "keepRunning": "Keep running in the tray when closed",
+      "keepRunningDesc": "Closing the window leaves notifications and the tray icon running.",
+      "unavailable": "The desktop app did not answer. Restart it and try again."
     }
   },
   "dashboard": {
@@ -7614,5 +7699,88 @@
       "inHours": "in {{n}}h",
       "inDays": "in {{n}}d"
     }
+  },
+  "menubar": {
+    "open": "Open LangAlpha",
+    "settings": "Desktop app settings",
+    "market": {
+      "title": "Market",
+      "open": "Market open",
+      "pre": "Pre-market",
+      "after": "After hours",
+      "closed": "Market closed",
+      "unknown": "Market",
+      "closesIn": "Closes in {{time}}",
+      "opensIn": "Opens in {{time}}",
+      "endsIn": "Ends in {{time}}"
+    },
+    "duration": {
+      "hoursMinutes": "{{h}}h {{m}}m",
+      "minutes": "{{m}}m"
+    },
+    "portfolio": {
+      "title": "Portfolio · today",
+      "showValues": "Show values",
+      "hideValues": "Hide values",
+      "weight": "{{pct}}%",
+      "manualNote": "From the holdings you entered",
+      "otherCurrencies": "{{list}} not included",
+      "empty": "No holdings yet.",
+      "add": "Add holdings in LangAlpha"
+    },
+    "watchlist": {
+      "title": "Watchlist",
+      "count": "{{shown}} of {{total}}",
+      "empty": "Your watchlist is empty.",
+      "add": "Add symbols in LangAlpha"
+    },
+    "agent": {
+      "title": "Agent",
+      "running": "Running",
+      "needsInput": "Needs input",
+      "finished": "Finished",
+      "untitled": "Untitled thread",
+      "empty": "Nothing running or waiting for you.",
+      "more": "{{count}} more"
+    },
+    "signedOut": {
+      "title": "Sign in to LangAlpha",
+      "body": "The market, your portfolio and your agent's work show here once you're signed in.",
+      "action": "Sign in"
+    },
+    "tray": {
+      "portfolio": "Port"
+    },
+    "feed": {
+      "offline": "Offline",
+      "overdue": "Not updating",
+      "updated": "Updated {{time}}",
+      "more": "+{{count}} more"
+    }
+  },
+  "marketIndex": {
+    "GSPC": {
+      "long": "S&P 500",
+      "short": "S&P"
+    },
+    "IXIC": {
+      "long": "Nasdaq",
+      "short": "Nasdaq"
+    },
+    "DJI": {
+      "long": "Dow",
+      "short": "Dow"
+    },
+    "RUT": {
+      "long": "Russell 2000",
+      "short": "Russell"
+    },
+    "VIX": {
+      "long": "VIX",
+      "short": "VIX"
+    }
+  },
+  "desktopApp": {
+    "untitledThread": "Untitled thread"
   }
 }
