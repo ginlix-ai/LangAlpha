@@ -402,6 +402,17 @@ export const queryKeys = {
     // Today's market-wide brief, as markdown for the agent.
     marketBrief: () => [...queryKeys.insights.all, 'market-brief'],
   },
+  // The user's watchlists themselves (id, name), for picking one. What is on
+  // the default list is read under `['watchlistData']` (hooks/membershipQueries).
+  watchlists: {
+    all:   ['watchlists'],
+    list:  () => [...queryKeys.watchlists.all, 'list'],
+    // One list's entries by id, for a list other than the default one.
+    items: (id: string) => [...queryKeys.watchlists.all, 'items', id],
+  },
+  // The US session (open, pre, after, closed), which every quote row's
+  // extended-hours split reads.
+  marketStatus: () => ['marketStatus'],
 };
 
 /**

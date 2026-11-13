@@ -5,10 +5,8 @@ import { useSymbolSearch } from '@/hooks/useSymbolSearch';
 import { resolveDualName } from '@/lib/displayName';
 import { readMarkedTicker, readTypedTicker } from '@/lib/marketUtils';
 import type { RecentTicker } from '@/lib/recentTickers';
-import { queryKeys } from '@/lib/queryKeys';
 import { queryWords } from '@/lib/textMatch';
-import { getRecentThreads } from '@/pages/ChatAgent/utils/api';
-import { workspaceThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
+import { recentThreadsQuery, workspaceThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
 import { askRow, fileRow, threadOfHit, threadOfList, threadRow, tickerRow, turnRow, type Verbs } from './rows';
 import { searchWithin } from './scope';
 import { boostOwnTickers } from './ownTickers';
@@ -75,7 +73,7 @@ function useRecentThreads(workspaceId: string | null) {
   const { data, isLoading } = useQuery(
     workspaceId
       ? workspaceThreadsQuery(workspaceId, RECENT_THREADS)
-      : { queryKey: queryKeys.threads.recent(RECENT_THREADS), queryFn: () => getRecentThreads(RECENT_THREADS, 0), staleTime: 30_000 },
+      : recentThreadsQuery(RECENT_THREADS),
   );
   return { threads: data?.threads ?? [], loading: isLoading };
 }

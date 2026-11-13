@@ -5,7 +5,7 @@
 import { queryOptions } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import type { ThreadsResponse } from '@/types/api';
-import { getThread, getThreadShareStatus, getWorkspaceThreads } from './api';
+import { getRecentThreads, getThread, getThreadShareStatus, getWorkspaceThreads } from './api';
 
 /**
  * One thread, read to learn its workspace on a direct link. No retry: the chat
@@ -25,6 +25,15 @@ export function workspaceThreadsQuery(workspaceId: string, limit: number) {
   return queryOptions({
     queryKey: queryKeys.threads.page(workspaceId, limit),
     queryFn: () => getWorkspaceThreads(workspaceId, limit, 0) as Promise<ThreadsResponse>,
+    staleTime: 30_000,
+  });
+}
+
+/** The user's newest `limit` threads across every workspace. */
+export function recentThreadsQuery(limit: number) {
+  return queryOptions({
+    queryKey: queryKeys.threads.recent(limit),
+    queryFn: () => getRecentThreads(limit, 0) as Promise<ThreadsResponse>,
     staleTime: 30_000,
   });
 }

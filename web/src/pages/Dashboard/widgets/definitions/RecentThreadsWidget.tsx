@@ -10,12 +10,10 @@ import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { HomeRowIcon } from '@/hooks/useHomeWorkspace';
 import { isHomeWorkspace } from '@/lib/homeWorkspace';
-import { getRecentThreads } from '@/pages/ChatAgent/utils/api';
-import { workspaceThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
+import { recentThreadsQuery, workspaceThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
 import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
-import { sentMessageWords } from '@/pages/ChatAgent/components/messageList/sentMessage';
-import type { Thread, ThreadsResponse, Workspace } from '@/types/api';
-import { queryKeys } from '@/lib/queryKeys';
+import { threadName } from '@/pages/ChatAgent/components/messageList/sentMessage';
+import type { Thread, Workspace } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { WidgetCardMeta } from '../framework/widgetCardSlots';
 import { useWidgetContextExport } from '../framework/contextSnapshot';
@@ -50,11 +48,6 @@ function formatThreadTime(date: Date, bucket: BucketKey, locale: string): string
   if (bucket === 'today') return clockTime(date, locale);
   if (bucket === 'week') return shortWeekday(date, locale);
   return shortMonthDay(date, locale);
-}
-
-/** A thread's title, else the words of its first message. */
-function threadName(thread: Thread): string {
-  return thread.title || sentMessageWords((thread as { first_query_content?: string }).first_query_content ?? '');
 }
 
 interface GroupedThreads {
@@ -249,11 +242,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
 
   const { data, isLoading } = useQuery(
     isAllScope
-      ? {
-          queryKey: queryKeys.threads.recent(limit),
-          queryFn: () => getRecentThreads(limit, 0) as Promise<ThreadsResponse>,
-          staleTime: 30_000,
-        }
+      ? recentThreadsQuery(limit)
       : { ...workspaceThreadsQuery(targetWorkspaceId ?? '', limit), enabled: !!targetWorkspaceId },
   );
 

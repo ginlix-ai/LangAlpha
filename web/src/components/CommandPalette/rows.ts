@@ -16,7 +16,7 @@ import {
 import type { MatchRange, SearchFileHit, SearchThreadHit, SearchTurnHit } from '@/api/search';
 import type { SlashCommand } from '@/components/ui/chat-input.types';
 import { fileGlyph } from '@/pages/ChatAgent/components/filePanel/fileMeta';
-import { sentMessageWords } from '@/pages/ChatAgent/components/messageList/sentMessage';
+import { sentMessageWords, threadName } from '@/pages/ChatAgent/components/messageList/sentMessage';
 import type { Thread } from '@/types/api';
 import type { PaletteAction, PaletteItem, Place } from './types';
 
@@ -130,7 +130,7 @@ export function threadOfList(thread: Thread, names: Names): ThreadRef {
   return {
     threadId: thread.thread_id,
     workspaceId: thread.workspace_id,
-    title: thread.title || sentMessageWords(thread.first_query_content ?? ''),
+    title: threadName(thread),
     savedTitle: thread.title ?? '',
     where: names.workspaceName(thread.workspace_id),
     at: thread.updated_at,

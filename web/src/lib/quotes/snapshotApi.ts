@@ -7,20 +7,18 @@
  * (`snapshots | results | data`), swallowing network errors to `{}`.
  */
 import { api } from '@/api/client';
+import { INDEX_SYMBOLS } from '@/lib/indices';
 import { normalizeIndexKey } from '@/lib/marketUtils';
 import type { SnapshotBatchResponse, SnapshotData } from '@/types/market';
 
 export type SnapshotEntry = SnapshotData;
 export type SnapshotResponse = SnapshotBatchResponse;
 
-// Default index basket for a no-arg indexes batch (mirrors Dashboard's).
-const DEFAULT_INDEX_SYMBOLS: string[] = ['GSPC', 'IXIC', 'DJI', 'RUT', 'VIX'];
-
 /**
  * GET /api/v1/market-data/snapshots/indexes?symbols=GSPC,IXIC,...
  * Batch snapshot for index symbols (caret-stripped, uppercased).
  */
-export async function getSnapshotIndexes(symbols: string[] = DEFAULT_INDEX_SYMBOLS): Promise<SnapshotResponse> {
+export async function getSnapshotIndexes(symbols: readonly string[] = INDEX_SYMBOLS): Promise<SnapshotResponse> {
   const list = symbols.map((s) => normalizeIndexKey(s));
   try {
     const { data } = await api.get('/api/v1/market-data/snapshots/indexes', {

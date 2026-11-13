@@ -19,10 +19,12 @@ vi.mock('@/lib/quotes/snapshotApi', () => ({
   getSnapshotStocks: vi.fn(),
 }));
 
-vi.mock('@/lib/marketUtils', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/marketUtils')>()),
-  fetchMarketStatus: vi.fn(),
-}));
+vi.mock('@/lib/marketUtils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/marketUtils')>();
+  const fetchMarketStatus = vi.fn();
+  // The shared query calls the module's own binding, which the stub cannot replace.
+  return { ...actual, fetchMarketStatus, marketStatusQuery: () => ({ ...actual.marketStatusQuery(), queryFn: () => fetchMarketStatus() }) };
+});
 
 // Eligibility is unit-tested via the pure function below; for the widget
 // provider-selection test we mock the hook to isolate the wiring.

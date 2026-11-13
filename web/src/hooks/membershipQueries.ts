@@ -6,6 +6,7 @@
  */
 import { queryOptions } from '@tanstack/react-query';
 import { registerAuthReset } from '@/lib/authResets';
+import { queryKeys } from '@/lib/queryKeys';
 import { getPortfolio, listWatchlistItems, listWatchlists } from '@/pages/Dashboard/utils/api';
 
 export interface WatchlistItem {
@@ -85,6 +86,43 @@ export const watchlistItemsQuery = queryOptions({
   },
   staleTime: 1000 * 30, // 30s fresh
 });
+
+/** One watchlist's entries by id, for a reader that shows a list other than the default one. */
+export function watchlistItemsByIdQuery(id: string) {
+  return queryOptions({
+    queryKey: queryKeys.watchlists.items(id),
+    queryFn: async (): Promise<{ items: WatchlistItem[] }> => {
+      const data = (await listWatchlistItems(id)) as { items?: WatchlistItem[] } | null;
+      return { items: data?.items ?? [] };
+    },
+    staleTime: 30_000,
+  });
+}
+
+export interface WatchlistName {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+function readWatchlists(data: unknown): WatchlistName[] {
+  const rows = (data as { watchlists?: unknown } | null)?.watchlists;
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row: { watchlist_id?: unknown; name?: unknown; is_default?: unknown }) =>
+    row && row.watchlist_id != null
+      ? [{ id: String(row.watchlist_id), name: String(row.name ?? ''), isDefault: row.is_default === true }]
+      : [],
+  );
+}
+
+/** The user's watchlists by name, for picking one. */
+export function watchlistsQuery() {
+  return queryOptions({
+    queryKey: queryKeys.watchlists.list(),
+    queryFn: async () => readWatchlists(await listWatchlists()),
+    staleTime: 60_000,
+  });
+}
 
 export interface PortfolioHolding {
   user_portfolio_id: string;

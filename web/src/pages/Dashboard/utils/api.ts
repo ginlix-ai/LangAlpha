@@ -5,6 +5,7 @@
 import { api } from '@/api/client';
 import i18n from '@/i18n';
 import type { Profile } from '@/lib/appBridge/protocol';
+import { INDEX_SYMBOLS as US_INDEX_SYMBOLS } from '@/lib/indices';
 import { normalizeIndexKey } from '@/lib/marketUtils';
 import { snapshotRowSpellings, snapshotToStockPrice } from '@/lib/quotes/quoteAdapters';
 import { getSnapshotIndexes, getSnapshotStocks } from '@/lib/quotes/snapshotApi';
@@ -48,8 +49,8 @@ interface EarningsResponse {
 
 // --- Market data (see docs/ptc-agent-api/market data) ---
 
-/** Index symbols: normalized (GSPC, IXIC, DJI, RUT). Index.yml / Index Batch.yml use these. */
-const INDEX_SYMBOLS: string[] = ['GSPC', 'IXIC', 'DJI', 'RUT', 'VIX'];
+/** Index symbols, normalized (GSPC, not ^GSPC), as the index endpoints take them. */
+const INDEX_SYMBOLS: string[] = [...US_INDEX_SYMBOLS];
 const INDEX_NAMES: Record<string, string> = { GSPC: 'S&P 500', IXIC: 'NASDAQ', DJI: 'Dow Jones', RUT: 'Russell 2000', VIX: 'VIX' };
 
 // Trim + strip a leading '^' + uppercase — the shared symbol-key normalizer.

@@ -14,7 +14,7 @@ import { providerLabel } from '@/lib/providerLabels';
 import { queryKeys } from '@/lib/queryKeys';
 import { quoteKey, quoteQueryOptions, type QuoteRow } from '@/lib/quotes';
 import { localDateStr } from '@/lib/utils';
-import { getRecentThreads } from '@/pages/ChatAgent/utils/api/threads';
+import { recentThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
 import {
   fetchEarningsCalendar,
   fetchTodayInsights,
@@ -366,11 +366,7 @@ async function readHoldings(): Promise<Holding[]> {
 /** Through the recent-threads widget's own query, so a thread the user just renamed or started shows here too. */
 const readThreads: BridgeMethod = async (params, queryClient) => {
   const count = limit(params, 10, 50);
-  const data: unknown = await queryClient.fetchQuery({
-    queryKey: queryKeys.threads.recent(count),
-    queryFn: () => getRecentThreads(count, 0),
-    staleTime: 30_000,
-  });
+  const data: unknown = await queryClient.fetchQuery(recentThreadsQuery(count));
   return listOf(data, 'threads').map((t): ThreadItem => ({
     id: String(t.thread_id),
     title: String(t.title ?? ''),
