@@ -1,7 +1,11 @@
 /* NavigationPanel Styles */
 
+/* --nav-panel-surface is what the panel sits on, read by the row actions'
+   overlay; a host that lets its own ground show through (the app sidebar)
+   sets it to that ground. */
 .nav-panel {
-  background: var(--color-bg-page);
+  --nav-panel-surface: var(--color-bg-page);
+  background: var(--nav-panel-surface);
   border-right: 1px solid var(--color-border-muted);
 }
 
@@ -11,20 +15,22 @@
   gap: 8px;
   padding: 4px 10px;
   cursor: pointer;
-  border-radius: 6px;
   margin: 1px 6px;
   transition: background-color var(--motion-quick) var(--ease-out);
   min-height: 28px;
-}
-
-.nav-panel-row:hover {
-  background-color: var(--color-border-muted);
+  /* The row's fill and corner, read by the actions overlay too, so the two
+     cannot drift apart. */
+  --nav-row-fill: transparent;
+  --nav-row-radius: 6px;
+  background-color: var(--nav-row-fill);
+  border-radius: var(--nav-row-radius);
 }
 
 /* The row a right-click menu is open for keeps its hover tint: the menu is
    modal, so the pointer no longer hovers anything beneath it. */
+.nav-panel-row:hover,
 .nav-panel-row.is-menu-open {
-  background-color: var(--color-border-muted);
+  --nav-row-fill: var(--color-border-muted);
 }
 
 /* The open card styles mark the open thread with an edge and full ink, not
@@ -32,11 +38,11 @@
 .nav-panel-row-active,
 .nav-panel-row-active:hover,
 .nav-panel-row-active.is-menu-open {
-  background-color: var(--color-shell-fill, var(--color-border-muted));
+  --nav-row-fill: var(--color-shell-fill, var(--color-border-muted));
 }
 
 .nav-panel-row-active {
-  border-radius: var(--cs-radius-small, 8px);
+  --nav-row-radius: var(--cs-radius-small, 8px);
   box-shadow: inset 0 0 0 1px var(--color-shell-edge, transparent);
   font-weight: var(--cs-weight-selected, 400);
 }
@@ -50,11 +56,11 @@
 
 /* Hover action overlay (pin/archive) — floats over the title's tail so
    revealing the buttons never reflows the text. Only visible while the row
-   is hovered. The row's hover tint (--color-border-muted) is translucent, so
-   masking the text needs TWO stacked gradients in the same geometry: solid
-   page bg underneath, the tint on top — reproducing exactly what the hovered
-   row (plain or active — they share the tint) looks like, opaque where the
-   buttons sit, with the title fading out through the leading edge. */
+   is hovered. The row's fill may be translucent, so masking the text needs
+   TWO stacked gradients in the same geometry: the panel's surface underneath,
+   the row's own fill on top — reproducing exactly what the row looks like,
+   opaque where the buttons sit, with the title fading out through the
+   leading edge. Either layer read from anything else shows as a band. */
 .nav-panel-row-actions {
   position: absolute;
   /* Full row height to the pill's right edge — a right-side radius matching
@@ -63,7 +69,7 @@
   right: 0;
   top: 0;
   bottom: 0;
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 var(--nav-row-radius) var(--nav-row-radius) 0;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -73,12 +79,17 @@
   pointer-events: none;
   transition: opacity var(--motion-quick) var(--ease-out);
   background:
-    linear-gradient(to right, transparent, var(--color-border-muted) 20px),
-    linear-gradient(to right, transparent, var(--color-bg-page) 20px);
+    linear-gradient(to right, transparent, var(--nav-row-fill) 20px),
+    linear-gradient(to right, transparent, var(--nav-panel-surface) 20px);
 }
 
+/* Inset by the active row's 1px edge, which the overlay would otherwise
+   paint over along the buttons. */
 .nav-panel-row-active .nav-panel-row-actions {
-  border-radius: 0 8px 8px 0;
+  top: 1px;
+  bottom: 1px;
+  right: 1px;
+  --nav-row-radius: calc(var(--cs-radius-small, 8px) - 1px);
 }
 
 /* Keyboard focus and an open menu keep the actions up too: the menu is
