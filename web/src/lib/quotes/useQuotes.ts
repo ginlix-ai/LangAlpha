@@ -8,7 +8,8 @@
  * one HTTP call and fans the result back out across the per-symbol keys.
  *
  * Missing rows (unknown/unresolvable symbols the backend drops) surface as
- * `quote === undefined` — never an error.
+ * `quote === undefined`, not an error. A refresh that failed is an error, which
+ * keeps the last row on screen and its `dataUpdatedAt` where it was.
  */
 import { useCallback, useMemo } from 'react';
 import { queryOptions, useQueries, useQueryClient, type QueryClient } from '@tanstack/react-query';

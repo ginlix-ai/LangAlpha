@@ -14,10 +14,14 @@ vi.mock('../../utils/api', async (importOriginal) => {
 });
 vi.mock('../../utils/indices', () => ({ getIndex: vi.fn() }));
 
-vi.mock('@/lib/quotes/snapshotApi', () => ({
-  getSnapshotIndexes: vi.fn(),
-  getSnapshotStocks: vi.fn(),
-}));
+vi.mock('@/lib/quotes/snapshotApi', () => {
+  const getSnapshotStocks = vi.fn();
+  const getSnapshotIndexes = vi.fn();
+  // The batcher reads the throwing primitive; route it to the two mocks.
+  const fetchSnapshotBatch = (kind: 'stocks' | 'indexes', symbols: string[]) =>
+    (kind === 'stocks' ? getSnapshotStocks : getSnapshotIndexes)(symbols);
+  return { getSnapshotStocks, getSnapshotIndexes, fetchSnapshotBatch };
+});
 
 vi.mock('@/lib/marketUtils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/marketUtils')>();

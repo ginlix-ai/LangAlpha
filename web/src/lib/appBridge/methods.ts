@@ -178,11 +178,15 @@ export function toQuote(key: string, row: QuoteRow): Quote {
 
 /**
  * Quotes are the page's own quote rows: batched with every other quote the
- * page asks for, and kept current by the market socket while one is open.
+ * page asks for, and kept current by the market socket while one is open. A
+ * refresh that failed answers with the last row, whose `as_of` gives its age,
+ * and a symbol never read is left out, so one bad symbol never fails the rest.
  */
 export async function readQuoteArgs({ keys, isIndex }: QuoteArgs, queryClient: QueryClient): Promise<Quote[]> {
-  const rows = await Promise.all(keys.map((key) =>
-    queryClient.fetchQuery(quoteQueryOptions(queryClient, key, { isIndex, staleTime: QUOTE_STALE_MS }))));
+  const rows = await Promise.all(keys.map((key) => {
+    const options = quoteQueryOptions(queryClient, key, { isIndex, staleTime: QUOTE_STALE_MS });
+    return queryClient.fetchQuery(options).catch(() => queryClient.getQueryData(options.queryKey) ?? null);
+  }));
   return rows.flatMap((row, i) => (row ? [toQuote(keys[i], row)] : []));
 }
 

@@ -22,10 +22,14 @@ vi.mock('@/lib/bars', async (importOriginal) => {
 
 // Each tile's live quote goes through the shared quote batcher, which would
 // otherwise send a real snapshot request after the batch window.
-vi.mock('@/lib/quotes/snapshotApi', () => ({
-  getSnapshotIndexes: vi.fn(),
-  getSnapshotStocks: vi.fn(),
-}));
+vi.mock('@/lib/quotes/snapshotApi', () => {
+  const getSnapshotStocks = vi.fn();
+  const getSnapshotIndexes = vi.fn();
+  // The batcher reads the throwing primitive; route it to the two mocks.
+  const fetchSnapshotBatch = (kind: 'stocks' | 'indexes', symbols: string[]) =>
+    (kind === 'stocks' ? getSnapshotStocks : getSnapshotIndexes)(symbols);
+  return { getSnapshotStocks, getSnapshotIndexes, fetchSnapshotBatch };
+});
 
 // Stub the dashboard context — the widget only reads `watchlist.rows` to fall
 // back when no symbols are configured. Mocking sidesteps Supabase / API hooks.

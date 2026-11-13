@@ -17,10 +17,14 @@ vi.mock('../../utils/indices', () => ({ getIndex: vi.fn() }));
 
 // Index quotes flow through the shared quote layer's batcher, which hits the
 // snapshot primitives in lib/quotes — mock those to feed useQuotes.
-vi.mock('@/lib/quotes/snapshotApi', () => ({
-  getSnapshotIndexes: vi.fn(),
-  getSnapshotStocks: vi.fn(),
-}));
+vi.mock('@/lib/quotes/snapshotApi', () => {
+  const getSnapshotStocks = vi.fn();
+  const getSnapshotIndexes = vi.fn();
+  // The batcher reads the throwing primitive; route it to the two mocks.
+  const fetchSnapshotBatch = (kind: 'stocks' | 'indexes', symbols: string[]) =>
+    (kind === 'stocks' ? getSnapshotStocks : getSnapshotIndexes)(symbols);
+  return { getSnapshotStocks, getSnapshotIndexes, fetchSnapshotBatch };
+});
 
 // Partial mock so the real normalizeIndexKey (used by the batcher + snapshotApi)
 // survives; only fetchMarketStatus is stubbed.

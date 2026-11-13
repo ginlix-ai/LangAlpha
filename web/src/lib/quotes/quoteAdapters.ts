@@ -21,17 +21,22 @@ export function snapshotRowSpellings(row: { symbol: string; requested?: string[]
  * from it.
  */
 export function snapshotToStockPrice(symbol: string, snap: QuoteRow | undefined | null): StockPrice {
-  if (snap && snap.price != null) {
-    const change = snap.change ?? 0;
+  // A new day's row has no close until its regular session prints, so through
+  // pre-market the last official price is still the previous close, unmoved.
+  // Its `change` then measures the pre-market move, which `session` carries.
+  const unprinted = snap != null && snap.price == null && snap.previous_close != null && snap.previous_close > 0;
+  const price = unprinted ? snap.previous_close : snap?.price;
+  if (snap && price != null) {
+    const change = unprinted ? 0 : (snap.change ?? 0);
     return {
       symbol,
       currency: snap.currency ?? null,
-      price: snap.price,
+      price,
       change,
-      changePercent: snap.change_percent ?? 0,
+      changePercent: unprinted ? 0 : (snap.change_percent ?? 0),
       isPositive: change >= 0,
       quoteAvailable: true,
-      places: quotePlaces(symbol, { currency: snap.currency, assetClass: snap.asset_class, price: snap.previous_close ?? snap.price }),
+      places: quotePlaces(symbol, { currency: snap.currency, assetClass: snap.asset_class, price: snap.previous_close ?? price }),
       session: {
         previousClose: snap.previous_close ?? null,
         regularClose: snap.regular_close ?? null,
