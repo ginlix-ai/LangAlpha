@@ -2,24 +2,27 @@
 
 Every worker runs it on the cleanup interval. Reconcile is a pair of guarded
 statements any worker can repeat. The metrics are read by one worker per
-cycle, the one holding the collector lock, with its reads spaced out: a
-provider's limit is the organization's, not a worker's, and Daytona's
-metrics backend allows about one read a second. Reading a run less often
-loses nothing, since each read fetches everything since the run's cursor,
-and the fold writes behind a cursor check, so a delete-time read racing the
-sweep counts nothing twice.
+cycle, the one holding the collector lock, each provider kind's reads
+spaced to its own limit: a provider's limit is the organization's, not a
+worker's, and Daytona's metrics backend allows about one read every 10 to
+15 s. Reading a run less often loses nothing, since each read fetches
+everything since the run's cursor, and the fold writes behind a cursor
+check, so a delete-time read racing the sweep counts nothing twice.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Optional
 
 from ptc_agent.core.sandbox.runtime import (
     SandboxFailureKind,
+    SandboxGoneError,
     SandboxProvider,
     SandboxRateLimitedError,
 )
@@ -28,6 +31,7 @@ from src.server.database import computer_runs as runs_db
 from src.server.database.session_lock import try_own_session_lock
 from src.server.services.computer_usage.metrics import RunMetrics, fold_samples
 from src.server.services.computer_usage.transitions import (
+    allocation_kinds,
     metered_kinds,
     metric_kinds,
     note_computer_status,
@@ -38,11 +42,22 @@ logger = logging.getLogger(__name__)
 # A run is read about once per cleanup cycle (300 s); a little under, so a
 # worker's next cycle finds the run it read last time due again.
 POLL_EVERY_SECONDS = 240
-# One read starts every READ_INTERVAL_SECONDS, so a cycle's claim fits in
-# the 300 s cycle; runs left over are claimed by the next cycle, oldest
-# polled first.
-READ_INTERVAL_SECONDS = 2.0
+# Seconds between the starts of two of a kind's reads. Daytona's metrics
+# backend refused reads 6 s apart and took reads 15 s apart (measured
+# 2026-11-04; on 2026-10-23 it allowed about one a second), and the limit is
+# the organization's, shared with every delete-time read. E2B has shown none.
+READ_INTERVAL_SECONDS: Dict[str, float] = {"daytona": 15.0}
+DEFAULT_READ_INTERVAL_SECONDS = 2.0
+# A cycle starts no read after this, so it ends inside the 300 s cleanup
+# interval, and a kind claims only the runs it can read in it: a claimed run
+# left unread would wait out POLL_EVERY_SECONDS for nothing. Runs past the
+# limit are claimed by the next cycle, oldest polled first.
+CYCLE_BUDGET_SECONDS = 270.0
 CLAIM_LIMIT = 120
+# A refused read makes the kind wait this many intervals before its next,
+# and MAX_REFUSALS in a row end its cycle.
+REFUSAL_BACKOFF_INTERVALS = 2
+MAX_REFUSALS = 3
 CONCURRENCY = 8
 _COLLECTOR_LOCK = "computer_usage:metrics_collector"
 # A closed run whose last fold keeps failing is given up a day after it
@@ -60,6 +75,15 @@ SETTLE = timedelta(seconds=120)
 # and the writes after it, since a read cut short there is never asked again.
 DELETE_FOLD_TIMEOUT_SECONDS = FETCH_TIMEOUT_SECONDS + 5.0
 ERROR_TEXT_MAX = 300
+# Asking a provider what it holds for a sandbox is a control-plane lookup,
+# which no provider has refused at this pace. A run with no reported size is
+# asked about every cycle until one answers; a stopped sandbox whose disk a
+# run may still hold, hourly, so a hold the ledger saw no event end (a
+# delete outside the server, an error) is over-counted by at most that.
+ALLOCATION_SIZE_EVERY_SECONDS = 240
+ALLOCATION_HELD_EVERY_SECONDS = 3600
+ALLOCATION_LIMIT = 200
+ALLOCATION_CONCURRENCY = 4
 
 ProviderFor = Callable[[Dict[str, Any]], SandboxProvider]
 
@@ -110,6 +134,13 @@ def _gives_up(
     if provider is None:
         # Built from the run's own settings, which a retry reads the same.
         return isinstance(error, ValueError)
+    return _is_gone(provider, error)
+
+
+def _is_gone(provider: SandboxProvider, error: Exception) -> bool:
+    """Whether *error* says the provider no longer has the sandbox."""
+    if isinstance(error, SandboxGoneError):
+        return True
     try:
         return provider.classify_error(error) is SandboxFailureKind.SANDBOX_GONE
     except Exception:
@@ -123,7 +154,10 @@ async def _record_failure(
     logger.debug(f"Metrics for run {run_id} not read: {type(error).__name__}: {error}")
     text = f"{type(error).__name__}: {error}"[:ERROR_TEXT_MAX]
     await runs_db.store_run_metrics_error(
-        run_id, text, final=_gives_up(run, provider, error)
+        run_id,
+        text,
+        final=_gives_up(run, provider, error),
+        ended_at=run.get("ended_at"),
     )
 
 
@@ -173,6 +207,7 @@ async def _fold_once(
             expected_through=current.metrics_through,
             aggregates=current.as_columns(),
             final=True,
+            ended_at=ended_at,
         )
         return True
     until = ended_at
@@ -198,8 +233,98 @@ async def _fold_once(
         expected_through=current.metrics_through,
         aggregates=folded.as_columns(),
         final=closed,
+        ended_at=ended_at,
     )
     return True if stored else None
+
+
+def _read_interval(kind: str) -> float:
+    return READ_INTERVAL_SECONDS.get(kind, DEFAULT_READ_INTERVAL_SECONDS)
+
+
+def _claim_limit(interval: float) -> int:
+    """How many of a kind's runs one cycle can read, its reads *interval* apart."""
+    if interval <= 0:
+        return CLAIM_LIMIT
+    return max(1, min(CLAIM_LIMIT, int(CYCLE_BUDGET_SECONDS // interval) + 1))
+
+
+async def _claim(
+    kinds: tuple[str, ...], limit: int, computer_id: Optional[str]
+) -> list[Dict[str, Any]]:
+    try:
+        return await runs_db.claim_runs_for_metrics(
+            kinds=kinds,
+            poll_every_seconds=POLL_EVERY_SECONDS,
+            settle_seconds=SETTLE.total_seconds(),
+            limit=limit,
+            computer_id=computer_id,
+        )
+    except Exception as e:
+        logger.warning(f"Usage metrics not claimed: {type(e).__name__}: {e}")
+        return []
+
+
+async def _read(
+    run: Dict[str, Any], provider_for: ProviderFor, settle: Optional[timedelta]
+) -> bool:
+    """One run's read and fold; raises only a rate-limit refusal."""
+    try:
+        try:
+            provider = provider_for(run)
+        except Exception as e:
+            # Recorded, so a closed run whose provider is gone still ends.
+            await _record_failure(run, None, e)
+            return False
+        return await fold_run(run, provider, settle=settle)
+    except SandboxRateLimitedError:
+        raise
+    except Exception as e:
+        logger.debug(
+            f"Metrics fold of run {run.get('run_id')} failed: {type(e).__name__}: {e}"
+        )
+        return False
+
+
+async def _collect_kind(kind: str, provider_for: ProviderFor) -> int:
+    """One cycle's paced reads of one provider kind's due runs.
+
+    Reads are one at a time, each starting an interval after the last
+    started (longer after a refusal), so a refusal is known before the next
+    read and the kind backs off instead of being dropped at its first.
+    """
+    interval = _read_interval(kind)
+    claimed = await _claim((kind,), _claim_limit(interval), None)
+    deadline = time.monotonic() + CYCLE_BUDGET_SECONDS
+    done = 0
+    refusals = 0
+    read = 0
+    last_start: Optional[float] = None
+    for run in claimed:
+        if last_start is not None:
+            gap = interval * (REFUSAL_BACKOFF_INTERVALS if refusals else 1)
+            start = last_start + gap
+            # A slow read can carry the clock past its successor's slot.
+            if max(start, time.monotonic()) > deadline:
+                break
+            await asyncio.sleep(max(0.0, start - time.monotonic()))
+        last_start = time.monotonic()
+        read += 1
+        try:
+            done += await _read(run, provider_for, SETTLE)
+        except SandboxRateLimitedError:
+            refusals += 1
+            if refusals >= MAX_REFUSALS:
+                break
+            continue
+        refusals = 0
+    if read < len(claimed):
+        logger.info(
+            f"Usage metrics for {kind}: {len(claimed) - read} run(s) left for "
+            f"the next cycle"
+            + (f" after {refusals} refusal(s) in a row" if refusals else "")
+        )
+    return done
 
 
 async def collect_metrics(
@@ -211,89 +336,130 @@ async def collect_metrics(
 
     *provider_for* turns a claimed row (a run, with its computer's
     ``provider_config`` and ``root_dir``) into a provider the caller owns.
-    The sweep's reads start ``READ_INTERVAL_SECONDS`` apart; a provider that
-    refuses one for its rate limit is not asked again this cycle, and the
-    runs left unread wait for the next. Never raises: a run that fails keeps
-    its error on its row.
+    The periodic sweep (no *computer_id*) reads each kind on its own pace
+    (``_collect_kind``), the kinds side by side. A delete's read of one
+    computer is unspaced and concurrent, since the delete waits on it. Never
+    raises: a run that fails keeps its error on its row.
     """
     kinds = metric_kinds()
     if not kinds:
         return 0
-    try:
-        claimed = await runs_db.claim_runs_for_metrics(
-            kinds=kinds,
-            poll_every_seconds=POLL_EVERY_SECONDS,
-            settle_seconds=SETTLE.total_seconds(),
-            limit=CLAIM_LIMIT,
-            computer_id=computer_id,
+    if computer_id is None:
+        counts = await asyncio.gather(
+            *(_collect_kind(kind, provider_for) for kind in kinds)
         )
-    except Exception as e:
-        logger.warning(f"Usage metrics not claimed: {type(e).__name__}: {e}")
-        return 0
-    if not claimed:
-        return 0
+        return sum(counts)
 
+    claimed = await _claim(kinds, CLAIM_LIMIT, computer_id)
     slots = asyncio.Semaphore(CONCURRENCY)
-    throttled: set[str] = set()
-    periodic = computer_id is None
-    pace = READ_INTERVAL_SECONDS if periodic else 0.0
-    settle = SETTLE if periodic else None
 
     async def one(run: Dict[str, Any]) -> bool:
-        try:
+        async with slots:
             try:
-                provider = provider_for(run)
-            except Exception as e:
-                # Recorded, so a closed run whose provider is gone still ends.
-                await _record_failure(run, None, e)
+                return await _read(run, provider_for, None)
+            except SandboxRateLimitedError:
                 return False
-            return await fold_run(run, provider, settle=settle)
-        except SandboxRateLimitedError:
-            throttled.add(run["provider_kind"])
-            return False
-        except Exception as e:
-            logger.debug(
-                f"Metrics fold of run {run.get('run_id')} failed: "
-                f"{type(e).__name__}: {e}"
-            )
-            return False
-        finally:
-            slots.release()
 
-    tasks: list[asyncio.Task] = []
-    async with asyncio.TaskGroup() as group:
-        for run in claimed:
-            if run["provider_kind"] in throttled:
-                continue
-            if tasks and pace:
-                await asyncio.sleep(pace)
-                if run["provider_kind"] in throttled:
-                    continue
-            await slots.acquire()
-            tasks.append(group.create_task(one(run)))
-    if throttled:
-        logger.info(
-            f"Usage metrics rate-limited by {sorted(throttled)}; "
-            f"{len(claimed) - len(tasks)} run(s) left for the next cycle"
+    results = await asyncio.gather(*(one(run) for run in claimed))
+    return sum(results)
+
+
+async def _check_allocation(row: Dict[str, Any], provider_for: ProviderFor) -> bool:
+    """Ask the provider about one sandbox and write the answer; never raises.
+
+    A sandbox the provider no longer has is written as gone, bounded by the
+    archive interval the provider is configured for. Any other failure is
+    stamped as a check, so the sandbox waits its turn rather than heading
+    every batch.
+    """
+    kind = row["provider_kind"]
+    sandbox_id = row["provider_sandbox_id"]
+    try:
+        provider = provider_for(row)
+        asked_at = time.monotonic()
+        try:
+            found = await asyncio.wait_for(
+                provider.allocation(sandbox_id), timeout=FETCH_TIMEOUT_SECONDS
+            )
+        except Exception as e:
+            if not _is_gone(provider, e):
+                raise
+            await runs_db.store_sandbox_gone(
+                kind,
+                sandbox_id,
+                archive_after_s=provider.default_archive_after_s,
+                asked_at=asked_at,
+            )
+            return True
+        await runs_db.store_allocation(kind, sandbox_id, found, asked_at=asked_at)
+        return True
+    except Exception as e:
+        logger.debug(
+            f"Allocation of {kind} sandbox {sandbox_id} not recorded: "
+            f"{type(e).__name__}: {e}"
         )
-    return sum(t.result() for t in tasks)
+        with contextlib.suppress(Exception):
+            await runs_db.mark_allocation_checked(kind, sandbox_id)
+        return False
+
+
+async def check_allocations(provider_for: ProviderFor) -> int:
+    """Ask the providers about every sandbox due; returns how many answered.
+
+    What makes each run's size the sandbox's own rather than its tier's, and
+    ends a disk hold that no event the server saw did. No lookup starts past
+    the cycle's budget, so lookups that hang in an outage hold the
+    collector lock no longer than the metrics reads beside them; what is
+    left is due again next cycle. Never raises.
+    """
+    kinds = allocation_kinds()
+    if not kinds:
+        return 0
+    try:
+        due = await runs_db.get_sandboxes_due_allocation(
+            kinds=kinds,
+            size_every_seconds=ALLOCATION_SIZE_EVERY_SECONDS,
+            held_every_seconds=ALLOCATION_HELD_EVERY_SECONDS,
+            limit=ALLOCATION_LIMIT,
+        )
+    except Exception as e:
+        logger.warning(f"Usage allocations not listed: {type(e).__name__}: {e}")
+        return 0
+    slots = asyncio.Semaphore(ALLOCATION_CONCURRENCY)
+    deadline = time.monotonic() + CYCLE_BUDGET_SECONDS
+
+    async def one(row: Dict[str, Any]) -> bool:
+        async with slots:
+            if time.monotonic() > deadline:
+                return False
+            return await _check_allocation(row, provider_for)
+
+    return sum(await asyncio.gather(*(one(row) for row in due)))
 
 
 async def run_usage_sweep(provider_for: ProviderFor) -> None:
     """One cycle: reconcile first, so a run opened here is read in the same pass.
 
-    Reconcile runs on every worker; the reads only on the one that holds the
-    collector lock, which it keeps for the cycle's spaced-out reads, on a
-    session of its own so the hold takes no pool slot.
+    Reconcile, and settling the holds a later run or an archive ended, run on
+    every worker; the provider reads only on the one that holds the collector
+    lock, which it keeps for the cycle's spaced-out metric reads, with the
+    allocation lookups beside them, on a session of its own so the hold takes
+    no pool slot.
     """
     try:
         await reconcile_runs()
     except Exception as e:
         logger.warning(f"Usage ledger not reconciled: {type(e).__name__}: {e}")
     try:
+        await runs_db.settle_holds()
+    except Exception as e:
+        logger.warning(f"Usage disk holds not settled: {type(e).__name__}: {e}")
+    try:
         async with try_own_session_lock(_COLLECTOR_LOCK) as held:
             if held:
-                await collect_metrics(provider_for)
+                await asyncio.gather(
+                    collect_metrics(provider_for), check_allocations(provider_for)
+                )
     except Exception as e:
         logger.warning(f"Usage metrics not collected: {type(e).__name__}: {e}")
 

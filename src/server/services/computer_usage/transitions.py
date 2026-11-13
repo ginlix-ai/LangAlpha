@@ -51,14 +51,22 @@ def metric_kinds() -> tuple[str, ...]:
     return METRIC_KINDS
 
 
+def allocation_kinds() -> tuple[str, ...]:
+    from ptc_agent.core.sandbox.providers import ALLOCATION_KINDS
+
+    return ALLOCATION_KINDS
+
+
 def resolve_spec(
     computer: Mapping[str, Any],
 ) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """The cpu, memory GB and disk GB the computer's tier names, as configured now.
 
-    Read from this process's manager, whose settings carry the computer's own
-    provider overrides; (None, None, None) without one, or for a tier no
-    longer configured.
+    Only a stand-in for a run's size until the sweep asks the provider: a
+    sandbox keeps the size it was created at, which a preset changed since
+    no longer names. Read from this process's manager, whose settings carry
+    the computer's own provider overrides; (None, None, None) without one,
+    or for a tier no longer configured.
     """
     from ptc_agent.core.sandbox.providers._tiers import resolve_tier
     from src.server.services.computer_manager import ComputerManager
@@ -103,6 +111,7 @@ async def _open(cur, computer_id: str) -> None:
         memory_gb=memory_gb,
         disk_gb=disk_gb,
         metrics_final=computer["kind"] not in metric_kinds(),
+        provider_sized=computer["kind"] in allocation_kinds(),
     )
 
 

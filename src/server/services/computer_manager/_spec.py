@@ -900,6 +900,9 @@ class ComputerSpecMixin:
             await self._destroy_sandbox(
                 sandbox_id, binding=self._binding_from_computer("", computer)
             )
+            # The next start builds a new sandbox, so the ledger ends this
+            # one's run and disk as a replacement's, at the confirmed delete.
+            await self._end_replaced_usage_run(computer_id, sandbox_id)
             await clear_computer_disk(computer_id, sandbox_id=sandbox_id)
             settled = ComputerStatus.STOPPED
             return True
