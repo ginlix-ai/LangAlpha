@@ -8,11 +8,15 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+use tokio::time::Instant;
 use tracing::{info, warn};
 
 use crate::folder::{Identity, Paired};
 use crate::keys;
 
+// How long telling the deployment a run stopped may take past the run's own
+// deadline, inside the app's wait for the outcome.
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 // The first line of the report's 202 that asks the machine to connect out.
 const TUNNEL_CUE: &str = "tunnel";
 // An answer longer than this is not a sentence for the person who asked, but
@@ -69,18 +73,33 @@ impl Offer {
     }
 }
 
-/// Takes the deployment's key, reports the machine, and asks for the tunnel
-/// the deployment's 202 says to connect out through.
-pub async fn offer(url: &str, identity: &Identity) -> Result<Offer, PairError> {
-    let base = url
-        .strip_suffix("/script")
-        .ok_or_else(|| PairError::Local(anyhow!("{url} is not a pairing script's URL")))?;
-    let (code, body) = call(format!("{base}/key"), None).await?;
-    let authorized_key = authorized_key(code, &body)?;
+/// The key line the deployment authorizes for the account the pairing is
+/// for. It is that account's own, so it tells one account from another.
+pub async fn account_key(url: &str, by: Instant) -> Result<String, PairError> {
+    let (code, body) = call_by(by, format!("{}/key", base(url)?), None).await?;
+    authorized_key(code, &body)
+}
+
+fn base(url: &str) -> Result<&str, PairError> {
+    url.strip_suffix("/script")
+        .ok_or_else(|| PairError::Local(anyhow!("{url} is not a pairing script's URL")))
+}
+
+/// Reports the machine and asks for the tunnel the deployment's 202 says to
+/// connect out through, authorizing `authorized_key` (see [`account_key`]). The
+/// run, its confirmation included, gives up at `by`.
+pub async fn offer(
+    url: &str,
+    identity: &Identity,
+    authorized_key: String,
+    by: Instant,
+) -> Result<Offer, PairError> {
+    let base = base(url)?;
 
     let run = Run {
         base: base.into(),
         id: format!("{:016x}", rand::random::<u64>()),
+        by,
     };
     let hostname = hostname();
     let report = report(identity, &hostname, &run.id).map_err(PairError::Local)?;
@@ -113,34 +132,50 @@ pub async fn confirm(offer: &Offer) -> Result<(), PairError> {
     info!("Asking the deployment to connect through the tunnel");
     let mut form = offer.report.clone();
     form.push(("tunnel_id", offer.paired.tunnel_id.clone()));
-    let (code, body) = offer.run.post("report", form).await?;
-    match confirmed(code, &body) {
+    let answered = offer.run.post("report", form).await;
+    match answered.and_then(|(code, body)| confirmed(code, &body)) {
         // A refusal settled the pairing on the deployment's side. The cue
-        // again left it waiting on a tunnel, so it is told this run stopped.
+        // again, or no answer in time, left it waiting on a tunnel, so it is
+        // told this run stopped.
         Err(e @ PairError::Local(_)) => Err(offer.stop(e).await),
         other => other,
     }
 }
 
-/// One run of the pairing, as the deployment follows it.
+/// One run of the pairing, as the deployment follows it, given up at `by`.
 struct Run {
     base: String,
     id: String,
+    by: Instant,
 }
 
 impl Run {
     async fn post(&self, path: &str, form: Form) -> Result<(u16, String), PairError> {
-        call(format!("{}/{path}", self.base), Some(form)).await
+        call_by(self.by, format!("{}/{path}", self.base), Some(form)).await
     }
 
     /// Tells the deployment this run stopped and why, so its dialog says so
-    /// too rather than waiting until the command expires. A deployment that
-    /// could not be reached is not told.
+    /// too rather than waiting until the command expires, a run that ran out
+    /// of time included. A deployment that could not be reached is not told.
     async fn stop(&self, e: PairError) -> PairError {
         if !matches!(e, PairError::Unreachable(_)) {
-            let _ = self.post("report", stopped(&self.id, &e)).await;
+            let report = format!("{}/report", self.base);
+            let _ = call(report, Some(stopped(&self.id, &e)), STOP_TIMEOUT).await;
         }
         e
+    }
+}
+
+/// `call`, given up at `by` as this machine's failure, which the run's
+/// deployment is then told of. The request itself ends then too, so none of
+/// the run reaches the deployment after it was told the run stopped.
+async fn call_by(by: Instant, url: String, form: Option<Form>) -> Result<(u16, String), PairError> {
+    let ran_out = || PairError::Local(anyhow!("the pairing did not finish in time"));
+    let left = by.saturating_duration_since(Instant::now());
+    match tokio::time::timeout_at(by, call(url, form, left)).await {
+        Ok(Err(PairError::Unreachable(_))) if Instant::now() >= by => Err(ran_out()),
+        Ok(answer) => answer,
+        Err(_) => Err(ran_out()),
     }
 }
 
@@ -234,14 +269,15 @@ fn hostname() -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
-fn agent(url: &str) -> ureq::Agent {
+fn agent(url: &str, within: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .http_status_as_error(false)
         // A deployment reached over https is never left for http on a
         // redirect, which would carry the key and the gateway's pin in clear.
         .https_only(url.starts_with("https://"))
-        // A report waits while the deployment dials the machine.
-        .timeout_global(Some(Duration::from_secs(150)))
+        // A report waits while the deployment dials the machine, within what
+        // is left of the run.
+        .timeout_global(Some(within))
         // The system store is what this Mac and the app already trust, so a
         // private or company-inspected root works here too.
         .tls_config(
@@ -259,13 +295,19 @@ fn host(url: &str) -> &str {
     rest.split('/').next().unwrap_or(rest)
 }
 
-/// A GET, or a POST of `form`, answered with its status and trimmed body.
-async fn call(url: String, form: Option<Form>) -> Result<(u16, String), PairError> {
+/// A GET, or a POST of `form`, answered with its status and trimmed body
+/// within `within`.
+async fn call(
+    url: String,
+    form: Option<Form>,
+    within: Duration,
+) -> Result<(u16, String), PairError> {
     let host = host(&url).to_string();
     let answer = tokio::task::spawn_blocking(move || -> Result<(u16, String), ureq::Error> {
+        let agent = agent(&url, within);
         let mut response = match form {
-            Some(form) => agent(&url).post(&url).send_form(form)?,
-            None => agent(&url).get(&url).call()?,
+            Some(form) => agent.post(&url).send_form(form)?,
+            None => agent.get(&url).call()?,
         };
         let body = response.body_mut().read_to_string()?;
         Ok((response.status().as_u16(), body.trim().to_string()))
@@ -283,6 +325,7 @@ mod tests {
     use russh::keys::{Algorithm, PrivateKey};
 
     use super::*;
+    use crate::account::Account;
 
     // The deployment's answers, as `ssh_pairing.flow` words them.
     const ASKED_OUT: &str = "tunnel\nThis machine cannot be reached from the internet, so it \
@@ -375,8 +418,7 @@ mod tests {
 
     #[test]
     fn reports_a_machine_reached_only_through_its_tunnel() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let identity = Identity::load(dir.path())?;
+        let identity = Identity::fresh(Account::current()?)?;
         let form = report(&identity, "mac", "0123456789abcdef")?;
         let named = |name| {
             form.iter()

@@ -4,4 +4,5 @@ pairing=failed
 pairing_detail=That pairing command has expired. Start again from LangAlpha.
 tunnel_id=
 fingerprint=SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU
+supersedes=1
 pid=4242

@@ -7,6 +7,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use russh::keys::ssh_key::LineEnding;
@@ -23,6 +24,8 @@ const TAKEN: &str = "pairing.taken";
 const STATE: &str = "state";
 const LOCK: &str = "lock";
 const MACHINE: &str = "machine";
+// A pairing's keys and record, written whole before they replace the folder's.
+const NEXT: &str = "next";
 pub const LOG: &str = "helper.log";
 // A pairing's failure is shown to the user as one line.
 const DETAIL_LIMIT: usize = 500;
@@ -84,7 +87,7 @@ fn required<'a>(text: &'a str, name: &str) -> Result<&'a str> {
     field(text, name).with_context(|| format!("no {name}"))
 }
 
-/// This machine's account and keys, read once at the start.
+/// An account and the keys of one pairing.
 pub struct Identity {
     pub account: Account,
     /// What the backend pins on first contact.
@@ -93,14 +96,70 @@ pub struct Identity {
     pub tunnel_key: PrivateKey,
 }
 
+/// Readies the folder to be read: drops one made on another machine, and
+/// finishes or drops a replacement an earlier run was writing.
+pub fn prepare(dir: &Path) -> Result<()> {
+    forget_another_machine(dir, this_machine().as_deref())?;
+    take_up_next(dir)
+}
+
 impl Identity {
-    pub fn load(dir: &Path) -> Result<Self> {
-        forget_another_machine(dir, this_machine().as_deref())?;
-        Ok(Self {
+    /// The pairing the folder holds and the keys it was made with; None
+    /// before any. Keys are made only for a pairing, so an unpaired folder
+    /// holds none.
+    pub fn load(dir: &Path) -> Result<Option<(Self, Paired)>> {
+        let Some(paired) = Paired::load(dir)? else {
+            return Ok(None);
+        };
+        let identity = Self {
             account: Account::current()?,
-            host_key: own_key(&dir.join(HOST_KEY))?,
-            tunnel_key: own_key(&dir.join(TUNNEL_KEY))?,
+            host_key: read_key(&dir.join(HOST_KEY))?,
+            tunnel_key: read_key(&dir.join(TUNNEL_KEY))?,
+        };
+        Ok(Some((identity, paired)))
+    }
+
+    /// Keys of a pairing's own, kept here until it lands. A pairing may be
+    /// another account's than the folder's last: the gateway refuses one
+    /// tunnel key to two, and a shared host key would have the deployment take
+    /// the old pairing's computer for this one.
+    pub fn fresh(account: Account) -> Result<Self> {
+        Ok(Self {
+            account,
+            host_key: PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?,
+            tunnel_key: PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?,
         })
+    }
+
+    /// Makes these keys and `paired` the folder's in place of what it held.
+    /// All three are written aside first and moved in only once the last is
+    /// down, so a crash leaves the folder on the old pairing or, from its next
+    /// start, on this one, never on a mix of the two. Once the set is written
+    /// whole the pairing has landed: a move that fails here is finished by the
+    /// next start, so it is not a failure to report.
+    pub fn adopt(&self, paired: &Paired, dir: &Path) -> Result<()> {
+        let next = dir.join(NEXT);
+        // An earlier pairing that landed but could not be moved in is moved
+        // in first, and one that still cannot be keeps its place: it is the
+        // folder's, and this one is refused rather than written over it.
+        take_up_next(dir)?;
+        DirBuilder::new()
+            .mode(0o700)
+            .create(&next)
+            .with_context(|| format!("creating {}", next.display()))?;
+        put(
+            &next.join(HOST_KEY),
+            &self.host_key.to_openssh(LineEnding::LF)?,
+        )?;
+        put(
+            &next.join(TUNNEL_KEY),
+            &self.tunnel_key.to_openssh(LineEnding::LF)?,
+        )?;
+        paired.save(&next)?;
+        if let Err(e) = take_up_next(dir) {
+            tracing::warn!("The new pairing is moved in at the next start: {e:#}");
+        }
+        Ok(())
     }
 
     /// The host key's fingerprint as the deployment shows it beside the
@@ -168,7 +227,7 @@ fn forget_another_machine(dir: &Path, this: Option<&str>) -> Result<()> {
         Ok(made_on) => {
             tracing::warn!(
                 made_on = made_on.trim(),
-                "This folder was made on another machine; making this machine's own keys"
+                "This folder was made on another machine; dropping its pairing"
             );
             for name in [HOST_KEY, TUNNEL_KEY, PAIRED, STATE, TAKEN] {
                 match fs::remove_file(dir.join(name)) {
@@ -178,6 +237,7 @@ fn forget_another_machine(dir: &Path, this: Option<&str>) -> Result<()> {
                     _ => {}
                 }
             }
+            remove_next(&dir.join(NEXT))?;
         }
         Err(e) if e.kind() == ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
@@ -185,21 +245,42 @@ fn forget_another_machine(dir: &Path, this: Option<&str>) -> Result<()> {
     put(&path, &format!("{this}\n"))
 }
 
-/// A key of this machine's own, made the first time it is asked for. Both
-/// outlive every restart: a new host key would fail the backend's pin, and a
-/// new tunnel key would be a tunnel the gateway does not know.
-fn own_key(path: &Path) -> Result<PrivateKey> {
-    match fs::read_to_string(path) {
-        Ok(text) => {
-            PrivateKey::from_openssh(&text).with_context(|| format!("reading {}", path.display()))
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?;
-            put(path, &key.to_openssh(LineEnding::LF)?)?;
-            Ok(key)
-        }
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+/// Moves in the pairing an earlier [`Identity::adopt`] wrote whole, or drops
+/// one it did not finish writing. `paired`, written last, says the set is
+/// whole, and is moved in last, so a start finishes a move a crash cut short.
+fn take_up_next(dir: &Path) -> Result<()> {
+    let next = dir.join(NEXT);
+    if !next.join(PAIRED).exists() {
+        return remove_next(&next);
     }
+    for name in [HOST_KEY, TUNNEL_KEY, PAIRED] {
+        match fs::rename(next.join(name), dir.join(name)) {
+            Err(e) if e.kind() != ErrorKind::NotFound => {
+                return Err(e).with_context(|| format!("moving in the new {name}"));
+            }
+            _ => {}
+        }
+    }
+    remove_next(&next)
+}
+
+fn remove_next(next: &Path) -> Result<()> {
+    match fs::remove_dir_all(next) {
+        Err(e) if e.kind() != ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("removing {}", next.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// A key a pairing left, kept across restarts: a new host key would fail the
+/// backend's pin, and a new tunnel key would be a tunnel the gateway does not
+/// know.
+fn read_key(path: &Path) -> Result<PrivateKey> {
+    fs::read_to_string(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|text| Ok(PrivateKey::from_openssh(&text)?))
+        .with_context(|| format!("reading {}", path.display()))
 }
 
 /// What a pairing leaves: the tunnel the deployment set up and the key it logs
@@ -309,6 +390,16 @@ impl Request {
         Some(Self::parse(&text))
     }
 
+    /// How long the claimed request waited for this helper, by its file's
+    /// age: the app counts its wait for the outcome from when it wrote it.
+    pub fn waited(dir: &Path) -> Duration {
+        fs::metadata(dir.join(TAKEN))
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|asked| SystemTime::now().duration_since(asked).ok())
+            .unwrap_or_default()
+    }
+
     /// Ends the claimed request, however it went.
     pub fn finish(dir: &Path) {
         let _ = fs::remove_file(dir.join(TAKEN));
@@ -412,9 +503,12 @@ impl State {
             .chars()
             .take(DETAIL_LIMIT)
             .collect();
+        // `supersedes` tells the app a pairing asked of a paired folder keeps
+        // the old pairing until the new one lands and then tells the gateway
+        // it was superseded, so the app need not take the folder down first.
         format!(
             "state={}\npairing_id={}\npairing={pairing}\npairing_detail={detail}\n\
-             tunnel_id={}\nfingerprint={}\npid={pid}\n",
+             tunnel_id={}\nfingerprint={}\nsupersedes=1\npid={pid}\n",
             self.connection.word(),
             self.pairing_id,
             self.tunnel_id,
@@ -547,6 +641,139 @@ mod tests {
         Ok(())
     }
 
+    fn paired(tunnel_id: &str) -> Result<Paired> {
+        let answer = format!(
+            "tunnel_id={tunnel_id}\ngateway_host=gw.example.com\ngateway_port=2222\n\
+             known_hosts=[gw.example.com]:2222 {}\n",
+            key_line(),
+        );
+        Paired::new(&answer, key_line())
+    }
+
+    fn write_keys(dir: &Path, identity: &Identity) -> Result<()> {
+        put(
+            &dir.join(HOST_KEY),
+            &identity.host_key.to_openssh(LineEnding::LF)?,
+        )?;
+        put(
+            &dir.join(TUNNEL_KEY),
+            &identity.tunnel_key.to_openssh(LineEnding::LF)?,
+        )
+    }
+
+    /// The folder as a pairing on `identity` with `record` left it.
+    fn paired_on(dir: &Path, identity: &Identity, record: &Paired) -> Result<()> {
+        write_keys(dir, identity)?;
+        record.save(dir)
+    }
+
+    fn load_paired(dir: &Path) -> Result<(Identity, Paired)> {
+        prepare(dir)?;
+        Identity::load(dir)?.context("no pairing")
+    }
+
+    #[test]
+    fn an_unpaired_folder_holds_no_keys() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        prepare(dir.path())?;
+        assert!(Identity::load(dir.path())?.is_none());
+        assert!(!dir.path().join(HOST_KEY).exists());
+        assert!(!dir.path().join(TUNNEL_KEY).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_pairing_on_new_keys_takes_the_folder_whole() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let old = Identity::fresh(Account::current()?)?;
+        paired_on(dir.path(), &old, &paired("old")?)?;
+
+        let new = Identity::fresh(old.account.clone())?;
+        let record = paired("new")?;
+        new.adopt(&record, dir.path())?;
+
+        let (loaded, loaded_record) = load_paired(dir.path())?;
+        assert_ne!(loaded.tunnel_key, old.tunnel_key);
+        assert_eq!(loaded.tunnel_key, new.tunnel_key);
+        assert_eq!(loaded.host_key, new.host_key);
+        assert_eq!(loaded_record, record);
+        assert!(!dir.path().join(NEXT).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn says_how_long_a_claimed_request_waited() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        Request::write(dir.path(), "https://example.com/script")?;
+        File::options()
+            .write(true)
+            .open(dir.path().join(REQUEST))?
+            .set_modified(SystemTime::now() - Duration::from_secs(30))?;
+        assert!(Request::claim(dir.path()).is_some());
+        let waited = Request::waited(dir.path());
+        assert!((30..40).contains(&waited.as_secs()), "{waited:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pairing_written_whole_has_landed_though_its_move_failed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let old = Identity::fresh(Account::current()?)?;
+        paired_on(dir.path(), &old, &paired("old")?)?;
+        let new = Identity::fresh(old.account.clone())?;
+        let record = paired("new")?;
+        // Something in the way of the new host key.
+        fs::remove_file(dir.path().join(HOST_KEY))?;
+        fs::create_dir_all(dir.path().join(HOST_KEY).join("in the way"))?;
+
+        new.adopt(&record, dir.path())?;
+        assert!(dir.path().join(NEXT).join(PAIRED).exists());
+
+        // A later pairing is refused while that one is still to be moved in.
+        let later = Identity::fresh(old.account.clone())?;
+        assert!(later.adopt(&paired("later")?, dir.path()).is_err());
+        assert_eq!(Paired::load(&dir.path().join(NEXT))?, Some(record.clone()));
+
+        fs::remove_dir_all(dir.path().join(HOST_KEY))?;
+        let (loaded, loaded_record) = load_paired(dir.path())?;
+        assert_eq!(loaded.host_key, new.host_key);
+        assert_eq!(loaded.tunnel_key, new.tunnel_key);
+        assert_eq!(loaded_record, record);
+        Ok(())
+    }
+
+    #[test]
+    fn a_start_finishes_a_replacement_written_whole_and_drops_one_that_was_not() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let old = Identity::fresh(Account::current()?)?;
+        let old_record = paired("old")?;
+        paired_on(dir.path(), &old, &old_record)?;
+        let new = Identity::fresh(old.account.clone())?;
+        let record = paired("new")?;
+        let next = dir.path().join(NEXT);
+
+        // Cut short before its record was written: the old pairing stays.
+        fs::create_dir(&next)?;
+        write_keys(&next, &new)?;
+        let (loaded, loaded_record) = load_paired(dir.path())?;
+        assert_eq!(loaded.tunnel_key, old.tunnel_key);
+        assert_eq!(loaded.host_key, old.host_key);
+        assert_eq!(loaded_record, old_record);
+        assert!(!next.exists());
+
+        // Written whole, cut short once its host key was moved in: finished.
+        fs::create_dir(&next)?;
+        write_keys(&next, &new)?;
+        fs::rename(next.join(HOST_KEY), dir.path().join(HOST_KEY))?;
+        record.save(&next)?;
+        let (loaded, loaded_record) = load_paired(dir.path())?;
+        assert_eq!(loaded.tunnel_key, new.tunnel_key);
+        assert_eq!(loaded.host_key, new.host_key);
+        assert_eq!(loaded_record, record);
+        assert!(!next.exists());
+        Ok(())
+    }
+
     #[test]
     fn refuses_a_tunnel_it_cannot_use() {
         let pin = format!("known_hosts=gw {}", key_line());
@@ -569,10 +796,10 @@ mod tests {
     }
 
     #[test]
-    fn makes_new_keys_in_a_folder_carried_over_from_another_machine() -> Result<()> {
+    fn drops_the_pairing_of_a_folder_carried_over_from_another_machine() -> Result<()> {
         let dir = tempfile::tempdir()?;
         forget_another_machine(dir.path(), Some("MAC-A"))?;
-        let first = own_key(&dir.path().join(HOST_KEY))?;
+        fs::write(dir.path().join(HOST_KEY), "first")?;
         fs::write(dir.path().join(PAIRED), "tunnel_id=t\n")?;
         fs::write(dir.path().join(STATE), "state=connected\n")?;
         fs::write(
@@ -582,7 +809,7 @@ mod tests {
 
         // The same machine starting again keeps everything.
         forget_another_machine(dir.path(), Some("MAC-A"))?;
-        assert_eq!(own_key(&dir.path().join(HOST_KEY))?, first);
+        assert_eq!(fs::read_to_string(dir.path().join(HOST_KEY))?, "first");
         assert!(dir.path().join(PAIRED).exists());
 
         forget_another_machine(dir.path(), Some("MAC-B"))?;
@@ -591,7 +818,6 @@ mod tests {
         }
         // The app's ask, written on this machine, still stands.
         assert!(dir.path().join(REQUEST).exists());
-        assert_ne!(own_key(&dir.path().join(HOST_KEY))?, first);
         assert_eq!(fs::read_to_string(dir.path().join(MACHINE))?, "MAC-B\n");
         Ok(())
     }
@@ -599,9 +825,9 @@ mod tests {
     #[test]
     fn takes_a_folder_from_before_the_check_as_this_machines() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let first = own_key(&dir.path().join(HOST_KEY))?;
+        fs::write(dir.path().join(HOST_KEY), "first")?;
         forget_another_machine(dir.path(), Some("MAC-A"))?;
-        assert_eq!(own_key(&dir.path().join(HOST_KEY))?, first);
+        assert_eq!(fs::read_to_string(dir.path().join(HOST_KEY))?, "first");
         // Nothing to tell machines apart by: nothing is dropped or written.
         forget_another_machine(dir.path(), None)?;
         assert_eq!(fs::read_to_string(dir.path().join(MACHINE))?, "MAC-A\n");
