@@ -47,7 +47,11 @@ const TIMING = {
   poll: 250,
   /** For a state naming this pairing to appear at all, or the helper never started. */
   start: 15_000,
-  /** For the pairing to finish, counted from when it was asked for. */
+  /**
+   * For the pairing to finish, counted from when it was asked for. The helper
+   * gives one up 80 seconds after the ask (its `PAIRING_DEADLINE`), so a
+   * pairing reported failed here never lands after.
+   */
   pair: 90_000,
   /** For the helper to exit after the login item is taken away, before D goes. */
   exit: 5_000,
@@ -197,14 +201,16 @@ function openLoginItems() {
  *
  * `replacing` is a Mac already paired. Its pairing may belong to another
  * LangAlpha account signed in on this same macOS account, whose computer stops
- * working once this one goes ahead, so that is said here too.
+ * working once this one goes ahead, so that is said here too, with how it
+ * comes back.
  */
 async function confirm(win, host, who, { replacing = false } = {}) {
   let detail = `This Mac will connect to ${host}. The agent can run commands and change files as ${who}, `
     + 'even while LangAlpha is closed. Turn it off any time from the LangAlpha menu.'
   if (replacing) {
     detail += '\n\nThis Mac is already connected to LangAlpha, perhaps for another account. '
-      + 'Continuing disconnects it, and any computer using it stops working.'
+      + 'Continuing connects it here instead, and any computer using it there stops working '
+      + 'until it is reconnected.'
   }
   // No `type`: macOS then shows the app's icon. 'warning' swaps in the
   // system caution triangle, and the page has already shown the warning.
@@ -418,7 +424,14 @@ function createRemoteControl({
     // Asked of the folder before the dialog, so the user is told what a yes
     // undoes. A pairing file alone is not a paired Mac: that is a pairing still
     // waiting for approval, which a new one simply replaces.
-    const replacing = !!stateOf()?.tunnel_id
+    const held = stateOf()
+    const replacing = !!held?.tunnel_id
+    // A running helper that says it `supersedes` pairs on keys of its own,
+    // keeps the old pairing until the new one lands, and then tells the gateway
+    // the old tunnel was superseded, so the folder stays and a pairing that
+    // fails changes nothing. Any other helper (one from before, or none
+    // running to say) has the folder taken down first.
+    const inPlace = replacing && held.supersedes === '1' && toStatus(service(), held, isRunning).helper !== null
     confirming = true
     let agreed
     try {
@@ -432,6 +445,31 @@ function createRemoteControl({
     if (!agreed) return failure('cancelled')
 
     const signal = supersede()
+    return inPlace ? pairInPlace(url, signal) : pairAfterTeardown(url, signal, replacing)
+  }
+
+  /**
+   * Over a running helper that supersedes pairings itself. It keeps the old
+   * pairing when a new one fails, and gives one up before this wait does, so
+   * only an ask it never claimed is left to take back. The Mac is then as it
+   * was: not replaced, which the page leaves alone rather than turning the
+   * other account's pairing off.
+   */
+  async function pairInPlace(url, signal) {
+    const id = ask(url)
+    if (!id) return failure('not_replaced')
+    const ended = await turnOn(id, signal)
+    if (!ended.error || stillPending(ended, signal)) return settled(ended)
+    fs.rmSync(path.join(dir, 'pairing'), { force: true })
+    return failure('not_replaced', ended.message)
+  }
+
+  /**
+   * Over any other helper, one from before `supersedes` or none running to
+   * say: the old pairing is taken down first, and a pairing that does not
+   * finish is undone. It can go once every helper supersedes.
+   */
+  async function pairAfterTeardown(url, signal, replacing) {
     // Only now, after the yes. Turning the old pairing off any earlier would
     // break the other account's computer even when this user cancels.
     if (replacing) {
@@ -446,21 +484,32 @@ function createRemoteControl({
         return failure('not_replaced')
       }
     }
+    const id = ask(url)
+    if (!id) return failure('not_started')
+    const ended = await turnOn(id, signal)
+    if (!ended.error || stillPending(ended, signal)) return settled(ended)
+    await teardown(signal)
+    return failure(ended.error, ended.message)
+  }
+
+  /** Writes the ask for the helper under a new id; null when it could not be written. */
+  function ask(url) {
     const id = randomBytes(16).toString('hex')
     try {
       writePairing(dir, url, id)
+      return id
     } catch (err) {
       console.error(`[remote] could not write the pairing: ${err.code || err.message}`)
-      return failure('not_started')
+      return null
     }
-
-    const ended = await turnOn(id, signal)
-    // One waiting for approval keeps its file: once the user allows the item,
-    // the helper starts, finds it, and pairs. A superseded one is the newer
-    // call's to settle. Anything else that did not finish is undone.
-    if (ended.error && ended.error !== 'needs_approval' && !signal.aborted) await teardown(signal)
-    return ended.error ? failure(ended.error, ended.message) : { ok: true, status: status() }
   }
+
+  // One waiting for approval keeps its file: once the user allows the item,
+  // the helper starts, finds it, and pairs. A superseded one is the newer
+  // call's to settle. Anything else that did not finish is undone.
+  const stillPending = (ended, signal) => ended.error === 'needs_approval' || signal.aborted
+
+  const settled = (ended) => (ended.error ? failure(ended.error, ended.message) : { ok: true, status: status() })
 
   async function enable(scriptUrl, { win } = {}) {
     enabling += 1
