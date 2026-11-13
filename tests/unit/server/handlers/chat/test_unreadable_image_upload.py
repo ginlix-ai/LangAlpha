@@ -11,6 +11,7 @@ from PIL import Image
 
 from src.server.handlers.chat.attachments import attach_request_files
 from src.server.models.chat import ChatRequest
+from src.server.services.chat_attachment_turns import resolve_turn_attachments
 
 
 def _data_url(mime: str, raw: bytes) -> str:
@@ -23,11 +24,12 @@ def _image(fmt: str) -> bytes:
     return buffer.getvalue()
 
 
-def _request(data: str) -> ChatRequest:
-    return ChatRequest.model_validate({
+async def _attachments(data: str):
+    request = ChatRequest.model_validate({
         "messages": [{"role": "user", "content": "what is this?"}],
         "additional_context": [{"type": "image", "data": data, "description": "chart.x"}],
     })
+    return await resolve_turn_attachments(request.additional_context, "user-1")
 
 
 class _Sandbox:
@@ -46,10 +48,11 @@ async def _attach(data: str, model: str):
     sandbox = _Sandbox()
     [message] = await attach_request_files(
         [{"role": "user", "content": "what is this?"}],
-        _request(data),
+        await _attachments(data),
         types.SimpleNamespace(sandbox=sandbox),
         model,
         types.SimpleNamespace(input_modalities=None),
+        project=None,
     )
     return message["content"], sandbox
 
@@ -65,12 +68,20 @@ UNREADABLE = {
 _HEIC = _data_url("image/heic", b"\0\0\0\x18ftypheic\0\0\0\0mif1heic" + b"\0" * 64)
 
 
-@pytest.mark.parametrize("model", ["deepseek-flash", "glm-5.2"])
-@pytest.mark.parametrize("data", UNREADABLE.values(), ids=UNREADABLE.keys())
+@pytest.mark.parametrize(
+    ("data", "model"),
+    [
+        (UNREADABLE["svg"], "deepseek-flash"),
+        (UNREADABLE["svg"], "glm-5.2"),
+        (UNREADABLE["truncated png"], "deepseek-flash"),
+    ],
+    ids=["svg-vision", "svg-text-only", "truncated png-vision"],
+)
 @pytest.mark.asyncio
 async def test_an_image_no_provider_decodes_goes_to_the_sandbox_as_a_file(data, model):
-    """On a vision model and a text-only one alike: the agent is told where the
-    file is, and is not told to switch models, which would not help."""
+    """The agent is told where the file is, and is not told to switch models,
+    which would not help. A text-only model reads no image to learn that, so
+    there only a type no model takes is known to be one."""
     content, sandbox = await _attach(data, model)
 
     assert isinstance(content, str)
@@ -90,7 +101,8 @@ async def test_one_with_no_payload_is_still_named_without_a_block():
     assert not sandbox.files
     assert content == (
         "what is this?\n\n<system-reminder>\n"
-        "The user attached a file (chart.x, image/png).\n</system-reminder>"
+        "The user attached a file (chart.x), but it did not arrive intact. "
+        "If it is needed, ask the user to attach it again.\n</system-reminder>"
     )
 
 
@@ -130,7 +142,7 @@ async def test_the_route_is_read_off_the_client_being_called():
     provider, and so whether HEIC goes as an image."""
     [message] = await attach_request_files(
         [{"role": "user", "content": "what is this?"}],
-        _request(_HEIC),
+        await _attachments(_HEIC),
         types.SimpleNamespace(sandbox=_Sandbox()),
         "My Gemini",
         types.SimpleNamespace(
@@ -139,6 +151,7 @@ async def test_the_route_is_read_off_the_client_being_called():
                 metadata={"manifest_model": "My Gemini", "pricing_provider": "gemini"}
             ),
         ),
+        project=None,
     )
     assert message["content"][1] == {"type": "image_url", "image_url": {"url": _HEIC}}
 

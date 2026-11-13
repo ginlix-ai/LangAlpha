@@ -63,7 +63,6 @@ export function mentionPillKeys(chips: ChipContext[]): string[] {
 }
 
 /* --- CONSTANTS --- */
-export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 export const MAX_FILES = 5;
 export const PASTE_PILL_MIN_CHARS = 1500;
 export const PASTE_PILL_MIN_LINES = 15;

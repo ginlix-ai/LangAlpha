@@ -5,15 +5,11 @@ import type { WidgetContextPreviewShape } from '@/pages/Dashboard/widgets/framew
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import { SelectionContextPreview, type SelectionPreviewShape } from '../SelectionContextPreview';
 import { selectionPriceBounds } from '../../utils/selectionBounds';
-
-/* --- Attachment helpers --- */
-const formatFileSize = (bytes: number | null | undefined): string => {
-  if (!bytes || bytes === 0) return '';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
+import { useLocale } from '@/hooks/useLocale';
+import { useObjectUrl } from '@/hooks/useObjectUrl';
+import { formatBytes } from '@/lib/format';
+import ImageLightbox from '../ImageLightbox';
+import { isImageFile } from '../../utils/fileUpload';
 
 // --- AttachmentCard ---
 
@@ -21,9 +17,13 @@ export interface AttachmentData {
   name?: string;
   type?: string;
   size?: number;
-  preview?: string;
+  /** A live send's file, its thumbnail until history replaces it. */
+  file?: File;
+  /** A chart capture's image, which has no file behind it. */
   dataUrl?: string;
   url?: string;
+  /** History only: the turn never received this file. */
+  missing?: boolean;
   [key: string]: unknown;
 }
 
@@ -136,26 +136,65 @@ export function InlineSelectionCards({ selections }: { selections: SelectionPrev
 }
 
 /**
- * AttachmentCard -- 96x96 preview card matching FilePreviewCard styling.
- * Handles both live attachments (with preview/dataUrl) and history
- * attachments (name/type/size only).
+ * AttachmentCard -- 96x96 preview card matching the composer's file tiles.
+ * Handles both live attachments (the file itself, or a chart capture's
+ * dataUrl) and history attachments (name/type/size, and a url once stored).
  */
 export function AttachmentCard({ attachment }: AttachmentCardProps): React.ReactElement {
+  const { t } = useTranslation();
+  const locale = useLocale();
+  const [previewOpen, setPreviewOpen] = useState(false);
   const att = attachment;
-  const isImage = att.type?.startsWith('image/') || att.type === 'image';
-  const hasPreview = att.dataUrl || att.url || att.preview;
+  const isImage = isImageFile(att);
+  const fileUrl = useObjectUrl(isImage ? att.file : null);
+  const src = fileUrl || att.dataUrl || att.url;
   const ext = att.name?.split('.').pop() || '';
 
-  if (isImage && hasPreview) {
+  // A file the turn never received has no bytes to show or open.
+  if (att.missing) {
     return (
-      <div className="relative group shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
-        <img src={att.dataUrl || att.url || att.preview} alt={att.name} className="w-full h-full object-cover" />
-        <div className="absolute inset-0 bg-black/20" />
+      <div
+        role="img"
+        aria-label={t('chat.composer.attachment.notReceivedLabel', { name: att.name })}
+        title={att.name}
+        className="relative shrink-0 w-24 h-24 rounded-xl overflow-hidden opacity-60"
+        style={{ border: '1px dashed var(--color-border-muted)', background: 'var(--color-bg-input)' }}
+      >
+        <div className="w-full h-full p-3 flex flex-col justify-between">
+          <div className="p-1.5 rounded self-start" style={{ background: 'var(--color-border-muted)' }}>
+            {isImage
+              ? <ImageIcon className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />
+              : <FileText className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />}
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-tertiary)' }}>{att.name}</p>
+            <p className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>{t('chat.composer.attachment.notReceived')}</p>
+          </div>
+        </div>
       </div>
     );
   }
 
-  if (isImage && !hasPreview) {
+  // A live file has its URL from the first commit on; until then the card stands empty.
+  if (isImage && (src || att.file)) {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setPreviewOpen(true); }}
+          aria-label={t('chat.composer.attachment.preview', { name: att.name })}
+          className="relative group shrink-0 w-24 h-24 rounded-xl overflow-hidden cursor-zoom-in"
+          style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}
+        >
+          {src && <img src={src} alt={att.name} className="w-full h-full object-cover" />}
+          <div className="absolute inset-0 bg-black/20 transition-colors group-hover:bg-black/0" />
+        </button>
+        {src && <ImageLightbox src={src} alt={att.name} open={previewOpen} onClose={() => setPreviewOpen(false)} />}
+      </>
+    );
+  }
+
+  if (isImage) {
     // History image -- no thumbnail available, show placeholder
     return (
       <div className="relative shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
@@ -182,7 +221,7 @@ export function AttachmentCard({ attachment }: AttachmentCardProps): React.React
         <div className="space-y-0.5">
           <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-muted)' }} title={att.name}>{att.name}</p>
           {(att.size ?? 0) > 0 && (
-            <p className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>{formatFileSize(att.size)}</p>
+            <p className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>{formatBytes(att.size ?? 0, locale)}</p>
           )}
         </div>
       </div>

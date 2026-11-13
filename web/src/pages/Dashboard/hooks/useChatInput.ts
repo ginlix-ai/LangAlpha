@@ -3,21 +3,14 @@ import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../../../components/ui/use-toast';
-import type { ComposerScope } from '../../../components/ui/chat-input.types';
+import type { ComposerScope, ReadyAttachment } from '../../../components/ui/chat-input.types';
 import type { Workspace } from '@/types/api';
-import { attachmentsToContexts, widgetSnapshotsToContexts } from '../../ChatAgent/utils/fileUpload';
+import { attachmentSendParts, widgetSnapshotsToContexts } from '../../ChatAgent/utils/fileUpload';
 import { warmWorkspace } from '../../ChatAgent/utils/warmWorkspace';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { resolveChatWorkspace } from '@/hooks/useHomeWorkspace';
 import { ContextBus } from '@/lib/contextBus';
 import type { WidgetContextSnapshot } from '../widgets/framework/contextSnapshot';
-
-interface ChatAttachment {
-  file: File;
-  type: string;
-  preview?: string | null;
-  dataUrl: string | null;
-}
 
 interface SlashCommand {
   type: string;
@@ -96,7 +89,7 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
    */
   const handleSend = async (
     message: string,
-    attachments: ChatAttachment[] = [],
+    attachments: ReadyAttachment[] = [],
     // Slash commands come with the composer's send but are dropped here:
     // they apply only inside an active chat session, not on the dashboard
     // handoff.
@@ -110,27 +103,16 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
 
     setIsLoading(true);
     try {
-      // Build additional context and attachment metadata from attachments
-      let additionalContext: Array<Record<string, unknown>> | null = null;
-      const toRecord = <T extends object>(x: T): Record<string, unknown> => x as unknown as Record<string, unknown>;
-      let attachmentMeta: Array<{ name: string; type: string; size: number; preview: string | null; dataUrl: string | null }> | null = null;
-      if (attachments && attachments.length > 0) {
-        additionalContext = attachmentsToContexts(attachments as any).map(toRecord);
-        attachmentMeta = attachments.map((a) => ({
-          name: a.file.name,
-          type: a.type,
-          size: a.file.size,
-          preview: a.preview || null,
-          dataUrl: a.dataUrl,
-        }));
-      }
-      // Append widget snapshot items (one widget directive + optional sibling
-      // image item per snapshot). Co-located with attachments so backend reads
-      // a single uniform `additional_context` array.
-      if (widgetSnapshots && widgetSnapshots.length > 0) {
-        const widgetItems = widgetSnapshotsToContexts(widgetSnapshots).map(toRecord);
-        additionalContext = [...(additionalContext ?? []), ...widgetItems];
-      }
+      // The attachments, then the widget snapshot items (one widget directive
+      // + optional sibling image item per snapshot), so the backend reads a
+      // single uniform `additional_context` array.
+      const attached = attachmentSendParts(attachments);
+      const contexts: Array<Record<string, unknown>> = [
+        ...attached.contexts,
+        ...(widgetSnapshots ? widgetSnapshotsToContexts(widgetSnapshots) : []),
+      ];
+      const additionalContext = contexts.length > 0 ? contexts : null;
+      const attachmentMeta = attached.meta.length > 0 ? attached.meta : null;
       // Pre-flight size check on the location.state payload before navigate.
       // Structured clone fails on payloads >50MB and dashboard → chat handoff
       // would crash silently. We cap at ~5MB; if oversized, drop the local

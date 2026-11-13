@@ -18,7 +18,7 @@ from fastapi import APIRouter, Body, File, HTTPException, Query, Request, Upload
 from pydantic import BaseModel, Field
 
 from src.server.utils.api import CurrentUserId, require_workspace_owner
-from src.server.services.persistence.transfer import scan_cap_bytes
+from src.server.services.persistence.transfer import held_bytes_budget, scan_cap_bytes
 from ptc_agent.agent.backends.db_json_route import DbJsonRoute
 from ptc_agent.core.sandbox.runtime import STREAM_CHUNK_BYTES
 from ptc_agent.core.paths import logged_path
@@ -94,7 +94,6 @@ from src.server.services.workspace_files import (
 )
 
 from ._shared import (
-    held_bytes_budget,
     streamed_download_budget,
     DEFAULT_READ_LIMIT_LINES,
     TOO_LARGE_DETAIL,

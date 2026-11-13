@@ -16,6 +16,7 @@ from src.server.utils.directive_context import (
 )
 from src.server.utils.multimodal_context import (
     inject_multimodal_context,
+    inline_attachment,
     parse_multimodal_contexts,
 )
 from src.server.utils.widget_context import (
@@ -23,6 +24,14 @@ from src.server.utils.widget_context import (
     parse_widget_contexts,
     serialize_widget_contexts_for_metadata,
 )
+
+
+def _natives(contexts):
+    """The images as the turn injects them, each routed as a content block."""
+    attachments = [inline_attachment(ctx) for ctx in contexts]
+    for att in attachments:
+        att.route = "native"
+    return attachments
 
 
 def _seed_messages():
@@ -82,7 +91,7 @@ def test_widget_image_rides_multimodal_channel():
     assert multimodal[0].type == "image"
 
     messages = _seed_messages()
-    inject_multimodal_context(messages, multimodal)
+    inject_multimodal_context(messages, _natives(multimodal))
     # After injection, last user message should contain an image content block.
     last_content = messages[-1]["content"]
     assert isinstance(last_content, list)
@@ -143,7 +152,7 @@ def test_widget_directive_image_and_skill_coexist_without_conflict():
     messages = _seed_messages()
     _append_to_last_user_message(messages, directive_reminder)
     _append_to_last_user_message(messages, widget_reminder)
-    inject_multimodal_context(messages, multimodal)
+    inject_multimodal_context(messages, _natives(multimodal))
 
     # Pull the rendered text from the last user message
     last = messages[-1]
@@ -198,7 +207,7 @@ def test_onboarding_market_brief_lands_verbatim_in_the_kickoff_reminder():
     messages = [
         {"role": "user", "content": "Bring in my holdings and suggest where to start."}
     ]
-    inject_multimodal_context(messages, parse_multimodal_contexts(raw))
+    inject_multimodal_context(messages, _natives(parse_multimodal_contexts(raw)))
     inject_inline_reminders(
         messages, [build_directive_reminder(parse_directive_contexts(raw))]
     )

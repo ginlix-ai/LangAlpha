@@ -208,7 +208,7 @@ describe('ChatInput — giveBack', () => {
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const { ref, box, onSend } = renderInput();
     const file = new File(['x'], 'positions.png', { type: 'image/png' });
-    const sent = { file, dataUrl: 'data:image/png;base64,eA==', type: 'image/png', preview: null };
+    const sent = { file, attachmentId: 'att-1', type: 'image/png' };
     act(() => ref.current!.giveBack('', [sent]));
     expect(box.value).toBe('');
     expect(screen.getByAltText('positions.png')).toBeTruthy();
@@ -216,6 +216,7 @@ describe('ChatInput — giveBack', () => {
       ref.current!.send();
     });
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0][0].files).toEqual([expect.objectContaining({ file, dataUrl: sent.dataUrl })]);
+    // Already on the server: nothing goes up again.
+    expect(onSend.mock.calls[0][0].files).toEqual([expect.objectContaining({ file, attachmentId: 'att-1' })]);
   });
 });

@@ -13,6 +13,7 @@ from PIL import Image
 
 from src.server.handlers.chat.attachments import attach_request_files
 from src.server.models.chat import ChatRequest
+from src.server.services.chat_attachment_turns import resolve_turn_attachments
 
 pytestmark = pytest.mark.asyncio
 
@@ -58,7 +59,8 @@ async def _attach(files: list[tuple[str, str]], session, config=PDF_MODEL) -> li
         ],
     )
     messages = [{"role": "user", "content": "look"}]
-    out = await attach_request_files(messages, request, session, "model", config)
+    attachments = await resolve_turn_attachments(request.additional_context, "user-1")
+    out = await attach_request_files(messages, attachments, session, "model", config, project=None)
     return out[-1]["content"]
 
 
@@ -76,7 +78,7 @@ async def test_a_saved_pdf_is_a_note_with_its_page_count():
     assert not any(b.get("type") == "file" for b in content)
     note, words = _texts(content)
     assert note == f"[Attached PDF: report.pdf, 3 pages (saved to {_saved(note)})]"
-    assert _saved(note).startswith("work/uploads/report.pdf_")
+    assert _saved(note).startswith("work/uploads/report_")
     assert words == "look"
 
 

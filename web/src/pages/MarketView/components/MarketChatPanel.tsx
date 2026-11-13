@@ -18,6 +18,7 @@ import { readTurnEndScroll } from '@/lib/turnEndScroll';
 import { LiveMessageList } from '../../ChatAgent/components/MessageList';
 import { MessageActionsProvider, type MessageActions } from '../../ChatAgent/components/messageList/MessageActionsContext';
 import { usePublishFile } from '../../ChatAgent/components/chatView/usePublishFile';
+import { useComposerGiveBack } from '../../ChatAgent/components/chatView/useComposerGiveBack';
 import { SubagentTelemetryContext, useHistoryTelemetry } from '../../ChatAgent/components/SubagentTelemetryContext';
 import { ChartSurfaceContext, type ChartSurface } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
@@ -34,7 +35,7 @@ import { useStreamFollow } from '../../ChatAgent/components/chatView/transcriptF
 import { useTranscriptFollow } from '../../ChatAgent/components/chatView/useTranscriptFollow';
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
 import { appendPathSuffix, getPreviewUrl, summarizeThread, offloadThread, type NextSummary } from '../../ChatAgent/utils/api';
-import { attachmentsToContexts } from '../../ChatAgent/utils/fileUpload';
+import { attachmentSendParts, type AttachmentMeta } from '../../ChatAgent/utils/fileUpload';
 import type { SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
 import { useToolCallLookup } from '../../ChatAgent/components/chatView/toolCallLookup';
 import type { PreviewData } from '../../ChatAgent/hooks/utils/types';
@@ -74,12 +75,6 @@ interface SlashCommandLike {
 interface ActionCommandLike {
   name: string;
   type?: string;
-}
-interface AttachmentItem {
-  dataUrl: string;
-  file: { name: string; size: number };
-  type: string;
-  preview?: string | null;
 }
 
 interface MarketChatPanelProps {
@@ -434,10 +429,6 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     handleThumbDown,
     handleThumbDownFollowUp,
     feedbackByTurn,
-    returnedSteering,
-    clearReturnedSteering,
-    returnedEdit,
-    clearReturnedEdit,
     editDrafts,
   } = chat;
 
@@ -485,7 +476,6 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   // Send: shape attachments + chart screenshot like ChatAgent does.
   const handleSend = useCallback(
     ({ message, files, commands, modelOptions }: ComposerSend) => {
-      const attachments = files as unknown as AttachmentItem[];
       const slashCommands = commands as SlashCommandLike[];
       const send = buildMarketSendContexts(symbol, interval, message, collectViews());
       const contexts: Record<string, unknown>[] = [send.skill];
@@ -500,30 +490,15 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         }
       }
 
-      const metaItems: Record<string, unknown>[] = [];
+      const metaItems: AttachmentMeta[] = [];
 
       if (chartImage) {
         contexts.push({ type: 'image', data: chartImage, description: chartImageDesc || undefined });
-        metaItems.push({
-          name: chartImageDesc || 'Chart',
-          type: 'image',
-          size: 0,
-          preview: chartImage,
-          dataUrl: chartImage,
-        });
+        metaItems.push({ name: chartImageDesc || 'Chart', type: 'image', size: 0, dataUrl: chartImage });
       }
-      if (attachments && attachments.length > 0) {
-        contexts.push(...(attachmentsToContexts(attachments as never[]) as unknown as Record<string, unknown>[]));
-        attachments.forEach((a) => {
-          metaItems.push({
-            name: a.file.name,
-            type: a.type,
-            size: a.file.size,
-            preview: a.preview ?? null,
-            dataUrl: a.dataUrl,
-          });
-        });
-      }
+      const attached = attachmentSendParts(files);
+      contexts.push(...attached.contexts);
+      metaItems.push(...attached.meta);
 
       // The confirmed selections on the chart on screen; a lone note becomes
       // the message text when the user typed nothing (so the bubble isn't empty).
@@ -648,22 +623,10 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   const stableRegenerate = useStableHandler((id: string) =>
     handleRegenerate(id, chatInputRef.current?.getModelOptions?.()));
   const stableRetry = useStableHandler(() => handleRetry(chatInputRef.current?.getModelOptions?.()));
-  // Steering the agent finished without reading comes back to the composer,
+  // Steering the agent finished without reading, edit text whose message is
+  // gone, and the files of a send a stop held back come back to the composer,
   // beside whatever was typed there since.
-  useEffect(() => {
-    if (returnedSteering) {
-      chatInputRef.current?.giveBack(returnedSteering);
-      clearReturnedSteering();
-    }
-  }, [returnedSteering, clearReturnedSteering]);
-  // Edit text whose message is gone comes back to the composer, beside
-  // whatever is typed there.
-  useEffect(() => {
-    if (returnedEdit) {
-      chatInputRef.current?.giveBack(returnedEdit);
-      clearReturnedEdit();
-    }
-  }, [returnedEdit, clearReturnedEdit]);
+  useComposerGiveBack(chatInputRef, chat);
   // A thread the server has named, so a failed turn's banner can offer "Report this".
   const reportThreadId = threadId && threadId !== '__default__' ? threadId : undefined;
   const stableThumbUp = useStableHandler(handleThumbUp);

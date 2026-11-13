@@ -33,7 +33,9 @@ from src.server.app.workspace_files.uploads import (
 )
 from src.server.database.blob_keys import INLINE_MAX_BYTES, upload_key
 from src.server.services.computer_disk import CRITICAL_FREE_BYTES
-from src.server.services.workspace_upload_pull import STORE_UNREACHABLE, Assembly, not_enough_disk
+from src.server.services import store_multipart
+from src.server.services.store_multipart import STORE_UNREACHABLE, Assembly
+from src.server.services.workspace_upload_pull import not_enough_disk
 from tests.conftest import create_test_app
 
 pytestmark = pytest.mark.asyncio
@@ -90,10 +92,10 @@ def _computer(*, direct=True, scan_cap=None, free=None, store_id=STORE_ID):
             "previous_dir_names_of": lambda _workspace: (),
             "contained_target": AsyncMock(side_effect=lambda _sb, path, wd, _prev: f"{wd}/{path}"),
             "free_disk_bytes": AsyncMock(return_value=free),
-            "open_multipart_upload": m.open,
-            "abort_multipart_upload": m.abort,
         }.items():
             stack.enter_context(patch(f"{_UPLOADS}.{name}", value))
+        stack.enter_context(patch.object(store_multipart, "open_multipart_upload", m.open))
+        stack.enter_context(patch.object(store_multipart, "abort_multipart_upload", m.abort))
         stack.enter_context(patch.object(uploads.db, "create_upload", m.create))
         yield m
 
@@ -258,7 +260,7 @@ async def test_parts_are_signed_for_the_browser_at_their_offsets():
     row, sign = _upload(), _sign()
     with (
         _db(get_upload=AsyncMock(return_value=row), extend_upload=AsyncMock(return_value=row)),
-        patch(f"{_UPLOADS}.sign_upload_part", sign),
+        patch("src.server.services.store_multipart.sign_upload_part", sign),
     ):
         resp = await _call("POST", f"/{UPLOAD_ID}/parts", json={"part_numbers": [3, 1, 3, 2]})
 
@@ -288,7 +290,7 @@ async def test_parts_for_an_ended_upload_are_409():
     sign = _sign()
     with (
         _db(get_upload=AsyncMock(return_value=_upload()), extend_upload=AsyncMock(return_value=None)),
-        patch(f"{_UPLOADS}.sign_upload_part", sign),
+        patch("src.server.services.store_multipart.sign_upload_part", sign),
     ):
         resp = await _call("POST", f"/{UPLOAD_ID}/parts", json={"part_numbers": [1]})
     assert (resp.status_code, resp.json()) == (409, {"detail": UPLOAD_ENDED})
@@ -299,7 +301,7 @@ async def test_a_part_the_store_cannot_sign_is_503():
     row = _upload()
     with (
         _db(get_upload=AsyncMock(return_value=row), extend_upload=AsyncMock(return_value=row)),
-        patch(f"{_UPLOADS}.sign_upload_part", MagicMock(return_value=None)),
+        patch("src.server.services.store_multipart.sign_upload_part", MagicMock(return_value=None)),
     ):
         resp = await _call("POST", f"/{UPLOAD_ID}/parts", json={"part_numbers": [1]})
     assert (resp.status_code, resp.json()) == (503, {"detail": STORE_UNREACHABLE})
@@ -405,21 +407,21 @@ def _sandbox(provider: str) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize(
-    "browser_uploads, scan_cap, provider, available",
+    "browser_uploads, mode, provider, available",
     [
-        (True, None, "daytona", True),
-        (False, None, "daytona", False),
-        # A bounded scan cap means the sandbox does not pull from the store itself.
-        (True, MAX_UPLOAD_BYTES, "daytona", False),
+        (True, "direct", "daytona", True),
+        (False, "direct", "daytona", False),
+        # A relay transfer mode means the sandbox does not pull from the store itself.
+        (True, "relay", "daytona", False),
         # A machine its owner brought keeps the one-request path.
-        (True, None, "ssh", False),
+        (True, "direct", "ssh", False),
     ],
 )
 async def test_direct_needs_browser_uploads_and_a_sandbox_that_pulls(
-    browser_uploads, scan_cap, provider, available
+    browser_uploads, mode, provider, available
 ):
     with (
         patch(f"{_UPLOADS}.browser_uploads_enabled", lambda: browser_uploads),
-        patch(f"{_UPLOADS}.scan_cap_bytes", lambda _sandbox, *, blobs_on: scan_cap),
+        patch("src.server.services.persistence.transfer.get_blob_transfer_mode", lambda _provider: mode),
     ):
         assert uploads.direct_available(_sandbox(provider)) is available

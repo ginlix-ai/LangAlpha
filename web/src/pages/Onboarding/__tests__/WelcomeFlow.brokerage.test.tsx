@@ -28,6 +28,13 @@ vi.mock('@/pages/Dashboard/utils/api', async (importOriginal) =>
 vi.mock('@/hooks/useSyncUserLocale', async () => (await import('./welcomeHarness')).syncUserLocaleMock());
 vi.mock('@/hooks/useUser', async () => (await import('./welcomeHarness')).userMock());
 vi.mock('../OnboardingProvider', async () => (await import('./welcomeHarness')).onboardingProviderMock());
+vi.mock('@/pages/ChatAgent/utils/attachmentUpload', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/pages/ChatAgent/utils/attachmentUpload')>()),
+  discardAttachment: vi.fn(),
+  stageAttachment: vi.fn(),
+}));
+
+import { discardAttachment } from '@/pages/ChatAgent/utils/attachmentUpload';
 
 import {
   answer,
@@ -324,7 +331,7 @@ describe('WelcomeFlow: the brokerage screen with nothing connected', () => {
     expect(routeState()).toMatchObject({
       additionalContext: [
         { type: 'skills', name: 'onboarding' },
-        { type: 'image', data: 'data:image/jpeg;base64,AAAA', description: 'positions.png' },
+        { type: 'image', attachment_id: 'att-s1', description: 'positions.png' },
       ],
       attachmentMeta: null,
     });
@@ -347,5 +354,7 @@ describe('WelcomeFlow: the brokerage screen with nothing connected', () => {
     expect(instruction()).toContain('Action: propose.');
     expect(instruction()).not.toContain('Screenshots');
     expect(routeState().additionalContext).toHaveLength(1);
+    // Staged for a message that no longer carries it.
+    expect(discardAttachment).toHaveBeenCalledWith('att-s1');
   });
 });

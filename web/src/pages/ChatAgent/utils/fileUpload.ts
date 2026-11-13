@@ -1,42 +1,82 @@
+import type { ReadyAttachment } from '@/components/ui/chat-input.types';
 import { selectionPriceBounds } from './selectionBounds';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import type { ChartSelection } from '@/pages/MarketView/stores/chartSelectionStore';
 
-export interface Attachment {
-  file: File;
-  dataUrl: string | null;
-  type: string;
+/** An image by its MIME type, the server's `image` tag, or its name, for a file the browser could not type. */
+export function isImageFile({ type = '', name = '' }: { type?: string; name?: string }): boolean {
+  return type.startsWith('image/') || type === 'image' || /\.(jpe?g|png|gif|webp)$/i.test(name);
 }
 
-export interface AttachmentContext {
-  type: string;
-  data: string;
+export type AttachmentContext = {
+  type: 'image' | 'pdf' | 'file';
+  attachment_id: string;
   description: string;
+};
+
+/**
+ * The sent bubble's record of an attachment, until history replaces it with
+ * the server's. A staged file carries itself, which survives the route state
+ * a send from another page travels in; a chart capture carries its image as
+ * `dataUrl`, having no file behind it.
+ */
+export type AttachmentMeta = {
+  name: string;
+  type: string;
+  size: number;
+  file?: File;
+  dataUrl?: string;
+  /** History only: the turn never received this file, so there is nothing to show. */
+  missing?: boolean;
+  /** When the staged file became ready, kept so a send handed back to the
+   *  composer re-stages it before the server's expiry. Never sent. */
+  readyAt?: number;
+};
+
+/**
+ * What a send carries for its staged files: the `additional_context` items
+ * naming them, typed for the agent (images, PDFs, everything else), and the
+ * bubble's record of them.
+ */
+export function attachmentSendParts(files: readonly ReadyAttachment[]): { contexts: AttachmentContext[]; meta: AttachmentMeta[] } {
+  return {
+    contexts: files.map((a) => ({
+      type: isImageFile({ type: a.type, name: a.file.name }) ? 'image' : a.type === 'application/pdf' ? 'pdf' : 'file',
+      attachment_id: a.attachmentId,
+      description: a.file.name,
+    })),
+    meta: files.map((a) => ({
+      name: a.file.name,
+      type: a.type,
+      size: a.file.size,
+      file: a.file,
+      ...(a.readyAt !== undefined ? { readyAt: a.readyAt } : {}),
+    })),
+  };
 }
 
-export function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`));
-    reader.readAsDataURL(file);
-  });
+/** Whether a send's `additional_context` names files staged on the server. */
+export function namesStagedFiles(contexts: readonly Record<string, unknown>[] | null | undefined): boolean {
+  return !!contexts?.some((c) => typeof c.attachment_id === 'string');
 }
 
 /**
- * Convert attachments to additional_context format with accurate type tags.
- * Images → "image", PDFs → "pdf", everything else → "file".
+ * The staged files a send carries, as the composer holds them, read back from
+ * what `attachmentSendParts` made of them: its items name them in the order
+ * its records hold the files.
  */
-export function attachmentsToContexts(attachments: Attachment[]): AttachmentContext[] {
-  return attachments
-    .filter((a) => a.dataUrl != null)
-    .map((a) => ({
-      type: a.type.startsWith('image/') ? 'image'
-          : a.type === 'application/pdf' ? 'pdf'
-          : 'file',
-      data: a.dataUrl!,
-      description: a.file.name,
-    }));
+export function stagedFilesOf(
+  contexts: readonly Record<string, unknown>[] | null | undefined,
+  meta: readonly AttachmentMeta[] | null | undefined,
+): ReadyAttachment[] {
+  const ids = (contexts ?? []).flatMap((c) => (typeof c.attachment_id === 'string' ? [c.attachment_id] : []));
+  const files = (meta ?? []).filter((m): m is AttachmentMeta & { file: File } => !!m.file);
+  return ids.slice(0, files.length).map((attachmentId, i) => ({
+    file: files[i].file,
+    type: files[i].type,
+    attachmentId,
+    ...(files[i].readyAt !== undefined ? { readyAt: files[i].readyAt } : {}),
+  }));
 }
 
 /**
@@ -54,7 +94,7 @@ export function attachmentsToContexts(attachments: Attachment[]): AttachmentCont
  */
 const MAX_DATA_BYTES_PER_SNAPSHOT = 100 * 1024;
 
-interface WidgetCtxItem {
+type WidgetCtxItem = {
   type: 'widget';
   widget_type: string;
   widget_id: string;
@@ -63,13 +103,13 @@ interface WidgetCtxItem {
   data: Record<string, unknown>;
   captured_at?: string;
   description?: string;
-}
+};
 
-interface WidgetImageItem {
+type WidgetImageItem = {
   type: 'image';
   data: string;
   description: string;
-}
+};
 
 export function widgetSnapshotsToContexts(
   snapshots: WidgetContextSnapshot[],
@@ -107,7 +147,7 @@ export function widgetSnapshotsToContexts(
   return out;
 }
 
-interface ChartSelectionCtxItem {
+type ChartSelectionCtxItem = {
   type: 'chart_selection';
   symbol: string;
   timeframe: string;
@@ -119,13 +159,13 @@ interface ChartSelectionCtxItem {
   bars: ChartSelection['bars'];
   bars_truncated: boolean;
   label?: string;
-}
+};
 
-interface ChartSelectionImageItem {
+type ChartSelectionImageItem = {
   type: 'image';
   data: string;
   description: string;
-}
+};
 
 /**
  * A selection time as the agent's structured block prints it: the exchange's

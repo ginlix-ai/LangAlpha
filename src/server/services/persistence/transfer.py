@@ -209,16 +209,34 @@ MULTIPART_THRESHOLD_BYTES = 100 * 1024 * 1024
 SINGLE_PUT_MAX_BYTES = 5 * 1024**3
 
 
-def transfer_mode(sandbox: Any) -> str:
+def _provider(sandbox: Any) -> str | None:
     # PTCSandbox holds the whole CoreConfig; the provider name is on its
     # sandbox section. Anything else (a mock, a foreign runtime) reads as
-    # an unknown provider and relays.
+    # an unknown provider.
     config = getattr(sandbox, "config", None)
     section = getattr(config, "sandbox", None)
     provider = getattr(section, "provider", None)
-    if not isinstance(provider, str):
-        provider = None
-    return get_blob_transfer_mode(provider)
+    return provider if isinstance(provider, str) else None
+
+
+def transfer_mode(sandbox: Any) -> str:
+    return get_blob_transfer_mode(_provider(sandbox))
+
+
+def sandbox_pulls_from_store(sandbox: Any) -> bool:
+    """Whether the sandbox can fetch an object the browser put in the store.
+
+    The direct transfer mode says it reaches the store; a machine its owner
+    brought does not take a file that way whatever the mode, so an upload
+    for it keeps the one-request path.
+    """
+    return kind_pulls_from_store(_provider(sandbox))
+
+
+def kind_pulls_from_store(kind: str | None) -> bool:
+    """:func:`sandbox_pulls_from_store` for a computer of provider ``kind``,
+    before any sandbox of it is open."""
+    return get_blob_transfer_mode(kind) == "direct" and kind != "ssh"
 
 
 def scan_cap_bytes(sandbox: Any, *, blobs_on: bool) -> int | None:
@@ -292,6 +310,32 @@ class ByteBudget:
     async def _wake(self) -> None:
         async with self._cv:
             self._cv.notify_all()
+
+
+# Whole files a request path holds in this process at once (an upload's body,
+# a chat attachment's bytes), however many requests hold them.
+_FILES_HELD_AT_ONCE = 8
+_held_budgets: dict[asyncio.AbstractEventLoop, ByteBudget] = {}
+
+
+def held_bytes_budget() -> ByteBudget:
+    """This worker's allowance for whole files held in memory at once.
+
+    Upload bodies are read whole before they reach the sandbox, and nothing
+    else bounds how many a worker holds at once.
+
+    Memory is the one thing a worker owns alone, so the bound is per process
+    by design. Keyed by loop because an asyncio primitive belongs to the loop
+    that first waits on it.
+    """
+    loop = asyncio.get_running_loop()
+    budget = _held_budgets.get(loop)
+    if budget is None:
+        _held_budgets.clear()
+        budget = _held_budgets[loop] = ByteBudget(
+            INPROCESS_MAX_INFLIGHT_BYTES, _FILES_HELD_AT_ONCE
+        )
+    return budget
 
 
 class TransferRuntimeError(Exception):

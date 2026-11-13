@@ -53,6 +53,7 @@ import {
 } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
 import type { AssistantMessage, UserMessage } from '@/types/chat';
+import type { AttachmentMeta } from '../../utils/fileUpload';
 
 const mockSendStream = sendChatMessageStream as Mock;
 const mockRetryStream = sendRetryStream as Mock;
@@ -376,7 +377,7 @@ describe('useChatMessages – /turns entries named by turn_index', () => {
   const refuseNextSend = () =>
     mockSendStream.mockRejectedValueOnce(Object.assign(new Error('Internal Server Error'), { status: 500 }));
 
-  async function send(result: { current: ReturnType<typeof useChatMessages> }, text: string, attachments: Record<string, unknown>[] | null = null) {
+  async function send(result: { current: ReturnType<typeof useChatMessages> }, text: string, attachments: AttachmentMeta[] | null = null) {
     await act(async () => {
       await result.current.handleSendMessage(text, null, attachments);
     });
@@ -676,7 +677,7 @@ describe('useChatMessages – /turns entries named by turn_index', () => {
     const hook = renderHookWithProviders(() => useChatMessages('ws-test'));
     await settleMountLoad();
     await send(hook.result, 'q0');
-    await send(hook.result, 'q1', [{ name: 'chart.png', type: 'image/png', dataUrl: 'data:image/png;base64,AA==' }]);
+    await send(hook.result, 'q1', [{ name: 'chart.png', type: 'image/png', size: 0, dataUrl: 'data:image/png;base64,AA==' }]);
     await send(hook.result, 'q2');
     const { result } = hook;
     const sends = mockSendStream.mock.calls.length;
@@ -703,7 +704,7 @@ describe('useChatMessages – /turns entries named by turn_index', () => {
       return { disconnected: false };
     });
     await act(async () => {
-      await hook.result.current.handleSendMessage('q1', context, [{ name: 'chart.png', type: 'image/png' }]);
+      await hook.result.current.handleSendMessage('q1', context, [{ name: 'chart.png', type: 'image/png', size: 4 }]);
     });
     const { result } = hook;
     const failed = result.current.messages.filter((m) => m.role === 'assistant')[1];

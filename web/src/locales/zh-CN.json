@@ -2138,7 +2138,22 @@
       "send": "发送消息",
       "messageLabel": "发给 Agent 的消息",
       "dropFiles": "拖放文件以上传",
-      "uploading": "上传中"
+      "attachment": {
+        "retry": "重试",
+        "preview": "预览 {{name}}",
+        "saving": "保存中",
+        "failed": "上传失败",
+        "sendFailed": "文件没能发出去，请检查网络连接。",
+        "tooLarge": "文件太大，无法添加。",
+        "uploadingLabel": "{{name}}，正在上传，{{percent}}%",
+        "failedLabel": "{{name}} 上传失败：{{error}}",
+        "holdUploading_one": "还有 {{count}} 个文件在上传…",
+        "holdUploading_other": "还有 {{count}} 个文件在上传…",
+        "holdFailed_one": "有 {{count}} 个文件需要重试或移除",
+        "holdFailed_other": "有 {{count}} 个文件需要重试或移除",
+        "notReceived": "未收到",
+        "notReceivedLabel": "{{name}}，未收到"
+      }
     },
     "mention": {
       "noMatching": "无匹配文件",
@@ -4868,7 +4883,8 @@
         "remove": "移除 {{name}}",
         "tooMany": "最多只能添加 {{max}} 张截图，其余的已忽略。",
         "notImage": "{{name}} 不是 PNG、JPEG、WebP 或 GIF 图片。",
-        "unreadable": "无法读取 {{name}}。"
+        "unreadable": "无法读取 {{name}}。",
+        "uploadFailed": "{{name}} 上传失败，请重新添加。"
       }
     }
   },

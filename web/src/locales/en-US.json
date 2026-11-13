@@ -2100,7 +2100,22 @@
       "send": "Send message",
       "messageLabel": "Message to the agent",
       "dropFiles": "Drop files to upload",
-      "uploading": "Uploading"
+      "attachment": {
+        "retry": "Retry",
+        "preview": "Preview {{name}}",
+        "saving": "Saving",
+        "failed": "Upload failed",
+        "sendFailed": "Couldn't send the file. Check your connection.",
+        "tooLarge": "This file is too large to attach.",
+        "uploadingLabel": "{{name}}, uploading, {{percent}}%",
+        "failedLabel": "{{name}}, upload failed: {{error}}",
+        "holdUploading_one": "Uploading {{count}} file…",
+        "holdUploading_other": "Uploading {{count}} files…",
+        "holdFailed_one": "Retry or remove {{count}} file",
+        "holdFailed_other": "Retry or remove {{count}} files",
+        "notReceived": "Not received",
+        "notReceivedLabel": "{{name}}, not received"
+      }
     },
     "mention": {
       "noMatching": "No matching files",
@@ -4877,7 +4892,8 @@
         "remove": "Remove {{name}}",
         "tooMany": "Up to {{max}} screenshots; the rest were left out.",
         "notImage": "{{name}} isn't a PNG, JPEG, WebP or GIF image.",
-        "unreadable": "{{name}} couldn't be read."
+        "unreadable": "{{name}} couldn't be read.",
+        "uploadFailed": "{{name}} couldn't be uploaded. Try adding it again."
       }
     }
   },

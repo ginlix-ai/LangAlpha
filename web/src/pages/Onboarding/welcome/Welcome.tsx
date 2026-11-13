@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useEffectEvent,
   useId,
@@ -31,6 +32,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import { scrollMotion } from '@/lib/reducedMotion';
 import { warmWorkspace } from '@/pages/ChatAgent/utils/warmWorkspace';
 import { getPreferences } from '@/pages/Dashboard/utils/api';
+import { discardAttachment } from '@/pages/ChatAgent/utils/attachmentUpload';
 import { useOnboarding } from '../OnboardingProvider';
 import { AgentPending, AgentTurn, ConversationShell, TurnCard, UserTurn } from './conversation';
 import {
@@ -53,7 +55,7 @@ import {
   type WelcomeStepId,
 } from './paths';
 import { answered, profilePatch, readProfile, resumeAnswers, unlistedSectors, type InvestingProfile } from './profile';
-import { screenshotAttachment } from './screenshots';
+import { ScreenshotStaging, screenshotAttachment } from './screenshots';
 import { brokerageNames, brokerageSummary, elsewhereSummary, questionSummary } from './summary';
 import { useBrokers } from './useBrokers';
 import { AgentStep } from './steps/AgentStep';
@@ -253,10 +255,26 @@ export function WelcomeFlow({
   // once its waits are over: a screenshot read during them is in here before
   // a render shows it.
   const elsewhereRef = useRef(elsewhere);
-  const setElsewhere: Dispatch<SetStateAction<ElsewhereAnswers>> = (update) => {
+  const setElsewhere: Dispatch<SetStateAction<ElsewhereAnswers>> = useCallback((update) => {
     elsewhereRef.current = typeof update === 'function' ? update(elsewhereRef.current) : update;
     setElsewhereState(elsewhereRef.current);
-  };
+  }, []);
+  // The screenshots stay staged while the flow is open, however long that is.
+  const stagingRef = useRef<ScreenshotStaging | null>(null);
+  useEffect(() => {
+    const staging = new ScreenshotStaging(
+      () => elsewhereRef.current.shots,
+      (id, attachmentId, readyAt) =>
+        setElsewhere((e) => ({ ...e, shots: e.shots.map((s) => (s.id === id ? { ...s, attachmentId, readyAt } : s)) })),
+    );
+    stagingRef.current = staging;
+    return () => {
+      staging.close();
+      stagingRef.current = null;
+    };
+  }, [setElsewhere]);
+  const { shots: stagedShots } = elsewhere;
+  useEffect(() => stagingRef.current?.track(stagedShots), [stagedShots]);
   // Each screenshot add, settled once its files are in the answers; each
   // holding or watchlist row written or removed by search, settled once the
   // write is done; and each trading level picked beside a connected broker,
@@ -446,9 +464,16 @@ export function WelcomeFlow({
     // that fails has said so in its toast, and the turn goes on the level the
     // server kept.
     await Promise.allSettled(preparing.current);
+    // A screenshot whose id the server may have dropped (a tab asleep for a
+    // day) is staged again and waited for, rather than sent missing.
     // A brief read by now wins the race even when the deadline is past too:
     // of two settled promises, the first listed is taken.
-    const [workspaceId, marketBrief] = await Promise.all([home, Promise.race([briefRead, briefDeadline]), shown]);
+    const [workspaceId, marketBrief, , shotsKept = true] = await Promise.all([
+      home,
+      Promise.race([briefRead, briefDeadline]),
+      shown,
+      stagingRef.current?.freshen(),
+    ]);
     if (controller.signal.aborted) return;
     if (!workspaceId) {
       standDown();
@@ -464,6 +489,19 @@ export function WelcomeFlow({
     // way showing them, and ahead of the composer's files.
     const answers = elsewhereRef.current;
     const shots = !connected && answers.method === 'screenshot' ? answers.shots : [];
+    // One the server let go that could not be staged again stops the start
+    // here, kept to be tried again, rather than reach the chat not received.
+    if (shots.length > 0 && !shotsKept) {
+      standDown();
+      toast({
+        variant: 'destructive',
+        title: t('common.error'),
+        description: t('onboarding.welcome.start.failed'),
+      });
+      return;
+    }
+    // Staged for a way no longer taken, they go with nothing; the server forgets them.
+    if (shots !== answers.shots) for (const shot of answers.shots) discardAttachment(shot.attachmentId);
     const send = kickoffSend(
       {
         task: written.task,
@@ -527,10 +565,15 @@ export function WelcomeFlow({
       // written there and not sent is not dropped for the suggestions.
       if (mode === 'new') {
         const input = composerRef.current;
-        if (!input?.send()) {
-          const options = input?.getModelOptions() ?? { model: null, reasoningEffort: null, fastMode: false };
-          void handOff({ task: '', attachments: [], options });
+        if (input?.send()) return;
+        // Files still uploading or failed hold the task; starting without
+        // them would drop them, so the composer and its hint wait instead.
+        if (input?.holdsSend()) {
+          input.focus();
+          return;
         }
+        const options = input?.getModelOptions() ?? { model: null, reasoningEffort: null, fastMode: false };
+        void handOff({ task: '', attachments: [], options });
       } else if (await save()) finish(SETTINGS_RETURN);
       return;
     }

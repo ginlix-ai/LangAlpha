@@ -67,10 +67,8 @@ function flatOf(message: MessageRecord, raw: (limit: number) => string, max: num
 function promptOf(message: MessageRecord): string {
   const text = flatOf(message, () => sentMessageWords(userMessageText(message)), PROMPT_MAX);
   if (text) return clip(text, PROMPT_MAX);
-  // Two shapes reach here: the history `Attachment` (name) and the upload-time
-  // `AttachmentMeta` a live send stores as-is (the name is on the File).
-  const attachments = message.attachments as (Attachment & { file?: { name?: string } })[] | undefined;
-  const names = (attachments ?? []).map((a) => a.name || a.file?.name || '').filter(Boolean);
+  const attachments = message.attachments as Attachment[] | undefined;
+  const names = (attachments ?? []).map((a) => a.name).filter(Boolean);
   return clip(names.join(', '), PROMPT_MAX);
 }
 

@@ -132,14 +132,13 @@ class TestRemoveAttachments:
     @pytest.mark.parametrize("path", [None, "work/uploads/chart.png"], ids=["unsaved", "saved"])
     def test_the_label_the_server_writes_is_the_one_read_back(self, path):
         from src.server.models.additional_context import MultimodalContext
-        from src.server.utils.multimodal_context import inject_multimodal_context
+        from src.server.utils.multimodal_context import inject_multimodal_context, inline_attachment
 
-        image = MultimodalContext(
-            type="image", data="data:image/png;base64,abc", description="chart.png"
+        image = inline_attachment(
+            MultimodalContext(type="image", data="data:image/png;base64,YWJj", description="chart.png")
         )
-        (written,) = inject_multimodal_context(
-            [{"role": "user", "content": "what is this?"}], [image], file_paths=[path]
-        )
+        image.route, image.path = "native", path
+        (written,) = inject_multimodal_context([{"role": "user", "content": "what is this?"}], [image])
         upload = HumanMessage(id="h1", content=written["content"])
         (result,) = remove_attachments([upload], {"h1"})
         asked = "Ask the user to attach it again" in result.content[1]["text"]

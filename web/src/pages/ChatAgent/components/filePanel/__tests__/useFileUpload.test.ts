@@ -8,7 +8,8 @@ vi.mock('../../../utils/workspaceUpload', async (importOriginal) => {
 });
 
 import { ApiError } from '@/api/client';
-import { uploadToWorkspace, UploadSendError, type WorkspaceUploadOptions } from '../../../utils/workspaceUpload';
+import { UploadSendError } from '../../../utils/partUpload';
+import { uploadToWorkspace, type WorkspaceUploadOptions } from '../../../utils/workspaceUpload';
 import { useFileUpload } from '../useFileUpload';
 
 const upload = uploadToWorkspace as Mock;

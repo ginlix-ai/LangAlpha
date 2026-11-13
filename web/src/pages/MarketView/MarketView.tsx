@@ -10,7 +10,7 @@ import MarketChart from './components/MarketChart';
 import { ChartToolButton } from './components/ChartToolButton';
 import type { MarketChartHandle } from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
-import type { ComposerScope, ComposerSend } from '../../components/ui/chat-input.types';
+import type { ComposerScope, ComposerSend, ReadyAttachment } from '../../components/ui/chat-input.types';
 import MarketChatPanel from './components/MarketChatPanel';
 import MarketSidebarPanel from './components/MarketSidebarPanel';
 import { INTERVALS } from './utils/chartConstants';
@@ -20,7 +20,7 @@ import { homeWorkspaceQuery, resolveChatWorkspace } from '@/hooks/useHomeWorkspa
 import type { Workspace } from '@/types/api';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import type { Freshness } from '@/types/market';
-import { attachmentsToContexts } from '../ChatAgent/utils/fileUpload';
+import { attachmentSendParts, type AttachmentMeta } from '../ChatAgent/utils/fileUpload';
 import { useThreadModel } from '../ChatAgent/hooks/useThreadModel';
 import { useThreadSubagents } from '../ChatAgent/hooks/useThreadSubagents';
 import { useThreadTuning } from '../ChatAgent/hooks/useThreadTuning';
@@ -48,13 +48,6 @@ import { getShowLayersRequest, subscribeLayerView, type ShowLayersRequest } from
 import { chartSelectionStore, isConfirmedFor, useChartSelections } from './stores/chartSelectionStore';
 import { buildMarketSendContexts } from './utils/selectionSend';
 import { layerAskContext } from './utils/layerAsk';
-
-interface AttachmentItem {
-  dataUrl: string;
-  file: { name: string; size: number };
-  type: string;
-  preview?: string | null;
-}
 
 // Stable identity for the pre-data render, so the reconcile effect's
 // `workspaces` dependency doesn't change on every render before the fetch
@@ -472,42 +465,24 @@ function MarketViewInner() {
     setChartImageDesc(parts.join('\n'));
   }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice, quote.currency, quote.places]);
 
-  const handleSendMessage = useCallback(async (message: string, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort, fastMode }: { model?: string | null; reasoningEffort?: string | null; fastMode?: boolean | null } = {}) => {
+  const handleSendMessage = useCallback(async (message: string, attachments: ReadyAttachment[] = [], _slashCommands: string[] = [], { model, reasoningEffort, fastMode }: { model?: string | null; reasoningEffort?: string | null; fastMode?: boolean | null } = {}) => {
     const send = buildMarketSendContexts(selectedStock || '', selectedInterval, message, collectViews());
     const contexts: unknown[] = [send.skill];
     if (chartImage) {
       contexts.push({ type: 'image', data: chartImage, description: chartImageDesc || undefined });
     }
-    if (attachments && attachments.length > 0) {
-      contexts.push(...attachmentsToContexts(attachments as any));
-    }
+    const attached = attachmentSendParts(attachments);
+    contexts.push(...attached.contexts);
     // The confirmed selections on the chart on screen.
     contexts.push(...send.contexts);
     const imageContext = contexts.length > 0 ? contexts : null;
 
     // Build attachment metadata for display in user message bubble
-    const metaItems = [];
+    const metaItems: AttachmentMeta[] = [];
     if (chartImage) {
-      metaItems.push({
-        name: chartImageDesc || 'Chart',
-        type: 'image',
-        size: 0,
-        preview: chartImage,
-        dataUrl: chartImage,
-      });
+      metaItems.push({ name: chartImageDesc || 'Chart', type: 'image', size: 0, dataUrl: chartImage });
     }
-    if (attachments && attachments.length > 0) {
-      attachments.forEach((a) => {
-        metaItems.push({
-          name: a.file.name,
-          type: a.type,
-          size: a.file.size,
-          preview: a.preview || null,
-          dataUrl: a.dataUrl,
-        });
-      });
-    }
-    metaItems.push(...send.attachments);
+    metaItems.push(...attached.meta, ...send.attachments);
     const attachmentMeta = metaItems.length > 0 ? metaItems : null;
 
     // The selected workspace, or, under the Chief of Staff, Home, which the server
@@ -668,7 +643,7 @@ function MarketViewInner() {
               </div>
             )}
             <ChatInput
-              onSend={(send: ComposerSend) => { void handleSendMessage(send.message, send.files as unknown as AttachmentItem[], [], send.modelOptions); setChatExpanded(false); }}
+              onSend={(send: ComposerSend) => { void handleSendMessage(send.message, send.files, [], send.modelOptions); setChatExpanded(false); }}
               scope={scope}
               onScopeChange={setScope}
               model={threadModel.model}

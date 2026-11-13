@@ -54,11 +54,10 @@ describe('buildEntries', () => {
   });
 
   it('names an attachment-only prompt from either attachment shape', () => {
-    // A live send stores the upload-time shape as-is, where the name is on the
-    // File; history reloads it into the flat shape.
+    // A live send's record carries its file; history's carries a url.
     const entries = buildEntries(
       [
-        user('u1', '', { attachments: [{ file: { name: 'live.csv' }, dataUrl: 'x', type: 'text/csv' }] }),
+        user('u1', '', { attachments: [{ name: 'live.csv', type: 'text/csv', size: 3, file: new File(['a,b'], 'live.csv') }] }),
         assistant('a1', 'Reply.'),
         user('u2', '', { attachments: [{ name: 'history.pdf', type: 'application/pdf' }] }),
       ],

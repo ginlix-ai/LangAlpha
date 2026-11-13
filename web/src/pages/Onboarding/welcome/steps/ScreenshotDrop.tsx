@@ -5,10 +5,10 @@
  * One zone takes all three routes in: a click opens the file picker, a drop
  * anywhere on it adds, and a paste anywhere on the page adds too (a screenshot
  * is usually on the clipboard already). The zone is a real button, so Tab,
- * Enter and Space work with no extra wiring. Files are prepared in parallel and
- * each shows a loader tile until it is ready. The component is controlled and
- * keeps nothing but what is still being prepared; the list belongs to the
- * flow. Adding past the cap keeps the first files that fit and says so, and a
+ * Enter and Space work with no extra wiring. Files are prepared and uploaded
+ * in parallel, and each shows a loader tile until it is ready. The component
+ * is controlled and keeps nothing but what is still being prepared; the list
+ * belongs to the flow. Adding past the cap keeps the first files that fit and says so, and a
  * file that cannot be used is named in a status line that the next add clears.
  */
 import {
@@ -23,13 +23,16 @@ import {
 import { useTranslation } from 'react-i18next';
 import { ImageUp, Plus, X } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { useObjectUrl } from '@/hooks/useObjectUrl';
 import { cn } from '@/lib/utils';
+import { discardAttachment } from '@/pages/ChatAgent/utils/attachmentUpload';
 import {
   ACCEPTED_TYPES,
   MAX_SCREENSHOTS,
   ScreenshotError,
   prepareScreenshot,
   type Screenshot,
+  type ScreenshotFailure,
 } from '../screenshots';
 
 interface ScreenshotDropProps {
@@ -51,6 +54,18 @@ const FOCUS =
 
 const TILE =
   'relative aspect-square overflow-hidden rounded-lg border border-(--color-border-muted) bg-(--color-bg-card)';
+
+const FAILURE_KEYS: Record<ScreenshotFailure, string> = {
+  'not-image': 'onboarding.welcome.shots.notImage',
+  unreadable: 'onboarding.welcome.shots.unreadable',
+  'upload-failed': 'onboarding.welcome.shots.uploadFailed',
+};
+
+/** From the top: a phone capture is tall, and its header names the screen. */
+function ShotThumb({ file }: { file: File }) {
+  const src = useObjectUrl(file);
+  return src ? <img src={src} alt={file.name} className="h-full w-full object-cover object-top" /> : null;
+}
 
 /** A paste into a field is the field's own; only a paste with nowhere to type
  *  is taken as a screenshot. */
@@ -103,20 +118,19 @@ export function ScreenshotDrop({ shots, onChange, onPreparing, active = true }: 
           return;
         }
         const reason = result.reason instanceof ScreenshotError ? result.reason.reason : 'unreadable';
-        notes.push(
-          t(
-            reason === 'not-image'
-              ? 'onboarding.welcome.shots.notImage'
-              : 'onboarding.welcome.shots.unreadable',
-            { name: taken[i].name },
-          ),
-        );
+        notes.push(t(FAILURE_KEYS[reason], { name: taken[i].name }));
       });
       // The list is the flow's, so a file still being read when the user
       // moved on (Continue, mid-decode) joins it all the same; only the
       // zone's own loader and status line go with the zone.
       if (ready.length > 0) {
-        onChange((prev) => [...prev, ...ready].slice(0, MAX_SCREENSHOTS));
+        onChange((prev) => {
+          const next = [...prev, ...ready];
+          // Past the cap only when adds overlapped. What does not fit is never
+          // sent, so the server forgets it; a second run of this is harmless.
+          for (const shot of next.slice(MAX_SCREENSHOTS)) discardAttachment(shot.attachmentId);
+          return next.slice(0, MAX_SCREENSHOTS);
+        });
       }
       if (!mounted.current) return;
       setPending(pendingRef.current);
@@ -171,6 +185,9 @@ export function ScreenshotDrop({ shots, onChange, onPreparing, active = true }: 
   }, [active]);
 
   const remove = (id: string) => {
+    // Staged for the first message, which no longer carries it.
+    const shot = shots.find((s) => s.id === id);
+    if (shot) discardAttachment(shot.attachmentId);
     onChange((prev) => prev.filter((s) => s.id !== id));
   };
 
@@ -240,12 +257,11 @@ export function ScreenshotDrop({ shots, onChange, onPreparing, active = true }: 
         >
           {shots.map((shot) => (
             <li key={shot.id} className={cn(TILE, 'wizard-fade-in')}>
-              {/* From the top: a phone capture is tall, and its header names the screen. */}
-              <img src={shot.dataUrl} alt={shot.name} className="h-full w-full object-cover object-top" />
+              <ShotThumb file={shot.file} />
               <button
                 type="button"
                 onClick={() => remove(shot.id)}
-                aria-label={t('onboarding.welcome.shots.remove', { name: shot.name })}
+                aria-label={t('onboarding.welcome.shots.remove', { name: shot.file.name })}
                 className={cn(
                   'absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full border border-(--color-border-default) bg-(--color-bg-card) text-(--color-text-primary) press hover:bg-(--color-bg-hover)',
                   FOCUS,

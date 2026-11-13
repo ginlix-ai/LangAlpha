@@ -59,11 +59,10 @@ describe('buildChartSelectionSend', () => {
     expect(contexts).toHaveLength(2);
     expect(contexts[0]).toMatchObject({ type: 'chart_selection' });
     expect(contexts[1]).toMatchObject({ type: 'image', data: 'data:image/jpeg;base64,ZZZZ' });
-    // Display attachment carries the base64 as preview so the live bubble shows a thumbnail.
+    // Display attachment carries the base64 so the live bubble shows a thumbnail.
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({
       type: 'image',
-      preview: 'data:image/jpeg;base64,ZZZZ',
       dataUrl: 'data:image/jpeg;base64,ZZZZ',
     });
   });

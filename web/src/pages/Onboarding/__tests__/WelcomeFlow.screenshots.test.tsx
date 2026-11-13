@@ -54,7 +54,7 @@ import type { Screenshot } from '../welcome/screenshots';
 const renderFlow = flowRenderer(WelcomeFlow);
 const prepare = vi.mocked(screenshots.prepareScreenshot);
 
-const POSITIONS: Screenshot = { id: 's1', name: 'positions.png', dataUrl: 'data:image/jpeg;base64,AAAA', bytes: 4 };
+const POSITIONS: Screenshot = { id: 's1', file: new File(['abc'], 'positions.png', { type: 'image/jpeg' }), attachmentId: 'att-s1' };
 
 describe('WelcomeFlow: a screenshot still being read at Start', () => {
   let finish: (shot: Screenshot) => void;
@@ -84,7 +84,7 @@ describe('WelcomeFlow: a screenshot still being read at Start', () => {
   const sentWithIt = () => {
     expect(instruction()).toContain('Brokerage: none. Screenshots: 1. This is');
     expect(routeState().additionalContext).toContainEqual(
-      expect.objectContaining({ type: 'image', data: POSITIONS.dataUrl, description: 'positions.png' }),
+      expect.objectContaining({ type: 'image', attachment_id: 'att-s1', description: 'positions.png' }),
     );
   };
 
