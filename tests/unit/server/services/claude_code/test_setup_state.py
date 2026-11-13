@@ -95,8 +95,7 @@ async def _setup(world, **switches):  # noqa: F811
         patch(f"{SETUP}.hosted.custody", new_callable=AsyncMock, return_value=switches.get("custody")),
         patch(f"{SETUP}.hosted.choice_offered", return_value=switches.get("offered", False)),
         patch(
-            f"{SETUP}.hosted.cloud_view", new_callable=AsyncMock,
-            return_value=(switches.get("refusals", {}), OnCloud(Hosted("saved_token"))),
+            f"{SETUP}.hosted.tier_refusals", new_callable=AsyncMock, return_value=switches.get("refusals", {}),
         ),
         patch(f"{SETUP}.hosted.in_sandbox", return_value=switches.get("sandbox", False)),
         patch(f"{SETUP}.get_computers_for_user", switches.get("listed", AsyncMock(return_value=[]))),

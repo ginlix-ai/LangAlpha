@@ -91,8 +91,8 @@ async def setup_state(user_id: str) -> ClaudeCodeSetup | None:
     on = await user_feature_enabled(user_id, FEATURE)
     if not on and system_flag(FEATURE).gate not in USER_CONTROLLABLE_GATES:
         return None
-    computers, status, (refusals, _) = await asyncio.gather(
-        list_computers(user_id, mark_offline=True), saved.status(user_id), hosted.cloud_view(user_id),
+    computers, status, refusals = await asyncio.gather(
+        list_computers(user_id, mark_offline=True), saved.status(user_id), hosted.tier_refusals(user_id),
     )
     custody = await hosted.custody(user_id)
     # Before opt-in, whether the server would run turns on a saved token:

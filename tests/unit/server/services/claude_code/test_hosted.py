@@ -490,7 +490,7 @@ async def test_a_computer_below_the_tier_is_refused_at_admission_saying_how_to_f
     with platform(mode="stored", computer=SMALL):
         assert await _admit() == {
             "message": TOO_SMALL, "type": "claude_code_off", "model": CODE, "reason": "needs_bigger_computer",
-            "home": False,
+            "home": False, "computer_id": "c-3", "name": "Scratch",
         }
 
 
@@ -549,7 +549,7 @@ async def test_a_computer_downsized_between_two_turns_of_a_thread_stops_the_seco
             await HostedCredential("user-1", "stored_token", "ws-1").read()
         assert claude_code_refusal(refused.value, CODE) == {
             "message": TOO_SMALL, "type": "claude_code_off", "model": CODE, "reason": "needs_bigger_computer",
-            "home": False,
+            "home": False, "computer_id": "c-2", "name": "Research",
         }
     downsized.assert_awaited_with("ws-1", conn=None)
     token.assert_not_awaited()
@@ -566,6 +566,7 @@ async def test_home_downsized_since_its_turn_was_admitted_is_refused_as_it_start
     assert "Home's computer is smaller" in words
     assert refusal == {
         "message": words, "type": "claude_code_off", "model": CODE, "reason": "needs_bigger_computer", "home": True,
+        "computer_id": "c-2", "name": "Research",
     }
 
 
@@ -640,6 +641,15 @@ async def test_no_cloud_computer_is_too_small_where_their_cli_runs_on_the_users_
     assert refusals == {}
     assert hosted_module.picks_own(where)
     computers.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["local", "stored"])
+async def test_the_setup_names_each_cloud_computer_too_small_whatever_the_user_chose(mode):
+    """So choosing to run it on cloud computers can be warned of before it is made."""
+    computers = AsyncMock(return_value=[CLOUD, SMALL, OWN])
+    with platform(mode=mode), patch("src.server.database.computer.get_computers_for_user", computers):
+        assert await hosted_module.tier_refusals("user-1") == {"c-3": "needs_bigger_computer"}
 
 
 @pytest.mark.asyncio

@@ -105,7 +105,8 @@ class Refused:
     """No Claude Code turn runs there, for ``reason``, the first of every
     reason, so every caller tells the user the same one; ``fields`` is what
     its words name (the offline computer's ``name``, or for a computer too
-    small whether it is Home's, ``home``), and ``hosted`` the credential
+    small whether it is Home's, ``home``, and the ``computer_id`` and
+    ``name`` its fix acts on), and ``hosted`` the credential
     that would run there where the refusal is not the credential's."""
 
     reason: PlacementRefusal
@@ -325,14 +326,22 @@ async def cloud_view(user_id: str) -> tuple[dict[str, ComputerRefusal], Placemen
 
 async def cloud_refusals(user_id: str, where: Placement) -> dict[str, ComputerRefusal]:
     """Each of the user's cloud computers that refuses a turn whatever its
-    credential (``tier_refusal``), by id; none where the CLI does not run in
-    their sandboxes, or runs on their own computers instead, as ``where``,
-    their cloud computers' placement, says (``picks_own``), where a cloud
-    computer's size refuses nothing."""
+    credential (``tier_refusals``), by id; none where their CLI runs on
+    their own computers instead, as ``where``, their cloud computers'
+    placement, says (``picks_own``), where a cloud computer's size refuses
+    nothing."""
+    return {} if picks_own(where) else await tier_refusals(user_id)
+
+
+async def tier_refusals(user_id: str) -> dict[str, ComputerRefusal]:
+    """Each of the user's cloud computers too small to run the CLI inside
+    its sandbox (``tier_refusal``), by id, whatever the user chose for
+    cloud computers, so a choice to run it there can be warned of before it
+    is made; none where the CLI does not run in their sandboxes."""
     from src.server.database.computer import get_computers_for_user
     from src.server.services.ssh_computers import is_own_computer
 
-    if not in_sandbox() or picks_own(where):
+    if not in_sandbox():
         return {}
     refusals: dict[str, ComputerRefusal] = {}
     for computer in await get_computers_for_user(user_id):
@@ -438,7 +447,8 @@ async def cloud_placement(
         if reason := await saved_refusal(user_id, conn=conn):
             return Refused(reason, hosted=state)
     if runs_in == "sandbox" and computer is not None and (reason := tier_refusal(computer)):
-        return Refused(reason, {"home": home}, hosted=state)
+        fields = {"home": home, "computer_id": str(computer["computer_id"]), "name": computer["name"]}
+        return Refused(reason, fields, hosted=state)
     return OnCloud(state, dict(computer) if computer is not None else None)
 
 
@@ -456,7 +466,8 @@ def runs_on_view(where: Placement) -> ClaudeCodeRunsOn:
     cloud = "home_cloud" if in_sandbox() else "server"
     if isinstance(where, Refused):
         return ClaudeCodeRunsOn(
-            kind="picked" if picks_own(where) else cloud, name=where.fields.get("name"), refusal=where.reason,
+            kind="picked" if picks_own(where) else cloud, computer_id=where.fields.get("computer_id"),
+            name=where.fields.get("name"), refusal=where.reason,
         )
     if cloud == "server":
         return ClaudeCodeRunsOn(kind="server")
