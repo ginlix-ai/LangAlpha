@@ -359,7 +359,12 @@ async def list_workspaces(
 
 # Declared before the `/{workspace_id}` routes so `/quota` isn't captured as an id.
 @router.get("/quota", response_model=WorkspaceQuotaResponse)
-async def get_workspace_quota(x_user_id: ReadUserId):
+async def get_workspace_quota(
+    x_user_id: ReadUserId,
+    plan_changed: bool = Query(
+        False, description="The client is back from the plan page: read the plan's scopes again."
+    ),
+):
     """Per-capability count quotas for the spec pickers, always-on and New computer.
 
     Platform mode only — every field is null in OSS mode, so the UI just omits the
@@ -367,7 +372,7 @@ async def get_workspace_quota(x_user_id: ReadUserId):
     back null rather than erroring the whole call.
     """
     statuses, computers = await asyncio.gather(
-        get_entitlement_statuses(x_user_id, DISPLAYED_ENTITLEMENTS),
+        get_entitlement_statuses(x_user_id, DISPLAYED_ENTITLEMENTS, plan_changed=plan_changed),
         get_capacity_status(x_user_id, COMPUTER_COUNT_QUOTA),
     )
     return WorkspaceQuotaResponse(

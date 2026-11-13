@@ -565,6 +565,31 @@ async def test_get_workspace_quota_unknown_scopes_fail_open(client):
 
 
 @pytest.mark.asyncio
+async def test_get_workspace_quota_back_from_the_plan_page_reads_the_plan_again(client):
+    """A plan changed seconds after the last read shows what it opens on the read that says so,
+    where any other read answers from the list cached just before it."""
+    import time
+
+    from src.server.dependencies.usage_limits import _scope_cache
+
+    counts = AsyncMock(side_effect=lambda _uid, quota: _CAPACITY[quota])
+    for query, limit in (("", 0), ("?plan_changed=true", 3)):
+        _scope_cache["test-user-123"] = ([], time.time() + 300 - 5)
+        with (
+            patch("src.server.dependencies.usage_limits.platform_gating_active", return_value=True),
+            patch(
+                "src.server.dependencies.usage_limits._call_validate_for_user",
+                new=AsyncMock(return_value={"scopes": ["workspace:spec:performance"]}),
+            ),
+            patch("src.server.dependencies.usage_limits.get_capacity_status", new=counts),
+            patch("src.server.app.workspaces.get_capacity_status", new=counts),
+        ):
+            resp = await client.get(f"/api/v1/workspaces/quota{query}")
+        assert resp.json()["performance"]["limit"] == limit
+    _scope_cache.pop("test-user-123", None)
+
+
+@pytest.mark.asyncio
 async def test_get_workspace_quota_oss_all_null(client):
     """OSS mode: every capability is None, so the response fields are null."""
     with patch(

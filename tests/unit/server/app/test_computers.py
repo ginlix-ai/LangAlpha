@@ -2365,6 +2365,30 @@ async def test_set_spec_to_a_size_the_provider_lacks_is_a_400_before_the_gate(
 
 
 @pytest.mark.asyncio
+async def test_set_spec_back_from_the_plan_page_asks_the_gate_to_read_the_plan_again(
+    client, computer, mock_computer_manager
+):
+    """The change can land on a worker whose list predates the plan change, so the gate is told."""
+    from fastapi import HTTPException
+
+    mock_computer_manager.precheck_computer_spec = AsyncMock(return_value=False)
+    for query, plan_changed in (("", False), ("?plan_changed=true", True)):
+        gate = AsyncMock(side_effect=HTTPException(403, detail="Requires scope"))
+        get_row, get_manager = _spec_client_patches(computer, mock_computer_manager)
+        with (
+            get_row,
+            get_manager,
+            patch("src.server.app.computers.platform_gating_active", return_value=True),
+            patch("src.server.app.computers.assert_spec_allowed", gate),
+        ):
+            resp = await client.post(
+                f"/api/v1/computers/{COMPUTER_ID}/spec{query}", json={"tier": "performance"}
+            )
+        assert resp.status_code == 403
+        assert gate.await_args.kwargs["plan_changed"] is plan_changed
+
+
+@pytest.mark.asyncio
 async def test_set_spec_refuses_a_second_change_while_one_runs(
     client, computer, mock_computer_manager
 ):
