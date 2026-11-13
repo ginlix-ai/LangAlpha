@@ -222,6 +222,23 @@ async def create_query(
         raise
 
 
+async def set_run_query_metadata(conn, run_id: str, key: str, value: Any) -> None:
+    """Set one key of the metadata on the query row of ``run_id``'s turn, on
+    ``conn``, so a START transaction can correct what it inserted."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE conversation_queries q
+            SET metadata = jsonb_set(COALESCE(q.metadata, '{}'::jsonb), ARRAY[%s], %s::jsonb)
+            FROM conversation_responses r
+            WHERE r.conversation_response_id::text = %s
+              AND q.conversation_thread_id = r.conversation_thread_id
+              AND q.turn_index = r.turn_index
+            """,
+            (key, SafeJson(value), run_id),
+        )
+
+
 async def get_queries_for_thread(
     conversation_thread_id: str, limit: Optional[int] = None, offset: int = 0
 ) -> Tuple[List[Dict[str, Any]], int]:

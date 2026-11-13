@@ -117,7 +117,21 @@ def steer_allowed(
     if dispatched:
         return steerable and _is_agent_hand_off(request)
     is_fork = request.fork_from_turn is not None and bool(request.checkpoint_id)
-    return steerable and request.retry_of_run_id is None and not is_fork
+    return (
+        steerable
+        and request.retry_of_run_id is None
+        and not is_fork
+        and not _names_uploaded_files(request)
+    )
+
+
+def _names_uploaded_files(request: ChatRequest) -> bool:
+    """A steer carries its text alone, so files uploaded for the message would
+    never reach the agent; it waits for a turn of its own instead."""
+    return any(
+        getattr(ctx, "attachment_id", None) is not None
+        for ctx in request.additional_context or ()
+    )
 
 
 def _is_agent_hand_off(request: ChatRequest) -> bool:

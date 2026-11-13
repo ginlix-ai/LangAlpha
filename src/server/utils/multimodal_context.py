@@ -1,8 +1,9 @@
 """
 Multimodal context utilities for chat endpoint.
 
-Parses MultimodalContext items from additional_context and injects image/PDF
-content blocks into user messages so the LLM receives native multimodal input.
+Parses MultimodalContext items from additional_context, and turns a turn's
+attachments into what the model reads: image/PDF content blocks merged into
+the user message, and notes naming the files it reaches by path.
 """
 
 import asyncio
@@ -10,133 +11,110 @@ import base64
 import io
 import logging
 import uuid
-from collections.abc import Collection
-from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
+from typing import Any, Dict, List, Optional
 
-from ptc_agent.agent.middleware.file_operations.image_fit import usable_image
-from ptc_agent.core.project_context import ProjectContext
+from pydantic import ValidationError
 
+from src.llms.llm import COMMON_IMAGE_TYPES
 from src.server.models.additional_context import MultimodalContext
-from src.utils.storage import get_public_url, is_storage_enabled, sanitize_storage_key, upload_base64
+from src.server.models.chat_attachment import (
+    NATIVE_MAX_BYTES,
+    AttachmentRoute,
+    InlineSource,
+    MissingAttachment,
+    TurnAttachment,
+    TurnAttachments,
+    normalize_mime,
+    served_type,
+)
+from src.utils.storage import get_public_url, is_storage_enabled, sanitize_storage_key, upload_bytes
 
 logger = logging.getLogger(__name__)
+
+_MULTIMODAL_TYPES = ("image", "pdf", "file")
 
 
 def parse_multimodal_contexts(
     additional_context: Optional[List[Any]],
 ) -> List[MultimodalContext]:
-    """Extract MultimodalContext items from additional_context list.
+    """The attachment items of ``additional_context``.
 
-    Args:
-        additional_context: List of context items from ChatRequest
-
-    Returns:
-        List of MultimodalContext objects
+    A raw item that does not validate (one naming neither inline data nor an
+    uploaded id, say) is dropped with a log line: a client sending junk
+    beside a message loses that item, not the turn.
     """
-    if not additional_context:
-        return []
-
-    contexts = []
-
-    _multimodal_types = ("image", "pdf", "file")
-
-    for ctx in additional_context:
-        if isinstance(ctx, dict):
-            if ctx.get("type") in _multimodal_types:
-                contexts.append(
-                    MultimodalContext(
-                        type=ctx.get("type", "image"),
-                        data=ctx.get("data", ""),
-                        description=ctx.get("description"),
-                    )
-                )
-        elif isinstance(ctx, MultimodalContext):
+    contexts: List[MultimodalContext] = []
+    for ctx in additional_context or []:
+        if isinstance(ctx, MultimodalContext):
             contexts.append(ctx)
-        elif hasattr(ctx, "type") and ctx.type in _multimodal_types:
-            contexts.append(
-                MultimodalContext(
-                    type=ctx.type,
-                    data=getattr(ctx, "data", ""),
-                    description=getattr(ctx, "description", None),
-                )
-            )
-
+        elif isinstance(ctx, dict) and ctx.get("type") in _MULTIMODAL_TYPES:
+            try:
+                contexts.append(MultimodalContext.model_validate(ctx))
+            except ValidationError as e:
+                logger.warning(f"Dropped an attachment item that does not validate: {e.error_count()} error(s)")
     return contexts
 
 
-async def build_attachment_metadata(
-    contexts: List[MultimodalContext],
-    thread_id: str = "",
-) -> List[Dict[str, Any]]:
-    """Build attachment metadata dicts, uploading to storage when enabled.
+def inline_attachment(ctx: MultimodalContext) -> Optional[TurnAttachment]:
+    """An inline item as the turn's attachment, its data URL decoded once;
+    None when it does not decode."""
+    assert ctx.data is not None
+    header, sep, payload = ctx.data.partition(",")
+    if not sep:
+        return None
+    try:
+        raw = base64.b64decode(payload)
+    except ValueError:
+        return None
+    mime = header.split(":")[1].split(";")[0] if ":" in header else ""
+    return TurnAttachment(
+        name=ctx.description or "file",
+        mime_type=mime,
+        size=len(raw),
+        source=InlineSource(raw),
+    )
 
-    Returns list of {name, type, size, url?} dicts.
-    Uploads run concurrently via asyncio.gather.
+
+# -- routing -------------------------------------------------------------------
+
+
+def wants_bytes(att: TurnAttachment, modalities: List[str]) -> bool:
+    """Whether routing ``att`` needs its bytes read first: an image or PDF
+    the model takes, read for its block, its check or its page count."""
+    return att.size <= NATIVE_MAX_BYTES and att.kind != "file" and att.kind in modalities
+
+
+def route_for(
+    att: TurnAttachment, modalities: List[str], *, readable: bool = True
+) -> AttachmentRoute:
+    """How ``att`` reaches a model taking ``modalities``.
+
+    Only an image or PDF small enough for a request goes in as a content
+    block; one whose bytes could not be read or, for an image, given to the
+    route goes in as a file. One the model does not take is a file the agent
+    is told it cannot view. Everything else is always a file.
     """
-    batch_id = uuid.uuid4().hex[:12]
-    prefix = f"attachments/{thread_id}/{batch_id}" if thread_id else f"attachments/{batch_id}"
-
-    async def _process(ctx: MultimodalContext) -> Dict[str, Any]:
-        is_pdf = ctx.data.startswith("data:application/pdf")
-        is_image = ctx.data.startswith("data:image/")
-        name = ctx.description or "file"
-        meta: Dict[str, Any] = {
-            "name": name,
-            "type": "pdf" if is_pdf else "image" if is_image else "file",
-            "size": len(ctx.data.split(",", 1)[1]) * 3 // 4 if "," in ctx.data else 0,
-        }
-        if is_storage_enabled():
-            safe_key = sanitize_storage_key(name, ctx.data)
-            storage_key = f"{prefix}/{safe_key}"
-            try:
-                success = await asyncio.to_thread(upload_base64, storage_key, ctx.data)
-                if success:
-                    meta["url"] = get_public_url(storage_key)
-            except Exception:
-                logger.warning("Failed to upload attachment %r", safe_key, exc_info=True)
-        return meta
-
-    return list(await asyncio.gather(*(_process(ctx) for ctx in contexts)))
+    if att.kind == "file" or att.size > NATIVE_MAX_BYTES or not readable:
+        return "file"
+    if att.kind in modalities:
+        return "native"
+    # Told it cannot view an image, the agent suggests a model that can; for a
+    # type no model takes as is, another model would not help either.
+    if att.kind == "image" and att.mime_type not in COMMON_IMAGE_TYPES:
+        return "file"
+    return "unsupported"
 
 
-async def find_unreadable_images(
-    contexts: List[MultimodalContext],
-    accepted: frozenset[str],
-) -> List[MultimodalContext]:
-    """Image attachments that can't reach a route taking ``accepted`` as images.
+def pdf_page_count(raw: bytes) -> Optional[int]:
+    """Pages in a PDF, or None when it cannot be read (encrypted or corrupt).
 
-    What Pillow decodes can, the call-time fit converting a format the route
-    does not take; so can a HEIC or HEIF the route takes as is. Off the event
-    loop, since each file is decoded in full.
-    """
-
-    def scan() -> List[MultimodalContext]:
-        unreadable = []
-        for ctx in contexts:
-            if not ctx.data.startswith("data:image/"):
-                continue
-            try:
-                raw = base64.b64decode(ctx.data.split(",", 1)[1])
-            except (ValueError, IndexError):
-                unreadable.append(ctx)
-                continue
-            if not usable_image(raw, accepted):
-                unreadable.append(ctx)
-        return unreadable
-
-    return await asyncio.to_thread(scan)
-
-
-def pdf_page_count(data_url: str) -> Optional[int]:
-    """Pages in a PDF data URL, or None when it cannot be read (encrypted or corrupt).
-
-    Blocking: decoding and parsing a large PDF takes long enough to stall the
-    event loop, so async callers run it in a thread.
+    Blocking: parsing a large PDF takes long enough to stall the event loop,
+    so async callers run it in a thread.
     """
     try:
         import pypdf
 
-        raw = base64.b64decode(data_url.split(",", 1)[1])
         # A broken page tree can parse as zero pages without raising, and
         # "0 pages" would read as an empty document rather than an unreadable one.
         return len(pypdf.PdfReader(io.BytesIO(raw)).pages) or None
@@ -144,34 +122,86 @@ def pdf_page_count(data_url: str) -> Optional[int]:
         return None
 
 
-async def pdf_page_counts(contexts: List[MultimodalContext]) -> List[Optional[int]]:
-    """Page counts parallel to ``contexts``: None for anything not a readable PDF.
+# -- history ---------------------------------------------------------------------
 
-    In one thread, as ``find_unreadable_images`` reads its images: a thread per
-    PDF would take as many of the shared executor's workers as a request has
-    PDFs.
+
+def _object_url(key: str) -> str:
+    """The link to a stored attachment. The key keeps the file's name as
+    given, so a ``#`` or ``?`` in it would end the path the browser asks for."""
+    return get_public_url(quote(key, safe="/"))
+
+
+async def build_attachment_metadata(
+    attachments: TurnAttachments,
+    thread_id: str = "",
+) -> List[Dict[str, Any]]:
+    """The history's entry for each attachment: ``{name, type, size, url?}``.
+
+    An inline file is stored for its link when storage is enabled, all at
+    once. An uploaded one's object is already the stored copy, so nothing is
+    stored again; one whose bytes Postgres holds has no link, as an
+    attachment has none without storage.
     """
+    batch_id = uuid.uuid4().hex[:12]
+    prefix = f"attachments/{thread_id}/{batch_id}" if thread_id else f"attachments/{batch_id}"
 
-    def count() -> List[Optional[int]]:
-        return [
-            pdf_page_count(ctx.data) if ctx.data.startswith("data:application/pdf") else None
-            for ctx in contexts
-        ]
+    async def entry(att: TurnAttachment) -> Dict[str, Any]:
+        meta: Dict[str, Any] = {"name": att.name, "type": att.kind, "size": att.size}
+        source = att.source
+        if not isinstance(source, InlineSource):
+            if source.object_key:
+                meta["url"] = _object_url(source.object_key)
+            return meta
+        if is_storage_enabled():
+            # The key's extension comes off the type as a data URL states it.
+            safe_key = sanitize_storage_key(att.name, f"data:{att.mime_type};")
+            # Its own folder: two files of one name in a turn are two objects.
+            storage_key = f"{prefix}/{uuid.uuid4().hex[:8]}/{safe_key}"
+            try:
+                stored = await asyncio.to_thread(
+                    upload_bytes,
+                    storage_key,
+                    source.data,
+                    # The type the request claims, served only where it is safe
+                    # to render from the store's origin.
+                    content_type=served_type(normalize_mime(att.mime_type)),
+                )
+                if stored:
+                    meta["url"] = _object_url(storage_key)
+            except Exception:
+                logger.warning("Failed to upload attachment %r", safe_key, exc_info=True)
+        return meta
 
-    return await asyncio.to_thread(count)
+    files = await asyncio.gather(*(entry(att) for att in attachments.files))
+    return [*files, *(_missing_entry(m) for m in attachments.missing)]
+
+
+def drop_gone_metadata(
+    entries: List[Dict[str, Any]],
+    listed: List[TurnAttachment],
+    attachments: TurnAttachments,
+) -> List[Dict[str, Any]]:
+    """The history's entries again once admission found some of ``listed``
+    (the files ``entries`` was built from, in order) no longer there: those
+    show as missing, as the agent is told they are."""
+    present = {id(a) for a in attachments.files}
+    files = [e for a, e in zip(listed, entries) if id(a) in present]
+    return [*files, *(_missing_entry(m) for m in attachments.missing)]
+
+
+def _missing_entry(missing: MissingAttachment) -> Dict[str, Any]:
+    return {"name": missing.name, "type": missing.kind, "size": 0, "missing": True}
+
+
+# -- what the model reads --------------------------------------------------------
 
 
 def inject_multimodal_context(
     messages: List[Dict[str, Any]],
-    multimodal_contexts: List[MultimodalContext],
-    file_paths: Optional[List[Optional[str]]] = None,
-    pdf_pages: Optional[List[Optional[int]]] = None,
+    attachments: List[TurnAttachment],
 ) -> List[Dict[str, Any]]:
-    """Merge image/PDF content blocks into the last user message.
-
-    Prepends content blocks before the user's text content so the LLM sees
-    the attachment context first. Non-image/non-PDF contexts are skipped
-    (they are handled via system-reminder with sandbox path only).
+    """Merge the content blocks of the attachments routed ``native`` into the
+    last user message, ahead of its text so the model sees them first.
 
     A PDF saved to the sandbox goes in as a note with its page count and path,
     not as a document: inlined whole, a long one fills the context window on
@@ -181,64 +211,40 @@ def inject_multimodal_context(
     count so the read side can hold it to the model's page ceiling, and as
     unsaved so what replaces it there offers no copy to extract from.
 
-    .. note::
-        Mutates ``messages`` in place (modifies the last user message's
-        ``content`` key). Callers must pass a fresh list if they need to
-        preserve the original.
-
-    Args:
-        messages: List of message dicts (role + content)
-        multimodal_contexts: List of MultimodalContext objects to inject
-        file_paths: Optional parallel list of sandbox virtual paths. When
-            provided, path references are included in the label text.
-        pdf_pages: Optional parallel list of PDF page counts (None where unknown).
-
-    Returns:
-        Modified messages list with content blocks merged into user message
+    Mutates ``messages`` in place.
     """
-    if not multimodal_contexts or not messages:
-        return messages
-
-    # Build content blocks from contexts
     blocks: List[Dict[str, Any]] = []
-    for idx, ctx in enumerate(multimodal_contexts):
-        data_url = ctx.data
-        desc = ctx.description or "file"
-        path = file_paths[idx] if file_paths and idx < len(file_paths) else None
-        path_note = f" (saved to {path})" if path else ""
-
-        if data_url.startswith("data:application/pdf"):
-            pages = pdf_pages[idx] if pdf_pages and idx < len(pdf_pages) else None
-            if path:
+    for att in attachments:
+        if att.route != "native":
+            continue
+        path_note = f" (saved to {att.path})" if att.path else ""
+        if att.kind == "pdf":
+            if att.path:
+                pages = att.pages
                 size = f", {pages} page{'' if pages == 1 else 's'}" if pages else ""
-                blocks.append({"type": "text", "text": f"[Attached PDF: {desc}{size}{path_note}]"})
+                blocks.append({"type": "text", "text": f"[Attached PDF: {att.name}{size}{path_note}]"})
                 continue
-            raw_b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
-            blocks.append({"type": "text", "text": f"[Attached PDF: {desc}]"})
+            blocks.append({"type": "text", "text": f"[Attached PDF: {att.name}]"})
             file_block: Dict[str, Any] = {
                 "type": "file",
-                "base64": raw_b64,
+                "base64": base64.b64encode(att.in_hand()).decode(),
                 "mime_type": "application/pdf",
-                "filename": desc,
+                "filename": att.name,
             }
-            if pages:
-                file_block["pages"] = pages
+            if att.pages:
+                file_block["pages"] = att.pages
             # Read off by the strip, which must not point the model at a
             # workspace copy when the page ceiling or a model switch drops it.
             file_block["unsaved"] = True
             blocks.append(file_block)
-        elif data_url.startswith("data:image/"):
-            blocks.append({"type": "text", "text": f"[Attached image: {desc}{path_note}]"})
-            blocks.append({"type": "image_url", "image_url": {"url": data_url}})
         else:
-            # Non-image/non-PDF: skip content block injection.
-            # These are handled via system-reminder with sandbox path only.
-            continue
+            data_url = f"data:{att.mime_type};base64,{base64.b64encode(att.in_hand()).decode()}"
+            blocks.append({"type": "text", "text": f"[Attached image: {att.name}{path_note}]"})
+            blocks.append({"type": "image_url", "image_url": {"url": data_url}})
 
     if not blocks:
         return messages
 
-    # Find last user message and prepend blocks into its content
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].get("role") == "user":
             content = messages[i]["content"]
@@ -252,6 +258,33 @@ def inject_multimodal_context(
             break
 
     return messages
+
+
+def file_note(att: TurnAttachment) -> str:
+    """A file the agent reaches by path, or is only told of when it could not
+    be saved."""
+    mime = att.mime_type or "unknown"
+    if att.path:
+        return (
+            f"The user attached a file ({att.name}, {mime}). "
+            f"It has been saved to {att.path}. "
+            f"Use Python to process it."
+        )
+    # Not just "attached": told only that, the agent looks for the file, or
+    # answers as if it had read it.
+    return (
+        f"The user attached a file ({att.name}, {mime}), but it could not be "
+        "saved where you can open it. If it is needed, ask the user to attach it again."
+    )
+
+
+def missing_note(missing: MissingAttachment) -> str:
+    """Said, so the agent can ask for the file again rather than answer as if
+    it saw it."""
+    return (
+        f"The user attached a file ({missing.name}), but {missing.why}. "
+        "If it is needed, ask the user to attach it again."
+    )
 
 
 # -- Unsupported-attachment reminder -----------------------------------------
@@ -292,13 +325,13 @@ def build_file_reminder(notes: list[str]) -> str:
 
     Unlike :func:`build_unsupported_reminder`, this does **not** include the
     "cannot view" warning because no model can natively consume these file
-    types — they are always processed via sandbox + Python.
+    types: they are always processed via sandbox + Python.
     """
     body = "\n".join(notes)
     return f"\n\n<system-reminder>\n{body}\n</system-reminder>"
 
 
-# -- Capability-aware helpers ------------------------------------------------
+# -- Where a file is saved -----------------------------------------------------
 
 # Mapping from MIME type to file extension
 _MIME_EXTENSIONS = {
@@ -326,116 +359,16 @@ def _ext_from_desc(desc: str) -> str:
     return ""
 
 
-def filter_multimodal_by_capability(
-    contexts: list,
-    modalities: list[str],
-    unreadable: Collection = (),
-) -> Tuple[list, list, list]:
-    """Filter multimodal contexts by model capabilities.
-
-    Image and PDF items are checked against the model's supported modalities.
-    All other file types (xlsx, csv, etc.) bypass capability checking entirely
-    because no model can consume them natively — they always require sandbox
-    processing via Python.
-
-    An image in ``unreadable`` (see :func:`find_unreadable_images`) goes with
-    them on every model: the route can't be given it as a content block, and in
-    the sandbox the agent can still convert it.
-
-    Args:
-        contexts: List of MultimodalContext objects (or dicts with a ``data`` key).
-        modalities: List of modality strings the model supports (e.g.
-            ``["text", "image", "pdf"]``).
-        unreadable: Image items the route can't be given as images.
-
-    Returns:
-        Tuple of (supported, unsupported, file_only).
-
-        - **supported**: image/PDF items the model handles natively.
-        - **unsupported**: image/PDF items the model cannot handle.
-        - **file_only**: non-image/non-PDF items (always need sandbox + Python)
-          and unreadable images.
-    """
-    supported: list = []
-    unsupported: list = []
-    file_only: list = []
-    undecodable = {id(ctx) for ctx in unreadable}
-    for ctx in contexts:
-        data = ctx.data if hasattr(ctx, "data") else ctx.get("data", "")
-        is_pdf = data.startswith("data:application/pdf")
-        is_image = data.startswith("data:image/") and id(ctx) not in undecodable
-        if is_pdf or is_image:
-            needed = "pdf" if is_pdf else "image"
-            if needed in modalities:
-                supported.append(ctx)
-            else:
-                unsupported.append(ctx)
-        else:
-            file_only.append(ctx)
-    return supported, unsupported, file_only
-
-
-async def upload_to_sandbox(
-    contexts: list,
-    sandbox,
-    upload_dir: str = "uploads",
-    *,
-    project: ProjectContext | None = None,
-) -> List[Optional[str]]:
-    """Upload multimodal files to the sandbox filesystem.
-
-    For each context item the base64 payload is decoded and written into the
-    sandbox's ``work/{upload_dir}/`` directory.
-
-    Args:
-        contexts: List of MultimodalContext objects to upload.
-        sandbox: The sandbox instance (must expose ``aupload_file_bytes``,
-            ``normalize_path``, and optionally ``virtualize_path``).
-        upload_dir: Sub-directory under ``work/`` to store uploads.
-        project: Resolved workspace when upload precedes the turn's context binding.
-
-    Returns:
-        List of virtual paths parallel to the input list (``None`` on failure).
-    """
-    async def _upload_one(ctx) -> Optional[str]:
-        data_url = ctx.data if hasattr(ctx, "data") else ctx.get("data", "")
-        desc = (
-            ctx.description if hasattr(ctx, "description") else ctx.get("description")
-        ) or "file"
-
-        try:
-            if "," not in data_url:
-                logger.warning(f"Malformed data URL for '{desc}' (no comma)")
-                return None
-
-            header, b64_content = data_url.split(",", 1)
-            mime_type = header.split(":")[1].split(";")[0] if ":" in header else ""
-
-            file_bytes = base64.b64decode(b64_content)
-
-            ext = _MIME_EXTENSIONS.get(mime_type, _ext_from_desc(desc))
-            unique_id = uuid.uuid4().hex[:8]
-            safe_desc = "".join(
-                c if c.isalnum() or c in "-_." else "_" for c in desc
-            ).strip("_")[:60]
-            filename = f"{safe_desc}_{unique_id}{ext}" if safe_desc else f"{unique_id}{ext}"
-
-            rel_path = f"work/{upload_dir}/{filename}"
-            abs_path = sandbox.normalize_path(rel_path, project=project)
-
-            ok = await sandbox.aupload_file_bytes(abs_path, file_bytes)
-            if ok:
-                # Return relative path (agent convention per workspace_paths template)
-                return rel_path
-            else:
-                logger.warning(f"Upload returned False for '{desc}'")
-                return None
-
-        except Exception:
-            logger.warning(
-                f"Failed to upload attachment '{desc}' to sandbox",
-                exc_info=True,
-            )
-            return None
-
-    return list(await asyncio.gather(*(_upload_one(ctx) for ctx in contexts)))
+def upload_rel_path(desc: str, mime_type: str, upload_dir: str = "uploads") -> str:
+    """Where an attachment is saved, relative to the workspace folder: its name
+    made safe, a short unique id, and an extension from its type or its name."""
+    ext = _MIME_EXTENSIONS.get(mime_type, _ext_from_desc(desc))
+    unique_id = uuid.uuid4().hex[:8]
+    stem = desc
+    if ext and _ext_from_desc(desc) in {ext, ".jpeg" if ext == ".jpg" else ext}:
+        stem = desc.rsplit(".", 1)[0]
+    safe_desc = "".join(
+        c if c.isalnum() or c in "-_." else "_" for c in stem
+    ).strip("_")[:60]
+    filename = f"{safe_desc}_{unique_id}{ext}" if safe_desc else f"{unique_id}{ext}"
+    return f"work/{upload_dir}/{filename}"

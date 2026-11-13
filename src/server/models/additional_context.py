@@ -6,6 +6,7 @@ Contexts are fetched, formatted, and appended to user messages before processing
 """
 
 from datetime import datetime
+from uuid import UUID
 from typing import Annotated, Any, Literal, Optional, List, Union
 from pydantic import (
     BaseModel,
@@ -38,11 +39,26 @@ class SkillContext(AdditionalContextBase):
 
 
 class MultimodalContext(AdditionalContextBase):
-    """Context providing an image, PDF, or arbitrary file attachment."""
+    """Context providing an image, PDF, or arbitrary file attachment.
+
+    The bytes come inline as ``data``, or were uploaded beforehand and are
+    named by ``attachment_id`` (``POST /api/v1/attachments``). Chat channels
+    and older clients send ``data``; the composer uploads first, so a large
+    file never rides the message request.
+    """
 
     type: Literal["image", "pdf", "file"] = "image"
-    data: str = Field(..., description="Base64 data URL (data:<mime>;base64,...)")
+    data: Optional[str] = Field(None, description="Base64 data URL (data:<mime>;base64,...)")
+    attachment_id: Optional[UUID] = Field(
+        None, description="An uploaded attachment's id, in place of data"
+    )
     description: Optional[str] = Field(None, description="Filename or caption for the attachment")
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "MultimodalContext":
+        if (self.data is None) == (self.attachment_id is None):
+            raise ValueError("an attachment takes exactly one of data or attachment_id")
+        return self
 
 
 class DirectiveContext(AdditionalContextBase):

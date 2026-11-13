@@ -16,6 +16,7 @@ import json
 import time
 from datetime import datetime
 from functools import partial
+from typing import Any
 
 from fastapi import HTTPException
 from langgraph.types import Command
@@ -60,9 +61,16 @@ from src.server.utils.chart_selection_context import (
     serialize_chart_selections_for_metadata,
 )
 from src.server.utils.credit_resume_context import build_credit_resume_update
+from src.server.models.chat_attachment import TurnAttachments
+from src.server.services.chat_attachment_turns import (
+    mark_sent as mark_attachments_sent,
+    refuse_too_large,
+    resolve_turn_attachments,
+)
+from src.server.database.conversation.queries import set_run_query_metadata
 from src.server.utils.multimodal_context import (
     build_attachment_metadata,
-    parse_multimodal_contexts,
+    drop_gone_metadata,
 )
 
 from ptc_agent.agent.graph import build_ptc_graph_with_session
@@ -125,6 +133,26 @@ def _turn_held(data: dict) -> str:
     """A ``turn_held`` frame. Id 0 like ``workspace_status``: it comes before
     the run has a stream to resume, so no cursor counts it."""
     return f"id: 0\nevent: turn_held\ndata: {json.dumps(data)}\n\n"
+
+
+async def _admit_attachments(
+    attachments: TurnAttachments,
+    conn: Any,
+    *,
+    run_id: str,
+    history: tuple[list, list] | None,
+) -> None:
+    """Stamp the turn's files sent in its START transaction, and correct the
+    query row written there when one was no longer there to stamp, so the
+    history shows what the agent is told."""
+    if await mark_attachments_sent(attachments, conn) and history:
+        entries, listed = history
+        await set_run_query_metadata(
+            conn,
+            run_id,
+            "attachments",
+            drop_gone_metadata(entries, listed, attachments),
+        )
 
 
 async def _resolve_origin_meta(request, thread_id: str) -> dict:
@@ -432,17 +460,29 @@ async def astream_ptc_workflow(
 
             # Extract attachment and context metadata for display in history
             # (skipped for HITL resumes)
+            turn_attachments = TurnAttachments()
+            # The history's entries and the files they were built from.
+            attachment_history: tuple[list, list] | None = None
             widget_ctxs = parse_widget_contexts(request.additional_context)
             chart_selections = parse_chart_selection_contexts(
                 request.additional_context
             )
             if request.additional_context and not request.hitl_response:
-                multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
+                # Resolved once, for this user, before anything reads them; a
+                # retry resolves the same uploaded ids again.
+                turn_attachments = await resolve_turn_attachments(
+                    request.additional_context, user_id
+                )
+                await refuse_too_large(turn_attachments, user_id, workspace_id)
                 # A retry writes no query row, so a second upload would be
                 # stored for nothing.
-                if multimodal_ctxs and not request.retry_of_run_id:
+                if turn_attachments and not request.retry_of_run_id:
                     query_metadata["attachments"] = await build_attachment_metadata(
-                        multimodal_ctxs, thread_id
+                        turn_attachments, thread_id
+                    )
+                    attachment_history = (
+                        query_metadata["attachments"],
+                        list(turn_attachments.files),
                     )
                 if widget_ctxs:
                     query_metadata["widget_contexts"] = (
@@ -525,6 +565,16 @@ async def astream_ptc_workflow(
                     **firing,
                     **(run_metadata or {}),
                 },
+                in_start=(
+                    partial(
+                        _admit_attachments,
+                        turn_attachments,
+                        run_id=run_id,
+                        history=attachment_history,
+                    )
+                    if turn_attachments
+                    else None
+                ),
             )
             if firing:
                 await automation_settlement.take_over_firing(
@@ -833,7 +883,7 @@ async def astream_ptc_workflow(
 
         # Multimodal Context Injection
         messages = await attach_request_files(
-            messages, request, session, effective_model, config, project=project
+            messages, turn_attachments, session, effective_model, config, project=project
         )
 
         # Build input state or resume command
