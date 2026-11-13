@@ -436,14 +436,19 @@ def _awake(computer: Mapping[str, Any], tunnels: dict[str, dict[str, Any]] | Non
 #: The states of a computer whose own token a turn there signs in with.
 _OWN_TOKEN_WORKS = frozenset({"signed_in", "unverified"})
 
+#: The states of an own computer a turn's CLI runs on: running, stopped (as
+#: the idle sweep leaves it), or on its way to either, which a run waits out
+#: and then starts it from (``launchers._PickedComputer``).
+RUNS_CLI = frozenset({Lifecycle.RUNNING, Lifecycle.STOPPED, Lifecycle.STARTING, Lifecycle.STOPPING})
+
 
 def _reachable(computer: Mapping[str, Any], tunnels: dict[str, dict[str, Any]] | None) -> bool:
     """Whether a turn's CLI may run on the own computer now: its machine is
     up as far as the server can tell without dialing (a connected tunnel for
-    one that connects out, any machine the server dials itself), whether the
-    computer runs or the idle sweep stopped it, which a run starts again
-    (``launchers._PickedComputer``)."""
-    if computer.get("status") not in (Lifecycle.RUNNING, Lifecycle.STOPPED):
+    one that connects out, any machine the server dials itself), in any state
+    a run starts it from (``RUNS_CLI``), so only a machine out of reach
+    reads as offline, never one this server stopped or is starting."""
+    if computer.get("status") not in RUNS_CLI:
         return False
     info = ssh_info(dict(computer), tunnels)
     return info is not None and (info.tunnel_connected is True if tunnel_of(dict(computer)) else True)
