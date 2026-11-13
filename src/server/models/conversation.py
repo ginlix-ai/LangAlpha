@@ -88,6 +88,13 @@ class WorkspaceThreadListItem(BaseModel):
         "provider can read. Until it is written the new model reads a plain "
         "record of the compacted part.",
     )
+    brief_handoff: Optional[bool] = Field(
+        None,
+        description="Only on the response to a model change: whether the "
+        "model the thread was on is writing a brief of the thread for the "
+        "Claude Code model it moved to, which has seen none of it. The next "
+        "send waits for it.",
+    )
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
 

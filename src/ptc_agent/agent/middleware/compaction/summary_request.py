@@ -164,6 +164,28 @@ write.
     )
 
 
+# The prompt for the model that held the conversation, when the user moves it
+# to a model that keeps a session of its own (Claude Code) and has seen none
+# of it. Sent as the last user message of the model's own request, so it
+# reads the conversation from its cache, and what it writes is all the next
+# model starts from.
+def _brief_prompt(after: str) -> str:
+    return (
+        f"""<context>
+This conversation is moving to another model, which has seen none of it.
+What you write now is all it starts from, beside the files the work left, so
+capture all it needs to continue the work without losing progress or
+repeating what is done. This request comes from the system, not the user,
+and is not part of the work: leave it out of what you write.
+
+{after}
+</context>
+
+"""
+        + _SUMMARY_BODY
+    )
+
+
 _NO_TAIL_STATE = """What you write is the only record of where the work stands, so record its
 current state exactly: the last step completed, what was in progress and how
 far it got, any tool result or decision still pending, any question to the
@@ -218,7 +240,7 @@ _SELF_SUMMARY_RULES = (
     f"\n\nEnd the summary with the line `{_SUMMARY_END}` on its own."
 )
 
-SummaryKind = Literal["transcript", "native", "self", "handoff"]
+SummaryKind = Literal["transcript", "native", "self", "handoff", "brief"]
 
 _NATIVE = _family(
     _native_prompt,
@@ -257,6 +279,14 @@ Describe unfinished work as where it stood at that point, not as still to do."""
 what you write: describe the work as it stands where the summary ends.""",
     ),
 }
+
+_BRIEF_NO_TAIL = """Nothing above reaches that model: the conversation goes on from what you
+write, so describe the work as it stands where this conversation ends."""
+# Written by the model as text from its own request, so with the self-summary
+# rules. A brief keeps no turn after it, so its kept prompt is the no-tail one,
+# never sent, and it ends on no carried step.
+_brief = _family(_brief_prompt, _BRIEF_NO_TAIL, _BRIEF_NO_TAIL)
+_PROMPTS["brief"] = _Family(*(prompt + _SELF_SUMMARY_RULES for prompt in _brief[:3]), None, None)
 
 
 def summary_prompt(kind: SummaryKind, keeps: bool, notes: bool = False, *, carried: bool = False) -> str:
@@ -429,7 +459,7 @@ def build_summary_request(
     """
     from src.llms.api_call import create_messages
 
-    history = _render_history(messages, turns)
+    history = render_history(messages, turns)
     user_prompt = f"{_COMPACTION_USER_NUDGE}\n\n<messages>\n{history}\n</messages>"
     if turns is not None:
         last = turns.last(messages)
@@ -446,7 +476,7 @@ def build_summary_request(
     return create_messages(system_prompt=summary_prompt, user_prompt=user_prompt)
 
 
-def _render_history(messages: Sequence[AnyMessage], turns: TranscriptTurns | None) -> str:
+def render_history(messages: Sequence[AnyMessage], turns: TranscriptTurns | None) -> str:
     """The history as text, each turn headed by its transcript file.
 
     An earlier summary is a block of its own holding its summary text alone.

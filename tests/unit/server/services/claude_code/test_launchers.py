@@ -320,6 +320,15 @@ async def test_claude_refusing_a_computers_own_token_ends_the_turn_saying_so():
     assert MachineAnswer(**cache.values[answer_key(CID)]).file == "refused"
     assert claude_code_refusal(failed.value, "claude-code/sonnet")["reason"] == "token_refused"
 
+
+def test_every_failure_worded_as_admissions_refusal_has_words():
+    """A runtime failure read as admission's refusal is worded from
+    ``CLAUDE_CODE_OFF``; a reason with no entry there raises while the turn's
+    error is built, instead of ending it with words."""
+    from src.server.services.llm.claude_code import _ADMISSION_REASON
+
+    assert set(_ADMISSION_REASON.values()) <= set(CLAUDE_CODE_OFF)
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("on", [True, False], ids=["sandbox-placement", "worker-placement"])
 async def test_a_cloud_computers_cli_runs_in_its_sandbox_only_where_the_switch_is_on(on, monkeypatch):

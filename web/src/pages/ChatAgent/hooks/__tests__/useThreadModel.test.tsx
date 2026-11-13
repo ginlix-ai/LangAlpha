@@ -25,7 +25,6 @@ const mocks = vi.hoisted(() => ({
   /** The Default a Chief of Staff turn starts on, where it is not the account's. */
   chiefOfStaffDefault: null as string | null,
   /** The thread the Default was last asked for, where the row follows it. */
-  askedThread: undefined as string | null | undefined,
   catalogModelNames: new Set<string>(),
   /** The server's row, which a read returns unless a test says otherwise. */
   server: null as unknown,
@@ -45,10 +44,7 @@ vi.mock('@/hooks/useSlotDefaultModels', () => ({
 }));
 
 vi.mock('@/hooks/useTurnModels', () => ({
-  useTurnDefaultModel: (home: boolean, threadId: string | null) => {
-    mocks.askedThread = threadId;
-    return (home && mocks.chiefOfStaffDefault) || mocks.defaultModel;
-  },
+  useTurnDefaultModel: (home: boolean) => (home && mocks.chiefOfStaffDefault) || mocks.defaultModel,
 }));
 
 // No sign-in has lapsed here; that hint has its own test.
@@ -125,29 +121,15 @@ describe('useThreadModel', () => {
       expect(setup({}, row(null)).result.current.model).toBe('model-default');
     });
 
-    // The server clears a model that left the catalog and resolves a Default
-    // with the thread's history, dropping a Claude Code one where another
-    // model replied, and refuses a send naming it there; so a thread whose
-    // row names no model, or one that left, names none until a pick, which
-    // the row then carries.
+    // The server clears a model that left the catalog and resolves the
+    // Default itself, so a thread whose row names no model, or one that left,
+    // names none until a pick, which the row then carries.
     it.each([true, false])('sends no model on a thread whose row names none, until a pick (Chief of Staff: %s)', async (chiefOfStaff) => {
       mocks.updateThread.mockImplementation((_id: string, patch: { llm_model: string }) => row(patch.llm_model));
       const { result } = setup({ chiefOfStaff }, row(null));
       expect(result.current).toMatchObject({ model: 'model-default', sendModel: null });
       await act(async () => { await result.current.pickModel('model-beta'); });
       expect(result.current).toMatchObject({ model: 'model-beta', sendModel: 'model-beta' });
-    });
-
-    // Which Default a thread starts on can depend on its history, so it is
-    // asked for the thread only where the row leaves the model to the Default.
-    it.each([
-      ['names no model', row(null), THREAD],
-      ['names one that left the catalog', row('model-retired'), THREAD],
-      ['names one the catalog carries', row('model-beta'), null],
-    ])('asks for the Default of a thread whose row %s', (_, cached, asked) => {
-      mocks.catalogModelNames = new Set(['model-default', 'model-beta']);
-      setup({ chiefOfStaff: true }, cached);
-      expect(mocks.askedThread).toBe(asked);
     });
 
     it.each([true, false])("shows the Default over a model that left the catalog but sends none, until a pick (Chief of Staff: %s)", async (chiefOfStaff) => {
@@ -512,8 +494,6 @@ describe('useThreadModel', () => {
       const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
       rerender({ threadId: THREAD, isLoading: false });
       expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.threads.detail(THREAD) });
-      // Another model's reply moves the Default a Home thread starts on.
-      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.features.claudeCodeChiefOfStaff(THREAD) });
     });
 
     it('leaves the reread to a pick still saving, which reads the row once it settles', async () => {

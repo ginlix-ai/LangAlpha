@@ -422,9 +422,9 @@ async def test_a_thread_naming_no_model_is_judged_on_the_default_its_posted_turn
     held, default, workspace, cos_runs, full
 ):
     """The posted turn names no model, so it runs the account default, which
-    the Chief of Staff runs only where ``chief_of_staff_default_runs`` lets it
-    on that thread; elsewhere it starts on the deployment's, and only a
-    Claude Code pin's resume takes a CLI."""
+    the Chief of Staff runs only where ``chief_of_staff_default_runs`` lets
+    it; elsewhere it starts on the deployment's, and only a Claude Code pin's
+    resume takes a CLI."""
     runs = "src.server.database.runs.subagent_runs"
     cos = AsyncMock(return_value=cos_runs)
     with (
@@ -448,7 +448,7 @@ async def test_a_thread_naming_no_model_is_judged_on_the_default_its_posted_turn
     ):
         assert await task_steer._computer_full("t-1", "k7Xm2p", "user-1", workspace) is full
     if workspace == _HOME and default.endswith("-code"):
-        cos.assert_awaited_once_with("user-1", workspace, thread_id="t-1")
+        cos.assert_awaited_once_with("user-1", workspace)
     else:
         cos.assert_not_awaited()
 
@@ -465,6 +465,7 @@ async def test_a_resume_is_held_for_room_where_its_cli_would_run_now():
     placement = AsyncMock(return_value=OnOwn(studio, picked=True))
     with (
         patch(f"{USER_MODELS}.get_model_preference", new=AsyncMock(return_value={"preferred_model": "claude-sonnet-5-5-code"})),
+        patch("src.server.services.claude_code.flow.rows_on", new=AsyncMock(return_value=True)),
         patch(f"{runs}.ran_on_claude_code", new=AsyncMock(return_value=True)),
         patch(f"{runs}.live_clis", new=live),
         patch("src.server.database.conversation.threads_read.get_thread_auth_meta", new=AsyncMock(return_value={})),

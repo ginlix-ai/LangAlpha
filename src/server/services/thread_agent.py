@@ -37,7 +37,6 @@ def thread_resolver(
     reasoning_effort: str | None = None,
     fast_mode: bool | None = None,
     enabled_subagents: list[str] | None = None,
-    checkpoint_id: str | None = None,
 ) -> Callable[[str | None], Awaitable[AgentConfig]]:
     """Maps a model name (None for the account default) to the config a turn
     on the thread runs it under, in the route's workspace and role.
@@ -46,8 +45,7 @@ def thread_resolver(
     its row), picked in its composer, and with none of those the user's
     Settings. A client sends what its composer shows, so the row decides only
     for a turn no composer started: a report-back, a resume after a reload, a
-    call between turns. ``checkpoint_id`` is where an edit or a regenerate
-    starts the turn (``resolve_llm_config``).
+    call between turns.
     """
     from src.server.app import setup
     from src.server.services.llm.config import resolve_llm_config
@@ -68,7 +66,6 @@ def thread_resolver(
             enabled_subagents=enabled_subagents,
             workspace_id=route.workspace_id,
             role=route.role,
-            checkpoint_id=checkpoint_id,
         )
 
     return resolve

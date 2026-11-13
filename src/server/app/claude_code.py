@@ -40,11 +40,12 @@ async def get_setup(x_user_id: CurrentUserId):
 
 @router.get("/chief-of-staff", response_model=ClaudeCodeChiefOfStaff)
 async def get_chief_of_staff(thread_id: str, x_user_id: CurrentUserId):
-    """The Chief of Staff's answer in ``setup`` for one Home thread, which
-    yields its Claude Code Default once another model replied there last."""
+    """The Chief of Staff's answer in ``setup``, asked for one Home thread by
+    web builds from before every Home thread ran the Claude Code Default
+    alike; the thread no longer changes it."""
     await require_thread_owner(thread_id, x_user_id)
     require(await flow.rows_on(x_user_id))
-    return await chief_of_staff(x_user_id, thread_id=thread_id)
+    return await chief_of_staff(x_user_id)
 
 
 @router.get("/status", response_model=ClaudeCodeStatus)

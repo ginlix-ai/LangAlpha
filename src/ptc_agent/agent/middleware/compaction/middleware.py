@@ -43,9 +43,10 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.runnables.base import RunnableBindingBase
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.config import get_config, get_stream_writer
 from langgraph.constants import TAG_NOSTREAM
@@ -63,16 +64,26 @@ from src.llms.cache_markers import CacheScope, cache_scope
 from src.llms.error_classification import is_context_overflow
 from src.llms.provider_compaction import (
     compaction_settings,
-    is_opaque,
     kept_user_texts,
     native_answer,
     native_kind,
+    replays,
 )
 
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY
-from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, IdleCompact, IdleSkipped, Measure, Parts, asked
+from ptc_agent.agent.middleware.compaction.between_turns import (
+    Ask,
+    HandOff,
+    IdleCompact,
+    IdleSkipped,
+    Measure,
+    Parts,
+    WriteBrief,
+    asked,
+)
+from ptc_agent.agent.middleware.compaction.brief import brief_cut
 from ptc_agent.agent.middleware.compaction.types import CompactionState, OffloadSettings
 from ptc_agent.agent.middleware.compaction.fitting import Fit, Fitted, reported_usage
 from ptc_agent.agent.middleware.compaction.compact import (
@@ -120,8 +131,8 @@ from ptc_agent.agent.middleware.compaction.summary_request import (
 )
 from ptc_agent.agent.middleware.compaction.utils import (
     get_effective_messages,
-    handed_off,
     provider_cutoff,
+    provider_only,
     read_ahead,
     stamp_compaction_summary,
     target_cost,
@@ -628,6 +639,8 @@ class CompactionMiddleware(AgentMiddleware):
             return (await context_tokens(request.state, view, self._estimate(request.model), ahead)).tokens
         if isinstance(ask, HandOff):
             return await self._hand_off(request, handler, view, notes=self._notes_dir is not None)
+        if isinstance(ask, WriteBrief):
+            return await self._brief(request, handler, view, ask)
         if isinstance(ask, IdleCompact):
             return await self._idle(request, handler, view)
         # A due thread's summary keeps no turns here too, so the next turn
@@ -683,6 +696,49 @@ class CompactionMiddleware(AgentMiddleware):
             _log_rebuild("yes", plan.reason)
         return compaction
 
+    async def _brief(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        view: list[AnyMessage],
+        ask: WriteBrief,
+    ) -> Compaction:
+        """The view through its last reply written out for a model that has
+        seen none of it (``WriteBrief``): by this model as text from its own
+        request where it reads the thread cheaply there (``_reads_cheaply``),
+        never as its provider's compaction, which no other model can read;
+        else, or when it writes none, by the compaction model; past that the
+        reader is handed the history itself.
+
+        Raises:
+            ValueError: When the view holds no reply to summarize.
+        """
+        cut = brief_cut(view)
+        if cut <= 0:
+            raise ValueError(NOTHING_TO_COMPACT)
+        own = (
+            functools.partial(
+                self._self_summary, request, handler, notes=self._notes_dir is not None, kind="brief"
+            )
+            if ask.by_own and self._reads_cheaply(request, view)
+            else None
+        )
+        return await self._compact(
+            request, view, cut, self._transcript_target(), own, brief_room=ask.room
+        )
+
+    def _reads_cheaply(self, request: ModelRequest, view: list[AnyMessage]) -> bool:
+        """Whether this model reads ``view`` from its own request at little
+        cost: the view opens on a summary only its provider can read, which
+        no other model can write out, and this model is sent it; the user's
+        subscription pays for the read; or its prompt cache is warm."""
+        client = request.model.bound if isinstance(request.model, RunnableBindingBase) else request.model
+        if view and provider_only(view[0]) and replays(view[0], client):
+            return True
+        if (getattr(client, "metadata", None) or {}).get("billing_type") == "oauth":
+            return True
+        return not self._rebuilds.cold(request, view, time.time())
+
     @staticmethod
     async def _hand_off(
         request: ModelRequest,
@@ -701,7 +757,7 @@ class CompactionMiddleware(AgentMiddleware):
         so a failure is never moved to a fallback model or retried without it.
         """
         head = view[0] if view and is_summary_message(view[0]) else None
-        if not isinstance(head, HumanMessage) or not is_opaque(head) or handed_off(head):
+        if not isinstance(head, HumanMessage) or not provider_only(head):
             return None
         prompt = summary_prompt("handoff", keeps_turns(view[1:]), notes)
         with as_sent():
@@ -729,10 +785,11 @@ class CompactionMiddleware(AgentMiddleware):
         *,
         carried: bool = False,
         own_only: bool = False,
+        brief_room: int | None = None,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, by ``own`` when given,
-        this agent's model being the fallback unless ``own_only`` (see
-        ``Summarizer.compact``).
+        this agent's model being the fallback unless ``own_only`` or a
+        ``brief_room`` (see ``Summarizer.compact``).
 
         Start is outside the try, so a start that fails opened no window. A
         cancellation still emits error before it propagates: otherwise the
@@ -758,6 +815,7 @@ class CompactionMiddleware(AgentMiddleware):
                 own=own,
                 carried=carried,
                 own_only=own_only,
+                brief_room=brief_room,
             )
         except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
@@ -816,9 +874,11 @@ class CompactionMiddleware(AgentMiddleware):
         notes: bool,
         scope: CacheScope | None = None,
         carried: bool = False,
+        kind: Literal["self", "brief"] = "self",
     ) -> str:
         """The agent's model writing the summary of ``to_summarize`` as text,
-        asked in the last user message of its own request.
+        asked in the last user message of its own request: for itself, or as
+        a brief for another model (``kind``).
 
         Sent through ``handler`` with the turn's tools and settings unchanged,
         so the request opens on the prefix the provider has cached; none may
@@ -833,7 +893,7 @@ class CompactionMiddleware(AgentMiddleware):
                 request.override(
                     messages=[
                         *to_summarize,
-                        HumanMessage(summary_prompt("self", kept, notes, carried=carried)),
+                        HumanMessage(summary_prompt(kind, kept, notes, carried=carried)),
                     ]
                 )
             )

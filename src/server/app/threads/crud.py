@@ -18,7 +18,6 @@ from src.server.services.commands.control import (
     delete_thread_ending_commands,
     request_running_stops,
 )
-from src.server.services.llm.claude_code import require_claude_code_continues
 from src.server.services.llm.thread_model import require_selectable_model
 from src.server.services.thread_lifecycle import project_lifecycle
 from src.server.services.thread_lifecycle_feed import (
@@ -456,7 +455,6 @@ async def update_thread_endpoint(
             # is the turn's question, since a lapsed one comes back.
             if request.llm_model is not None:
                 await require_selectable_model(x_user_id, request.llm_model)
-                await require_claude_code_continues(thread_id, request.llm_model)
             updates["llm_model"] = request.llm_model
             switched_from = (await get_thread_auth_meta(thread_id) or {}).get("llm_model")
         if "subagents_allowed" in provided:
@@ -534,11 +532,27 @@ async def update_thread_endpoint(
                 await request_running_stops(thread_id=thread_id, by="archive")
         item = _thread_list_item(updated_thread)
         if "llm_model" in updates and updates["llm_model"] != switched_from:
+            from src.server.handlers.handoff_brief import brief_on_switch
             from src.server.handlers.thread_maintenance import hand_off_on_switch
+            from src.server.services.llm.thread_model import next_turn_runs_claude_code
 
-            item.summary_handoff = await hand_off_on_switch(
-                thread_id, x_user_id, switched_from
-            )
+            # Claude Code reads none of the thread's messages, so a brief of
+            # all of them takes the place of any summary written out for it.
+            # The switch is committed: a failed read leaves the hand-off to
+            # the next turn rather than report the PATCH failed.
+            try:
+                to_claude_code = await next_turn_runs_claude_code(
+                    x_user_id, str(updated_thread["workspace_id"]), updates["llm_model"]
+                )
+            except Exception:
+                logger.warning(f"[handoff] thread {thread_id}: switch routing not read", exc_info=True)
+                return item
+            if to_claude_code:
+                item.brief_handoff = await brief_on_switch(thread_id, x_user_id, updates["llm_model"])
+            else:
+                item.summary_handoff = await hand_off_on_switch(
+                    thread_id, x_user_id, switched_from
+                )
         return item
 
     except HTTPException:

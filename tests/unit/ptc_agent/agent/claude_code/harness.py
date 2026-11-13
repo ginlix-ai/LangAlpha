@@ -28,9 +28,10 @@ def new_graph(entry=()):
 
 
 async def run_turn(spec: RuntimeSpec, launcher: Launcher, graph, thread: str, messages: list,
-                   callbacks: list | None = None, baseline=None, compaction: CompactionRules = NO_RULES) -> dict:
+                   callbacks: list | None = None, baseline=None, compaction: CompactionRules = NO_RULES,
+                   configurable: dict | None = None) -> dict:
     turn = ClaudeTurn(spec, launcher, identity="test-user", thread_key=thread, baseline=baseline, compaction=compaction)
-    config = {"configurable": {"thread_id": thread, TURN_KEY: turn}, "callbacks": callbacks or []}
+    config = {"configurable": {"thread_id": thread, TURN_KEY: turn, **(configurable or {})}, "callbacks": callbacks or []}
     try:
         await graph.ainvoke({"messages": messages}, config)
     finally:

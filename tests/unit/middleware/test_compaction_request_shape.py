@@ -90,7 +90,7 @@ def _offline_token_counter(monkeypatch):
     encoder loader at its definition site so every caller stays offline."""
     from ptc_agent.agent.middleware.compaction import utils as compaction_utils
 
-    fake = SimpleNamespace(encode=lambda text: [0] * (len(text) // 4 + 1))
+    fake = SimpleNamespace(encode=lambda text, **_: [0] * (len(text) // 4 + 1))
     monkeypatch.setattr(compaction_utils, "_get_tiktoken_encoder", lambda: fake)
 
 

@@ -578,7 +578,7 @@ def _offline_token_counter(monkeypatch):
     blocked sockets refuse on a cold cache (CI runners). Routes whose answers
     report no usage reach the third turn's summary on the estimate alone, so
     a token is two characters: enough to cross it, as cl100k does."""
-    fake = SimpleNamespace(encode=lambda text: [0] * (len(text) // 2 + 1))
+    fake = SimpleNamespace(encode=lambda text, **_: [0] * (len(text) // 2 + 1))
     monkeypatch.setattr(compaction_utils, "_get_tiktoken_encoder", lambda: fake)
 
 @pytest.mark.asyncio

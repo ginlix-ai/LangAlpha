@@ -132,7 +132,7 @@ class TestClaude:
         """cl100k_base fetches its BPE file on first use, which the unit
         suite's blocked sockets refuse on a cold cache (CI). A token a
         character keeps the weights each script gets under test."""
-        fake = SimpleNamespace(encode=lambda text: [0] * len(text))
+        fake = SimpleNamespace(encode=lambda text, **_: [0] * len(text))
         monkeypatch.setattr(utils, "_get_tiktoken_encoder", lambda: fake)
 
     def test_english_counts_well_over_tiktoken_and_chinese_about_the_same(self):
@@ -145,7 +145,7 @@ class TestClaude:
     def test_digits_are_held_to_about_what_tiktoken_counts(self, monkeypatch):
         """tiktoken packs three digits to a token, which the per-digit term
         would otherwise all but cancel."""
-        packed = SimpleNamespace(encode=lambda text: [0] * -(-len(text) // 3))
+        packed = SimpleNamespace(encode=lambda text, **_: [0] * -(-len(text) // 3))
         monkeypatch.setattr(utils, "_get_tiktoken_encoder", lambda: packed)
         number = [HumanMessage("1234567890" * 600)]
 

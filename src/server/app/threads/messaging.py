@@ -580,7 +580,6 @@ async def _handle_send_message(
 
         # Resolve LLM config eagerly — credit check must happen before SSE stream starts
         from src.server.services.llm import thread_model
-        from src.server.services.llm.claude_code import require_claude_code_continues
         from src.server.services.thread_agent import thread_resolver
         from src.server.dependencies.usage_limits import enforce_credit_limit
         from ptc_agent.config.agent import CredentialSource
@@ -607,7 +606,6 @@ async def _handle_send_message(
             reasoning_effort=getattr(request, "reasoning_effort", None),
             fast_mode=getattr(request, "fast_mode", None),
             enabled_subagents=request.subagents_enabled,
-            checkpoint_id=request.checkpoint_id,
         )
 
         # A report-back or a channel message has nobody at a client to
@@ -623,12 +621,6 @@ async def _handle_send_message(
             fall_back=from_service,
             resolve=resolve,
         )
-        # Before the thread keeps the model, whichever way the turn came to it:
-        # named, held, or a Claude Code default. A new thread holds no reply.
-        if thread_meta:
-            await require_claude_code_continues(
-                thread_id, config.llm.name if config.llm else None, request.checkpoint_id
-            )
 
         # is_byok is True only when the stamped credential_source confirms the user
         # supplied their own key (OAUTH or BYOK), not merely that a client object exists.

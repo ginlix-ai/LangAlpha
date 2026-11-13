@@ -4,7 +4,7 @@
  */
 
 import type { SSEEvent, ContextWindowCallbacks } from '../../session/types';
-import type { AssistantMessage } from '@/types/chat';
+import type { AssistantMessage, NotificationSegment } from '@/types/chat';
 import { applyCallUsage } from '../../session/tokenUsage';
 import { updateMessage } from './messageHelpers';
 
@@ -54,19 +54,23 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
       const detail = (event.summary_text as string | undefined) || undefined;
       const msgId = getMsgId();
       if (msgId) {
-        const order = nextOrder();
-        setMessages((prev) => updateMessage(prev,msgId, (msg) => {
-          if (msg.role !== 'assistant') return msg;
-          const aMsg = msg as AssistantMessage;
-          return {
-            ...aMsg,
-            contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order, detail }],
-          };
-        }));
+        appendNotification(setMessages, msgId, { content: text, order: nextOrder(), detail });
       } else {
         insertNotification(text, 'info', detail);
       }
     }
+    return;
+  }
+
+  // The turn opened on another model's brief. Its mark rides the turn's
+  // reply, which a turn always has by now: the brief comes ahead of any call.
+  if (action === 'brief') {
+    const msgId = getMsgId();
+    const to = event.to_model;
+    if (!msgId || typeof to !== 'string') return;
+    const from = typeof event.from_model === 'string' ? event.from_model : undefined;
+    const detail = (event.summary_text as string | undefined) || undefined;
+    appendNotification(setMessages, msgId, { handoff: { from, to }, order: nextOrder(), detail, detailKind: 'brief' });
     return;
   }
 
@@ -105,15 +109,7 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
 
         if (text) {
           if (msgId) {
-            const order = nextOrder();
-            setMessages((prev) => updateMessage(prev,msgId, (msg) => {
-              if (msg.role !== 'assistant') return msg;
-              const aMsg = msg as AssistantMessage;
-              return {
-                ...aMsg,
-                contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order }],
-              };
-            }));
+            appendNotification(setMessages, msgId, { content: text, order: nextOrder() });
           } else {
             insertNotification(text);
           }
@@ -126,6 +122,19 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
     }
     return;
   }
+}
+
+/** Add a notification segment to the end of assistant message `msgId`. */
+function appendNotification(
+  setMessages: ContextWindowCallbacks['setMessages'],
+  msgId: string,
+  segment: Omit<NotificationSegment, 'type'>,
+): void {
+  setMessages((prev) => updateMessage(prev, msgId, (msg) => {
+    if (msg.role !== 'assistant') return msg;
+    const aMsg = msg as AssistantMessage;
+    return { ...aMsg, contentSegments: [...(aMsg.contentSegments || []), { type: 'notification', ...segment }] };
+  }));
 }
 
 /** Write a debounced offload notice now, if one is waiting. */

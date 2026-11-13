@@ -217,14 +217,19 @@ class ClaudeCodeTarget(BaseChatModel):
         raise RuntimeError(f"{self.model} runs through the Claude Code runtime, not as a chat model call")
 
 
-def _last_reply(messages: Sequence[BaseMessage]) -> AIMessage | None:
-    """The thread's last reply. A task resume the steering made for the
-    turn (``lc_source`` ``steering``) is no model's reply."""
+def last_reply_index(messages: Sequence[BaseMessage]) -> int | None:
+    """Where the thread's last reply is. A task resume the steering made for
+    the turn (``lc_source`` ``steering``) is no model's reply."""
     return next(
-        (m for m in reversed(messages)
-         if isinstance(m, AIMessage) and (m.additional_kwargs or {}).get("lc_source") != "steering"),
+        (i for i in range(len(messages) - 1, -1, -1)
+         if isinstance(m := messages[i], AIMessage) and (m.additional_kwargs or {}).get("lc_source") != "steering"),
         None,
     )
+
+
+def _last_reply(messages: Sequence[BaseMessage]) -> AIMessage | None:
+    at = last_reply_index(messages)
+    return messages[at] if at is not None else None
 
 
 def another_model_replied_last(messages: Sequence[BaseMessage]) -> bool:

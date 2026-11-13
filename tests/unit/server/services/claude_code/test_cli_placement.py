@@ -692,17 +692,6 @@ async def test_whether_claude_code_is_off_is_the_callers_to_check_before_the_chi
 
 
 @pytest.mark.asyncio
-async def test_the_chief_of_staff_runs_no_claude_code_default_on_a_thread_another_model_replied_on():
-    """Claude's session would carry on without that reply; a thread not
-    started yet has none to read."""
-    replied = AsyncMock(return_value=True)
-    with platform(mode="local", cli=(STUDIO, None)), patch(f"{SERVICE}.another_model_replied", replied):
-        assert not await chief_of_staff_default_runs("user-1", HOME, thread_id="t-1")
-        assert await chief_of_staff_default_runs("user-1", HOME)
-    replied.assert_awaited_once_with("t-1", None)
-
-
-@pytest.mark.asyncio
 async def test_the_chief_of_staff_runs_no_claude_code_default_on_a_saved_token_known_not_to_work():
     with (
         platform(), patch(f"{HOSTED}.backend_available", lambda: True),

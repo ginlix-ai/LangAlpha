@@ -12,6 +12,7 @@ half-rendered stamp is worse for the model than no stamp at all.
 from __future__ import annotations
 
 import logging
+import re
 
 from ptc_agent.agent.middleware.runtime_context.templates import render_template
 
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 ENVELOPE_OPEN = "<system-reminder>"
 ENVELOPE_CLOSE = "</system-reminder>"
+
+#: The opening of a tag that would open or close the wrapper.
+_ENVELOPE_TAG = re.compile(r"<(?=/?system-reminder\b)", re.IGNORECASE)
 
 # Steady target is what the tail should cost on a normal call; the hard cap is
 # what it may never exceed. Only the hard cap drops the block, because a tail a
@@ -77,5 +81,10 @@ def frame_reminder(text: str) -> str:
     meaning itself, so the same text goes out bare on those channels. The budget
     still counts the wrapper because the reminder shape is the largest form the
     block can take.
+
+    A tag in *text* that would open or close the wrapper is escaped: what it
+    frames can hold what a tool read or a user wrote (a hand-off's brief
+    carries the thread itself), which must not end the harness's frame early
+    and speak as the harness after it.
     """
-    return f"{ENVELOPE_OPEN}\n{text}\n{ENVELOPE_CLOSE}"
+    return f"{ENVELOPE_OPEN}\n{_ENVELOPE_TAG.sub('&lt;', text)}\n{ENVELOPE_CLOSE}"

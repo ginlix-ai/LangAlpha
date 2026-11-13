@@ -336,29 +336,6 @@ async def test_the_chief_of_staff_runs_on_the_own_computer_a_home_turn_would_or_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("default_runs", "replied", "runs"),
-    [(True, False, True), (True, True, False), (False, False, False), (False, True, False)],
-)
-async def test_a_home_thread_another_model_last_replied_on_runs_the_deployments_default(default_runs, replied, runs):
-    """As its turn is admitted (``chief_of_staff_default_runs``), so the composer starts that thread
-    on the model the server runs. The checkpoint is read only where the Default would run otherwise."""
-    read = AsyncMock(return_value=replied)
-    with (
-        patch(f"{SETUP}.hosted.cli_placement", AsyncMock(return_value=OnOwn(STUDIO, picked=True))),
-        patch(f"{SETUP}.hosted.in_sandbox", lambda: False),
-        patch(DEFAULT_RUNS, AsyncMock(return_value=default_runs)),
-        patch("src.server.services.llm.claude_code.another_model_replied", read),
-    ):
-        answer = await chief_of_staff(USER, thread_id="t-1")
-    assert answer.default_runs is runs
-    if default_runs:
-        read.assert_awaited_once_with("t-1")
-    else:
-        read.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     ("computer", "shown"),
     [
         ({"computer_id": "c-2", "name": "Research"}, ("c-2", "Research")),

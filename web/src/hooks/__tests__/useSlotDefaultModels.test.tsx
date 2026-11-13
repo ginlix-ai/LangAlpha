@@ -6,7 +6,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { waitFor } from '@testing-library/react';
 import { renderHookWithProviders } from '@/test/utils';
-import { queryKeys } from '@/lib/queryKeys';
 import { getHomeWorkspace } from '@/pages/ChatAgent/utils/api';
 import { useDefaultModel, useSlotDefaultModels } from '../useSlotDefaultModels';
 import { useTurnDefaultModel, useTurnModels } from '../useTurnModels';
@@ -24,12 +23,6 @@ const mocks = vi.hoisted(() => ({
   catalog: {} as unknown,
   setup: null as unknown,
   setupLoading: false,
-  threadAnswer: vi.fn(),
-}));
-
-vi.mock('@/api/model', async (importActual) => ({
-  ...(await importActual<typeof import('@/api/model')>()),
-  getClaudeCodeChiefOfStaff: mocks.threadAnswer,
 }));
 
 vi.mock('../useClaudeCode', async (importActual) => ({
@@ -131,50 +124,6 @@ describe('useDefaultModel', () => {
     mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
     const { result } = renderHookWithProviders(() => useTurnDefaultModel(true));
     expect(result.current).toBe('model-code');
-  });
-
-  // The server also starts a Home thread another model last replied on on the
-  // deployment's Default, which only that thread's answer says.
-  it.each([
-    ['another model last replied on', false, 'model-deployment'],
-    ["Claude Code's reply ends", true, 'model-code'],
-  ])("starts a Chief of Staff thread %s on the Default the server runs there", async (_, runs, shown) => {
-    mocks.setup = { on: true, chief_of_staff: PLACED };
-    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
-    let answer!: (value: unknown) => void;
-    mocks.threadAnswer.mockReset().mockReturnValue(new Promise((resolve) => { answer = resolve; }));
-    const { result } = renderHookWithProviders(() => useTurnDefaultModel(true, 'thread-1'));
-    expect(result.current).toBeNull();
-    answer({ ...PLACED, default_runs: runs });
-    await waitFor(() => expect(result.current).toBe(shown));
-    expect(mocks.threadAnswer).toHaveBeenCalledWith('thread-1');
-  });
-
-  // A sign-in, a computer started or a plan check reads the setup again; the
-  // thread's answer follows it, since it is read from the same placement.
-  it("reads the thread's answer again whenever the setup is read again", async () => {
-    mocks.setup = { on: true, chief_of_staff: PLACED };
-    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
-    mocks.threadAnswer.mockReset().mockResolvedValueOnce({ ...PLACED, default_runs: false }).mockResolvedValue(PLACED);
-    const { result, queryClient } = renderHookWithProviders(() => useTurnDefaultModel(true, 'thread-1'));
-    await waitFor(() => expect(result.current).toBe('model-deployment'));
-    await queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeSetup() });
-    await waitFor(() => expect(result.current).toBe('model-code'));
-    expect(mocks.threadAnswer).toHaveBeenCalledTimes(2);
-  });
-
-  it.each([
-    ['a turn with no thread yet', { on: true, chief_of_staff: PLACED }, null, 'model-code'],
-    ["an account whose Claude Code Default does not run in Home", { on: true, chief_of_staff: { ...PLACED, default_runs: false } }, 'thread-1', 'model-deployment'],
-    ['an account that turned Claude Code off since', { on: false, chief_of_staff: PLACED }, 'thread-1', 'model-deployment'],
-  ])('asks nothing of the thread for %s', async (_, setup, threadId, shown) => {
-    mocks.setup = setup;
-    mocks.preferences = { model_preference: { preferred_model: 'model-code' } };
-    mocks.threadAnswer.mockReset();
-    const { result } = renderHookWithProviders(() => useTurnDefaultModel(true, threadId));
-    expect(result.current).toBe(shown);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mocks.threadAnswer).not.toHaveBeenCalled();
   });
 
   it("keeps any other Default on a Chief of Staff turn, whatever the server's word", () => {

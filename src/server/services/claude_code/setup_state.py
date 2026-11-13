@@ -69,21 +69,16 @@ def _cloud(custody: ClaudeCodeCustody | None, *, on: bool, backend_runs: bool) -
     return None
 
 
-async def chief_of_staff(user_id: str, *, thread_id: str | None = None) -> ClaudeCodeChiefOfStaff:
+async def chief_of_staff(user_id: str) -> ClaudeCodeChiefOfStaff:
     """Where the Chief of Staff's Claude Code runs, by the rule every turn
     follows (``hosted.cli_placement`` for Home, the saved token's check
     included), and whether it runs a Claude Code Default the user saved
-    (``default_runs``), as its turns are admitted. With ``thread_id``, on
-    that Home thread, which runs the deployment's Default once another model
-    replied on it last (``chief_of_staff_default_runs``); its checkpoint is
-    read only where the Default would run otherwise."""
+    (``default_runs``), as its turns are admitted, on every Home thread."""
     from src.server.database.home_workspace import get_home_workspace_id
-    from src.server.services.llm.claude_code import another_model_replied, default_runs
+    from src.server.services.llm.claude_code import default_runs
 
     where = await hosted.cli_placement(user_id, get_home_workspace_id(user_id), token=True)
     runs = await default_runs(user_id, where)
-    if runs and thread_id:
-        runs = not await another_model_replied(thread_id)
     return ClaudeCodeChiefOfStaff(**hosted.runs_on_view(where).model_dump(), default_runs=runs)
 
 

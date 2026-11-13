@@ -301,13 +301,6 @@ export async function getClaudeCodeSetup(): Promise<ClaudeCodeSetup | null> {
   }
 }
 
-/** The Chief of Staff's answer for one Home thread, which starts on the
- *  deployment's Default once another model last replied there. */
-export async function getClaudeCodeChiefOfStaff(threadId: string): Promise<ClaudeCodeChiefOfStaff> {
-  const { data } = await api.get('/api/v1/claude-code/chief-of-staff', { params: { thread_id: threadId } });
-  return data as ClaudeCodeChiefOfStaff;
-}
-
 export async function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
   const { data } = await api.get('/api/v1/claude-code/status');
   return data as ClaudeCodeStatus;

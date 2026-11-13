@@ -235,17 +235,3 @@ async def test_a_relayed_token_is_handed_over_once_asked_and_its_refusal_marks_i
         assert cache.values == {token_check_key("sk-ant-oat01-saved"): False}
         assert "sk-ant-oat01-saved" not in repr(vars(machine))
         assert await ComputerToken("user-1", "c-1").read() is None, "a token Claude refused is not relayed again"
-
-
-@pytest.mark.asyncio
-async def test_a_thread_s_turn_resolves_where_an_edit_or_a_regenerate_starts_it():
-    from types import SimpleNamespace
-
-    from src.server.services.thread_agent import thread_resolver
-
-    seen = AsyncMock(return_value=None)
-    route = SimpleNamespace(workspace_id="ws-1", role="chief_of_staff")
-    with patch("src.server.services.llm.config.resolve_llm_config", new=seen):
-        await thread_resolver("user-1", "t-1", route, thread=None, is_byok=False, checkpoint_id="cp-1")(None)
-        await thread_resolver("user-1", "t-1", route, thread=None, is_byok=False)(None)
-    assert [c.kwargs["checkpoint_id"] for c in seen.await_args_list] == ["cp-1", None]

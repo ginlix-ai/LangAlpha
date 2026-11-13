@@ -1,7 +1,8 @@
 """A resume answers the pause the newest checkpoint holds, so a step the
 turn's agent lacks is cancelled first (``cancel_tool_calls_it_lacks``),
-whatever the role, except on Claude Code, whose own graph runs the step it
-paused on: the Chief of Staff's Claude Code turn resumes as an analyst's does.
+whatever the role: on Claude Code a step another model paused on, which its
+graph lacks, never by name, so the Chief of Staff's Claude Code turn resumes
+as an analyst's does.
 """
 
 from __future__ import annotations
@@ -119,9 +120,9 @@ async def _resume_as(role: str, model: str):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["chief_of_staff", "analyst"])
-async def test_a_claude_code_resume_cancels_nothing_whatever_the_role(role):
-    cancel, _ = await _resume_as(role, CODE)
-    cancel.assert_not_awaited()
+async def test_a_claude_code_resume_cancels_another_models_step_whatever_the_role(role):
+    cancel, graph = await _resume_as(role, CODE)
+    cancel.assert_awaited_once_with(graph, "t-1", user_id="u-1", by_name=False, claude_code=True)
 
 
 @pytest.mark.asyncio
@@ -129,4 +130,4 @@ async def test_a_claude_code_resume_cancels_nothing_whatever_the_role(role):
 async def test_any_other_resume_cancels_the_steps_its_agent_lacks_first(role, by_name):
     """Home's by name, since the retired agent it may have paused under named its own."""
     cancel, graph = await _resume_as(role, "gpt-5")
-    cancel.assert_awaited_once_with(graph, "t-1", user_id="u-1", by_name=by_name)
+    cancel.assert_awaited_once_with(graph, "t-1", user_id="u-1", by_name=by_name, claude_code=False)

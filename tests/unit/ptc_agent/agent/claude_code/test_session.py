@@ -4,6 +4,7 @@ import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from ptc_agent.agent.claude_code.session import (
+    ENDED,
     Arrivals,
     CheckpointSessionStore,
     SessionDrift,
@@ -35,6 +36,13 @@ def test_a_write_naming_another_session_starts_it_over():
     state = session_records_reducer(session_records_reducer(None, [write("s1", "a")]), [write("s2", "x")])
     assert state["session_id"] == "s2"
     assert [e["uuid"] for e in state["entries"]] == ["x"]
+
+
+def test_an_ended_session_leaves_nothing_to_resume():
+    held = session_records_reducer(None, [{**write("s1", "a"), "pinned": {"system_prompt": "p", "tools": []}, "baseline": "b1"}])
+    ended = session_records_reducer(held, [ENDED])
+    assert not ended.get("session_id") and not ended["entries"]
+    assert ended.get("pinned") is None and ended.get("baseline") is None
 
 
 @pytest.mark.asyncio

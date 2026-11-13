@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
-import { isModelAvailable, resolveComposerModel } from '@/components/ui/chat-input.models';
+import { resolveComposerModel } from '@/components/ui/chat-input.models';
 import type { SubscriptionProvider } from '@/api/oauth';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useLapsedSignIn } from '@/hooks/useLapsedSignIn';
@@ -64,9 +64,7 @@ interface UseThreadModelOptions {
  *
  * A thread whose row names no model, or one that left the catalog, shows the
  * Default it would start on but sends none until a pick (`sendModel`), so
- * the server clears the model that left and resolves the Default with the
- * thread's history: it drops a Claude Code Default where another model
- * replied, and refuses a send that names one there.
+ * the server clears the model that left and resolves the Default itself.
  *
  * A pick also raises the offer to make that model the account default, shown
  * while the composer still shows the pick and it differs from the default.
@@ -94,10 +92,7 @@ export function useThreadModel({
   // With no model named, the server runs the thread's own.
   const unread = !!liveThreadId && !thread && !initialModel;
   const own = thread?.llm_model || initialModel || null;
-  // Only a thread whose row names no model it runs starts on the Default,
-  // so only there is the server asked what this thread's Default is.
-  const followsDefault = !unread && !(own && isModelAvailable(own, catalogModelNames));
-  const startsOn = useTurnDefaultModel(chiefOfStaff, followsDefault ? liveThreadId : null);
+  const startsOn = useTurnDefaultModel(chiefOfStaff);
   const { seed, retired: retiredName } = unread
     ? { seed: null, retired: null }
     : resolveComposerModel(own, startsOn, catalogModelNames);
@@ -135,15 +130,17 @@ export function useThreadModel({
       setModel((current) => (current === value ? before : current));
       setOffered(null);
     },
-    // A switch away from a model whose provider compacted the thread into a
-    // summary only it can read: that model writes it out for the new one
-    // first, which the next send waits for.
+    // A switch the model the thread was on writes something for first,
+    // which the next send waits for: a summary only its provider could read,
+    // written out for the new model, or a brief of the whole thread for a
+    // Claude Code model, which has seen none of it.
     onSaved: (saved) => {
       // What the next call sends is the new model's.
       if (liveThreadId) void queryClient.invalidateQueries({ queryKey: queryKeys.threads.context(liveThreadId) });
       const to = saved.llm_model || startsOn;
-      if (!saved.summary_handoff || !to) return;
-      toast({ description: t('chat.threadModel.handoff', { model: modelLabel(to, metadata) }) });
+      const key = saved.brief_handoff ? 'chat.threadModel.brief' : saved.summary_handoff ? 'chat.threadModel.handoff' : null;
+      if (!key || !to) return;
+      toast({ description: t(key, { model: modelLabel(to, metadata) }) });
     },
   });
 
@@ -174,9 +171,6 @@ export function useThreadModel({
       queryKey: queryKeys.threads.detail(liveThreadId),
       ...(saving ? { refetchType: 'none' as const } : {}),
     });
-    // The turn may have been another model's reply, which moves the Default
-    // a Home thread starts on.
-    void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeChiefOfStaff(liveThreadId) });
     // A turn can change what its next call sends ahead of the messages.
     void queryClient.invalidateQueries({ queryKey: queryKeys.threads.context(liveThreadId) });
   }, [isLoading, liveThreadId, queryClient]);

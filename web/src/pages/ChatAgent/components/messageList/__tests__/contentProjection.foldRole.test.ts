@@ -68,6 +68,24 @@ describe('what survives a collapsed turn', () => {
     expect(projection.roles.get(block!.key)).toBe('retain');
   });
 
+  it('keeps the mark of a turn that opened on another model\'s brief, which says what it was written from', () => {
+    const message = {
+      id: 'a0',
+      role: 'assistant',
+      content: 'Done.',
+      contentType: 'text',
+      contentSegments: [
+        { type: 'notification', order: 1, handoff: { from: 'deepseek-flash', to: 'claude-sonnet-5-5-code' }, detail: 'The brief.', detailKind: 'brief' },
+        { type: 'text', content: 'Done.', order: 2 },
+      ],
+      reasoningProcesses: {},
+      toolCallProcesses: {},
+    } as unknown as MessageRecord;
+    const projection = projectMessageContent(message);
+    const block = projection.blocks.find((b) => b.type === 'notification');
+    expect(projection.roles.get(block!.key)).toBe('retain');
+  });
+
   it.each(Object.keys(INLINE_ARTIFACT_MAP).filter((t) => !RETAINED.includes(t)))(
     'folds %s away with the rest of the working',
     (type) => {

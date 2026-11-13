@@ -26,13 +26,19 @@ from ptc_agent.agent.middleware.compaction import (
     HandOff,
     Measure,
     Parts,
+    WriteBrief,
     ask_between_turns,
     record_offloads,
 )
 from ptc_agent.agent.middleware.compaction.compact import Summarizer
 from ptc_agent.agent.middleware.compaction.middleware import CompactionMiddleware
-from ptc_agent.agent.middleware.compaction.rebuild import LAST_ANSWER_KEY, next_summary, offloaded_reading
-from ptc_agent.agent.middleware.compaction.summary_request import summary_prompt
+from ptc_agent.agent.middleware.compaction.rebuild import (
+    LAST_ANSWER_KEY,
+    TurnStartRebuilds,
+    next_summary,
+    offloaded_reading,
+)
+from ptc_agent.agent.middleware.compaction.summary_request import _SUMMARY_END, summary_prompt
 from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_message,
     handed_off,
@@ -40,6 +46,8 @@ from ptc_agent.agent.middleware.compaction.utils import (
     with_summary_text,
 )
 from src.llms.provider_compaction import SIDECAR_KEY
+
+import time
 
 pytestmark = pytest.mark.asyncio
 
@@ -67,13 +75,19 @@ def _model(*answers: AIMessage) -> GenericFakeChatModel:
     return GenericFakeChatModel(messages=iter(answers))
 
 
-def _agent(model, *, summary="the summarizer's summary", compaction=True, keep_tokens=2, notes_dir=None):
+def _agent(
+    model, *, summary="the summarizer's summary", compaction=True, keep_tokens=2, notes_dir=None, main=False
+):
+    """``main`` builds the main agent's stack, which reads its prompt cache
+    as lapsed once it is (``TurnStartRebuilds``); a subagent's never does."""
     sent = _Sent()
     middleware = []
     if compaction:
         summarizer = Summarizer(_model(AIMessage(summary)), limit=100_000, counter=len)
         # Never past the threshold: only an ask summarizes.
         compaction_mw = CompactionMiddleware(summarizer, token_threshold=10**9, keep_tokens=keep_tokens)
+        if main:
+            compaction_mw = compaction_mw.with_turn_start_rebuilds(TurnStartRebuilds(0))
         middleware.append(compaction_mw.with_scratchpad_notes(notes_dir) if notes_dir else compaction_mw)
     agent = create_agent(model=model, tools=[], middleware=[*middleware, sent])
     return agent, sent
@@ -114,6 +128,61 @@ def _opaque(**kwargs) -> HumanMessage:
         notes=_NOTES,
         **kwargs,
     )
+
+
+class TestWriteBrief:
+    """Who writes the brief a thread hands Claude Code: the agent's model
+    from its own request while that is cheap, else the compaction model,
+    else nobody, and Claude reads the thread itself."""
+
+    async def test_on_a_warm_cache_the_agents_model_writes_it_from_its_own_request(self):
+        agent, sent = _agent(_model(AIMessage(f"the agent's own brief\n{_SUMMARY_END}")), main=True)
+        state = {"messages": _history(), "_last_model_response_at": time.time()}
+
+        answer = await ask_between_turns(agent, state, WriteBrief(), thread_id="t-1")
+
+        assert (answer.summary.source, answer.summary.text) == ("self", "the agent's own brief")
+        assert len(sent.requests) == 1
+
+    async def test_on_a_cold_cache_the_compaction_model_writes_it(self):
+        agent, sent = _agent(_model(), main=True)
+        state = {"messages": _history(), "_last_model_response_at": time.time() - 3600}
+
+        answer = await ask_between_turns(agent, state, WriteBrief(), thread_id="t-1")
+
+        assert (answer.summary.source, answer.summary.text) == ("model", "the summarizer's summary")
+        assert sent.requests == []
+
+    async def test_a_writer_that_may_not_use_its_own_request_leaves_it_to_the_compaction_model(self):
+        agent, sent = _agent(_model(), main=True)
+        state = {"messages": _history(), "_last_model_response_at": time.time()}
+
+        answer = await ask_between_turns(agent, state, WriteBrief(by_own=False), thread_id="t-1")
+
+        assert answer.summary.source == "model" and sent.requests == []
+
+    async def test_a_summary_only_another_provider_can_read_does_not_make_this_models_read_cheap(self):
+        agent, sent = _agent(_model(), main=True)
+        state = {**_summarized(_opaque()), "_last_model_response_at": time.time() - 3600}
+
+        await ask_between_turns(agent, state, WriteBrief(), thread_id="t-1")
+
+        assert sent.requests == []
+
+    async def test_when_no_model_writes_it_claude_is_handed_the_thread_itself(self):
+        sent = _Sent()
+        failing = Summarizer(_model(), limit=100_000, counter=len)
+        compaction_mw = CompactionMiddleware(failing, token_threshold=10**9, keep_tokens=2)
+        agent = create_agent(
+            model=_model(), tools=[], middleware=[compaction_mw.with_turn_start_rebuilds(TurnStartRebuilds(0)), sent]
+        )
+        state = {"messages": _history()}
+
+        answer = await ask_between_turns(agent, state, WriteBrief(), thread_id="t-1")
+
+        assert answer.summary.source == "thread"
+        assert "Human: q0" in answer.summary.text and "AI: r2" in answer.summary.text
+        assert sent.requests == []
 
 
 class TestCompact:

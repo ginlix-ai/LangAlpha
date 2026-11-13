@@ -26,7 +26,6 @@ from src.llms.claude_code import (
     PlanLimit,
     PlanStopped,
     PlanWindow,
-    another_model_replied_last,
     binding_limit,
     is_claude_code_model,
     rows_available,
@@ -52,7 +51,10 @@ logger = logging.getLogger(__name__)
 CLAUDE_CODE_OFF = {
     "server": "This server does not run Claude Code models. Pick another model.",
     "account": "Claude Code is off for your account. Turn it on in Settings under Model access, or pick another model.",
-    "other_model": "Claude Code cannot continue a thread another model has replied on. Start a new thread to use this model.",
+    "other_model": (
+        "Claude Code could not pick up this thread from another model's reply. Send again, or start a new thread "
+        "to use this model."
+    ),
     "signed_out": "Add a Claude Code setup token in Settings under Model access to use this model.",
     "token_refused": (
         "Claude refused your setup token. It may have expired or been revoked. Add a new one in Settings under "
@@ -256,8 +258,8 @@ def plan_refusal(model_name: str | None, stopped: PlanStopped) -> dict[str, Any]
 #: where the backend runs none, or the user's choice for cloud computers
 #: changed since admission, or the computer is now below the tier Claude Code
 #: runs on, or the own computer picked to run the CLI is offline, or another
-#: model last replied on the thread, which a turn admission never saw (an
-#: automation's firing, on the thread it continues) reaches only here.
+#: model last replied on the thread and no brief stands in for that reply
+#: (``ClaudeTurn.hand_off``), which only the runtime finds.
 _ADMISSION_REASON = {
     "auth_failed": "signed_out", "token_refused": "token_refused", "policy_blocked": "policy_blocked",
     "needs_own_computer": "needs_own_computer", "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
@@ -387,22 +389,17 @@ async def default_runs(user_id: str, where: Placement) -> bool:
 
 
 async def chief_of_staff_default_runs(
-    user_id: str, workspace_id: str | None, *, thread_id: str | None = None, checkpoint_id: str | None = None,
-    conn=None,
+    user_id: str, workspace_id: str | None, *, conn=None,
 ) -> Placement | None:
     """Where the Chief of Staff's turn in ``workspace_id`` runs the Claude Code
     Default the user saved rather than the deployment's, None where it does
-    not: the thread ``thread_id`` holds a reply from another model where the
-    turn starts (``checkpoint_id`` for an edit or a regenerate, as
-    ``require_claude_code_continues`` reads it, else its head), or by
-    where admission would place it (``cli_placement`` with the token) its CLI
-    has nowhere to run, or runs where the answer there says it cannot
-    (``admitted_there``). One rule wherever Home
-    is, on a cloud computer or one of the user's own. Short of what only
-    admission reads (the plan). The caller checks first that this server
-    runs Claude Code and the user has it on."""
-    if thread_id and await another_model_replied(thread_id, checkpoint_id):
-        return None
+    not: by where admission would place it (``cli_placement`` with the
+    token) its CLI has nowhere to run, or runs where the answer there says it
+    cannot (``admitted_there``). One rule wherever Home is, on a cloud
+    computer or one of the user's own. Short of what only admission reads
+    (the plan). The caller checks first that this server runs Claude Code
+    and the user has it on. A thread another model replied on runs it too,
+    opening on that model's brief (``brief_for_turn``)."""
     where = await cli_placement(user_id, workspace_id, conn=conn, token=True)
     return where if await default_runs(user_id, where) else None
 
@@ -607,27 +604,4 @@ def drop_claude_code_roles(
     return drop_models(model_pref, keys, lambda name: not is_claude_code_model(name))
 
 
-async def require_claude_code_continues(
-    thread_id: str, name: str | None, checkpoint_id: str | None = None
-) -> None:
-    """Refuse a Claude Code row on a thread another model last replied on,
-    before the thread keeps it: Claude's session holds only what Claude said,
-    so it would carry on without that reply and what led to it.
 
-    Read where the turn would start: ``checkpoint_id`` for an edit or a
-    regenerate, else the base an ordinary turn takes.
-    """
-    if is_claude_code_model(name) and await another_model_replied(thread_id, checkpoint_id):
-        raise_claude_code_off(name, "other_model")
-
-
-async def another_model_replied(thread_id: str, checkpoint_id: str | None = None) -> bool:
-    """Whether a model other than Claude Code last replied on the thread, read
-    where its turn would start (``require_claude_code_continues``)."""
-    from src.server.services.history.reader import CheckpointHistoryReader
-    from src.server.utils.checkpoint_helpers import get_checkpointer, turn_base_checkpoint_id
-
-    base = checkpoint_id or await turn_base_checkpoint_id(get_checkpointer(), thread_id)
-    state = await CheckpointHistoryReader.get_instance().aget_state(thread_id, base)
-    messages = (state.values or {}).get("messages") or [] if state else []
-    return another_model_replied_last(messages)

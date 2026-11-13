@@ -417,7 +417,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
           const notifSeg = (block as NotificationRenderBlock).segment;
           if (notifSeg.planBilled) return <PlanBilledNotice key={block.key} billed={notifSeg.planBilled} />;
           return (
-            <NotificationDivider key={block.key} content={notifSeg.content} fallback={notifSeg.fallback} detail={notifSeg.detail} detailKind={notifSeg.detailKind} />
+            <NotificationDivider key={block.key} content={notifSeg.content} fallback={notifSeg.fallback} handoff={notifSeg.handoff} detail={notifSeg.detail} detailKind={notifSeg.detailKind} />
           );
         }
 

@@ -104,8 +104,12 @@ def project_turn(
     # state keys: offload counts, which fire as the turn starts, and a
     # summary saved before its response was stamped with it, whose place in
     # the turn is lost. Both open the turn. A stamped summary already sits
-    # before the response that answered from it.
-    turn_items[:0] = projector.context_signal_items(thread_id, turn)
+    # before the response that answered from it. A hand-off's mark opens
+    # the turn ahead of them: Claude opened on the brief before any call.
+    turn_items[:0] = [
+        *projector.handoff_items(thread_id, turn),
+        *projector.context_signal_items(thread_id, turn),
+    ]
     durations = replay_facts.reasoning_durations(response)
     if durations is not None:
         replay_facts.apply_reasoning_durations(turn_items, durations)

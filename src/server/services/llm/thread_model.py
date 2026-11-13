@@ -16,7 +16,6 @@ from typing import TypeVar
 
 from fastapi import HTTPException
 
-from src.llms.claude_code import is_claude_code_model
 from src.server.database.conversation import threads_read, threads_write
 
 from . import logger, user_models
@@ -199,9 +198,10 @@ async def carry_default_change(
     if scope != "existing_threads":
         return 0
     old, new = effective_default_model(before), effective_default_model(after)
-    # With no old default no thread can be on it. Nor does a thread move onto
-    # a Claude Code row, which continues only threads it replied on.
-    if not old or old == new or is_claude_code_model(new):
+    # With no old default no thread can be on it. A thread moved onto a
+    # Claude Code row opens its next turn on the brief its model writes then
+    # (``brief_for_turn``).
+    if not old or old == new:
         return 0
     moved = await threads_write.reassign_thread_llm_models(user_id, old, new, conn=conn)
     logger.info(
@@ -209,3 +209,25 @@ async def carry_default_change(
         f"{old} -> {new}"
     )
     return moved
+
+
+async def next_turn_runs_claude_code(user_id: str, workspace_id: str | None, held: str | None) -> bool:
+    """Whether the thread's next turn, naming no model, runs on Claude Code:
+    on the thread's own model, ``held``, while it still resolves (``turn_model``),
+    else on the account default (``effective_default_model``), which the
+    Chief of Staff runs only where ``chief_of_staff_default_runs`` lets it,
+    as ``resolve_llm_config`` does, and on the deployment's Default
+    otherwise. Never while the user's Claude Code models are off
+    (``rows_on``): a held one is refused at the send, and a brief written
+    for it would be paid for and never read."""
+    from src.llms.claude_code import is_claude_code_model
+    from src.server.database.home_workspace import is_home_id
+    from src.server.services.claude_code.flow import rows_on
+    from src.server.services.llm.claude_code import chief_of_staff_default_runs
+
+    prefs = await user_models.get_model_preference(user_id)
+    if held and model_resolves(prefs, held):
+        return is_claude_code_model(held) and await rows_on(user_id)
+    if not is_claude_code_model(effective_default_model(prefs)) or not await rows_on(user_id):
+        return False
+    return not is_home_id(user_id, workspace_id) or await chief_of_staff_default_runs(user_id, workspace_id) is not None

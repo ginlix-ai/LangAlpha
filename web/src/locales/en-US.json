@@ -2251,6 +2251,7 @@
       "lapsed": "Your {{account}} sign-in has expired. Reconnect it to use {{model}}.",
       "offer": "This thread uses {{model}}. New threads start on {{defaultModel}}.",
       "handoff": "OpenAI compacted part of this thread into a summary only its models can read. The previous model is writing it out for {{model}}, so your next message may take a little longer to start.",
+      "brief": "Handing this thread's context to {{model}} so it can pick up where it left off. Your next message may take a little longer to start.",
       "makeDefault": "Make {{model}} my default"
     },
     "backgroundTasksRunning": "Background tasks are still running",
@@ -2536,6 +2537,8 @@
     "offloading": "Offloading context...",
     "turnHeld": {
       "handoff": "Waiting for the previous model to write out its summary...",
+      "brief": "Handing off context to {{model}}...",
+      "briefNoModel": "Handing off context to the new model...",
       "other": "Waiting for the current operation on this conversation to finish..."
     },
     "compactionStopped": "Compaction stopped",
@@ -2576,12 +2579,16 @@
       "chart-annotationDesc": "Draw an analysis on a price chart as a layer: levels, lines, zones, indicators, and projections, live on MarketView or as a chart card in chat"
     },
     "compactedNotification": "Context compacted · {{from}} messages → summary",
+    "handOffNotification": "Context handed off · {{from}} → {{to}}",
+    "handOffNotificationDigest": "Context handed off → {{to}}",
     "taskErrorNotification": "Subagent run failed",
     "taskStoppedNotification": "Subagent run stopped",
     "taskSteeringReturnedNotification": "Steering message returned — the run ended before it was delivered",
     "taskSteeringNotSentNotification": "Steering message not sent",
     "viewSummary": "View summary",
     "hideSummary": "Hide summary",
+    "viewBrief": "View brief",
+    "hideBrief": "Hide brief",
     "offloadedArgsNotification": "Tool arguments offloaded · {{count}} tools",
     "offloadedReadsNotification": "Stale read results offloaded · {{count}} reads",
     "offloadedNotification": "Context offloaded · {{args}} tool args, {{reads}} reads",

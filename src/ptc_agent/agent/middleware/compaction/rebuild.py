@@ -186,10 +186,12 @@ class StalePinRebuilds:
         if not cut:
             return RebuildPlan(due=True, waits="unanswered_tool_call")
         return RebuildPlan(
-            due=True, cut=cut, reason="manual", scope="last_tool" if self._cold(request, view, now) else None
+            due=True, cut=cut, reason="manual", scope="last_tool" if self.cold(request, view, now) else None
         )
 
-    def _cold(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> bool:
+    def cold(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> bool:
+        """Whether the model's prompt cache for ``view`` has lapsed by ``now``.
+        A subagent's run is bounded, so it never reads one as lapsed."""
         return False
 
 
@@ -252,12 +254,12 @@ class TurnStartRebuilds(StalePinRebuilds):
             step = step_cut(view) if due else 0
             if not step:
                 return RebuildPlan(due=due)
-            scope: CacheScope | None = "last_tool" if self._cold(request, view, now) else None
+            scope: CacheScope | None = "last_tool" if self.cold(request, view, now) else None
             return RebuildPlan(
                 due=True, cut=step, reason="mid_turn", forced=_armed(request.state), scope=scope, carry=True
             )
-        cold = self._cold(request, view, now)
-        cold_at_send = cold if self.sent_at is None else self._cold(request, view, self.sent_at)
+        cold = self.cold(request, view, now)
+        cold_at_send = cold if self.sent_at is None else self.cold(request, view, self.sent_at)
         claude = _claude_answered_last(view)
         scope = "last_tool" if cold else None
         reason = None
@@ -331,7 +333,7 @@ class TurnStartRebuilds(StalePinRebuilds):
             )
         return None
 
-    def _cold(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> bool:
+    def cold(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> bool:
         return now > cache_expires_at(
             cache_ttl(view, request.model), request.state.get("_last_model_response_at"), self.settled_at
         )

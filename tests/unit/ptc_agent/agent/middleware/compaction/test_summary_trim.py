@@ -24,10 +24,15 @@ from ptc_agent.agent.middleware.compaction.summarize import (
     Summary,
     awrite_summary,
     preparer,
+    thread_summary,
 )
 from ptc_agent.agent.middleware.compaction.summary_request import trim_for_summary
 from ptc_agent.agent.transcript.classify import LEGACY_SUMMARY_PREFIX
-from ptc_agent.agent.middleware.compaction.utils import build_summary_message
+from ptc_agent.agent.middleware.compaction.utils import (
+    build_summary_message,
+    count_tokens_claude,
+    count_tokens_tiktoken,
+)
 
 PRIOR = "Earlier: NVDA gross margin held at 75 percent; the AMD model is pending."
 
@@ -193,3 +198,30 @@ async def test_nothing_is_sent_when_not_even_the_newest_message_fits():
 
     assert summary.source == "server"
     assert model.sent == []
+
+
+def test_a_thread_quoting_a_special_token_is_still_fitted_to_the_room_its_brief_has(monkeypatch):
+    from types import SimpleNamespace
+
+    from ptc_agent.agent.middleware.compaction import utils
+
+    def encode(text, disallowed_special="all"):
+        if disallowed_special and "<|endoftext|>" in text:
+            raise ValueError("disallowed special token")
+        return [0] * (len(text) // 4 + 1)
+
+    monkeypatch.setattr(utils, "_get_tiktoken_encoder", lambda: SimpleNamespace(encode=encode))
+    quoted = [HumanMessage(f"why does <|endoftext|> end text? {i}") for i in range(4)]
+    filler = [AIMessage("x " * 400, id=f"r{i}") for i in range(30)]
+    assert count_tokens_tiktoken(quoted) > 0 and count_tokens_claude(quoted) > 0
+    summary = thread_summary([*filler, *quoted], turns=None, limit=200, counter=count_tokens_tiktoken)
+    assert summary.text.startswith("(") and "<|endoftext|>" in summary.text
+
+
+def test_a_thread_that_cannot_be_measured_hands_the_reader_none_of_it_rather_than_too_much():
+    def counter(messages):
+        raise RuntimeError("tokenizer unavailable")
+
+    thread = [AIMessage("x " * 400, id=f"r{i}") for i in range(30)]
+    summary = thread_summary(thread, turns=None, limit=200, counter=counter)
+    assert summary.text.startswith("(30 earlier messages are not shown here.)") and "x x" not in summary.text
