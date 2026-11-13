@@ -84,7 +84,10 @@ def test_a_token_past_its_expiry_is_refused_though_its_last_check_passed():
 
 
 async def _setup(world, **switches):  # noqa: F811
+    """A deployment that gates Claude Code ``opt_in`` unless ``gate`` says
+    otherwise, since a user before opting in exists only there."""
     with (
+        patch(f"{SETUP}.system_flag", return_value=SimpleNamespace(gate=switches.get("gate", FeatureGate.OPT_IN))),
         patch(f"{SETUP}.rows_available", side_effect=lambda: world.rows),
         patch(f"{SETUP}.user_feature_enabled", new_callable=AsyncMock, side_effect=lambda *_: world.opted_in),
         patch(f"{SETUP}.backend_available", return_value=switches.get("backend", False)),
@@ -117,8 +120,7 @@ async def test_a_server_that_offers_no_claude_code_answers_nothing(world):  # no
 ])
 async def test_a_user_the_gate_keeps_off_has_nothing_to_set_up(world, gate, opted_in, answers):  # noqa: F811
     world.opted_in = opted_in
-    with patch(f"{SETUP}.system_flag", return_value=SimpleNamespace(gate=gate)):
-        answer = await _setup(world)
+    answer = await _setup(world, gate=gate)
     assert (answer is not None) is answers
 
 

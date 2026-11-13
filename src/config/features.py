@@ -174,10 +174,11 @@ FEATURES: dict[str, FeatureSpec] = {
             "gets that record, which leaves out the earlier tool results."
         ),
     ),
-    # Off in every deployment until an operator turns it on; then each user
-    # opts in. The system switch lists the Claude Code models
-    # (``src.llms.claude_code.rows_available``) and a user's opt-in lets
-    # their turns run on one (``resolve_llm_config``).
+    # On for everyone. The models are listed only where the backend can run
+    # them (``src.llms.claude_code.rows_available``: the ``claude-code`` extra
+    # and the at-rest key), and a user's turns run on one once they connect a
+    # setup token under Model access. A deployment that wants a per-user
+    # switch sets the gate to ``opt_in``.
     "claude_code_runtime": FeatureSpec(
         key="claude_code_runtime",
         label="Claude Code mode",
@@ -188,16 +189,15 @@ FEATURES: dict[str, FeatureSpec] = {
             "server offers it, also on cloud computers, with your setup token. "
             "Choose where it runs in Settings under Model access."
         ),
-        enabled=False,
-        gate=FeatureGate.OPT_IN,
+        enabled=True,
+        gate=FeatureGate.NONE,
         home="model_access",
     ),
-    # Off in every deployment until an operator turns it on in config.yaml's
-    # ``features:``; no user toggle, since "Summarize long threads after a
-    # break" (``Tuning.cold_compaction``) already decides it per user. On, a
-    # completed turn arms its thread's summary while the thread is idle on a
-    # warm cache (``services.idle_compaction``), on routes whose cache entries
-    # live an hour only.
+    # Each user opts in. For one who has, a completed turn arms its thread's
+    # summary while the thread is idle on a warm cache
+    # (``services.idle_compaction``), on routes whose cache entries live an
+    # hour only; "Summarize long threads after a break"
+    # (``Tuning.cold_compaction``) turned off still keeps it from summarizing.
     "idle_compaction": FeatureSpec(
         key="idle_compaction",
         label="Idle compaction",
@@ -205,16 +205,22 @@ FEATURES: dict[str, FeatureSpec] = {
             "Summarizes a long Claude thread while it sits idle, before its "
             "hour-long prompt cache expires, so the next message neither waits "
             "for a summary nor sends the whole conversation again. Applies only "
-            "where the cache lasts an hour, such as a Claude subscription."
+            "where the cache lasts an hour, such as the Claude sign-in (legacy); "
+            "threads in Claude Code mode are not summarized this way."
         ),
-        enabled=False,
-        gate=FeatureGate.NONE,
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        tradeoffs=(
+            "Each summary costs like a turn: it reads the thread from the "
+            "warm cache and writes the summary. It runs whether or not you "
+            "come back, so a thread you leave for good still pays for one."
+        ),
     ),
-    # Who may sign in with Claude (the ``claude-oauth`` provider), which
-    # Claude Code replaces. Everyone by default; a deployment retiring it for
-    # new sign-ins sets the gate to ``grant``, and migration 121 granted it to
-    # every user with a Claude sign-in stored, who keep reconnecting it. A
-    # sign-in already stored keeps working either way.
+    # Who may start a new Claude sign-in (the ``claude-oauth`` provider),
+    # which Claude Code replaces: only the users migration 121 granted it to,
+    # every one with a Claude sign-in stored, who keep reconnecting it. A
+    # sign-in already stored keeps working either way. A deployment still
+    # offering it to everyone sets the gate to ``none``.
     "claude_oauth": FeatureSpec(
         key="claude_oauth",
         label="Claude sign-in (legacy)",
@@ -224,7 +230,7 @@ FEATURES: dict[str, FeatureSpec] = {
             "replaces it."
         ),
         enabled=True,
-        gate=FeatureGate.NONE,
+        gate=FeatureGate.GRANT,
     ),
     "a_share_pack": FeatureSpec(
         key="a_share_pack",

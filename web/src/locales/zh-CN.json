@@ -228,6 +228,11 @@
         "label": "Claude Code 模式",
         "description": "通过 Claude Code 运行你的 Claude 对话，用量计入你自己的 Claude 套餐。它用专为 LangAlpha 生成的 setup token 登录。Claude Code 在你自己的电脑上运行；如果此服务器提供该选项，也可以在云端计算机上运行，使用你的 setup token。请在设置的“模型接入”中选择运行位置。"
       },
+      "idle_compaction": {
+        "label": "空闲时压缩",
+        "description": "长的 Claude 对话空闲时，在它一小时的提示词缓存过期之前先做好摘要，这样你下次发消息时既不用等摘要，也不必把整段对话重新发送一遍。只在缓存能保留一小时的情况下生效，比如通过 Claude 登录（旧版）使用时；Claude Code 模式下的对话不会这样做摘要。",
+        "tradeoffs": "每次摘要的用量和一轮对话相当：要从仍有效的缓存中读取整个对话，再写出摘要。不管你回不回来它都会运行，所以就算这个对话你不再继续，也要为这次摘要付费。"
+      },
       "claude_oauth": {
         "label": "Claude 登录（旧版）",
         "description": "通过登录你的 Claude 账户使用 Claude Pro 或 Max 套餐，由 LangAlpha 直接调用 Claude。Claude Code 模式将取代它。"

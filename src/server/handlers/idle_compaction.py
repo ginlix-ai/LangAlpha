@@ -27,13 +27,14 @@ from fastapi import HTTPException
 
 from ptc_agent.agent.middleware.compaction import IdleCompact, IdleSkipped
 from ptc_agent.agent.middleware.compaction.compact import NoOwnSummary
-from ptc_agent.agent.middleware.compaction.idle import IDLE_DEADLINE_MARGIN_S
+from ptc_agent.agent.middleware.compaction.idle import FEATURE, IDLE_DEADLINE_MARGIN_S
 from ptc_agent.agent.middleware.compaction.measure import measured_tokens
 from ptc_agent.agent.middleware.compaction.rebuild import LAST_ANSWER_KEY, forced_under_threshold
 from ptc_agent.agent.middleware.runtime_context.state import as_dict
 from ptc_agent.core.sandbox.attach_only import SandboxNotRunning
 from src.llms.claude_code import is_claude_code_model
 from src.server.services.computer_manager import attach_only
+from src.server.services.features import user_feature_enabled
 from src.server.services.idle_compaction import log_idle
 
 logger = logging.getLogger(__name__)
@@ -94,13 +95,13 @@ async def fire(row: dict[str, Any]) -> None:
 
 
 async def _precheck(row: dict[str, Any]) -> _Thread:
-    """What drops a claim before anything is built: the thread moved off the
-    turn's checkpoint, a run started since the one that armed it, the thread
-    archived, a step waits on the user, a rebuild that no deploy or urgent
-    prompt made due (``forced_under_threshold``, on the turn's own
-    ``floor_tokens``), something set to report back
-    before the entry expires, a Claude Code thread, or a computer that is
-    not running."""
+    """What drops a claim before anything is built: the user turned the
+    feature off since the arm, the thread moved off the turn's checkpoint, a
+    run started since the one that armed it, the thread archived, a step
+    waits on the user, a rebuild that no deploy or urgent prompt made due
+    (``forced_under_threshold``, on the turn's own ``floor_tokens``),
+    something set to report back before the entry expires, a Claude Code
+    thread, or a computer that is not running."""
     from src.server.database.computer import get_computer_for_workspace
     from src.server.database.conversation import get_thread_by_id, threads_read
     from src.server.services.thread_agent import thread_route
@@ -108,6 +109,8 @@ async def _precheck(row: dict[str, Any]) -> _Thread:
     from src.tools.thread_status.tool import pending_work
 
     thread_id, base = row["thread_id"], row["base_checkpoint_id"]
+    if not await user_feature_enabled(row["user_id"], FEATURE):
+        raise _Skip("skip", "feature_off")
     if (await threads_read.get_thread_branch_read(thread_id)).checkpoint_id != base:
         raise _Skip("skip", "moved")
     if await _returned(thread_id, row["armed_by_run_id"]):

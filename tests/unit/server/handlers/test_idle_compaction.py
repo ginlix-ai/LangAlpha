@@ -28,6 +28,26 @@ ROW = {
 }
 
 
+@pytest.fixture(autouse=True)
+def opted_in(monkeypatch) -> AsyncMock:
+    """The row's user has the idle_compaction feature on."""
+    flag = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler, "user_feature_enabled", flag)
+    return flag
+
+
+@pytest.mark.asyncio
+async def test_a_user_who_turned_the_feature_off_since_the_arm_is_not_summarized(opted_in):
+    opted_in.return_value = False
+    with patch("src.server.database.conversation.threads_read.get_thread_branch_read") as pointer:
+        with pytest.raises(_Skip) as skip:
+            await _precheck(ROW)
+
+    assert (skip.value.event, skip.value.reason) == ("skip", "feature_off")
+    opted_in.assert_awaited_once_with("u-1", "idle_compaction")
+    pointer.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_a_claim_past_its_deadline_is_dropped_before_anything_is_read(monkeypatch, caplog):
     caplog.set_level("INFO")
