@@ -9,13 +9,31 @@ from unittest.mock import patch
 import pytest
 
 from src.server.models.additional_context import MultimodalContext
+from src.server.models.chat_attachment import TurnAttachments
 from src.server.utils.multimodal_context import (
     build_attachment_metadata,
     inject_multimodal_context,
+    inline_attachment,
     parse_multimodal_contexts,
-    pdf_page_counts,
 )
 from src.utils.storage import sanitize_storage_key
+
+# base64 of b"abc": the bytes are decoded once, when the turn resolves them.
+ABC = "YWJj"
+
+
+def _inline(data: str, description: str | None = None, type_: str = "image"):
+    return inline_attachment(MultimodalContext(type=type_, data=data, description=description))
+
+
+def _native(data: str, description: str | None = None):
+    att = _inline(data, description)
+    att.route = "native"
+    return att
+
+
+async def _meta(*attachments, thread_id: str = ""):
+    return await build_attachment_metadata(TurnAttachments(list(attachments)), thread_id)
 
 
 # ---------------------------------------------------------------------------
@@ -105,11 +123,11 @@ class TestParseMultimodalContexts:
 
     def test_dict_with_image_type(self):
         result = parse_multimodal_contexts([
-            {"type": "image", "data": "data:image/png;base64,abc", "description": "test"},
+            {"type": "image", "data": f"data:image/png;base64,{ABC}", "description": "test"},
         ])
         assert len(result) == 1
         assert isinstance(result[0], MultimodalContext)
-        assert result[0].data == "data:image/png;base64,abc"
+        assert result[0].data == f"data:image/png;base64,{ABC}"
         assert result[0].description == "test"
 
     def test_dict_without_image_type_skipped(self):
@@ -119,33 +137,39 @@ class TestParseMultimodalContexts:
         assert result == []
 
     def test_multimodal_context_passes_through(self):
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc")
+        ctx = MultimodalContext(type="image", data=f"data:image/png;base64,{ABC}")
         result = parse_multimodal_contexts([ctx])
         assert result == [ctx]
 
-    def test_object_with_type_attr(self):
-        class FakeCtx:
-            type = "image"
-            data = "data:image/png;base64,abc"
-            description = "fake"
-
-        result = parse_multimodal_contexts([FakeCtx()])
-        assert len(result) == 1
-        assert result[0].description == "fake"
+    def test_a_dict_naming_neither_data_nor_an_id_is_dropped(self):
+        """It used to become an attachment of no bytes; it is junk, and the
+        turn goes on without it."""
+        assert parse_multimodal_contexts([{"type": "file", "description": "neither"}]) == []
 
     def test_unrecognized_ctx_skipped(self):
         result = parse_multimodal_contexts([42, "string", None])
         assert result == []
 
     def test_mixed_inputs(self):
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc")
+        ctx = MultimodalContext(type="image", data=f"data:image/png;base64,{ABC}")
         result = parse_multimodal_contexts([
-            {"type": "image", "data": "data:image/jpeg;base64,xyz"},
+            {"type": "image", "data": "data:image/jpeg;base64,xyz="},
             ctx,
             {"type": "text", "data": "skip me"},
             42,
         ])
         assert len(result) == 2
+
+
+class TestInlineAttachment:
+    def test_the_data_url_is_decoded_once(self):
+        att = _inline(f"data:image/png;base64,{ABC}", "chart")
+        assert (att.name, att.mime_type, att.size, att.kind) == ("chart", "image/png", 3, "image")
+        assert att.in_hand() == b"abc"
+
+    @pytest.mark.parametrize("data", ["data:image/png;base64", "data:image/png;base64,abc"])
+    def test_one_that_does_not_decode_is_none(self, data):
+        assert _inline(data) is None
 
 
 # ---------------------------------------------------------------------------
@@ -167,69 +191,60 @@ class TestBuildAttachmentMetadata:
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_disable_storage")
     async def test_storage_disabled_no_upload(self):
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="chart")
-        result = await build_attachment_metadata([ctx])
-        assert len(result) == 1
-        assert result[0]["name"] == "chart"
-        assert result[0]["type"] == "image"
-        assert "url" not in result[0]
+        result = await _meta(_inline(f"data:image/png;base64,{ABC}", "chart"))
+        assert result == [{"name": "chart", "type": "image", "size": 3}]
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_enable_storage")
     async def test_storage_enabled_upload_success(self):
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="chart")
         with (
-            patch("src.server.utils.multimodal_context.upload_base64", return_value=True) as mock_upload,
+            patch("src.server.utils.multimodal_context.upload_bytes", return_value=True) as mock_upload,
             patch("src.server.utils.multimodal_context.get_public_url", return_value="https://cdn.example.com/key"),
         ):
-            result = await build_attachment_metadata([ctx], thread_id="t123")
+            result = await _meta(_inline(f"data:image/png;base64,{ABC}", "chart"), thread_id="t123")
             assert result[0]["url"] == "https://cdn.example.com/key"
-            # The key passed to upload should be sanitized (no newlines)
-            uploaded_key = mock_upload.call_args[0][0]
+            uploaded_key, uploaded = mock_upload.call_args[0]
             assert "\n" not in uploaded_key
-            assert uploaded_key.startswith("attachments/t123/")
+            assert uploaded_key.startswith("attachments/t123/") and uploaded_key.endswith("/chart.png")
+            assert uploaded == b"abc"
+            assert mock_upload.call_args.kwargs == {"content_type": "image/png"}
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_enable_storage")
     async def test_storage_enabled_upload_failure(self):
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="chart")
-        with patch("src.server.utils.multimodal_context.upload_base64", return_value=False):
-            result = await build_attachment_metadata([ctx])
+        with patch("src.server.utils.multimodal_context.upload_bytes", return_value=False):
+            result = await _meta(_inline(f"data:image/png;base64,{ABC}", "chart"))
             assert "url" not in result[0]
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_enable_storage")
     async def test_storage_enabled_upload_exception(self):
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="chart")
-        with patch("src.server.utils.multimodal_context.upload_base64", side_effect=RuntimeError("boom")):
-            result = await build_attachment_metadata([ctx])
+        with patch("src.server.utils.multimodal_context.upload_bytes", side_effect=RuntimeError("boom")):
+            result = await _meta(_inline(f"data:image/png;base64,{ABC}", "chart"))
             assert "url" not in result[0]
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_disable_storage")
     async def test_pdf_detection(self):
-        ctx = MultimodalContext(type="image", data="data:application/pdf;base64,abc")
-        result = await build_attachment_metadata([ctx])
+        result = await _meta(_inline(f"data:application/pdf;base64,{ABC}"))
         assert result[0]["type"] == "pdf"
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_disable_storage")
     async def test_description_absent_falls_back(self):
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc")
-        result = await build_attachment_metadata([ctx])
+        result = await _meta(_inline(f"data:image/png;base64,{ABC}"))
         assert result[0]["name"] == "file"
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_disable_storage")
     async def test_thread_id_in_prefix(self):
         """When thread_id is provided, the storage key prefix includes it."""
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="img")
         with (
             patch("src.server.utils.multimodal_context.is_storage_enabled", return_value=True),
-            patch("src.server.utils.multimodal_context.upload_base64", return_value=True) as mock_upload,
+            patch("src.server.utils.multimodal_context.upload_bytes", return_value=True) as mock_upload,
             patch("src.server.utils.multimodal_context.get_public_url", return_value="url"),
         ):
-            await build_attachment_metadata([ctx], thread_id="tid-abc")
+            await _meta(_inline(f"data:image/png;base64,{ABC}", "img"), thread_id="tid-abc")
             key = mock_upload.call_args[0][0]
             assert "tid-abc" in key
 
@@ -237,18 +252,17 @@ class TestBuildAttachmentMetadata:
     @pytest.mark.usefixtures("_disable_storage")
     async def test_no_thread_id_in_prefix(self):
         """When thread_id is empty, the key has no thread segment."""
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="img")
         with (
             patch("src.server.utils.multimodal_context.is_storage_enabled", return_value=True),
-            patch("src.server.utils.multimodal_context.upload_base64", return_value=True) as mock_upload,
+            patch("src.server.utils.multimodal_context.upload_bytes", return_value=True) as mock_upload,
             patch("src.server.utils.multimodal_context.get_public_url", return_value="url"),
         ):
-            await build_attachment_metadata([ctx])
+            await _meta(_inline(f"data:image/png;base64,{ABC}", "img"))
             key = mock_upload.call_args[0][0]
-            # Should be attachments/<batch_id>/img.png, no double //
+            # attachments/<batch_id>/<file id>/img.png, no double //
             parts = key.split("/")
             assert parts[0] == "attachments"
-            assert len(parts) == 3  # attachments / batch / filename
+            assert len(parts) == 4 and all(parts)
 
     # --- REGRESSION: newline in description must not reach S3 key ---
 
@@ -262,12 +276,11 @@ class TestBuildAttachmentMetadata:
             "Interval: Daily\n"
             "Date range: 2024-04-01 to 2026-03-27 (500 bars)"
         )
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description=desc)
         with (
-            patch("src.server.utils.multimodal_context.upload_base64", return_value=True) as mock_upload,
+            patch("src.server.utils.multimodal_context.upload_bytes", return_value=True) as mock_upload,
             patch("src.server.utils.multimodal_context.get_public_url", return_value="url"),
         ):
-            await build_attachment_metadata([ctx], thread_id="t1")
+            await _meta(_inline(f"data:image/png;base64,{ABC}", desc), thread_id="t1")
             key = mock_upload.call_args[0][0]
             assert "\n" not in key
             assert "\r" not in key
@@ -289,18 +302,21 @@ class TestInjectMultimodalContext:
         assert result == msgs
 
     def test_empty_messages_returns_unchanged(self):
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc")
-        result = inject_multimodal_context([], [ctx])
+        result = inject_multimodal_context([], [_native(f"data:image/png;base64,{ABC}")])
         assert result == []
+
+    def test_only_files_routed_native_go_in(self):
+        msgs = [{"role": "user", "content": "hello"}]
+        result = inject_multimodal_context(msgs, [_inline(f"data:image/png;base64,{ABC}")])
+        assert result[0]["content"] == "hello"
 
     def test_image_merges_into_user_message(self):
         msgs = [{"role": "user", "content": "describe this"}]
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="chart")
-        result = inject_multimodal_context(msgs, [ctx])
+        result = inject_multimodal_context(msgs, [_native(f"data:image/png;base64,{ABC}", "chart")])
         assert len(result) == 1  # merged, not inserted
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        assert any(b.get("type") == "image_url" for b in blocks)
+        assert {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{ABC}"}} in blocks
         assert any("chart" in b.get("text", "") for b in blocks)
         # Original text is last
         assert blocks[-1] == {"type": "text", "text": "describe this"}
@@ -309,18 +325,18 @@ class TestInjectMultimodalContext:
         """The onboarding kickoff opens with images and no text of the user's;
         an empty text block is one some providers refuse."""
         msgs = [{"role": "user", "content": ""}]
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="positions")
-        blocks = inject_multimodal_context(msgs, [ctx])[0]["content"]
+        blocks = inject_multimodal_context(
+            msgs, [_native(f"data:image/png;base64,{ABC}", "positions")]
+        )[0]["content"]
         assert any(b.get("type") == "image_url" for b in blocks)
         assert all(b.get("text", "x").strip() for b in blocks if b.get("type") == "text")
 
     def test_pdf_merges_file_block(self):
         msgs = [{"role": "user", "content": "summarize"}]
-        ctx = MultimodalContext(type="image", data="data:application/pdf;base64,abc", description="report")
-        result = inject_multimodal_context(msgs, [ctx])
+        result = inject_multimodal_context(msgs, [_native(f"data:application/pdf;base64,{ABC}", "report")])
         assert len(result) == 1  # merged
         blocks = result[0]["content"]
-        assert any(b.get("type") == "file" for b in blocks)
+        assert {"type": "file", "base64": ABC, "mime_type": "application/pdf", "filename": "report", "unsaved": True} in blocks
         assert any("report" in b.get("text", "") for b in blocks)
 
     def test_merges_into_last_user_message(self):
@@ -330,8 +346,7 @@ class TestInjectMultimodalContext:
             {"role": "assistant", "content": "reply"},
             {"role": "user", "content": "second"},
         ]
-        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc")
-        result = inject_multimodal_context(msgs, [ctx])
+        result = inject_multimodal_context(msgs, [_native(f"data:image/png;base64,{ABC}")])
         # Same message count, last user message now has list content
         assert len(result) == 4
         assert isinstance(result[3]["content"], list)
@@ -348,8 +363,11 @@ class TestPdfPageCounts:
         import io
         import threading
         import time
+        from types import SimpleNamespace
 
         import pypdf
+
+        from src.server.handlers.chat.attachments import attach_request_files
 
         def pdf(pages: int) -> str:
             writer = pypdf.PdfWriter()
@@ -359,10 +377,7 @@ class TestPdfPageCounts:
             writer.write(out)
             return "data:application/pdf;base64," + base64.b64encode(out.getvalue()).decode()
 
-        contexts = [
-            *(MultimodalContext(type="pdf", data=pdf(n)) for n in (1, 2, 3)),
-            MultimodalContext(type="image", data="data:image/png;base64,abc"),
-        ]
+        files = [_inline(pdf(n), f"{n}.pdf", "pdf") for n in (1, 2, 3)]
         threads = set()
         real = pypdf.PdfReader
 
@@ -372,5 +387,13 @@ class TestPdfPageCounts:
             return real(stream, *args, **kwargs)
 
         with patch.object(pypdf, "PdfReader", reader):
-            assert await pdf_page_counts(contexts) == [1, 2, 3, None]
+            await attach_request_files(
+                [{"role": "user", "content": "read"}],
+                TurnAttachments(files),
+                None,
+                "model",
+                SimpleNamespace(input_modalities=["text", "pdf"]),
+                project=None,
+            )
+        assert [f.pages for f in files] == [1, 2, 3]
         assert len(threads) == 1 and threading.main_thread() not in threads

@@ -28,7 +28,7 @@ from ptc_agent.agent.middleware.file_operations.multimodal_strip import (
 )
 from src.llms.llm import COMMON_IMAGE_TYPES, get_image_types
 from src.server.models.additional_context import MultimodalContext
-from src.server.utils.multimodal_context import inject_multimodal_context
+from src.server.utils.multimodal_context import inject_multimodal_context, inline_attachment
 
 
 def _encode(size, fmt="PNG", **options) -> bytes:
@@ -342,10 +342,9 @@ def _read(path: str, raw: bytes):
 def _upload(raw: bytes, saved_to: str | None):
     """An attachment as the turn injects it, labelled with its sandbox path if any."""
     data = f"data:image/png;base64,{base64.b64encode(raw).decode()}"
-    ctx = MultimodalContext(type="image", data=data, description="tall (1).png")
-    [message] = inject_multimodal_context(
-        [{"role": "user", "content": "look"}], [ctx], file_paths=[saved_to]
-    )
+    att = inline_attachment(MultimodalContext(type="image", data=data, description="tall (1).png"))
+    att.route, att.path = "native", saved_to
+    [message] = inject_multimodal_context([{"role": "user", "content": "look"}], [att])
     return [HumanMessage(content=message["content"])]
 
 

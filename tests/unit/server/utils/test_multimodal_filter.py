@@ -3,16 +3,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.server.models.additional_context import MultimodalContext
+from src.server.models.chat_attachment import NATIVE_MAX_BYTES
+from src.server.services.chat_attachment_turns import save_attachments
 from src.server.utils.multimodal_context import (
     _ext_from_desc,
     build_file_reminder,
     build_unsupported_reminder,
-    filter_multimodal_by_capability,
     inject_multimodal_context,
+    inline_attachment,
     parse_multimodal_contexts,
-    upload_to_sandbox,
+    route_for,
 )
-from src.server.models.additional_context import MultimodalContext
 
 
 def _make_image_context():
@@ -45,6 +47,24 @@ def _make_csv_context():
     )
 
 
+def _image():
+    return inline_attachment(_make_image_context())
+
+
+def _pdf():
+    return inline_attachment(_make_pdf_context())
+
+
+def _csv():
+    return inline_attachment(_make_csv_context())
+
+
+def _native(att, path=None):
+    att.route = "native"
+    att.path = path
+    return att
+
+
 def _mock_sandbox():
     sandbox = AsyncMock()
     sandbox.normalize_path = lambda p, project=None: f"/home/workspace/{p}"
@@ -53,131 +73,70 @@ def _mock_sandbox():
     return sandbox
 
 
-# -- filter_multimodal_by_capability ------------------------------------------
+# -- route_for -------------------------------------------------------------------
 
 
-class TestFilterMultimodalByCapability:
-    def test_all_supported(self):
-        contexts = [_make_image_context(), _make_image_context()]
-        supported, unsupported, file_only = filter_multimodal_by_capability(
-            contexts, ["text", "image", "pdf"]
-        )
-        assert len(supported) == 2
-        assert len(unsupported) == 0
-        assert len(file_only) == 0
+class TestRouteFor:
+    def test_what_the_model_takes_goes_in_natively(self):
+        assert [route_for(a, ["text", "image", "pdf"]) for a in (_image(), _pdf())] == ["native", "native"]
 
-    def test_all_unsupported(self):
-        contexts = [_make_image_context(), _make_pdf_context()]
-        supported, unsupported, file_only = filter_multimodal_by_capability(
-            contexts, ["text"]
-        )
-        assert len(supported) == 0
-        assert len(unsupported) == 2
-        assert len(file_only) == 0
+    def test_what_it_does_not_is_unsupported(self):
+        assert [route_for(a, ["text"]) for a in (_image(), _pdf())] == ["unsupported", "unsupported"]
 
     def test_mixed_image_supported_pdf_not(self):
-        contexts = [_make_image_context(), _make_pdf_context()]
-        supported, unsupported, file_only = filter_multimodal_by_capability(
-            contexts, ["text", "image"]
-        )
-        assert len(supported) == 1  # image
-        assert len(unsupported) == 1  # pdf
-        assert len(file_only) == 0
-
-    def test_pdf_supported_image_not(self):
-        contexts = [_make_image_context(), _make_pdf_context()]
-        supported, unsupported, file_only = filter_multimodal_by_capability(
-            contexts, ["text", "pdf"]
-        )
-        assert len(supported) == 1  # pdf
-        assert len(unsupported) == 1  # image
-        assert len(file_only) == 0
-
-    def test_empty_contexts(self):
-        supported, unsupported, file_only = filter_multimodal_by_capability([], ["text"])
-        assert supported == []
-        assert unsupported == []
-        assert file_only == []
+        assert [route_for(a, ["text", "image"]) for a in (_image(), _pdf())] == ["native", "unsupported"]
 
     def test_file_only_bypasses_capability_check(self):
-        """Non-image/non-PDF files go to file_only, not unsupported."""
-        contexts = [_make_csv_context()]
-        supported, unsupported, file_only = filter_multimodal_by_capability(
-            contexts, ["text"]
-        )
-        assert len(supported) == 0
-        assert len(unsupported) == 0
-        assert len(file_only) == 1
+        """Non-image/non-PDF files are files on every model, never unsupported."""
+        assert route_for(_csv(), ["text"]) == "file"
+        assert route_for(_csv(), ["text", "image", "pdf"]) == "file"
 
-    def test_mixed_all_three_categories(self):
-        """Image + PDF + CSV split into supported, unsupported, file_only."""
-        contexts = [_make_image_context(), _make_pdf_context(), _make_csv_context()]
-        supported, unsupported, file_only = filter_multimodal_by_capability(
-            contexts, ["text", "image"]  # image supported, pdf not
-        )
-        assert len(supported) == 1  # image
-        assert len(unsupported) == 1  # pdf
-        assert len(file_only) == 1  # csv
+    def test_an_unreadable_one_is_a_file_on_every_model(self):
+        assert route_for(_image(), ["text", "image"], readable=False) == "file"
+        assert route_for(_image(), ["text"], readable=False) == "file"
+
+    def test_one_too_large_for_a_request_is_a_file(self):
+        att = _image()
+        att.size = NATIVE_MAX_BYTES + 1
+        assert route_for(att, ["text", "image"]) == "file"
 
 
-# -- upload_to_sandbox ---------------------------------------------------------
+# -- save_attachments ------------------------------------------------------------
 
 
-class TestUploadToSandbox:
+class TestSaveAttachments:
     @pytest.mark.asyncio
-    async def test_image_upload_returns_relative_path(self):
+    async def test_image_is_saved_at_a_relative_path(self):
         sandbox = _mock_sandbox()
-        contexts = [_make_image_context()]
-        paths = await upload_to_sandbox(contexts, sandbox)
-        assert len(paths) == 1
-        assert paths[0] is not None
-        assert "uploads/" in paths[0]
-        assert not paths[0].startswith("/")  # must be relative
-        assert paths[0].startswith("work/uploads/")
-        sandbox.aupload_file_bytes.assert_called_once()
+        [att] = files = [_image()]
+        await save_attachments(files, sandbox, project=None)
+        assert att.path is not None
+        assert not att.path.startswith("/")  # must be relative
+        assert att.path.startswith("work/uploads/")
+        sandbox.aupload_file_bytes.assert_called_once_with(f"/home/workspace/{att.path}", b"fake-png-data")
 
     @pytest.mark.asyncio
-    async def test_pdf_upload_returns_path(self):
+    async def test_extensions_come_from_the_type(self):
         sandbox = _mock_sandbox()
-        contexts = [_make_pdf_context()]
-        paths = await upload_to_sandbox(contexts, sandbox)
-        assert len(paths) == 1
-        assert paths[0] is not None
-        assert ".pdf" in paths[0]
+        files = [_pdf(), _csv()]
+        await save_attachments(files, sandbox, project=None)
+        assert files[0].path.endswith(".pdf") and files[1].path.endswith(".csv")
 
     @pytest.mark.asyncio
-    async def test_csv_upload_returns_path_with_ext(self):
-        sandbox = _mock_sandbox()
-        contexts = [_make_csv_context()]
-        paths = await upload_to_sandbox(contexts, sandbox)
-        assert len(paths) == 1
-        assert paths[0] is not None
-        assert ".csv" in paths[0]
-
-    @pytest.mark.asyncio
-    async def test_upload_failure_returns_none(self):
+    async def test_a_failed_write_leaves_no_path(self):
         sandbox = _mock_sandbox()
         sandbox.aupload_file_bytes = AsyncMock(side_effect=Exception("upload failed"))
-        contexts = [_make_image_context()]
-        paths = await upload_to_sandbox(contexts, sandbox)
-        assert len(paths) == 1
-        assert paths[0] is None
+        [att] = files = [_image()]
+        await save_attachments(files, sandbox, project=None)
+        assert att.path is None
 
     @pytest.mark.asyncio
-    async def test_multiple_uploads_returns_parallel_list(self):
-        sandbox = _mock_sandbox()
-        contexts = [_make_image_context(), _make_pdf_context()]
-        paths = await upload_to_sandbox(contexts, sandbox)
-        assert len(paths) == 2
-        assert all(p is not None for p in paths)
-
-    @pytest.mark.asyncio
-    async def test_upload_false_returns_none(self):
+    async def test_a_refused_write_leaves_no_path(self):
         sandbox = _mock_sandbox()
         sandbox.aupload_file_bytes = AsyncMock(return_value=False)
-        contexts = [_make_image_context()]
-        paths = await upload_to_sandbox(contexts, sandbox)
-        assert paths[0] is None
+        [att] = files = [_image()]
+        await save_attachments(files, sandbox, project=None)
+        assert att.path is None
 
 
 # -- parse_multimodal_contexts ------------------------------------------------
@@ -227,7 +186,7 @@ class TestParseMultimodalContexts:
 class TestInjectMultimodalContext:
     def test_string_content_converted_to_list(self):
         messages = [{"role": "user", "content": "Analyze this"}]
-        result = inject_multimodal_context(messages, [_make_image_context()])
+        result = inject_multimodal_context(messages, [_native(_image())])
         content = result[0]["content"]
         assert isinstance(content, list)
         # Image blocks prepended, then text
@@ -240,7 +199,7 @@ class TestInjectMultimodalContext:
         messages = [{"role": "user", "content": [
             {"type": "text", "text": "existing text"},
         ]}]
-        result = inject_multimodal_context(messages, [_make_image_context()])
+        result = inject_multimodal_context(messages, [_native(_image())])
         content = result[0]["content"]
         # Image blocks come first, then existing text
         assert content[-1] == {"type": "text", "text": "existing text"}
@@ -249,35 +208,32 @@ class TestInjectMultimodalContext:
 
     def test_with_file_paths_includes_path_note(self):
         messages = [{"role": "user", "content": "Look at this"}]
-        result = inject_multimodal_context(
-            messages, [_make_image_context()], file_paths=["/uploads/test.png"]
-        )
+        result = inject_multimodal_context(messages, [_native(_image(), "/uploads/test.png")])
         content = result[0]["content"]
         assert "(saved to /uploads/test.png)" in content[0]["text"]
 
     def test_without_file_paths_no_path_note(self):
         messages = [{"role": "user", "content": "Look at this"}]
-        result = inject_multimodal_context(messages, [_make_image_context()])
+        result = inject_multimodal_context(messages, [_native(_image())])
         content = result[0]["content"]
         assert "(saved to" not in content[0]["text"]
 
-    def test_non_image_non_pdf_skipped(self):
+    def test_files_not_routed_native_are_skipped(self):
         messages = [{"role": "user", "content": "Check data"}]
-        result = inject_multimodal_context(messages, [_make_csv_context()])
-        # CSV should be skipped, content stays as string
+        result = inject_multimodal_context(messages, [_csv(), _image()])
         assert result[0]["content"] == "Check data"
 
     def test_empty_messages_unchanged(self):
-        assert inject_multimodal_context([], [_make_image_context()]) == []
+        assert inject_multimodal_context([], [_native(_image())]) == []
 
     def test_no_user_message_unchanged(self):
         messages = [{"role": "assistant", "content": "hello"}]
-        result = inject_multimodal_context(messages, [_make_image_context()])
+        result = inject_multimodal_context(messages, [_native(_image())])
         assert result[0]["content"] == "hello"
 
     def test_pdf_content_block(self):
         messages = [{"role": "user", "content": "Read this"}]
-        result = inject_multimodal_context(messages, [_make_pdf_context()])
+        result = inject_multimodal_context(messages, [_native(_pdf())])
         content = result[0]["content"]
         assert isinstance(content, list)
         assert any(b.get("type") == "file" for b in content)
@@ -289,7 +245,7 @@ class TestInjectMultimodalContext:
             {"role": "assistant", "content": "hi"},
             {"role": "user", "content": "Check this"},
         ]
-        result = inject_multimodal_context(messages, [_make_image_context()])
+        result = inject_multimodal_context(messages, [_native(_image())])
         assert len(result) == 2  # same count, no insertion
 
 
