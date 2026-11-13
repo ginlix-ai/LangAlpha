@@ -8,9 +8,8 @@ const { randomBytes } = require('node:crypto')
 const { app, dialog, shell, ipcMain } = require('electron')
 
 const config = require('./config')
-const origins = require('./origins')
 const { forDisplay } = require('./redact')
-const { senderWindow } = require('./sender')
+const { appSenderWindow } = require('./sender')
 const {
   unsupportedReason, serviceOf, scriptUrlFrom, parseState, pidOf, toStatus, unsupportedStatus, menuView,
 } = require('./remoteControlState')
@@ -546,12 +545,8 @@ function createRemoteControl({
  * but runs as no origin, and a file the agent wrote can be served that way.
  */
 function appWindowOf(event) {
-  return senderWindow(event, (win) => {
-    const from = win.webContents.getURL()
-    const frame = event.senderFrame
-    if (origins.isApp(from) && frame === win.webContents.mainFrame && origins.isApp(frame.origin)) return true
-    console.warn(`[remote] a request from '${forDisplay(from)}' is not the app's; refusing`)
-    return false
+  return appSenderWindow(event, {
+    onRefuse: (win) => console.warn(`[remote] a request from '${forDisplay(win.webContents.getURL())}' is not the app's; refusing`),
   })
 }
 

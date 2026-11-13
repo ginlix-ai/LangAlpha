@@ -134,6 +134,10 @@ function normalizeUrl(value) {
  * leaves the OS to pick one, so a hosted magic link can open a build pointed at
  * localhost, which cannot redeem it.
  *
+ * The bundle id rides along because Windows needs it at runtime too: a toast
+ * is filed under the AppUserModelID, and one that differs from the installer's
+ * shortcut is never shown.
+ *
  * The helper label is the third: the launchd label of the remote-control agent
  * this edition's bundle carries, and the stem of its plist. launchd keeps one job
  * per label, so two editions sharing it would be one job to macOS, and turning
@@ -144,13 +148,18 @@ function normalizeUrl(value) {
  * silent everywhere else.
  */
 const IDENTITY = {
-  saas: { appName: 'LangAlpha', scheme: 'langalpha', helperLabel: 'ai.langalpha.desktop.helper' },
-  oss: { appName: 'LangAlpha OSS', scheme: 'langalpha-oss', helperLabel: 'ai.langalpha.desktop.oss.helper' },
+  saas: { appId: 'ai.langalpha.desktop', appName: 'LangAlpha', scheme: 'langalpha', helperLabel: 'ai.langalpha.desktop.helper' },
+  oss: { appId: 'ai.langalpha.desktop.oss', appName: 'LangAlpha OSS', scheme: 'langalpha-oss', helperLabel: 'ai.langalpha.desktop.oss.helper' },
 }
 
 module.exports = Object.freeze({
   edition: merged.edition,
   isSaas: merged.edition === 'saas',
+  /**
+   * The bundle id electron-builder stamps (`appId`). Windows also files
+   * notifications under it, so `app.setAppUserModelId` must say the same.
+   */
+  appId: IDENTITY[merged.edition].appId,
   /** Display name, `.app` filename, and the directory userData is derived from. */
   appName: IDENTITY[merged.edition].appName,
   /** The custom scheme this edition registers, without the `://`. */

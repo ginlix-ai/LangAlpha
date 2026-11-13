@@ -8,7 +8,8 @@
  * one HTTP call and fans the result back out across the per-symbol keys.
  *
  * Missing rows (unknown/unresolvable symbols the backend drops) surface as
- * `quote === undefined` — never an error.
+ * `quote === undefined`, not an error. A refresh that failed is an error, which
+ * keeps the last row on screen and its `dataUpdatedAt` where it was.
  */
 import { useCallback, useMemo } from 'react';
 import { queryOptions, useQueries, useQueryClient, type QueryClient } from '@tanstack/react-query';
@@ -29,6 +30,8 @@ export interface UseQuotesOptions {
 export interface UseQuotesResult {
   /** Normalized-key → quote row (undefined when the symbol has no quote). */
   quotes: Record<string, QuoteRow | undefined>;
+  /** Normalized-key → no answer yet (never fetched, or its first fetch in flight), as opposed to no quote to be had. */
+  pending: Record<string, boolean>;
   isLoading: boolean;
   isFetching: boolean;
   refetch: () => void;
@@ -89,12 +92,14 @@ export function useQuotes(symbols: string[], options: UseQuotesOptions = {}): Us
   // re-renders (dataUpdatedAt moves on every fetch AND every WS write-through).
   const signature = results.map((r) => `${r.status}:${r.dataUpdatedAt}`).join('|');
 
-  const quotes = useMemo(() => {
+  const { quotes, pending } = useMemo(() => {
     const out: Record<string, QuoteRow | undefined> = {};
+    const waiting: Record<string, boolean> = {};
     results.forEach((r, i) => {
       out[keys[i]] = (r.data ?? undefined) as QuoteRow | undefined;
+      waiting[keys[i]] = r.status === 'pending';
     });
-    return out;
+    return { quotes: out, pending: waiting };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signature, keys]);
 
@@ -107,7 +112,7 @@ export function useQuotes(symbols: string[], options: UseQuotesOptions = {}): Us
     });
   }, [keys, queryClient]);
 
-  return { quotes, isLoading, isFetching, refetch };
+  return { quotes, pending, isLoading, isFetching, refetch };
 }
 
 export interface UseQuoteOptions extends UseQuotesOptions {}

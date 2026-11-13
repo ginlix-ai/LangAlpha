@@ -12,6 +12,7 @@ import { GeneralPanel } from './panels/GeneralPanel';
 import { AppearancePanel } from './panels/AppearancePanel';
 import { ChatPanel } from './panels/ChatPanel';
 import { ArtifactsPanel } from './panels/ArtifactsPanel';
+import { DesktopPanel } from './panels/DesktopPanel';
 import { AgentPanel } from './panels/AgentPanel';
 import { ModelsPanel } from './panels/ModelsPanel';
 import { TradingPermissionSection } from './panels/TradingPermissionSection';
@@ -53,6 +54,7 @@ function SectionBody({ section }: { section: Section }) {
     case 'appearance': return <AppearancePanel />;
     case 'chat': return <ChatPanel />;
     case 'artifacts': return <ArtifactsPanel />;
+    case 'desktop': return <DesktopPanel />;
     case 'agent': return <AgentPanel />;
     case 'model': return <ModelsPanel />;
     case 'integrations': return <IntegrationsPanel />;

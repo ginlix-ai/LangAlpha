@@ -3,6 +3,7 @@
  */
 import { api } from '@/api/client';
 import { displaySpelling, venueLabelForSymbol } from '@/lib/bars/exchanges';
+import { queryKeys } from '@/lib/queryKeys';
 
 export interface MarketStatusData {
   market?: string;
@@ -248,4 +249,28 @@ export async function fetchMarketStatus({ signal }: { signal?: AbortSignal } = {
     console.error('[API] fetchMarketStatus failed:', err?.message);
     return {};
   }
+}
+
+/**
+ * The US session, one entry for every reader (the Dashboard, a stock's page,
+ * the desktop menu bar). Each reader adds its own polling.
+ */
+export function marketStatusQuery() {
+  // A plain object, not `queryOptions`: node-environment suites import this module, and react-query reads `window` on load.
+  return {
+    queryKey: queryKeys.marketStatus(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => fetchMarketStatus({ signal }),
+    staleTime: 30_000,
+  };
+}
+
+export type MarketPhase = 'open' | 'pre' | 'after' | 'closed' | 'unknown';
+
+/** Which US session the market status describes. */
+export function marketPhase(status: MarketStatusData | null | undefined): MarketPhase {
+  if (!status || !status.market) return 'unknown';
+  if (status.earlyHours) return 'pre';
+  if (status.afterHours) return 'after';
+  if (status.market === 'open') return 'open';
+  return 'closed';
 }

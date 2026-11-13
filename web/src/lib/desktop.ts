@@ -107,8 +107,159 @@ export type RemoteControlResult =
       status: RemoteControlStatus | null;
     };
 
+/** What a desktop notification is about; the shell filters by the user's per-kind switches. */
+export type DesktopNotificationKind = 'turn' | 'needs_input' | 'wakeup' | 'automation' | 'started';
+
+export interface DesktopNotification {
+  /** The thread id. One notification per thread, so a run's start is replaced by its result. */
+  id: string;
+  kind: DesktopNotificationKind;
+  title: string;
+  /** macOS shows it on its own line; elsewhere the shell folds it into the body. */
+  subtitle?: string;
+  body: string;
+  /** The app path a click opens in the main window. */
+  path: string;
+  silent?: boolean;
+}
+
+export interface DesktopNotifyResult {
+  shown: boolean;
+  reason?: 'disabled' | 'watching' | 'unsupported';
+}
+
+export interface AttentionThread {
+  id: string;
+  title: string;
+  path: string;
+  state: 'running' | 'unread' | 'needs_input';
+}
+
+/** A symbol the quote API can price; `index` symbols are asked for as indices (GSPC, not ^GSPC). */
+export interface QuoteRef {
+  symbol: string;
+  kind: 'index' | 'stock';
+}
+
+/** One thing beside the menu bar icon: the portfolio's day, or one symbol. */
+export type MenubarItem = { kind: 'portfolio' } | QuoteRef;
+
+export type PanelSectionId = 'market' | 'portfolio' | 'watchlist' | 'agent';
+
+/** A formatted line for the menu bar, e.g. `NVDA ▼5.60%`. The shell lays them out; the page formats them. */
+export interface TrayItemText {
+  text: string;
+}
+
+export interface DesktopSettings {
+  notifications: {
+    turn: boolean;
+    needs_input: boolean;
+    wakeup: boolean;
+    automation: boolean;
+    started: boolean;
+  };
+  menubar: {
+    enabled: boolean;
+    /** What sits beside the icon, in order. Empty for the icon alone. At most 8. */
+    items: MenubarItem[];
+    /** With more than one item: one slot cycling, or up to three side by side. */
+    style: 'rotate' | 'side';
+    /** 2 to 30. */
+    rotateSeconds: number;
+    show: 'change' | 'price' | 'both';
+    /** Show the pre-market or after-hours move, tagged PM/AH, when there is one. */
+    extendedHours: boolean;
+  };
+  panel: {
+    /** All four, in display order. */
+    sections: Array<{ id: PanelSectionId; visible: boolean }>;
+    /** The market tiles, at most 4. */
+    tiles: QuoteRef[];
+    /** Null for the user's default watchlist. */
+    watchlistId: string | null;
+    /** 1 to 10. */
+    watchlistRows: number;
+  };
+  openAtLogin: boolean;
+  /** An Electron accelerator, or '' for none. */
+  shortcut: string;
+  /** Windows only: closing the last window leaves the app in the tray. */
+  keepRunningInTray: boolean;
+}
+
+/** One level deep: each group may be given in part. */
+export type DesktopSettingsPatch = {
+  [K in keyof DesktopSettings]?: DesktopSettings[K] extends object
+    ? Partial<DesktopSettings[K]>
+    : DesktopSettings[K];
+};
+
+/** The settings plus what this platform can do, so a page offers only switches that work here. */
+export interface DesktopSettingsView extends DesktopSettings {
+  support: {
+    menubarPanel: boolean;
+    trayTitle: boolean;
+    openAtLogin: boolean;
+    shortcut: boolean;
+    keepRunningInTray: boolean;
+    notificationActions: boolean;
+  };
+  /** Set when the shortcut could not be registered, usually because another app holds it. */
+  shortcutError?: string;
+}
+
+/** Commands the shell's menus send to the main window. */
+export type DesktopMenuCommand =
+  | 'new-thread'
+  | 'new-workspace'
+  | 'toggle-sidebar'
+  | 'export-pdf'
+  | 'open-settings'
+  | 'go-chief-of-staff'
+  | 'go-market'
+  | 'go-automations'
+  | 'go-orders'
+  | 'open';
+
 export interface DesktopBridge {
   readonly version: string;
+  /**
+   * Which of the shell's windows this page is in. `menubar` is the hidden
+   * window behind the menu bar icon, the only page that posts notifications.
+   * Absent on a shell older than the menu bar.
+   */
+  readonly windowRole?: 'main' | 'menubar' | 'other';
+  notify?(notification: DesktopNotification): Promise<DesktopNotifyResult>;
+  /** Remove these threads' notifications, once read anywhere. */
+  clearNotifications?(ids: string[]): void;
+  /** Dock badge and dock menu / jump list. `count` is unread plus needs-input threads. */
+  setAttention?(attention: { count: number; threads: AttentionThread[] }): void;
+  /** A notification's "Mark as read" button. Opening is handled by the shell. */
+  onNotificationAction?(
+    callback: (action: { id: string; action: 'mark-read'; path: string }) => void,
+  ): () => void;
+  /** Declare which menu commands this page handles; the shell enables only those. */
+  setMenuCommands?(commands: DesktopMenuCommand[]): void;
+  onMenuCommand?(callback: (command: { command: DesktopMenuCommand; path?: string }) => void): () => void;
+  getDesktopSettings?(): Promise<DesktopSettingsView>;
+  setDesktopSettings?(patch: DesktopSettingsPatch): Promise<DesktopSettingsView>;
+  onDesktopSettings?(callback: (settings: DesktopSettingsView) => void): () => void;
+  /**
+   * Menu bar page only: the lines beside the icon. The shell rotates or joins
+   * them (macOS), puts them in the tooltip (Windows) or atop the tray menu
+   * (Linux), by the user's own layout settings. Empty for the icon alone.
+   */
+  setTrayItems?(items: TrayItemText[], options: { refreshMs: number }): void;
+  /**
+   * Menu bar page only: the shell asks for fresh lines every `refreshMs`. A
+   * hidden page's own timers are throttled to once a minute, IPC is not.
+   */
+  onTrayRefresh?(callback: () => void): () => void;
+  /** Menu bar page only: show the main window at `path` and close the panel. */
+  openInMain?(path: string): void;
+  /** Menu bar page only: close the panel. */
+  hideMenubar?(): void;
   /** Node's process.platform: 'darwin' | 'win32' | 'linux'. */
   readonly platform: string;
   /**
@@ -139,8 +290,12 @@ export interface DesktopBridge {
    * the list, which means none of them.
    */
   readonly capabilities?: readonly string[];
-  /** Tells the shell which theme the page settled on. Added in shell 0.1.0. */
-  setTheme?(theme: 'light' | 'dark'): void;
+  /**
+   * Tells the shell which theme the page settled on, and the user's choice
+   * behind it, which the menu bar panel's material follows. Added in shell
+   * 0.1.0; a shell older than the menu bar ignores the choice.
+   */
+  setTheme?(theme: 'light' | 'dark', preference?: 'light' | 'dark' | 'auto'): void;
   openExternal?(url: string): Promise<void>;
   /**
    * Render this page to a PDF and let the user choose where it lands, with no
@@ -194,8 +349,58 @@ declare global {
   }
 }
 
+
 export const desktop: DesktopBridge | undefined =
   typeof window === 'undefined' ? undefined : window.langalphaDesktop;
+
+// Every helper below is safe to call anywhere. A browser has no bridge, an
+// older shell lacks the method, and a channel can throw once its window is
+// going; each of those is the same quiet answer, so no call site needs a guard.
+
+type Methods = {
+  [K in keyof DesktopBridge as NonNullable<DesktopBridge[K]> extends (...args: never[]) => unknown ? K : never]-?: NonNullable<
+    DesktopBridge[K]
+  >;
+};
+type Method = keyof Methods;
+type Args<K extends Method> = Methods[K] extends (...args: infer A) => unknown ? A : never;
+type Answer<K extends Method> = Methods[K] extends (...args: never[]) => infer R ? R : never;
+
+function has(name: Method): boolean {
+  return typeof desktop?.[name] === 'function';
+}
+
+function call<K extends Method>(name: K, args: Args<K>): Answer<K> | undefined {
+  const fn = desktop?.[name] as ((this: DesktopBridge, ...a: Args<K>) => Answer<K>) | undefined;
+  return fn?.call(desktop!, ...args);
+}
+
+/** Whether the shell took the call. */
+function fire<K extends Method>(name: K, ...args: Args<K>): boolean {
+  if (!has(name)) return false;
+  try {
+    call(name, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function listen<K extends Method>(name: K, ...args: Args<K>): () => void {
+  try {
+    return (call(name, args) as (() => void) | undefined) ?? (() => {});
+  } catch {
+    return () => {};
+  }
+}
+
+async function ask<K extends Method>(name: K, ...args: Args<K>): Promise<Awaited<Answer<K>> | null> {
+  try {
+    return (await call(name, args)) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Whether this page is running inside the desktop shell at all.
@@ -220,7 +425,7 @@ export function isDesktopShell(): boolean {
  * place where the browser's answer is the dangerous one.
  */
 export function canBeginMcpOAuth(): boolean {
-  return typeof desktop?.beginMcpOAuth === 'function';
+  return has('beginMcpOAuth');
 }
 
 /**
@@ -239,17 +444,11 @@ export function canBeginMcpOAuth(): boolean {
  * saw the flow. `startMcpOauth` is where that is judged.
  */
 export async function beginMcpOAuth(returnUrl: string): Promise<McpOAuthFlow | undefined> {
-  const begin = desktop?.beginMcpOAuth;
-  if (!begin) return undefined;
-  try {
-    const flow = await begin.call(desktop, returnUrl);
-    // Both halves or neither. A shell that answered without one of them cannot
-    // complete the flow, and treating that as 'no listener' puts the caller on
-    // the browser path, which still works.
-    return flow?.redirectUri && flow.flowId ? flow : undefined;
-  } catch {
-    return undefined;
-  }
+  const flow = await ask('beginMcpOAuth', returnUrl);
+  // Both halves or neither. A shell that answered without one of them cannot
+  // complete the flow, and treating that as 'no listener' puts the caller on
+  // the browser path, which still works.
+  return flow?.redirectUri && flow.flowId ? flow : undefined;
 }
 
 /**
@@ -264,15 +463,11 @@ export async function beginMcpOAuth(returnUrl: string): Promise<McpOAuthFlow | u
  * Answers whether the flow is now bound. False means the shell is no longer
  * holding this one -- a second connect in the same window supersedes the first,
  * and the loser must not go on to open a consent screen whose reply the
- * listener will refuse. Never throws: a shell too old to know the channel armed
- * nothing anyway, and reports the same false.
+ * listener will refuse. A shell too old to know the channel armed nothing
+ * anyway, and reports the same false.
  */
 export async function bindMcpOAuth(flowId: string, state: string): Promise<boolean> {
-  try {
-    return (await desktop?.bindMcpOAuth?.(flowId, state)) === true;
-  } catch {
-    return false;
-  }
+  return (await ask('bindMcpOAuth', flowId, state)) === true;
 }
 
 /**
@@ -281,57 +476,136 @@ export async function bindMcpOAuth(flowId: string, state: string): Promise<boole
  * `beginMcpOAuth` has to be asked before the start request, because its answer
  * travels with it — so a start that fails leaves the shell holding a flow for a
  * code nobody is going to send. Saying so frees it now rather than at the
- * timeout, which arrives minutes later and reloads the window.
- *
- * Never throws and never reports: a shell that cannot hear this still recovers
- * on its own, just later, and there is nothing the page would do differently.
+ * timeout, which arrives minutes later and reloads the window. Never reports: a
+ * shell that cannot hear this still recovers on its own, just later.
  */
 export async function cancelMcpOAuth(flowId: string): Promise<void> {
-  try {
-    await desktop?.cancelMcpOAuth?.(flowId);
-  } catch {
-    // A shell too old to know the channel, or one already gone.
-  }
+  await ask('cancelMcpOAuth', flowId);
 }
 
 /**
  * Whether this shell can turn remote control on and off again. All three
- * methods, each detected: offering a switch the shell could not turn back
- * off would leave the user with no way out but System Settings.
+ * methods: offering a switch the shell could not turn back off would leave the
+ * user with no way out but System Settings.
  */
 export function canRemoteControl(): boolean {
-  return (
-    typeof desktop?.getRemoteControl === 'function' &&
-    typeof desktop.enableRemoteControl === 'function' &&
-    typeof desktop.disableRemoteControl === 'function'
-  );
+  return has('getRemoteControl') && has('enableRemoteControl') && has('disableRemoteControl');
 }
 
-/** Null wherever there is no answer: a browser, an older shell, a channel that threw. */
-export async function getRemoteControl(): Promise<RemoteControlStatus | null> {
-  try {
-    return (await desktop?.getRemoteControl?.()) ?? null;
-  } catch {
-    return null;
-  }
+export function getRemoteControl(): Promise<RemoteControlStatus | null> {
+  return ask('getRemoteControl');
 }
 
-/** Never rejects: a shell that cannot be asked, or gave no answer, fails as `unavailable`. */
+/** A shell that cannot be asked, or gave no answer, fails as `unavailable`. */
 export async function enableRemoteControl(scriptUrl: string): Promise<RemoteControlResult> {
-  try {
-    const result = await desktop?.enableRemoteControl?.(scriptUrl);
-    if (result) return result;
-  } catch {
-    // A shell too old to know the channel, or one already gone.
-  }
-  return { ok: false, error: 'unavailable', status: null };
+  return (await ask('enableRemoteControl', scriptUrl)) ?? { ok: false, error: 'unavailable', status: null };
 }
 
 /** The status it leaves, or null when the shell could not be asked. */
-export async function disableRemoteControl(): Promise<RemoteControlStatus | null> {
-  try {
-    return (await desktop?.disableRemoteControl?.()) ?? null;
-  } catch {
-    return null;
-  }
+export function disableRemoteControl(): Promise<RemoteControlStatus | null> {
+  return ask('disableRemoteControl');
+}
+
+/**
+ * Whether this page is the hidden window behind the menu bar icon, the one
+ * page that posts notifications and sets the dock badge. False on a shell
+ * older than the menu bar, which reports no role at all.
+ */
+export function isMenubarWindow(): boolean {
+  return desktop?.windowRole === 'menubar';
+}
+
+/**
+ * Whether this page is the app's main window. A shell older than window roles
+ * reports none, and is taken as main when it can send menu commands at all,
+ * since that shell has only the one window that could.
+ */
+export function isMainWindow(): boolean {
+  const role = desktop?.windowRole;
+  return role === 'main' || (role === undefined && has('onMenuCommand'));
+}
+
+export function canNotify(): boolean {
+  return has('notify');
+}
+
+/** Posting nothing (no method, a channel that threw) answers `unsupported` rather than rejecting. */
+export async function desktopNotify(notification: DesktopNotification): Promise<DesktopNotifyResult> {
+  return (await ask('notify', notification)) ?? { shown: false, reason: 'unsupported' };
+}
+
+export function clearDesktopNotifications(ids: string[]): void {
+  if (ids.length) fire('clearNotifications', ids);
+}
+
+export function desktopSetAttention(attention: { count: number; threads: AttentionThread[] }): void {
+  fire('setAttention', attention);
+}
+
+export function onNotificationAction(
+  callback: (action: { id: string; action: 'mark-read'; path: string }) => void,
+): () => void {
+  return listen('onNotificationAction', callback);
+}
+
+export function canReceiveMenuCommands(): boolean {
+  return has('onMenuCommand');
+}
+
+export function setMenuCommands(commands: DesktopMenuCommand[]): void {
+  fire('setMenuCommands', commands);
+}
+
+export function onMenuCommand(callback: (command: { command: DesktopMenuCommand; path?: string }) => void): () => void {
+  return listen('onMenuCommand', callback);
+}
+
+/**
+ * Whether Settings shows its Desktop app section. Reading and writing both: a
+ * section that could show the values but not change them would only mislead.
+ */
+export function canDesktopSettings(): boolean {
+  return has('getDesktopSettings') && has('setDesktopSettings');
+}
+
+export function getDesktopSettings(): Promise<DesktopSettingsView | null> {
+  return ask('getDesktopSettings');
+}
+
+/** The settings the shell holds after the change, or null when it could not be asked. */
+export function setDesktopSettings(patch: DesktopSettingsPatch): Promise<DesktopSettingsView | null> {
+  return ask('setDesktopSettings', patch);
+}
+
+/** Settings changed anywhere: another window, the tray menu. */
+export function onDesktopSettings(callback: (settings: DesktopSettingsView) => void): () => void {
+  return listen('onDesktopSettings', callback);
+}
+
+export function canSetTrayItems(): boolean {
+  return has('setTrayItems');
+}
+
+/** Menu bar page only: the lines beside the icon, [] for the icon alone. */
+export function setTrayItems(items: TrayItemText[], options: { refreshMs: number }): void {
+  fire('setTrayItems', items, options);
+}
+
+export function onTrayRefresh(callback: () => void): () => void {
+  return listen('onTrayRefresh', callback);
+}
+
+/**
+ * Show the main window at `path`, closing the menu bar panel. A shell without
+ * the call still sends any app address but its own page to the main window,
+ * so a plain navigation reaches the same place there, and in a browser it
+ * simply goes.
+ */
+export function openInMain(path: string): void {
+  if (!fire('openInMain', path)) window.location.assign(path);
+}
+
+/** Menu bar page only: close the panel. */
+export function hideMenubar(): void {
+  fire('hideMenubar');
 }

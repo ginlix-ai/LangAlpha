@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { searchStocks, fetchMarketStatus, normalizeSymbolInput, readMarkedTicker, readTypedTicker, sessionQuote } from '../marketUtils';
+import { searchStocks, fetchMarketStatus, marketPhase, normalizeSymbolInput, readMarkedTicker, readTypedTicker, sessionQuote } from '../marketUtils';
 
 // Mock the api client
 vi.mock('@/api/client', () => ({
@@ -278,5 +278,16 @@ describe('sessionQuote', () => {
   it('in the regular session, keeps the row figures as they are', () => {
     const open = { market: 'open', afterHours: false, earlyHours: false };
     expect(sessionQuote(open, { ...blended, session: ahRow })).toEqual({ headline: { price: 331.9, change: -7.91, pct: -2.34 }, ext: null });
+  });
+});
+
+describe('marketPhase', () => {
+  it('reads the session from the status', () => {
+    expect(marketPhase(null)).toBe('unknown');
+    expect(marketPhase({})).toBe('unknown');
+    expect(marketPhase({ market: 'open' })).toBe('open');
+    expect(marketPhase({ market: 'extended-hours', earlyHours: true })).toBe('pre');
+    expect(marketPhase({ market: 'extended-hours', afterHours: true })).toBe('after');
+    expect(marketPhase({ market: 'closed' })).toBe('closed');
   });
 });

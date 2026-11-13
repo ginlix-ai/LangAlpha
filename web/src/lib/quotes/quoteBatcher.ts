@@ -17,11 +17,14 @@
  *
  * In-flight dedup: a symbol already being fetched in the current window is not
  * re-requested — the pending promise is returned instead. Unknown/unresolvable
- * symbols (dropped from the batch response) resolve to `null`, never throw, so
- * consumers surface `quote === undefined` without crashing.
+ * symbols (dropped from the batch response) resolve to `null`, so consumers
+ * surface `quote === undefined` without crashing. A failed batch rejects, as
+ * does one that leaves out a symbol already holding a row: React Query then
+ * keeps that row and its `dataUpdatedAt`, so a refresh that did not happen
+ * never passes for one that did.
  */
 import type { QueryClient } from '@tanstack/react-query';
-import { getSnapshotStocks, getSnapshotIndexes } from './snapshotApi';
+import { fetchSnapshotBatch } from './snapshotApi';
 import { snapshotRowSpellings } from './quoteAdapters';
 import { normalizeIndexKey } from '@/lib/marketUtils';
 import { queryKeys } from '@/lib/queryKeys';
@@ -115,9 +118,7 @@ export class QuoteBatcher {
 
     const byKey = new Map<string, QuoteRow>();
     try {
-      const resp = isIndex
-        ? await getSnapshotIndexes(keys)
-        : await getSnapshotStocks(keys);
+      const resp = await fetchSnapshotBatch(isIndex ? 'indexes' : 'stocks', keys);
       const list = resp?.snapshots || resp?.results || resp?.data || [];
       if (Array.isArray(list)) {
         for (const wire of list) {
@@ -129,17 +130,23 @@ export class QuoteBatcher {
           }
         }
       }
-    } catch {
-      // getSnapshot* already swallow network errors and return {}; this catch is
-      // purely defensive so a thrown error never rejects a consumer's query.
-      // Every pending symbol falls through to `null` below.
+    } catch (err) {
+      for (const [key, deferred] of pool) this.settle(key, isIndex, deferred, { error: err });
+      return;
     }
 
     for (const [key, deferred] of pool) {
-      const flightKey = (isIndex ? 'i:' : 's:') + key;
+      const row = byKey.get(key);
+      // A batch can leave out a symbol it answered last time. Blanking the
+      // known price would empty a holding's row and take it out of its
+      // portfolio's total; keeping it as if refreshed would hide its age.
+      if (!row && this.queryClient.getQueryData<QuoteRow | null>(queryKeys.quote.detail(key))) {
+        this.settle(key, isIndex, deferred, { error: new Error(`No quote for ${key} in this refresh`) });
+        continue;
+      }
       // Missing / unknown symbol → null (not undefined): React Query rejects an
       // `undefined` queryFn result, and the hooks map null → `quote: undefined`.
-      const value: QuoteRow | null = byKey.get(key) ?? null;
+      const value: QuoteRow | null = row ?? null;
       this.queryClient.setQueryData(queryKeys.quote.detail(key), value);
       // A row shown under another spelling also seeds that key, so a page
       // adopting the shown spelling lands on a warm entry.
@@ -147,9 +154,14 @@ export class QuoteBatcher {
       if (shown !== key && !pool.has(shown)) {
         this.queryClient.setQueryData(queryKeys.quote.detail(shown), value);
       }
-      this.inFlight.delete(flightKey);
-      deferred.resolve(value);
+      this.settle(key, isIndex, deferred, { value });
     }
+  }
+
+  private settle(key: string, isIndex: boolean, deferred: Deferred, outcome: { value: QuoteRow | null } | { error: unknown }): void {
+    this.inFlight.delete((isIndex ? 'i:' : 's:') + key);
+    if ('error' in outcome) deferred.reject(outcome.error);
+    else deferred.resolve(outcome.value);
   }
 }
 

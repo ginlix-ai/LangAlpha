@@ -229,3 +229,14 @@ export function patchThreadSeen(
       : rows,
   );
 }
+
+/**
+ * The rows a cache entry under the `threads` prefix holds, whichever of its two
+ * shapes it is: a plain list (`{threads}`) or the gallery's infinite query
+ * (`{pages: [{threads}]}`). Empty for anything else (a detail entry).
+ */
+export function threadRowsOf(data: unknown): Thread[] {
+  const shaped = data as { threads?: unknown; pages?: Array<{ threads?: Thread[] } | null> } | null | undefined;
+  if (Array.isArray(shaped?.pages)) return shaped.pages.flatMap((page) => page?.threads ?? []);
+  return Array.isArray(shaped?.threads) ? (shaped.threads as Thread[]) : [];
+}

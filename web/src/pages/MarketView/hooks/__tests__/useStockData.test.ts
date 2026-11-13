@@ -25,7 +25,7 @@ vi.mock('@/lib/quotes', () => ({
   },
 }));
 
-vi.mock('@/lib/marketUtils', () => ({ fetchMarketStatus: () => new Promise(() => {}) }));
+vi.mock('@/lib/marketUtils', () => ({ marketStatusQuery: () => ({ queryKey: ['marketStatus'], queryFn: () => new Promise(() => {}) }) }));
 
 vi.mock('../../utils/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../utils/api')>();

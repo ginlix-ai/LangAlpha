@@ -52,8 +52,12 @@ def _jobs(final_status, **kw):
     return build_finalize_jobs(**defaults)(final_status)
 
 
+#: A settle's news jobs have their own table (``test_hook_jobs_push``).
+_NEWS_HOOKS = frozenset({"user_notification", "push"})
+
+
 def _types(jobs):
-    return sorted(j.hook_type for j in jobs)
+    return sorted(j.hook_type for j in jobs if j.hook_type not in _NEWS_HOOKS)
 
 
 @pytest.mark.parametrize("on", [False, True])
@@ -231,6 +235,7 @@ class TestBuildFinalizeJobs:
         assert a == b == {
             "run-1:burst_release",
             "run-1:user_feed",
+            "run-1:user_notification",
             "run-1:report_back",
         }
 

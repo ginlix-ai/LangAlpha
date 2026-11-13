@@ -1,0 +1,710 @@
+/* The menu bar panel. A window of its own, so it owns its viewport: nothing of
+   the app shell is mounted here. A raised surface, like the menus it sits
+   among, dense, and never wider than the window. */
+
+/* The window is a frameless panel with nothing to drag it by. index.html's
+   strip would make its top 38px a drag region, swallowing clicks there. */
+html.desktop-mac:has(.mb-root) #window-drag {
+  display: none;
+}
+
+/* The shell sizes the panel to the page's own height (Electron's preferred
+   size, the document's scroll height), clamped to what fits under the icon.
+   So nothing here may be sized by the viewport: the app's full-height body
+   and root would report the window's height back, and a scroller capped at
+   100vh would report the cap, so a panel opened small could never grow. The
+   page keeps its natural height and the document scrolls when the window is
+   shorter, with the footer stuck to the bottom. */
+html:has(.mb-root) {
+  background: var(--color-bg-elevated);
+  overscroll-behavior: contain;
+}
+
+/* No scrollbar, on any platform. The window grows with the page up to the
+   screen's height, so the page scrolls only when it is taller than the
+   screen, and a trackpad or wheel still scrolls it there. A bar, even an
+   overlay one, only drew a track along a panel that mostly had nothing to
+   scroll. */
+html:has(.mb-root) {
+  scrollbar-width: none;
+}
+
+html:has(.mb-root)::-webkit-scrollbar {
+  display: none;
+}
+
+html:has(.mb-root) body,
+html:has(.mb-root) #root {
+  height: auto;
+  background: var(--color-bg-elevated);
+}
+
+/* The panel is narrower than the phone breakpoint, so tokens.css pins the body
+   (`position: fixed`, for iOS Safari's keyboard). A fixed body leaves the
+   document no height of its own, and the shell would read the window's height
+   back as the page's. */
+html:has(.mb-root) body {
+  position: static;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.mb-root {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-family: var(--font-content);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.mb-num,
+.mb-move,
+.mb-ext {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* One line, cut short with an ellipsis. */
+.mb-status-left,
+.mb-tile-name,
+.mb-tile-price,
+.mb-tile-move,
+.mb-tile-ext,
+.mb-sym,
+.mb-hero,
+.mb-agent-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mb-t3 {
+  color: var(--color-text-tertiary);
+}
+
+/* A number still loading: a still bar the height of the text it stands for,
+   inside a wrapper that keeps the number's own width and alignment. */
+.mb-pending {
+  display: inline-block;
+  width: 3.5em;
+  height: 0.75em;
+  border-radius: 3px;
+  background: var(--color-border-muted);
+  vertical-align: middle;
+}
+
+/* ── Sections ── */
+
+.mb-section {
+  padding: 10px 12px;
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.mb-section:first-child {
+  border-top: 0;
+}
+
+.mb-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
+  margin-bottom: 4px;
+}
+
+.mb-kicker {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+.mb-aside-link,
+.mb-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+
+.mb-aside-link {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mb-link {
+  margin-top: 4px;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-border-strong);
+}
+
+.mb-aside-link:hover,
+.mb-link:hover {
+  color: var(--color-text-primary);
+}
+
+.mb-empty {
+  margin: 2px 0 0;
+  color: var(--color-text-tertiary);
+}
+
+.mb-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--color-text-quaternary);
+}
+
+.mb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    color var(--motion-quick) var(--ease-out),
+    background-color var(--motion-quick) var(--ease-out);
+}
+
+.mb-icon-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+/* A move's direction: profit, loss, or quiet. */
+.mb-move {
+  color: var(--color-text-tertiary);
+}
+
+.mb-move[data-dir='up'] {
+  color: var(--color-profit);
+}
+
+.mb-move[data-dir='down'] {
+  color: var(--color-loss);
+}
+
+/* ── Market ── */
+
+.mb-market {
+  padding-top: 12px;
+}
+
+.mb-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
+.mb-status-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-quaternary);
+}
+
+.mb-status-dot[data-phase='open'] {
+  background: var(--color-profit);
+}
+
+.mb-status-dot[data-phase='pre'],
+.mb-status-dot[data-phase='after'] {
+  background: var(--color-warning);
+}
+
+.mb-status-label {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.mb-status-left {
+  margin-left: auto;
+  color: var(--color-text-tertiary);
+}
+
+.mb-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mb-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px 7px 5px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-quick) var(--ease-out),
+    border-color var(--motion-quick) var(--ease-out);
+}
+
+.mb-tile:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-default);
+}
+
+.mb-tile-name {
+  font-size: 10.5px;
+  color: var(--color-text-tertiary);
+}
+
+.mb-tile-price,
+.mb-tile-move {
+  font-size: 11px;
+}
+
+.mb-tile-price {
+  font-weight: 500;
+}
+
+.mb-tile-spark {
+  display: block;
+  height: 16px;
+  margin-top: 3px;
+}
+
+/* ── Rows ── */
+
+.mb-rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -6px;
+  padding: 0;
+  list-style: none;
+}
+
+.mb-row-btn {
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+
+.mb-row-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.mb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 6px;
+}
+
+/* A row's figures: the official price and move, and under them the
+   extended-hours move when there is one (the row grows a line for it). */
+.mb-figs {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding: 3px 0;
+}
+
+.mb-figs-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mb-ext {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--color-text-tertiary);
+}
+
+.mb-ext-label {
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--color-text-quaternary);
+}
+
+.mb-sym {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.mb-weight {
+  font-size: 11px;
+  color: var(--color-text-quaternary);
+}
+
+.mb-price {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.mb-row-move {
+  width: 58px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+/* ── Portfolio ── */
+
+.mb-hero-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 -6px 4px;
+  padding: 2px 6px;
+}
+
+.mb-hero {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.mb-hero-change {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.mb-hero-figs {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* ── Agent ── */
+
+.mb-agent-row {
+  gap: 6px;
+}
+
+.mb-glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.mb-glyph-still {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--color-accent-primary);
+}
+
+.mb-ring {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--color-accent-primary);
+  border-radius: 50%;
+}
+
+.mb-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent-primary);
+}
+
+.mb-agent-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.mb-agent-state {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+/* ── Footer ── */
+
+.mb-footer {
+  position: sticky;
+  bottom: 0;
+  /* Above rows that form layers of their own (a fade, a transition), which
+     would otherwise paint over it as they scroll beneath. */
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-border-muted);
+  background: var(--color-bg-elevated);
+}
+
+.mb-open {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+
+.mb-open:hover {
+  background: var(--color-bg-hover);
+}
+
+/* How live the figures are: Market View's session dot, in the footer. */
+.mb-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  cursor: default;
+}
+
+.mb-live-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mb-live-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-secondary);
+  opacity: 0.5;
+}
+
+.mb-live[data-dot='live'] .mb-live-dot {
+  background: var(--color-profit);
+  opacity: 1;
+  /* motion-exempt: live-dot pulse loop, its period is its own pace */
+  animation: mb-live-pulse 2s ease-in-out infinite;
+}
+
+/* A current figure reached by polling: steady, since the pulse means a streaming tick. */
+.mb-live[data-dot='realtime'] .mb-live-dot {
+  background: var(--color-profit);
+  opacity: 1;
+}
+
+.mb-live[data-dot='closed'] .mb-live-dot {
+  opacity: 0.3;
+}
+
+/* Stale, short of the close, not refreshing or offline: a fault, unlike a delay. */
+.mb-live[data-dot='warning'] {
+  color: var(--color-warning);
+}
+
+.mb-live[data-dot='warning'] .mb-live-dot {
+  background: var(--color-warning);
+  opacity: 1;
+}
+
+/* Reduced motion slows a liveness glyph rather than stopping it (DESIGN.md). */
+@media (prefers-reduced-motion: reduce) {
+  .mb-live[data-dot='live'] .mb-live-dot {
+    /* motion-exempt: the live-dot pulse at half pace, its own period like the full one */
+    animation-duration: 4s;
+  }
+}
+
+@keyframes mb-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* ── Signed out ── */
+
+.mb-signed-out {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* The shell's smallest panel, so the message sits centered in it. */
+  min-height: 260px;
+  padding: 24px;
+  text-align: center;
+}
+
+.mb-signed-out-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.mb-signed-out-body {
+  max-width: 260px;
+  margin: 0 0 6px;
+  color: var(--color-text-secondary);
+}
+
+/* ── macOS ──
+   The panel sits on the material macOS gives its own menu bar panels (the
+   shell's vibrancy), so the page keeps its background clear and reads as one
+   of them: the system font with tabular figures rather than a code face,
+   section titles as macOS sets them, the system's green and red, filled
+   tiles instead of outlined ones, hairline separators, and a footer of plain
+   buttons. */
+
+html:has(.mb-root[data-look='mac']),
+html:has(.mb-root[data-look='mac']) body,
+html:has(.mb-root[data-look='mac']) #root,
+.mb-root[data-look='mac'] {
+  background: transparent;
+}
+
+.mb-root[data-look='mac'] {
+  --mb-font: -apple-system, BlinkMacSystemFont, 'Noto Sans SC', system-ui, sans-serif;
+  --mb-fill: rgb(255 255 255 / 0.06);
+  --mb-fill-hover: rgb(255 255 255 / 0.1);
+  --mb-hairline: rgb(255 255 255 / 0.09);
+  --mb-up: #30d158;
+  --mb-down: #ff453a;
+  --mb-bar: rgb(38 38 42);
+  font-family: var(--mb-font);
+  font-size: 12.5px;
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-theme='light'] .mb-root[data-look='mac'] {
+  --mb-fill: rgb(0 0 0 / 0.045);
+  --mb-fill-hover: rgb(0 0 0 / 0.08);
+  --mb-hairline: rgb(0 0 0 / 0.1);
+  --mb-up: #248a3d;
+  --mb-down: #d70015;
+  --mb-bar: rgb(242 242 244);
+}
+
+.mb-root[data-look='mac'] :is(.mb-num, .mb-move, .mb-ext, .mb-sym, .mb-kicker, .mb-aside-link) {
+  font-family: var(--mb-font);
+  font-variant-numeric: tabular-nums;
+}
+
+.mb-root[data-look='mac'] .mb-section {
+  margin: 0 10px;
+  padding: 10px 2px;
+  border-top-color: var(--mb-hairline);
+}
+
+.mb-root[data-look='mac'] .mb-kicker {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-text-secondary);
+}
+
+.mb-root[data-look='mac'] .mb-move[data-dir='up'],
+.mb-root[data-look='mac'] .mb-status-dot[data-phase='open'] {
+  color: var(--mb-up);
+}
+
+.mb-root[data-look='mac'] :is(.mb-status-dot[data-phase='open'], .mb-live:is([data-dot='live'], [data-dot='realtime']) .mb-live-dot) {
+  background: var(--mb-up);
+}
+
+.mb-root[data-look='mac'] .mb-move[data-dir='down'] {
+  color: var(--mb-down);
+}
+
+.mb-root[data-look='mac'] .mb-tile {
+  border: 0;
+  border-radius: 10px;
+  background: var(--mb-fill);
+  padding: 7px 8px 6px;
+}
+
+.mb-root[data-look='mac'] .mb-tile:hover,
+.mb-root[data-look='mac'] :is(.mb-row-btn, .mb-icon-btn, .mb-open):hover {
+  background: var(--mb-fill-hover);
+}
+
+.mb-root[data-look='mac'] .mb-tile-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.mb-root[data-look='mac'] .mb-tile-price {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mb-root[data-look='mac'] .mb-sym {
+  font-weight: 600;
+}
+
+.mb-root[data-look='mac'] .mb-hero {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.mb-root[data-look='mac'] .mb-ext-label {
+  letter-spacing: 0;
+}
+
+/* Rows scroll beneath the footer, so it is near solid in the material's tone.
+   Not a CSS blur: Electron draws no backdrop-filter over a window's vibrancy. */
+.mb-root[data-look='mac'] .mb-footer {
+  padding: 6px 8px;
+  border-top-color: var(--mb-hairline);
+  background: var(--mb-bar);
+}
+
+.mb-root[data-look='mac'] .mb-open {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  font-weight: 500;
+}

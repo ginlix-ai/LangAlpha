@@ -3,7 +3,7 @@ import { useMemo } from 'react';
 import { getNews, INDEX_SYMBOLS, normalizeIndexSymbol, buildIndexData } from '../utils/api';
 import { getIndex } from '../utils/indices';
 import { useQuotes } from '@/lib/quotes';
-import { fetchMarketStatus } from '@/lib/marketUtils';
+import { marketStatusQuery } from '@/lib/marketUtils';
 import type { IndexData, SparklinePoint } from '@/types/market';
 import {
   type DashboardNewsItem,
@@ -95,12 +95,10 @@ function useInfiniteNewsFeed(queryKey: (string | null)[], provider?: string, ena
  */
 export function useDashboardData(): DashboardData {
   // 1. Market Status (Polls every 60s, cached globally)
-  const { data: marketStatus = null } = useQuery<MarketStatusData | null>({
-    queryKey: ['dashboard', 'marketStatus'],
-    queryFn: fetchMarketStatus,
+  const { data: marketStatus = null } = useQuery({
+    ...marketStatusQuery(),
     refetchInterval: 60000,
     refetchIntervalInBackground: false,
-    staleTime: 30000,
   });
 
   // 2. Market Indices (Adaptive Polling: 30s open / 60s closed)

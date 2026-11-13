@@ -103,4 +103,29 @@ function chromeKeyFor(url) {
   return null
 }
 
-module.exports = { entryUrl, platformFitsMainWindow, classifyNavigation, classifyWindowOpen, chromeKeyFor }
+/**
+ * The app URL for a path the page handed over (a notification's, a Dock menu
+ * thread's), or null. Resolved against the app origin and refused unless it
+ * stays there: `//host/x` and `/\host/x` are paths to a reader and another
+ * origin to the parser.
+ */
+function appPathUrl(path) {
+  const origin = origins.appOrigin()
+  if (typeof path !== 'string' || !path.startsWith('/') || !origin) return null
+  try {
+    const url = new URL(path, origin)
+    return url.origin === new URL(origin).origin ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether the menu bar window has an app to load: the SaaS edition once this
+ * install has reached the app, the OSS edition once it has a server.
+ */
+function menubarReachable() {
+  return config.isSaas ? Boolean(store.get('reachedApp')) : Boolean(store.get('serverUrl'))
+}
+
+module.exports = { appPathUrl, menubarReachable, entryUrl, platformFitsMainWindow, classifyNavigation, classifyWindowOpen, chromeKeyFor }

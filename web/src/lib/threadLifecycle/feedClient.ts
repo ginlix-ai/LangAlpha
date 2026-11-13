@@ -26,7 +26,8 @@ import { isCacheOnlyMeta, queryKeys } from '@/lib/queryKeys';
 import { PING_STREAM_BEAT_MS } from '@/lib/streamSilence';
 import { ALL, refreshArtifactComments, refreshArtifactRecord, refreshArtifactThreads, refreshEveryArtifact } from '@/lib/artifactCache';
 import { threadFieldMutationKey } from '@/lib/threadFieldMutations';
-import { patchThreadTitle } from '@/lib/threadListCache';
+import { createEmitter } from '@/lib/emitter';
+import { patchThreadTitle, threadRowsOf } from '@/lib/threadListCache';
 import { isArchivedThreadsKey, patchThreadRows } from '@/lib/threadRowActions';
 import {
   getAuthHeaders,
@@ -35,7 +36,8 @@ import {
 import type { ArtifactCommentEvent, ArtifactRecordEvent, Thread } from '@/types/api';
 import {
   getLifecycleQueryClient,
-  markThreadSeen,
+  listenForSeenElsewhere,
+  markWatchedThreadSeen,
   setLifecycleQueryClient,
 } from './seen';
 import {
@@ -174,6 +176,23 @@ function scheduleInvalidate(workspaceId?: string | null): void {
   }, INVALIDATE_DEBOUNCE_MS);
 }
 
+const notifications = createEmitter<Record<string, unknown>>();
+
+/**
+ * Hear the payloads that may carry a notification: every `run_started` (a
+ * background one holds its start) and every `notification`. An event to act
+ * on once, not state: a reconnect replays none, losing only that alert.
+ */
+export const subscribeFeedNotifications = notifications.subscribe;
+
+function tellNotification(raw: Record<string, unknown>): void {
+  try {
+    notifications.emit(raw);
+  } catch {
+    // A surface failing must not drop the feed.
+  }
+}
+
 function onFeedEvent(raw: Record<string, unknown>): void {
   const eventName = raw.event as string | undefined;
   if (eventName === 'snapshot') {
@@ -226,10 +245,18 @@ function onFeedEvent(raw: Record<string, unknown>): void {
         evt.run_id &&
         evt.thread_id === getActiveThreadId()
       ) {
-        markThreadSeen(evt.thread_id, evt.run_id);
+        markWatchedThreadSeen(evt.thread_id, evt.run_id);
       }
+      // A background run's start carries its notification. After the store
+      // has the run, so a listener reading it sees the run it is told about.
+      if (evt.type === 'run_started') tellNotification(raw);
       return;
     }
+    // A run's end the server decided to tell the user about. The store needs
+    // nothing from it: the run_settled before it already moved the thread.
+    case 'notification':
+      tellNotification(raw);
+      return;
     case 'thread_title': {
       const qc = getLifecycleQueryClient();
       // An empty title is a real payload — clearing a title publishes "" —
@@ -410,15 +437,8 @@ function readArtifactEvent(raw: Record<string, unknown>): ArtifactCommentEvent |
  * fields) — cold caches first, then each future success via subscription. */
 function attachCacheSeeding(qc: QueryClient): void {
   const seedFromData = (data: unknown): void => {
-    // Two cache shapes live under the 'threads' prefix: plain lists
-    // ({threads}) and the gallery's infinite query ({pages: [{threads}]}).
-    const shaped = data as
-      | { threads?: Thread[]; pages?: Array<{ threads?: Thread[] }> }
-      | undefined;
-    const rows = Array.isArray(shaped?.pages)
-      ? shaped.pages.flatMap((p) => p?.threads ?? [])
-      : shaped?.threads;
-    if (Array.isArray(rows) && rows.length) seedFromListRows(rows);
+    const rows = threadRowsOf(data);
+    if (rows.length) seedFromListRows(rows);
   };
   for (const [, data] of qc.getQueriesData({ queryKey: queryKeys.threads.all })) {
     seedFromData(data);
@@ -449,7 +469,9 @@ function attachWindowHandlers(): void {
   window.addEventListener('freeze', suspend);
   window.addEventListener('pageshow', resume);
   document.addEventListener('visibilitychange', onVisibility);
+  const detachSeen = listenForSeenElsewhere();
   client.detachWindow = () => {
+    detachSeen();
     window.removeEventListener('pagehide', suspend);
     window.removeEventListener('freeze', suspend);
     window.removeEventListener('pageshow', resume);

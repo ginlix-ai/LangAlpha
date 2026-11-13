@@ -5,6 +5,7 @@ const path = require('node:path')
 const { app } = require('electron')
 
 const config = require('./config')
+const desktopSettings = require('./desktopSettings')
 
 // Deliberately a plain JSON file rather than a dependency. The shell persists a
 // handful of scalars; anything that can corrupt on write is worse than re-asking.
@@ -61,6 +62,27 @@ const DEFAULTS = {
    * upgrades, which teaches them to dismiss it without reading.
    */
   updateNotifiedVersion: null,
+  /**
+   * The user's desktop settings (notifications, the menu bar icon and what sits
+   * beside it, the panel's sections and tiles, open at login, the global
+   * shortcut), edited from the app's Settings. Its shape and validation live in
+   * desktopSettings.js; read through `normalize` like every other key here is
+   * read against its default, which also carries a file from before
+   * `menubar.items` over from its single `title`.
+   */
+  desktop: desktopSettings.DEFAULTS,
+  /**
+   * Windows: whether the user has been told, once, that closing the window left
+   * the app running in the notification area. Told every time, it is noise.
+   */
+  trayNoticeShown: false,
+}
+
+// Keys whose value is a structure rather than a scalar, each with the function
+// that reads one back into shape. A hand-edited or older file goes through it
+// field by field, so one bad value costs that field and not the group.
+const NORMALIZE = {
+  desktop: (value) => desktopSettings.normalize(value),
 }
 
 let cache = null
@@ -89,6 +111,10 @@ function load() {
   // Unknown keys are left alone: they have no reader here, and dropping them
   // would make a downgrade quietly discard a newer shell's settings.
   for (const [key, fallback] of Object.entries(DEFAULTS)) {
+    if (NORMALIZE[key]) {
+      cache[key] = NORMALIZE[key](cache[key])
+      continue
+    }
     const value = cache[key]
     const wanted = fallback === null ? 'string' : typeof fallback
     if (value === null && fallback === null) continue

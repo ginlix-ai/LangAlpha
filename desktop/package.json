@@ -16,6 +16,7 @@
     "test": "node --test --test-concurrency=1",
     "preview": "node scripts/preview.mjs",
     "icons": "node scripts/make-icons.mjs",
+    "tray-icons": "node scripts/make-tray-icons.mjs",
     "build": "node scripts/write-build-config.mjs && node scripts/make-icons.mjs && node scripts/build.mjs --dir",
     "dist": "node scripts/write-build-config.mjs && node scripts/make-icons.mjs && node scripts/build.mjs"
   },

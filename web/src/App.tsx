@@ -34,6 +34,7 @@ import { appSectionOf } from './lib/appRoutes';
 import { lazyWithMotion } from './lib/lazyWithMotion';
 import { CommandPaletteProvider } from './components/CommandPalette/CommandPaletteProvider';
 import { CreateWorkspaceHost } from './components/CreateWorkspaceHost';
+import { DesktopMenuCommands } from './lib/desktopMenuCommands/DesktopMenuCommands';
 import { setSentryUser } from './lib/sentry';
 import './App.css';
 
@@ -52,6 +53,8 @@ const SetupWizard = lazyWithMotion(() => import('./pages/Setup/SetupWizard'));
 // shell's to load rather than one of Main's routes.
 const Welcome = lazyWithMotion(() => import('./pages/Onboarding/welcome/Welcome'));
 const Legal = React.lazy(() => import('./pages/Legal/Legal'));
+// The desktop shell's menu bar panel, loaded only in that window.
+const DesktopMenubar = React.lazy(() => import('./pages/DesktopMenubar/MenubarPage'));
 const ResetPassword = React.lazy(() => import('./pages/Login/ResetPassword'));
 
 /** How long a callback may sit holding neither a session nor a stated reason
@@ -386,6 +389,7 @@ function AuthenticatedShell() {
               </main>
             </div>
             <OnboardingHostGate />
+            <DesktopMenuCommands onToggleSidebar={isMobile ? undefined : toggleSidebar} />
           </CommandPaletteProvider>
         </CreateWorkspaceHost>
       )}
@@ -504,6 +508,14 @@ function App() {
         ) : (
           <Navigate to={APP_ENTRY_PATH} replace />
         )
+      } />
+      {/* The desktop shell's menu bar window. None of the app shell, and its
+          own signed-out state rather than the entry's: a sign-in started
+          here would take over a panel too small to hold it. */}
+      <Route path="/desktop/menubar" element={
+        <Suspense fallback={null}>
+          <DesktopMenubar />
+        </Suspense>
       } />
       <Route path="/*" element={
         isLoggedIn ? <AuthenticatedShell /> : <Navigate to={APP_ENTRY_PATH} replace />

@@ -8,6 +8,11 @@ up — every settle status is representable in the snapshot. The thread events
 (title, pinned, subagents, deleted, archived, unarchived) are NOT: they have no snapshot
 representation, so a dropped publish for those is repaired only by the
 client's stream-cap reconnect, never by the reconcile.
+
+``notification`` rides its own ``user_notification`` outbox job
+(``services.notices``): a settle judged news, in the push's own words,
+for the desktop app to show. It has no snapshot form either; a lost one is a
+missed notice.
 """
 
 from __future__ import annotations
@@ -15,9 +20,12 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, Optional
 
+from src.server.contracts.notices import Notice, SettleNews
+from src.server.contracts.status import to_public
 from src.server.services.thread_lifecycle import interrupt_reason_for
 from src.server.services.workspace_status_pubsub import (
     ChannelWaitFn,
@@ -50,6 +58,8 @@ def build_lifecycle_event(
     pinned: Optional[bool] = None,
     updated_at: Optional[str] = None,
     last_seen_run_seq: Optional[int] = None,
+    origin: Optional[str] = None,
+    notification: Optional[Notice] = None,
 ) -> Dict[str, Any]:
     """The one wire shape (plan v6 §2.2). ``status`` is PUBLIC vocabulary.
 
@@ -57,6 +67,9 @@ def build_lifecycle_event(
     a wakeup's check that ended without a reply and changed nothing, on a
     thread with nothing unseen before it. The client takes it as it takes
     any seen pointer, so the settle leaves no unseen dot.
+
+    ``origin`` is where the run came from (``contracts.turn_kinds.run_origin``);
+    ``notification`` is what a desktop shows of it, worded by the server.
     """
     event: Dict[str, Any] = {
         "v": EVENT_VERSION,
@@ -76,7 +89,41 @@ def build_lifecycle_event(
         event["updated_at"] = updated_at
     if last_seen_run_seq is not None:
         event["last_seen_run_seq"] = last_seen_run_seq
+    if origin is not None:
+        event["origin"] = origin
+    if notification is not None:
+        event["notification"] = asdict(notification)
     return event
+
+
+def build_notification_event(
+    *,
+    thread_id: str,
+    workspace_id: Optional[str],
+    run_id: str,
+    run_seq: Optional[int],
+    status: str,
+    interrupt_reason: Optional[str],
+    news: SettleNews,
+) -> Dict[str, Any]:
+    """A settled run judged news (``services.notices.settle_news``), for a
+    desktop to show, in the push's own words. ``status`` is the run's raw
+    status; the event carries it public.
+
+    The notice rides under ``notification``, as a start's does on
+    ``run_started``: a top-level ``title`` is the thread's own on this feed.
+    """
+    return build_lifecycle_event(
+        type="notification",
+        thread_id=thread_id,
+        workspace_id=workspace_id,
+        run_id=run_id,
+        run_seq=run_seq,
+        status=to_public(status),
+        interrupt_reason=interrupt_reason,
+        origin=news.origin,
+        notification=news.notice,
+    )
 
 
 async def publish_user_event_strict(user_id: str, event: Dict[str, Any]) -> None:
@@ -116,6 +163,8 @@ async def publish_run_started(
     workspace_id: Optional[str],
     run_id: str,
     run_seq: Optional[int],
+    origin: Optional[str] = None,
+    notification: Optional[Notice] = None,
 ) -> None:
     await publish_user_event(
         user_id,
@@ -126,6 +175,8 @@ async def publish_run_started(
             run_id=run_id,
             run_seq=run_seq,
             status="running",
+            origin=origin,
+            notification=notification,
         ),
     )
 

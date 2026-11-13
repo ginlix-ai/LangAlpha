@@ -260,18 +260,18 @@ describe('which window a page lands in', () => {
   // install that never once reached the app, and every later launch would open
   // the app origin unauthenticated instead of platform sign-in.
   test('a completed load of the app is what retires onboarding', () => {
-    const { main, policy, store } = loadShell({ edition: 'saas' })
+    const { pageFacts, policy, store } = loadShell({ edition: 'saas' })
     assert.equal(store.get('reachedApp'), false)
     policy.classifyNavigation(APP, { isMainWindow: false })
     assert.equal(store.get('reachedApp'), false)
-    main.noteAppReached(APP, 200)
+    pageFacts.noteAppReached(APP, 200)
     assert.equal(store.get('reachedApp'), true)
   })
 
   test('a load of anything else does not', () => {
-    const { main, store } = loadShell({ edition: 'saas' })
-    main.noteAppReached('https://platform.example.com/login', 200)
-    main.noteAppReached('https://evil.example.com/dashboard', 200)
+    const { pageFacts, store } = loadShell({ edition: 'saas' })
+    pageFacts.noteAppReached('https://platform.example.com/login', 200)
+    pageFacts.noteAppReached('https://evil.example.com/dashboard', 200)
     assert.equal(store.get('reachedApp'), false)
   })
 
@@ -282,15 +282,15 @@ describe('which window a page lands in', () => {
   // never signed in, and nothing in the app could undo it.
   test('a load the server refused is not an arrival', () => {
     for (const status of [500, 502, 503, 404, 401, 0]) {
-      const { main, store } = loadShell({ edition: 'saas' })
-      main.noteAppReached(APP, status)
+      const { pageFacts, store } = loadShell({ edition: 'saas' })
+      pageFacts.noteAppReached(APP, status)
       assert.equal(store.get('reachedApp'), false, `status ${status} retired onboarding`)
     }
     // The whole 2xx/3xx range still counts, including the redirect the app
     // origin answers a signed-in user with.
     for (const status of [200, 204, 302]) {
-      const { main, store } = loadShell({ edition: 'saas' })
-      main.noteAppReached(APP, status)
+      const { pageFacts, store } = loadShell({ edition: 'saas' })
+      pageFacts.noteAppReached(APP, status)
       assert.equal(store.get('reachedApp'), true, `status ${status} was not an arrival`)
     }
   })
@@ -426,10 +426,10 @@ describe('what a finished load is allowed to conclude', () => {
   }
 
   test('a 502 from the origin does not revoke the flag', async () => {
-    const { main, store } = loadShell({ edition: 'oss', serverUrl: APP })
+    const { pageFacts, store } = loadShell({ edition: 'oss', serverUrl: APP })
     store.set('appChrome', true)
     const win = loadedWindow(`${APP}/dashboard`)
-    main.watchLoads(win)
+    pageFacts.watchLoads(win)
 
     await finish(win, `${APP}/dashboard`, 502)
 
@@ -443,7 +443,7 @@ describe('what a finished load is allowed to conclude', () => {
   // the dashboard and then the welcome flow before the load event fires. The
   // document the server answered for is still the one that finished.
   test('an app that moves its own URL while it boots has still been reached', async () => {
-    const { main, store } = loadShell({ edition: 'saas' })
+    const { pageFacts, store } = loadShell({ edition: 'saas' })
     const SAAS_APP = 'https://app.example.com'
     let at = `${SAAS_APP}/`
     const win = {
@@ -453,7 +453,7 @@ describe('what a finished load is allowed to conclude', () => {
         executeJavaScript: async () => true,
       }),
     }
-    main.watchLoads(win)
+    pageFacts.watchLoads(win)
 
     win.webContents.emit('did-navigate', {}, `${SAAS_APP}/`, 200)
     for (const moved of ['/dashboard', '/welcome']) {
@@ -469,10 +469,10 @@ describe('what a finished load is allowed to conclude', () => {
   // A frame inside the page moving its own address is not the page doing it,
   // and must not lend the page's status to a URL the page never had.
   test('a subframe moving its address does not answer for the page', async () => {
-    const { main, store } = loadShell({ edition: 'oss', serverUrl: APP })
+    const { pageFacts, store } = loadShell({ edition: 'oss', serverUrl: APP })
     store.set('appChrome', true)
     const win = loadedWindow(`${APP}/chart#range=1y`)
-    main.watchLoads(win)
+    pageFacts.watchLoads(win)
 
     win.webContents.emit('did-navigate', {}, `${APP}/dashboard`, 200)
     win.webContents.emit('did-navigate-in-page', {}, `${APP}/chart#range=1y`, false)
@@ -487,7 +487,7 @@ describe('what a finished load is allowed to conclude', () => {
   // already on, and reports it with `did-fail-load` instead of `did-navigate`.
   // The 200 still paired with that URL belonged to the page the reload replaced.
   test('the error page of a reload that failed does not revoke the flag', async () => {
-    const { main, store } = loadShell({ edition: 'oss', serverUrl: APP })
+    const { pageFacts, store } = loadShell({ edition: 'oss', serverUrl: APP })
     store.set('appChrome', true)
     let at = `${APP}/`
     let declares = true
@@ -498,7 +498,7 @@ describe('what a finished load is allowed to conclude', () => {
         executeJavaScript: async () => declares,
       }),
     }
-    main.watchLoads(win)
+    pageFacts.watchLoads(win)
 
     win.webContents.emit('did-navigate', {}, at, 200)
     at = `${APP}/dashboard`
@@ -528,7 +528,7 @@ describe('what a finished load is allowed to conclude', () => {
   // `did-navigate` has landed.
   test("a load cut short by the next one does not take that one's status", async () => {
     const CONSOLE = 'https://console.example.org'
-    const { main, store } = loadShell({ edition: 'saas', platformOrigin: CONSOLE })
+    const { pageFacts, store } = loadShell({ edition: 'saas', platformOrigin: CONSOLE })
     const at = 'https://app.example.com/'
     const win = {
       isDestroyed: () => false,
@@ -537,7 +537,7 @@ describe('what a finished load is allowed to conclude', () => {
         executeJavaScript: async () => true,
       }),
     }
-    main.watchLoads(win)
+    pageFacts.watchLoads(win)
 
     win.webContents.emit('did-navigate', {}, `${CONSOLE}/onboarding`, 200)
     win.webContents.emit('did-navigate', {}, at, 200)
@@ -551,10 +551,10 @@ describe('what a finished load is allowed to conclude', () => {
   // A frame failing inside a served page is the frame's business: the page
   // around it still finished, and still answers.
   test('a frame that fails inside a served page does not hide that it was served', async () => {
-    const { main, store } = loadShell({ edition: 'oss', serverUrl: APP })
+    const { pageFacts, store } = loadShell({ edition: 'oss', serverUrl: APP })
     store.set('appChrome', true)
     const win = loadedWindow(`${APP}/dashboard`)
-    main.watchLoads(win)
+    pageFacts.watchLoads(win)
 
     win.webContents.emit('did-navigate', {}, `${APP}/dashboard`, 200)
     win.webContents.emit('did-fail-load', {}, -102, 'ERR_CONNECTION_REFUSED', 'https://widgets.example/embed', false)
@@ -565,10 +565,10 @@ describe('what a finished load is allowed to conclude', () => {
   })
 
   test('a status belonging to another navigation does not answer for this one', async () => {
-    const { main, store } = loadShell({ edition: 'oss', serverUrl: APP })
+    const { pageFacts, store } = loadShell({ edition: 'oss', serverUrl: APP })
     store.set('appChrome', true)
     const win = loadedWindow(`${APP}/dashboard`)
-    main.watchLoads(win)
+    pageFacts.watchLoads(win)
 
     // The shape the outage screen makes: it aborts the load that failed and
     // navigates the window to its own page, so the last status seen is its own.
@@ -578,10 +578,10 @@ describe('what a finished load is allowed to conclude', () => {
   })
 
   test('a page the origin really served, declaring nothing, does revoke it', async () => {
-    const { main, store } = loadShell({ edition: 'oss', serverUrl: APP })
+    const { pageFacts, store } = loadShell({ edition: 'oss', serverUrl: APP })
     store.set('appChrome', true)
     const win = loadedWindow(`${APP}/dashboard`)
-    main.watchLoads(win)
+    pageFacts.watchLoads(win)
 
     await finish(win, `${APP}/dashboard`, 200)
 
@@ -1889,9 +1889,9 @@ describe('the bridge says what the shell can do', () => {
 
   test('each edition\'s windows answer with the console returns that match its console', () => {
     const factsOf = (opts) => {
-      const { main } = loadShell(opts)
+      const { main, pageFacts } = loadShell(opts)
       main.openLaunchWindows()
-      return main.windowFactsOf(windows[0].webContents)
+      return pageFacts.windowFactsOf(windows[0].webContents)
     }
     assert.equal(factsOf({ edition: 'oss', serverUrl: 'http://localhost:5173' }).consoleReturns, false)
     cleanup()
@@ -1905,8 +1905,10 @@ describe('the bridge says what the shell can do', () => {
     const bridge = loadPreload().langalphaDesktop
     const callable = Object.keys(bridge).filter((k) => typeof bridge[k] === 'function').sort()
     assert.deepEqual(callable, [
-      'beginMcpOAuth', 'bindMcpOAuth', 'cancelMcpOAuth', 'disableRemoteControl', 'enableRemoteControl',
-      'getRemoteControl', 'openExternal', 'savePdf', 'setTheme',
+      'beginMcpOAuth', 'bindMcpOAuth', 'cancelMcpOAuth', 'clearNotifications', 'disableRemoteControl',
+      'enableRemoteControl', 'getDesktopSettings', 'getRemoteControl', 'hideMenubar', 'notify',
+      'onDesktopSettings', 'onMenuCommand', 'onNotificationAction', 'onTrayRefresh', 'openExternal', 'openInMain',
+      'savePdf', 'setAttention', 'setDesktopSettings', 'setMenuCommands', 'setTheme', 'setTrayItems',
     ])
   })
 
@@ -2031,6 +2033,9 @@ describe('the two editions can sit on one machine', () => {
     test(`the running ${edition} app agrees with what was packaged`, () => {
       const { config, deeplink, remoteControl } = loadShell({ edition })
       assert.equal(config.appName, IDENTITY[edition].appName)
+      // Windows files notifications under the AppUserModelID main sets from
+      // this, and shows none unless it is the installer's shortcut id.
+      assert.equal(config.appId, IDENTITY[edition].appId)
       assert.equal(config.scheme, IDENTITY[edition].scheme)
       assert.equal(config.helperLabel, IDENTITY[edition].helperLabel)
       assert.equal(remoteControl.SERVICE_NAME, `${IDENTITY[edition].helperLabel}.plist`)
@@ -2180,10 +2185,11 @@ describe('the window-chrome contract holds across the two processes', () => {
 
   test('the channel main answers is the one preload asks', () => {
     const main = read('src/main.js')
+    const facts = read('src/pageFacts.js')
     const preload = read('src/preload.js')
     assert.match(main, /ipcMain\.on\('shell:window-facts'/)
     assert.match(preload, /ipcRenderer\.sendSync\('shell:window-facts'\)/)
-    assert.match(main, /windowChrome: chromeHidden \? 'hidden' : 'native'/)
+    assert.match(facts, /windowChrome: chromeHidden \? 'hidden' : 'native'/)
     assert.match(preload, /facts\.windowChrome === 'hidden'/)
   })
 
@@ -2213,11 +2219,11 @@ describe('the window-chrome contract holds across the two processes', () => {
     const [, app] = windows
     const hidden = process.platform === 'darwin'
     assert.equal(app.options.titleBarStyle, hidden ? 'hiddenInset' : 'default')
-    const appFacts = shell.main.windowFactsOf(app.webContents)
+    const appFacts = shell.pageFacts.windowFactsOf(app.webContents)
     assert.equal(appFacts.windowChrome, hidden ? 'hidden' : 'native', 'the page was told a frame its window does not have')
     assert.equal(appFacts.version, '0.0.0-test')
-    assert.equal(shell.main.windowFactsOf(console_.webContents).windowChrome, 'native')
-    assert.equal(shell.main.windowFactsOf({}), null, 'a WebContents the shell never made got an answer')
+    assert.equal(shell.pageFacts.windowFactsOf(console_.webContents).windowChrome, 'native')
+    assert.equal(shell.pageFacts.windowFactsOf({}), null, 'a WebContents the shell never made got an answer')
   })
 
   test('the preload hands the page what main answered, and a framed old shell when it answered nothing', () => {
@@ -2232,11 +2238,11 @@ describe('the window-chrome contract holds across the two processes', () => {
     assert.deepEqual(silent.capabilities, [])
   })
 
-  test('the meta main queries is the one the web build ships', () => {
-    const main = read('src/main.js')
+  test('the meta the shell queries is the one the web build ships', () => {
+    const facts = read('src/pageFacts.js')
     const indexHtml = read('../web/index.html')
-    assert.match(main, /meta\[name="langalpha-window-chrome"\]/)
-    assert.match(main, /el\.content === 'reserves'/)
+    assert.match(facts, /meta\[name="langalpha-window-chrome"\]/)
+    assert.match(facts, /el\.content === 'reserves'/)
     assert.match(indexHtml, /<meta name="langalpha-window-chrome" content="reserves"/)
   })
 

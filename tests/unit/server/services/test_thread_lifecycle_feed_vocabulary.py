@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.server.app import user_events
+from src.server.contracts.notices import Notice
 from src.server.services import thread_lifecycle_feed
 
 _FEED_SRC = Path(thread_lifecycle_feed.__file__)
@@ -35,6 +36,8 @@ LIFECYCLE_TYPES = {
     "thread_unarchived",
     "automation_waiting",
     "automation_waiting_ended",
+    # A settle the push executor judged news, which the desktop app shows.
+    "notification",
 }
 
 
@@ -146,3 +149,31 @@ def test_the_feed_stays_out_of_the_chat_event_ledger():
     for root in test_event_ledger._SCAN_ROOTS:
         assert root not in _FEED_SRC.parents
         assert root not in _ENDPOINT_SRC.parents
+
+
+@pytest.mark.asyncio
+async def test_run_started_says_where_the_run_came_from():
+    notice = Notice("started", "NVDA", "Checking back in…")
+    with patch.object(thread_lifecycle_feed, "publish_user_event", AsyncMock()) as sent:
+        await thread_lifecycle_feed.publish_run_started(
+            user_id="user-1",
+            thread_id="t-1",
+            workspace_id="ws-1",
+            run_id="r-1",
+            run_seq=3,
+            origin="wakeup",
+            notification=notice,
+        )
+    _, event = sent.await_args.args
+    assert event == {
+        "v": thread_lifecycle_feed.EVENT_VERSION,
+        "type": "run_started",
+        "thread_id": "t-1",
+        "workspace_id": "ws-1",
+        "run_id": "r-1",
+        "run_seq": 3,
+        "status": "running",
+        "interrupt_reason": None,
+        "origin": "wakeup",
+        "notification": {"kind": "started", "title": "NVDA", "body": "Checking back in…"},
+    }

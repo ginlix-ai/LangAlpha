@@ -104,7 +104,7 @@ async def test_the_carrying_turn_releases_the_pair_under_its_generation():
     }
 
     jobs = build_finalize_jobs_from_run_row(row)("completed")
-    assert sorted(j.hook_type for j in jobs) == ["user_feed", "watch_clear"]
+    assert sorted(j.hook_type for j in jobs) == ["user_feed", "user_notification", "watch_clear"]
     (wc,) = [j for j in jobs if j.hook_type == "watch_clear"]
     assert wc.payload == {
         "ptc_thread_id": "ptc-9",
@@ -114,5 +114,6 @@ async def test_the_carrying_turn_releases_the_pair_under_its_generation():
     }
     assert wc.ordering_key == "home-1"
     assert [j.hook_type for j in build_finalize_jobs_from_run_row(row)("interrupted")] == [
-        "user_feed"
+        "user_feed",
+        "user_notification",
     ]

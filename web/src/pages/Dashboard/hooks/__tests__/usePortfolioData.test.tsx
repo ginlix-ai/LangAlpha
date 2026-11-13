@@ -17,10 +17,14 @@ vi.mock('../../utils/api', () => ({
 
 // Quotes flow through the shared quote layer, whose batcher hits the snapshot
 // primitives in lib/quotes — mock those (not getStockPrices) to feed useQuotes.
-vi.mock('@/lib/quotes/snapshotApi', () => ({
-  getSnapshotStocks: vi.fn(),
-  getSnapshotIndexes: vi.fn(),
-}));
+vi.mock('@/lib/quotes/snapshotApi', () => {
+  const getSnapshotStocks = vi.fn();
+  const getSnapshotIndexes = vi.fn();
+  // The batcher reads the throwing primitive; route it to the two mocks.
+  const fetchSnapshotBatch = (kind: 'stocks' | 'indexes', symbols: string[]) =>
+    (kind === 'stocks' ? getSnapshotStocks : getSnapshotIndexes)(symbols);
+  return { getSnapshotStocks, getSnapshotIndexes, fetchSnapshotBatch };
+});
 
 import { getPortfolio } from '../../utils/api';
 import { getSnapshotStocks } from '@/lib/quotes/snapshotApi';

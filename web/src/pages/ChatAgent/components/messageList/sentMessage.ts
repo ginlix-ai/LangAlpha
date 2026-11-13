@@ -14,6 +14,12 @@ export function sentMessageWords(content: string): string {
   return first.chart ? first.source ?? '' : first.body;
 }
 
+/** A thread as lists name it: its title, else the words of its first message. */
+export function threadName(thread: { title?: string | null; first_query_content?: string | null } | undefined): string {
+  if (!thread) return '';
+  return thread.title || sentMessageWords(thread.first_query_content ?? '');
+}
+
 /** A sent message for the clipboard: its words as typed, what it quoted as markdown quotes. */
 export function sentMessageForCopy(content: string): string {
   const parts = parseSentMessage(content);

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { mapSnapshotToStockQuote, fetchCompanyOverview, fetchAnalystData } from '../utils/api';
 import { useQuote } from '@/lib/quotes';
 import { isIndexFamilySpelling, isUSEquity } from '@/lib/bars/exchanges';
-import { fetchMarketStatus } from '@/lib/marketUtils';
+import { marketStatusQuery } from '@/lib/marketUtils';
 import type { StockInfo, RealTimePrice, SnapshotData } from '@/types/market';
 import type { CompanyOverviewArtifact } from '@/lib/quotes/overview';
 
@@ -103,12 +103,10 @@ export function useStockData({
     });
 
     // 4. Market Status
-    const { data: marketStatus = null } = useQuery<MarketStatusData | null>({
-        queryKey: ['dashboard', 'marketStatus'], // Matches cached value from useDashboardData
-        queryFn: fetchMarketStatus,
-        refetchInterval: 60000,
-        refetchIntervalInBackground: false,
-        staleTime: 30000,
+    const { data: marketStatus = null } = useQuery({
+      ...marketStatusQuery(),
+      refetchInterval: 60000,
+      refetchIntervalInBackground: false,
     });
 
     // The quote row is the single source of realTimePrice — live WS ticks
