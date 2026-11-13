@@ -377,10 +377,10 @@ describe('WelcomeFlow: starting the chat', () => {
             name: 'onboarding',
             instruction: expect.stringContaining('Action: first_task. Language: en-US. Brokerage: none.'),
           },
-          { type: 'image', data: 'data:image/png;base64,AAAA', description: 'chart.png' },
+          { type: 'image', attachment_id: 'att-chart', description: 'chart.png' },
         ],
         attachmentMeta: [
-          { name: 'chart.png', type: 'image/png', size: 4, preview: null, dataUrl: 'data:image/png;base64,AAAA' },
+          { name: 'chart.png', type: 'image/png', size: 4, file: CHART.file },
         ],
         model: 'model-x',
         reasoningEffort: 'high',
@@ -441,10 +441,28 @@ describe('WelcomeFlow: starting the chat', () => {
         hiddenOpener: true,
         additionalContext: [
           { type: 'skills', name: 'onboarding', instruction: expect.stringContaining('Action: propose.') },
-          { type: 'image', data: 'data:image/png;base64,AAAA', description: 'chart.png' },
+          { type: 'image', attachment_id: 'att-chart', description: 'chart.png' },
         ],
         attachmentMeta: null,
       });
+    });
+
+    it('Start while files still upload starts nothing, keeping the task and its files in the composer', async () => {
+      composerSend.attachments = [CHART];
+      composerSend.holding = true;
+      renderFlow({ initialStep: 'agent', profile: answered });
+      fireEvent.change(composer(), { target: { value: 'Read my chart' } });
+      fireEvent.click(primary());
+      await act(async () => {});
+      expect(location()).not.toBe('/chat/t/__default__');
+      expect(screen.queryByTestId('welcome-answer-start')).toBeNull();
+      expect(composer()).toHaveValue('Read my chart');
+
+      // Once they are up, Start takes the task with them.
+      composerSend.holding = false;
+      fireEvent.click(primary());
+      await waitFor(() => expect(location()).toBe('/chat/t/__default__'));
+      expect(routeState()).toMatchObject({ initialMessage: 'Read my chart' });
     });
 
     it("waits for a fresh brokerage's tools before a written task too, showing it as sent", async () => {

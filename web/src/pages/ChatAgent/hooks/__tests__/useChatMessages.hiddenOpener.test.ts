@@ -164,7 +164,7 @@ describe('useChatMessages: a hidden opener', () => {
     const image = [{ type: 'image', data: 'data:image/png;base64,AAAA', description: 'chart.png' }];
 
     await act(async () => {
-      await result.current.handleSendMessage('', image, [{ name: 'chart.png', type: 'image/png' }]);
+      await result.current.handleSendMessage('', image, [{ name: 'chart.png', type: 'image/png', size: 4 }]);
     });
 
     expect(mockCreateThread).not.toHaveBeenCalled();

@@ -702,3 +702,72 @@ describe('useChatMessages: refused steers belong to their view, not to a thread 
     expect(posts[4].opts.requestKey).not.toBe(posts[1].opts.requestKey);
   });
 });
+
+describe('useChatMessages: a send naming staged files while a turn runs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCancel.mockResolvedValue({ cancelled: true, message: 'ok' });
+  });
+
+  const csv = new File(['a,b\n'], 'a.csv', { type: 'text/csv' });
+  const FILES = [{ type: 'file', attachment_id: 'att-1', description: 'a.csv' }];
+  const META = [{ name: 'a.csv', type: 'text/csv', size: 4, file: csv }];
+
+  async function sendFiles(hook: Hook, message: string) {
+    await settle(() => hook.result.current.handleSendMessage(message, FILES, META));
+  }
+
+  it('is held rather than steered, and opens the next turn with its files, ahead of what was typed after it', async () => {
+    const { hook, posts } = await startTurn();
+    await sendFiles(hook, 'read this');
+    // A steer would reach the turn as its text alone.
+    expect(posts).toHaveLength(1);
+    expect(userBubbles(hook, 'read this')).toMatchObject([{ steering: true }]);
+    const waitingId = userBubbles(hook, 'read this')[0].id;
+
+    // What comes after waits behind it rather than steering past it.
+    await settle(() => hook.result.current.handleSendMessage('and then this'));
+    expect(posts).toHaveLength(1);
+
+    await settle(() => posts[0].end());
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1].message).toBe('read this');
+    expect(posts[1].opts.steerOnly).toBeFalsy();
+    expect((posts[1].opts as SendOpts & { additionalContext?: unknown }).additionalContext).toEqual(FILES);
+    expect(userBubbles(hook, 'read this')).toMatchObject([{ id: waitingId }]);
+
+    await settle(() => posts[1].end());
+    await waitFor(() => expect(posts).toHaveLength(3));
+    expect(posts[2].message).toBe('and then this');
+  });
+
+  it('goes back to the composer with its files on a stop', async () => {
+    const { hook, posts } = await startTurn();
+    await sendFiles(hook, 'read this');
+    await settle(() => hook.result.current.stopWorkflow());
+
+    expect(hook.result.current.returnedSteering).toBe('read this');
+    expect(hook.result.current.returnedDraft?.files).toEqual([{ file: csv, type: 'text/csv', attachmentId: 'att-1' }]);
+    expect(userBubbles(hook, 'read this')).toEqual([]);
+    await settle(() => {});
+    expect(posts).toHaveLength(1);
+  });
+
+  it('keeps its files on the Retry when the server refuses it as running', async () => {
+    const { hook, posts } = await startTurn();
+    await sendFiles(hook, 'read this');
+    mockSendStream.mockImplementationOnce(async () => {
+      throw refusal('running');
+    });
+    await settle(() => posts[0].end());
+    await waitFor(() => expect(mockSendStream).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+    expect(hook.result.current.messages.at(-1)).toMatchObject({ error: true, unadmitted: true });
+
+    // The resend's stream stays open, so it is not awaited.
+    await settle(() => { void hook.result.current.handleRetry(); });
+    await waitFor(() => expect(mockSendStream).toHaveBeenCalledTimes(3));
+    expect(mockSendStream.mock.lastCall?.[0]).toBe('read this');
+    expect(mockSendStream.mock.lastCall?.[3]).toMatchObject({ additionalContext: FILES });
+  });
+});

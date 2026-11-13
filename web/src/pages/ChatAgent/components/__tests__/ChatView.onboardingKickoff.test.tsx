@@ -244,25 +244,23 @@ describe("ChatView: the welcome flow's opening turn", () => {
 /**
  * What the chat's send was handed before the flow sent through Home's route
  * state, recorded from the kickoff branch it replaced, for the same inputs
- * the flow now builds the state from. Three things differ, each on purpose:
+ * the flow now builds the state from. Four things differ, each on purpose:
  * a screenshot's size is the bytes it holds, not its data URL's length; a
  * hidden opener sends no bubble's record of its files, which it never drew;
- * and the composer's Subagents pick rides the send, where it was dropped.
+ * the composer's Subagents pick rides the send, where it was dropped; and each
+ * file goes as the id of its staged upload, not its bytes.
  */
 describe("ChatView: the welcome flow's opening turn, as it went out before", () => {
   const SKILL_TAIL =
     "This is the user's first conversation, right after onboarding. " +
     'Their investing profile is in your system prompt; do not ask for it again.';
-  const attachment = (name: string, type: string, body: string, dataUrl: string | null, preview: string | null) =>
-    ({ file: new File([body], name, { type }), type, dataUrl, preview }) satisfies ReadyAttachment;
-  const chart = attachment('chart.png', 'image/png', 'abcd', 'data:image/png;base64,AAAA', 'blob:chart');
-  const composer = [
-    chart,
-    attachment('draft.pdf', 'application/pdf', 'ab', null, null),
-    attachment('report.pdf', 'application/pdf', 'abc', 'data:application/pdf;base64,QUJD', ''),
-  ];
-  const positions = { id: 's1', name: 'positions.jpg', dataUrl: 'data:image/jpeg;base64,AAAA', bytes: 20 };
-  const watchlist = { id: 's2', name: 'watchlist.png', dataUrl: 'data:image/png;base64,iVBORw0KGgo=', bytes: 26 };
+  const attachment = (name: string, type: string, body: string, attachmentId: string) =>
+    ({ file: new File([body], name, { type }), type, attachmentId }) satisfies ReadyAttachment;
+  const chart = attachment('chart.png', 'image/png', 'abcd', 'att-chart');
+  const report = attachment('report.pdf', 'application/pdf', 'abc', 'att-report');
+  const composer = [chart, report];
+  const positions = { id: 's1', file: new File(['abc'], 'positions.jpg', { type: 'image/jpeg' }), attachmentId: 'att-s1' };
+  const watchlist = { id: 's2', file: new File(['iVBORw0K'], 'watchlist.png', { type: 'image/png' }), attachmentId: 'att-s2' };
 
   it('sends a written task with screenshots, files, the brief and the model as it did', async () => {
     // As Welcome's Start puts them together: the screens first, then the
@@ -297,29 +295,17 @@ describe("ChatView: the welcome flow's opening turn, as it went out before", () 
           type: 'directive',
           content: `${BRIEF_PREAMBLE}\n<market-brief>\n## Stocks slip as yields climb\n</market-brief>`,
         },
-        { type: 'image', data: 'data:image/jpeg;base64,AAAA', description: 'positions.jpg' },
-        { type: 'image', data: 'data:image/png;base64,iVBORw0KGgo=', description: 'watchlist.png' },
-        { type: 'image', data: 'data:image/png;base64,AAAA', description: 'chart.png' },
-        { type: 'pdf', data: 'data:application/pdf;base64,QUJD', description: 'report.pdf' },
+        { type: 'image', attachment_id: 'att-s1', description: 'positions.jpg' },
+        { type: 'image', attachment_id: 'att-s2', description: 'watchlist.png' },
+        { type: 'image', attachment_id: 'att-chart', description: 'chart.png' },
+        { type: 'pdf', attachment_id: 'att-report', description: 'report.pdf' },
       ],
       [
         // Was 20 and 26, the data URLs' lengths.
-        { name: 'positions.jpg', type: 'image/jpeg', size: 3, preview: null, dataUrl: 'data:image/jpeg;base64,AAAA' },
-        {
-          name: 'watchlist.png',
-          type: 'image/png',
-          size: 8,
-          preview: null,
-          dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
-        },
-        { name: 'chart.png', type: 'image/png', size: 4, preview: 'blob:chart', dataUrl: 'data:image/png;base64,AAAA' },
-        {
-          name: 'report.pdf',
-          type: 'application/pdf',
-          size: 3,
-          preview: null,
-          dataUrl: 'data:application/pdf;base64,QUJD',
-        },
+        { name: 'positions.jpg', type: 'image/jpeg', size: 3, file: positions.file },
+        { name: 'watchlist.png', type: 'image/png', size: 8, file: watchlist.file },
+        { name: 'chart.png', type: 'image/png', size: 4, file: chart.file },
+        { name: 'report.pdf', type: 'application/pdf', size: 3, file: report.file },
       ],
       // The preferences are unread, so the send names what the toggle shows.
       { model: 'model-x', reasoningEffort: 'high', subagentsAllowed: true },
@@ -351,8 +337,8 @@ describe("ChatView: the welcome flow's opening turn, as it went out before", () 
             SKILL_TAIL,
         },
         { type: 'directive', content: `${BRIEF_PREAMBLE}\n<market-brief>\n## Headline\n</market-brief>` },
-        { type: 'image', data: 'data:image/jpeg;base64,AAAA', description: 'positions.jpg' },
-        { type: 'image', data: 'data:image/png;base64,AAAA', description: 'chart.png' },
+        { type: 'image', attachment_id: 'att-s1', description: 'positions.jpg' },
+        { type: 'image', attachment_id: 'att-chart', description: 'chart.png' },
       ],
       // Was the chart's record, for a bubble a hidden opener does not draw.
       null,

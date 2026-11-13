@@ -17,14 +17,18 @@ vi.mock('../welcome/screenshots', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../welcome/screenshots')>()),
   prepareScreenshot: vi.fn(),
 }));
+vi.mock('@/pages/ChatAgent/utils/attachmentUpload', () => ({ discardAttachment: vi.fn(), stageAttachment: vi.fn() }));
 
+import { discardAttachment } from '@/pages/ChatAgent/utils/attachmentUpload';
 import { ScreenshotDrop } from '../welcome/steps/ScreenshotDrop';
 
 const prepare = vi.mocked(real.prepareScreenshot);
+const discard = vi.mocked(discardAttachment);
 
 function shot(name: string): Screenshot {
-  return { id: `id-${name}`, name, dataUrl: `data:image/jpeg;base64,${name}`, bytes: 10 };
+  return { id: `id-${name}`, file: new File(['x'], name, { type: 'image/jpeg' }), attachmentId: `att-${name}` };
 }
+const names = (shots: Screenshot[]) => shots.map((s) => s.file.name);
 /** A stand-in for the flow's state: `onChange` applies a setter the way React
  *  would, and `current` is the list it leaves. */
 function flowState(initial: Screenshot[] = []) {
@@ -39,6 +43,10 @@ const png = (name: string) => new File(['x'], name, { type: 'image/png' });
 beforeEach(() => {
   prepare.mockReset();
   prepare.mockImplementation(async (file: File) => shot(file.name));
+  discard.mockReset();
+  // jsdom has no object URLs.
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:shot');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
 });
 
 describe('prepareScreenshot', () => {
@@ -64,7 +72,7 @@ describe('ScreenshotDrop', () => {
     fireEvent.change(input, { target: { files } });
 
     await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
-    expect(state.current.map((s) => s.name)).toEqual(['s0.png', 's1.png', 's2.png', 's3.png', 's4.png']);
+    expect(names(state.current)).toEqual(['s0.png', 's1.png', 's2.png', 's3.png', 's4.png']);
     expect(prepare).toHaveBeenCalledTimes(5);
     expect(screen.getByRole('status')).toHaveTextContent('Up to 5 screenshots; the rest were left out.');
   });
@@ -80,7 +88,7 @@ describe('ScreenshotDrop', () => {
     fireEvent.change(input, { target: { files: [png('ok.png'), png('bad.heic')] } });
 
     await waitFor(() => expect(onChange).toHaveBeenCalled());
-    expect(state.current.map((s) => s.name)).toEqual(['ok.png']);
+    expect(names(state.current)).toEqual(['ok.png']);
     expect(screen.getByRole('status')).toHaveTextContent("bad.heic isn't a PNG, JPEG, WebP or GIF image.");
   });
 
@@ -95,7 +103,7 @@ describe('ScreenshotDrop', () => {
     // Continue, while it is still being read.
     unmount();
     await act(async () => finish(shot('late.png')));
-    expect(state.current.map((s) => s.name)).toEqual(['late.png']);
+    expect(names(state.current)).toEqual(['late.png']);
   });
 
   it('hands the flow each add as it starts, settled once its files are in the list', async () => {
@@ -115,11 +123,11 @@ describe('ScreenshotDrop', () => {
     finish(shot('late.png'));
     await act(async () => {
       await onPreparing.mock.calls[0][0];
-      expect(state.current.map((s) => s.name)).toEqual(['late.png']);
+      expect(names(state.current)).toEqual(['late.png']);
     });
   });
 
-  it('removes a shot without touching the others', () => {
+  it('removes a shot without touching the others, and the server forgets it', () => {
     const shots = [shot('a.png'), shot('b.png')];
     const { state, onChange } = flowState(shots);
     renderWithProviders(<ScreenshotDrop shots={shots} onChange={onChange} />);
@@ -127,6 +135,18 @@ describe('ScreenshotDrop', () => {
     expect(removes).toHaveLength(2);
     fireEvent.click(removes[0]);
     expect(state.current).toEqual([shots[1]]);
+    expect(discard).toHaveBeenCalledWith('att-a.png');
+  });
+
+  it('discards on the server what an overlapping add leaves past the cap', async () => {
+    // Four in the list the flow holds, while the render this zone counted from had none.
+    const { state, onChange } = flowState(['a', 'b', 'c', 'd'].map((n) => shot(`${n}.png`)));
+    const { container } = renderWithProviders(<ScreenshotDrop shots={[]} onChange={onChange} />);
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [png('e.png'), png('f.png')] } });
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(names(state.current)).toEqual(['a.png', 'b.png', 'c.png', 'd.png', 'e.png']);
+    expect(discard).toHaveBeenCalledExactlyOnceWith('att-f.png');
   });
 
   it('adds an image pasted outside a text field', async () => {
@@ -134,7 +154,7 @@ describe('ScreenshotDrop', () => {
     renderWithProviders(<ScreenshotDrop shots={[]} onChange={onChange} />);
     fireEvent.paste(document.body, { clipboardData: { files: [png('clip.png')] } });
     await waitFor(() => expect(onChange).toHaveBeenCalled());
-    expect(state.current[0].name).toBe('clip.png');
+    expect(names(state.current)).toEqual(['clip.png']);
   });
 
   it('refuses a file let go outside the zone instead of letting the page open it', () => {
@@ -157,7 +177,7 @@ describe('ScreenshotDrop', () => {
     expect(over.dropEffect).toBe('copy');
     fireEvent.drop(zone, { dataTransfer: { types: ['Files'], files: [png('dropped.png')] } });
     await waitFor(() => expect(onChange).toHaveBeenCalled());
-    expect(state.current[0].name).toBe('dropped.png');
+    expect(names(state.current)).toEqual(['dropped.png']);
   });
 
   it('leaves the window alone while it is kept unseen', () => {

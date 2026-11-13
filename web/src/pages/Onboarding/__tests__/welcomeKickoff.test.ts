@@ -1,5 +1,8 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// Staging is the drop zone's business; this file reads what a send carries.
+vi.mock('@/pages/ChatAgent/utils/attachmentUpload', () => ({ stageAttachment: vi.fn() }));
 import type { ReadyAttachment } from '@/components/ui/chat-input.types';
 import { BRIEF_PREAMBLE, kickoffSend, type OnboardingKickoff } from '../welcome/kickoff';
 import { screenshotAttachment } from '../welcome/screenshots';
@@ -57,9 +60,11 @@ describe('kickoffSend', () => {
 });
 
 describe('kickoffSend with what the user said instead of connecting', () => {
+  const positions = new File(['positions'], 'positions.png', { type: 'image/png' });
+  const watchlist = new File(['wl'], 'watchlist.jpg', { type: 'image/jpeg' });
   const shots = [
-    screenshotAttachment({ id: 's1', name: 'positions.png', dataUrl: 'data:image/png;base64,AAAAAAAA', bytes: 30 }),
-    screenshotAttachment({ id: 's2', name: 'watchlist.jpg', dataUrl: 'data:image/jpeg;base64,BBBB', bytes: 27 }),
+    screenshotAttachment({ id: 's1', file: positions, attachmentId: 'att-s1' }),
+    screenshotAttachment({ id: 's2', file: watchlist, attachmentId: 'att-s2' }),
   ];
 
   it('names the brokerages used and the screenshot count in the instruction, only when there are any', () => {
@@ -80,8 +85,8 @@ describe('kickoffSend with what the user said instead of connecting', () => {
   it('attaches each screenshot as an image context after the skill', () => {
     const { additionalContext } = kickoffSend(kickoff({ attachments: shots, screenshots: 2 }), 'en-US', TITLE);
     expect(additionalContext.slice(1)).toEqual([
-      { type: 'image', data: 'data:image/png;base64,AAAAAAAA', description: 'positions.png' },
-      { type: 'image', data: 'data:image/jpeg;base64,BBBB', description: 'watchlist.jpg' },
+      { type: 'image', attachment_id: 'att-s1', description: 'positions.png' },
+      { type: 'image', attachment_id: 'att-s2', description: 'watchlist.jpg' },
     ]);
     const task = kickoffSend(kickoff({ task: 'Go', attachments: shots, screenshots: 2 }), 'en-US', TITLE);
     expect(task.additionalContext).toHaveLength(3);
@@ -94,10 +99,10 @@ describe('kickoffSend with what the user said instead of connecting', () => {
     expect(kickoffSend(kickoff({ attachments: shots, screenshots: 2 }), 'en-US', TITLE).attachmentMeta).toBeNull();
     expect(kickoffSend(kickoff({ task: 'Go' }), 'en-US', TITLE).attachmentMeta).toBeNull();
     const { attachmentMeta } = kickoffSend(kickoff({ task: 'Go', attachments: shots, screenshots: 2 }), 'en-US', TITLE);
-    // The type the data URL names, and the size of the bytes it holds.
+    // The prepared image's own type and size, and the file itself for the thumbnail.
     expect(attachmentMeta).toEqual([
-      { name: 'positions.png', type: 'image/png', size: 6, preview: null, dataUrl: 'data:image/png;base64,AAAAAAAA' },
-      { name: 'watchlist.jpg', type: 'image/jpeg', size: 3, preview: null, dataUrl: 'data:image/jpeg;base64,BBBB' },
+      { name: 'positions.png', type: 'image/png', size: 9, file: positions },
+      { name: 'watchlist.jpg', type: 'image/jpeg', size: 2, file: watchlist },
     ]);
   });
 });
@@ -119,9 +124,8 @@ describe("kickoffSend with today's market brief", () => {
   it('comes before the screenshots, and rides a first task too', () => {
     const shot = screenshotAttachment({
       id: 's1',
-      name: 'positions.png',
-      dataUrl: 'data:image/png;base64,AAAA',
-      bytes: 26,
+      file: new File(['x'], 'positions.png', { type: 'image/png' }),
+      attachmentId: 'att-s1',
     });
     const { additionalContext } = kickoffSend(
       kickoff({ task: 'Go', brief, attachments: [shot], screenshots: 1 }),
@@ -145,64 +149,27 @@ describe("kickoffSend with today's market brief", () => {
 });
 
 describe("kickoffSend with the composer's files", () => {
-  const attachment = (
-    name: string,
-    type: string,
-    body: string,
-    dataUrl: string | null,
-    preview: string | null = null,
-  ) => ({ file: new File([body], name, { type }), type, dataUrl, preview }) satisfies ReadyAttachment;
+  const attachment = (name: string, type: string, body: string, attachmentId: string) =>
+    ({ file: new File([body], name, { type }), type, attachmentId }) satisfies ReadyAttachment;
 
-  it('carries the files that finished reading, as context for the agent and as the bubble shows them', () => {
-    const send = kickoffSend(
-      kickoff({
-        task: 'Read these',
-        attachments: [
-          attachment('chart.png', 'image/png', 'abcd', 'data:image/png;base64,AAAA', 'blob:chart'),
-          // Still reading: nothing to send yet.
-          attachment('draft.pdf', 'application/pdf', 'ab', null),
-          // No thumbnail is sent as none, not as an empty one.
-          attachment('report.pdf', 'application/pdf', 'abc', 'data:application/pdf;base64,BBBB', ''),
-        ],
-      }),
-      'en-US',
-      TITLE,
-    );
+  it('carries the files by their staged ids, as context for the agent and as the bubble shows them', () => {
+    const chart = attachment('chart.png', 'image/png', 'abcd', 'att-chart');
+    const report = attachment('report.pdf', 'application/pdf', 'abc', 'att-report');
+    const send = kickoffSend(kickoff({ task: 'Read these', attachments: [chart, report] }), 'en-US', TITLE);
     expect(send.additionalContext.slice(1)).toEqual([
-      { type: 'image', data: 'data:image/png;base64,AAAA', description: 'chart.png' },
-      { type: 'pdf', data: 'data:application/pdf;base64,BBBB', description: 'report.pdf' },
+      { type: 'image', attachment_id: 'att-chart', description: 'chart.png' },
+      { type: 'pdf', attachment_id: 'att-report', description: 'report.pdf' },
     ]);
     expect(send.attachmentMeta).toEqual([
-      { name: 'chart.png', type: 'image/png', size: 4, preview: 'blob:chart', dataUrl: 'data:image/png;base64,AAAA' },
-      {
-        name: 'report.pdf',
-        type: 'application/pdf',
-        size: 3,
-        preview: null,
-        dataUrl: 'data:application/pdf;base64,BBBB',
-      },
+      { name: 'chart.png', type: 'image/png', size: 4, file: chart.file },
+      { name: 'report.pdf', type: 'application/pdf', size: 3, file: report.file },
     ]);
-  });
-
-  it('has no files to send when none has finished reading', () => {
-    const send = kickoffSend(
-      kickoff({ task: 'Read this', attachments: [attachment('draft.pdf', 'application/pdf', 'ab', null)] }),
-      'en-US',
-      TITLE,
-    );
-    expect(send.additionalContext).toHaveLength(1);
-    expect(send.attachmentMeta).toBeNull();
   });
 });
 
 describe('screenshotAttachment', () => {
-  it('reads a screenshot back into the file the composer would hold, its type the one its data URL names', async () => {
-    const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
-    const attached = screenshotAttachment({ id: 's1', name: 'positions.png', dataUrl, bytes: dataUrl.length });
-    expect(attached).toMatchObject({ type: 'image/png', dataUrl, preview: null });
-    expect(attached.file.name).toBe('positions.png');
-    expect(attached.file.type).toBe('image/png');
-    // The PNG signature, byte for byte.
-    expect([...new Uint8Array(await attached.file.arrayBuffer())]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  it('hands the composer the prepared file under its staged id', () => {
+    const file = new File(['x'], 'positions.png', { type: 'image/png' });
+    expect(screenshotAttachment({ id: 's1', file, attachmentId: 'att-s1' })).toEqual({ file, type: 'image/png', attachmentId: 'att-s1' });
   });
 });

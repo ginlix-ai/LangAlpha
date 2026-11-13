@@ -43,7 +43,8 @@ import {
   signWorkspaceUploadParts,
   uploadWorkspaceFile,
 } from '../api/files';
-import { PART_IDLE_MS, uploadToWorkspace, UploadSendError, type UploadProgress } from '../workspaceUpload';
+import { PART_IDLE_MS, PART_SLOTS, SIGN_DEADLINE_MS, UploadSendError, type UploadProgress } from '../partUpload';
+import { uploadToWorkspace } from '../workspaceUpload';
 
 const begin = beginWorkspaceUpload as Mock;
 const sign = signWorkspaceUploadParts as Mock;
@@ -273,6 +274,61 @@ describe('uploadToWorkspace', () => {
 
     expect(put).toHaveBeenCalledTimes(3);
     expect(put.mock.calls.every(([, , config]) => config.timeout === undefined)).toBe(true);
+  });
+
+  it('sends a few parts at a time across uploads, and a part waiting its turn is not given up', async () => {
+    // Each part ten minutes long, its bytes moving every 50 seconds.
+    let going = 0;
+    let most = 0;
+    put.mockImplementation((_url: string, _body: Blob, { onUploadProgress }: { onUploadProgress?: (e: { loaded: number }) => void }) =>
+      new Promise((resolve) => {
+        going += 1;
+        most = Math.max(most, going);
+        let loaded = 0;
+        const tick = () => {
+          onUploadProgress?.({ loaded: ++loaded });
+          if (loaded < 12) setTimeout(tick, PART_IDLE_MS - 10_000);
+          else {
+            going -= 1;
+            resolve({ status: 200 });
+          }
+        };
+        setTimeout(tick, PART_IDLE_MS - 10_000);
+      }));
+
+    const uploads = [1, 2, 3].map(() => uploadToWorkspace(WS, file));
+    await expect(settle(Promise.all(uploads))).resolves.toEqual([{ path: 'big.bin' }, { path: 'big.bin' }, { path: 'big.bin' }]);
+
+    // Nine parts, no more than the shared turns at once, and none sent twice.
+    expect(most).toBe(PART_SLOTS);
+    expect(put).toHaveBeenCalledTimes(9);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('gives up a signing that hangs, so it gives back the shared turns, and signs again', async () => {
+    // The first two uploads' signings never answer, and between them hold every turn.
+    const hung: AbortSignal[] = [];
+    sign.mockImplementation((_ws: string, _id: string, numbers: number[], signal: AbortSignal) => {
+      if (hung.length < 2) {
+        hung.push(signal);
+        return new Promise(() => {});
+      }
+      return Promise.resolve(signedParts(numbers));
+    });
+
+    const uploads = [1, 2, 3].map(() => uploadToWorkspace(WS, file));
+    uploads.forEach((u) => u.catch(() => {}));
+    await vi.advanceTimersByTimeAsync(SIGN_DEADLINE_MS - 1);
+    expect(hung).toHaveLength(2);
+    expect(hung.some((s) => s.aborted)).toBe(false);
+    // The third upload's parts are still waiting for a turn.
+    expect(put).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hung.every((s) => s.aborted)).toBe(true);
+    await expect(settle(Promise.all(uploads))).resolves.toEqual([{ path: 'big.bin' }, { path: 'big.bin' }, { path: 'big.bin' }]);
+    expect(put).toHaveBeenCalledTimes(9);
+    expect(cancel).not.toHaveBeenCalled();
   });
 
   it('says the file is saving before it asks the backend to complete, so no cancel races the assembly', async () => {
