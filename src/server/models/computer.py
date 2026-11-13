@@ -565,6 +565,14 @@ class ComputerSSHInfo(BaseModel):
         None,
         description="Whether the tunnel is up now; null when there is none or it is not known",
     )
+    paired_elsewhere: bool = Field(
+        False,
+        description=(
+            "The tunnel is down because its machine paired again, as with another "
+            "LangAlpha account or server, and let it go; reconnecting the machine "
+            "brings it back"
+        ),
+    )
     helper: bool = Field(
         False,
         description=(
@@ -791,7 +799,7 @@ class StartFailure(BaseModel):
     code: str = Field(
         description=(
             "folder_marked (another computer's mark is on the root), an SSH "
-            "connect code (root_dir, not_connected, auth_failed, "
+            "connect code (root_dir, not_connected, paired_elsewhere, auth_failed, "
             "host_key_mismatch, unreachable, timeout, gateway_unreachable, "
             "unsupported, private_address, host_key_invalid), or start_failed "
             "for anything else"

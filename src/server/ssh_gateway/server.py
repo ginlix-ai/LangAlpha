@@ -10,6 +10,7 @@ import resource
 import signal
 import sys
 import weakref
+from typing import NoReturn
 
 import asyncssh
 from asyncssh.kex import get_kex_algs
@@ -18,6 +19,7 @@ from psycopg import AsyncConnection
 from ptc_agent.core.sandbox.providers._ssh_connect import (
     GATEWAY_DIALER,
     GATEWAY_NOT_CONNECTED,
+    GATEWAY_PAIRED_ELSEWHERE,
 )
 from src.config.logging_config import configure_logging
 from src.config.settings import get_conversation_pool_max
@@ -106,6 +108,11 @@ _ANY_ADDRESS = frozenset({"0.0.0.0", "::"})
 # A refused login's name is logged as an example; a long one is cut, so a
 # stranger cannot fill the log with it.
 _LOGGED_NAME_MAX = 64
+# The one command a machine's login may run, once its machine paired again
+# and that newer pairing superseded the tunnel.
+_SUPERSEDE = "supersede"
+# How long a failed dial waits to learn why before saying not connected.
+_DIAL_LOOKUP_TIMEOUT_S = 3
 
 
 def _login_lookup_slots() -> int:
@@ -116,6 +123,16 @@ def _login_lookup_slots() -> int:
     liveness writes that keep every tunnel up still find a connection.
     """
     return max(1, (get_conversation_pool_max() - 1) // 3)
+
+
+def _dial_lookup_slots() -> int:
+    """How many failed dials may ask the database why at once.
+
+    Apart from the logins' share, which a worker dialing a machine that is
+    away every second would otherwise queue against, and smaller, since an
+    answer that cannot be had in time is only "not connected".
+    """
+    return max(1, (get_conversation_pool_max() - 1) // 6)
 
 
 def _kex_algs() -> list[str]:
@@ -177,6 +194,8 @@ class Gateway:
         self._marked_up: set[str] = set()
         # Held by a login while it looks its tunnel up.
         self.login_lookups = asyncio.Semaphore(_login_lookup_slots())
+        # Held by a failed dial while it reads why.
+        self._dial_lookups = asyncio.Semaphore(_dial_lookup_slots())
         # One lock per tunnel with a liveness write in flight, so the
         # disconnect of a connection that just closed cannot land after the
         # connect of the one that replaced it.
@@ -366,16 +385,57 @@ class Gateway:
         connection first, and a machine that refuses it fails the worker's open
         with the machine's own reason.
 
-        Raises:
-            asyncssh.ChannelOpenError: The tunnel has no connection open.
+        A tunnel with no connection open fails it too, with why (see
+        ``_unanswered``).
         """
         forwards = self._forwards.get(tunnel_id, ())
         fwd = next((f for f in reversed(forwards) if f.ready), None)
         if fwd is None:
-            raise asyncssh.ChannelOpenError(
-                asyncssh.OPEN_CONNECT_FAILED, GATEWAY_NOT_CONNECTED
-            )
+            return self._unanswered(tunnel_id)
         return self._relay(fwd, dialer_conn, orig_host, orig_port)
+
+    async def _unanswered(self, tunnel_id: str) -> NoReturn:
+        """Fail a dial to a tunnel with no connection open: paired elsewhere
+        when a newer pairing of its machine superseded it, else not connected.
+
+        The row is read in a small share of the pool of its own and briefly,
+        since a worker may dial a machine that is away every second: a read
+        that cannot be had answers not connected, as every dial did before.
+
+        Raises:
+            asyncssh.ChannelOpenError: Always.
+        """
+        reason = GATEWAY_NOT_CONNECTED
+        try:
+            async with asyncio.timeout(_DIAL_LOOKUP_TIMEOUT_S):
+                async with self._dial_lookups:
+                    row = await tunnels_db.get_tunnel(tunnel_id)
+        except Exception as e:
+            logger.warning(
+                "Could not read tunnel %s for a failed dial: %r", tunnel_id, e
+            )
+            row = None
+        if row is not None and row["paired_elsewhere"]:
+            reason = GATEWAY_PAIRED_ELSEWHERE
+        raise asyncssh.ChannelOpenError(asyncssh.OPEN_CONNECT_FAILED, reason)
+
+    async def supersede(self, tunnel_id: str) -> bool:
+        """Record that a newer pairing of the tunnel's machine superseded it;
+        False when that could not be written.
+
+        A machine causes the write, so it takes the machines' share of the
+        pool, as a login's lookup does, and leaves the rest to the liveness
+        writes that keep every tunnel up.
+        """
+        try:
+            async with asyncio.timeout(LOGIN_TIMEOUT_S):
+                async with self.login_lookups:
+                    await tunnels_db.mark_superseded(tunnel_id)
+        except Exception as e:
+            logger.warning("Could not record tunnel %s as superseded: %r", tunnel_id, e)
+            return False
+        logger.info("Tunnel %s superseded: its machine paired again", tunnel_id)
+        return True
 
     async def _relay(
         self,
@@ -614,12 +674,48 @@ def _bound(addr: tuple) -> str:
     return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
+class _Supersede(asyncssh.SSHServerSession):
+    """A machine's ``supersede``: it paired again, and the newer pairing
+    superseded this tunnel.
+
+    It logs in with the tunnel's key one last time to say so, so a computer
+    still on the tunnel is told the machine moved instead of asked whether it
+    is awake. The exit status says whether that was recorded.
+    """
+
+    def __init__(self, gateway: Gateway, tunnel_id: str) -> None:
+        self._gateway = gateway
+        self._tunnel_id = tunnel_id
+        self._chan: asyncssh.SSHServerChannel | None = None
+
+    def connection_made(self, chan: asyncssh.SSHServerChannel) -> None:
+        self._chan = chan
+
+    def shell_requested(self) -> bool:
+        return False
+
+    def subsystem_requested(self, subsystem: str) -> bool:
+        return False
+
+    def exec_requested(self, command: str) -> bool:
+        return command == _SUPERSEDE
+
+    def session_started(self) -> None:
+        self._gateway._spawn(self._record())
+
+    async def _record(self) -> None:
+        recorded = await self._gateway.supersede(self._tunnel_id)
+        assert self._chan is not None
+        self._chan.exit(0 if recorded else 1)
+
+
 class _Login(asyncssh.SSHServer):
     """One connection to the gateway: a worker's or a machine's.
 
     The login decides what the connection may do. The dialer may only open
-    channels to machines, and a machine may only ask for its forward. Sessions,
-    SFTP, agent and X11 forwarding and Unix socket forwarding stay refused, as
+    channels to machines, and a machine's login may be put to one use: its
+    forward, or ``supersede`` once the machine paired again. Shells, SFTP,
+    agent and X11 forwarding and Unix socket forwarding stay refused, as
     asyncssh's defaults have them.
     """
 
@@ -638,6 +734,7 @@ class _Login(asyncssh.SSHServer):
         self._authed = False
         self._closed = False
         self._forward: _Forward | None = None
+        self._superseding = False
         self._forward_due: asyncio.TimerHandle | None = None
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
@@ -778,9 +875,27 @@ class _Login(asyncssh.SSHServer):
         assert self._conn is not None
         return self._gateway.dial(self._conn, dest_host, orig_host, orig_port)
 
+    def _unused(self) -> bool:
+        """A machine's login not yet put to its one use. One forward per
+        connection keeps where a dial leads unambiguous, and one supersede
+        keeps a tunnel's key from opening writes without bound: the login
+        deadline then ends it."""
+        return (
+            self._authed
+            and self._tunnel_id is not None
+            and self._forward is None
+            and not self._superseding
+        )
+
+    def session_requested(self) -> _Supersede | bool:
+        if not self._unused():
+            return False
+        assert self._tunnel_id is not None
+        self._superseding = True
+        return _Supersede(self._gateway, self._tunnel_id)
+
     def server_requested(self, listen_host: str, listen_port: int):
-        # One forward per connection keeps where a dial leads unambiguous.
-        if not self._authed or self._tunnel_id is None or self._forward is not None:
+        if not self._unused():
             return False
         return self._open_forward(listen_host, listen_port)
 

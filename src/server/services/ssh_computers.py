@@ -806,9 +806,12 @@ def ssh_info(
     machine = shown.get("machine") if isinstance(shown.get("machine"), dict) else {}
     tunnel_id = tunnel_of(computer)
     connected = None
+    paired_elsewhere = False
     if tunnel_id and tunnels is not None:
         # A tunnel no longer there is one the machine cannot connect through.
-        connected = bool((tunnels.get(tunnel_id) or {}).get("live"))
+        row = tunnels.get(tunnel_id) or {}
+        connected = bool(row.get("live"))
+        paired_elsewhere = bool(row.get("paired_elsewhere"))
     return ComputerSSHInfo(
         host=config.get("host") or "",
         port=int(config.get("port") or 22),
@@ -816,6 +819,7 @@ def ssh_info(
         fingerprint=fingerprint,
         tunnel=bool(tunnel_id),
         tunnel_connected=connected,
+        paired_elsewhere=paired_elsewhere,
         helper=bool(config.get("helper")),
         os=config.get("os") or None,
         model=shown.get("model") or None,

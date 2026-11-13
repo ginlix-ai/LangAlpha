@@ -183,6 +183,9 @@ async def dial_addresses(
 GATEWAY_DIALER = "dial"
 # The reason the gateway gives for a machine with no tunnel open to it.
 GATEWAY_NOT_CONNECTED = "not connected"
+# The reason it gives instead when a newer pairing of the machine, perhaps for
+# another account, superseded the tunnel.
+GATEWAY_PAIRED_ELSEWHERE = "paired elsewhere"
 _GATEWAY_CONNECT_TIMEOUT_S = 10
 _GATEWAY_DOWN = (
     "The tunnel that machines connect through is not answering right now. "
@@ -313,6 +316,12 @@ def _gateway() -> _Gateway:
 
 def _tunnel_error(target: SSHTarget, exc: asyncssh.ChannelOpenError) -> SSHConnectError:
     name = target.host or "The machine"
+    if exc.reason == GATEWAY_PAIRED_ELSEWHERE:
+        return SSHConnectError(
+            "paired_elsewhere",
+            f"{name} is now connected to another LangAlpha account or server. "
+            "Reconnect it to use it here.",
+        )
     if exc.reason == GATEWAY_NOT_CONNECTED:
         return SSHConnectError(
             "not_connected",
