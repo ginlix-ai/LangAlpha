@@ -60,6 +60,7 @@ import { denialMessage } from '../utils/denialMessage';
 import { entitlementErrorMessage } from '../utils/entitlementErrors';
 import { folderMarkedOwner, sshLimitMessage } from '../utils/sshLimit';
 import { computerNameTakenMessage } from '../utils/computerName';
+import { pairedElsewhere } from './startFailure';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
@@ -137,6 +138,7 @@ function ComputersPanel({
   const [backupOffTargetId, setBackupOffTargetId] = useState<string | null>(null);
   const [reinstallTargetId, setReinstallTargetId] = useState<string | null>(null);
   const [reconnectTargetId, setReconnectTargetId] = useState<string | null>(null);
+  const [reconnectAfterStopId, setReconnectAfterStopId] = useState<string | null>(null);
   // The machine whose Claude Code token a sheet adds or replaces, or a
   // confirmation removes.
   const [claudeCodeDialog, setClaudeCodeDialog] = useState<ClaudeCodeDialog | null>(null);
@@ -154,6 +156,13 @@ function ComputersPanel({
   const backupOffTarget = find(backupOffTargetId);
   const reinstallTarget = find(reinstallTargetId);
   const reconnectTarget = find(reconnectTargetId);
+  // A stop another caller already holds answers stopping. Reconnect opens
+  // once the row reads stopped, and gives up on any other status.
+  const stoppingForReconnect = find(reconnectAfterStopId);
+  if (reconnectAfterStopId && stoppingForReconnect?.status !== 'stopping') {
+    if (stoppingForReconnect?.status === 'stopped') setReconnectTargetId(reconnectAfterStopId);
+    setReconnectAfterStopId(null);
+  }
   const claudeCodeComputer = find(claudeCodeDialog?.computerId ?? null);
   const claudeCodeTarget = claudeCodeComputer && computerTokenTarget(claudeCodeComputer);
   const { data: providerData, isLoading: providersLoading } = useComputerProviders({ enabled: true });
@@ -233,7 +242,20 @@ function ComputersPanel({
       },
       reconnect: () => {
         reconnect.reset();
-        setReconnectTargetId(computerId);
+        // A computer whose machine paired with another account runs on
+        // nothing. The reconnect takes only a stopped one, so the dialog
+        // opens once it stopped, and a stop that failed says so here.
+        if (computer.status !== 'running' || !pairedElsewhere(computer)) {
+          setReconnectTargetId(computerId);
+          return;
+        }
+        power.mutate(
+          { computerId, action: 'stop' },
+          {
+            onSuccess: (res) =>
+              res.status === 'stopped' ? setReconnectTargetId(computerId) : setReconnectAfterStopId(computerId),
+          },
+        );
       },
       movingHome: homeMoving?.target_computer_id === computerId,
       // One move at a time per user, and Home's is the one this button starts.

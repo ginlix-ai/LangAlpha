@@ -1827,6 +1827,7 @@
       "provider": "远程控制",
       "asAccount": "以 {{account}} 身份",
       "notConnected": "未连接",
+      "pairedElsewhere": "已连接到其他账号",
       "paused": "远程控制已暂停，可在 LangAlpha 菜单中恢复。",
       "removeTurnsOff": "这台 Mac 上的远程控制也会随之关闭。",
       "cardTitlePc": "这台电脑",

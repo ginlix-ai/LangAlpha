@@ -1784,6 +1784,7 @@
       "provider": "Remote control",
       "asAccount": "as {{account}}",
       "notConnected": "Not connected",
+      "pairedElsewhere": "Connected to another account",
       "paused": "Remote control is paused. Resume it from the LangAlpha menu.",
       "removeTurnsOff": "Remote control on this Mac turns off too.",
       "cardTitlePc": "This PC",

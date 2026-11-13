@@ -75,7 +75,10 @@ export function attemptAfter(result: RemoteControlResult, token: string): Remote
       return { step: 'idle' };
     case 'needs_approval':
       return { step: 'approval', token };
+    // An in-place replacement that failed left the other pairing as it was,
+    // in the deployment's words where it gave some.
     case 'failed':
+    case 'not_replaced':
       return { step: 'failed', message: result.message || null };
     case 'bad_url':
       return { step: 'insecure' };

@@ -93,6 +93,7 @@ function reconnectedSsh(row: Computer, { ssh: target, fingerprint, helper }: Rec
     helper,
     tunnel,
     tunnel_connected: tunnel ? true : null,
+    paired_elsewhere: false,
   };
 }
 
