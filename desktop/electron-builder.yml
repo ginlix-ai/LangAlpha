@@ -66,6 +66,9 @@ files:
   - outage/**/*
   - config/*.json
   - package.json
+  # The menu bar icons, which the shell loads at runtime. The rest of
+  # resources/ is packaging input and stays out of the archive.
+  - resources/tray*.png
 
 # Swapped for the hosted scheme by scripts/build.mjs on a saas build. Two
 # editions cannot both answer `langalpha://`: the OS picks one for the whole

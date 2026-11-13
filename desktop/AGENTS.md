@@ -171,22 +171,36 @@ edition's output directory and refuses a parent holding several.
 | File | Purpose |
 |---|---|
 | `src/index.js` | the packaged entry: turns a require-time crash into a dialog instead of a silent death |
-| `src/main.js` | windows, IPC, lifecycle, and carrying out what `policy` decided |
+| `src/main.js` | windows, IPC, and carrying out what `policy` decided; wires the menu bar modules below to the windows it owns |
+| `src/pageFacts.js` | what a window tells its page about itself (`shell:window-facts`), and what a finished load tells the shell: the window-chrome declaration and reaching the app |
 | `src/policy.js` | what the shell decides: entry URL, where a navigation belongs. **Pure** — it may not write the store or open anything |
 | `src/origins.js` | what counts as ours: **by origin, never by path** |
 | `src/oauth.js` | system-browser OAuth, intercepted (below) |
 | `src/deeplink.js` | `langalpha://` scheme, for magic links clicked with the app closed, and integration logins, installs and console pages the browser hands back |
-| `src/preload.js` | the renderer bridge: version, platform, `capabilities`, `setTheme`, `openExternal`, `savePdf`, the connector OAuth trio, and `getRemoteControl` / `enableRemoteControl` / `disableRemoteControl` |
+| `src/preload.js` | the renderer bridge: version, platform, `windowRole`, `capabilities`, `setTheme`, `openExternal`, `savePdf`, the connector OAuth trio, `getRemoteControl` / `enableRemoteControl` / `disableRemoteControl`, and the menu bar (`setTrayItems`, `onTrayRefresh`, `openInMain`, `hideMenubar`), notification, menu-command and desktop-settings members (below) |
 | `src/remoteControl.js` | remote control of this Mac: the helper's login item, its folder, and the confirmation before a pairing (below) |
 | `src/remoteControlState.js` | what remote control reads off the Mac: whether it can run here, the status the app is shown, the menu line. **Pure**, like `policy` |
-| `src/sender.js` | the window an IPC call came from, for the channels that answer only some pages |
+| `src/sender.js` | the window an IPC call came from, for the channels that answer only some pages; `appSenderWindow` for the ones that answer only the app's own main frame, `gatedIpc` to register a channel behind such a check |
+| `src/platformTraits.js` | every platform fact the menu bar, notification, login-item and closing code acts on, as one object (below). **Pure** |
+| `src/glance.js` | the menu bar feature's root: composes the menu bar window, its icon, notifications and attention, and answers the menu bar page's IPC |
+| `src/menubar.js` | the menu bar window: the panel on macOS and Windows, the Market Glance window on Linux, and its navigation policy |
+| `src/tray.js` | the menu bar icon and the lines beside it: layout per platform, rotation and refresh timers |
+| `src/trayMenu.js` | the icon's menu. **Pure** |
+| `src/panelGeometry.js` | where the panel opens, from the icon's bounds and the display. **Pure** |
+| `src/desktopSettings.js` | the desktop settings' shape, validation, merge and what each platform supports. **Pure** |
+| `src/desktopSettingsService.js` | the live settings: a patch applied and broadcast, `onChange` for each feature that acts on one, and their IPC |
+| `src/commands.js` | menu commands: what the main window's page declared, enabling the menu by it, and delivering one to it |
+| `src/attention.js` | the Dock badge and Dock menu, the Windows overlay dot and jump list task |
+| `src/shortcut.js` | the global shortcut that toggles the panel |
+| `src/lifecycle.js` | quitting and what closing the last of the user's windows means (below) |
+| `src/loginItem.js` | open at login, whether this launch was one, and the Linux autostart entry |
 | `src/pdf.js` | renders the calling window to a PDF the user picks a home for; allowlists the options the page may set |
 | `src/downloads.js` | gives a download a visible ending, since a frameless window has no download shelf |
-| `src/notify.js` | the dock bounce that says a file landed |
+| `src/notify.js` | the dock bounce that says a file landed, and posting thread notifications: whether to, and where a click goes |
 | `src/outage.js` | what replaces a blank window when the network does not answer |
 | `src/updater.js` | auto-update, gated on a feed actually existing |
 | `src/probe.js` | "is anything answering", shared by the picker and the outage page |
-| `src/store.js` | a few scalars in a JSON file: `serverUrl`, `reachedApp`, `appChrome`, `platformChrome`, `theme` |
+| `src/store.js` | a small JSON file: `serverUrl`, `reachedApp`, `appChrome`, `platformChrome`, `theme`, `updateNotifiedVersion`, `desktop` (the desktop settings: `notifications`, `menubar`, `panel`, `openAtLogin`, `shortcut`, `keepRunningInTray`), `trayNoticeShown` |
 | `setup/` | the OSS server picker, in its own window with its own preload |
 | `outage/` | the outage page, a local file so it renders when nothing else can |
 | `test/` | `node:test` over the pure logic, with an `electron` module stub |
@@ -220,7 +234,7 @@ macOS Accessibility permission. Changes here are checked by dragging the window.
 
 **So the frame is feature-detected, not assumed.** After each app load the shell reads the
 page's own declaration, `<meta name="langalpha-window-chrome" content="reserves">` in
-`index.html` (`CHROME_DECLARATION` in `main.js`), and remembers the answer in `appChrome`;
+`index.html` (`CHROME_DECLARATION` in `pageFacts.js`), and remembers the answer in `appChrome`;
 window creation reads it. A declaration rather than a hit-test, because the strip is only
 painted once the shell says the titlebar is hidden, so measuring it would read back the
 shell's own last answer. A page with no meta is a "no" only when the server really served
@@ -447,6 +461,142 @@ its login item.
 - **IPC** answers only a window showing the app's own origin, like the connector
   OAuth channels.
 
+## Menu bar and notifications
+
+The shell keeps one more window than the user sees: the **menu bar window**, the app's
+`/desktop/menubar` page with `windowRole` `menubar`. It is made once the app has been
+reached (`reachedApp` on SaaS, a server on OSS), and lives until the app quits; closing it
+hides it, and turning the icon off takes the icon away and leaves the window. It is
+reloaded while hidden after a sleep or a locked screen, since its feed may have died
+quietly and a web deploy since then left it on old code.
+
+**The page has to call in before it is shown.** A server whose web build predates the
+menu bar answers `/desktop/menubar` with its whole app, so the panel opens only once the
+loaded page has called one of the menu bar's methods (it sends its tray lines as it
+mounts, signed in or out); until then the main window stands in. A page that routes
+itself away in place, or never calls in within 30s, is unloaded and tried again when the
+main window next reaches the app.
+
+It has two jobs. It is the panel the menu bar icon opens, and it is **the one page that
+posts notifications**: it holds the user's feed whether or not any other window is open,
+so a run that finishes with every window closed still reaches the user. The main window
+never notifies. The page asks (`notify`, `clearNotifications`, `setAttention`,
+`setTrayItems`); the shell filters by the user's desktop settings, holds back a
+notification for a thread the focused main window is showing (`watching`), draws the
+badge, and owns the click, because a click has to raise a window the page cannot reach.
+Each notification's `id` is its thread's, so a background run's silent "running" note is
+replaced in place by its result, and one held back takes down the note it would have
+replaced.
+
+Every one of those methods is refused by main unless the sender is the menu bar window
+showing the app's own origin, in its main frame (`appSenderWindow` in `sender.js`): the
+bridge is the same in every window, so the window decides, never the message. A link out
+of the panel is an `open` for the main window, carried out by its page in place rather
+than as a reload over a turn that may be streaming; anything else goes to the browser.
+The panel never navigates away from its page. It keeps default background throttling and
+is made with `paintWhenInitiallyHidden: false`, so the page can read its own visibility,
+from its first load, and stop polling quotes while hidden.
+
+**Menu commands** go the other way: File › New Thread, Go › Market and the rest are sent to
+the main window's page (`onMenuCommand`), and each is enabled only once that page declared
+it (`setMenuCommands`), so a build that predates a command shows it greyed rather than as
+a key that does nothing. A new document declares afresh. `open { path }` is the exception:
+the shell loads the path itself when the page does not take it. With no main window every
+command is enabled and opens one, then waits for its page to declare the command.
+
+**Desktop settings** (`desktop` in the store; shape and validation in `desktopSettings.js`)
+are edited from the app's Settings and kept here, because the shell is what acts on each.
+Read back field by field like every other key, so one bad value in a hand-edited file
+costs that field. A change applies live and is sent to every window showing the app
+(`shell:desktop-settings`). The view carries `support`, what this platform can do, so the
+page offers only switches that work, and `shortcutError` when the accelerator would not
+register.
+
+- `menubar`: `enabled`, `items` (what sits beside the icon, in order: `{ kind: 'portfolio' }`
+  or a quote `{ symbol, kind: 'index' | 'stock' }`, an index bare as `GSPC`; deduplicated,
+  at most 8), `style` (`rotate` or `side`), `rotateSeconds` (2 to 30), `show` (`change`,
+  `price` or `both`), `extendedHours`.
+- `panel`: `sections` (all four of `market`, `portfolio`, `watchlist`, `agent` exactly once,
+  in display order, each with `visible`), `tiles` (at most 4 quotes), `watchlistId` (null
+  for the default list), `watchlistRows` (1 to 10).
+
+Lists are repaired rather than refused: a bad or repeated entry goes, a section left out
+is put back where the previous settings had it, a number out of range is clamped. A patch
+is one level deep and replaces whole arrays (`items`, `sections`, `tiles`).
+
+**The lines beside the icon.** The menu bar page formats each item as a line
+(`NVDA ▼5.60%`, `Port ▲0.42%`) and hands the shell the list (`setTrayItems(items,
+{ refreshMs })`); the shell lays them out (`layout` in `tray.js`, pure) by the settings'
+`menubar.style` and `menubar.rotateSeconds`, never by anything the page sends. On macOS `rotate` is one slot turning
+every `rotateSeconds`, each frame padded to the longest line and drawn in the monospaced
+system font so the status item never changes width; `side` is the first three, two spaces
+apart; one line is static. Rotation lives in the shell, and so does the clock that asks for
+fresh lines (`shell:tray-refresh` every `refreshMs`, clamped to 10 s to 10 min, while there
+are lines and the icon is shown), because the page is a hidden window, and a hidden page's
+timers are throttled to once a minute: a four-second slot would sit for sixty. A refresh
+that brings new lines keeps the slot and its timer running rather than restarting them.
+Both timers stop when the icon is hidden and at quit. With nothing chosen in
+`menubar.items` the icon stands alone whatever the page sends, and a settings change
+re-lays or clears the lines at once rather than when the page next reports.
+
+**The icon's menu** (a right-click on macOS and Windows; the icon's only menu on Linux):
+Open LangAlpha; "In the menu bar" and each item, checked, a click removing it; "With more
+than one" (Rotate, Side by side); "Panel sections" (a checkbox each, toggling `visible`);
+Customize… (`open-settings` in the main window); Quit. Each click edits the settings
+through the same path as a page's patch, so every window hears it. macOS and Windows build
+the menu per click; Linux's sits on the icon and is rebuilt on every settings change and
+whenever the lines change.
+
+**Closing** (`lifecycle.js`). The hidden window means `window-all-closed` no longer fires
+once it exists, so every user window's `closed` decides instead (`afterUserWindowClosed`),
+by `traits.lastWindowClosed`: the app, the
+account window, the server picker, and on Linux the Market Glance window, which is one of
+the user's windows there. `activate` and `second-instance` look for the user's windows,
+not all of them (counting the hidden one left a Dock click with nothing to open). A quit
+marks itself before the windows close, including the Squirrel install path on macOS,
+which closes them before `before-quit` fires, and that lets the menu bar window close.
+It commits to nothing else: a page's `beforeunload` can still cancel the quit (the app
+holds one over unsaved edits), which reaches the shell as `will-prevent-unload` on a user
+window, and the shell then drops the flag and makes the menu bar window again. The icon,
+the shortcut, the sign-in callback server and the update timer go only in `will-quit`,
+once the quit is certain, each registered with `onWillQuit`. The menu bar page itself can
+never hold a quit up.
+
+**The panel** is 380 wide and as tall as its page (`enablePreferredSizeMode`,
+`preferred-size-changed`), from 260 up to the screen's height less a margin, re-anchored
+to the icon as it grows; past that the page scrolls inside it, with no scrollbar drawn. The
+math is `panelSize` and `panelPosition` in `panelGeometry.js`. On macOS it is a
+non-activating panel, so opening it makes it key without activating the app: the app the
+user was in stays frontmost, Esc reaches it, and a click anywhere else resigns key, the
+`blur` that hides it.
+
+The shell logs one `[notify]` line per notification decision and per click (kind, the
+thread id's first 8 characters, shown or the reason; never a title or body) and one
+`[menubar]` line per load of the menu bar page, with its status.
+
+The platform facts behind this table are `traits()` in `platformTraits.js`. The modules
+take that object rather than reading `process.platform`, so a test hands one another
+platform's answers directly. Any platform other than macOS and Windows is treated as Linux.
+
+| | macOS | Windows | Linux |
+|---|---|---|---|
+| Icon | template image; click opens the panel under it, right-click the menu | the app's colours; click opens the panel beside it, whichever edge the taskbar is on, right-click the menu | a menu only (the lines, Open Market Glance…, Open, the menu's settings, Quit), since an AppIndicator reports no clicks; Market Glance is the same page in an ordinary window |
+| Menu bar text | beside the icon: one slot rotating every `rotateSeconds`, padded and monospaced, or the first three side by side | the tooltip: the app's name, then a line each, as many as fit in 127 characters | disabled items heading the icon's menu |
+| Notifications | replaced by id, subtitle, Open / Mark as read | replaced by id, subtitle folded into the body, Open / Mark as read; the AppUserModelID is the bundle id, which the installer's shortcut carries | title, body and click; no replace, so a run's start is not shown |
+| Badge | Dock badge, and a Dock menu of New Thread, Market Glance and up to five threads | an overlay dot on the taskbar button, and a jump list New Thread (`--command=new-thread`, read from the launch's own argv and in `second-instance`) | `setBadgeCount`, where the desktop shows one |
+| Last window closed | keeps running | keeps running in the tray when the icon is on and `keepRunningInTray` (telling the user once), else quits | quits |
+| Open at login | the login item; a login launch opens no window | the Run key with `--hidden` | an XDG autostart entry with `--hidden`, pointing at the AppImage when there is one |
+| Global shortcut | toggles the panel | toggles the panel | X11 only: Wayland lets no app grab a key outside its windows |
+
+A login launch opens only the menu bar presence, and only where there is one: an app
+reached before, and on Windows and Linux the icon on, since without it a hidden launch is
+an app the user cannot find. A dev run registers no login item, since it would register
+Electron's own binary.
+
+The tray icons are committed under `resources/` (`tray*.png`, `trayTemplate*.png`),
+because the shell loads them at runtime; `pnpm run tray-icons` regenerates them from the
+logo, and `electron-builder.yml` packs only those from that directory.
+
 ## Updates
 
 A build learns where to look in one of two ways, and needs exactly one:
@@ -565,7 +715,7 @@ like.
   the version comes from main, with the rest of what a window tells its page.
 - **What a window tells its page is asked of main, never put on the command line.**
   The preload's `shell:window-facts` (sync IPC) is answered from the sender's
-  WebContents (`recordWindowFacts` in `main.js`): version, frame, scheme, console
+  WebContents (`recordWindowFacts` in `pageFacts.js`): version, frame, scheme, console
   returns. `additionalArguments` belong to the renderer process, and a page can land
   in a process launched without its window's; shells through 0.3.0 read every switch
   as absent there, so the page was told `native` in a frameless window and drew its
@@ -578,6 +728,11 @@ like.
 macOS is built and verified end to end, including the outage page and the update
 path. Windows and Linux targets are declared in `electron-builder.yml` and run in
 CI, but are not signed and have not been exercised by hand.
+
+The menu bar, notifications and menu commands are written Mac first; their Windows and
+Linux halves follow the table above and are covered by the suite's pure parts (panel
+placement on every taskbar edge, the notification decision, the autostart entry), not by
+a run on either system.
 
 The signing and notarization switches above are wired and exercised on CI: both
 `.app` bundles and both disk images come back notarized and stapled, verified

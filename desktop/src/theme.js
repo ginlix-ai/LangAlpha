@@ -1,6 +1,6 @@
 'use strict'
 
-const { ipcMain } = require('electron')
+const { ipcMain, nativeTheme } = require('electron')
 
 const store = require('./store')
 const { senderWindow } = require('./sender')
@@ -23,10 +23,25 @@ function isTheme(value) {
   return value === 'dark' || value === 'light'
 }
 
+/**
+ * The system material under the menu bar panel, drawn in the app's theme
+ * rather than the OS's, so a light page never sits on a dark material with
+ * its dark text unreadable. `themeSource` also decides `prefers-color-scheme`
+ * in every window, so it carries the user's choice, never the theme it
+ * resolved to: `auto` stays `system`, or the app's own auto mode would stop
+ * following the OS. A page too old to send its choice leaves it `system`.
+ */
+function nativeThemeFor(preference) {
+  return isTheme(preference) ? preference : 'system'
+}
+
 // Theme has to come from the page: the shell cannot read a CSS variable, and
 // the user's choice lives in the renderer's localStorage, not the OS setting.
-function registerIpc() {
-  ipcMain.on('shell:set-theme', (event, value) => {
+// `ownsBackground(win)` names the window drawn on a system material: its
+// background stays clear, and its report alone sets the native theme, since
+// the console in another window resolves a preference of its own.
+function registerIpc({ ownsBackground = () => false } = {}) {
+  ipcMain.on('shell:set-theme', (event, value, preference) => {
     // Answered rather than dropped: the ack exists so a renderer can tell a
     // shell that understands this message from one that does not, and returning
     // undefined for a value this shell simply rejected says the wrong thing.
@@ -44,7 +59,9 @@ function registerIpc() {
     // deploys resolving their own preference, so painting both from one message
     // gives the other window a frame in a theme its page is not using, which is
     // the mismatched resize band this exists to prevent.
-    senderWindow(event)?.setBackgroundColor(backgroundFor(value))
+    const win = senderWindow(event)
+    if (win && ownsBackground(win)) nativeTheme.themeSource = nativeThemeFor(preference)
+    else if (win) win.setBackgroundColor(backgroundFor(value))
     // Unchanged is the common case, not the rare one: every page load reports
     // the theme it resolved, nearly always the stored one, and this is
     // sendSync, so the renderer blocks on it. Writing anyway put a synchronous
@@ -57,4 +74,4 @@ function registerIpc() {
   })
 }
 
-module.exports = { backgroundFor, isTheme, registerIpc }
+module.exports = { backgroundFor, isTheme, nativeThemeFor, registerIpc }
