@@ -2,7 +2,6 @@ import React, { useState, useCallback, useMemo, useRef, useSyncExternalStore } f
 import { useTranslation } from 'react-i18next';
 import type { DragStartEvent, DragEndEvent, Modifier } from '@dnd-kit/core';
 import { ChevronsDown } from 'lucide-react';
-import { ScrollArea } from '../../../components/ui/scroll-area';
 import { useWorkspaceActions } from './workspaceActions';
 import { isEffectivelyPinned } from '../hooks/useNavigationData';
 import type { NavWorkspace } from '../hooks/useNavigationData';
@@ -366,7 +365,10 @@ function NavigationPanel({
           {headerActions}
         </div>
       )}
-      <ScrollArea className="flex-1">
+      {/* No scrollbar: the app's styled one is a classic bar that takes its lane
+          out of the rows, narrowing every title the moment a section expands
+          past the panel. The row cut off at the bottom says there is more. */}
+      <div className="flex-1 overflow-y-auto scrollbar-none">
         <div className="py-2">
           <NavTreeContext value={navTree}>
           <TreeRoot
@@ -439,7 +441,7 @@ function NavigationPanel({
             </div>
           )}
         </div>
-      </ScrollArea>
+      </div>
       {wsActions.dialogs}
       {archiveDialog}
       {deleteDialog}
