@@ -516,6 +516,7 @@ describe('closing the dialog', () => {
     ['refused the address', { ok: false, error: 'bad_url' }],
     ['could not run the helper', { ok: false, error: 'unsupported' }],
     ['could not take the old pairing down', { ok: false, error: 'not_replaced' }],
+    ['kept the old pairing when the new one failed', { ok: false, error: 'not_replaced', message: 'That command has expired.' }],
     ['gave no answer', null],
   ] as const)('touches nothing when closed after the shell %s', async (_label, answer) => {
     macStatus = { ...PAIRED, fingerprint: 'SHA256:anotherAccount' };
@@ -528,6 +529,15 @@ describe('closing the dialog', () => {
     unmount();
     await settle();
     expect(disable).not.toHaveBeenCalled();
+  });
+
+  it("says why when the helper kept the other pairing, in the deployment's words", async () => {
+    macStatus = { ...PAIRED, fingerprint: 'SHA256:anotherAccount' };
+    enable.mockResolvedValue({ ok: false, error: 'not_replaced', message: 'That command has expired.', status: macStatus });
+    const user = userEvent.setup();
+    open();
+    await agreeAndTurnOn(user);
+    expect(await screen.findByRole('alert')).toHaveTextContent('That command has expired.');
   });
 
   it('touches nothing when closed during an enable the shell then refuses', async () => {

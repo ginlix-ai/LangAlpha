@@ -316,6 +316,29 @@ def test_a_listing_says_whether_the_helper_answers_for_the_machine(stored, helpe
     assert ssh_info(computer).helper is helper
 
 
+@pytest.mark.parametrize(
+    ("live", "paired_elsewhere", "connected", "elsewhere"),
+    [
+        (True, False, True, False),
+        (False, False, False, False),
+        (False, True, False, True),
+    ],
+)
+def test_a_listing_says_when_the_machine_paired_elsewhere(
+    live, paired_elsewhere, connected, elsewhere
+):
+    from src.server.services.ssh_computers import ssh_info
+
+    tunnel_id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    computer = _ssh("/Users/alex/langalpha", host="mac")
+    computer["provider_config"]["tunnel"] = tunnel_id
+    tunnels = {tunnel_id: {"live": live, "paired_elsewhere": paired_elsewhere}}
+
+    info = ssh_info(computer, tunnels)
+    assert info.tunnel_connected is connected
+    assert info.paired_elsewhere is elsewhere
+
+
 @pytest.mark.parametrize(("os", "stored"), [("Darwin", "Darwin"), ("", None)])
 def test_a_new_computer_keeps_its_system_only_when_the_probe_named_one(os, stored):
     """The deployment may not set it, so a system left out stays unknown."""

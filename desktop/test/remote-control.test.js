@@ -260,6 +260,7 @@ describe('reading the state file', () => {
       pairing_detail: '',
       tunnel_id: '7c9e6679-7425-40de-944b-e07fc1f90ae7',
       fingerprint: 'SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU',
+      supersedes: '1',
       pid: '4242',
     })
     assert.deepEqual(state.toStatus('on', parsed, () => true), {
@@ -276,6 +277,7 @@ describe('reading the state file', () => {
       pairing_detail: 'That pairing command has expired. Start again from LangAlpha.',
       tunnel_id: '',
       fingerprint: 'SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU',
+      supersedes: '1',
       pid: '4242',
     })
     assert.equal(state.toStatus('on', parsed, () => true).paired, false)
@@ -529,7 +531,8 @@ describe('turning it on', () => {
   // one folder. Turning remote control on for the second must not break the
   // first's computer until the user has been told and said yes.
   const REPLACING = 'This Mac is already connected to LangAlpha, perhaps for another account. '
-    + 'Continuing disconnects it, and any computer using it stops working.'
+    + 'Continuing connects it here instead, and any computer using it there stops working '
+    + 'until it is reconnected.'
 
   /** A Mac paired for someone else: its state and a key of its own. */
   function pairedElsewhere(remote) {
@@ -628,6 +631,80 @@ describe('turning it on', () => {
       assert.equal(loginItems.status, was)
       assert.deepEqual(fs.readdirSync(remote.dir).sort(), ['host_key', 'state'], `${was}: the old pairing was cut into`)
     }
+  })
+
+  /** A Mac paired for someone else, served by a running helper that supersedes pairings itself. */
+  function pairedElsewhereInPlace(t, remote) {
+    const helper = helperProcess(t)
+    writeState(remote.dir, {
+      state: 'connected', tunnel_id: 'tun_other', fingerprint: 'SHA256:other', supersedes: '1', pid: helper.pid,
+    })
+    fs.writeFileSync(path.join(remote.dir, 'host_key'), 'the other pairing')
+  }
+
+  test('a running helper that supersedes pairings itself is asked to, with the old pairing left in place', async (t) => {
+    loginItems.status = 'enabled'
+    const remote = onMac()
+    pairedElsewhereInPlace(t, remote)
+    t.after(fakeHelper(remote.dir))
+
+    const result = await remote.enable(SCRIPT)
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.ok(messageBoxes[0].at(-1).detail.endsWith(`\n\n${REPLACING}`), messageBoxes[0].at(-1).detail)
+    assert.deepEqual(loginItems.calls, [])
+    assert.equal(loginItems.status, 'enabled')
+    assert.ok(fs.existsSync(path.join(remote.dir, 'host_key')), 'the old pairing was deleted under the helper')
+    assert.equal(result.status.fingerprint, 'SHA256:abcDEF012+/')
+  })
+
+  // Answered not_replaced, which the page leaves alone: any other failure it
+  // undoes, and that would turn the other account's pairing off.
+  test('an in-place replacement that fails leaves the old pairing as it was, said so, its ask taken back', async (t) => {
+    for (const outcome of ['failed', 'running', 'unclaimed']) {
+      resetLoginItems()
+      loginItems.status = 'enabled'
+      const remote = onMac()
+      pairedElsewhereInPlace(t, remote)
+      if (outcome !== 'unclaimed') t.after(fakeHelper(remote.dir, { outcome, detail: 'That command has expired.' }))
+
+      const result = await remote.enable(SCRIPT)
+      assert.equal(result.error, 'not_replaced', outcome)
+      assert.equal(result.message, outcome === 'failed' ? 'That command has expired.' : undefined, outcome)
+      assert.deepEqual(loginItems.calls, [], outcome)
+      assert.equal(loginItems.status, 'enabled', outcome)
+      assert.ok(fs.existsSync(path.join(remote.dir, 'host_key')), `${outcome}: the old pairing was deleted`)
+      assert.ok(!fs.existsSync(path.join(remote.dir, 'pairing')), `${outcome}: the ask was left for the helper`)
+    }
+  })
+
+  test('an in-place replacement whose ask cannot be written leaves the old pairing as it was, said so', async (t) => {
+    loginItems.status = 'enabled'
+    const remote = onMac()
+    pairedElsewhereInPlace(t, remote)
+    fs.mkdirSync(path.join(remote.dir, 'pairing', 'in the way'), { recursive: true })
+
+    const result = await remote.enable(SCRIPT)
+    assert.equal(result.error, 'not_replaced')
+    assert.deepEqual(loginItems.calls, [])
+    assert.equal(loginItems.status, 'enabled')
+    assert.ok(fs.existsSync(path.join(remote.dir, 'host_key')), 'the old pairing was deleted')
+  })
+
+  test('a helper that says it supersedes but is not running has the folder taken down first', async (t) => {
+    assertDead()
+    loginItems.status = 'enabled'
+    const remote = onMac()
+    pairedElsewhere(remote)
+    writeState(remote.dir, { state: 'connected', tunnel_id: 'tun_other', supersedes: '1', pid: DEAD_PID })
+    const seen = watchLoginItem(t, remote.dir)
+    t.after(fakeHelper(remote.dir))
+
+    const result = await remote.enable(SCRIPT)
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.deepEqual(seen, [
+      { openAtLogin: false, pairing: false, oldKey: true },
+      { openAtLogin: true, pairing: true, oldKey: false },
+    ])
   })
 
   test('a pairing still waiting for approval is not a paired Mac: it is replaced, nothing torn down', async () => {

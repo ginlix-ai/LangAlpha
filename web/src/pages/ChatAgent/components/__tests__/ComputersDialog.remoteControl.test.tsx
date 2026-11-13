@@ -42,6 +42,7 @@ vi.mock('../../utils/api', async () => {
     getWorkspaceQuota: vi.fn(async () => ({ performance: null, max: null, always_on: null })),
     createSshPairing: vi.fn(),
     reconnectComputer: vi.fn(),
+    stopComputer: vi.fn(),
     getSshPairing: vi.fn(),
     connectSshPairing: vi.fn(),
     probeSsh: vi.fn(),
@@ -63,6 +64,7 @@ import {
   getComputers,
   getSshPairing,
   reconnectComputer,
+  stopComputer,
 } from '../../utils/api';
 import ComputersDialog from '../ComputersDialog';
 import { openDetails } from './computersDialogHarness';
@@ -184,6 +186,92 @@ describe('the rows', () => {
     const mac = await rowNamed('alex-mac');
     expect(await within(mac).findByText('Not connected')).toBeInTheDocument();
     expect(within(mac).queryByText('tunnel offline')).not.toBeInTheDocument();
+  });
+
+  it('say a Mac that paired again for another account is connected to it, and offer only Reconnect once stopped', async () => {
+    // The helper now holds the other account's pairing, under keys of its own.
+    getStatus.mockResolvedValue({ ...STATUS, fingerprint: 'SHA256:otherAccount' });
+    const moved = sshRow('c-mac', 'alex-mac', MAC_KEY, {
+      status: 'stopped',
+      ssh: {
+        host: 'alex-mac', port: 22, username: 'alex', fingerprint: MAC_KEY, tunnel: true, tunnel_connected: false,
+        paired_elsewhere: true, helper: true,
+      },
+    });
+    mockGetComputers.mockResolvedValue({ computers: [PRIMARY, moved, BOX], total: 3 });
+    open();
+    const mac = await rowNamed('alex-mac');
+    expect(await within(mac).findByText('Connected to another account')).toBeInTheDocument();
+    expect(within(mac).queryByText('Not connected')).not.toBeInTheDocument();
+    expect(within(mac).getByRole('button', { name: 'Reconnect…' })).toBeInTheDocument();
+    expect(within(mac).queryByRole('button', { name: 'Start' })).not.toBeInTheDocument();
+  });
+
+  it('offer Reconnect on a computer still running when its Mac paired elsewhere, stopping it on the way', async () => {
+    const stopped = deferred<{ computer_id: string; status: string }>();
+    (stopComputer as Mock).mockReturnValue(stopped.promise);
+    const moved = sshRow('c-mac', 'alex-mac', MAC_KEY, {
+      status: 'running',
+      ssh: {
+        host: 'alex-mac', port: 22, username: 'alex', fingerprint: MAC_KEY, tunnel: true, tunnel_connected: false,
+        paired_elsewhere: true, helper: true,
+      },
+    });
+    mockGetComputers.mockResolvedValue({ computers: [PRIMARY, moved, BOX], total: 3 });
+    const user = userEvent.setup();
+    open();
+    const mac = await rowNamed('alex-mac');
+    await user.click(await within(mac).findByRole('button', { name: 'Reconnect…' }));
+    await waitFor(() => expect(stopComputer).toHaveBeenCalledWith('c-mac'));
+    // Opened only once it stopped: the reconnect takes no running computer.
+    await expect(screen.findByRole('dialog', { name: 'Reconnect alex-mac' }, { timeout: 500 })).rejects.toThrow();
+    await act(async () => stopped.resolve({ computer_id: 'c-mac', status: 'stopped' }));
+    expect(await screen.findByRole('dialog', { name: 'Reconnect alex-mac' })).toBeInTheDocument();
+  });
+
+  it('wait for a stop another caller holds before opening Reconnect', async () => {
+    (stopComputer as Mock).mockResolvedValue({ computer_id: 'c-mac', status: 'stopping' });
+    const moved = sshRow('c-mac', 'alex-mac', MAC_KEY, {
+      status: 'running',
+      ssh: {
+        host: 'alex-mac', port: 22, username: 'alex', fingerprint: MAC_KEY, tunnel: true, tunnel_connected: false,
+        paired_elsewhere: true, helper: true,
+      },
+    });
+    mockGetComputers.mockResolvedValue({ computers: [PRIMARY, moved, BOX], total: 3 });
+    const queryClient = createTestQueryClient();
+    const user = userEvent.setup();
+    renderWithProviders(<ComputersDialog panel={{ view: 'list' }} onClose={() => {}} />, { queryClient });
+    await user.click(await within(await rowNamed('alex-mac')).findByRole('button', { name: 'Reconnect…' }));
+    await waitFor(() => expect(stopComputer).toHaveBeenCalledWith('c-mac'));
+    await expect(screen.findByRole('dialog', { name: 'Reconnect alex-mac' }, { timeout: 500 })).rejects.toThrow();
+    act(() => {
+      queryClient.setQueriesData<{ computers: Computer[] } | undefined>(
+        { queryKey: queryKeys.computers.lists() },
+        (prev) => prev && { ...prev, computers: prev.computers.map((c) => (c.computer_id === 'c-mac' ? { ...c, status: 'stopped' } : c)) },
+      );
+    });
+    expect(await screen.findByRole('dialog', { name: 'Reconnect alex-mac' })).toBeInTheDocument();
+  });
+
+  it('drop a start failure from before the Mac paired with another account', async () => {
+    const moved = sshRow('c-mac', 'alex-mac', MAC_KEY, {
+      status: 'stopped',
+      ssh: {
+        host: 'alex-mac', port: 22, username: 'alex', fingerprint: MAC_KEY, tunnel: true, tunnel_connected: false,
+        paired_elsewhere: true, helper: true,
+      },
+      start_failure: {
+        code: 'not_connected', message: 'alex-mac is not connected. Check that it is awake.', owner: null,
+        remedy: 'reconnect', at: '2026-11-13T00:00:00Z',
+      },
+    });
+    mockGetComputers.mockResolvedValue({ computers: [PRIMARY, moved, BOX], total: 3 });
+    open();
+    const mac = await rowNamed('alex-mac');
+    expect(await within(mac).findByText('Connected to another account')).toBeInTheDocument();
+    expect(within(mac).queryByText(/Check that it is awake/)).not.toBeInTheDocument();
+    expect(within(mac).getByRole('button', { name: 'Reconnect…' })).toBeInTheDocument();
   });
 
   it("say on this Mac's row when remote control is paused", async () => {
@@ -561,6 +649,25 @@ describe('reconnecting this Mac', () => {
     await within(await rowNamed('alex-mac')).findByText('This Mac');
     await settle();
     expect(disable).not.toHaveBeenCalled();
+  });
+
+  it('stops calling the Mac connected to another account once it reconnected, before the list is read again', async () => {
+    const moved = { ...BROKEN, start_failure: null, ssh: { ...BROKEN.ssh!, tunnel_connected: false, paired_elsewhere: true } };
+    mockGetComputers.mockResolvedValue({ computers: [PRIMARY, moved], total: 2 });
+    mockReconnect.mockImplementation(async () => {
+      mockGetComputers.mockRejectedValue(new Error('the list could not be read'));
+      // As a start that then stopped again would leave it.
+      return { computer_id: 'c-mac', status: 'stopped' };
+    });
+    const user = userEvent.setup();
+    const { dialog } = await pairAgain(user);
+    await user.click(within(dialog).getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reconnect alex-mac' })).not.toBeInTheDocument());
+    const mac = await rowNamed('alex-mac');
+    await within(mac).findByText('This Mac');
+    // Start again, rather than Reconnect for a move the reconnect undid.
+    expect(within(mac).queryByRole('button', { name: 'Reconnect…' })).not.toBeInTheDocument();
+    expect(within(mac).getByRole('button', { name: 'Start' })).toBeInTheDocument();
   });
 
   it('waits for a reconnect still in flight before deciding the helper is unused', async () => {

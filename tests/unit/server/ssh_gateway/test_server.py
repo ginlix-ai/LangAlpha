@@ -38,6 +38,7 @@ class _Tunnels:
         # "alive", "gone" (the session ended) or "hung" (it never answers).
         self.lock_session = "alive"
         self.tunnel_rows: dict[str, dict] = {}
+        self.supersede_fails = False
 
     async def try_gateway_lock(self, conn: object) -> bool:
         return not self.locked_elsewhere
@@ -65,6 +66,11 @@ class _Tunnels:
 
     async def mark_seen(self, tunnel_ids) -> set[str]:
         return set(tunnel_ids)
+
+    async def mark_superseded(self, tunnel_id: str) -> None:
+        if self.supersede_fails:
+            raise ConnectionError("server closed the connection unexpectedly")
+        self.writes.append(("superseded", tunnel_id))
 
     async def get_tunnel(self, tunnel_id: str) -> dict | None:
         return self.tunnel_rows.get(tunnel_id)
@@ -699,3 +705,151 @@ class TestDials:
             assert raised.value.reason == server.GATEWAY_NOT_CONNECTED
             assert fwd.conn.closed
             assert TUNNEL not in gateway._forwards
+
+
+class TestSupersede:
+    """A machine that paired again logs in with its old tunnel's key one last
+    time and runs ``supersede``, and a dial to that tunnel then says the
+    machine paired elsewhere instead of that it is not connected."""
+
+    @pytest.fixture
+    def machine(self, tunnels: _Tunnels):
+        key = generate_client_key("machine")
+        tunnels.tunnel_rows = {
+            TUNNEL: {"tunnel_id": TUNNEL, "public_key": key.public_key}
+        }
+        return key
+
+    @asynccontextmanager
+    async def _machine_login(self, key):
+        gateway = Gateway(object())  # type: ignore[arg-type]
+        acceptor = await gateway._listen(
+            asyncssh.generate_private_key("ssh-ed25519"),
+            GatewayAddress("127.0.0.1", 0),
+            dialer=False,
+        )
+        try:
+            async with asyncssh.connect(
+                "127.0.0.1",
+                acceptor.get_port(),
+                username=TUNNEL,
+                client_keys=[asyncssh.import_private_key(key.private_key)],
+                known_hosts=None,
+                agent_path=None,
+                config=None,
+                connect_timeout=5,
+            ) as conn:
+                yield conn
+        finally:
+            acceptor.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.enable_socket  # a loopback listener, nothing beyond it
+    async def test_a_machine_says_its_tunnel_was_superseded(self, tunnels, machine):
+        async with self._machine_login(machine) as conn:
+            ran = await conn.run("supersede")
+
+        assert ran.exit_status == 0
+        assert tunnels.writes == [("superseded", TUNNEL)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.enable_socket
+    async def test_a_machine_may_run_nothing_else(self, tunnels, machine):
+        async with self._machine_login(machine) as conn:
+            with pytest.raises(asyncssh.ChannelOpenError):
+                await conn.run("supersede; id")
+
+        assert tunnels.writes == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.enable_socket
+    async def test_a_login_says_it_once(self, tunnels, machine):
+        async with self._machine_login(machine) as conn:
+            assert (await conn.run("supersede")).exit_status == 0
+            with pytest.raises(asyncssh.ChannelOpenError):
+                await conn.run("supersede")
+
+        assert tunnels.writes == [("superseded", TUNNEL)]
+
+    @pytest.mark.asyncio
+    async def test_a_login_holding_a_forward_says_nothing_and_one_that_spoke_holds_none(
+        self, tunnels, machine
+    ):
+        gateway = Gateway(object())  # type: ignore[arg-type]
+        async with _serving(gateway):
+            forwarding, _ = await TestWhatALoginMayHold._logged_in(gateway)
+            assert await forwarding.server_requested("langalpha", 22)
+            assert forwarding.session_requested() is False
+
+            superseding, _ = await TestWhatALoginMayHold._logged_in(gateway)
+            assert superseding.session_requested()
+            assert superseding.server_requested("langalpha", 22) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.enable_socket
+    async def test_a_write_that_failed_answers_so(self, tunnels, machine):
+        tunnels.supersede_fails = True
+        async with self._machine_login(machine) as conn:
+            ran = await conn.run("supersede")
+
+        assert ran.exit_status == 1
+
+    def test_the_workers_login_runs_nothing(self):
+        login = server._Login(Gateway(object()), dialer=True, machines=True)  # type: ignore[arg-type]
+        login._authed = True  # the dialer's login, which names no tunnel
+
+        assert login.session_requested() is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "row,reason",
+        [
+            ({"paired_elsewhere": True}, "paired elsewhere"),
+            ({"paired_elsewhere": False}, "not connected"),
+            (None, "not connected"),
+        ],
+        ids=["superseded", "down", "gone"],
+    )
+    async def test_a_dial_to_a_tunnel_with_none_up_says_why(self, tunnels, row, reason):
+        if row is not None:
+            tunnels.tunnel_rows = {TUNNEL: {"tunnel_id": TUNNEL, **row}}
+        gateway = Gateway(object())  # type: ignore[arg-type]
+
+        with pytest.raises(asyncssh.ChannelOpenError) as raised:
+            await gateway.dial(_Conn(), TUNNEL, "127.0.0.1", 0)  # type: ignore[arg-type]
+
+        assert raised.value.reason == reason
+
+    @pytest.mark.asyncio
+    async def test_a_dial_reads_why_while_logins_hold_every_lookup(
+        self, tunnels, monkeypatch
+    ):
+        monkeypatch.setattr(server, "_DIAL_LOOKUP_TIMEOUT_S", 0.5)
+        tunnels.tunnel_rows = {TUNNEL: {"tunnel_id": TUNNEL, "paired_elsewhere": True}}
+        gateway = Gateway(object())  # type: ignore[arg-type]
+        for _ in range(server._login_lookup_slots()):
+            await gateway.login_lookups.acquire()
+
+        with pytest.raises(asyncssh.ChannelOpenError) as raised:
+            await gateway.dial(_Conn(), TUNNEL, "127.0.0.1", 0)  # type: ignore[arg-type]
+
+        assert raised.value.reason == server.GATEWAY_PAIRED_ELSEWHERE
+
+    @pytest.mark.asyncio
+    async def test_a_dial_whose_read_fails_or_hangs_says_not_connected(
+        self, tunnels, monkeypatch
+    ):
+        monkeypatch.setattr(server, "_DIAL_LOOKUP_TIMEOUT_S", 0.01)
+        gateway = Gateway(object())  # type: ignore[arg-type]
+        for answer in (ConnectionError("server closed the connection"), None):
+
+            async def get_tunnel(tunnel_id: str, answer=answer) -> None:
+                if answer is not None:
+                    raise answer
+                await asyncio.Event().wait()
+
+            monkeypatch.setattr(tunnels, "get_tunnel", get_tunnel)
+            with pytest.raises(asyncssh.ChannelOpenError) as raised:
+                await gateway.dial(_Conn(), TUNNEL, "127.0.0.1", 0)  # type: ignore[arg-type]
+
+            assert raised.value.reason == server.GATEWAY_NOT_CONNECTED
