@@ -26,11 +26,21 @@ vi.mock('@/pages/ChatAgent/utils/api', () => ({
 
 const mocks = vi.hoisted(() => ({
   where: { state: 'signed_in', computerId: null, known: true } as WorkspaceClaudeCode, asked: [] as unknown[], planUrl: null as string | null,
+  medium: null as { kind: 'resize' | 'plan' | 'resizing'; go: () => void } | null, mediumAsked: undefined as unknown, go: vi.fn(),
 }));
 
 vi.mock('@/config/supportLinks', async (original) => ({
   ...(await original<typeof import('@/config/supportLinks')>()),
   get PLAN_URL() { return mocks.planUrl; },
+}));
+
+// The hold's own copy is pinned in useMediumAction.test; here, that the row
+// carries it and its fix.
+vi.mock('@/pages/ChatAgent/hooks/useMediumAction', () => ({
+  useMediumHold: (computerId: string | null) => {
+    mocks.mediumAsked = computerId;
+    return mocks.medium && { unavailable: `hold:${mocks.medium.kind}`, fix: mocks.medium.go };
+  },
 }));
 
 vi.mock('@/hooks/useWorkspaceClaudeCode', () => ({
@@ -126,6 +136,9 @@ const codeRow = () => screen.getByText(/^claude-x-code:/).textContent;
 describe("ChatInput: Claude Code rows by the workspace's computer", () => {
   beforeEach(() => {
     mocks.planUrl = null;
+    mocks.medium = null;
+    mocks.mediumAsked = undefined;
+    mocks.go.mockReset();
     ContextBus.__resetForTests();
     ChatInputRegistry.__resetForTests();
     Element.prototype.scrollIntoView = vi.fn();
@@ -181,6 +194,30 @@ describe("ChatInput: Claude Code rows by the workspace's computer", () => {
     renderInput();
     expect(codeRow()).toBe('claude-x-code:held:Needs a Medium or larger cloud computer, or a computer of your own');
     expect(screen.queryByRole('button', { name: 'fix' })).toBeNull();
+  });
+
+  it.each(['resize', 'plan', 'resizing'] as const)('on a named cloud computer too small for Claude Code, holds the row with the fix when that is to %s, and does it', (kind) => {
+    mocks.medium = { kind, go: mocks.go };
+    mocks.where = { state: 'needs_bigger_computer', computerId: null, known: true, smallComputerId: 'cmp-small' };
+    renderInput();
+    expect(mocks.mediumAsked).toBe('cmp-small');
+    expect(codeRow()).toBe(`claude-x-code:held:hold:${kind}:fix`);
+    fireEvent.click(screen.getByRole('button', { name: 'fix' }));
+    expect(mocks.go).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/^at:/).textContent).toBe('at:/');
+  });
+
+  it('asks after no computer unless the workspace\'s is too small for Claude Code', () => {
+    mocks.where = { state: 'signed_in', computerId: 'cmp-mac', known: true, smallComputerId: 'cmp-small' };
+    renderInput();
+    expect(mocks.mediumAsked).toBeNull();
+  });
+
+  it('falls back to the plain hold where nothing gets the named computer to Medium', () => {
+    mocks.where = { state: 'needs_bigger_computer', computerId: null, known: true, smallComputerId: 'cmp-small' };
+    renderInput();
+    expect(mocks.mediumAsked).toBe('cmp-small');
+    expect(codeRow()).toBe('claude-x-code:held:Needs a Medium or larger cloud computer, or a computer of your own');
   });
 
   it('where the build names a plan page, leads a cloud computer too small for Claude Code to it', () => {

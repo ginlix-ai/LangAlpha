@@ -14,6 +14,11 @@ import { queryKeys } from '@/lib/queryKeys';
 import { claudeCodeTokenUrl } from '@/lib/claudeCode';
 import type { ClaudeCodeComputer, ClaudeCodeSetup, ClaudeCodeStatus } from '@/api/model';
 
+vi.mock('@/hooks/useAllModels', () => ({ useAllModels: () => ({ models: {}, metadata: {} }) }));
+vi.mock('@/hooks/useSlotDefaultModels', async (original) => ({
+  ...(await original<typeof import('@/hooks/useSlotDefaultModels')>()),
+  useDefaultModel: () => null,
+}));
 vi.mock('@/hooks/useProviderCatalog', () => ({
   useProviderCatalog: () => ({ keyGroups: [], planGroups: [], localEntries: [], placeOf: () => undefined, optionFor: () => null }),
 }));

@@ -9,6 +9,7 @@ import type { TokenTarget } from '@/components/modelAccess/tokenTarget';
 import { useClaudeCodeSetup } from '@/hooks/useClaudeCode';
 import { skipSetup } from '@/hooks/useSetupGate';
 import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION, claudeCodeConnected } from '@/lib/claudeCode';
+import ComputersDialogHost from '@/pages/ChatAgent/components/ComputersDialogHost';
 import { ClaudeCodeSheet } from '@/pages/Settings/panels/modelAccess/ClaudeCodeSheet';
 import { SetupFooter } from '../SetupFooter';
 import { useProviderConnected } from './connectStep/shared';
@@ -42,6 +43,7 @@ export default function ClaudeCodeStep() {
         <ClaudeCodeSheet setup={setup} tokenRows={tokenRows} onRemoveToken={setRemoving} onCover={noCover} onLeave={skipSetup} />
       )}
       {removing && <RemoveClaudeCodeTokenDialog target={removing} onClose={() => setRemoving(null)} />}
+      <ComputersDialogHost planInPlace />
       <SetupFooter
         back={{ label: t('setup.back'), onClick: () => navigate('/setup/provider', { state: { list: 'oauth' } }) }}
         primary={{

@@ -20,6 +20,7 @@ import { ExperimentsPanel } from './panels/ExperimentsPanel';
 import { PlanPanel } from './panels/PlanPanel';
 import { IntegrationsPanel } from './panels/IntegrationsPanel';
 import { SettingsRail } from './components/SettingsRail';
+import ComputersDialogHost from '@/pages/ChatAgent/components/ComputersDialogHost';
 import { readSection, SECTIONS, type Section } from './sections';
 import '@/styles/pageRail.css';
 import './Settings.css';
@@ -153,6 +154,9 @@ function Settings() {
           </div>
         </div>
       </div>
+      {/* Change spec, opened over Claude Code's view in Model access, so
+          the user stays where they started while the computer resizes. */}
+      <ComputersDialogHost overSheet planInPlace />
     </div>
   );
 }

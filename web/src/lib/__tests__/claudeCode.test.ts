@@ -58,7 +58,16 @@ describe('claudeCodeRefusal', () => {
     build.planUrl = '/account/plans';
     expect(claudeCodeRefusal({ reason: 'needs_bigger_computer' }, 'ws-1')).toEqual({
       reread: true,
-      link: { url: '/account/plans', label: 'Upgrade plan', labelKey: 'computer.spec.upgradePlan', external: true },
+      link: { url: '/account/plans', label: 'Upgrade plan', labelKey: 'computer.spec.upgradePlan', console: true },
+      messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan',
+    });
+  });
+
+  it('where the refusal names the computer too small, links what gets that computer to Medium', () => {
+    build.planUrl = '/account/plans';
+    expect(claudeCodeRefusal({ reason: 'needs_bigger_computer', computer_id: 'c-3' }, 'ws-1')).toEqual({
+      reread: true,
+      link: { url: '?resize=c-3', label: 'Change spec', labelKey: 'workspace.changeSpec', resize: 'c-3' },
       messageKey: 'chat.claudeCode.off.needs_bigger_computer_plan',
     });
   });

@@ -188,10 +188,12 @@ export async function chooseFilesRestore(workspaceId: string, restore: boolean):
 
 /**
  * Fetch per-tier workspace count quotas. Platform mode only — every field is null
- * in OSS mode, so callers should treat null as "no limit to show".
+ * in OSS mode, so callers should treat null as "no limit to show". `planChanged`:
+ * the user is back from the plan page, so the server reads the plan again.
  */
-export async function getWorkspaceQuota(): Promise<WorkspaceQuota> {
+export async function getWorkspaceQuota(planChanged = false): Promise<WorkspaceQuota> {
   const { data } = await api.get('/api/v1/workspaces/quota', {
+    params: planChanged ? { plan_changed: true } : undefined,
     timeout: WORKSPACE_QUERY_TIMEOUT_MS,
   });
   return data;

@@ -27,6 +27,8 @@ export interface WorkspaceClaudeCode {
   computerId: string | null;
   /** On `cli_computer_offline`, the own computer that is offline. */
   cliComputerName?: string | null;
+  /** On `needs_bigger_computer`, the cloud computer too small, where known. */
+  smallComputerId?: string | null;
   /** Whether the workspace's computer, and which computers are the user's
    *  own, are read; until they are, `computerId` says nothing. */
   known: boolean;
@@ -97,8 +99,9 @@ function onCloud(
 ): WorkspaceClaudeCode {
   const tooSmall = computerId != null && own.cloudRefusals[computerId] === 'needs_bigger_computer';
   const state = TOKEN_WORKS.has(credential) && tooSmall ? 'needs_bigger_computer' : credential;
-  if (!status.runsHere) return { state, computerId: null, known: true };
-  return { state, computerId: null, known: true, plan: status.plan, meter: meterOf(state, { kind: 'saved' }, savedName, status.plan, status.checkAfter, status.checkBills) };
+  const small = state === 'needs_bigger_computer' ? { smallComputerId: computerId ?? null } : {};
+  if (!status.runsHere) return { state, computerId: null, known: true, ...small };
+  return { state, computerId: null, known: true, ...small, plan: status.plan, meter: meterOf(state, { kind: 'saved' }, savedName, status.plan, status.checkAfter, status.checkBills) };
 }
 
 /** A turn whose CLI the server placed (`placement`): the reason it runs
@@ -109,9 +112,9 @@ function onPlacement(reads: ClaudeCodeReads, placement: ClaudeCodeCliPlacement):
   const { kind, refusal, computer_id: computerId } = placement;
   if (refusal) {
     const state = REFUSAL_STATES[refusal];
-    return state === 'cli_computer_offline'
-      ? { state, computerId: null, known: true, cliComputerName: placement.name }
-      : { state, computerId: null, known: true };
+    if (state === 'cli_computer_offline') return { state, computerId: null, known: true, cliComputerName: placement.name };
+    if (state === 'needs_bigger_computer') return { state, computerId: null, known: true, smallComputerId: computerId };
+    return { state, computerId: null, known: true };
   }
   if (kind === 'home_cloud' || kind === 'server') return onCloud(reads, cloudCredentialState(reads.status, reads.choice), computerId);
   const entry = reads.own.computers.find((c) => c.computer_id === computerId);

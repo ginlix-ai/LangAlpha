@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useLocation } from 'react-router';
+import { queryOptions } from '@tanstack/react-query';
 import { renderWithProviders } from '@/test/utils';
 import type { ClaudeCodeChiefOfStaff, ClaudeCodeCliPlacement, ClaudeCodeComputer, ClaudeCodeSetup } from '@/api/model';
 import type { TokenRow } from '@/components/modelAccess/tokenLine';
@@ -18,12 +19,18 @@ const h = vi.hoisted(() => ({
   custody: null as { mode: string } | null,
   statusOn: false,
   spec: [] as string[],
+  medium: {} as Record<string, 'resize' | 'plan'>,
   planUrl: null as string | null,
   platform: false,
   cliComputer: null as ClaudeCodeCliPlacement | null,
   computers: [] as ClaudeCodeComputer[],
   clisMax: null as number | null,
   setClis: vi.fn(),
+  models: {} as Record<string, { models: string[] }>,
+  modelsLoading: false,
+  metadata: {} as Record<string, { sdk?: string; model_id?: string }>,
+  defaultModel: null as string | null,
+  home: vi.fn(),
 }));
 
 vi.mock('@/hooks/useFeatures', () => ({
@@ -34,6 +41,11 @@ vi.mock('@/hooks/useClaudeCode', () => ({
   useClaudeCodeStatus: () => ({ enabled: h.statusOn }),
   useClaudeCodeComputers: () => ({ cliComputer: h.cliComputer, computers: h.computers, clisMax: h.clisMax }),
   useSetComputerClis: (computerId: string) => ({ mutate: (clis: number) => h.setClis(computerId, clis), isPending: false }),
+}));
+vi.mock('@/hooks/useAllModels', () => ({ useAllModels: () => ({ models: h.models, metadata: h.metadata, isLoading: h.modelsLoading }) }));
+vi.mock('@/hooks/useSlotDefaultModels', () => ({ useDefaultModel: () => h.defaultModel }));
+vi.mock('@/hooks/useHomeWorkspace', () => ({
+  homeWorkspaceQuery: () => queryOptions({ queryKey: ['workspaces', 'home'], queryFn: () => h.home() }),
 }));
 vi.mock('@/hooks/useClaudeCodeCustody', () => ({ useClaudeCodeCustody: () => ({ custody: h.custody }) }));
 vi.mock('../ClaudeCodeHostedChoice', () => ({ ClaudeCodeHostedChoice: () => null }));
@@ -49,7 +61,13 @@ vi.mock('@/components/modelAccess/ClaudeCodeToken', () => ({
 vi.mock('@/lib/desktop', () => ({ canRemoteControl: () => h.remote }));
 vi.mock('@/pages/ChatAgent/hooks/computerPanelStore', () => ({
   openComputersPanel: (p: unknown) => h.opened.push(p),
-  openComputerSpec: (id: string) => h.spec.push(id),
+  useComputersPanel: () => ({ specComputerId: null }),
+}));
+vi.mock('@/pages/ChatAgent/hooks/useMediumAction', () => ({
+  useMediumAction: (id: string) => {
+    const kind = h.medium[id];
+    return kind ? { kind, go: () => h.spec.push(id) } : null;
+  },
 }));
 vi.mock('@/config/supportLinks', async (original) => ({
   ...(await original<typeof import('@/config/supportLinks')>()),
@@ -69,7 +87,8 @@ const mac = (state: ClaudeCodeComputer['state'], extra: Partial<ClaudeCodeComput
 const setupOf = (over: Partial<ClaudeCodeSetup>): ClaudeCodeSetup => ({ state: 'no_computer', on: false, computers: [], saved_token_runs: false, cloud: false, too_small: [], ...over });
 
 function Where() {
-  return <span>{`at:${useLocation().pathname}`}</span>;
+  const { pathname, state } = useLocation();
+  return <span>{`at:${pathname}`}<i data-testid="state">{JSON.stringify(state)}</i></span>;
 }
 
 function show(setup: ClaudeCodeSetup | null, tokenRows: TokenRow[] = [], onLeave?: () => void) {
@@ -84,6 +103,7 @@ function show(setup: ClaudeCodeSetup | null, tokenRows: TokenRow[] = [], onLeave
 
 describe('ClaudeCodeSheet', () => {
   beforeEach(() => {
+    h.medium = {};
     h.toggle.mockReset().mockResolvedValue([]);
     h.remote = false;
     h.opened = [];
@@ -97,6 +117,16 @@ describe('ClaudeCodeSheet', () => {
     h.computers = [];
     h.clisMax = null;
     h.setClis.mockReset();
+    h.models = { 'claude-code': { models: ['claude-fable-5-2-code', 'claude-opus-5-5-code', 'claude-sonnet-5-5-code'] } };
+    h.metadata = {
+      'claude-fable-5-2-code': { sdk: 'claude-code', model_id: 'claude-fable-5-2' },
+      'claude-opus-5-5-code': { sdk: 'claude-code', model_id: 'claude-opus-5-5' },
+      'claude-sonnet-5-5-code': { sdk: 'claude-code', model_id: 'claude-sonnet-5-5' },
+      'gpt-x': {},
+    };
+    h.defaultModel = null;
+    h.modelsLoading = false;
+    h.home.mockReset().mockResolvedValue({ workspace_id: 'home-1' });
   });
 
   const macRow = (line: TokenRow['line']): TokenRow => ({
@@ -183,26 +213,30 @@ describe('ClaudeCodeSheet', () => {
 
   const TOO_SMALL = [{ computer_id: 'c-3', name: 'Scratch' }, { computer_id: 'c-4', name: 'Backtests' }];
 
-  it('names each cloud computer too small for it, and opens Change spec on the one picked', () => {
+  it('names each cloud computer too small for it, with what gets the one picked to Medium', () => {
+    h.medium = { 'c-3': 'plan', 'c-4': 'resize' };
     show(setupOf({ state: 'not_connected', on: true, too_small: TOO_SMALL }));
     const row = screen.getByText('Backtests').closest('li') as HTMLElement;
-    expect(within(row).getByText('Needs a Medium or larger cloud computer, or a computer of your own')).toBeInTheDocument();
-    expect(screen.getByText('Scratch').closest('li')).toHaveTextContent('Medium or larger cloud computer');
-    fireEvent.click(within(row).getByRole('button', { name: 'Change spec' }));
+    expect(within(row).getByText('Claude Code runs on Medium or larger. Changing it restarts it for a few minutes.')).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole('button', { name: 'Change to Medium' }));
     expect(h.spec).toEqual(['c-4']);
-    expect(screen.getByText('at:/chat')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /Upgrade plan/ })).toBeNull();
+    const scratch = screen.getByText('Scratch').closest('li') as HTMLElement;
+    expect(within(scratch).getByText("Claude Code runs on Medium or larger, and Medium isn't on your plan.")).toBeInTheDocument();
+    fireEvent.click(within(scratch).getByRole('button', { name: 'Upgrade plan' }));
+    expect(h.spec).toEqual(['c-4', 'c-3']);
   });
 
-  it('where the build names a plan page, sends a cloud computer too small for it there instead', () => {
-    h.planUrl = 'https://console.example.com/plans';
-    show(setupOf({ cloud: true, too_small: TOO_SMALL.slice(0, 1) }));
+  it('states the requirement alone where nothing gets the computer to Medium', () => {
+    show(setupOf({ state: 'not_connected', on: true, too_small: TOO_SMALL.slice(0, 1) }));
     const row = screen.getByText('Scratch').closest('li') as HTMLElement;
-    expect(within(row).getByText('Needs a Medium or larger cloud computer: change its spec or upgrade your LangAlpha plan, or use a computer of your own')).toBeInTheDocument();
-    const link = within(row).getByRole('link', { name: /Upgrade plan/ });
-    expect(link).toHaveAttribute('href', 'https://console.example.com/plans');
-    expect(link).toHaveAttribute('target', '_blank');
-    expect(screen.queryByRole('button', { name: 'Change spec' })).toBeNull();
+    expect(within(row).getByText('Claude Code runs on Medium or larger cloud computers.')).toBeInTheDocument();
+    expect(within(row).queryByRole('button')).toBeNull();
+  });
+
+  it('leaves the computers too small to the choice while the user runs it on their own computers', () => {
+    h.custody = { mode: 'local' };
+    show(setupOf({ state: 'not_connected', on: true, cloud: true, too_small: TOO_SMALL }));
+    expect(screen.queryByText('Too small for Claude Code')).toBeNull();
   });
 
   it('reads a server that predates naming the cloud computers too small for it', () => {
@@ -336,6 +370,80 @@ describe('ClaudeCodeSheet', () => {
     show(setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' }), ...more], chief_of_staff: chiefOfStaff }));
     expect(screen.getByText('Claude Code is ready')).toBeInTheDocument();
     expect(screen.queryByText(/Chief of Staff/)?.textContent ?? null).toBe(words);
+  });
+
+  const SMALL_HOME = cos({ kind: 'home_cloud', computer_id: 'cmp-home', name: 'Cloud computer', refusal: 'needs_bigger_computer' });
+
+  it("while Home's cloud computer is too small and no computer of their own runs it, says it is almost ready, with no chat to start", () => {
+    show(setupOf({ state: 'connected', on: true, computers: [], chief_of_staff: SMALL_HOME }));
+    expect(screen.getByRole('heading', { name: 'Claude Code is almost ready' })).toBeInTheDocument();
+    expect(screen.getByText('It runs once Cloud computer is Medium or larger.')).toBeInTheDocument();
+    expect(screen.queryByText('Claude Code is ready')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Start a chat' })).toBeNull();
+  });
+
+  it("is ready all the same when a computer of their own has a token that works, though Home's is too small", () => {
+    show(setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' })], chief_of_staff: SMALL_HOME }));
+    expect(screen.getByRole('heading', { name: 'Claude Code is ready' })).toBeInTheDocument();
+    expect(screen.queryByText('Claude Code is almost ready')).toBeNull();
+    // A chat starts in Home, whose computer still refuses it.
+    expect(screen.queryByRole('button', { name: 'Start a chat' })).toBeNull();
+  });
+
+  it('offers no chat where no Claude Code model can be read, so none starts on the Default', () => {
+    h.models = {};
+    show(setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' })] }));
+    expect(screen.getByRole('heading', { name: 'Claude Code is ready' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start a chat' })).toBeNull();
+  });
+
+  const startChat = async (default_: string | null) => {
+    h.defaultModel = default_;
+    const onLeave = vi.fn();
+    show(setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' })] }), [], onLeave);
+    fireEvent.click(screen.getByRole('button', { name: 'Start a chat' }));
+    await waitFor(() => expect(onLeave).toHaveBeenCalledTimes(1));
+    return JSON.parse(screen.getByTestId('state').textContent ?? 'null');
+  };
+
+  it("once ready, offers a chat in Home on Claude Code's Sonnet when the account's default is not a Claude Code model", async () => {
+    const state = await startChat('gpt-x');
+    expect(screen.getByText(/^at:\/chat\/t\/__default__/)).toBeInTheDocument();
+    expect(state).toMatchObject({ workspaceId: 'home-1', model: 'claude-sonnet-5-5-code' });
+  });
+
+  it('holds Start a chat until the models are read, so the chat does not start on the Default', () => {
+    h.modelsLoading = true;
+    show(setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' })] }));
+    expect(screen.getByRole('button', { name: 'Start a chat' })).toBeDisabled();
+  });
+
+  it('starts on the first Claude Code model where none is a Sonnet', async () => {
+    h.models = { 'claude-code': { models: ['claude-fable-5-2-code', 'claude-opus-5-5-code'] } };
+    expect(await startChat('gpt-x')).toMatchObject({ model: 'claude-fable-5-2-code' });
+  });
+
+  it("starts the chat on the account's default when it is a Claude Code model", async () => {
+    expect(await startChat('claude-opus-5-5-code')).toMatchObject({ model: 'claude-opus-5-5-code' });
+  });
+
+  it('goes nowhere when Home is read after the user left the view', async () => {
+    let answer: (home: { workspace_id: string }) => void = () => {};
+    h.home.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    const onLeave = vi.fn();
+    const { unmount } = show(setupOf({ state: 'connected', on: true, computers: [mac('signed_in', { source: 'machine' })] }), [], onLeave);
+    fireEvent.click(screen.getByRole('button', { name: 'Start a chat' }));
+    await waitFor(() => expect(h.home).toHaveBeenCalled());
+    unmount();
+    answer({ workspace_id: 'home-1' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onLeave).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the chat page where Home cannot be read', async () => {
+    h.home.mockRejectedValue(new Error('no home'));
+    await startChat(null);
+    expect(screen.getByText(/^at:\/chat$/)).toBeInTheDocument();
   });
 
   it('while a token is checked, leads with a title and a sentence as every other state does', () => {
