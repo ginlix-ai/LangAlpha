@@ -146,6 +146,9 @@ _REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
     # Ends uploads their browser abandoned and takes over pulls whose worker
     # died; a claim on each upload's row in Postgres dedups it across workers.
     ("UploadSweeper", "src.server.services.workspace_upload_pull"),
+    # Ends chat attachments their composer abandoned and drops the bytes of
+    # ones past use; a claim on each row in Postgres dedups it across workers.
+    ("AttachmentSweeper", "src.server.services.chat_attachments"),
     # Follows handed-off background commands to their end and keeps their
     # computers up while covered; claims on each command's row in Postgres
     # dedup it across workers.
@@ -1422,6 +1425,7 @@ from src.server.app.computers_ssh import router as computers_ssh_router
 from src.server.app.workspaces import router as workspaces_router
 from src.server.app.workspace_files import router as workspace_files_router
 from src.server.app.workspace_files import wsfiles_router
+from src.server.app.attachments import router as attachments_router
 from src.server.app.workspace_sandbox import router as workspace_sandbox_router
 from src.server.app.chart_annotations import router as chart_annotations_router
 from src.server.app.artifact_frames import frame_router as artifact_frame_router
@@ -1506,6 +1510,9 @@ app.include_router(
 app.include_router(
     workspace_files_router
 )  # /api/v1/workspaces/{id}/files/* - Live file access
+app.include_router(
+    attachments_router
+)  # /api/v1/attachments/* - Chat composer attachments, uploaded before the message
 app.include_router(
     workspace_sandbox_router
 )  # /api/v1/workspaces/{id}/sandbox/* - Sandbox stats & packages
