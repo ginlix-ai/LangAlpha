@@ -785,12 +785,12 @@ describe('the deep-link scheme contract holds across the two processes', () => {
   const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')
 
   test('the scheme main answers with is the one preload hands the page', () => {
-    assert.match(read('src/main.js'), /scheme: config\.scheme,/)
+    assert.match(read('src/pageFacts.js'), /scheme: config\.scheme,/)
     assert.match(read('src/preload.js'), /scheme: typeof facts\.scheme === 'string' \? facts\.scheme : ''/)
   })
 
   test('the console returns main answers with are the ones preload reads', () => {
-    assert.match(read('src/main.js'), /consoleReturns: Boolean\(origins\.platformOrigin\(\)\)/)
+    assert.match(read('src/pageFacts.js'), /consoleReturns: Boolean\(origins\.platformOrigin\(\)\)/)
     assert.match(read('src/preload.js'), /facts\.consoleReturns === true/)
   })
 

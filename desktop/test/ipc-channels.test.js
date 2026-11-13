@@ -29,6 +29,10 @@ function invokedIn(file) {
   return channels(fs.readFileSync(path.join(ROOT, file), 'utf8'), /ipcRenderer\.invoke\(\s*'([^']+)'/g)
 }
 
+function read(file) {
+  return fs.readFileSync(path.join(ROOT, file), 'utf8')
+}
+
 // What the loaded web app can reach, and what only the local setup page can.
 const remote = invokedIn('src/preload.js')
 const setup = invokedIn('setup/setup-preload.js')
@@ -36,13 +40,26 @@ const invoked = new Set([...remote, ...setup])
 
 // Handlers live in whichever module owns the feature, so gather them from the
 // whole tree rather than naming files this test would then have to be
-// remembered to update.
+// remembered to update. Registered on `ipcMain` itself or on a gated wrapper
+// of it (`gatedIpc` in sender.js, which answers only some windows), so the
+// pattern is the method and a channel name, whatever it is called on.
 const handled = new Set()
+// The other two directions: fire-and-forget messages a page sends (and the
+// synchronous ones), heard with `.on`; and what main pushes to a page with
+// `webContents.send`, heard with `ipcRenderer.on` through `subscribe`.
+const heard = new Set()
+const pushed = new Set()
+const CHANNEL = "'([a-z]+:[a-z-]+)'"
 for (const entry of fs.readdirSync(SRC)) {
-  if (!entry.endsWith('.js')) continue
+  if (!entry.endsWith('.js') || entry === 'preload.js') continue
   const source = fs.readFileSync(path.join(SRC, entry), 'utf8')
-  for (const c of channels(source, /ipcMain\.handle\(\s*'([^']+)'/g)) handled.add(c)
+  for (const c of channels(source, new RegExp(`\\.handle\\(\\s*${CHANNEL}`, 'g'))) handled.add(c)
+  for (const c of channels(source, new RegExp(`\\.on\\(\\s*${CHANNEL}`, 'g'))) heard.add(c)
+  for (const c of channels(source, /webContents\.send\(\s*'([^']+)'/g)) pushed.add(c)
 }
+const preloadSource = read('src/preload.js')
+const sent = channels(preloadSource, /ipcRenderer\.send(?:Sync)?\(\s*'([^']+)'/g)
+const subscribed = channels(preloadSource, /subscribe\(\s*'([^']+)'/g)
 
 describe('ipc channels', () => {
   test('the source of both halves is still shaped the way this reads it', () => {
@@ -53,6 +70,22 @@ describe('ipc channels', () => {
     assert.ok(remote.size >= 11, `found only ${remote.size} channels in the remote preload`)
     assert.ok(setup.size >= 3, `found only ${setup.size} channels in the setup preload`)
     assert.ok(handled.size >= 14, `found only ${handled.size} handled channels`)
+  })
+
+  test('every message a page sends is heard, and every one main hears is sent', () => {
+    assert.ok(sent.size >= 8, `found only ${sent.size} sent channels in the remote preload`)
+    assert.ok(heard.size >= 8, `found only ${heard.size} heard channels`)
+    assert.ok(sent.has('shell:set-tray-items') && heard.has('shell:set-tray-items'), 'the tray items channel is not wired')
+    assert.deepEqual([...sent].filter((c) => !heard.has(c)), [], 'sent with no ipcMain.on')
+    assert.deepEqual([...heard].filter((c) => !sent.has(c)), [], 'heard but never sent')
+  })
+
+  test('every event main pushes to a page has a listener, and the other way round', () => {
+    for (const c of ['shell:menu-command', 'shell:notification-action', 'shell:desktop-settings', 'shell:tray-refresh']) {
+      assert.ok(pushed.has(c), `${c} is never sent by main`)
+      assert.ok(subscribed.has(c), `${c} has no subscriber in the preload`)
+    }
+    assert.deepEqual([...subscribed].filter((c) => !pushed.has(c)), [], 'subscribed but never pushed')
   })
 
   test('every channel a renderer invokes has a handler', () => {
