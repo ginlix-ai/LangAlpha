@@ -30,7 +30,7 @@ import { isLargePaste, getModelDisplayName } from './chat-input.helpers';
 import { effortLabelFor, resolveEffort } from '@/lib/modelTuning';
 import { ChatInputWidgetDeck, MentionAutocompleteList, SlashCommandList } from './chat-input.parts';
 import {
-  ComposerAttachments, ComposerChips, DraftTokenLayer, DropOverlay, SendStopButton, ToolbarOverflowMenu, VoiceButton, VoiceOverlay,
+  ComposerAttachments, ComposerChips, DraftTokenLayer, DropOverlay, FilesHoldHint, SendStopButton, ToolbarOverflowMenu, VoiceButton, VoiceOverlay,
 } from './chat-input.composerParts';
 import { ChatInputModelMenu, ModelTriggerMeasure, type EffortMenuProps } from './chat-input.modelMenu';
 import type { ModelRowStatus } from './chat-input.modelPicker';
@@ -96,9 +96,12 @@ export interface ChatInputHandle {
     files?: ReadyAttachment[],
     rest?: Partial<Pick<ComposerDraft, 'mentions' | 'commands'>> & { focus?: boolean },
   ) => void;
-  /** Sends what is written, as Enter does. Returns whether there was
-   *  anything to send. */
+  /** Sends what is written, as Enter does. Returns whether it went: false
+   *  when there was nothing to send, or files hold it (`holdsSend`). */
   send: () => boolean;
+  /** Whether files still uploading, or failed, hold the send. The hint
+   *  beside Send says which; the draft waits in the box. */
+  holdsSend: () => boolean;
   focus: () => void;
 }
 
@@ -270,7 +273,22 @@ function ChatInput({
   const lapsedSignIn = useLapsedSignIn();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
   const [message, setMessage] = useState('');
-  const { attachedFiles, setAttachedFiles, isDragging, handleFiles, restoreFiles, removeFile, onDragEnter, onDragOver, onDragLeave, onDrop, handlePaste } = useFileAttachments({ disabled });
+  // Where the message is going: Home for the Chief of Staff, else the
+  // selected workspace. File uploads and the slash menu both aim at it.
+  const queryClient = useQueryClient();
+  const { data: homeWorkspaceId = null } = useQuery({
+    ...homeWorkspaceQuery(queryClient),
+    enabled: scope === 'all',
+    select: (workspace) => workspace.workspace_id,
+  });
+  const slashWorkspaceId = scope === 'all' ? homeWorkspaceId : selectedWorkspaceId;
+  // Read when a file starts uploading, which is outside any render.
+  const targetWorkspaceRef = useRef<string | null>(null);
+  const {
+    attachedFiles, uploadingCount, failedCount, isDragging,
+    handleFiles, retryFile, restoreFiles, removeFile, discardFiles, takeFiles, holdsStale,
+    onDragEnter, onDragOver, onDragLeave, onDrop, handlePaste,
+  } = useFileAttachments({ disabled, workspaceIdRef: targetWorkspaceRef, workspaceId: slashWorkspaceId ?? null });
   const [watchMode, setWatchMode] = useState(false);
   // The toggle state survives the feature going off (the pill just hides), so
   // every payload derives from this gated value.
@@ -392,13 +410,9 @@ function ChatInput({
   // skills included, its disables applied). The Chief of Staff runs in Home,
   // which loads its skills as any workspace does, so the menu lists Home's
   // rather than those of the workspace the picker remembers.
-  const queryClient = useQueryClient();
-  const { data: homeWorkspaceId = null } = useQuery({
-    ...homeWorkspaceQuery(queryClient),
-    enabled: scope === 'all',
-    select: (workspace) => workspace.workspace_id,
-  });
-  const slashWorkspaceId = scope === 'all' ? homeWorkspaceId : selectedWorkspaceId;
+  useEffect(() => {
+    targetWorkspaceRef.current = slashWorkspaceId ?? null;
+  }, [slashWorkspaceId]);
   const slash = useSlashCommands({ textareaRef, message, setMessage, workspaceId: slashWorkspaceId });
   const {
     mentionedFiles, setMentionedFiles, pruneRemoved: pruneMentions, detectTrigger: detectMention,
@@ -430,6 +444,7 @@ function ChatInput({
 
   // The handle is built before the send below, so it reaches it through here.
   const sendRef = useRef<() => boolean>(() => false);
+  const holdsRef = useRef(false);
 
   // Expose addContext method for external callers (e.g. FilePanel, message selection)
   useImperativeHandle(ref, () => ({
@@ -504,10 +519,13 @@ function ChatInput({
     send() {
       return sendRef.current();
     },
+    holdsSend() {
+      return holdsRef.current || holdsStale();
+    },
     focus() {
       textareaRef.current?.focus();
     },
-  }), [sentModel, sentEffort, resolvedFastMode, effectiveMarketWatch, draftSubagents, ownOverrides, mentionedFiles, setMentionedFiles, addMention, addQuote, restoreFiles, restoreSlash, pruneDraft, handleFiles, abandonListening]);
+  }), [sentModel, sentEffort, resolvedFastMode, effectiveMarketWatch, draftSubagents, ownOverrides, mentionedFiles, setMentionedFiles, addMention, addQuote, restoreFiles, holdsStale, restoreSlash, pruneDraft, handleFiles, abandonListening]);
 
   // Subscribe to ContextBus so this input mirrors the global widget-context
   // deck. Multiple chat inputs can be visible simultaneously (hero card +
@@ -695,9 +713,13 @@ function ChatInput({
 
   // --- Send ---
   const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || chips.length > 0 || widgetSnapshots.length > 0 || hasExternalContext;
+  // A file still uploading has nothing to send yet, and a failed one is never
+  // dropped unseen: either holds the send until it is ready or removed.
+  const filesHold = uploadingCount > 0 || failedCount > 0;
 
-  const handleSend = useCallback(() => {
-    if (!hasContent || disabled) return;
+  /** Whether it sent. */
+  const handleSend = useCallback((): boolean => {
+    if (!hasContent || disabled || filesHold) return false;
 
     // System action commands (/compact, /offload) are standalone: they run on
     // send rather than starting a chat turn. If any are present, fire them and
@@ -709,25 +731,23 @@ function ChatInput({
       // staged attachments / mentions / widget context behind for the next turn.
       setMessage('');
       resetSlash();
-      attachedFiles.forEach((f) => { if (f.preview) URL.revokeObjectURL(f.preview); });
-      setAttachedFiles([]);
+      discardFiles();
       resetMentions();
       if (widgetSnapshots.length > 0) {
         ContextBus.clear();
       }
       setDeckFanned(false);
       settleAfterSend(textareaRef.current);
-      return;
+      return true;
     }
 
-    const readyAttachments = attachedFiles
-      .filter((f) => f.dataUrl)
-      .map((f) => ({
-        file: f.file,
-        dataUrl: f.dataUrl,
-        type: f.type,
-        preview: f.preview,
-      }));
+    const readyAttachments = takeFiles();
+    // A file too old to name uploads again, and the send waits for it as for
+    // any upload; the hold shows before the render that counts it.
+    if (!readyAttachments) {
+      holdsRef.current = true;
+      return false;
+    }
     // Quotes go where they sit among the typed words. Chips' blocks trail.
     let finalMessage = spellOutQuotes(message, quotes);
     if (chips.length > 0) {
@@ -751,8 +771,6 @@ function ChatInput({
       },
     });
     setMessage('');
-    attachedFiles.forEach(f => { if (f.preview) URL.revokeObjectURL(f.preview); });
-    setAttachedFiles([]);
     resetMentions();
     resetSlash();
     // Clear widget deck on send. Other mounted chat inputs hear the same
@@ -763,16 +781,19 @@ function ChatInput({
     }
     setDeckFanned(false);
     settleAfterSend(textareaRef.current);
-  }, [hasContent, disabled, message, effectiveMarketWatch, draftSubagents, attachedFiles, setAttachedFiles, onSend, onAction,
+    return true;
+  }, [hasContent, disabled, filesHold, message, effectiveMarketWatch, draftSubagents, discardFiles, takeFiles, onSend, onAction,
     heldMentions, quotes, chips, resetMentions, slashCommands, resetSlash,
     sentModel, sentEffort, resolvedFastMode, ownOverrides, widgetSnapshots, t]);
   useEffect(() => {
+    holdsRef.current = filesHold;
     sendRef.current = () => {
-      if (!hasContent || disabled) return false;
-      handleSend();
-      return true;
+      // Held by its files, the draft is still there to send, and the hint
+      // beside Send says what it waits on; nothing went.
+      if (!hasContent || disabled || filesHold) return false;
+      return handleSend();
     };
-  }, [hasContent, disabled, handleSend]);
+  }, [hasContent, disabled, filesHold, handleSend]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -986,6 +1007,7 @@ function ChatInput({
             onRemoveChartImage={onRemoveChartImage}
             files={attachedFiles}
             onRemoveFile={removeFile}
+            onRetryFile={retryFile}
             isMobile={isMobile}
           />
 
@@ -1164,9 +1186,11 @@ function ChatInput({
                   onToggle={toggleListening}
                 />
               )}
+              {/* Also beside Stop: Enter steering a running turn waits on the files too. */}
+              {filesHold && <FilesHoldHint uploading={uploadingCount} failed={failedCount} />}
               <SendStopButton
                 running={isLoading || isCompacting}
-                canSend={!!hasContent && !disabled}
+                canSend={!!hasContent && !disabled && !filesHold}
                 onSend={handleSend}
                 onStop={onStop}
               />

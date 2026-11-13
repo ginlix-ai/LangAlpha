@@ -1,12 +1,22 @@
+import type { UploadFailure } from '@/pages/ChatAgent/utils/partUpload';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 
+/** Where a composer file's upload stands. */
+export type TileUpload =
+  /** `percent` sent; null once the bytes are in and the server is storing them. */
+  | { status: 'uploading'; percent: number | null }
+  | { status: 'ready'; attachmentId: string }
+  | { status: 'failed'; failure: UploadFailure };
+
+/**
+ * A file in the composer. It uploads from the moment it is added; the message
+ * names it by its attachment id once it is ready.
+ */
 export interface FileAttachment {
   id: string;
   file: File;
   type: string;
-  preview: string | null;
-  uploadStatus: 'pending' | 'uploading' | 'complete';
-  dataUrl: string | null;
+  upload: TileUpload;
 }
 
 /** A whole file, whose `@path` is a word of the draft. */
@@ -100,11 +110,13 @@ export interface ModelOptions {
   widgetSnapshots?: WidgetContextSnapshot[];
 }
 
+/** A file a send carries, already on the server under `attachmentId`. */
 export interface ReadyAttachment {
   file: File;
-  dataUrl: string | null;
+  attachmentId: string;
   type: string;
-  preview: string | null;
+  /** When the server had it ready, which its expiry counts from; unknown is now. */
+  readyAt?: number;
 }
 
 /**

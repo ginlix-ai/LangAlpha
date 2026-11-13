@@ -1,6 +1,6 @@
 import type { ReadyAttachment } from '@/components/ui/chat-input.types';
 import { formatList } from '@/lib/format';
-import { attachmentsToContexts } from '@/pages/ChatAgent/utils/fileUpload';
+import { attachmentSendParts, type AttachmentMeta } from '@/pages/ChatAgent/utils/fileUpload';
 
 /** The most of a market brief the opening turn carries. A day's brief runs
  *  to about half of this, so only a runaway one is cut. */
@@ -25,15 +25,6 @@ export interface OnboardingKickoff {
   /** Today's market brief, in markdown, for the agent to tie a first task to
    *  what moved today. Null when there is none. */
   brief: string | null;
-}
-
-/** The bubble's record of an attachment, as the composer sends it. */
-interface AttachmentMeta {
-  name: string;
-  type: string;
-  size: number;
-  preview: string | null;
-  dataUrl: string | null;
 }
 
 /** The chat's first send, in the fields a send from Home opens a new thread
@@ -87,25 +78,15 @@ export function kickoffSend(kickoff: OnboardingKickoff, language: string, title:
   // it is written from outside news, so it goes under a line that says so,
   // as a dashboard snapshot does.
   const reminder = brief ? [{ type: 'directive', content: `${BRIEF_PREAMBLE}\n<market-brief>\n${brief}\n</market-brief>` }] : [];
-  // A file still being read has nothing to send yet.
-  const ready = kickoff.attachments.filter((a) => a.dataUrl != null);
+  // Attached the way the composer attaches a file, so the agent sees them as
+  // it sees any other.
+  const files = attachmentSendParts(kickoff.attachments);
   return {
     initialMessage: kickoff.task,
-    // Attached the way the composer attaches a file, so the agent sees them
-    // as it sees any other. Spread into plain records, the shape a send takes.
-    additionalContext: [onboarding, ...reminder, ...attachmentsToContexts(ready).map((c) => ({ ...c }))],
+    additionalContext: [onboarding, ...reminder, ...files.contexts],
     // A hidden opener draws no bubble, so the agent's read of the files is
     // where the user sees them.
-    attachmentMeta:
-      hidden || ready.length === 0
-        ? null
-        : ready.map((a) => ({
-            name: a.file.name,
-            type: a.type,
-            size: a.file.size,
-            preview: a.preview || null,
-            dataUrl: a.dataUrl,
-          })),
+    attachmentMeta: hidden || files.meta.length === 0 ? null : files.meta,
     ...(hidden ? { hiddenOpener: true, threadTitle: title } : {}),
   };
 }

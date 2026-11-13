@@ -1,6 +1,7 @@
 /** ChatView's local type contracts, carved out of ChatView.tsx (5.9b). */
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import type { ChartSelectionSnapshot } from '@/pages/MarketView/stores/chartSelectionStore';
+import type { AttachmentMeta } from '../../utils/fileUpload';
 import type { SubagentTokenUsage } from '../../utils/tokenUsage';
 
 export type { MessageRecord } from '../../hooks/utils/types';
@@ -9,7 +10,7 @@ export interface LocationState {
   workspaceStatus?: string | null;
   initialMessage?: string;
   additionalContext?: Record<string, unknown>[] | null;
-  attachmentMeta?: Record<string, unknown>[] | null;
+  attachmentMeta?: AttachmentMeta[] | null;
   model?: string;
   /** The level `initialMessage` runs at, as the sending composer showed it. */
   reasoningEffort?: string;

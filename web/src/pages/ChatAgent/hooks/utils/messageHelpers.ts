@@ -14,6 +14,7 @@ import type {
 import type { ArtifactCommentsShown } from '@/types/api';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import type { ChartSelectionSnapshot } from '@/pages/MarketView/stores/chartSelectionStore';
+import type { AttachmentMeta } from '../../utils/fileUpload';
 
 // Re-export types for consumers
 export type { ChatMessage, AssistantMessage, UserMessage, NotificationMessage, NotificationVariant };
@@ -21,12 +22,6 @@ export type { ChatMessage, AssistantMessage, UserMessage, NotificationMessage, N
 // Keeps ids made within the same millisecond apart: a message is updated by
 // id, so two sharing one are both updated.
 let _idSeq = 0;
-
-export interface AttachmentMeta {
-  file: File;
-  dataUrl: string;
-  type: string;
-}
 
 /**
  * `turnIndex` is the backend turn the bubble belongs to, or undefined for one
@@ -57,10 +52,8 @@ export function createUserMessage(
     sentHere: true,
   };
   if (attachments && attachments.length > 0) {
-    // AttachmentMeta is the upload-time shape (file, dataUrl, type).
-    // Attachment from sse.ts has a different shape (name, size, url).
-    // At send time only AttachmentMeta fields are used, so store as-is.
-    msg.attachments = attachments as any;
+    // The send-time record; history's carries a url instead. The bubble reads either.
+    msg.attachments = attachments;
   }
   if (widgetSnapshots && widgetSnapshots.length > 0) {
     msg.widgetSnapshots = widgetSnapshots;

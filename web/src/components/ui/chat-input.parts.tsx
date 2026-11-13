@@ -1,84 +1,253 @@
+import { useState } from 'react';
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode, Ref } from 'react';
 import { FileText, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Loader } from '@/components/ui/loader';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { useLocale } from '@/hooks/useLocale';
+import { useObjectUrl } from '@/hooks/useObjectUrl';
+import { formatBytes } from '@/lib/format';
 import { motion, useIsPresent } from '@/lib/framer';
 import { cn } from '@/lib/utils';
+import ImageLightbox from '@/pages/ChatAgent/components/ImageLightbox';
+import { isImageFile } from '@/pages/ChatAgent/utils/fileUpload';
+import type { UploadFailure } from '@/pages/ChatAgent/utils/partUpload';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import { CHIP_PRESENCE, MENU_PRESENCE, getSlashCommandIcon } from './chat-input.helpers';
 import { SUBAGENT_CORE, SUBAGENT_SEATS } from './subagents-rings.geometry';
 import type { FileAttachment, SlashCommand } from './chat-input.types';
 
-const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
+/** A ring of `percent` around nothing, over an uploading image's thumbnail. */
+function ProgressRing({ percent }: { percent: number }) {
+  const r = 11;
+  const c = 2 * Math.PI * r;
+  return (
+    <svg width={28} height={28} viewBox="0 0 28 28" aria-hidden className="-rotate-90">
+      <circle cx={14} cy={14} r={r} fill="none" strokeWidth={2.5} className="stroke-white/30" />
+      <circle
+        cx={14}
+        cy={14}
+        r={r}
+        fill="none"
+        strokeWidth={2.5}
+        strokeLinecap="round"
+        strokeDasharray={c}
+        strokeDashoffset={c * (1 - percent / 100)}
+        className="stroke-white transition-[stroke-dashoffset] duration-quick ease-out"
+      />
+    </svg>
+  );
+}
 
-/* --- FILE PREVIEW CARD ---
- * Its root is a motion element: rendered as a child of an AnimatePresence, it
- * plays CHIP_PRESENCE on the way in and on the way out. */
-export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRemove: (id: string) => void }) => {
+/* --- FILE TILES ---
+ * A file uploads from the moment it is added, and its tile shows how far it
+ * has gone: a ring over an image, a thin bar under any other file's name, and
+ * once failed, why, with a way to send it again. Each tile's root is a motion
+ * element: rendered as a child of an AnimatePresence, it plays CHIP_PRESENCE
+ * on the way in and on the way out. */
+
+const FAILURE_KEYS = {
+  send: 'chat.composer.attachment.sendFailed',
+  tooLarge: 'chat.composer.attachment.tooLarge',
+  refused: 'chat.composer.attachment.failed',
+  unknown: 'chat.composer.attachment.failed',
+} as const satisfies Record<UploadFailure['kind'], string>;
+
+/** A failure in the current language; the server's own words when it gave them. */
+function failureText(t: TFunction, failure: UploadFailure): string {
+  return (failure.kind === 'refused' && failure.message) || t(FAILURE_KEYS[failure.kind]);
+}
+
+type TileProps = { file: FileAttachment; onRemove: (id: string) => void; onRetry: (id: string) => void };
+
+/** The upload's state, over an image's thumbnail or inline under another file's name. */
+function UploadState({ file, variant, onRetry }: Omit<TileProps, 'onRemove'> & { variant: 'overlay' | 'inline' }) {
   const { t } = useTranslation();
-  const isMobilePreview = useIsMobile();
-  const isImage = file.type.startsWith('image/') && file.preview;
+  const locale = useLocale();
+  const size = formatBytes(file.file.size, locale);
+  const overlay = variant === 'overlay';
+  const caption = (text: string, saving = false) => (
+    <p
+      className={cn(
+        'flex items-center gap-1 text-[0.625rem] tabular-nums',
+        overlay ? 'text-white/90' : 'text-(--color-text-tertiary)',
+      )}
+      title={file.file.name}
+    >
+      <span className="truncate">{text}</span>
+      {saving && !overlay && <Loader size={10} label={t('chat.composer.attachment.saving')} style={{ color: 'inherit' }} />}
+    </p>
+  );
+  const strip = (children: ReactNode) => (
+    <div className="absolute inset-x-0 bottom-0 bg-linear-to-t from-black/70 to-transparent px-2 pb-1.5 pt-4">{children}</div>
+  );
+  const { upload } = file;
 
+  switch (upload.status) {
+    case 'uploading': {
+      const { percent } = upload;
+      const meta = percent === null ? size : `${size} · ${percent}%`;
+      if (overlay) {
+        return (
+          <>
+            <div className="absolute inset-0 flex items-center justify-center text-white">
+              {percent === null
+                ? <Loader size={16} label={t('chat.composer.attachment.saving')} className="text-white" />
+                : <ProgressRing percent={percent} />}
+            </div>
+            {strip(caption(meta))}
+          </>
+        );
+      }
+      return (
+        <>
+          {caption(meta, percent === null)}
+          <div className="h-0.5 w-full overflow-hidden rounded-full bg-(--color-border-muted)" aria-hidden>
+            <div
+              className="h-full rounded-full bg-(--color-text-tertiary) transition-[width] duration-quick ease-out"
+              style={{ width: `${percent ?? 100}%` }}
+            />
+          </div>
+        </>
+      );
+    }
+    case 'ready':
+      return overlay ? strip(caption(size)) : caption(size);
+    case 'failed': {
+      const reason = failureText(t, upload.failure);
+      const failure = (
+        <div className="relative flex min-w-0 flex-col items-start gap-0.5">
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <p
+                  tabIndex={0}
+                  className={cn('w-full truncate text-[0.625rem] leading-tight', overlay ? 'text-white' : 'text-(--color-loss)')}
+                >
+                  {reason}
+                </p>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-64">{reason}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <button
+            type="button"
+            onClick={() => onRetry(file.id)}
+            className={cn(
+              'tap-target rounded text-[0.625rem] font-medium underline-offset-2 hover:underline',
+              overlay ? 'text-white' : 'text-(--color-text-primary)',
+            )}
+          >
+            {t('chat.composer.attachment.retry')}
+          </button>
+        </div>
+      );
+      return overlay ? strip(failure) : failure;
+    }
+  }
+}
+
+/** The tile around either kind of file: its name for assistive tech, the failed border, and remove. */
+function TileShell({ file, onRemove, children }: Omit<TileProps, 'onRetry'> & { children: ReactNode }) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const { upload } = file;
+  const name = file.file.name;
+  const label = upload.status === 'uploading'
+    ? t('chat.composer.attachment.uploadingLabel', { name, percent: upload.percent ?? 100 })
+    : upload.status === 'failed'
+      ? t('chat.composer.attachment.failedLabel', { name, error: failureText(t, upload.failure) })
+      : name;
+  const failed = upload.status === 'failed';
   return (
     <motion.div
       {...CHIP_PRESENCE}
-      className="relative group shrink-0 w-24 h-24 rounded-xl overflow-hidden border border-(--color-border-muted) bg-(--color-bg-elevated) transition-colors hover:border-(--color-border-default)"
-    >
-      {isImage ? (
-        <div className="w-full h-full relative">
-          <img src={file.preview!} alt={file.file.name} className="w-full h-full object-cover" />
-          <div className="absolute inset-0 bg-black/20 group-hover:bg-black/0 transition-colors" />
-        </div>
-      ) : (
-        <div className="w-full h-full p-3 flex flex-col justify-between">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 rounded" style={{ background: 'var(--color-border-muted)' }}>
-              <FileText className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />
-            </div>
-            <span className="text-[0.625rem] font-medium uppercase tracking-wider truncate" style={{ color: 'var(--color-text-tertiary)' }}>
-              {file.file.name.split('.').pop()}
-            </span>
-          </div>
-          <div className="space-y-0.5">
-            <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-muted)' }} title={file.file.name}>
-              {file.file.name}
-            </p>
-            <p className="text-[0.625rem]" style={{ color: 'var(--color-text-tertiary)' }}>
-              {formatFileSize(file.file.size)}
-            </p>
-          </div>
-        </div>
+      role="group"
+      aria-label={label}
+      data-status={upload.status}
+      className={cn(
+        'relative group shrink-0 w-24 h-24 rounded-xl overflow-hidden border bg-(--color-bg-elevated) transition-colors',
+        failed ? 'border-(--color-border-loss)' : 'border-(--color-border-muted) hover:border-(--color-border-default)',
       )}
-
-      {/* Remove Button Overlay */}
+    >
+      {children}
       <button
         type="button"
         onClick={() => onRemove(file.id)}
         aria-label={t('chat.composer.remove')}
-        className={`absolute top-1 right-1 p-1 bg-black/50 hover:bg-black/70 rounded-full text-white transition-opacity ${isMobilePreview ? 'opacity-60' : 'opacity-0 group-hover:opacity-100'}`}
+        // The tile clips what reaches past its corner, so the finger's box
+        // moves in by that much and keeps its whole 44px inside the tile.
+        className={cn(
+          'tap-target [--tap-target-x:-8px] [--tap-target-y:8px] absolute top-1 right-1 p-1 bg-black/50 hover:bg-black/70 rounded-full text-white transition-opacity',
+          isMobile || failed ? 'opacity-60' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+        )}
       >
         <X className="w-3 h-3" />
       </button>
-
-      {/* Upload Status */}
-      {file.uploadStatus === 'uploading' && (
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-          <Loader size={20} label={t('chat.composer.uploading')} className="text-white" />
-        </div>
-      )}
     </motion.div>
   );
-};
+}
+
+/**
+ * An image's tile. The thumbnail opens the lightbox; the strip along the
+ * bottom (size, or why it failed and Retry) sits beside that target rather
+ * than over it, so Retry never zooms.
+ */
+function ImageTile({ file, onRemove, onRetry }: TileProps) {
+  const { t } = useTranslation();
+  const src = useObjectUrl(file.file);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const busy = file.upload.status !== 'ready';
+  return (
+    <TileShell file={file} onRemove={onRemove}>
+      {src && <img src={src} alt={file.file.name} className="w-full h-full object-cover" />}
+      <div
+        aria-hidden
+        className={cn('absolute inset-0 transition-colors', busy ? 'bg-black/45' : 'bg-black/20 group-hover:bg-black/0')}
+      />
+      <UploadState file={file} variant="overlay" onRetry={onRetry} />
+      <button
+        type="button"
+        onClick={() => setPreviewOpen(true)}
+        aria-label={t('chat.composer.attachment.preview', { name: file.file.name })}
+        className="absolute inset-x-0 top-0 bottom-10 cursor-zoom-in"
+      />
+      {src && <ImageLightbox src={src} alt={file.file.name} open={previewOpen} onClose={() => setPreviewOpen(false)} />}
+    </TileShell>
+  );
+}
+
+/** Any other file's tile: its extension, its name, and the upload's state under it. */
+function DocTile({ file, onRemove, onRetry }: TileProps) {
+  return (
+    <TileShell file={file} onRemove={onRemove}>
+      <div className="w-full h-full p-3 flex flex-col justify-between">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 rounded" style={{ background: 'var(--color-border-muted)' }}>
+            <FileText className="w-4 h-4" style={{ color: 'var(--color-text-tertiary)' }} />
+          </div>
+          <span className="text-[0.625rem] font-medium uppercase tracking-wider truncate" style={{ color: 'var(--color-text-tertiary)' }}>
+            {file.file.name.split('.').pop()}
+          </span>
+        </div>
+        <div className="space-y-0.5 min-w-0">
+          <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-muted)' }} title={file.file.name}>
+            {file.file.name}
+          </p>
+          <UploadState file={file} variant="inline" onRetry={onRetry} />
+        </div>
+      </div>
+    </TileShell>
+  );
+}
+
+export function FileTile(props: TileProps) {
+  return isImageFile({ type: props.file.type, name: props.file.file.name }) ? <ImageTile {...props} /> : <DocTile {...props} />;
+}
 
 /**
  * The single composer pill: every labeled control in the action bar (scope,

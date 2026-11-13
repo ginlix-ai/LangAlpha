@@ -54,7 +54,7 @@ import {
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
 import type { ComposerSend, ContextPayload } from '../../../components/ui/chat-input.types';
-import { attachmentsToContexts, widgetSnapshotsToContexts } from '../utils/fileUpload';
+import { attachmentSendParts, widgetSnapshotsToContexts } from '../utils/fileUpload';
 import MessageList, { LiveMessageList, normalizeSubagentText } from './MessageList';
 import { MessageActionsProvider } from './messageList/MessageActionsContext';
 import { UserBubble } from './messageList/UserBubble';
@@ -723,21 +723,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // Wrapper: converts ChatInput's send into handleSendMessage(message,
   // additionalContext, attachmentMeta), the send itself the draft it gives back.
   const handleSendWithAttachments = useCallback((send: ComposerSend) => {
-    const { message, files: attachments, commands: slashCommands, modelOptions } = send;
-    const contexts: Record<string, unknown>[] = [];
-    let attachmentMeta: Record<string, unknown>[] | null = null;
-
-    // Image/PDF contexts from attachments
-    if (attachments && attachments.length > 0) {
-      contexts.push(...(attachmentsToContexts(attachments) as unknown as Record<string, unknown>[]));
-      attachmentMeta = attachments.map((a) => ({
-        name: a.file.name,
-        type: a.type,
-        size: a.file.size,
-        preview: null,
-        dataUrl: a.dataUrl,
-      }));
-    }
+    const { message, files, commands: slashCommands, modelOptions } = send;
+    const attached = attachmentSendParts(files);
+    const contexts: Record<string, unknown>[] = [...attached.contexts];
+    const meta = [...attached.meta];
 
     // Skill contexts from slash commands
     for (const cmd of slashCommands) {
@@ -766,18 +755,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     // routing). The same snapshots are also forwarded to handleSendMessage so
     // the user message renders chip cards inline below its bubble.
     if (modelOptions.widgetSnapshots && modelOptions.widgetSnapshots.length > 0) {
-      const items = widgetSnapshotsToContexts(modelOptions.widgetSnapshots);
-      contexts.push(...(items as unknown as Record<string, unknown>[]));
+      contexts.push(...widgetSnapshotsToContexts(modelOptions.widgetSnapshots));
     }
 
     // Regions and price levels picked on a panel chart tab, and what each chart shows.
     const { picked, chartViews } = panelChart.takeForSend(message);
     if (picked) {
       contexts.push(...picked.contexts);
-      if (picked.attachments.length > 0) attachmentMeta = [...(attachmentMeta ?? []), ...picked.attachments];
+      meta.push(...picked.attachments);
     }
 
     const additionalContext = contexts.length > 0 ? contexts : null;
+    const attachmentMeta = meta.length > 0 ? meta : null;
     const outgoing = picked?.outgoingMessage ?? message;
     // The queued file comments go with every send, the text as their note.
     const artifactComments = takeQueuedComments(outgoing);
@@ -1010,7 +999,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     isMobile, filePanel: rightPanelType === 'file', panelExpanded, panelWidth: rightPanelWidth, threadId: panelThreadId,
     mainAgent: activeAgentId === 'main', queuedComments: commentDeck.comments, reads: coverReads,
   });
-  const addCommentsToTurn = useStableHandler(() => { chatInputRef.current?.send(); });
+  // Files that hold the send keep the comments waiting with them; the
+  // composer takes focus, where the hint beside Send says why.
+  const addCommentsToTurn = useStableHandler(() => {
+    const input = chatInputRef.current;
+    if (input && !input.send() && input.holdsSend()) input.focus();
+  });
   const focusComposer = useStableHandler(() => { chatInputRef.current?.focus(); });
   // The queued comments ride above the text box and count as something to
   // send. Folded as the sheet starts over the chat, so it docks folded.
