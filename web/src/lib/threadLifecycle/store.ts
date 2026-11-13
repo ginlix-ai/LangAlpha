@@ -103,6 +103,9 @@ interface StoreState {
   /** Each thread's effective run seq, so a newer run that settles as the last
    *  one did still notifies. */
   effSeq: ReadonlyMap<string, number>;
+  /** The open thread's seen cursor. It is never unseen, so its cursor moving
+   *  changes no set; whether it still owes a stamp follows from this. */
+  activeSeenSeq: number;
   resetRegistered: boolean;
 }
 
@@ -118,6 +121,7 @@ function freshState(): StoreState {
     unseen: new Set(),
     effStatus: new Map(),
     effSeq: new Map(),
+    activeSeenSeq: 0,
     resetRegistered: false,
   };
 }
@@ -264,6 +268,11 @@ function recompute(): void {
   }
   if (!mapsEqual(state.effSeq, effSeq)) {
     state.effSeq = effSeq;
+    changed = true;
+  }
+  const activeSeenSeq = state.activeThreadId ? getSeenThroughSeq(state.activeThreadId) : 0;
+  if (activeSeenSeq !== state.activeSeenSeq) {
+    state.activeSeenSeq = activeSeenSeq;
     changed = true;
   }
   if (changed) notify();
@@ -499,12 +508,46 @@ export function getEffectiveObservation(
   return entry ? effective(entry) : undefined;
 }
 
+/**
+ * The newest run seq the user has seen on this thread, by either proof: the
+ * durable cursor, or a snapshot's absence that showed every run up to it read.
+ * 0 when nothing is known.
+ */
+export function getSeenThroughSeq(threadId: string): number {
+  const entry = state.threads.get(threadId);
+  return entry ? Math.max(entry.lastSeenSeq, entry.seenSuppressedBelowSeq) : 0;
+}
+
+export interface ThreadAttention {
+  running: ReadonlySet<string>;
+  needsInput: ReadonlySet<string>;
+  unseen: ReadonlySet<string>;
+}
+
+let attention: ThreadAttention | null = null;
+
+/** The derived sets as they stand. Each set keeps its identity until its
+ *  members change, and so does the whole, so it is a `useSyncExternalStore`
+ *  snapshot as it is. */
+export function getThreadAttention(): ThreadAttention {
+  const { running, needsInput, unseen } = state;
+  if (attention?.running !== running || attention.needsInput !== needsInput || attention.unseen !== unseen) {
+    attention = { running, needsInput, unseen };
+  }
+  return attention;
+}
+
 // ---------------------------------------------------------------------------
 // Subscriptions
 // ---------------------------------------------------------------------------
 
 function subscribe(fn: () => void): () => void {
   return state.emitter.subscribe(fn);
+}
+
+/** Called after every change to what the store derives; for code outside React. */
+export function subscribeThreadLifecycle(fn: () => void): () => void {
+  return subscribe(fn);
 }
 
 /** Per-thread lifecycle flags as primitives. Rows must subscribe here — never
@@ -641,5 +684,6 @@ export function resetThreadLifecycle(): void {
   state.unseen = new Set();
   state.effStatus = new Map();
   state.effSeq = new Map();
+  state.activeSeenSeq = 0;
   notify();
 }

@@ -13,7 +13,7 @@
  * this thread", this one owns "this tab is running this thread".
  */
 import { useEffect, useRef } from 'react';
-import { markThreadSeen } from './seen';
+import { markWatchedThreadSeen } from './seen';
 import {
   clearLocalObservation,
   getActiveThreadId,
@@ -75,7 +75,7 @@ export function useLocalRunPublisher(
       } else {
         publishLocalSettled(threadId, runId);
         if (getActiveThreadId() === threadId) {
-          markThreadSeen(threadId, runId);
+          markWatchedThreadSeen(threadId, runId);
         }
       }
     }

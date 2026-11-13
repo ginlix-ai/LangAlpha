@@ -10,7 +10,7 @@ import { useLocalRunPublisher } from '../useLocalRunPublisher';
 import { getEffectiveObservation, resetThreadLifecycle, setActiveThread } from '../store';
 
 const markThreadSeen = vi.fn();
-vi.mock('../seen', () => ({ markThreadSeen: (...a: unknown[]) => markThreadSeen(...a) }));
+vi.mock('../seen', () => ({ markWatchedThreadSeen: (...a: unknown[]) => markThreadSeen(...a) }));
 
 beforeEach(() => {
   resetThreadLifecycle();
