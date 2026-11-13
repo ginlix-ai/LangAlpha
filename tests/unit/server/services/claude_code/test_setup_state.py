@@ -277,6 +277,19 @@ async def test_once_on_a_computer_the_idle_sweep_stopped_reads_as_its_token_last
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["starting", "stopping"])
+async def test_once_on_a_computer_this_server_is_starting_or_stopping_reads_as_its_token_last_worked(world, status):  # noqa: F811
+    """A turn waits the start or stop out and runs there, so the computer
+    and the Chief of Staff's placement on it are not offline meanwhile."""
+    world.machine.token = "sk-ant-oat01-mine"
+    await _setup(world)
+    assert (await _setup(world)).state == "connected"
+    world.computer = _computer(status)
+    answer = await _setup(world)
+    assert (answer.state, answer.computers[0].state) == ("connected", "signed_in")
+
+
+@pytest.mark.asyncio
 async def test_once_on_a_computer_that_went_out_of_reach_reads_offline_though_its_token_last_worked(world):  # noqa: F811
     world.machine.token = "sk-ant-oat01-mine"
     await _setup(world)

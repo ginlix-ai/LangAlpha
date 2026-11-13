@@ -133,8 +133,8 @@ async def test_one_whose_host_is_reachable_is_picked_asleep_or_not_else_passed_o
 ):
     """Never dialed: a stopped computer is picked while its host is up (the
     run starts it), a connect-out one only through a live tunnel; one a
-    recent dial could not reach, and one neither running nor stopped, are
-    passed over."""
+    recent dial could not reach, and one in no state a run starts it from,
+    are passed over."""
     laptop = _own("c-8", "Laptop", status=status, tunnel=tunnel)
     studio = _own("c-9", "Studio")
     cache = Cache()
@@ -144,6 +144,30 @@ async def test_one_whose_host_is_reachable_is_picked_asleep_or_not_else_passed_o
         cache.values[unreached_key("c-8")] = "1"
     tunnels = {"tun-8": {"live": live}} if tunnel else None
     assert await _pick([laptop, studio], cache, tunnels) == ((laptop if picked else studio), None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["starting", "stopping"])
+@pytest.mark.parametrize(
+    ("tunnel", "live", "picked"),
+    [
+        pytest.param(None, None, True, id="dialed-directly"),
+        pytest.param("tun-8", True, True, id="tunnel-live"),
+        pytest.param("tun-8", False, False, id="tunnel-down"),
+    ],
+)
+async def test_one_this_server_is_starting_or_stopping_is_picked_while_its_host_is_up(status, tunnel, live, picked):
+    """The idle sweep's stop, and the start after it, are this server's own
+    doing, which the run waits out before it starts the computer, so neither
+    reads as offline: only a host out of reach passes it over."""
+    laptop = _own("c-8", "Laptop", status=status, tunnel=tunnel)
+    studio = _own("c-9", "Studio")
+    cache = Cache()
+    _found(cache, "c-8", "works", ago=10)
+    _found(cache, "c-9", "works", ago=300)
+    tunnels = {"tun-8": {"live": live}} if tunnel else None
+    assert await _pick([laptop, studio], cache, tunnels) == ((laptop if picked else studio), None)
+    assert await _pick([laptop], cache, tunnels) == ((laptop, None) if picked else (None, "Laptop"))
 
 
 @pytest.mark.asyncio

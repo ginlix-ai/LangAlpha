@@ -23,7 +23,7 @@ from src.llms.claude_code import ClaudeTurnFailed
 
 from .cli_slots import computer_cli_slot
 from .hosted import OnOwn, Refused, cli_placement, cloud_runs_in
-from .machine import ComputerToken
+from .machine import RUNS_CLI, ComputerToken
 from .plan import UserPlan
 from .saved import refusal_stamp, refuse, stored_row
 
@@ -212,7 +212,7 @@ class _PickedComputer:
         if computer is None or computer.get("user_id") != self.user_id:
             raise ClaudeTurnFailed("cli_computer_offline", "the computer is gone", name=self.name)
         status = computer.get("status")
-        if status not in (Lifecycle.RUNNING, Lifecycle.STOPPED, Lifecycle.STARTING, Lifecycle.STOPPING):
+        if status not in RUNS_CLI:
             raise ClaudeTurnFailed("cli_computer_offline", f"the computer is {status}", name=self.name)
         if status != Lifecycle.RUNNING:
             # Out of the turn's workspace: a start lays out the bound one's
