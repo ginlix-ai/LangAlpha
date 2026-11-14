@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useId } from 'react';
 import { Info, List, ChevronDown } from 'lucide-react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { SymbolSwitcher } from './SymbolSwitcher';
 import { HeaderPill } from './HeaderPill';
 import { ExtendedHoursPair } from './ExtendedHoursPair';
@@ -67,6 +68,7 @@ const StockHeader = ({ symbol, quote: q, onToggleOverview, onOpenWatchlist, wsSt
       <div className="stock-header-top">
         <div className="stock-header-identity">
           <div className="stock-title">
+            <TickerLogo symbol={symbol} />
             {onSwitchSymbol ? (
               <SymbolSwitcher symbol={symbol} onPick={onSwitchSymbol} />
             ) : (

@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { X, ChevronLeft, ChevronRight, BarChart3, Sunrise, Sunset } from 'lucide-react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useWatchlistData } from '../../Dashboard/hooks/useWatchlistData';
@@ -123,7 +124,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
           className={`market-sidebar-row${isActive ? ' market-sidebar-row--active' : ''}`}
           onClick={() => onSymbolClick?.(row.symbol)}
         >
-          <span className="market-sidebar-row-symbol">{row.symbol}</span>
+          <TickerLabel symbol={row.symbol} className="market-sidebar-row-symbol" />
           <span className="market-sidebar-row-price">{formatPrice(headline.price, row.places)}</span>
           <span className={`market-sidebar-row-change ${changeClass(changeValue)}`}>
             {formatChange(changeValue)}

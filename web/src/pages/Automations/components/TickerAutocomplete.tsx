@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { Input } from '@/components/ui/input';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
 import type { StockSearchHit } from '@/lib/marketUtils';
@@ -76,6 +77,7 @@ export default function TickerAutocomplete({ value, onChange, label }: TickerAut
                 setShowDropdown(false);
               }}
             >
+              <TickerLogo symbol={item.symbol} />
               <span className="min-w-[6ch] shrink-0 font-mono font-medium" style={{ color: 'var(--color-text-primary)' }}>
                 {item.symbol}
               </span>

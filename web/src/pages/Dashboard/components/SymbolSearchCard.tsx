@@ -1,4 +1,5 @@
 import type React from 'react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';
@@ -55,6 +56,7 @@ export function SymbolSearchCard({
               return (
                 <li key={`${hit.symbol}-${index}`}>
                   <button type="button" onClick={() => onSelect(hit)} className="dash-form-hit">
+                    <TickerLogo symbol={hit.symbol} />
                     <span className="term-code dash-form-hit-symbol">{hit.symbol}</span>
                     <span className="term-word dash-form-hit-name">{hit.name}</span>
                     {exchange && <span className="term-code dash-form-hit-exchange">{exchange}</span>}

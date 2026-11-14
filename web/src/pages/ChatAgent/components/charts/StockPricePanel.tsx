@@ -164,7 +164,7 @@ export function StockPriceChart({ data }: PanelProps): React.ReactElement {
 
   return (
     <>
-      <TermPanelHead title={symbol ?? ''} aside={<MarketLink symbol={symbol} />} />
+      <TermPanelHead title={symbol ?? ''} symbol={symbol} aside={<MarketLink symbol={symbol} />} />
       <TermCard
         title={t('toolArtifact.price')}
         sub={INTERVAL_LABEL[interval] ?? interval}

@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { Sparkline } from '@/components/charts/Sparkline';
+import { TickerLogo } from '@/components/TickerLogo';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import { cn } from '@/lib/utils';
 import { percentMove } from './termChange';
@@ -31,6 +32,7 @@ export function CardColumn({ className, children }: { className?: string; childr
  */
 export function TermCard({
   title,
+  symbol,
   sub,
   meta,
   metaTitle,
@@ -41,6 +43,8 @@ export function TermCard({
   testid,
 }: {
   title: React.ReactNode;
+  /** The one instrument the card is about, whose logo leads the title. */
+  symbol?: string | null;
   /** Beside the title, in its cut: the exchange, the filing kind. */
   sub?: React.ReactNode;
   /** At the far end of the edge: the date range, the freshness, a count. A
@@ -78,11 +82,9 @@ export function TermCard({
       }
     : undefined;
   const titleParts = (
-    <>
-      <span className="term-bracket" aria-hidden="true">[</span>
+    <BracketTitle symbol={symbol}>
       <span className="term-card-title-text">{title}</span>
-      <span className="term-bracket" aria-hidden="true">]</span>
-    </>
+    </BracketTitle>
   );
   return (
     <section
@@ -105,6 +107,24 @@ export function TermCard({
       </header>
       {children}
     </section>
+  );
+}
+
+/** A frame's title in brackets, `[AAPL]`, led by the instrument's logo when it is about one. */
+export function BracketTitle({
+  symbol,
+  children,
+}: {
+  symbol?: string | null;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <>
+      {symbol && <TickerLogo symbol={symbol} className="term-title-logo" />}
+      <span className="term-bracket term-bracket-open" aria-hidden="true">[</span>
+      {children}
+      <span className="term-bracket term-bracket-close" aria-hidden="true">]</span>
+    </>
   );
 }
 

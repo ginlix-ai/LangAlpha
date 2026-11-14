@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
@@ -92,6 +93,7 @@ export function SymbolSearch({ onPick }: SymbolSearchProps): React.ReactElement 
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => pick(hit.symbol, hit)}
             >
+              <TickerLogo symbol={hit.symbol} />
               <span className="symbol-search-symbol">{hit.symbol}</span>
               {hit.name && <span className="symbol-search-name">{hit.name}</span>}
             </li>

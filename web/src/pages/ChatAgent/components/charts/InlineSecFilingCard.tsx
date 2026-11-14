@@ -38,6 +38,7 @@ function InlinePeriodicCard({
   return (
     <TermCard
       title={filing.symbol}
+      symbol={filing.symbol}
       sub={sub}
       meta={filingDate && t('toolArtifact.filedOn', { date: filingDate })}
       onClick={onClick}
@@ -125,7 +126,7 @@ function Inline8KCard({
     : t('toolArtifact.8kFilings');
 
   return (
-    <TermCard title={filing.symbol} sub={sub} meta={t('toolArtifact.filingCount', { count: filing.count })} onClick={onClick}>
+    <TermCard title={filing.symbol} symbol={filing.symbol} sub={sub} meta={t('toolArtifact.filingCount', { count: filing.count })} onClick={onClick}>
       <TermTable<CurrentReport>
         rows={filing.filings}
         limit={MAX_INLINE_8K}

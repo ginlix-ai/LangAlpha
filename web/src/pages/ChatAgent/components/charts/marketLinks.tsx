@@ -1,4 +1,5 @@
 import React from 'react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 import { ArrowUpRight } from 'lucide-react';
@@ -36,6 +37,7 @@ export function MarketLink({ symbol, inline = false }: { symbol: string | undefi
   if (!inline) return <TermLink onClick={handleClick}>{t('toolArtifact.openInMarketView')}</TermLink>;
   return (
     <button type="button" className="term-sym-link" title={t('toolArtifact.openInMarketView')} onClick={handleClick}>
+      <TickerLogo symbol={target} />
       <span>{symbol}</span>
       <ArrowUpRight className="term-link-mark" aria-hidden="true" />
     </button>

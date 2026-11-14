@@ -117,6 +117,8 @@
 }
 .term-card-title {
   display: inline-flex;
+  /* The text sets the baseline the head aligns on, not a leading logo. */
+  align-items: baseline;
   min-width: 0;
   font-family: var(--term-words);
   font-weight: 600;
@@ -142,11 +144,18 @@ button.term-card-title {
   color: var(--color-term-text-tertiary);
   font-weight: 400;
 }
-.term-bracket:first-child {
+.term-bracket:first-child,
+.term-bracket-open {
   margin-right: 0.5ch;
 }
-.term-bracket:last-child {
+.term-bracket:last-child,
+.term-bracket-close {
   margin-left: 0.5ch;
+}
+/* A logo leads the title, centred on the line its text sets. */
+.term-title-logo {
+  align-self: center;
+  margin-right: 0.625ch;
 }
 /* The sub-title shares the title's cut. Whichever of the two the card keeps
    holds its width, and the other gives way; a long kept title still stops at

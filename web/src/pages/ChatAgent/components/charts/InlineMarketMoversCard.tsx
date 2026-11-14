@@ -1,4 +1,5 @@
 import React from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { formatMoney } from '@/lib/bars';
 import { useLocale } from '@/hooks/useLocale';
@@ -38,7 +39,7 @@ export function InlineMarketMoversCard({ artifact, onClick, toolArgs }: InlineCa
         rowKey={(row, i) => row.symbol || i}
         columns={[
           // Without the name column, the symbol takes the spare width.
-          { key: 'sym', label: t('toolArtifact.termHead.sym'), fill: 'grow', className: 'term-strong', cell: (r) => r.symbol },
+          { key: 'sym', label: t('toolArtifact.termHead.sym'), fill: 'grow', className: 'term-strong', cell: (r) => r.symbol && <TickerLabel symbol={r.symbol} /> },
           // The vendor names few US movers; a column blank on every row says nothing.
           { key: 'name', label: t('toolArtifact.termHead.name'), fill: 'clip', className: 'term-t3', show: !narrow && listed.some((r) => r.name), cell: (r) => r.name },
           {

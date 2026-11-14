@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { SymbolSwitcher } from './SymbolSwitcher';
@@ -67,6 +68,7 @@ export function LegendLead({ symbol, quote: q, onSwitchSymbol, showName = false,
   // quote is inline content so the cut lands on a character, not a box.
   return (
     <span className="legend-lead" title={fullName}>
+      <TickerLogo symbol={symbol} />
       {onSwitchSymbol ? (
         <SymbolSwitcher symbol={symbol} onPick={onSwitchSymbol} />
       ) : (

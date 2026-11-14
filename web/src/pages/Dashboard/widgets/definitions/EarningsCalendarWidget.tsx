@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { useLocale } from '@/hooks/useLocale';
@@ -130,7 +131,9 @@ function EarningsRow({
   return (
     <tr className="row-attach-host">
       <td className="term-t3">{label}</td>
-      <td className="term-code term-strong">{item.symbol}</td>
+      <td className="term-code term-strong">
+        <TickerLabel symbol={item.symbol} />
+      </td>
       <td className="term-fill dash-attach-cell">
         {session && <TermTag>{session}</TermTag>}
         {item.companyName && (

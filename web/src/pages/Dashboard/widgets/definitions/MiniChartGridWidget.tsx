@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Grid2x2 } from 'lucide-react';
@@ -286,7 +287,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                       className="font-bold text-xs"
                       style={{ color: 'var(--color-text-primary)' }}
                     >
-                      {cell.symbol}
+                      <TickerLabel symbol={cell.symbol} />
                     </span>
                     <span
                       className="text-[0.6875rem] dashboard-mono"

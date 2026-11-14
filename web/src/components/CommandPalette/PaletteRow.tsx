@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Ellipsis } from 'lucide-react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { useLocale } from '@/hooks/useLocale';
 import { grouped2, signedFixed2 } from '@/lib/format';
 import { snapshotToStockPrice, type QuoteRow } from '@/lib/quotes';
@@ -55,7 +56,12 @@ export function PaletteRow({
       onMouseDown={(e) => e.preventDefault()}
       onClick={onPick}
     >
-      <Icon className={cn('command-palette-row-icon', accent && 'is-accent')} aria-hidden />
+      {/* A ticker's row leads with its logo, in the icon's column. */}
+      {symbol ? (
+        <TickerLogo symbol={symbol} className="command-palette-row-icon" />
+      ) : (
+        <Icon className={cn('command-palette-row-icon', accent && 'is-accent')} aria-hidden />
+      )}
       <span className="command-palette-row-body">
         <span className="command-palette-row-line">
           {symbol && <span className="command-palette-symbol">{symbol}</span>}

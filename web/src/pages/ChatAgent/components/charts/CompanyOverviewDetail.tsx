@@ -67,6 +67,7 @@ export const CompanyOverviewCard = memo(function CompanyOverviewCard({ data, scr
     <>
       <TermPanelHead
         title={dualName.named ? symbol : dualName.primary}
+        symbol={symbol}
         sub={dualName.named ? [dualName.primary, dualName.secondary].filter(Boolean).join(' · ') : undefined}
         aside={<MarketLink symbol={data.symbol} />}
       />

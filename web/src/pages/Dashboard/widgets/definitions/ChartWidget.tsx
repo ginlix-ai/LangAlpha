@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { useNavigate } from 'react-router';
@@ -1188,6 +1189,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
             />
           ) : (
             <div className="flex items-baseline gap-2">
+              <TickerLogo symbol={config.symbol} className="self-center" />
               <button
                 type="button"
                 onClick={startEditSymbol}
@@ -1252,6 +1254,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                       e.currentTarget.style.backgroundColor = 'transparent';
                     }}
                   >
+                    <TickerLogo symbol={hit.symbol} />
                     <span className="text-xs font-semibold tabular-nums">{hit.symbol}</span>
                     {hit.name && (
                       <span

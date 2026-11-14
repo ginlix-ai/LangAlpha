@@ -1,4 +1,5 @@
 import React from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { useLocale } from '@/hooks/useLocale';
 import { fixed2, signedFixed2 } from '@/lib/format';
@@ -45,7 +46,7 @@ export function PriceMeter({ reading, symbol }: { reading: MeterReading; symbol:
       {/* Each number sits at the end of the track its mark is on. */}
       <div className={cn('automation-mono automation-meter-scale', cur > thr && 'flex-row-reverse')}>
         <span>
-          <span style={{ color: 'var(--color-text-secondary)' }}>{symbol}</span> {formatValue(reading, current, locale)}
+          <TickerLabel symbol={symbol} className="text-[var(--color-text-secondary)]" /> {formatValue(reading, current, locale)}
         </span>
         <span>{t('automation.firesAt', { value: formatValue(reading, threshold, locale) })}</span>
       </div>

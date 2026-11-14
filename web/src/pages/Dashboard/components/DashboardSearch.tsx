@@ -1,4 +1,5 @@
 import { Search } from 'lucide-react';
+import { TickerLogo } from '@/components/TickerLogo';
 import React, { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
@@ -171,6 +172,7 @@ export function DashboardSymbolField() {
                   className="dashboard-search-dropdown-item"
                   onClick={() => handleSelectStock(stock)}
                 >
+                  <TickerLogo symbol={stock.symbol} />
                   <span className="dashboard-search-dropdown-symbol">{stock.symbol}</span>
                   <span className="dashboard-search-dropdown-name">
                     {dualName.primary}

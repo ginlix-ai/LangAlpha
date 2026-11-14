@@ -181,7 +181,7 @@ function AddPortfolioHoldingDialog({
             </DialogHeader>
             {selectedStock && (
               <div className="space-y-5">
-                <FormCard title={<span className="term-code">{selectedStock.symbol}</span>} sub={exchange}>
+                <FormCard title={<span className="term-code">{selectedStock.symbol}</span>} symbol={selectedStock.symbol} sub={exchange}>
                   {selectedStock.name && <div className="term-word dash-form-name">{selectedStock.name}</div>}
 
                   <div className="grid grid-cols-2 gap-3">
