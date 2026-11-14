@@ -13,6 +13,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { registerAuthReset } from '@/lib/authResets';
 import { queryKeys } from '@/lib/queryKeys';
 import { isArchivedThreadsKey, mapThreadCacheEntry, patchThreadRows } from '@/lib/threadRowActions';
+import type { SearchThreadHit } from '@/api/search';
 import type { Thread } from '@/types/api';
 
 /**
@@ -233,10 +234,27 @@ export function patchThreadSeen(
 /**
  * The rows a cache entry under the `threads` prefix holds, whichever of its two
  * shapes it is: a plain list (`{threads}`) or the gallery's infinite query
- * (`{pages: [{threads}]}`). Empty for anything else (a detail entry).
+ * (`{pages: [{threads}]}`). Empty for anything else (a detail entry). The
+ * palette's search keeps its thread hits under the same prefix, and a hit's
+ * `title` is the first message when `has_title` is false.
  */
-export function threadRowsOf(data: unknown): Thread[] {
-  const shaped = data as { threads?: unknown; pages?: Array<{ threads?: Thread[] } | null> } | null | undefined;
+export function threadRowsOf(data: unknown): CachedThreadRow[] {
+  const shaped = data as { threads?: unknown; pages?: Array<{ threads?: CachedThreadRow[] } | null> } | null | undefined;
   if (Array.isArray(shaped?.pages)) return shaped.pages.flatMap((page) => page?.threads ?? []);
-  return Array.isArray(shaped?.threads) ? (shaped.threads as Thread[]) : [];
+  return Array.isArray(shaped?.threads) ? (shaped.threads as CachedThreadRow[]) : [];
+}
+
+export type CachedThreadRow = Thread & Partial<Pick<SearchThreadHit, 'has_title'>>;
+
+/** A thread's title from whatever the cache already holds: its detail, or a
+ *  row in any list. A search hit with no title of its own carries the first
+ *  message instead, which is not one. */
+export function cachedThreadTitle(qc: QueryClient, threadId: string): string | undefined {
+  const detail = qc.getQueryData<Thread>(queryKeys.threads.detail(threadId));
+  if (detail?.thread_id === threadId && detail.title) return detail.title;
+  for (const [, data] of qc.getQueriesData<unknown>({ queryKey: queryKeys.threads.all })) {
+    const row = threadRowsOf(data).find((r) => r?.thread_id === threadId && r.has_title !== false);
+    if (row?.title) return row.title;
+  }
+  return undefined;
 }

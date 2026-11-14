@@ -23,7 +23,8 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "gen:web-grammar": "esbuild scripts/gen-web-grammar.ts --bundle --platform=node --format=esm --log-level=warning | node --input-type=module"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

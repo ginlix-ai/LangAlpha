@@ -1,9 +1,9 @@
 import { CliError, Exit, usage } from "../errors.js";
+import { workspaceRef } from "../grammar.js";
 import { type Api, p, type Query } from "../http.js";
 import { print, table } from "../output.js";
 import { type Command, command, remove, type Row, YES } from "./command.js";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // The most the server lists at once.
 const PAGE = 100;
 
@@ -24,11 +24,12 @@ async function* everyWorkspace<T>(api: Api, query: Query): AsyncGenerator<T> {
 /** ``home``, a workspace id, or a workspace's exact name. The server filters
  *  by no name, so a name is looked for across every page. */
 export async function resolveWorkspace(api: Api, ref: string): Promise<string> {
-  if (ref.toLowerCase() === "home") {
+  const named = workspaceRef(ref);
+  if ("home" in named) {
     const home = await api.json<WorkspaceRow>("POST", "/api/v1/workspaces/home");
     return home.workspace_id;
   }
-  if (UUID.test(ref)) return ref;
+  if ("id" in named) return named.id;
   const matches = new Set<string>();
   for await (const w of everyWorkspace<WorkspaceRow>(api, { include_home: true, sort_by: "name" })) {
     if (w.name === ref) matches.add(w.workspace_id);

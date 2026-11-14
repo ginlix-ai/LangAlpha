@@ -3,6 +3,7 @@ import React, { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
+import { queryKeys } from '@/lib/queryKeys';
 import i18n, { initI18n } from '@/i18n';
 import { switchLocale } from '@/lib/locale';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';
@@ -10,6 +11,8 @@ import '@/index.css';
 import type { MessageProvenance } from '@/types/chat';
 import type { CommandRun, CommandsResponse } from '@/types/commands';
 import ActivityBlock from '../../ActivityBlock';
+import { WorkspaceCreatedSlip } from '../../messageList/WorkspaceCreatedSlip';
+import { preapprovedCardOf } from '../../../utils/preapprovedCards';
 import ToolCallDetailView from '../../ToolCallDetailView';
 import { ComposerTray } from '../../chatView/ComposerTray';
 import type { TrayContents } from '../../chatView/useTrayContents';
@@ -114,6 +117,35 @@ const TOOL_ITEMS: ToolActivityItem[] = [
   ...rows.map((row) => toolItem(row.tool_call_id!, row.tool, row.description ?? '', HANDOFF(row.command_id))),
 ];
 
+// Bash calls that run `la`, each named for what it did. The thread and the
+// workspace below are in the cache, as the sidebar's reads would leave them.
+const LA_THREAD = '346bee3b-8f31-43d3-b8a3-f6489e03d7aa';
+const LA_WS = '0f1e2d3c-4b5a-4968-8776-655443322110';
+function laItem(id: string, command: string, description: string, result: Partial<ToolActivityItem> = {}): ToolActivityItem {
+  return {
+    type: 'tool_call', id, toolCallId: id, toolName: 'Bash',
+    toolCall: { args: { command, description } },
+    toolCallResult: { content: 'ok' },
+    isComplete: true, _liveState: 'completed',
+    ...result,
+  };
+}
+const LA_ITEMS: ToolActivityItem[] = [
+  laItem('la_list', 'la workspaces list --include-home', 'List workspaces'),
+  laItem('la_output', `la threads output ${LA_THREAD}`, 'Read the analyst thread'),
+  laItem('la_create', "la workspaces create 'Model test' --description 'Which model answers best'", 'Create a workspace'),
+  laItem('la_new', `la threads new -w ${LA_WS} --detach 'Size the AI capex cycle'`, 'Start a thread'),
+  laItem('la_delete_unknown', 'la threads delete 11111111-2222-4333-8444-555555555555 -y', 'Delete an old thread'),
+  laItem('la_cancel', `la threads cancel ${LA_THREAD}`, 'Stop the analyst'),
+  laItem('la_failed', `la threads delete ${LA_THREAD} -y`, 'Delete the thread', {
+    toolCallResult: { content: 'ERROR: Command failed (exit code 4)\nla: Not found' }, isFailed: true,
+  }),
+  laItem('la_piped', 'la threads list --json | jq length', 'Count threads'),
+  laItem('la_running', `la threads delete ${LA_THREAD} -y`, 'Delete the thread', {
+    toolCallResult: undefined, isComplete: false, _liveState: 'active',
+  }),
+];
+
 const TASKS: RosterTask[] = [
   { id: 'task:k7Xm2p', name: 'Task-k7Xm2p', description: 'Compare momentum papers', isMainAgent: false, status: 'active', running: true },
   { id: 'task:Qm3xLp', name: 'Task-Qm3xLp', description: 'Summarize the Fed minutes', isMainAgent: false, status: 'completed', running: false },
@@ -133,6 +165,12 @@ const REPORTS: Array<{ label: string; provenance: ReportProvenance }> = [
 ];
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+queryClient.setQueryData(queryKeys.threads.page(LA_WS, 20), {
+  threads: [{ thread_id: LA_THREAD, workspace_id: LA_WS, title: 'NVDA fair value' }],
+});
+queryClient.setQueryData(queryKeys.workspaces.list({ limit: 100 }), {
+  workspaces: [{ workspace_id: LA_WS, name: 'Semis' }, { workspace_id: 'ws-model-test', name: 'Model test' }],
+});
 
 function Section({ id, label, children }: { id: string; label: string; children: React.ReactNode }): React.ReactElement | null {
   if (knobs.only && knobs.only !== id) return null;
@@ -153,13 +191,34 @@ function Surfaces(): React.ReactElement {
     commands: running.length ? running : null,
     tasks: { rows: TASKS, unnamedRunning: false },
   };
-  const detail = TOOL_ITEMS.find((item) => item.toolCallId === (opened ?? 'call_bg-3f9a1c2e7d10'));
+  const detail = [...TOOL_ITEMS, ...LA_ITEMS].find((item) => item.toolCallId === (opened ?? 'call_bg-3f9a1c2e7d10'));
   const actions = { onToolCallDetailClick: setOpened };
   return (
     <ThreadCommandsContext value={THREAD}>
       <MessageActionsProvider actions={actions}>
         <Section id="tool-rows" label="Tool rows (expanded activity): a plain call, then one per command state">
           <ActivityBlock items={TOOL_ITEMS} isStreaming={false} presentation="expanded" onToolCallClick={(item) => item.type === 'tool_call' && setOpened(item.toolCallId)} />
+        </Section>
+        <Section id="la-steps" label="la steps: named for what they did; a failure, a pipe and an unnamed id keep what they can say">
+          {/* A workspace `la` created leaves the group for its card, as the
+              message draws it (buildRenderBlocks): the steps around it split. */}
+          {(() => {
+            const at = LA_ITEMS.findIndex((item) => item.toolCallId === 'la_create');
+            const card = preapprovedCardOf(LA_ITEMS[at]);
+            const open = (item: ToolActivityItem | { type: string }) => item.type === 'tool_call' && setOpened((item as ToolActivityItem).toolCallId);
+            return (
+              <>
+                <ActivityBlock items={LA_ITEMS.slice(0, at)} isStreaming={false} presentation="expanded" onToolCallClick={open} />
+                {card?.type === 'create_workspace' && (
+                  <WorkspaceCreatedSlip
+                    name={String(card.proposal.workspace_name)}
+                    description={card.proposal.workspace_description as string | undefined}
+                  />
+                )}
+                <ActivityBlock items={LA_ITEMS.slice(at + 1)} isStreaming={false} presentation="expanded" onToolCallClick={open} />
+              </>
+            );
+          })()}
         </Section>
         <Section id="reports" label="Report captions">
           {REPORTS.map((r) => (

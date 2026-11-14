@@ -2883,6 +2883,7 @@
       "create": "Create",
       "decline": "Decline",
       "created": "Workspace created: {{name}}",
+      "createdStatus": "Workspace created",
       "declined": "Workspace creation declined",
       "alwaysApprove": "Always allow",
       "alwaysApproveHint": "Create this and later workspaces without asking. Turn it off in Settings."
@@ -3997,7 +3998,26 @@
       "read_user": "Read account",
       "updated_user": "Updated account",
       "read_automations": "Read automations",
-      "updated_automations": "Updated automations"
+      "updated_automations": "Updated automations",
+      "la": {
+        "listWorkspaces": "Listed workspaces",
+        "createWorkspace": "Created workspace",
+        "archiveComputer": "Archived workspace's computer",
+        "deleteWorkspace": "Deleted workspace",
+        "listThreads": "Listed threads",
+        "showThread": "Checked thread",
+        "readThread": "Read thread",
+        "startThread": "Started thread",
+        "sendToThread": "Sent to thread",
+        "followThread": "Followed thread",
+        "retryThread": "Retried thread's turn",
+        "cancelThread": "Cancelled thread's turn",
+        "archiveThread": "Archived thread",
+        "deleteThread": "Deleted thread",
+        "listComputers": "Listed computers",
+        "listModels": "Listed models",
+        "listAutomations": "Listed automations"
+      }
     },
     "inProgress": {
       "callingServer": "calling {{server}}...",
@@ -4076,7 +4096,26 @@
       "fetchingSymbolOptions": "fetching {{symbol}} options...",
       "fetchingOptions": "fetching options...",
       "fetchingGainers": "fetching top gainers...",
-      "fetchingLosers": "fetching top losers..."
+      "fetchingLosers": "fetching top losers...",
+      "la": {
+        "listWorkspaces": "listing workspaces...",
+        "createWorkspace": "creating workspace...",
+        "archiveComputer": "archiving workspace's computer...",
+        "deleteWorkspace": "deleting workspace...",
+        "listThreads": "listing threads...",
+        "showThread": "checking thread...",
+        "readThread": "reading thread...",
+        "startThread": "starting thread...",
+        "sendToThread": "sending to thread...",
+        "followThread": "following thread...",
+        "retryThread": "retrying thread's turn...",
+        "cancelThread": "cancelling thread's turn...",
+        "archiveThread": "archiving thread...",
+        "deleteThread": "deleting thread...",
+        "listComputers": "listing computers...",
+        "listModels": "listing models...",
+        "listAutomations": "listing automations..."
+      }
     },
     "preparing": {
       "writingCode": "writing code{{size}}...",

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLatestRef } from '@/hooks/useLatestRef';
-import { getCompletedRowTitle } from '../toolDisplayConfig';
+import { getCompletedRowTitle, type ToolCallOutcome } from '../toolDisplayConfig';
 import type { MessageRecord } from './types';
 
 /** Screen-reader announcer for tool-call completions (carved out of ChatView,
@@ -71,8 +71,7 @@ export function useToolCallAnnouncer(messages: readonly MessageRecord[], root?: 
         seen.add(id);
         const toolName = (proc.toolName as string) || '';
         const toolCall = proc.toolCall as { args?: Record<string, unknown> } | undefined;
-        const artifact = (proc.toolCallResult as { artifact?: unknown } | undefined)?.artifact;
-        const baseTitle = getCompletedRowTitle(toolName, toolCall, t, { artifact, root });
+        const baseTitle = getCompletedRowTitle(toolName, toolCall, t, { record: proc as ToolCallOutcome, root });
         announcementQueueRef.current.push({ label: baseTitle, failed: isFailed });
         enqueued++;
       }

@@ -1,5 +1,5 @@
 import type { ActivityItem, ToolActivityItem } from './activityTypes';
-import { categorizeTool } from '../toolDisplayConfig';
+import { categorizeTool, isFailedCall } from '../toolDisplayConfig';
 import { calledOn } from '../../utils/agentPaths';
 
 /** The verbs whose consecutive calls read as one act on a set of files. */
@@ -45,7 +45,7 @@ export function groupFileToolRuns(items: ActivityItem[]): ActivityItem[][] {
 }
 
 function failed(item: ActivityItem): boolean {
-  return item.type === 'tool_call' && (item.isFailed === true || item._liveState === 'failed');
+  return item.type === 'tool_call' && isFailedCall(item);
 }
 
 function ordinarySettledFile(item: ActivityItem): boolean {

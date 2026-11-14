@@ -53,6 +53,9 @@ jobs:
             cli:
               - *workflow
               - cli/**
+              # The web app's copy of the command table, which cli's suite
+              # regenerates and diffs.
+              - web/src/pages/ChatAgent/utils/laGrammar.generated.ts
             market_protocol:
               - *workflow
               - libs/market-protocol/**

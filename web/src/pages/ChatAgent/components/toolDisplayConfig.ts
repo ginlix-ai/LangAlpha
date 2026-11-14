@@ -15,6 +15,10 @@ import { LARGE_TOOL_RESULTS_PREFIX } from './filePanel/fileMeta';
 import { messagingAppName, platformOf } from './messaging/messageDelivery';
 import { quietArg, wakeupArgCount, wakeupArgListed } from '../session/wakeupArgs';
 import type { TFn } from '@/lib/elapsed';
+import { bashFailed, laStepOf, type LaStep } from '../utils/laCommand';
+import { laActiveLabel, laCompletedTitle, laStepObject, type LaNames } from './laStepLabels';
+import type { ArtifactRecord } from './ToolCallDetailView';
+import type { LiveState } from './messageList/activityTypes';
 
 interface ToolDisplayEntry {
   displayName: string;
@@ -127,9 +131,24 @@ const FILE_WRITE_TOOLS = new Set(['Write', 'Edit']);
 const FILE_READ_TOOLS = new Set(['Read']);
 const FILE_PATH_TOOLS = new Set([...FILE_WRITE_TOOLS, ...FILE_READ_TOOLS]);
 
-/** Classifies the file_path arg for Read/Write/Edit. Returns null for all other tools. */
-function classifyFromArgs(toolName: string, args: ToolCallArgs | undefined, root?: string | null): AgentPathInfo | null {
+/** A Bash call that runs `la`, as the step it is. */
+interface LaCallInfo {
+  kind: 'la';
+  step: LaStep;
+}
+
+type CallInfo = AgentPathInfo | LaCallInfo;
+
+/**
+ * What a call's args make it: the path a Read/Write/Edit names, or the `la`
+ * step a Bash call runs. Null for all other calls.
+ */
+function classifyFromArgs(toolName: string, args: ToolCallArgs | undefined, root?: string | null): CallInfo | null {
   if (!args) return null;
+  if (toolName === 'Bash') {
+    const step = laStepOf(toolName, args);
+    return step ? { kind: 'la', step } : null;
+  }
   if (!FILE_PATH_TOOLS.has(toolName)) return null;
   const fp = (args.file_path || args.filePath) as string | undefined;
   if (!fp) return null;
@@ -137,21 +156,57 @@ function classifyFromArgs(toolName: string, args: ToolCallArgs | undefined, root
 }
 
 /**
- * What a title reads beyond the call's own args: the result's artifact, which
- * carries a direct tool's vendor names, and the computer root its paths start with.
+ * What a title reads beyond the call's own args: the call's record, whose
+ * result's artifact carries a direct tool's vendor names and whose end says
+ * whether an `la` step did what it says, and the computer root its paths
+ * start with.
  */
 export interface ToolTitleContext {
-  artifact?: unknown;
+  /** The call's record, as the timeline, the tabs and the announcer hold it. */
+  record?: ToolCallOutcome;
   root?: string | null;
+  /** Names the app holds for the ids an `la` step names. */
+  names?: LaNames;
+}
+
+/** What a title reads of a call's record: its result, and how it ended. */
+export interface ToolCallOutcome {
+  toolCallResult?: { content?: unknown; artifact?: ArtifactRecord } | null;
+  isFailed?: boolean;
+  _liveState?: LiveState;
+}
+
+/** The call failed: its record says so, or the live stream marked it. */
+export function isFailedCall(record: Pick<ToolCallOutcome, 'isFailed' | '_liveState'>): boolean {
+  return record.isFailed === true || record._liveState === 'failed';
+}
+
+function artifactOf(context: ToolTitleContext): ArtifactRecord | undefined {
+  return context.record?.toolCallResult?.artifact;
+}
+
+/**
+ * Whether an `la` step did what it says: its call returned a result that is
+ * not a failure, by its record or by Bash's own `ERROR:` (`bashFailed`); a
+ * call with no record keeps the generic row. A call whose
+ * command moved to the background (its artifact names a `command_id`)
+ * returned before the command did, so it says nothing of how the command ended.
+ */
+function laStepSettled(record: ToolCallOutcome | undefined): boolean {
+  if (record?.toolCallResult == null || isFailedCall(record) || bashFailed(record.toolCallResult.content)) return false;
+  return record.toolCallResult.artifact?.command_id == null;
 }
 
 export function getDisplayName(
   rawToolName: string,
   t?: TFn,
   args?: ToolCallArgs,
-  { artifact, root }: ToolTitleContext = {},
+  context: ToolTitleContext = {},
 ): string {
-  const info = classifyFromArgs(rawToolName, args, root);
+  return displayNameOf(classifyFromArgs(rawToolName, args, context.root), rawToolName, t, context);
+}
+
+function displayNameOf(info: CallInfo | null, rawToolName: string, t: TFn | undefined, context: ToolTitleContext): string {
   if (info) {
     if (info.kind === 'skill') {
       return t ? t('toolArtifact.tool.skill') : 'Skill';
@@ -168,7 +223,7 @@ export function getDisplayName(
       return t ? t(`toolArtifact.tool.${info.entity}`) : entityLabel(info.entity);
     }
   }
-  const direct = directToolDisplayName(rawToolName, artifact);
+  const direct = directToolDisplayName(rawToolName, artifactOf(context));
   if (direct) return direct;
   const config = TOOL_DISPLAY_CONFIG[rawToolName];
   if (t && config?.i18nKey) return t(`toolArtifact.tool.${config.i18nKey}`);
@@ -209,13 +264,16 @@ export function getToolIcon(rawToolName: string, args?: ToolCallArgs, root?: str
 }
 
 export function getInProgressText(rawToolName: string, toolCall: ToolCall | undefined, t?: TFn, root?: string | null): string {
-  const args = toolCall?.args;
+  return inProgressTextOf(classifyFromArgs(rawToolName, toolCall?.args, root), rawToolName, toolCall?.args, t);
+}
+
+function inProgressTextOf(info: CallInfo | null, rawToolName: string, args: ToolCallArgs | undefined, t?: TFn): string {
   const tr = t ? (key: string, opts?: Record<string, unknown>) => t(`toolArtifact.inProgress.${key}`, opts) : null;
 
-  // Path-aware variants for store-backed paths. These short-circuit the
-  // generic Read/Write/Edit branches below.
-  const info = classifyFromArgs(rawToolName, args, root);
+  // Path-aware variants for store-backed paths, and an `la` step. These
+  // short-circuit the generic Read/Write/Edit/Bash branches below.
   if (info) {
+    if (info.kind === 'la') return laActiveLabel(info.step, t);
     if (info.kind === 'skill' && rawToolName === 'Read') {
       return info.name
         ? (tr?.('activatingSkillName', { name: info.name }) ?? `activating skill ${info.name}...`)
@@ -426,23 +484,22 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
   }
 }
 
-/**
- * `_t` (optional, currently unused) is accepted for parity with sibling
- * helpers — the summary is a bare noun (topic / slug / skill name) that
- * doesn't need localization today, but the param keeps call sites symmetric
- * and reserves space for future translated variants.
- */
 /** Tools that act on one chart instance. The annotation tools are retired,
  *  but older threads still hold their calls. */
 const CHART_INSTANCE_TOOLS = new Set(['manage_chart_layers', 'draw_chart_annotation', 'manage_chart_annotations']);
 
-export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, t?: TFn, { artifact, root }: ToolTitleContext = {}): string | null {
+/**
+ * The object a settled row names, as its pill. `t` names Home for an `la`
+ * step; the rest are bare nouns (topic, slug, skill name) as the call gave them.
+ */
+export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, t?: TFn, context: ToolTitleContext = {}): string | null {
   const args = toolCall?.args;
   if (!args) return null;
   // Path-aware summaries: emit just the meaningful object (skill name, topic,
   // memo slug). The verb is carried by getDisplayName / row label.
-  const info = classifyFromArgs(toolName, args, root);
+  const info = classifyFromArgs(toolName, args, context.root);
   if (info) {
+    if (info.kind === 'la' && laStepSettled(context.record)) return laStepObject(info.step, t, context.names);
     if (info.kind === 'skill') return info.name || null;
     if (info.kind === 'memory') {
       // Index files: no pill — the row title already says "Read memory" /
@@ -475,7 +532,7 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
   // conversation, which the call alone does not name.
   if (toolName === 'send_message') return messagingAppName(platformOf(args.target));
   // A turn can call it several times over; each row says what that call did.
-  if (toolName === 'schedule_wakeup') return wakeupCallSummary(args, artifact, t);
+  if (toolName === 'schedule_wakeup') return wakeupCallSummary(args, artifactOf(context), t);
   if (args.description) return args.description;
   if (args.symbol) return args.symbol;
   if (args.query) return args.query;
@@ -531,12 +588,11 @@ function wakeupCallSummary(args: ToolCallArgs, artifact: unknown, t?: TFn): stri
 export function getActiveLabel(toolName: string, toolCall: ToolCall | undefined, t?: TFn, root?: string | null): string {
   const args = toolCall?.args;
   const info = classifyFromArgs(toolName, args, root);
-  if (info && info.kind !== 'file') {
-    // getInProgressText already produces the full phrase for path-aware paths.
-    return getInProgressText(toolName, toolCall, t, root);
-  }
-  const dn = getDisplayName(toolName, t, args, { root });
-  const pt = getInProgressText(toolName, toolCall, t, root);
+  const pt = inProgressTextOf(info, toolName, args, t);
+  // The in-progress text is already the full phrase for path-aware paths and
+  // for an `la` step.
+  if (info && info.kind !== 'file') return pt;
+  const dn = displayNameOf(info, toolName, t, { root });
   return pt ? `${dn} ${pt}` : dn;
 }
 
@@ -545,9 +601,10 @@ export function getActiveLabel(toolName: string, toolCall: ToolCall | undefined,
  * path-aware tools ("Read memory", "Added memory", "Activated skill") and the
  * generic displayName otherwise.
  *
- * The result's artifact is optional because a row is only completed once, and
- * a direct tool's vendor names ride on it: without it the title falls back to
- * parsing the model-facing name, which is lossy for an aliased one.
+ * The call's record is optional. A direct tool's vendor names ride on its
+ * result's artifact: without it the title falls back to parsing the
+ * model-facing name, which is lossy for an aliased one. An `la` step reads as
+ * what it did only with a record saying it succeeded.
  */
 export function getCompletedRowTitle(
   toolName: string,
@@ -558,6 +615,7 @@ export function getCompletedRowTitle(
   const args = toolCall?.args;
   const info = classifyFromArgs(toolName, args, context.root);
   if (info) {
+    if (info.kind === 'la' && laStepSettled(context.record)) return laCompletedTitle(info.step, t);
     if (info.kind === 'skill' && toolName === 'Read') {
       return t ? t('toolArtifact.completed.activatedSkill') : 'Activated skill';
     }
@@ -596,7 +654,7 @@ export function getCompletedRowTitle(
       return t ? t(`toolArtifact.completed.updated_${entity}`) : `Updated ${entity}`;
     }
   }
-  return getDisplayName(toolName, t, args, context);
+  return displayNameOf(info, toolName, t, context);
 }
 
 /**
@@ -642,6 +700,9 @@ export function categorizeTool(toolName: string, toolCall: ToolCall | undefined,
       if (info.entity === 'automations') return write ? 'automationsWrite' : 'automationsRead';
       return write ? 'profileWrite' : 'profileRead';
     }
+    // An `la` step manages the user's workspaces and threads rather than
+    // running code of the agent's own, so a header counts it as a step.
+    if (info.kind === 'la') return 'generic';
     // info.kind === 'file' (a known file tool but path is generic) falls
     // through to the per-tool bucketing below.
   }

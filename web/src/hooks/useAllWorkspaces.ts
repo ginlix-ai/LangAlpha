@@ -60,15 +60,21 @@ export const allWorkspacesKey = (sortBy: string, includeHome: boolean) =>
  * without looking wrong. Cached in the list shape so an optimistic row patch
  * reaches it too.
  */
+/** The read behind `useAllWorkspaces`, for a caller that reads it without
+ *  mounting the hook. */
+export const allWorkspacesQuery = (sortBy: string, includeHome: boolean) => ({
+  queryKey: allWorkspacesKey(sortBy, includeHome),
+  queryFn: async () => {
+    const workspaces = await getAllWorkspaces(sortBy, includeHome);
+    return { workspaces, total: workspaces.length };
+  },
+  staleTime: 30_000,
+});
+
 export function useAllWorkspaces({ sortBy = 'custom', includeHome = false, enabled = true }: { sortBy?: string; includeHome?: boolean; enabled?: boolean } = {}) {
   return useQuery({
-    queryKey: allWorkspacesKey(sortBy, includeHome),
-    queryFn: async () => {
-      const workspaces = await getAllWorkspaces(sortBy, includeHome);
-      return { workspaces, total: workspaces.length };
-    },
+    ...allWorkspacesQuery(sortBy, includeHome),
     enabled,
-    staleTime: 30_000,
     // A new sort is a new key: hold the last list on screen while it loads
     // rather than dropping back to a loading state.
     placeholderData: keepPreviousData,

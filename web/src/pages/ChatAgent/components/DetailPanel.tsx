@@ -33,10 +33,9 @@ function DetailPanel({ toolCallProcess, onOpenFile, onOpenSubagentTask }: Detail
   const toolName = toolCallProcess.toolName || '';
   const toolArgs = toolCallProcess.toolCall?.args;
   const isTask = isTaskTool(toolName);
-  const artifact = toolCallProcess.toolCallResult?.artifact;
   const displayName = isTask
     ? t('toolArtifact.subagentTask')
-    : getDisplayName(toolName, t, toolArgs, { artifact, root });
+    : getDisplayName(toolName, t, toolArgs, { record: toolCallProcess, root });
   const subagentType = isTask ? ((toolCallProcess.toolCall?.args?.subagent_type as string) || 'general-purpose') : '';
   // Status only — a Task's reply exists from the moment it is dispatched, so
   // `content` marked every running task "completed" and contradicted the

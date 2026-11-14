@@ -3,20 +3,10 @@ import { Folder } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { SteeredMark } from '../messageList/MessageProvenance';
-import { ElapsedClock, RUN_DETAIL, RUN_TITLE, RunPart, RunStatus, StatusSpeech } from '../messageList/runCard';
+import {
+  ElapsedClock, RUN_DETAIL, RUN_OPEN_BUTTON as STRETCHED_BUTTON, RUN_TITLE, RunPart, RunStatus, StatusSpeech,
+} from '../messageList/runCard';
 import { HANDOFF_PHASES, phaseWords, type HandoffPhase, type HandoffView } from './handoffModel';
-
-/**
- * The control that opens a run, wrapped around its task. Its `::after`
- * stretches over the nearest positioned box (the slip, a group's row), so the
- * whole row is the way in while a second action there can still sit above it
- * as a button of its own; a button wrapping that action could not. The ring
- * is drawn on the row's rounded box, inside, since a group's rows sit in a
- * fold that clips.
- */
-const STRETCHED_BUTTON =
-  'flex max-w-full min-w-0 cursor-pointer text-left outline-hidden after:absolute after:inset-0 after:rounded-lg after:content-[""] '
-  + 'focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-(--color-focus-ring)';
 
 /** A small action on the right of a row: words alone, in the row's quieter
  *  ink until the pointer is on them. */
