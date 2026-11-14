@@ -12,12 +12,15 @@ import './dashForms.css';
  */
 export function FormCard({
   title,
+  symbol,
   sub,
   meta,
   className,
   children,
 }: {
   title: React.ReactNode;
+  /** The instrument the form is about, whose logo leads the title. */
+  symbol?: string;
   sub?: React.ReactNode;
   meta?: React.ReactNode;
   className?: string;
@@ -25,7 +28,7 @@ export function FormCard({
 }): React.ReactElement {
   return (
     <TermPanelContext value={true}>
-      <TermCard title={title} sub={sub} meta={meta}>
+      <TermCard title={title} symbol={symbol} sub={sub} meta={meta}>
         <div className={cn('dash-form-body', className)}>{children}</div>
       </TermCard>
     </TermPanelContext>

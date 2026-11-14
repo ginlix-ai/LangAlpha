@@ -26,6 +26,7 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
   return (
     <TermCard
       title={dualName.primary}
+      symbol={symbol}
       keep={narrow && dualName.named ? 'sub' : 'title'}
       // The ticker first: the shortest and most useful of the three, the
       // second spelling after it gives way before it does. A phone has room

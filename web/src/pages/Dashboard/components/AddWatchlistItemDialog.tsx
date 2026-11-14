@@ -201,7 +201,7 @@ function AddWatchlistItemDialog({
             </DialogHeader>
             {selectedStock && (
               <div className="space-y-5">
-                <FormCard title={<span className="term-code">{selectedStock.symbol}</span>} sub={exchange}>
+                <FormCard title={<span className="term-code">{selectedStock.symbol}</span>} symbol={selectedStock.symbol} sub={exchange}>
                   <div>
                     {selectedStock.name && <div className="term-word dash-form-name">{selectedStock.name}</div>}
                     <TermKV cols={1} pairs={[[t('dashboard.addWatchlistDialog.currentPrice'), priceCell]]} />

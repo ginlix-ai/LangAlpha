@@ -1,0 +1,39 @@
+/* A ticker's logo tile, a little taller than the text it sits in. The image
+   is an opaque square the server pads for either theme; the letter under it
+   is what shows until it loads, and for a ticker with no logo. A surface that
+   needs another size sets --ticker-logo-size. */
+.ticker-logo {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: var(--ticker-logo-size, 1.2em);
+  height: var(--ticker-logo-size, 1.2em);
+  border-radius: calc(var(--ticker-logo-size, 1.2em) / 4);
+  overflow: hidden;
+  vertical-align: middle;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-tertiary);
+  font-family: var(--font-ui);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  user-select: none;
+}
+.ticker-logo::before {
+  content: attr(data-letter);
+  font-size: calc(var(--ticker-logo-size, 1.2em) / 2);
+}
+.ticker-logo > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Inline, so the container decides whether a long label wraps or cuts. */
+.ticker-label > .ticker-logo {
+  margin-inline-end: 0.4em;
+}

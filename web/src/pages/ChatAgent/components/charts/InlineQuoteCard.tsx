@@ -1,4 +1,5 @@
 import React from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { useLocale } from '@/hooks/useLocale';
 import { formatMoney } from '@/lib/bars';
@@ -83,6 +84,7 @@ function QuoteHero({
   return (
     <TermCard
       title={d.symbol}
+      symbol={d.symbol}
       sub={d.name && <DualName first={d.name} second={narrow ? null : d.secondaryName} />}
       meta={[status && <TermTag key="status">{marketStatusLabel(t, status)}</TermTag>, !narrow && stampEl]}
       onClick={onClick}
@@ -168,7 +170,7 @@ function QuoteTable({
         const status = rowStatus(d);
         return (
           <>
-            <span className="term-strong">{d.symbol}</span>
+            <TickerLabel symbol={d.symbol} className="term-strong" />
             {/* Only a row whose freshness differs from the header's keeps a
                 mark, or one whose venue time has no column to sit in: the
                 mark's tooltip carries it. */}

@@ -42,7 +42,7 @@ export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): Re
   const { first, mid, last } = sent;
 
   return (
-    <TermCard title={symbol} meta={first && last ? formatCalendarDayRange(first, last, locale) : undefined} onClick={onClick}>
+    <TermCard title={symbol} symbol={symbol} meta={first && last ? formatCalendarDayRange(first, last, locale) : undefined} onClick={onClick}>
       <div className="term-line term-plot-lead">
         {sent.lastClose != null && <span className="term-big">{money(sent.lastClose)}</span>}
         <TermChange value={prices.changePct} />

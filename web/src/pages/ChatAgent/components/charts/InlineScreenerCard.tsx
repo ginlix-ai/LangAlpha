@@ -1,4 +1,5 @@
 import React from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { formatMoney, quotePlaces } from '@/lib/bars';
@@ -67,7 +68,7 @@ export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps):
         rowKey={(r, i) => r.symbol ?? i}
         columns={[
           // Without the name column, the symbol takes the spare width.
-          { key: 'sym', label: t('toolArtifact.termHead.sym'), fill: 'clip', className: 'term-code term-strong', cell: (r) => r.symbol },
+          { key: 'sym', label: t('toolArtifact.termHead.sym'), fill: 'clip', className: 'term-code term-strong', cell: (r) => r.symbol && <TickerLabel symbol={r.symbol} /> },
           { key: 'name', label: t('toolArtifact.termHead.name'), fill: 'clip', className: 'term-t3', show: !narrow, cell: (r) => r.name },
           { key: 'last', label: t('toolArtifact.termHead.last'), num: true, cell: (r) => (r.price != null ? formatMoney(r.price, r.currency, locale, { upTo: quotePlaces(r.symbol, { currency: r.currency, price: r.price }) }) : '') },
           {

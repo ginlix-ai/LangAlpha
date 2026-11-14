@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowUpRight, Check, Copy } from 'lucide-react';
 import { copyText } from '@/lib/clipboard';
-import { TermCard } from './TermCard';
+import { BracketTitle, TermCard } from './TermCard';
 import { TermPanelContext, useTermPanel } from './termContext';
 import './termPanel.css';
 
@@ -23,10 +23,13 @@ export function TermPanel({ children }: { children: React.ReactNode }): React.Re
 /** The panel's first line: `[AMD] ADVANCED MICRO DEVICES ....... [CLOSED]`. */
 export function TermPanelHead({
   title,
+  symbol,
   sub,
   aside,
 }: {
   title: React.ReactNode;
+  /** The one instrument the panel is about, whose logo leads the title. */
+  symbol?: string | null;
   sub?: React.ReactNode;
   /** At the line's far end: tags and links. */
   aside?: React.ReactNode;
@@ -34,9 +37,7 @@ export function TermPanelHead({
   return (
     <header className="term-panel-head">
       <span className="term-panel-title">
-        <span className="term-bracket" aria-hidden="true">[</span>
-        {title}
-        <span className="term-bracket" aria-hidden="true">]</span>
+        <BracketTitle symbol={symbol}>{title}</BracketTitle>
       </span>
       {sub != null && sub !== '' && <span className="term-panel-sub">{sub}</span>}
       {aside && <span className="term-panel-aside">{aside}</span>}

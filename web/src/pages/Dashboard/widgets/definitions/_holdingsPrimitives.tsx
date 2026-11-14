@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from 'react';
 import { motion } from '@/lib/framer';
+import { TickerLabel } from '@/components/TickerLogo';
 import { SkeletonBar } from '@/components/ui/skeleton';
 import { useLastShape } from '@/lib/lastShape';
 import { TWEEN } from '@/lib/motion';
@@ -111,7 +112,7 @@ export function WatchlistRowItem({ item, marketStatus, onDelete, attach }: Watch
       onClick={() => navigate(`/market?symbol=${encodeURIComponent(item.symbol)}`)}
     >
       <td className="term-fill term-code term-strong dash-attach-cell">
-        <span title={item.symbol}>{item.symbol}</span>
+        <TickerLabel symbol={item.symbol}><span title={item.symbol}>{item.symbol}</span></TickerLabel>
         {attach}
       </td>
       <td className="term-num">
@@ -196,7 +197,7 @@ export function PortfolioRowItem({
       onClick={() => navigate(`/market?symbol=${encodeURIComponent(item.symbol)}`)}
     >
       <td className="term-code term-strong">
-        <span title={item.symbol}>{item.symbol}</span>
+        <TickerLabel symbol={item.symbol}><span title={item.symbol}>{item.symbol}</span></TickerLabel>
       </td>
       <td className="term-fill term-t3 dash-attach-cell">
         {valuesHidden

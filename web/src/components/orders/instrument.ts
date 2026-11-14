@@ -40,3 +40,10 @@ export function instrumentLabel(instrument: OrderInstrument | null | undefined):
       return '';
   }
 }
+
+/** The listing whose logo stands for the instrument: an option's underlying, or null for a kind with no one company. */
+export function instrumentLogoSymbol(instrument: OrderInstrument | null | undefined): string | null {
+  if (instrument?.kind === 'equity') return instrument.symbol || null;
+  if (instrument?.kind === 'option') return instrument.underlying || null;
+  return null;
+}

@@ -50,15 +50,17 @@
   line-height: 1.45;
 }
 .term-panel-title {
+  display: inline-flex;
+  align-items: baseline;
   font-family: var(--term-words);
   font-weight: 600;
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
-.term-panel-title > .term-bracket:first-child {
+.term-panel-title > .term-bracket-open {
   margin-right: 0.375em;
 }
-.term-panel-title > .term-bracket:last-child {
+.term-panel-title > .term-bracket-close {
   margin-left: 0.375em;
 }
 .term-panel-sub {

@@ -1,6 +1,7 @@
 import React from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
-import { instrumentLabel } from '@/components/orders/instrument';
+import { instrumentLabel, instrumentLogoSymbol } from '@/components/orders/instrument';
 import { OPTION_RIGHT_KEY, orderWordKey } from '@/components/orders/labels';
 import { cn } from '@/lib/utils';
 import type { OrderInstrument } from '@/types/orders';
@@ -91,10 +92,18 @@ function OrderHeadline({
   );
 }
 
-/** The instrument at headline weight. An option's contract (expiry, strike,
- *  call or put) is one thing to check, so it is set as one, a step lighter
- *  than the underlying it is a contract on. */
+/** The instrument at headline weight, after its company's logo. */
 export function InstrumentName({ instrument }: { instrument: OrderInstrument }): React.ReactElement {
+  return (
+    <TickerLabel symbol={instrumentLogoSymbol(instrument)}>
+      <InstrumentText instrument={instrument} />
+    </TickerLabel>
+  );
+}
+
+/** An option's contract (expiry, strike, call or put) is one thing to check,
+ *  so it is set as one, a step lighter than the underlying it is a contract on. */
+function InstrumentText({ instrument }: { instrument: OrderInstrument }): React.ReactElement {
   const { t } = useTranslation();
   switch (instrument.kind) {
     case 'equity':
