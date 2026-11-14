@@ -390,7 +390,8 @@ describe('OrderReceiptCard', () => {
   it('wears the vendor mark', () => {
     renderWithProviders(<OrderReceiptCard artifact={artifactWith({ status: 'submitted' })} />);
 
-    const mark = screen.getByTestId('order-receipt').querySelector('img');
+    // The brokerage's mark, not the ticker logo in the headline.
+    const mark = screen.getByTestId('order-receipt').querySelector(':not(.ticker-logo) > img');
     expect(mark).not.toBeNull();
     expect(mark!.getAttribute('src')).toContain('/api/v1/mcp/brokerages/moomoo/icon');
   });
@@ -400,7 +401,7 @@ describe('OrderReceiptCard', () => {
     renderWithProviders(<OrderReceiptCard artifact={artifactWith({ status: 'submitted' })} />);
 
     const card = screen.getByTestId('order-receipt');
-    expect(card.querySelector('img')).toBeNull();
+    expect(card.querySelector(':not(.ticker-logo) > img')).toBeNull();
     expect(card.querySelector('svg.lucide-plug')).not.toBeNull();
   });
 
