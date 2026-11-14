@@ -7719,5 +7719,87 @@
   },
   "desktopApp": {
     "untitledThread": "未命名对话"
+  },
+  "cliApproval": {
+    "title": {
+      "threadDelete": "删除对话“{{name}}”？",
+      "threadDeleteUnnamed": "删除这个对话？",
+      "workspaceDelete": "删除工作区“{{name}}”？",
+      "workspaceCreate": "创建工作区“{{name}}”？",
+      "automationDelete": "删除自动化“{{name}}”？",
+      "computerRemove": "移除计算机“{{name}}”？",
+      "threadSend": "向对话“{{name}}”发送消息？",
+      "threadSendUnnamed": "向这个对话发送消息？",
+      "threadRetry": "重试对话“{{name}}”中失败的一轮？",
+      "threadRetryUnnamed": "重试这个对话中失败的一轮？",
+      "threadCreate": "在“{{name}}”中新建对话？",
+      "threadCreateHome": "与 CoS Agent 新建对话？",
+      "automationCreate": "创建自动化“{{name}}”？",
+      "automationEdit": "修改自动化“{{name}}”？",
+      "automationTrigger": "运行自动化“{{name}}”？",
+      "automationResume": "继续自动化“{{name}}”？"
+    },
+    "ask": {
+      "threadDelete": "删除这个对话",
+      "workspaceDelete": "删除这个工作区及其中的对话",
+      "workspaceDeleteFiles": "删除这个工作区及其中的对话和文件",
+      "workspaceCreate": "创建这个工作区",
+      "workspaceCreateOn": "在“{{computer}}”上创建这个工作区",
+      "automationDelete": "删除这个自动化",
+      "computerRemove": "移除这台计算机",
+      "computerRemoveWorkspaces": "移除这台计算机，并删除它上面的工作区",
+      "threadSend": "向这个对话发送消息",
+      "threadSendOn": "在“{{computer}}”上向这个对话发送消息",
+      "threadRetry": "重新运行这个对话中失败的一轮",
+      "threadRetryOn": "在“{{computer}}”上重新运行这个对话中失败的一轮",
+      "threadCreate": "在这个工作区中新建对话",
+      "threadCreateOn": "在“{{computer}}”上的这个工作区中新建对话",
+      "threadCreateHome": "与 CoS Agent 新建对话",
+      "threadCreateHomeOn": "在“{{computer}}”上与 CoS Agent 新建对话",
+      "automationCreate": "创建这个自动化",
+      "automationCreateWhere": "创建这个自动化，它将{{where}}运行",
+      "automationEdit": "修改这个自动化",
+      "automationEditWhere": "修改这个自动化，它{{where}}运行",
+      "automationTrigger": "立即运行这个自动化",
+      "automationTriggerWhere": "立即{{where}}运行这个自动化",
+      "automationResume": "继续这个自动化",
+      "automationResumeWhere": "继续这个自动化，它{{where}}运行"
+    },
+    "where": {
+      "workspace": "在“{{workspace}}”中",
+      "workspaceOn": "在“{{computer}}”上的“{{workspace}}”中",
+      "home": "由 CoS Agent ",
+      "homeOn": "由 CoS Agent 在“{{computer}}”上",
+      "on": "在“{{computer}}”上"
+    },
+    "from": {
+      "chiefOfStaff": "CoS Agent 请求{{ask}}。",
+      "chiefOfStaffInThread": "CoS Agent 在<thread>“{{thread}}”</thread>中请求{{ask}}。",
+      "analyst": "分析师请求{{ask}}。",
+      "analystInThread": "分析师在<thread>“{{thread}}”</thread>中请求{{ask}}。",
+      "analystOf": "“{{workspace}}”的分析师请求{{ask}}。",
+      "analystOfInThread": "“{{workspace}}”的分析师在<thread>“{{thread}}”</thread>中请求{{ask}}。",
+      "command": "你某台计算机上运行的命令请求{{ask}}。",
+      "commandInThread": "<thread>“{{thread}}”</thread>中运行的命令请求{{ask}}。",
+      "commandOn": "“{{computer}}”上运行的命令请求{{ask}}。",
+      "commandOnInThread": "<thread>“{{thread}}”</thread>在“{{computer}}”上运行的命令请求{{ask}}。"
+    },
+    "note": {
+      "computerFiles": "LangAlpha 在这台机器上的文件也会一并删除。",
+      "computerKey": "我们的密钥也会从 ~/.ssh/authorized_keys 中移除。",
+      "computerWorkspaces": "它上面的工作区会一并删除：{{names}}。",
+      "cannotUndo": "此操作无法撤销。"
+    },
+    "expiresIn": "{{time}} 后失效",
+    "more": "还有 {{count}} 项待处理",
+    "remove": "移除",
+    "failed": "未能提交你的选择，请重试。",
+    "send": "发送",
+    "start": "开始",
+    "run": "运行",
+    "resume": "继续",
+    "decline": "拒绝",
+    "alwaysApprove": "始终允许",
+    "alwaysApproveHint": "这次及以后创建工作区都不再询问，可在设置中关闭。"
   }
 }
