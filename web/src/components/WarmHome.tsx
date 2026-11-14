@@ -53,7 +53,7 @@ export function WarmHome(): null {
       // send still starts the computer and shows what failed.
       const current = generation;
       void queryClient.ensureQueryData(homeWorkspaceQuery(queryClient)).then(
-        (home) => (current === generation ? warmWorkspace(home.workspace_id, queryClient) : undefined),
+        (home) => (current === generation ? warmWorkspace(home.workspace_id, queryClient, 'input') : undefined),
         // A lookup that failed started nothing, so the next interaction
         // retries, unless a power control has since begun its own wait.
         () => {

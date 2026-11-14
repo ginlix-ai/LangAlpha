@@ -205,16 +205,29 @@ export interface WorkspaceActionResponse {
   message?: string;
 }
 
+/** What prompted a start, sent as `reason` so the server can tell why computers start. */
+export type WarmReason =
+  | 'input'
+  | 'workspace_open'
+  | 'thread_open'
+  | 'composer'
+  | 'onboarding'
+  | 'create';
+
 /**
  * Start (or warm) a stopped workspace. When { lazy: true }, the backend
  * returns 202 immediately and continues the restart in a background task.
  */
 export async function startWorkspace(
   workspaceId: string,
-  opts: { lazy?: boolean } = {},
+  opts: { lazy?: boolean; reason?: WarmReason } = {},
 ): Promise<WorkspaceActionResponse> {
   if (!workspaceId) throw new Error('Workspace ID is required');
-  const params = opts.lazy ? '?lazy=true' : '';
+  const query = new URLSearchParams();
+  if (opts.lazy) query.set('lazy', 'true');
+  if (opts.reason) query.set('reason', opts.reason);
+  const search = query.toString();
+  const params = search ? `?${search}` : '';
   const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/start${params}`);
   return data;
 }

@@ -63,6 +63,7 @@ from src.server.database.workspace_move import (
     take_over_stale_moves,
 )
 from src.server.models.computer import ComputerStatus
+from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.computer_errors import ComputerBusyError
 from src.server.services.computer_manager._folders import _run_folder_script
 from src.server.services.persistence.transfer import SYNC_MARKER_NAME
@@ -264,7 +265,8 @@ class WorkspaceMoveMixin:
 
     async def _wake_move_source(self, source: str, user_id: str) -> Any:
         try:
-            session = await self.wake_computer(source, user_id=user_id)
+            with computer_cause("move"):
+                session = await self.wake_computer(source, user_id=user_id)
         except Exception as e:
             raise MoveSourceUnavailable(f"computer {source} did not start: {e}") from e
         if getattr(session, "sandbox", None) is None:
@@ -480,7 +482,8 @@ class WorkspaceMoveMixin:
             return "never"
         if _running_ref(computer) is None:
             try:
-                await self.wake_computer(source, user_id=str(row["user_id"]))
+                with computer_cause("move"):
+                    await self.wake_computer(source, user_id=str(row["user_id"]))
             except Exception as e:
                 logger.warning("Could not start computer %s to put a folder back: %s", source, e)
                 return "later"

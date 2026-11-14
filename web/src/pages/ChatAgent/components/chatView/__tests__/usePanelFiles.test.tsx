@@ -51,7 +51,7 @@ describe('usePanelFiles', () => {
     await act(() => result.current.refreshOwn());
 
     expect(list).toHaveBeenCalledTimes(1);
-    expect(list).toHaveBeenCalledWith(HOME, '.', expect.objectContaining({ autoStart: true }));
+    expect(list).toHaveBeenCalledWith(HOME, '.', expect.objectContaining({ autoStart: false }));
     expect(queryClient.getQueryState(homeBody)?.isInvalidated).toBe(false);
   });
 

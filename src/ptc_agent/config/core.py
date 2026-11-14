@@ -171,7 +171,7 @@ class DaytonaConfig(CredentialedSandboxConfig):
     TIER_CEILING: ClassVar[ResourceTier | None] = DAYTONA_TIER_CEILING
 
     base_url: str = "https://app.daytona.io/api"
-    auto_stop_interval: int = 3600  # 1 hour
+    auto_stop_interval: int = 1800  # Daytona stops it; the idle sweep runs 10 min ahead
     auto_archive_interval: int = 604800  # 7 days, keep stopped (fast restart) before cold storage
     auto_delete_interval: int = 7776000  # 90 days, total dormant lifetime
     # How long a computer's starts may be refused by a recovering host before
@@ -229,7 +229,7 @@ class E2BConfig(CredentialedSandboxConfig):
     sandbox_url: str = ""
     # Seconds without activity before a sandbox pauses. E2B keeps a paused
     # sandbox (memory included) indefinitely and bills nothing for it.
-    auto_stop_interval: int = Field(default=3600, ge=60)
+    auto_stop_interval: int = Field(default=1500, ge=60)
     # The plan's longest continuous run (3600 on Hobby, 86400 on Pro). It caps
     # every timeout we ask for.
     max_timeout: int = Field(default=3600, ge=300, le=86400)
@@ -503,7 +503,7 @@ class SSHConfig(ResourceTieredConfig):
     # The machine never stops on idle, so the server's idle reaper stops a
     # quiet one by this interval. Stopping only ends this computer's own
     # processes there; the machine keeps running.
-    auto_stop_interval: int = Field(default=3600, ge=60)
+    auto_stop_interval: int = Field(default=7200, ge=60)
     # The server dials each machine itself, so by default it connects only to
     # public addresses: a user's machine is never a way into the network the
     # server sits on. A deployment whose users' machines are on its own LAN or

@@ -64,7 +64,7 @@ describe('WarmHome', () => {
 
     await tap();
     expect(warm.warmWorkspace).toHaveBeenCalledTimes(1);
-    expect(warm.warmWorkspace).toHaveBeenCalledWith('home-1', queryClient);
+    expect(warm.warmWorkspace).toHaveBeenCalledWith('home-1', queryClient, 'input');
   });
 
   it('looks Home up on the first click, not before', async () => {
@@ -81,7 +81,7 @@ describe('WarmHome', () => {
     expect(warm.warmWorkspace).not.toHaveBeenCalled();
 
     await act(async () => resolveHome({ workspace_id: 'home-1' }));
-    expect(warm.warmWorkspace).toHaveBeenCalledWith('home-1', expect.anything());
+    expect(warm.warmWorkspace).toHaveBeenCalledWith('home-1', expect.anything(), 'input');
   });
 
   it('retries a failed lookup on the next interaction', async () => {
@@ -93,7 +93,7 @@ describe('WarmHome', () => {
 
     await tap();
     expect(api.getHomeWorkspace).toHaveBeenCalledTimes(2);
-    expect(warm.warmWorkspace).toHaveBeenCalledWith('home-1', expect.anything());
+    expect(warm.warmWorkspace).toHaveBeenCalledWith('home-1', expect.anything(), 'input');
   });
 
   it('does not warm Home found after unmount', async () => {

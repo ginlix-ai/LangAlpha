@@ -1254,7 +1254,7 @@ async def upload_workspace_file(
     if served_from_mirror(workspace.get("status")):
         raise not_running_for_upload(workspace)
 
-    async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
+    async with acquire_sandbox_to_change(workspace_id, x_user_id, "upload") as (sandbox, workspace):
         work_dir = owner_work_dir(workspace)
         previous_dirs = previous_dir_names_of(workspace)
 

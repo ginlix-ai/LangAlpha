@@ -216,6 +216,46 @@ class TestPTCSandboxDelegation:
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
+    async def test_a_refused_stop_raises(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        """Swallowed, the caller recorded the computer stopped over a machine
+        still running, which Docker and SSH never stop on their own."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        sandbox = PTCSandbox(config=_make_config())
+        sandbox.runtime = mock_runtime
+        mock_runtime.stop.side_effect = RuntimeError("daemon refused")
+
+        with pytest.raises(RuntimeError, match="daemon refused"):
+            await sandbox.stop_sandbox()
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error, state_after",
+        [
+            (SandboxGoneError("gone"), RuntimeState.RUNNING),
+            (RuntimeError("not stoppable"), RuntimeState.ARCHIVED),
+        ],
+    )
+    async def test_a_stop_that_finds_the_machine_down_succeeds(
+        self, mock_create_provider, mock_provider, mock_runtime, error, state_after
+    ):
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        sandbox = PTCSandbox(config=_make_config())
+        sandbox.runtime = mock_runtime
+        mock_runtime.stop.side_effect = error
+        # The cached state still reads running; only a fresh read sees it down.
+        mock_runtime.refresh_state.return_value = state_after
+
+        await sandbox.stop_sandbox()
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
     async def test_cleanup_routes_to_runtime_and_provider(
         self, mock_create_provider, mock_provider, mock_runtime
     ):

@@ -48,6 +48,7 @@ from src.server.database.workspace import (
 )
 from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
 from src.server.services.computer_start_failure import record_start_failure
+from src.server.services.computer_usage.events import note_start_path
 from src.server.services.computer_errors import (
     ProviderNotOffered,
     UnknownResourceTier,
@@ -695,6 +696,7 @@ class MachineLifecycleMixin:
                     await self._keep_computer_tokens(computer_id, user_id, session.sandbox)
             if not reconnected:
                 await self._publish_build_stage(computer_id, "sandbox")
+                note_start_path(computer_id, "rebuild" if previous_ref else "create")
                 await session.initialize(
                     tier=tier,
                     auto_stop_minutes=0 if always_on else None,

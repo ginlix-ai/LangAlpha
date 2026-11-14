@@ -332,7 +332,7 @@ export function WelcomeFlow({
     preloadRouteChunk('/chat/t/__default__');
     let live = true;
     void queryClient.ensureQueryData(homeWorkspaceQuery(queryClient)).then(
-      (home) => (live ? warmWorkspace(home.workspace_id, queryClient) : undefined),
+      (home) => (live ? warmWorkspace(home.workspace_id, queryClient, 'onboarding') : undefined),
       () => {},
     );
     return () => {

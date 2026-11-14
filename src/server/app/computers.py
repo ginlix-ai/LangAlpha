@@ -23,6 +23,7 @@ from ptc_agent.core.sandbox.providers.ssh_errors import (
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.server.services.persistence.sync_result import BackupIncomplete
 from src.server.services.background_starts import schedule_start
+from src.server.services.computer_usage.causes import computer_cause
 from src.server.app.status_stream import (
     SSE_HEADERS,
     sse_status_event,
@@ -506,7 +507,8 @@ async def create_computer(
                 **(plan.create_kwargs() if plan is not None else {}),
             )
         computer_id = str(computer["computer_id"])
-        status = await _schedule_claimed_start(computer_id)
+        with computer_cause("create"):
+            status = await _schedule_claimed_start(computer_id)
         logger.info(
             "Created computer %s for user %s, preparing it (%s)",
             computer_id, x_user_id, status,
@@ -881,8 +883,12 @@ async def start_computer(
                 detail=f"Cannot start computer in '{status}' state",
             )
 
+        with computer_cause("button"):
+            if lazy:
+                status = await _schedule_claimed_start(computer_id)
+            else:
+                updated = await manager.start_computer(computer_id)
         if lazy:
-            status = await _schedule_claimed_start(computer_id)
             payload = ComputerActionResponse(
                 computer_id=computer_id,
                 status=status,
@@ -893,8 +899,6 @@ async def start_computer(
                 content=payload.model_dump_json(),
                 media_type="application/json",
             )
-
-        updated = await manager.start_computer(computer_id)
         return ComputerActionResponse(
             computer_id=computer_id,
             status=(updated or {}).get("status") or "running",
@@ -906,7 +910,8 @@ async def start_computer(
 async def stop_computer(computer_id: str, x_user_id: ComputerEndUserId):
     async with _computer_action_errors("stop", computer_id):
         await _owned_computer(computer_id, x_user_id)
-        updated = await _computer_manager().stop_computer(computer_id)
+        with computer_cause("user"):
+            updated = await _computer_manager().stop_computer(computer_id)
         logger.info(f"Stopped computer {computer_id}")
         return ComputerActionResponse(
             computer_id=computer_id,
@@ -919,7 +924,8 @@ async def stop_computer(computer_id: str, x_user_id: ComputerEndUserId):
 async def archive_computer(computer_id: str, x_user_id: ComputerEndUserId):
     async with _computer_action_errors("archive", computer_id):
         await _owned_computer(computer_id, x_user_id)
-        updated = await _computer_manager().archive_computer(computer_id)
+        with computer_cause("archive"):
+            updated = await _computer_manager().archive_computer(computer_id)
         logger.info(f"Archived computer {computer_id}")
         return ComputerActionResponse(
             computer_id=computer_id,
@@ -975,12 +981,13 @@ async def set_computer_spec(
         # Keyed by the claim, not the machine: the row already refuses a second
         # fresh change, and a stale takeover must get a runner of its own
         # rather than be deduplicated onto the one it replaced.
-        schedule_start(
-            f"computer-spec:{computer_id}:{claim_id}",
-            lambda: manager.run_accepted_spec_change(
-                computer_id, request.tier, user_id=x_user_id, claim_id=claim_id
-            ),
-        )
+        with computer_cause("spec_change"):
+            schedule_start(
+                f"computer-spec:{computer_id}:{claim_id}",
+                lambda: manager.run_accepted_spec_change(
+                    computer_id, request.tier, user_id=x_user_id, claim_id=claim_id
+                ),
+            )
         logger.info(
             "Accepted spec change of computer %s to %r for user %s",
             computer_id,
@@ -1056,18 +1063,18 @@ async def set_computer_always_on(
     """
     async with _computer_action_errors("set always-on for", computer_id):
         await _owned_computer(computer_id, x_user_id)
-        updated = await _computer_manager().set_computer_always_on(
-            computer_id, request.enabled, user_id=x_user_id
-        )
-        if updated is None:
-            raise HTTPException(status_code=404, detail="Computer not found")
-
-        if request.enabled and updated.get("status") in CLAIMABLE_FOR_START:
-            status = await _schedule_claimed_start(computer_id)
-            logger.info(
-                f"Always-on enabled: scheduled start for computer {computer_id}"
+        with computer_cause("always_on"):
+            updated = await _computer_manager().set_computer_always_on(
+                computer_id, request.enabled, user_id=x_user_id
             )
-            updated = {**updated, "status": status}
+            if updated is None:
+                raise HTTPException(status_code=404, detail="Computer not found")
+            if request.enabled and updated.get("status") in CLAIMABLE_FOR_START:
+                status = await _schedule_claimed_start(computer_id)
+                logger.info(
+                    f"Always-on enabled: scheduled start for computer {computer_id}"
+                )
+                updated = {**updated, "status": status}
 
         logger.info(
             f"Set computer {computer_id} always-on to {request.enabled} "
@@ -1117,7 +1124,8 @@ def _repair_refusals():
 async def _accepted_repair_start(computer_id: str, message: str) -> ComputerActionResponse:
     """Start the repaired computer as a lazy start does, answering once its
     claim is on the row."""
-    status = await _schedule_claimed_start(computer_id)
+    with computer_cause("repair"):
+        status = await _schedule_claimed_start(computer_id)
     return ComputerActionResponse(computer_id=computer_id, status=status, message=message)
 
 
@@ -1150,13 +1158,14 @@ async def reinstall_computer(
         await _owned_computer(computer_id, x_user_id)
         settings = _sandbox_config().settings_for(SSH_KIND)
         with _repair_refusals():
-            await _computer_manager().reinstall_computer(
-                computer_id,
-                folder=request.folder,
-                root_dir=request.root_dir,
-                settings=settings,
-                take_over=request.take_over,
-            )
+            with computer_cause("repair"):
+                await _computer_manager().reinstall_computer(
+                    computer_id,
+                    folder=request.folder,
+                    root_dir=request.root_dir,
+                    settings=settings,
+                    take_over=request.take_over,
+                )
         logger.info(
             "Reinstalled computer %s (%s) for user %s",
             computer_id,
@@ -1195,9 +1204,10 @@ async def reconnect_computer(
         await _owned_computer(computer_id, x_user_id)
         settings = _sandbox_config().settings_for(SSH_KIND)
         with _repair_refusals():
-            updated, before = await _computer_manager().reconnect_computer(
-                computer_id, request.ssh, settings=settings
-            )
+            with computer_cause("repair"):
+                updated, before = await _computer_manager().reconnect_computer(
+                    computer_id, request.ssh, settings=settings
+                )
         left = tunnel_of(before)
         if left and left != tunnel_of(updated):
             schedule_start(

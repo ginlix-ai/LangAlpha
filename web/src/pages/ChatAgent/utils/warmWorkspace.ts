@@ -16,6 +16,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import type { ComputersResponse, Workspace, WorkspacesResponse } from '@/types/api';
 
 import { startWorkspace } from './api';
+import type { WarmReason } from './api/workspaces';
 import { cachedHomeRow, workspaceDetailQuery } from './workspaceQueries';
 
 const inFlight = new Map<string, Promise<void>>();
@@ -172,7 +173,11 @@ function isCachedHome(queryClient: QueryClient, workspaceId: string): boolean {
   );
 }
 
-export function warmWorkspace(workspaceId: string, queryClient: QueryClient): Promise<void> {
+export function warmWorkspace(
+  workspaceId: string,
+  queryClient: QueryClient,
+  reason?: WarmReason,
+): Promise<void> {
   if (!workspaceId) return Promise.resolve();
 
   const existing = inFlight.get(workspaceId);
@@ -184,7 +189,7 @@ export function warmWorkspace(workspaceId: string, queryClient: QueryClient): Pr
   if (isCachedHome(queryClient, workspaceId)) {
     // The start moves Home's computer, which the workspaces beside it on that
     // machine show too, so patch the machine.
-    const p = startWorkspace(workspaceId, { lazy: true })
+    const p = startWorkspace(workspaceId, { lazy: true, reason })
       .then(async (resp) => {
         const computerId = await homeComputerId(queryClient, workspaceId);
         if (computerId && cachedComputerStatus(queryClient, computerId) === 'stopped') {
@@ -211,7 +216,7 @@ export function warmWorkspace(workspaceId: string, queryClient: QueryClient): Pr
       const detail = cached ?? (await queryClient.fetchQuery(workspaceDetailQuery(workspaceId)));
       if (!detail?.status || !['stopped', 'running'].includes(detail.status)) return;
 
-      const resp = await startWorkspace(workspaceId, { lazy: true });
+      const resp = await startWorkspace(workspaceId, { lazy: true, reason });
       // Only reflect the 202 'starting' if nothing has advanced the cache past
       // 'stopped' meanwhile. The SSE stream (useWarmWorkspaceSandbox) can push
       // a fast 'running' (or 'error') before this slower patch lands; without

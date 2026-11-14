@@ -410,8 +410,14 @@ class Session:
             "Stopping session for persistence", session=self.session_label
         )
 
+        # A refused stop still leaves this session torn down, so the next
+        # start reconnects to the machine afresh, then reaches the caller.
+        stop_error: Exception | None = None
         if self.sandbox:
-            await self.sandbox.stop_sandbox()
+            try:
+                await self.sandbox.stop_sandbox()
+            except Exception as e:
+                stop_error = e
             try:
                 await self.sandbox.close()
             except Exception:
@@ -438,6 +444,8 @@ class Session:
         # the unresolved built-ins, not the stale per-workspace resolution.
         self.config.mcp.servers = list(self._pristine_mcp_servers)
 
+        if stop_error is not None:
+            raise stop_error
         logger.info("Session stopped", session=self.session_label)
 
     async def __aenter__(self) -> "Session":
@@ -478,9 +486,8 @@ class SessionManager:
             session_key: The machine whose session to stop.
         """
         if session_key in cls._sessions:
-            session = cls._sessions[session_key]
+            session = cls._sessions.pop(session_key)
             await session.stop()
-            del cls._sessions[session_key]
             logger.info("Session stopped and removed", session_key=session_key)
 
     @classmethod

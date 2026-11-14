@@ -56,6 +56,7 @@ from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtim
 from src.observability.private_query import drop_span_query
 from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.cli_calls import CliCallRecorder
+from src.server.utils.request_client import RequestClientMiddleware
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
 from src.server.services.preview_base import (
@@ -436,6 +437,14 @@ async def lifespan(app: FastAPI):
         )
         await workspace_manager.start_cleanup_task()
         logger.info("Workspace Manager initialized")
+
+        # What each sandbox was in before a start, and the provider's own
+        # start time, reach the computer events from here.
+        from src.server.services.computer_usage.events import (
+            install_runtime_start_listener,
+        )
+
+        install_runtime_start_listener()
 
         # An ssh computer logs in with its owner's key, which the provider
         # reads through this loader; any worker may start one. A machine that
@@ -1338,6 +1347,10 @@ app.add_middleware(MalformedIdDiagnosticMiddleware)
 # Records every request a computer's `la` makes, with the thread whose command
 # made it (src/server/services/cli_calls.py).
 app.add_middleware(CliCallRecorder)
+
+# Which of our apps sent each request, for computer start telemetry
+# (src/server/utils/request_client.py).
+app.add_middleware(RequestClientMiddleware)
 
 # Register request ID middleware (will be executed after CORS)
 # Note: In FastAPI, middleware is executed in reverse order (last added = first executed)

@@ -347,7 +347,7 @@ async def _pull_once(row: dict[str, Any], held: dict[str, Any]) -> None:
     # refuse it, rather than starting the computer again under its owner.
     if served_from_mirror(current.get("status")):
         raise _Refused(not_running_for_upload(current).detail)
-    async with acquire_sandbox_to_change(workspace_id, user_id) as (sandbox, workspace):
+    async with acquire_sandbox_to_change(workspace_id, user_id, "upload") as (sandbox, workspace):
         held["sandbox"] = sandbox
         layout = owner_layout(workspace)
         work_dir = layout.workspace

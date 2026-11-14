@@ -61,7 +61,10 @@ workspace_created = meter.create_counter(
 
 workspace_cold_start_duration_ms = meter.create_histogram(
     "langalpha.workspace.cold_start.duration_ms",
-    description="Sandbox cold-start wall time (only emitted on _restart_workspace paths).",
+    description=(
+        "Sandbox cold-start wall time on _restart_workspace paths, by provider and "
+        "path (lazy = initiation only, blocking = through readiness)."
+    ),
     unit="ms",
 )
 

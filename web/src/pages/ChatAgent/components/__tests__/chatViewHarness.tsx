@@ -168,7 +168,7 @@ export function chatMessagesMock(original: unknown) {
 }
 
 export function workspaceFilesMock() {
-  return { useWorkspaceFiles: () => ({ files: [], loading: false, error: null, refresh: vi.fn() }) };
+  return { useWorkspaceFiles: () => ({ files: [], loading: false, error: null, refresh: vi.fn(), refreshInBackground: vi.fn() }) };
 }
 
 export function navigationDataMock(original: unknown) {

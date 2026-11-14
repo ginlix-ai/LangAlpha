@@ -820,12 +820,15 @@ class TestStopWorkspace:
         async def detached(*_args, **_kwargs):
             yield runtime
         manager._detached_runtime = detached
-        with patch(f"{_LIFECYCLE}.update_computer_activity", AsyncMock()):
+        with patch(f"{_LIFECYCLE}.update_computer_activity", AsyncMock()), \
+                patch(f"{_LIFECYCLE}.note_stop_phases") as phases:
             with pytest.raises(RuntimeError, match="stop failed"):
                 await manager._finish_claimed_stop(
                     _binding("ws-1"), workspace_id="ws-1",
                     durable_sandbox_id="sandbox-abc",
                 )
+        # The refused stop is still timed: the failing stops are worth measuring.
+        phases.assert_called_once_with(_STUB_COMPUTER_ID, backup_ms=ANY, provider_ms=ANY)
         if state == "unreachable":
             manager._settle_machine_stop.assert_not_awaited()
         else:
@@ -8474,3 +8477,27 @@ class TestSupersededResolve:
 def _local_lifecycle_capacity(monkeypatch):
     # Lifecycle fakes have no platform or database; admission is tested separately.
     monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: False)
+
+
+@pytest.mark.parametrize(
+    "kind, interval, stops_at",
+    [
+        # The provider stops these itself, so the sweep runs ten minutes ahead.
+        ("daytona", 1800, 1200),
+        ("e2b", 1500, 900),
+        # No provider stop to run ahead of: the setting is the sweep's.
+        ("ssh", 7200, 7200),
+        ("docker", 3600, 3600),
+        # Never under five minutes.
+        ("daytona", 600, 300),
+    ],
+)
+def test_the_idle_sweep_runs_ahead_only_of_a_provider_that_stops_itself(
+    kind, interval, stops_at
+):
+    manager = SimpleNamespace(
+        _provider_settings=lambda kind, overrides: SimpleNamespace(
+            auto_stop_interval=interval
+        )
+    )
+    assert WorkspaceManager._idle_timeout_for(manager, {"kind": kind}) == stops_at

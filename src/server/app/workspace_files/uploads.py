@@ -144,7 +144,7 @@ async def begin_workspace_upload(
     if body.size < DIRECT_UPLOAD_MIN_BYTES:
         return {"mode": "relay"}
 
-    async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
+    async with acquire_sandbox_to_change(workspace_id, x_user_id, "upload") as (sandbox, workspace):
         if not direct_available(sandbox):
             # The cap the relay route itself applies, said before any bytes move.
             scan_cap = scan_cap_bytes(sandbox, blobs_on=is_storage_enabled())

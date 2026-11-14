@@ -453,15 +453,24 @@ class E2BRuntime(ExecSessionRuntime):
     async def set_autostop_interval(self, minutes: int) -> None:
         """Set how long the sandbox may sit idle; 0 keeps it up as long as E2B allows.
 
-        Applied to the deadline outright, so shortening the window takes effect
-        now rather than when the longer deadline runs out.
+        A shorter window never pulls the current deadline in: a long command or
+        a background job, kept up through another runtime, may need all of it,
+        and E2B pauses at the deadline whatever is running. The server's idle
+        sweep, not this deadline, stops an idle computer on time.
         """
         self._window_s = _window(
             minutes, default_s=self._window_s, max_s=self._max_timeout_s
         )
-        if self._state is RuntimeState.RUNNING:
+        if self._state is not RuntimeState.RUNNING:
+            return
+        if await self.refresh_state() is not RuntimeState.RUNNING:
+            return
+        now = time.monotonic()
+        left = _seconds_left(self._info)
+        if left < self._window_s:
             await self._client.AsyncSandbox.set_timeout(self._id, self._window_s)
-            self._alive_until = time.monotonic() + self._window_s
+            left = self._window_s
+        self._alive_until = now + left
 
     async def get_metadata(self) -> dict[str, Any]:
         info = self._info

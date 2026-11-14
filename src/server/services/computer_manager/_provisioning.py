@@ -52,6 +52,8 @@ from src.server.services.persistence.file import (
     RestoreIdentityLost,
 )
 from src.server.services.persistence.sync_result import BackupIncomplete
+from src.server.services.computer_usage.events import note_start_path
+from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.workspace_layout import (
     held_workspace_layout,
     layout_from_binding,
@@ -637,6 +639,9 @@ class ProvisioningMixin:
                 f"Computer {binding.computer_id} is on a machine the server "
                 "cannot replace"
             )
+        note_start_path(
+            binding.computer_id, "rebuild" if binding.provider_ref else "create"
+        )
         workspace_id = binding.workspace_id
         workspace = await db_get_workspace(workspace_id)
         # Warm-path recovery may lack user_id. Use the NOT NULL row owner or
@@ -1435,12 +1440,14 @@ class ProvisioningMixin:
         # The machine owns the transition, so the claim is its CAS: claiming on
         # the project would let a lagging shadow replace a machine that has
         # meanwhile stopped.
-        if not transition_already_owned and not await try_claim_computer_for_start(
-            binding.computer_id,
-            from_status="running",
-            expected_provider_ref=old_sandbox_id,
-            require_provider_ref=True,
-        ):
+        with computer_cause("rebuild"):
+            claimed = transition_already_owned or await try_claim_computer_for_start(
+                binding.computer_id,
+                from_status="running",
+                expected_provider_ref=old_sandbox_id,
+                require_provider_ref=True,
+            )
+        if not claimed:
             logger.warning(
                 f"Skipping migration for {workspace_id}: could not claim the "
                 f"replacement (sandbox {old_sandbox_id})"
@@ -1489,7 +1496,8 @@ class ProvisioningMixin:
             await self._end_replaced_usage_run(binding.computer_id, old_sandbox_id)
 
             core_config = self._core_config_for(binding)
-            new_session = await self._recover_sandbox(binding, user_id, core_config)
+            with computer_cause("rebuild"):
+                new_session = await self._recover_sandbox(binding, user_id, core_config)
         except (Exception, asyncio.CancelledError):
             # stopped permits recovery from the backup; error would block starts.
             # Catch CancelledError explicitly: it is a BaseException and would otherwise

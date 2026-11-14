@@ -41,6 +41,7 @@ from src.server.database.workspace import (
 )
 from src.server.database.workspace_file import get_live_project_sizes_for_computer
 from src.server.models.computer import ComputerStatus
+from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.computer_errors import (
     ComputerBusyError,
     DiskTooSmallError,
@@ -257,9 +258,10 @@ class ComputerSpecMixin:
     ) -> None:
         """Run a change accepted behind a 202; the outcome on the row is its only report."""
         try:
-            await self._run_spec_change(
-                computer_id, tier, claim_id=claim_id, user_id=user_id
-            )
+            with computer_cause("spec_change"):
+                await self._run_spec_change(
+                    computer_id, tier, claim_id=claim_id, user_id=user_id
+                )
         except (RuntimeError, HTTPException) as exc:
             logger.warning("Spec change of computer %s refused: %s", computer_id, exc)
         except Exception:
@@ -323,13 +325,14 @@ class ComputerSpecMixin:
         claimed = await claim_computer_spec_change(computer_id, target_tier=tier)
         if claimed is None:
             raise ComputerBusyError(SPEC_CHANGE_IN_PROGRESS)
-        return await self._run_spec_change(
-            computer_id,
-            tier,
-            claim_id=_claim_id(claimed),
-            user_id=user_id,
-            workspace_id=workspace_id,
-        )
+        with computer_cause("spec_change"):
+            return await self._run_spec_change(
+                computer_id,
+                tier,
+                claim_id=_claim_id(claimed),
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
 
     async def _run_spec_change(
         self,
@@ -669,7 +672,16 @@ class ComputerSpecMixin:
                     await self._assert_machine_disk_fits(computer_id, disk_guard)
             finally:
                 # On any failure, keep the original sandbox stopped and intact.
-                await session.stop()
+                # A refused stop must not mask that failure, nor stop the
+                # destroy below that takes the sandbox down anyway.
+                try:
+                    await session.stop()
+                except Exception:
+                    logger.warning(
+                        f"Stop of sandbox {sandbox_id} of computer {computer_id} "
+                        "was refused during its replacement",
+                        exc_info=True,
+                    )
             if not gone:
                 await self._assert_spec_claim_owned(computer_id, claim_id)
                 # Daytona's metric history goes with the sandbox.

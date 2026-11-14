@@ -60,6 +60,44 @@ describe('useWorkspaceFiles', () => {
     expect(mockListFiles).toHaveBeenCalledWith('ws-1', '.', { autoStart: true, includeSystem: false });
   });
 
+  it('a background refresh never starts a stopped computer', async () => {
+    mockListFiles.mockResolvedValue({ files: [] });
+    const { result } = renderHookWithProviders(() => useWorkspaceFiles('ws-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mockListFiles.mockClear();
+
+    await act(async () => {
+      await result.current.refreshInBackground();
+    });
+
+    expect(mockListFiles).toHaveBeenCalledTimes(1);
+    expect(mockListFiles).toHaveBeenCalledWith('ws-1', '.', { autoStart: false, includeSystem: false });
+  });
+
+  it("a user's refresh joining a background one still starts the computer", async () => {
+    mockListFiles.mockResolvedValue({ files: [] });
+    const { result } = renderHookWithProviders(() => useWorkspaceFiles('ws-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mockListFiles.mockClear();
+
+    let release!: () => void;
+    mockListFiles.mockImplementationOnce(
+      () => new Promise((resolve) => { release = () => resolve({ files: [] }); }),
+    );
+    mockListFiles.mockResolvedValue({ files: ['a.md'] });
+
+    let both!: Promise<void[]>;
+    act(() => {
+      both = Promise.all([result.current.refreshInBackground(), result.current.refresh()]);
+    });
+    await act(async () => {
+      release();
+      await both;
+    });
+
+    expect(mockListFiles.mock.calls.map((c) => c[2].autoStart)).toEqual([false, true]);
+  });
+
   it('a burst of refreshes shares the fetch in flight plus one trailing fetch', async () => {
     mockListFiles.mockResolvedValue({ files: [] });
     const { result } = renderHookWithProviders(() => useWorkspaceFiles('ws-1'));

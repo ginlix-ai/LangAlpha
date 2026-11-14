@@ -30,6 +30,7 @@ from src.server.database.user import get_user_profile_for_prompt
 from src.server.database.workspace import update_workspace_activity
 from src.server.services.commands.mirror import mirror_computer
 from src.server.services.computer_disk import TURN_MEASURE_MIN_INTERVAL_SECONDS
+from src.server.services.computer_usage.causes import computer_cause, turn_cause
 from src.server.services.history.window import runs_held
 from src.server.services.llm.claude_code import run_stamp
 from src.server.services.runs.pending_input import needs_resend, pending_input_stamp
@@ -646,13 +647,19 @@ async def astream_ptc_workflow(
         # broader than the old `ws_status == "stopped"` check — it also fires
         # on server-restart cold starts (workspace running in Daytona but no
         # session in memory). The extra "starting/ready" SSE pair is harmless.
+        turn_cause_name, turn_client = turn_cause(
+            run_handle.origin,
+            platform=request.platform,
+            delegated=bool(getattr(request, "origin_home_thread_id", None)),
+        )
         if not needs_startup:
-            session = await workspace_manager.get_session_for_workspace(
-                workspace_id,
-                user_id=user_id,
-                skills_signature=skills_signature,
-                run_id=run_id,
-            )
+            with computer_cause(turn_cause_name, client=turn_client):
+                session = await workspace_manager.get_session_for_workspace(
+                    workspace_id,
+                    user_id=user_id,
+                    skills_signature=skills_signature,
+                    run_id=run_id,
+                )
         else:
             yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'starting', 'workspace_id': workspace_id})}\n\n"
 
@@ -669,15 +676,17 @@ async def astream_ptc_workflow(
                 state_box["value"] = state
                 state_event.set()
 
-            session_task = asyncio.create_task(
-                workspace_manager.get_session_for_workspace(
-                    workspace_id,
-                    user_id=user_id,
-                    on_state_observed=_on_state,
-                    skills_signature=skills_signature,
-                    run_id=run_id,
+            # The task copies the cause in; no yield may sit inside the block.
+            with computer_cause(turn_cause_name, client=turn_client):
+                session_task = asyncio.create_task(
+                    workspace_manager.get_session_for_workspace(
+                        workspace_id,
+                        user_id=user_id,
+                        on_state_observed=_on_state,
+                        skills_signature=skills_signature,
+                        run_id=run_id,
+                    )
                 )
-            )
 
             try:
 
@@ -704,8 +713,10 @@ async def astream_ptc_workflow(
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
 
+                # In the message: the default log format drops extras.
                 logger.info(
-                    "[WS_STATUS] state observation",
+                    f"[WS_STATUS] state observation workspace={workspace_id} "
+                    f"sandbox_state={state_box['value']}",
                     extra={
                         "workspace_id": workspace_id,
                         "sandbox_state": state_box["value"],

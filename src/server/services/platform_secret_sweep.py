@@ -434,14 +434,16 @@ class PlatformSecretSweeper:
         """
         from src.server.services.computer_errors import MachineBusyError
         from src.server.services.computer_manager import ComputerManager
+        from src.server.services.computer_usage.causes import computer_cause
 
         now = time.monotonic()
         if self._rebuild_retry_at.get(computer_id, 0.0) > now:
             return False
         try:
-            rebuilt = await ComputerManager.get_instance().replace_sandbox_for_platform_secrets(
-                computer_id, sandbox_id
-            )
+            with computer_cause("platform_secret"):
+                rebuilt = await ComputerManager.get_instance().replace_sandbox_for_platform_secrets(
+                    computer_id, sandbox_id
+                )
         except MachineBusyError:
             self._note_busy_skip(computer_id)
             return False

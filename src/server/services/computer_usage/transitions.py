@@ -1,9 +1,11 @@
-"""Opening and closing a computer's run at its status boundaries.
+"""Opening and closing a computer's run at its status boundaries, and the
+status event that says why it started or stopped (``events.py``).
 
 ``note_computer_status`` is called by every write that moves a computer's
 status (``database/computer.py``: ``create_computer``,
 ``update_computer_status``, ``try_claim_computer_for_start``,
-``try_bind_computer_provider_ref``; ``database/workspace.py``: the mirrored
+``try_bind_computer_provider_ref``), and ``note_mirrored_status`` by the
+workspace write mirrored to it (``database/workspace.py``:
 ``update_workspace_status``), after the write, on the same connection when
 the write was given one. The ledger is telemetry, so this never raises and
 never waits long: a failure is logged and left to the sweep's reconcile.
@@ -13,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Mapping, Optional
+from typing import Any, Awaitable, Mapping, Optional
 
 from src.server.database import computer_runs as runs_db
 from src.server.database.computer_runs import hook_cursor
+from src.server.services.computer_usage.causes import current_cause
+from src.server.services.computer_usage.events import note_status
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +107,7 @@ async def _open(cur, computer_id: str) -> None:
     if computer["kind"] not in metered:
         return
     cpu, memory_gb, disk_gb = resolve_spec(computer)
+    cause = current_cause()
     await runs_db.open_computer_run(
         cur,
         computer_id,
@@ -112,6 +117,8 @@ async def _open(cur, computer_id: str) -> None:
         disk_gb=disk_gb,
         metrics_final=computer["kind"] not in metric_kinds(),
         provider_sized=computer["kind"] in allocation_kinds(),
+        start_cause=cause.name if cause else None,
+        start_client=cause.client if cause else None,
     )
 
 
@@ -135,55 +142,102 @@ async def _apply(
             )
 
 
+async def _quietly(what: str, work: Awaitable[Any], *, conn=None) -> Any:
+    """Await a telemetry write the caller must never wait on long or see fail.
+
+    Bounded only on a connection of its own: one the caller holds is already
+    checked out, and a cancellation mid-statement would abort the caller's
+    transaction. A cancellation of the caller still reaches it.
+    """
+    try:
+        return await asyncio.wait_for(
+            work, timeout=_HOOK_TIMEOUT_S if conn is None else None
+        )
+    except Exception as e:
+        logger.warning(f"{what}: {type(e).__name__}: {e}")
+        return None
+
+
+async def _replaced(computer_id: str, sandbox_id: str) -> None:
+    async with hook_cursor() as cur:
+        await runs_db.close_replaced_run(cur, computer_id, sandbox_id)
+
+
 async def note_sandbox_replaced(computer_id: str, sandbox_id: str) -> None:
     """Record that a replacement deleted *sandbox_id*; never raises.
 
     Called once the provider confirms the delete, so the old sandbox's run
     ends there rather than when the new one binds after its restore.
     """
-
-    async def close() -> None:
-        async with hook_cursor() as cur:
-            await runs_db.close_replaced_run(cur, computer_id, sandbox_id)
-
-    try:
-        await asyncio.wait_for(close(), timeout=_HOOK_TIMEOUT_S)
-    except Exception as e:
-        logger.warning(
-            f"Usage ledger not updated for computer {computer_id} -> replaced: "
-            f"{type(e).__name__}: {e}"
-        )
+    await _quietly(
+        f"Usage ledger not updated for computer {computer_id} -> replaced",
+        _replaced(computer_id, sandbox_id),
+    )
 
 
 async def note_computer_status(
-    row: Optional[Mapping[str, Any]],
+    computer: Optional[Mapping[str, Any]],
     status: str,
     *,
     conn=None,
     reason: Optional[str] = None,
 ) -> None:
-    """Record that the computer in *row* was written to *status*.
+    """Record that *computer*, the row a computer write returned, is now *status*.
 
-    *row* is whatever the write returned, a computer or a workspace row, and
-    only its ``computer_id`` is read. *reason* is why a stop is happening,
-    stamped on the open run when the row goes to 'stopping' and kept when
-    the stop closes it.
+    *reason* is why a stop is happening, stamped on the open run when the
+    computer goes to 'stopping' and kept when the stop closes it, and the
+    stop's recorded cause.
     """
-    if row is None:
-        return
-    computer_id = row.get("computer_id")
+    computer_id = computer.get("computer_id") if computer else None
     if not computer_id:
         return
     computer_id = str(computer_id)
+    await _quietly(
+        f"Status not recorded for computer {computer_id} -> {status}",
+        _record_status(computer_id, status, conn=conn, reason=reason, written=computer),
+        conn=conn,
+    )
+
+
+async def note_mirrored_status(computer_id: str, status: str, *, conn=None) -> None:
+    """Record a workspace status write mirrored to its computer.
+
+    The mirror may not have reached the machine (it guards on the computer's
+    own status), so the computer is read back and nothing is recorded unless
+    it is at *status*.
+    """
+    await _quietly(
+        f"Status not recorded for computer {computer_id} -> {status}",
+        _record_status(computer_id, status, conn=conn, reason=None, written=None),
+        conn=conn,
+    )
+
+
+async def _record_status(
+    computer_id: str,
+    status: str,
+    *,
+    conn,
+    reason: Optional[str],
+    written: Optional[Mapping[str, Any]],
+) -> None:
+    """Both records of a status write, under the one bound ``_quietly`` gives.
+
+    The run ledger goes first and on its own: an event that cannot be
+    written must not cost the ledger its write. *written* is the computer as
+    its own write returned it; without it, it is read back.
+    """
     try:
-        # A connection the caller holds is already checked out, and a
-        # cancellation mid-statement would abort the caller's transaction.
-        await asyncio.wait_for(
-            _apply(computer_id, status, conn=conn, reason=reason),
-            timeout=_HOOK_TIMEOUT_S if conn is None else None,
-        )
+        await _apply(computer_id, status, conn=conn, reason=reason)
     except Exception as e:
         logger.warning(
             f"Usage ledger not updated for computer {computer_id} -> {status}: "
             f"{type(e).__name__}: {e}"
         )
+    computer = written
+    if computer is None:
+        async with hook_cursor(conn) as cur:
+            computer = await runs_db.get_computer_for_run(cur, computer_id)
+        if computer is None or computer["status"] != status:
+            return
+    note_status(computer, status, reason=reason)
