@@ -13,6 +13,7 @@ from pathlib import Path
 # The only file allowed to import the Daytona SDK
 ALLOWED_DAYTONA_IMPORTS = {
     "src/ptc_agent/core/sandbox/providers/daytona.py",
+    "src/ptc_agent/core/sandbox/providers/_daytona_errors.py",
     "src/ptc_agent/core/sandbox/providers/_daytona_stream.py",
     "src/ptc_agent/core/sandbox/providers/daytona_runtime.py",
     "src/ptc_agent/core/sandbox/providers/daytona_secrets.py",

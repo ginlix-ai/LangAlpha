@@ -168,3 +168,38 @@ async def test_the_turns_own_folder_and_a_siblings_deliverables_still_work():
     assert (written.args or (written.kwargs.get("file_path"),))[
         0
     ] == f"{ROOT}/{OWN}/work/out.md"
+
+
+@pytest.mark.asyncio
+async def test_a_folders_absolute_spelling_of_the_user_tier_writes_the_computers():
+    """The store route is keyed on the root's ``.agents/user``; this spelling
+    went to the sandbox, where the mount refused the write without a reason."""
+    backend = _backend()
+    _read, write, _edit = create_filesystem_tools(backend)
+
+    await write.ainvoke(
+        {
+            "file_path": f"{ROOT}/{OWN}/.agents/user/profile/portfolio.json",
+            "content": "{}",
+        }
+    )
+
+    backend.awrite_text.assert_awaited_once_with(
+        f"{ROOT}/.agents/user/profile/portfolio.json", "{}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reading_a_directory_says_so(monkeypatch):
+    from ptc_agent.agent.tools import file_ops
+
+    failed: list[BaseException] = []
+    monkeypatch.setattr(file_ops, "mark_sandbox_raised", failed.append)
+    backend = _backend()
+    backend.aread_range = AsyncMock(side_effect=IsADirectoryError(21, "Is a directory"))
+    read, _write, _edit = create_filesystem_tools(backend)
+
+    result = await read.ainvoke({"file_path": ".agents/tools/docs/yf_price/"})
+
+    assert result.startswith("ERROR: .agents/tools/docs/yf_price/ is a directory.")
+    assert failed == []

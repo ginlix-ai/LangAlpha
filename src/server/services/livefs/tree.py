@@ -25,7 +25,13 @@ from ptc_agent.agent.filesystem_routes import (
     build_filesystem_backend,
     resolve_identity_gates,
 )
-from ptc_agent.core.paths import USER_DATA_DIRS, SandboxLayout, WorkspaceLayout, logged_path
+from ptc_agent.core.paths import (
+    ROOT_MOUNTED_AGENT_SUBDIRS,
+    USER_DATA_DIRS,
+    SandboxLayout,
+    WorkspaceLayout,
+    logged_path,
+)
 from ptc_agent.core.sandbox.livefs_mount import CallContext
 from ptc_agent.core.sandbox.livefs_runtime.protocol import (
     INLINE_LISTING_MAX_BYTES,
@@ -68,9 +74,6 @@ class MountPoint:
     target: str
     #: One per workspace (``workspaces/<id>/<name>``) instead of per computer.
     per_workspace: bool = False
-    #: Also linked in every workspace folder, where Bash and code run and
-    #: the prompts' relative paths land.
-    in_folders: bool = False
     #: The one file under ``target`` that is linked, when not all of it.
     only: str = ""
     #: The directories under ``target`` routes serve, when none serves it.
@@ -78,12 +81,18 @@ class MountPoint:
     #: The route of past threads, from (computer id, workspace id, layout).
     history: Callable[[str, str | None, WorkspaceLayout], MountRoute] | None = None
 
+    @property
+    def in_folders(self) -> bool:
+        """Also linked in every workspace folder, where Bash and code run and
+        the prompts' relative paths land. Read off the layout, which the file
+        tools' path folding reads too, so the two cannot disagree."""
+        return self.target in ROOT_MOUNTED_AGENT_SUBDIRS
+
 
 POINTS = (
     MountPoint(
         "user",
         SandboxLayout.USER_DIR,
-        in_folders=True,
         tiers=tuple(
             directory.removeprefix(SandboxLayout.USER_DIR + "/")
             for directory in (
@@ -93,7 +102,7 @@ POINTS = (
             )
         ),
     ),
-    MountPoint("workflows", SandboxLayout.WORKFLOWS_DIR, in_folders=True),
+    MountPoint("workflows", SandboxLayout.WORKFLOWS_DIR),
     MountPoint(
         "computer",
         SandboxLayout.AGENTS_DIR,

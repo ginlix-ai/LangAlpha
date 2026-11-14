@@ -111,7 +111,7 @@ def test_daytona_absence_outranks_the_transient_message_scan() -> None:
     """
     exc = _miss("/home/workspace/session_timeout.log")
 
-    from ptc_agent.core.sandbox.providers.daytona_secrets import (
+    from ptc_agent.core.sandbox.providers._daytona_errors import (
         is_transient_daytona_error,
     )
 
@@ -149,7 +149,7 @@ def test_daytona_an_int_code_on_a_wrapper_does_not_hide_the_sdk_string() -> None
     and the 404 left behind routes to ``SANDBOX_GONE``, so a missing file
     authorizes destroying and replacing the sandbox it lives in.
     """
-    from ptc_agent.core.sandbox.providers.daytona_secrets import daytona_error_code
+    from ptc_agent.core.sandbox.providers._daytona_errors import daytona_error_code
 
     wrapped = HTTPError("http://daytona/files", 404, "Not Found", None, None)
     wrapped.__cause__ = _miss("/home/workspace/report.csv")
