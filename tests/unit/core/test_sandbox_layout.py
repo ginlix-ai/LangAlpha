@@ -750,7 +750,7 @@ class TestTraversalContainment:
         [
             "/home/workspace/beta-c3d4/work/x.md",
             "/home/workspace/beta-c3d4/.agents/memory/n.md",
-            "/home/workspace/beta-c3d4/.agents/user/memory/stray.md",
+            "/home/workspace/beta-c3d4/.agents/tmp/n.md",
             "/home/workspace/.agents/user/memory/n.md",
             "/home/workspace/alpha-a1b2/work/x.md",
             "/home/workspace/_internal/.manifest",
@@ -768,6 +768,31 @@ class TestTraversalContainment:
         sandbox, project = self._sandbox(), self._project()
         virtual = _paths.virtualize_path(sandbox, real, project)
         assert _paths.normalize_path(sandbox, virtual, project) == real
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "/home/workspace/beta-c3d4/.agents/user/profile/portfolio.json",
+            "/home/workspace/alpha-a1b2/.agents/user/profile/portfolio.json",
+            "/.agents/user/profile/portfolio.json",
+            ".agents/user/profile/portfolio.json",
+        ],
+    )
+    def test_a_folders_link_into_the_user_tier_names_the_computers(self, spelling):
+        """Every folder links ``.agents/user`` to the computer's, and the store
+        route is keyed on the root's, so each spelling has to land there."""
+        sandbox, project = self._sandbox(), self._project()
+        assert (
+            _paths.normalize_path(sandbox, spelling, project)
+            == f"{self.ROOT}/.agents/user/profile/portfolio.json"
+        )
+
+    def test_a_folder_the_turn_does_not_know_keeps_its_user_path(self):
+        sandbox, project = self._sandbox(), self._project()
+        real = f"{self.ROOT}/gamma-e5f6/.agents/user/profile/portfolio.json"
+        assert _paths.normalize_path(sandbox, real, project) != (
+            f"{self.ROOT}/.agents/user/profile/portfolio.json"
+        )
 
     def test_a_sibling_keeps_its_absolute_path_and_the_folder_owns_the_slash(self):
         sandbox, project = self._sandbox(), self._project()
