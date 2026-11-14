@@ -392,6 +392,15 @@ async def get_primary_computer(
     return dict(row) if row else None
 
 
+async def get_home_computer(user_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
+    """The computer a turn in the user's Home runs on: the one Home is bound
+    to, else the primary, which Home binds to on its first start or turn
+    (``turn_runtime.TurnRoute.bind``). None for a user with no computer."""
+    return await get_computer_for_workspace(
+        get_home_workspace_id(user_id), conn=conn
+    ) or await get_primary_computer(user_id, conn=conn)
+
+
 async def get_computers_by_status(
     status: str,
     limit: int = 100,

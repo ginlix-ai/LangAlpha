@@ -34,7 +34,6 @@ from pydantic import ValidationError
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.database.home_workspace import is_home_row
-from src.server.database.principal_reach import workspace_or_home
 from src.server.database.workspace import get_workspace
 from src.server.services.automations import lifecycle as handler
 from src.server.services.automations import delivery
@@ -48,15 +47,14 @@ from src.server.models.automation import (
     DeliveryDefaultUpdate,
     ExecutionStatus,
 )
+from src.server.dependencies import cli_approval
 from src.server.dependencies.principal import (
     ReadPrincipal,
     ReadUserId,
-    RunUserId,
+    RunPrincipal,
+    WorkspaceDeletePrincipal,
     WorkspaceSendPrincipal,
-    WorkspaceSendUserId,
-    WorkspaceWritePrincipal,
     WorkspaceWriteUserId,
-    assert_automation_target,
 )
 from src.server.utils.api import (
     CurrentUserId,
@@ -79,19 +77,13 @@ router = APIRouter(prefix="/api/v1", tags=["Automations"])
 @handle_api_exceptions("create automation", logger, conflict_on_value_error=True)
 async def create_automation(
     request: AutomationCreate,
-    principal: WorkspaceWritePrincipal,
+    principal: WorkspaceSendPrincipal,
     http_request: Request,
 ):
     """Create a new scheduled automation."""
-    user_id = principal.user_id
-    await assert_automation_target(
-        principal,
-        http_request,
-        workspace_id=workspace_or_home(user_id, request.workspace_id),
-        thread_id=request.conversation_thread_id,
-    )
+    await cli_approval.automation_runs(http_request, principal, "create", body=request)
     try:
-        automation = await handler.create_automation(user_id=user_id, data=request)
+        automation = await handler.create_automation(user_id=principal.user_id, data=request)
     except handler.DeliveryRefused as e:
         return _delivery_refused(e)
     return AutomationResponse.model_validate(automation)
@@ -111,7 +103,6 @@ async def list_automations(
         status=status,
         limit=limit,
         offset=offset,
-        computer_id=principal.computer_id,
     )
     return AutomationsListResponse(
         automations=[AutomationResponse.model_validate(a) for a in automations],
@@ -243,11 +234,8 @@ async def update_automation(
 ):
     """Partial update of an automation."""
     user_id = principal.user_id
-    await assert_automation_target(
-        principal,
-        http_request,
-        workspace_id=request.workspace_id,
-        thread_id=request.conversation_thread_id,
+    await cli_approval.automation_runs(
+        http_request, principal, "edit", automation_id=str(automation_id), body=request
     )
     try:
         automation = await handler.update_automation(
@@ -273,10 +261,12 @@ async def update_automation(
 @handle_api_exceptions("delete automation", logger)
 async def delete_automation(
     automation_id: UUID,
-    user_id: WorkspaceWriteUserId,
+    principal: WorkspaceDeletePrincipal,
+    http_request: Request,
 ):
     """Delete an automation (cascade deletes executions)."""
-    deleted = await auto_db.delete_automation(str(automation_id), user_id)
+    await cli_approval.automation_delete(http_request, principal, str(automation_id))
+    deleted = await auto_db.delete_automation(str(automation_id), principal.user_id)
     if not deleted:
         raise_not_found("Automation")
     return Response(status_code=204)
@@ -291,10 +281,16 @@ async def delete_automation(
 @handle_api_exceptions("trigger automation", logger, conflict_on_value_error=True)
 async def trigger_automation(
     automation_id: UUID,
-    user_id: RunUserId,
+    principal: RunPrincipal,
+    http_request: Request,
 ):
     """Manually trigger an automation immediately (doesn't affect next_run_at)."""
-    result = await handler.trigger_automation(str(automation_id), user_id)
+    checked = await cli_approval.automation_runs(
+        http_request, principal, "trigger", automation_id=str(automation_id)
+    )
+    result = await handler.trigger_automation(
+        str(automation_id), principal.user_id, checked_computer_id=checked
+    )
     return result
 
 
@@ -316,10 +312,15 @@ async def pause_automation(
 async def resume_automation(
     automation_id: UUID,
     # Re-arms runs into the automation's thread, so not the call's own.
-    user_id: WorkspaceSendUserId,
+    principal: WorkspaceSendPrincipal,
+    http_request: Request,
 ):
     """Resume a paused or disabled automation."""
-    automation = await handler.resume_automation(str(automation_id), user_id)
+    # Its runs start again where it runs, so off the token's computer it asks.
+    await cli_approval.automation_runs(
+        http_request, principal, "resume", automation_id=str(automation_id)
+    )
+    automation = await handler.resume_automation(str(automation_id), principal.user_id)
     if not automation:
         raise_not_found("Automation")
     return AutomationResponse.model_validate(automation)

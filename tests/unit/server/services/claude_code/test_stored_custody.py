@@ -200,28 +200,28 @@ async def _stamp() -> dict:
 
 @pytest.mark.asyncio
 async def test_an_automation_on_the_stored_token_is_saved():
-    from src.server.services.automations.lifecycle import _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import check_claude_code_hosted
 
     with platform(stored=True, mode="stored"):
-        await _check_claude_code_hosted("user-1", CODE, "ws-1")
+        await check_claude_code_hosted("user-1", CODE, "ws-1")
 
 
 @pytest.mark.asyncio
 async def test_an_automation_naming_no_model_is_judged_on_the_default_its_firing_runs():
-    from src.server.services.automations.lifecycle import AutomationRefusal, _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import AutomationRefusal, check_claude_code_hosted
 
     with platform(stored=True, mode="stored", computer=SMALL), pytest.raises(AutomationRefusal) as refused:
-        await _check_claude_code_hosted("user-1", None, "ws-1", pref={"preferred_model": CODE})
+        await check_claude_code_hosted("user-1", None, "ws-1", pref={"preferred_model": CODE})
     assert str(refused.value) == TOO_SMALL
     with platform(stored=True, mode="stored", computer=SMALL):
-        await _check_claude_code_hosted("user-1", None, "ws-1", pref={"preferred_model": "gpt-5"})
+        await check_claude_code_hosted("user-1", None, "ws-1", pref={"preferred_model": "gpt-5"})
         with patch("src.server.services.automations.lifecycle.is_home_id", lambda *_: True):
-            await _check_claude_code_hosted("user-1", None, "ws-1", pref={"preferred_model": CODE})
+            await check_claude_code_hosted("user-1", None, "ws-1", pref={"preferred_model": CODE})
 
 
 @pytest.mark.asyncio
 async def test_an_automation_on_an_own_computer_relayed_the_stored_token_is_saved():
-    from src.server.services.automations.lifecycle import _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import check_claude_code_hosted
     from src.server.services.claude_code.machine import MachineAnswer
 
     for answer in (None, MachineAnswer("none"), MachineAnswer("works")):
@@ -229,7 +229,7 @@ async def test_an_automation_on_an_own_computer_relayed_the_stored_token_is_save
             platform(computer=OWN, stored=True, mode="stored"),
             patch("src.server.services.claude_code.machine.read_answer", AsyncMock(return_value=answer)),
         ):
-            await _check_claude_code_hosted("user-1", CODE, "ws-1")
+            await check_claude_code_hosted("user-1", CODE, "ws-1")
 
 
 # -- Own computers and the token sheet --

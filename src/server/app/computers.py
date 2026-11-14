@@ -9,9 +9,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from ptc_agent.core.sandbox.providers import provider_class
@@ -122,11 +122,12 @@ from src.server.services.workspace_status_pubsub import (
     publish_computer_status_change,
     subscribe_to_computer_status,
 )
+from src.server.dependencies import cli_approval
 from src.server.dependencies.principal import (
     ComputerAddUserId,
     ComputerEndUserId,
+    ComputerRemovePrincipal,
     ComputerWriteUserId,
-    Principal,
     ReadPrincipal,
     ReadUserId,
 )
@@ -546,18 +547,10 @@ def _ssh_create_refusals():
         raise HTTPException(status_code=503, detail=str(e)) from None
 
 
-async def _listed_computers(principal: Principal) -> List[Dict[str, Any]]:
-    """The computers a list shows the caller: a computer's token, only its own."""
-    if principal.computer_id is None:
-        return await get_computers_for_user(principal.user_id)
-    row = await get_computer(principal.computer_id)
-    return [row] if row is not None and row.get("user_id") == principal.user_id else []
-
-
 @router.get("", response_model=ComputerListResponse)
 async def list_computers(principal: ReadPrincipal):
     x_user_id = principal.user_id
-    rows = await _listed_computers(principal)
+    rows = await get_computers_for_user(x_user_id)
     # One query for the whole list: stopping a machine takes every project on it
     # down, so the count is what the card needs to say so before asking.
     counts = await count_live_workspaces_by_computer(
@@ -670,7 +663,8 @@ async def rename_computer(
 @router.delete("/{computer_id}", response_model=ComputerRemoveResponse)
 async def remove_computer(
     computer_id: str,
-    x_user_id: ComputerEndUserId,
+    principal: ComputerRemovePrincipal,
+    request: Request,
     remove_key: bool = Query(
         True,
         description=(
@@ -713,10 +707,26 @@ async def remove_computer(
     on, or without one in the background, where a machine that does not
     answer holds up nobody.
     """
+    x_user_id = principal.user_id
     named = list(dict.fromkeys([*delete_workspaces, *(body.delete_workspaces if body else ())]))
     async with _computer_action_errors("remove", computer_id):
         computer = await _owned_computer(computer_id, x_user_id)
-        deleted = await _computer_manager().remove_computer_with_workspaces(
+        manager = _computer_manager()
+        # Read before anyone is asked, so the user never approves a removal
+        # the manager then refuses; the manager reads it again, decisively.
+        held = await manager.removal_refusal(computer, named)
+        if held is not None:
+            raise ComputerRemovalRefused(held)
+        await cli_approval.computer_remove(
+            request,
+            principal,
+            computer,
+            remove_key=remove_key,
+            delete_files=delete_files,
+            delete_workspaces=delete_workspaces,
+            body=body,
+        )
+        deleted = await manager.remove_computer_with_workspaces(
             computer_id, named, delete_files=delete_files
         )
         logger.info("Removed computer %s for user %s", computer_id, x_user_id)

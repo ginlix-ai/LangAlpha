@@ -11,7 +11,10 @@ thread's lifecycle for the user. Frame contract (thread-lifecycle v6 §2.2):
   client's guard against stale frames). Both sets are classified in SQL by
   ``get_thread_lifecycle_rows``; archived threads are absent by construction.
 - ``thread_lifecycle`` for each forwarded Redis event (advisory hints — the
-  client's seq-aware merge owns correctness).
+  client's seq-aware merge owns correctness), including ``cli_approval``
+  (``approval_id``, ``status``) when what a computer's ``la`` asks the user to
+  approve is written or changes; the snapshot's ``pending_approvals`` lists
+  the ids still waiting.
 
 Redis is transport only: a runtime pub/sub failure abandons the subscription
 and degrades to the 30s DB cadence with ≥30s-paced resubscribe attempts —
@@ -32,6 +35,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from src.server.database.conversation import get_thread_lifecycle_rows
+from src.server.services import cli_approvals
 from src.server.services.thread_lifecycle import project_lifecycle
 from src.server.services.thread_lifecycle_feed import (
     LIFECYCLE_EVENT,
@@ -91,7 +95,19 @@ async def _read_snapshot(user_id: str) -> dict:
         ),
         "live": live,
         "unseen": unseen,
+        # What a computer's `la` waits on the user to approve, oldest first:
+        # the backstop for a `cli_approval` event the transport dropped.
+        "pending_approvals": await _pending_approvals(user_id),
     }
+
+
+async def _pending_approvals(user_id: str) -> list[str]:
+    try:
+        return [approval.approval_id for approval in await cli_approvals.pending(user_id)]
+    except Exception as exc:
+        # The lifecycle sets stay worth sending without it.
+        logger.warning("thread-feed approvals read failed (user=%s): %s", user_id, exc)
+        return []
 
 
 @router.get("/thread-events")

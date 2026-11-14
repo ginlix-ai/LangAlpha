@@ -238,3 +238,14 @@ def test_a_narrow_fan_out_is_a_configuration_not_a_contradiction() -> None:
 
     patient = WorkflowOrchestrationConfig(max_concurrent_children=4, child_timeout=7200)
     assert patient.child_timeout == 7200
+
+
+def test_a_cli_approval_hold_ends_before_its_request_expires():
+    # A request that expired mid-hold would be asked again under a new id.
+    from pydantic import ValidationError
+
+    from src.config.models import CliApprovalsConfig
+
+    with pytest.raises(ValidationError):
+        CliApprovalsConfig(hold_seconds=90, pending_minutes=1)
+    assert CliApprovalsConfig(hold_seconds=50, pending_minutes=1).hold_seconds == 50

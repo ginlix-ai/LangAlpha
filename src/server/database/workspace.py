@@ -383,6 +383,22 @@ async def find_workspace_by_name_key(user_id: str, key: str) -> Optional[Dict[st
     return dict(row) if row else None
 
 
+async def free_workspace_name(user_id: str, name: str) -> str:
+    """``name`` as a new workspace stores it, once it is usable and no live
+    workspace of the user's holds it: the insert's refusals, read before
+    anyone is asked to approve a create that would meet them.
+
+    Raises:
+        WorkspaceNameInvalid: the name has no usable folder spelling.
+        WorkspaceNameTaken: a live workspace already holds it.
+    """
+    name = checked_workspace_name(name)
+    holder = await find_workspace_by_name_key(user_id, workspace_name_key(name))
+    if holder is not None:
+        raise WorkspaceNameTaken(holder["name"], str(holder["workspace_id"]))
+    return name
+
+
 async def _name_taken(user_id: str, name: str) -> WorkspaceNameTaken:
     holder = await find_workspace_by_name_key(user_id, workspace_name_key(name))
     if holder is None:
@@ -1058,23 +1074,13 @@ async def get_workspaces_for_user(
     sort_by: str = "custom",
     include_home: bool = False,
     conn=None,
-    computer_id: str | None = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """``computer_id`` keeps the page to what that computer's token reaches:
-    the workspaces on it other than Home, which is out of a computer's reach
-    wherever it sits."""
     try:
         status_filter = "" if include_deleted else "AND status != 'deleted'"
         home_filter = "" if include_home else f"AND {EXCLUDE_HOME}"
-        computer_filter = (
-            ""
-            if computer_id is None
-            else f"AND computer_id = %(computer_id)s::uuid AND {EXCLUDE_HOME}"
-        )
         params = {
             "user_id": user_id,
             "home_id": get_home_workspace_id(user_id),
-            "computer_id": computer_id,
         }
 
         # Every order ends on workspace_id, appended below: rows that tie would
@@ -1094,7 +1100,7 @@ async def get_workspaces_for_user(
                 f"""
                 SELECT COUNT(*) as total
                 FROM workspaces
-                WHERE user_id = %(user_id)s {status_filter} {home_filter} {computer_filter}
+                WHERE user_id = %(user_id)s {status_filter} {home_filter}
                 """,
                 params,
             )
@@ -1111,7 +1117,7 @@ async def get_workspaces_for_user(
                        (SELECT c.root_dir FROM computers c
                         WHERE c.computer_id = workspaces.computer_id) AS computer_root_dir
                 FROM workspaces
-                WHERE user_id = %(user_id)s {status_filter} {home_filter} {computer_filter}
+                WHERE user_id = %(user_id)s {status_filter} {home_filter}
                 ORDER BY {order_clause}, workspace_id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
@@ -1618,6 +1624,26 @@ async def lock_run_workspace(conn, thread_id: str) -> None:
     # Its own statement: one that waited on a move's claim for the row lock
     # would still read the move table as it stood before the claim.
     if await workspace_is_moving(workspace["workspace_id"], conn=conn):
+        raise WorkspaceMovingError(str(workspace["workspace_id"]))
+
+
+async def refuse_moved_off(conn, thread_id: str, computer_id: str) -> None:
+    """Refuse a turn checked to run on ``computer_id`` once its workspace is
+    on another. Read on START's connection after ``lock_run_workspace``, so a
+    move cannot commit between the two: one committed before is seen here,
+    and one claimed after finds this run. A workspace on no computer yet
+    binds at its turn, so it is not held to one."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            """
+            SELECT w.workspace_id, w.computer_id FROM workspaces w
+            JOIN conversation_threads t ON t.workspace_id = w.workspace_id
+            WHERE t.conversation_thread_id = %s
+            """,
+            (thread_id,),
+        )
+        workspace = await cur.fetchone()
+    if workspace and workspace["computer_id"] and str(workspace["computer_id"]) != computer_id:
         raise WorkspaceMovingError(str(workspace["workspace_id"]))
 
 

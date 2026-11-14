@@ -878,3 +878,46 @@ async def test_rows_waiting_out_their_days_never_crowd_out_a_due_one(
 
     assert [(str(r["move_id"]), r["action"]) for r in listed] == [(due, "remove")]
     assert not waiting & {str(r["move_id"]) for r in listed}
+
+
+@pytest.mark.parametrize("home", [False, True])
+async def test_a_turn_checked_on_one_computer_does_not_start_once_the_move_commits(
+    seed_user, home
+):
+    """A computer's token's send is checked to run on the workspace's
+    computer; a move that commits after that check, before the run's START,
+    must not carry the turn to the target unasked. START reads the binding
+    under the row lock the move's commit needs, so the move is seen."""
+    from src.server.database.workspace import refuse_moved_off
+
+    user_id = seed_user["user_id"]
+    primary, second = await _machines(user_id)
+    if home:
+        workspace_id = await _home_on(user_id, primary)
+    else:
+        workspace_id = await _workspace(user_id, "Research", primary)
+    thread_id = str(uuid.uuid4())
+    await create_thread(thread_id, workspace_id, "completed")
+
+    move = await claim_workspace_move(
+        user_id=user_id, workspace_id=workspace_id, target_computer_id=second,
+        make_primary=home,
+    )
+    move_id, runner = str(move["move_id"]), str(move["runner_id"])
+    assert await advance_workspace_move(move_id, runner, "backing_up")
+    await stage_workspace_move(move_id, runner, source_folder="Research", leftovers_path="away")
+    await commit_workspace_move(move_id, runner)
+    await finish_workspace_move(move_id, runner, "done")
+
+    async def checked_on(computer_id):
+        identifier = str(uuid.uuid4())
+        return await start_run(
+            run_id=identifier,
+            thread_id=thread_id,
+            request_key=identifier,
+            before_commit=lambda conn: refuse_moved_off(conn, thread_id, computer_id),
+        )
+
+    with pytest.raises(workspaces.WorkspaceMovingError):
+        await checked_on(primary)
+    assert await checked_on(second)

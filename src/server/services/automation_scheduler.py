@@ -173,7 +173,12 @@ class AutomationScheduler:
                 )
 
     def dispatch(
-        self, automation: Dict[str, Any], execution_id: str, *, name: str
+        self,
+        automation: Dict[str, Any],
+        execution_id: str,
+        *,
+        name: str,
+        checked_computer_id: str | None = None,
     ) -> None:
         """Run a firing in the background, whatever triggered it.
 
@@ -186,7 +191,7 @@ class AutomationScheduler:
         that triggered it.
         """
         task = asyncio.create_task(
-            self._run_execution(automation, execution_id),
+            self._run_execution(automation, execution_id, checked_computer_id),
             name=name,
             context=self._context.copy(),
         )
@@ -242,10 +247,13 @@ class AutomationScheduler:
         self,
         automation: Dict[str, Any],
         execution_id: str,
+        checked_computer_id: str | None = None,
     ) -> None:
         """Wrapper that catches exceptions from executor."""
         try:
-            await self._executor.execute(automation, execution_id)
+            await self._executor.execute(
+                automation, execution_id, checked_computer_id=checked_computer_id
+            )
         except Exception as e:
             logger.error(
                 f"[SCHEDULER] Execution task failed: "

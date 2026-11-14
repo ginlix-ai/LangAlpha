@@ -23,17 +23,17 @@ import contextlib
 import logging
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
 from src.server.services.persistence.sync_result import BackupIncomplete
+from src.server.dependencies import cli_approval
 from src.server.dependencies.principal import (
     ReadPrincipal,
     ReadUserId,
+    WorkspaceDeletePrincipal,
     WorkspaceWritePrincipal,
     WorkspaceWriteUserId,
-    assert_reaches,
-    pin_computer,
 )
 from src.server.utils.api import CurrentUserId, require_workspace_owner
 from src.server.dependencies.usage_limits import (
@@ -57,7 +57,6 @@ from src.server.database.workspace_names import (
     WorkspaceNameTaken,
 )
 from src.server.database.home_workspace import (
-    get_home_workspace_id,
     is_home_row,
     is_unbound,
 )
@@ -214,9 +213,10 @@ def _workspace_to_response(workspace: dict) -> WorkspaceResponse:
 async def create_workspace(
     request: WorkspaceCreate,
     principal: WorkspaceWritePrincipal,
+    http_request: Request,
 ):
     """
-    Create a workspace on the caller's computer.
+    Create a workspace on one of the user's computers.
 
     Returns as soon as the row is written: the workspace is bound to the
     user's computer and owns a folder on it, and the machine itself is brought
@@ -236,10 +236,12 @@ async def create_workspace(
         Created workspace details
     """
     x_user_id = principal.user_id
-    computer_id = pin_computer(
-        principal, str(request.computer_id) if request.computer_id else None
-    )
+    computer_id = str(request.computer_id) if request.computer_id else None
     try:
+        computer_id = (
+            await cli_approval.workspace_create(http_request, principal, request)
+            or computer_id
+        )
         manager = WorkspaceManager.get_instance()
         with computer_cause("create"):
             workspace = await manager.create_workspace(
@@ -281,8 +283,6 @@ async def get_home_workspace(principal: ReadPrincipal):
     Home joins the user's computer on its first start or turn.
     """
     x_user_id = principal.user_id
-    # Before the row is made: a computer's token never reaches Home.
-    await assert_reaches(principal, workspace_id=get_home_workspace_id(x_user_id))
     try:
         workspace = await get_or_create_home_workspace(x_user_id)
         return _workspace_to_response(workspace)
@@ -345,7 +345,6 @@ async def list_workspaces(
             offset=offset,
             sort_by=sort_by,
             include_home=include_home,
-            computer_id=principal.computer_id,
         )
 
         return WorkspaceListResponse(
@@ -1031,7 +1030,8 @@ async def refresh_workspace(
 @router.delete("/{workspace_id}", status_code=204)
 async def delete_workspace(
     workspace_id: str,
-    x_user_id: WorkspaceWriteUserId,
+    principal: WorkspaceDeletePrincipal,
+    http_request: Request,
     delete_files: bool = Query(
         False,
         description=(
@@ -1049,14 +1049,16 @@ async def delete_workspace(
 
     Args:
         workspace_id: Workspace UUID
-        x_user_id: Authenticated user ID
         delete_files: Also delete the folder from the user's own machine
     """
     try:
         workspace = await db_get_workspace(workspace_id)
         if is_home_row(workspace):
             raise HTTPException(status_code=400, detail="Cannot delete Home")
-        require_workspace_owner(workspace, user_id=x_user_id)
+        require_workspace_owner(workspace, user_id=principal.user_id)
+        await cli_approval.workspace_delete(
+            http_request, principal, workspace, delete_files=delete_files
+        )
 
         manager = WorkspaceManager.get_instance()
         await manager.delete_workspace(workspace_id, delete_files=delete_files)

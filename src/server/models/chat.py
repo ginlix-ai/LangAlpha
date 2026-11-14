@@ -718,6 +718,14 @@ class ChatRequest(BaseModel):
         description="Burst-guard slot held for this request. Server-stamped.",
     )
 
+    # Server-stamped: the computer a computer's token's turn was checked to
+    # run on (``cli_approval.admit_turn``); its START refuses the run when
+    # the workspace has moved off it since.
+    checked_computer_id: Optional[str] = Field(
+        default=None,
+        description="The computer this turn was checked to run on. Server-stamped.",
+    )
+
     # External thread identity (for channel integrations like Telegram, Slack)
     external_thread_id: Optional[str] = Field(
         default=None,
@@ -807,6 +815,16 @@ class ChatRequest(BaseModel):
         if v is None:
             return None
         return v.strip() or None
+
+    def message_text(self) -> str:
+        """The words of the message the turn sends: the last message's text,
+        or its first text part; empty for a turn that sends none."""
+        if not self.messages:
+            return ""
+        content = self.messages[-1].content
+        if isinstance(content, str):
+            return content
+        return next((item.text for item in content if getattr(item, "text", None)), "")
 
 
 # =============================================================================

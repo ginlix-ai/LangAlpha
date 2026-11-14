@@ -15,7 +15,6 @@ from src.server.contracts.status import (
 )
 from src.server.database import pool
 from src.server.database.conversation import _sql
-from src.server.database.home_workspace import get_home_workspace_id
 from src.server.utils.pg_sanitize import like_escape, normalize_uuid
 
 logger = logging.getLogger(__name__)
@@ -236,10 +235,8 @@ async def get_threads_for_user(
     sort_by: str = "updated_at",
     sort_order: str = "desc",
     platform_prefix: Optional[str] = None,
-    computer_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Get all threads for a user across all workspaces, or across those on
-    ``computer_id`` other than Home, which a computer's token never reaches.
+    """Get all threads for a user across all workspaces.
 
     Archived threads are always excluded — the cross-workspace recency view
     has no archived counterpart (the workspace listing serves that). Pinning
@@ -265,9 +262,6 @@ async def get_threads_for_user(
     if platform_prefix:
         where_extra = " AND t.platform LIKE %s ESCAPE '\\'"
         extra_params.append(f"{like_escape(platform_prefix)}%")
-    if computer_id is not None:
-        where_extra += " AND w.computer_id = %s::uuid AND w.workspace_id <> %s::uuid"
-        extra_params += [computer_id, get_home_workspace_id(user_id)]
 
     try:
         async with pool.get_db_connection() as conn:
@@ -746,7 +740,8 @@ async def get_thread_owner_id(thread_id: str, *, conn=None) -> Optional[str]:
 
 async def get_thread_auth_meta(thread_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
     """Owner ``user_id`` + ``is_shared`` + ``msg_type`` + ``workspace_id`` +
-    ``llm_model`` + ``reasoning_effort`` + ``fast_mode`` in one query.
+    ``llm_model`` + ``reasoning_effort`` + ``fast_mode`` + ``title`` +
+    ``created_at`` in one query.
 
     Lets ``/status`` authorize the caller and read share state from a single
     round-trip, and lets a send authorize, find its workspace and read the
@@ -764,7 +759,8 @@ async def get_thread_auth_meta(thread_id: str, *, conn=None) -> Optional[Dict[st
                 await cur.execute(
                     """
                     SELECT w.user_id, t.is_shared, t.msg_type, t.workspace_id,
-                           t.llm_model, t.reasoning_effort, t.fast_mode
+                           t.llm_model, t.reasoning_effort, t.fast_mode, t.title,
+                           t.created_at
                     FROM conversation_threads t
                     JOIN workspaces w ON w.workspace_id = t.workspace_id
                     WHERE t.conversation_thread_id = %s

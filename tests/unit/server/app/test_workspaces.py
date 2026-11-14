@@ -383,23 +383,24 @@ async def test_a_home_id_another_account_holds_is_forbidden(client):
 
 
 @pytest.mark.asyncio
-async def test_a_computer_token_never_gets_or_creates_home():
-    """A turn in Home runs the Chief of Staff, which reaches every computer, so
-    the token is refused before the row is made, wherever Home would sit."""
+async def test_a_computer_token_gets_home_like_the_user():
+    """Every computer's token reaches Home, wherever Home sits."""
     from src.server.app.workspaces import router
-    from tests.unit.server.dependencies.reach_world import act_as_computer
+    from tests.unit.server.dependencies.reach_world import OTHER_COMPUTER, act_as_computer
 
     app = create_test_app(router)
-    act_as_computer(app)
+    act_as_computer(app, computer=OTHER_COMPUTER)
+    ws = _ws(name="Home", status="unbound", computer_id=None)
     with patch(
-        "src.server.app.workspaces.get_or_create_home_workspace", new_callable=AsyncMock
+        "src.server.app.workspaces.get_or_create_home_workspace",
+        new_callable=AsyncMock,
+        return_value=ws,
     ) as ensure:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.post("/api/v1/workspaces/home")
 
-    assert resp.status_code == 403
-    assert "never reaches Home" in resp.json()["detail"]["message"]
-    ensure.assert_not_awaited()
+    assert resp.status_code == 200
+    ensure.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +470,6 @@ async def test_list_workspaces_with_params(client):
     mock_list.assert_awaited_once_with(
         user_id="test-user-123", limit=5, offset=10, sort_by="activity",
         include_home=False,
-        computer_id=None,
     )
 
 

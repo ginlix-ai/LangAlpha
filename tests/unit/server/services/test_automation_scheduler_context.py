@@ -25,7 +25,7 @@ _SERVER = contextvars.ContextVar("server", default=None)
 async def _fire(scheduler: AutomationScheduler) -> dict[str, object]:
     seen: dict[str, object] = {}
 
-    async def record(automation, execution_id):
+    async def record(automation, execution_id, checked_computer_id=None):
         seen.update(turn=_TURN.get(), server=_SERVER.get())
 
     with patch.object(scheduler, "_run_execution", record):

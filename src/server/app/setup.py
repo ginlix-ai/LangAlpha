@@ -1464,6 +1464,7 @@ from src.server.app.workspace_sandbox import preview_redirect_router
 from src.server.app.market_data import router as market_data_router
 from src.server.app.bars import router as bars_router
 from src.server.app.user_events import router as user_events_router
+from src.server.app.cli_approvals import router as cli_approvals_router
 from src.server.app.users import router as users_router
 from src.server.app.reports import router as reports_router
 from src.server.app.trading_permission import router as trading_permission_router
@@ -1560,6 +1561,7 @@ app.include_router(
     bars_router
 )  # /api/v1/market-data/bars/* - Protocol-native progressive bars
 app.include_router(users_router)  # /api/v1/users/* - User management
+app.include_router(cli_approvals_router)  # /api/v1/cli/approvals - What la asks the user
 app.include_router(reports_router)  # /api/v1/reports - Reports forwarded to the platform
 app.include_router(
     trading_permission_router

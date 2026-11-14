@@ -67,7 +67,12 @@ _RUNNABLE = frozenset({"active", "executing"})
 _STILL_WAITING = object()
 
 async def hand_off(
-    automation: Dict[str, Any], execution_id: str, thread_id: str, *, from_status: str
+    automation: Dict[str, Any],
+    execution_id: str,
+    thread_id: str,
+    *,
+    from_status: str,
+    checked_computer_id: str | None = None,
 ) -> None:
     """Leave a firing this draining process has not started a turn for to the
     next process: back to ``pending``, with a job that starts it there."""
@@ -75,6 +80,7 @@ async def hand_off(
         execution_id=execution_id,
         automation_id=str(automation["automation_id"]),
         user_id=automation["user_id"],
+        checked_computer_id=checked_computer_id,
     )
     handed = await exec_db.hand_off_execution(
         execution_id, from_statuses=(from_status,), thread_id=thread_id, job=job
@@ -111,6 +117,7 @@ async def start_handed_off(job: Dict[str, Any]) -> None:
         automation,
         payload["execution_id"],
         name=f"handed_exec_{payload['automation_id'][:8]}",
+        checked_computer_id=payload.get("checked_computer_id"),
     )
 
 
@@ -131,6 +138,9 @@ class _Firing:
     """
 
     automation: Dict[str, Any]
+    # The computer a computer token's run now was checked to run on; its
+    # turn's START refuses any other (``admission.refuse_moved_off``).
+    checked_computer_id: Optional[str] = None
     route: Optional[TurnRoute] = None
     thread_id: Optional[str] = None
     run_id: Optional[str] = None
@@ -469,6 +479,7 @@ class AutomationExecutor:
         execution_id: str,
         thread_id: str,
         deadline: float,
+        checked_computer_id: str | None = None,
     ) -> Optional[Dict[str, Any]]:
         """Hold the firing as ``waiting`` until its thread's turn ends.
 
@@ -523,7 +534,13 @@ class AutomationExecutor:
                 # The server is stopping: one draining for a restart hands the
                 # firing on, still in line for the thread.
                 if restart_drain.draining():
-                    await hand_off(automation, execution_id, thread_id, from_status="waiting")
+                    await hand_off(
+                        automation,
+                        execution_id,
+                        thread_id,
+                        from_status="waiting",
+                        checked_computer_id=checked_computer_id,
+                    )
                 else:
                     await self._skip_interrupted(automation, execution_id)
                 return None
@@ -808,6 +825,7 @@ class AutomationExecutor:
                     id=str(automation["automation_id"]),
                     name=(automation.get("name") or "").strip() or None,
                 ),
+                checked_computer_id=firing.checked_computer_id,
             )
             # Generate run_id locally: automations don't pass through the
             # HTTP handler that normally creates it. Per-turn keying for
@@ -855,7 +873,11 @@ class AutomationExecutor:
                 return True
             firing.run_id = None
             fresh = await self._wait_for_thread(
-                automation, execution_id, firing.thread_id, deadline
+                automation,
+                execution_id,
+                firing.thread_id,
+                deadline,
+                checked_computer_id=firing.checked_computer_id,
             )
             if fresh is None:
                 return False
@@ -870,6 +892,8 @@ class AutomationExecutor:
         self,
         automation: Dict[str, Any],
         execution_id: str,
+        *,
+        checked_computer_id: str | None = None,
     ) -> None:
         """Run one firing of ``automation`` until it settles or its run does.
 
@@ -914,7 +938,7 @@ class AutomationExecutor:
             name=f"automation_heartbeat_{execution_id[:8]}",
         )
 
-        firing = _Firing(automation=automation)
+        firing = _Firing(automation=automation, checked_computer_id=checked_computer_id)
         wait_deadline = time.monotonic() + _WAIT_CAP_SECONDS
         try:
             # ─── Wait out a running turn ──────────────────────────
@@ -924,7 +948,11 @@ class AutomationExecutor:
             pinned = _pinned_thread(automation)
             if pinned and await _thread_busy(pinned):
                 fresh = await self._wait_for_thread(
-                    automation, execution_id, pinned, wait_deadline
+                    automation,
+                    execution_id,
+                    pinned,
+                    wait_deadline,
+                    checked_computer_id=firing.checked_computer_id,
                 )
                 if fresh is None:
                     _exec_span.set_attribute("status", "skipped")
@@ -987,7 +1015,11 @@ class AutomationExecutor:
 
         except restart_drain.Draining:
             await hand_off(
-                firing.automation, execution_id, firing.thread_id, from_status="running"
+                firing.automation,
+                execution_id,
+                firing.thread_id,
+                from_status="running",
+                checked_computer_id=firing.checked_computer_id,
             )
             _exec_span.set_attribute("status", "handed_off")
         except Exception as e:

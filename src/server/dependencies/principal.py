@@ -6,19 +6,24 @@ outside app, a personal access token and a computer's token alike. What no
 scope grants (orders, secrets, publishing, identity) stays on those routes.
 
 A computer's token (``lac1.``, what the ``la`` CLI presents from inside a
-computer) is held by agent code, so it is narrower than its scopes say: it
-reaches only what its own computer holds and never Home, deletes nothing,
-adds no computer, leaves its own computer running, answers no approval,
-rewrites no history, and sends nothing into the thread its call came from.
-Home is out of reach wherever it sits because a turn there runs the Chief of
-Staff, whose tools reach every computer and hand work to any workspace.
+computer) is held by agent code, and every computer's is held to one rule.
+It reaches all of the user's computers and Home, since the Chief of Staff
+manages everything through ``la`` and an analyst reads the workspaces and
+threads it builds on. It adds no computer, leaves its own computer running,
+answers no approval, rewrites no history, and sends nothing into the thread
+its call came from or the one that sent that thread its current turn. What
+cannot be undone, what adds a place for work to go, and what starts work on
+another computer waits until the user approves that exact request in the app
+(``cli_approval``): a delete, a new workspace, a removed computer, and a
+message, a retry or an automation whose turn would run on a computer other
+than the token's own. Home runs on whichever computer holds it.
 """
 
 from __future__ import annotations
 
 import functools
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Annotated, Any, Final, Literal
 
 from fastapi import Depends, HTTPException, Request
@@ -26,9 +31,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.types import Scope
 
 from src.server.auth import computer_token_core, oauth_resource, pats
-from src.server.database import order_attempts, principal_reach
-from src.server.database.home_workspace import is_home_id
-from src.server.database.principal_reach import HOME, MISSING, Reach, ReachKind
+from src.server.database import order_attempts, turn_targets
 from src.server.models.chat import ChatRequest, ThreadOrigin
 from src.server.services import cli_tokens
 from src.server.services.livefs import outcomes
@@ -65,17 +68,28 @@ class CliCall:
 
     ``thread_id`` is the thread the call ran in, as its command filed it: a
     loop guard and a label, never authority, since any process on the
-    computer can read a sibling's environment and send its id. ``reached``
-    keeps the reach answers already read for the request, so a turn's body
-    check does not ask again what its path's did.
+    computer can read a sibling's environment and send its id.
     """
 
     principal: Principal
     call_id: str | None
     thread_id: str | None
-    reached: dict[tuple[ReachKind, str], Reach] = field(
-        default_factory=dict, compare=False, repr=False
-    )
+
+    def running_thread(self) -> str | None:
+        """The thread the command runs in; None for a command that names no
+        call, a person's or a schedule's on the machine.
+
+        Raises:
+            HTTPException: the command named its call, but what it filed is
+                gone (Redis is down, or the command outlived it), so any
+                thread might be the one it runs in.
+        """
+        if self.thread_id is None and self.call_id is not None:
+            raise forbidden(
+                "Cannot tell which conversation this command runs in, so it may not "
+                "start or stop a run; run it from a new command"
+            )
+        return self.thread_id
 
 
 _CLI_CALL: Final = "cli_call"
@@ -96,7 +110,7 @@ def _invalid_token(message: str) -> HTTPException:
     )
 
 
-def _forbidden(message: str, kind: str = "forbidden_for_token") -> HTTPException:
+def forbidden(message: str, kind: str = "forbidden_for_token") -> HTTPException:
     return HTTPException(status_code=403, detail={"message": message, "type": kind})
 
 
@@ -164,116 +178,69 @@ async def get_principal(
 CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
 
 
-def _uuid(value: Any) -> str | None:
+def uuid_or_none(value: Any) -> str | None:
+    """``value`` as a canonical UUID string; None for one that is not a UUID,
+    which a route answers as its own 404."""
     try:
         return str(uuid.UUID(str(value)))
     except ValueError:
         return None
 
 
-async def _computer_of(
-    principal: Principal, kind: ReachKind, value: Any, call: CliCall | None = None
-) -> Reach:
-    """The computer the resource sits on, ``MISSING`` for one the user does
-    not have (the route answers its own 404), ``HOME`` for one in Home.
-    ``call`` keeps the answer for the rest of the request.
-
-    Home's id is known without its row, which a turn naming it would create,
-    so it never reads as one the user lacks.
-    """
-    resource_id = _uuid(value)
-    if resource_id is None:
-        return MISSING
-    if kind == "workspace" and is_home_id(principal.user_id, resource_id):
-        return HOME
-    key = (kind, resource_id)
-    if call is not None and key in call.reached:
-        return call.reached[key]
-    found = await principal_reach.computer_of(kind, principal.user_id, resource_id)
-    if call is not None:
-        call.reached[key] = found
-    return found
-
-
-def _refuse_off_computer(principal: Principal, found: Reach) -> None:
-    if found is HOME:
-        raise _forbidden("A computer's token never reaches Home")
-    if found is not MISSING and found != principal.computer_id:
-        raise _forbidden("A computer's token reaches only what that computer holds")
-
-
-_UNKNOWN_CALL_THREAD: Final = (
-    "Cannot tell which conversation this command runs in, so it may not "
-    "start or stop a run; run it from a new command"
-)
-
-
-def _refuse_own_thread(call: CliCall | None, thread_id: Any) -> None:
+def refuse_own(call: CliCall | None, thread_id: str | None, message: str) -> None:
+    """Refuse ``message`` when ``thread_id`` is the thread the command runs
+    in, or might be (``CliCall.running_thread``)."""
     if call is None or thread_id is None:
         return
-    if call.thread_id is None:
-        if call.call_id is not None:
-            # The command named its call, but what it filed is gone, so the
-            # thread it names might be the one the command runs in.
-            raise _forbidden(_UNKNOWN_CALL_THREAD)
+    if call.running_thread() == thread_id:
+        raise forbidden(message)
+
+
+async def refuse_loop(principal: Principal, call: CliCall | None, thread_id: Any) -> None:
+    """The thread the call runs in, and the one that sent that thread its
+    current turn: an analyst a hand-off started, or a thread ``la`` sent
+    into, answering into its sender would start the sender's next turn, and
+    so on round."""
+    target = uuid_or_none(thread_id)
+    refuse_own(call, target, "A command cannot send into the conversation it runs in")
+    if call is None or call.thread_id is None or target is None:
         return
-    if call.thread_id == _uuid(thread_id):
-        raise _forbidden("A command cannot send into the conversation it runs in")
+    if await turn_targets.turn_sender(principal.user_id, call.thread_id) == target:
+        raise forbidden(
+            "A command cannot send into the conversation that sent it its current turn"
+        )
 
 
-# The ids a route may name that sit on a computer, and where it may name them:
-# the path, or for a workspace and a thread, the query too, as a list's filter.
-_REACH_IDS: Final[tuple[tuple[str, ReachKind], ...]] = (
-    ("workspace_id", "workspace"),
-    ("thread_id", "thread"),
-    ("automation_id", "automation"),
-)
-_QUERY_IDS: Final = ("workspace_id", "thread_id")
-
-
-async def _within_computer(
+async def _computer_limits(
     request: Request,
     principal: Principal,
     *,
     own_computer: bool,
     own_thread: bool,
     adds_computer: bool,
+    gated: bool,
 ) -> None:
     if adds_computer:
         # A machine it added would hold a token of its own, which outlives
         # revoking this one.
-        raise _forbidden("A computer's token cannot add or pair a computer")
-    if request.method == "DELETE":
-        raise _forbidden("A computer's token cannot delete; archive or pause instead")
+        raise forbidden("A computer's token cannot add or pair a computer")
+    if request.method == "DELETE" and not gated:
+        raise forbidden("A computer's token cannot delete; archive or pause instead")
     call = computer_call(request.scope)
     params = request.path_params
-    if "computer_id" in params:
-        target = _uuid(params["computer_id"])
-        if target != principal.computer_id:
-            raise _forbidden("A computer's token reaches only its own computer")
-        if not own_computer:
-            raise _forbidden("A computer cannot stop, archive or remove itself")
-    named = {k: request.query_params[k] for k in _QUERY_IDS if k in request.query_params}
-    named.update(params)
-    for name, kind in _REACH_IDS:
-        if name in named:
-            found = await _computer_of(principal, kind, named[name], call)
-            _refuse_off_computer(principal, found)
-    if own_thread or call is None or call.call_id is None:
+    if (
+        not own_computer
+        and "computer_id" in params
+        and uuid_or_none(params["computer_id"]) == principal.computer_id
+    ):
+        raise forbidden("A computer cannot stop, archive or remove itself")
+    # A command that runs in no thread has none to loop into.
+    if own_thread or call is None or call.running_thread() is None:
         return
-    if call.thread_id is None:
-        # The command named its call, but what it filed is gone (Redis is
-        # down, or the command outlived it), so the run it would start might
-        # be in its own conversation.
-        raise _forbidden(_UNKNOWN_CALL_THREAD)
     if "thread_id" in params:
-        _refuse_own_thread(call, params["thread_id"])
-    automation_id = _uuid(params.get("automation_id"))
-    if automation_id is not None:
-        # Its run would start a turn in the thread it sends into.
-        _refuse_own_thread(
-            call, await principal_reach.automation_thread(principal.user_id, automation_id)
-        )
+        await refuse_loop(principal, call, params["thread_id"])
+    # An automation's runs are guarded by the thread its write leaves pinned,
+    # which only the route's body tells (``cli_approval.automation_runs``).
 
 
 @functools.cache
@@ -282,6 +249,7 @@ def require_scopes(
     own_computer: bool = True,
     own_thread: bool = True,
     adds_computer: bool = False,
+    gated: bool = False,
 ):
     """A dependency answering the caller once it holds every one of ``scopes``.
 
@@ -289,9 +257,13 @@ def require_scopes(
     ``own_computer=False`` marks an action it may not take on the computer it
     runs on, ``own_thread=False`` one it may not take on the thread its call
     runs in (sending into it, stopping its run, or into it through an
-    automation), which would loop the conversation into itself, and
-    ``adds_computer=True`` one it may not take at all. Cached per arguments,
-    so FastAPI runs it once a request however many parameters name it.
+    automation) or on the thread that sent that thread its current turn,
+    which would loop the conversation into itself, and ``adds_computer=True``
+    one it may not take at all. A delete is refused unless ``gated`` says
+    its route holds it for the user's OK itself (``cli_approval``), so a
+    delete route that forgets the gate refuses rather than deletes. Cached
+    per arguments, so FastAPI runs it once a request however many parameters
+    name it.
     """
 
     async def dependency(
@@ -315,12 +287,13 @@ def require_scopes(
                 },
             )
         if principal.computer_id is not None:
-            await _within_computer(
+            await _computer_limits(
                 request,
                 principal,
                 own_computer=own_computer,
                 own_thread=own_thread,
                 adds_computer=adds_computer,
+                gated=gated,
             )
         return principal
 
@@ -349,6 +322,13 @@ ReadPrincipal = Annotated[Principal, Depends(_READ)]
 RunPrincipal = Annotated[Principal, Depends(_RUN)]
 WorkspaceWritePrincipal = Annotated[Principal, Depends(_WORKSPACE_WRITE)]
 WorkspaceSendPrincipal = Annotated[Principal, Depends(_WORKSPACE_SEND)]
+#: The deletes whose routes hold a computer's request for the user's OK.
+WorkspaceDeletePrincipal = Annotated[
+    Principal, Depends(require_scopes("workspace:write", gated=True))
+]
+ComputerRemovePrincipal = Annotated[
+    Principal, Depends(require_scopes("computer:write", own_computer=False, gated=True))
+]
 
 ReadUserId = Annotated[str, Depends(_user_of(_READ))]
 RunUserId = Annotated[str, Depends(_user_of(_RUN))]
@@ -360,53 +340,22 @@ ComputerEndUserId = Annotated[str, Depends(_user_of(_COMPUTER_END))]
 ComputerAddUserId = Annotated[str, Depends(_user_of(_COMPUTER_ADD))]
 
 
-async def assert_reaches(
-    principal: Principal, *, workspace_id: Any = None, thread_id: Any = None
-) -> None:
-    """For what a route names in its body or finds itself rather than in its
-    path or query; None names nothing. Home's id is refused like any place
-    off the computer."""
-    if principal.computer_id is None:
-        return
-    if workspace_id is not None:
-        _refuse_off_computer(principal, await _computer_of(principal, "workspace", workspace_id))
-    if thread_id is not None:
-        _refuse_off_computer(principal, await _computer_of(principal, "thread", thread_id))
-
-
-def pin_computer(principal: Principal, requested: str | None) -> str | None:
-    """The computer a new workspace goes on. A computer's token adds one only
-    beside its own, and another it names is answered as one the user lacks."""
-    if principal.computer_id is None:
-        return requested
-    if requested is not None and requested != principal.computer_id:
-        raise HTTPException(status_code=404, detail="Computer not found")
-    return principal.computer_id
-
-
-async def assert_automation_target(
-    principal: Principal, request: Request, *, workspace_id: Any, thread_id: Any
-) -> None:
-    """Where an automation's runs go, held like a turn's: on the computer,
-    out of Home, and never the thread the call runs in, whose turns its runs
-    would start, the loop the send guard refuses."""
-    await assert_reaches(principal, workspace_id=workspace_id, thread_id=thread_id)
-    if principal.computer_id is not None and thread_id is not None:
-        _refuse_own_thread(computer_call(request.scope), thread_id)
-
-
 def refuse_computer(principal: Principal, message: str) -> None:
     """For a surface only a person reads: a computer's token is refused even
     where its scopes would pass."""
     if principal.computer_id is not None:
-        raise _forbidden(message)
+        raise forbidden(message)
 
 
-def refuse_rewrite(principal: Principal, checkpoint_id: Any, fork_from_turn: Any = None) -> None:
+def refuse_rewrite(
+    principal: Principal, checkpoint_id: Any, fork_from_turn: Any = None
+) -> None:
     """A turn a computer's token runs only adds to its thread: replaying an
     older checkpoint or forking from a turn would drop the turns after it."""
-    if principal.computer_id is not None and (checkpoint_id is not None or fork_from_turn is not None):
-        raise _forbidden("A computer's token cannot edit or regenerate a turn")
+    if principal.computer_id is not None and (
+        checkpoint_id is not None or fork_from_turn is not None
+    ):
+        raise forbidden("A computer's token cannot edit or regenerate a turn")
 
 
 async def check_turn_body(
@@ -423,10 +372,10 @@ async def check_turn_body(
     answers one; a computer's agent answers no approval at all, since one
     approving its own requests defeats them, and starts no turn from an
     earlier checkpoint, since an edit or regenerate deletes the turns after
-    it. The thread the turn goes to (None for one minted for it) and the
-    workspace the body names are held to the computer like a path's, a new
-    thread naming none being Home's; ``from_path`` says the route's path
-    named the thread, so ``require_scopes`` already held it there.
+    it. A thread the body names (None for one minted for it) is held to the
+    send guard like a path's; ``from_path`` says the route's path named it,
+    so ``require_scopes`` already did. Where the turn runs is the approval's
+    (``cli_approval.admit_turn``, which runs this first).
     """
     if principal.unlimited:
         return
@@ -436,28 +385,19 @@ async def check_turn_body(
     # answers nothing while one waits.
     if answers and (
         any(getattr(answer, "order_decisions", None) for answer in answers.values())
-        or ((waiting := _uuid(thread_id)) is not None and await order_attempts.thread_awaits_order(waiting))
+        or (
+            (waiting := uuid_or_none(thread_id)) is not None
+            and await order_attempts.thread_awaits_order(waiting)
+        )
     ):
-        raise _forbidden("Orders are answered only in the app", "order_decision_forbidden")
+        raise forbidden("Orders are answered only in the app", "order_decision_forbidden")
     if principal.computer_id is None:
         return
     if answers:
-        raise _forbidden("A computer's token cannot answer approval requests")
+        raise forbidden("A computer's token cannot answer approval requests")
     refuse_rewrite(principal, body.checkpoint_id, body.fork_from_turn)
-    call = computer_call(request.scope)
-    new_thread = True
-    if thread_id is not None:
-        thread_on = await _computer_of(principal, "thread", thread_id, call)
-        new_thread = thread_on is MISSING
-        if not from_path:
-            _refuse_off_computer(principal, thread_on)
-            _refuse_own_thread(call, thread_id)
-    workspace_id = body.workspace_id
-    if workspace_id is None and new_thread:
-        workspace_id = principal_reach.workspace_or_home(principal.user_id, None)
-    if workspace_id is not None:
-        found = await _computer_of(principal, "workspace", workspace_id, call)
-        _refuse_off_computer(principal, found)
+    if thread_id is not None and not from_path:
+        await refuse_loop(principal, computer_call(request.scope), thread_id)
 
 
 def stamp_origin(principal: Principal, request: Request, body: ChatRequest) -> ChatRequest:

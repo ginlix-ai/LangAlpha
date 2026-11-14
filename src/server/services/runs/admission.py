@@ -548,7 +548,12 @@ async def begin_run(
                 partial(
                     _start_checks, request, thread_id=thread_id, run_id=run_id, then=in_start
                 )
-                if request.request_key or request.steer_job_id or in_start
+                if (
+                    request.request_key
+                    or request.steer_job_id
+                    or request.checked_computer_id
+                    or in_start
+                )
                 else None
             ),
         ),
@@ -592,6 +597,10 @@ async def _start_checks(
         )
     if request.steer_job_id:
         await claim_steer_or_refuse(conn, request.steer_job_id, run_id)
+    if request.checked_computer_id:
+        from src.server.database.workspace import refuse_moved_off
+
+        await refuse_moved_off(conn, thread_id, request.checked_computer_id)
     if then is not None:
         await then(conn)
 

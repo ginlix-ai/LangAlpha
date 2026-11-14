@@ -266,3 +266,33 @@ async def test_the_next_process_starts_a_handed_firing(draining, age):
         args, _ = scheduler.dispatch.call_args
         assert args == ({"automation_id": "auto-1"}, "exec-1")
 
+
+
+@pytest.mark.asyncio
+async def test_a_handed_firing_stays_held_to_the_computer_it_was_checked_on():
+    from src.server.services import automation_executor
+    from src.server.services.automation_scheduler import AutomationScheduler
+
+    hand = AsyncMock(return_value=True)
+    with patch.object(automation_executor.exec_db, "hand_off_execution", hand):
+        await automation_executor.hand_off(
+            {"automation_id": "auto-1", "user_id": "u-1"}, "exec-1", "thread-1",
+            from_status="waiting", checked_computer_id="computer-1",
+        )
+    payload = hand.await_args.kwargs["job"].payload
+    assert payload["checked_computer_id"] == "computer-1"
+
+    scheduler = SimpleNamespace(dispatch=MagicMock())
+    job = {"created_at": datetime.now(timezone.utc), "payload": payload}
+    with (
+        patch("src.server.services.runs.restart_drain.draining", return_value=False),
+        patch.object(
+            automation_executor.auto_db,
+            "get_automation",
+            AsyncMock(return_value={"automation_id": "auto-1"}),
+        ),
+        patch.object(AutomationScheduler, "get_instance", return_value=scheduler),
+    ):
+        await automation_executor.start_handed_off(job)
+
+    assert scheduler.dispatch.call_args.kwargs["checked_computer_id"] == "computer-1"

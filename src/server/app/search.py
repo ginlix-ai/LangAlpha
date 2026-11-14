@@ -1,8 +1,8 @@
 """Search for the command palette: threads by title, turns by what was said
 in them, files by path, and a turn's text for the preview pane.
 
-A person's surface: a computer's token is refused whatever its scopes, since
-its agent reads its own computer's threads through the file mount.
+A person's surface: a computer's token is refused whatever its scopes, and
+its agent finds threads through the list and read routes ``la`` calls.
 """
 
 import logging

@@ -909,3 +909,12 @@ async def test_a_chief_of_staff_automation_runs_in_home():
     assert turn["request"].workspace_id == _HOME
     assert turn["route"] == TurnRoute(_HOME, "chief_of_staff")
     manager.ensure_home_bound.assert_awaited_once_with(_USER)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("checked", ["computer-1", None])
+async def test_a_run_now_starts_its_turn_held_to_the_computer_it_was_checked_on(checked):
+    with _firing([_streams]) as fx, _delivery(None):
+        await AutomationExecutor().execute(_automation(), _EXEC, checked_computer_id=checked)
+
+    assert _turn_args(fx)["request"].checked_computer_id == checked
