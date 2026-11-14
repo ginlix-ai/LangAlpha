@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import structlog
-from daytona import CreateSecretParams, UpdateSecretParams
+from daytona import CreateSecretParams, DaytonaConnectionError, UpdateSecretParams
 
 from ptc_agent.core.sandbox.platform_secrets import (
     PlatformSecretReconciler,
@@ -89,14 +89,19 @@ def is_transient_daytona_error(exc: Exception) -> bool:
     """
 
     # Transport exception types are transient even with an empty message
-    # (a bare ConnectionResetError / TimeoutError carries no text).
-    if isinstance(exc, (ConnectionError, TimeoutError)):
+    # (a bare ConnectionResetError / TimeoutError carries no text). The SDK maps
+    # its transport failures, a read timeout among them, to
+    # DaytonaConnectionError and keeps the prefix of the call that failed, so an
+    # exec whose reply never came reads "Failed to execute command: " with
+    # nothing after it and would otherwise fall to the execution-error guard.
+    if isinstance(exc, (ConnectionError, TimeoutError, DaytonaConnectionError)):
         return True
     message = str(exc).lower()
-    # A closed HTTP client means the request never reached the server. The SDK
-    # wraps these as "Failed to execute command: Session is closed", so check
-    # BEFORE the execution-error guard below.
-    if any(marker in message for marker in ("session is closed", "client is closed")):
+    # The request never reached the command: a closed HTTP client, or a
+    # sandbox proxy that cannot find the container. The SDK prefixes both with
+    # "Failed to execute command:", so check BEFORE the execution-error guard.
+    not_reached = ("session is closed", "client is closed", "no ip address found")
+    if any(marker in message for marker in not_reached):
         return True
     if "failed to execute command" in message:
         return False
@@ -113,7 +118,6 @@ def is_transient_daytona_error(exc: Exception) -> bool:
         "bad gateway",
         "service unavailable",
         "too many requests",
-        "no ip address found",
     )
     return any(marker in message for marker in transient_markers)
 
