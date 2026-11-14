@@ -45,6 +45,7 @@ from ptc_agent.core.sandbox.livefs_runtime.protocol import PREFIX as LIVEFS_PREF
 from ptc_agent.core.sandbox.platform_secrets import PlatformSecretError
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
+from src.server.app.logos import LOGOS_PREFIX, router as logos_router
 from src.server.preview_proxy import install_preview_proxy
 from src.config.logging_config import configure_logging
 from src.config.settings import (
@@ -1155,6 +1156,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error closing APNs client: {e}")
 
+    try:
+        from src.data_client.ginlix_data.logos import close_logo_client
+
+        await close_logo_client()
+    except Exception as e:
+        logger.warning(f"Error closing logo HTTP client: {e}")
+
     # 9.1. Close the messaging gateway HTTP client
     try:
         from src.tools.messaging.tools import close_client
@@ -1295,8 +1303,15 @@ def _gzip_exempt(path: str) -> bool:
     next save is checked against. A CDN in front of the server (Cloudflare
     for one) asks for gzip whatever its client asked, and decompressing for
     the daemon, which asks for no encoding, weakens or drops that tag.
+
+    A ticker logo is an already compressed image whose ETag a browser sends
+    back to revalidate it, for the same reason.
     """
-    return path.endswith("/files/download") or path.startswith(f"{LIVEFS_PREFIX}/")
+    return (
+        path.endswith("/files/download")
+        or path.startswith(f"{LIVEFS_PREFIX}/")
+        or path.startswith(f"{LOGOS_PREFIX}/")
+    )
 
 
 class _SelectiveGZip(GZipMiddleware):
@@ -1527,6 +1542,7 @@ app.include_router(
     artifacts_router
 )  # /api/v1/artifacts/{id}/* - Versions, publishing and comments (owner)
 app.include_router(market_data_router)  # /api/v1/market-data/* - Market data proxy
+app.include_router(logos_router)  # /api/v1/market-data/logos/{symbol} - Public logo relay
 app.include_router(
     bars_router
 )  # /api/v1/market-data/bars/* - Protocol-native progressive bars
