@@ -188,3 +188,18 @@ async def test_a_folders_absolute_spelling_of_the_user_tier_writes_the_computers
         f"{ROOT}/.agents/user/profile/portfolio.json", "{}"
     )
 
+
+@pytest.mark.asyncio
+async def test_reading_a_directory_says_so(monkeypatch):
+    from ptc_agent.agent.tools import file_ops
+
+    failed: list[BaseException] = []
+    monkeypatch.setattr(file_ops, "mark_sandbox_raised", failed.append)
+    backend = _backend()
+    backend.aread_range = AsyncMock(side_effect=IsADirectoryError(21, "Is a directory"))
+    read, _write, _edit = create_filesystem_tools(backend)
+
+    result = await read.ainvoke({"file_path": ".agents/tools/docs/yf_price/"})
+
+    assert result.startswith("ERROR: .agents/tools/docs/yf_price/ is a directory.")
+    assert failed == []

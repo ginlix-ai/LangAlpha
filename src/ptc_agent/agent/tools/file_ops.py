@@ -366,6 +366,9 @@ def create_filesystem_tools(
 
             return formatted
 
+        except IsADirectoryError:
+            logger.info("Read of a directory", file_path=logged_path(file_path))
+            return f"ERROR: {file_path} is a directory. Use Glob or `ls` to list it, then Read a file in it."
         except Exception as e:
             mark_sandbox_raised(e)
             error_msg = f"Failed to read file: {e!s}"
