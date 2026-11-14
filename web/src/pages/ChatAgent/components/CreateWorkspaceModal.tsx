@@ -152,7 +152,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
     // The blocking start also attaches a new folder on an already-running
     // computer. Retry must repeat it if the previous start failed.
     try {
-      await startWorkspace(workspace.workspace_id);
+      await startWorkspace(workspace.workspace_id, { reason: 'create' });
     } catch (err: unknown) {
       setProgressError(denialMessage(err, t));
       setCreationStep('error');

@@ -46,7 +46,7 @@ export function useWarmWorkspaceSandbox(workspaceId: string | null): WarmingStat
 
   useEffect(() => {
     if (!workspaceId || !rowRead) return;
-    void warmWorkspace(workspaceId, queryClient);
+    void warmWorkspace(workspaceId, queryClient, 'workspace_open');
   }, [workspaceId, queryClient, rowRead]);
 
   useEffect(() => {

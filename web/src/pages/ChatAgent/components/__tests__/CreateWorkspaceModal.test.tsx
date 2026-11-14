@@ -267,7 +267,7 @@ describe('CreateWorkspaceModal', () => {
     await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement,
       new File(['hello'], 'notes.txt', { type: 'text/plain' }));
     await user.click(screen.getByRole('button', { name: /^create$/i }));
-    await waitFor(() => expect(startWorkspace).toHaveBeenCalledWith(LIVE_CREATED.workspace_id));
+    await waitFor(() => expect(startWorkspace).toHaveBeenCalledWith(LIVE_CREATED.workspace_id, { reason: 'create' }));
     expect(mockUpload).not.toHaveBeenCalled();
     ready({ workspace_id: LIVE_CREATED.workspace_id, status: 'running' });
     await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(1));

@@ -246,7 +246,7 @@ function ChatAgent(): React.ReactElement | null {
   const handleWorkspaceSelect = useCallback((selectedWorkspaceId: string, workspaceName?: string, workspaceStatus?: string) => {
     if (!isValidUuid(selectedWorkspaceId)) return;
     if (workspaceStatus === 'stopped') {
-      void warmWorkspace(selectedWorkspaceId, queryClient);
+      void warmWorkspace(selectedWorkspaceId, queryClient, 'workspace_open');
     }
     navigate(`/chat/${selectedWorkspaceId}`, {
       state: {

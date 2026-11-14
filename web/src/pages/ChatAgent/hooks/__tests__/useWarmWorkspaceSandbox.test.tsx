@@ -170,7 +170,7 @@ describe('useWarmWorkspaceSandbox', () => {
     });
 
     await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledWith('/api/v1/workspaces/ws-1/start?lazy=true');
+      expect(mockPost).toHaveBeenCalledWith('/api/v1/workspaces/ws-1/start?lazy=true&reason=workspace_open');
     });
   });
 
@@ -201,7 +201,7 @@ describe('useWarmWorkspaceSandbox', () => {
 
     renderHook(() => useWarmWorkspaceSandbox('ws-1'), { wrapper: wrapper(qc) });
 
-    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/api/v1/workspaces/ws-1/start?lazy=true'));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/api/v1/workspaces/ws-1/start?lazy=true&reason=workspace_open'));
     await new Promise((res) => setTimeout(res, 20));
     expect(mockPost).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);

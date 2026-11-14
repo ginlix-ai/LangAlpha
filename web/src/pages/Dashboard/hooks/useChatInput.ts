@@ -80,7 +80,7 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
     }
     if (!warmTargetId || warmedRef.current.has(warmTargetId)) return;
     warmedRef.current.add(warmTargetId);
-    void warmWorkspace(warmTargetId, queryClient);
+    void warmWorkspace(warmTargetId, queryClient, 'composer');
   }, [composing, warmTargetId, queryClient]);
 
   /**

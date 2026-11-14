@@ -146,7 +146,7 @@ describe('WelcomeFlow: the questions and their save', () => {
       threadTitle: 'Getting started',
       handoff: true,
     });
-    expect(warmWorkspace).toHaveBeenCalledWith('home-1', expect.anything());
+    expect(warmWorkspace).toHaveBeenCalledWith('home-1', expect.anything(), 'onboarding');
     expect(localStorage.getItem(DRAFT)).toBeNull();
   });
 
