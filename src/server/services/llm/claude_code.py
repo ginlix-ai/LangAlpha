@@ -370,14 +370,32 @@ async def claude_code_placement(config, *, user_id: str, workspace_id: str | Non
     stopped by its plan as it starts, and bounded by the count of CLIs on the
     computer that runs it, as a Claude Code turn's subagent is.
     """
-    if not rows_available() or not config.feature_enabled(FEATURE):
-        return None
+    where = await cli_admission(config, user_id=user_id, workspace_id=workspace_id)
+    return where if isinstance(where, Admitted) else None
+
+
+#: ``cli_admission``'s answer when the placement could not be read, the one
+#: refusal a moment later may not repeat.
+PLACEMENT_UNREAD = "Where Claude Code runs could not be read just now."
+
+
+async def cli_admission(config, *, user_id: str, workspace_id: str | None) -> Admitted | str:
+    """``claude_code_placement``, or why a CLI runs nowhere there for the
+    user, in the words admission refuses a turn with, for a caller that
+    tells the agent which it is rather than running something else."""
+    from fastapi import HTTPException
+
+    if not rows_available():
+        return claude_code_off_message("server")
+    if not config.feature_enabled(FEATURE):
+        return claude_code_off_message("account")
     try:
-        where = await cli_placement(user_id, workspace_id, token=True)
+        return await _admitted(None, user_id, await cli_placement(user_id, workspace_id, token=True))
+    except HTTPException as exc:
+        return str(exc.detail.get("message")) if isinstance(exc.detail, dict) else str(exc.detail)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[claude_code] could not read where Claude Code runs for user_id={user_id}: {type(e).__name__}")
-        return None
-    return await admitted_there(user_id, where)
+        return PLACEMENT_UNREAD
 
 
 async def default_runs(user_id: str, where: Placement) -> bool:

@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, NoReturn
 
 from . import user_models
-from .capabilities import TierPermits
+from .capabilities import PlanTier, TierPermits
 
 if TYPE_CHECKING:
     from src.server.services.oauth_providers import SubscriptionProvider
@@ -299,6 +299,36 @@ async def model_on_plan(
         return False
     found, _ = await walk_byok_candidates(user_id, provider, mc, _byok_cache=byok_cache)
     return found is not None
+
+
+async def plan_covers(
+    user_id: str,
+    model: str,
+    *,
+    model_pref: dict,
+    permits: PlanTier,
+    is_byok: bool,
+    byok_cache: dict[str, dict | None],
+) -> bool | None:
+    """Whether the plan covers ``model`` where someone named it to run,
+    ``model_on_plan`` asked again on a fresh tier before it refuses, since a
+    refusal should not rest on a plan the user changed minutes ago. None
+    where no tier could be read: the quota service is down, which is not the
+    plan's answer, and saying so would send the user to Settings for nothing.
+    """
+
+    async def ask() -> bool:
+        return await model_on_plan(
+            user_id, model, model_pref=model_pref, permits=permits,
+            is_byok=is_byok, byok_cache=byok_cache,
+        )
+
+    if await ask():
+        return True
+    await permits.refresh()
+    if await ask():
+        return True
+    return None if await permits.tier() is None else False
 
 
 async def drop_off_plan_models(

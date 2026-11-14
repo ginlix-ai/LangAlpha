@@ -23,6 +23,7 @@ from ptc_agent.agent.subagents.merge import (
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.config.agent import SubagentModel, SubagentsConfig
 from src.llms.claude_code import is_claude_code_model
+from src.llms.model_identity import catalog_model
 from src.llms.preferences import resolve_tuning
 
 from . import logger, user_models
@@ -277,21 +278,23 @@ def subagent_models(
     names for one API model (a model and its subscription twin) count as the
     same, since the user picked that model either way.
     """
-    main_id = _api_model_id(model_pref, turn_model)
     models: dict[str, SubagentModel] = {}
     for defn in turn_roster(config.subagents).for_role(role):
         client = config.subsidiary_llm_clients.get(f"subagent:{defn.name}")
-        runs = (
-            (getattr(client, "metadata", None) or {}).get("manifest_model")
-            if client is not None
-            else defn.model
-        )
-        if not runs or _api_model_id(model_pref, runs) == main_id:
-            continue
-        provider = _serving_provider(model_pref, runs)
-        if provider:
-            models[defn.name] = {"id": runs, "provider": provider}
+        runs = catalog_model(client) if client is not None else defn.model
+        if model := card_model(model_pref, runs, turn_model):
+            models[defn.name] = model
     return models
+
+
+def card_model(model_pref: dict, runs: str | None, turn_model: str) -> SubagentModel | None:
+    """What a run's card names for a run on the catalog model ``runs``: None
+    where that is the turn's own API model, since the user picked that model
+    under either name, and where no catalog provider serves it."""
+    if not runs or _api_model_id(model_pref, runs) == _api_model_id(model_pref, turn_model):
+        return None
+    provider = _serving_provider(model_pref, runs)
+    return {"id": runs, "provider": provider} if provider else None
 
 
 def _api_model_id(model_pref: dict, name: str) -> str:
