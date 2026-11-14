@@ -34,6 +34,10 @@ PROVIDER_KINDS = tuple(_PROVIDERS)
 METERED_KINDS: tuple[str, ...] = ("daytona", "docker", "e2b")
 METRIC_KINDS: tuple[str, ...] = ("daytona", "e2b")
 ALLOCATION_KINDS: tuple[str, ...] = ("daytona", "e2b")
+# Kinds whose provider stops an idle sandbox on its own at ``auto_stop_interval``
+# (Daytona's auto-stop, E2B's pause deadline). The server's idle sweep runs
+# ahead of that only for these; for the rest the setting is the sweep's.
+SELF_STOPPING_KINDS: tuple[str, ...] = ("daytona", "e2b")
 
 
 def provider_class(kind: str) -> type[SandboxProvider]:

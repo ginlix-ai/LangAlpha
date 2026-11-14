@@ -321,7 +321,7 @@ class TestE2BConfig:
             {"sandbox": {"provider": "e2b", "e2b": {"max_timeout": 86400}}}
         )
         assert cfg.e2b.max_timeout == 86400
-        assert cfg.e2b.auto_stop_interval == 3600
+        assert cfg.e2b.auto_stop_interval == E2BConfig().auto_stop_interval
 
     def test_autodetects_e2b_only_from_its_key(self, monkeypatch):
         assert create_sandbox_config({"sandbox": {}}).provider == "docker"

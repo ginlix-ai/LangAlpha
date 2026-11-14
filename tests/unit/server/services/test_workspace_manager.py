@@ -8477,3 +8477,27 @@ class TestSupersededResolve:
 def _local_lifecycle_capacity(monkeypatch):
     # Lifecycle fakes have no platform or database; admission is tested separately.
     monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: False)
+
+
+@pytest.mark.parametrize(
+    "kind, interval, stops_at",
+    [
+        # The provider stops these itself, so the sweep runs ten minutes ahead.
+        ("daytona", 1800, 1200),
+        ("e2b", 1500, 900),
+        # No provider stop to run ahead of: the setting is the sweep's.
+        ("ssh", 7200, 7200),
+        ("docker", 3600, 3600),
+        # Never under five minutes.
+        ("daytona", 600, 300),
+    ],
+)
+def test_the_idle_sweep_runs_ahead_only_of_a_provider_that_stops_itself(
+    kind, interval, stops_at
+):
+    manager = SimpleNamespace(
+        _provider_settings=lambda kind, overrides: SimpleNamespace(
+            auto_stop_interval=interval
+        )
+    )
+    assert WorkspaceManager._idle_timeout_for(manager, {"kind": kind}) == stops_at

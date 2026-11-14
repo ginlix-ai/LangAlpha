@@ -14,6 +14,7 @@ from collections.abc import Callable, Collection
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, NamedTuple, Optional
 
+from ptc_agent.core.sandbox.providers import SELF_STOPPING_KINDS
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxTransientError
 from ptc_agent.core.session import Session
 
@@ -739,9 +740,10 @@ class WorkspaceManager(ComputerManager):
     def _idle_timeout_for(self, computer: Dict[str, Any]) -> int:
         """Seconds idle before the sweep stops this computer.
 
-        Ten minutes ahead of its own provider's auto-stop, overrides included,
-        so the server cleans up before the provider stops the sandbox; never
-        under five minutes.
+        Its provider's ``auto_stop_interval``, overrides included. Where the
+        provider stops the sandbox on its own at that interval, the sweep runs
+        ten minutes ahead, so the server backs up and records the stop rather
+        than finding it done; never under five minutes.
 
         Raises:
             ValueError: The computer's provider settings are unreadable.
@@ -749,7 +751,8 @@ class WorkspaceManager(ComputerManager):
         settings = self._provider_settings(
             computer["kind"], computer.get("provider_config") or None
         )
-        return max(settings.auto_stop_interval - 600, 300)
+        lead = 600 if computer["kind"] in SELF_STOPPING_KINDS else 0
+        return max(settings.auto_stop_interval - lead, 300)
 
     def _note_idle_reap_failure(self, computer_id: str, error: Exception) -> None:
         """Park a machine the sweep cannot stop, so one warning replaces a loop.

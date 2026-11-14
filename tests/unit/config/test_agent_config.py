@@ -247,7 +247,7 @@ class TestAgentConfigToCoreConfig:
         first.filesystem.working_directory = "/home/workspace/projects/one"
 
         assert second.sandbox.daytona.default_tier == "standard"
-        assert second.sandbox.daytona.auto_stop_interval == 3600
+        assert second.sandbox.daytona.auto_stop_interval == DaytonaConfig().auto_stop_interval
         assert second.filesystem.working_directory == "/home/workspace"
         assert config.sandbox.daytona.default_tier == "standard"
 
