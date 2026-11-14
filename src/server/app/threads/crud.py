@@ -157,6 +157,7 @@ async def list_threads(
                 is_pinned=bool(thread.get("is_pinned", False)),
                 archived_at=thread.get("archived_at"),
                 llm_model=thread.get("llm_model"),
+                latest_run_model=thread.get("latest_run_model") or None,
                 subagents_allowed=thread["subagents_allowed"],
                 reasoning_effort=thread.get("reasoning_effort"),
                 fast_mode=thread.get("fast_mode"),

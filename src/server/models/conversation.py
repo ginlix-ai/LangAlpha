@@ -129,6 +129,14 @@ class WorkspaceThreadListItem(BaseModel):
     run_started_at: Optional[datetime] = Field(
         None, description="Latest attempt's start time (start, not settle)"
     )
+    latest_run_model: Optional[str] = Field(
+        None,
+        description="The model the latest attempt was set to run on, which "
+        "``llm_model`` does not say when the thread follows the account "
+        "default. The thread's transcript records the model that answered, "
+        "which differs after a fallback mid-turn. Null for an attempt that "
+        "started before attempts recorded it.",
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
