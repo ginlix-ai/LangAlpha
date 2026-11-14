@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { TickerLogo } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import {
   BarChart3,
@@ -76,6 +77,7 @@ function StockTop() {
     <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
       <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
         <div className="flex min-w-0 items-center gap-[5px] leading-none">
+          <TickerLogo symbol={q.sym} className="text-[9px]" />
           <span
             className="flex shrink-0 items-center gap-[1px] rounded-[2px] px-[1px] text-[9px] font-semibold"
             style={{ color: 'var(--color-text-primary)' }}

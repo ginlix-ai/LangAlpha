@@ -12,6 +12,7 @@ import {
   CashFlowChart,
   RevenueBreakdownChart,
 } from '../../ChatAgent/components/charts/CompanyCharts';
+import { TickerLogo } from '@/components/TickerLogo';
 import { formatMoney } from '@/lib/bars';
 import { compactNumberFixed2, fixed2, signedFixed2 } from '@/lib/format';
 import { deriveOverviewQuote, type CompanyOverviewArtifact } from '@/lib/quotes/overview';
@@ -79,6 +80,7 @@ function QuoteSummary({ data, symbol }: QuoteSummaryProps) {
       {/* Two long names can outrun the panel, so both shrink to an ellipsis and
           the ticker, the shortest and most useful of the three, never does. */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8, minWidth: 0 }}>
+        <TickerLogo symbol={symbol} className="self-center [--ticker-logo-size:22px]" />
         <span title={dualName.primary} style={{ ...NAME_CLIP, fontSize: '1.125rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
           {dualName.primary}
         </span>

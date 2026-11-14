@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { Paperclip } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useLocale } from '@/hooks/useLocale';
@@ -411,7 +412,9 @@ function WatchRow({ row, live }: { row: (typeof WATCH)[number]; live: boolean })
   const v = changeAt(row.ticks, t, live);
   return (
     <tr>
-      <td className="term-fill term-code term-strong">{row.sym}</td>
+      <td className="term-fill term-code term-strong">
+        <TickerLabel symbol={row.sym} />
+      </td>
       <td className="term-num">{formatMoney(row.prev * (1 + v / 100), 'USD', locale)}</td>
       <td className="term-num">
         <TermChange value={v} />
@@ -468,7 +471,9 @@ export function EarningsWidget({
             {EARNINGS.map((row) => (
               <tr key={row.sym}>
                 <td className="term-t3">{shortWeekday(row.date, locale)}</td>
-                <td className="term-code term-strong">{row.sym}</td>
+                <td className="term-code term-strong">
+                  <TickerLabel symbol={row.sym} />
+                </td>
                 <td className="term-fill">
                   <TermTag>AMC</TermTag>
                 </td>

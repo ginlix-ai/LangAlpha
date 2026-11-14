@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Sparkline } from '@/components/charts/Sparkline';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
+import { TickerLabel } from '@/components/TickerLogo';
 import { timezoneForSymbol } from '@/lib/bars/exchanges';
 import { sessionLineQuery } from '@/lib/bars/sessionQuery';
 import { clockTime, formatCalendarMonthDay } from '@/lib/format';
@@ -160,7 +161,7 @@ function TickerPreview({ symbol }: { symbol: string }) {
   return (
     <div className="command-palette-pane-scroll">
       <div className="command-palette-pane-ticker">
-        <span className="command-palette-pane-symbol">{symbol}</span>
+        <TickerLabel symbol={symbol} className="command-palette-pane-symbol" />
         {quote?.name && <span className="command-palette-pane-meta">{quote.name}</span>}
       </div>
       <QuoteFigures

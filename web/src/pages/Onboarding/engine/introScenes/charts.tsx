@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { TickerLabel } from '@/components/TickerLogo';
 import { cn } from '@/lib/utils';
 import { ease, useSceneTime } from './clock';
 import { signColor, useSvgId } from './kit';
@@ -130,7 +131,7 @@ export function StockPriceCard({
           its own line, flush right */}
       <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 leading-none">
         <span className="text-[8px] font-bold" style={{ color: 'var(--color-text-primary)' }}>
-          {sym}
+          <TickerLabel symbol={sym} />
         </span>
         <span className="text-[8px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>
           {price}

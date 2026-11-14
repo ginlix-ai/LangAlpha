@@ -8,6 +8,7 @@
 import type { TFunction } from 'i18next';
 import { epochMs } from '@/lib/elapsed';
 import { clockTime, formatList } from '@/lib/format';
+import { isIndexListing } from '@/lib/bars/exchanges';
 import { formatDateTimeShort } from '../../../Automations/utils/time';
 import type { WakeupArrival } from '@/types/chat';
 import type { WakeNotice } from '@/types/wakeups';
@@ -85,6 +86,16 @@ function priceSentence(notice: WakeNotice, t: TFunction, locale: string): string
 export function isPriceArrival(arrival: WakeupArrival): boolean {
   if (arrival.legacy) return true;
   return arrival.notices.length > 0 && arrival.notices.every((n) => n.kind === 'price' && n.price);
+}
+
+/** The one listing a price alert is about, whose logo stands in for its bell:
+ *  null for any other wakeup, a legacy notice that names nothing, several
+ *  listings, or an index, which has no logo to show. */
+export function priceAlertSymbol(arrival: WakeupArrival): string | null {
+  if (arrival.legacy || !isPriceArrival(arrival)) return null;
+  const symbols = new Set(arrival.notices.map((n) => n.price?.symbol));
+  const [symbol] = symbols.size === 1 ? symbols : [];
+  return symbol && !isIndexListing(symbol) ? symbol : null;
 }
 
 /** A price alert's row text. A notice that names no condition says nothing

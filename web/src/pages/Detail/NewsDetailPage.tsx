@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { TickerLabel } from '@/components/TickerLogo';
 import { buttonSlot, doorSlot } from '@/components/ui/button-class';
 import { useScrollMemory } from '@/lib/scrollMemory';
 import { getNewsArticle } from '../Dashboard/utils/api';
@@ -167,7 +168,7 @@ function NewsArticleView() {
                 data-bracket="tag"
                 style={{ color: 'var(--color-accent-primary)' }}
               >
-                {ticker}
+                <TickerLabel symbol={ticker} className="[--ticker-logo-size:1em]" />
               </span>
             ))}
           </div>
@@ -210,7 +211,7 @@ function NewsArticleView() {
                   data-bracket="tag"
                   style={{ color: 'var(--color-accent-primary)' }}
                 >
-                  {s.ticker}
+                  <TickerLabel symbol={s.ticker} className="[--ticker-logo-size:1em]" />
                 </span>
                 {s.sentiment ? (
                   <span

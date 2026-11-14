@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { TickerLabel } from '@/components/TickerLogo';
 import { ArrowRight, CandlestickChart, ExternalLink, Menu, TextSelect } from 'lucide-react';
 import { useLocale } from '@/hooks/useLocale';
 import { fixed2, signedFixed2 } from '@/lib/format';
@@ -159,7 +160,7 @@ function LegendLead() {
       style={{ color: 'var(--color-text-secondary)' }}
     >
       <span className="text-[6px] font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-        NVDA
+        <TickerLabel symbol="NVDA" />
       </span>{' '}
       <span className="font-mono font-semibold" style={tint}>
         {fixed2(NVDA_LAST, locale)}

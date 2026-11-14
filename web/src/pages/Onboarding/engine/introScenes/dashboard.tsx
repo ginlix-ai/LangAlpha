@@ -1,4 +1,5 @@
 import { Layers, Plus, RotateCcw, X } from 'lucide-react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useTranslation } from 'react-i18next';
 import { useLocale } from '@/hooks/useLocale';
 import { formatMoney } from '@/lib/bars/currencyDisplay';
@@ -123,7 +124,7 @@ function MiniChartBody() {
           >
             <span className="flex items-center justify-between">
               <span className="text-xs font-bold" style={{ color: 'var(--color-text-primary)' }}>
-                {sym}
+                <TickerLabel symbol={sym} />
               </span>
               <span className="font-mono text-[11px] tabular-nums" style={{ color }}>
                 {v >= 0 ? '+' : ''}

@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Loader } from '@/components/ui/loader';
 import { toast } from '@/components/ui/use-toast';
 import { useSymbolSearch } from '@/hooks/useSymbolSearch';
+import { TickerLabel } from '@/components/TickerLogo';
 import type { StockSearchHit } from '@/lib/marketUtils';
 import { asksHoldingCurrency, isCurrencyCode, typedCurrencyCode } from '@/lib/holdingCurrency';
 import { apiErrorReason, apiErrorStatus } from '@/pages/ChatAgent/utils/api';
@@ -224,7 +225,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
           </label>
           {picked ? (
             <div className="flex h-9 items-center gap-2 rounded-md border border-(--color-border-default) pl-3 pr-1.5 text-sm">
-              <span className="font-medium text-(--color-text-primary)">{picked.symbol}</span>
+              <TickerLabel symbol={picked.symbol} className="font-medium text-(--color-text-primary)" />
               <span className="min-w-0 flex-1 truncate text-(--color-text-tertiary)">{nameOf(picked)}</span>
               <button
                 type="button"
@@ -294,7 +295,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
                         i === active ? 'bg-(--color-bg-hover)' : ''
                       }`}
                     >
-                      <span className="font-medium text-(--color-text-primary)">{hit.symbol}</span>
+                      <TickerLabel symbol={hit.symbol} className="font-medium text-(--color-text-primary)" />
                       <span className="min-w-0 flex-1 truncate text-(--color-text-secondary)">{nameOf(hit)}</span>
                       {hit.exchangeShortName && (
                         <span className="shrink-0 text-xs text-(--color-text-tertiary)">{hit.exchangeShortName}</span>
@@ -374,7 +375,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
           <ul className="flex flex-wrap gap-1.5" data-testid="welcome-holdings-list">
             {holdings.map((h) => (
               <li key={h.user_portfolio_id} className={chipClass}>
-                <span className="font-medium">{h.symbol}</span>
+                <TickerLabel symbol={h.symbol} className="font-medium" />
                 <span className="text-(--color-text-tertiary)">{h.quantity}</span>
                 <button
                   type="button"
@@ -395,7 +396,7 @@ export function HoldingsEntry({ onPreparing }: HoldingsEntryProps) {
           <ul className="flex flex-wrap gap-1.5" data-testid="welcome-watchlist-list">
             {watchlist.map((w) => (
               <li key={w.watchlist_item_id} className={chipClass}>
-                <span className="font-medium">{w.symbol}</span>
+                <TickerLabel symbol={w.symbol} className="font-medium" />
                 <button
                   type="button"
                   onClick={() => started(removeWatch(w.watchlist_item_id, w.symbol))}

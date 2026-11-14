@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { ArrowUpRight } from 'lucide-react';
 import { instrumentLabel } from '@/components/orders/instrument';
+import { InstrumentLabel } from '@/components/orders/InstrumentLabel';
 import { OrderStatusPill } from '@/components/orders/OrderStatusPill';
 import {
   ListError,
@@ -75,7 +76,7 @@ function Body({
             {assetKey ? t(assetKey) : summary.asset_class || none}
           </DetailField>
           <DetailField label={t('orders.detail.instrument')}>
-            {instrumentLabel(summary.instrument) || none}
+            <InstrumentLabel instrument={summary.instrument} fallback={none} />
           </DetailField>
           <DetailField label={t('orders.detail.side')}>
             {sideKey ? t(sideKey) : summary.side || none}
