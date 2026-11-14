@@ -22,6 +22,7 @@ from typing import Any
 
 import structlog
 
+from ptc_agent.agent.limits import pending_read, read_a_running_thread
 from ptc_agent.agent.tools.utils import mark_sandbox_failed, note_sandbox_exit
 from ptc_agent.core.sandbox.jobs import Ended, Failed, JobOutcome, JobRef, Outbox, Running
 from src.utils.durations import format_duration
@@ -228,7 +229,7 @@ async def run_command(
         backend,
         call,
         launch,
-        render,
+        _marking_running_reads(render),
         hand_off=hand_off,
         first_wait=first_wait,
         background=background,
@@ -248,6 +249,19 @@ async def run_command(
     if published.text:
         content = content.rstrip("\n") + "\n\n" + published.text
     return content, artifact
+
+
+def _marking_running_reads(render: Render) -> Render:
+    """``render``, its result marked a pending read when the job's ``la``
+    read a thread still running, as ``agent_output``'s once was: the loop
+    guard counts the marks, since the text differs every read. Only an ended
+    job is rendered, so a placeholder or a refusal is never marked."""
+
+    async def marked(outcome: Ended | Failed) -> Result:
+        text, artifact = await render(outcome)
+        return text, pending_read(artifact) if read_a_running_thread(text) else artifact
+
+    return marked
 
 
 def _outbox_of(outcome: Ended | Failed) -> Outbox:

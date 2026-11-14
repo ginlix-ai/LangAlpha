@@ -8,6 +8,13 @@ import { resolveWorkspace } from "./workspaces.js";
 const WAIT = { type: "bool", help: "print only the answer, once the turn ends" } as const;
 const DETACH = { type: "bool", help: "return once the turn has started, with its thread and run" } as const;
 
+/** What ``threads output`` says on stderr after ``Thread <id>`` when the
+ *  thread is still running, with ``--json`` too. An agent polling from a
+ *  shell reads it, and its loop guard counts each such read as a poll
+ *  (``LA_STILL_RUNNING`` in src/ptc_agent/agent/limits.py, held to this line
+ *  by a test): reword both together. */
+export const STILL_RUNNING = "is still running; this is its text so far.";
+
 const answer = (verdict: "approve" | "reject") =>
   command({
     words: ["threads", verdict],
@@ -107,7 +114,7 @@ export const threads: Command[] = [
         p`/api/v1/threads/${id}/output`,
         { query: { turns: args.int("turns") } },
       );
-      if (out.status === "running" && !json) process.stderr.write(`Thread ${id} is still running; this is its text so far.\n`);
+      if (out.status === "running") process.stderr.write(`Thread ${id} ${STILL_RUNNING}\n`);
       print(json, out, () => out.text);
     },
   }),
