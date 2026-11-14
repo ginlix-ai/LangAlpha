@@ -7,6 +7,7 @@ semantics are unchanged.
 
 import asyncio
 import base64
+import errno
 import functools
 import hashlib
 import json
@@ -56,6 +57,8 @@ logger = structlog.get_logger(__name__)
 
 _INLINE_TEXT_WRITE_LIMIT = 256 * 1024
 _INLINE_TEXT_MARKER = "__LANGALPHA_TEXT_PAYLOAD__"
+# Outside sed's own exit codes (0, 1, 2, 4); EISDIR's number, for the reader.
+_IS_DIRECTORY_EXIT = errno.EISDIR
 # Grep output past this renders off the event loop. Rendering costs about
 # 9 ms per MB, so 128 KiB holds the loop near 1 ms, while smaller outputs, the
 # common case, skip the thread hop.
@@ -621,7 +624,13 @@ async def aread_file_range(
     start = max(0, offset)
     start_line = start + 1  # sed is 1-indexed
     end_line = start + limit
-    cmd = f"sed -n '{start_line},{end_line}p' {shlex.quote(normalized)}"
+    target = shlex.quote(normalized)
+    # A directory is answered in the same round trip: sed fails on one, and the
+    # fallback's download then gets a 400 that reads as the sandbox failing.
+    cmd = (
+        f"if [ -d {target} ]; then exit {_IS_DIRECTORY_EXIT}; fi; "
+        f"sed -n '{start_line},{end_line}p' {target}"
+    )
 
     try:
         result = await sandbox._runtime_call(
@@ -630,9 +639,6 @@ async def aread_file_range(
             timeout=30,
             retry_policy=RetryPolicy.SAFE,
         )
-        if result.exit_code != 0:
-            return await sandbox._aread_file_range_fallback(file_path, offset, limit)
-        return result.stdout or ""
     except Exception as e:
         # The fallback re-reads through ``aread_file_text``, which now raises on
         # sandbox failures — so falling back is only meaningful when the sandbox
@@ -641,6 +647,11 @@ async def aread_file_range(
         await _raise_normalized(sandbox, e, op="read_file_range", path=normalized)
         logger.warning("Failed to read file range", filepath=file_path, error=str(e))
         return await sandbox._aread_file_range_fallback(file_path, offset, limit)
+    if result.exit_code == _IS_DIRECTORY_EXIT:
+        raise IsADirectoryError(errno.EISDIR, "Is a directory", normalized)
+    if result.exit_code != 0:
+        return await sandbox._aread_file_range_fallback(file_path, offset, limit)
+    return result.stdout or ""
 
 
 async def _aread_file_range_fallback(

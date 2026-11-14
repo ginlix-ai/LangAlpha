@@ -52,13 +52,13 @@ from ptc_agent.core.sandbox.providers.daytona_runtime import (
     DaytonaRuntime,
     _raw_state,
 )
-from ptc_agent.core.sandbox.providers.daytona_secrets import (
-    DaytonaSecretReconciler,
+from ptc_agent.core.sandbox.providers._daytona_errors import (
     daytona_error_code as _daytona_error_code,
     daytona_error_status as _daytona_error_status,
     is_daytona_host_unavailable,
     is_transient_daytona_error,
 )
+from ptc_agent.core.sandbox.providers.daytona_secrets import DaytonaSecretReconciler
 
 logger = structlog.get_logger(__name__)
 

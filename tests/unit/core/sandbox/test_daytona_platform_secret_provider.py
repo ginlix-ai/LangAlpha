@@ -222,7 +222,7 @@ async def test_status_less_transient_is_retried():
 
 
 def test_is_transient_daytona_error_classification():
-    from ptc_agent.core.sandbox.providers.daytona_secrets import (
+    from ptc_agent.core.sandbox.providers._daytona_errors import (
         is_transient_daytona_error,
     )
 
@@ -246,6 +246,35 @@ def test_is_transient_daytona_error_classification():
     )
     assert not is_transient_daytona_error(ValueError("bad secret name"))
     assert not is_transient_daytona_error(Exception(""))
+
+
+def test_an_exec_whose_reply_never_came_is_transient():
+    """The SDK wraps a read timeout as a connection error under the exec's
+    prefix, with nothing after it; that reached the agent unretried."""
+    from daytona.common.errors import (
+        DaytonaBadRequestError,
+        DaytonaConnectionTimeoutError,
+        DaytonaProcessExecutionTimeoutError,
+    )
+
+    from ptc_agent.core.sandbox.providers._daytona_errors import (
+        is_transient_daytona_error,
+    )
+
+    assert is_transient_daytona_error(
+        DaytonaConnectionTimeoutError("Failed to execute command: ")
+    )
+    assert is_transient_daytona_error(
+        DaytonaBadRequestError(
+            "Failed to execute command: bad request: failed to resolve container IP "
+            "after 3 attempts: no IP address found. Is the Sandbox started?",
+            status_code=400,
+        )
+    )
+    # The command itself running past its timeout is still an answer.
+    assert not is_transient_daytona_error(
+        DaytonaProcessExecutionTimeoutError("Failed to execute command: timeout reached")
+    )
 
 
 @pytest.mark.asyncio
