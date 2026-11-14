@@ -98,6 +98,29 @@ async def test_a_hand_off_without_a_workspace_is_refused_before_anything_is_crea
     assert 'manage_workspaces(action="create")' in payload["error"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-6.1-terra", None])
+async def test_the_hand_off_card_names_the_model_the_call_named(model):
+    """The user approves the model along with the work; a declined card
+    stops before anything is sent."""
+    confirm = MagicMock(return_value=(False, {}))
+    args = {"question": "Value NVDA", "workspace_id": "ws-1"}
+    if model:
+        args["model"] = model
+    with patch(
+        "src.server.database.workspace.get_workspace",
+        AsyncMock(return_value={"user_id": USER_ID, "name": "Semis"}),
+    ), patch("src.tools.secretary.dispatch.hitl_confirm", confirm):
+        await delegate_to_analyst.ainvoke(
+            _call(args),
+            config={"configurable": {"user_id": USER_ID, "workspace_id": HOME_ID}},
+        )
+
+    kind, payload = confirm.call_args.args
+    assert kind == "ptc_agent"
+    assert payload["model"] == model
+
+
 def _delete_call(workspace_id: str) -> dict:
     return {
         "name": "manage_workspaces",

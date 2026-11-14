@@ -142,6 +142,68 @@ async def test_the_dispatched_thread_names_the_agent_that_sent_it():
     }
 
 
+async def _bodies_and_result(
+    args: dict,
+    resp: _FakeResp | None = None,
+    thread_model: str | None = None,
+):
+    session = _RecordingSession(resp or _FakeResp())
+    with patch(
+        "src.server.database.conversation.threads_read.get_thread_owner_id",
+        AsyncMock(return_value=USER_ID),
+    ), patch(
+        "src.server.database.conversation.threads_read.get_thread_by_id",
+        AsyncMock(return_value={"workspace_id": WORKSPACE_ID, "llm_model": thread_model}),
+    ), patch(
+        "src.tools.secretary.dispatch.hitl_confirm", return_value=(True, {})
+    ), patch("aiohttp.ClientSession", return_value=session):
+        result = await delegate_to_analyst.ainvoke(
+            _tool_call({"question": "follow up", "thread_id": PTC_THREAD_ID, **args}),
+            config=_config(),
+        )
+    return session.bodies, _payload(result)
+
+
+@pytest.mark.asyncio
+async def test_a_named_model_goes_out_on_the_request_and_comes_back_in_the_result():
+    bodies, payload = await _bodies_and_result({"model": "gpt-6.1-terra"})
+
+    assert bodies[0]["llm_model"] == "gpt-6.1-terra"
+    assert payload["success"] is True
+    assert payload["model"] == "gpt-6.1-terra"
+
+
+@pytest.mark.asyncio
+async def test_no_model_named_leaves_the_thread_its_own():
+    """An absent ``llm_model`` keeps the thread's model; a null would too,
+    but naming nothing is the contract the endpoint reads."""
+    bodies, payload = await _bodies_and_result({})
+
+    assert "llm_model" not in bodies[0]
+    assert "model" not in payload
+
+
+@pytest.mark.asyncio
+async def test_naming_the_model_the_thread_holds_still_sends_it():
+    """Whether a running turn is on the named model is the server's call at
+    the POST: the thread's model can change while the card waits, and an
+    unnamed hand-off would then run the new one."""
+    bodies, _ = await _bodies_and_result({"model": "gpt-6.1-terra"}, thread_model="gpt-6.1-terra")
+
+    assert bodies[0]["llm_model"] == "gpt-6.1-terra"
+
+
+@pytest.mark.asyncio
+async def test_a_busy_thread_refuses_a_named_model_with_its_own_reason():
+    from src.tools.secretary.dispatch import _THREAD_BUSY, _THREAD_BUSY_MODEL
+
+    _, named = await _bodies_and_result({"model": "gpt-6.1-terra"}, _FakeResp(status=409))
+    _, unnamed = await _bodies_and_result({}, _FakeResp(status=409))
+
+    assert named["error"] == _THREAD_BUSY_MODEL
+    assert unnamed["error"] == _THREAD_BUSY
+
+
 async def _continue_into(body: dict):
     """The ToolMessage a continuation gets when the endpoint answers ``body``."""
     with patch(

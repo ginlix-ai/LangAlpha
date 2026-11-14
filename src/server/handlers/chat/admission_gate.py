@@ -112,7 +112,8 @@ def steer_allowed(
     it), a fork (an edit or a regenerate replaces a turn, which a message
     added to the running one cannot do) and a non-steerable caller (an
     automation's instruction is a turn of its own) meet a running peer with a
-    409 instead.
+    409 instead. A hand-off naming a model rides only a turn running on it
+    (``wait_or_steer``'s ``on_model``).
     """
     if dispatched:
         return steerable and _is_agent_hand_off(request)
@@ -123,6 +124,10 @@ def steer_allowed(
         and not is_fork
         and not _names_uploaded_files(request)
     )
+
+
+def _run_model(row: dict) -> str | None:
+    return (row.get("metadata") or {}).get("llm_model")
 
 
 def _names_uploaded_files(request: ChatRequest) -> bool:
@@ -211,6 +216,7 @@ async def wait_or_steer(
     agent: AgentSteer | None = None,
     artifact_comments: ShownSend | None = None,
     checked_computer_id: str | None = None,
+    on_model: str | None = None,
 ) -> tuple[bool, str | HandOffSteered | None]:
     """Admit a new turn, steer the running one, or 409.
 
@@ -245,7 +251,10 @@ async def wait_or_steer(
     primer, which has no SSE reader, as does a copy of it that finds its
     steer still one; a run that reports to another Home thread is a 409.
     ``artifact_comments`` rides a steer of a send carrying file comments, for
-    the reader to be shown them rather than the message.
+    the reader to be shown them rather than the message. ``on_model`` is the
+    model a hand-off names: it steers only a run started on that model, read
+    off the run here rather than by the sender before its approval wait, and
+    meets any other run with a 409, since a running turn keeps its model.
 
     Admission states (see ``LocalRunExecutor.wait_for_admission``):
     - ``"fresh"``     → start a new turn ``(True, None)``; with ``steer_only``,
@@ -277,7 +286,12 @@ async def wait_or_steer(
         # every other non-fresh state, and every request ``steer_allowed``
         # refuses, is a conflict. Steering mid-stopping would start a second
         # checkpoint writer; mid-compaction would corrupt the context rewrite.
-        if state != "running" or not can_steer or active_row is None:
+        if (
+            state != "running"
+            or not can_steer
+            or active_row is None
+            or (on_model and _run_model(active_row) != on_model)
+        ):
             raise HTTPException(
                 status_code=409, detail=admission_conflict_detail(state)
             )
@@ -293,6 +307,7 @@ async def wait_or_steer(
             origin=agent.origin if agent else None,
             artifact_comments=artifact_comments,
             checked_computer_id=checked_computer_id,
+            llm_model=on_model,
         )
         if agent is not None:
             idempotency_key = agent.idempotency_key

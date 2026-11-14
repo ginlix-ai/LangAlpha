@@ -2525,6 +2525,7 @@
     "ptcCard": {
       "handOffTo": "Hand off to the analyst <ws>in {{name}}</ws>",
       "handOffToAnalyst": "Hand off to the analyst",
+      "onModel": "On {{model}}",
       "waitingForYou": "Waiting for you",
       "briefMore": "Read the whole brief",
       "briefLess": "Show less",

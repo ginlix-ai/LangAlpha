@@ -92,6 +92,7 @@ async def delegate_to_analyst(
     workspace_id: str | None = None,
     thread_id: str | None = None,
     report_back: bool = True,
+    model: str | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> Command:
     """Hand work to a workspace's analyst, who does it there in the background unless the user declines.
@@ -106,6 +107,11 @@ async def delegate_to_analyst(
         report_back: Leave True to be told when the analyst finishes, is stopped or fails.
             False only when the user asks for no report, or will follow the work in that
             workspace themselves.
+        model: A model name from `la models list`. Pass one only when the user asks for a
+            model or a skill's procedure names one; it stays the thread's model for later
+            turns. Omitted, the turn runs the thread's own model, or the user's default on
+            a new thread. A thread mid-turn takes it only into a turn already running that
+            model, and otherwise refuses it until that turn ends.
 
     Returns:
         The analyst's thread, still running; its report_back field says whether a report-back is coming.
@@ -119,7 +125,7 @@ async def delegate_to_analyst(
         )
     return await dispatch(
         question, config, workspace_id, thread_id, report_back, tool_call_id,
-        preapproved=preapproved(state, tool_call_id),
+        preapproved=preapproved(state, tool_call_id), model=model,
     )
 
 

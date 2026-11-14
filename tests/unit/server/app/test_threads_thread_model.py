@@ -225,6 +225,34 @@ async def test_a_named_model_runs_and_is_kept():
     assert m["astream"].call_args.kwargs["named_model"] == NamedModel("m-named", seen="m-pin")
 
 
+@pytest.mark.asyncio
+async def test_a_hand_off_naming_a_model_runs_it_and_keeps_it():
+    """A Chief of Staff hand-off is a background dispatch with the service
+    token; its named model is judged and kept as a person's send is."""
+    from fastapi.responses import JSONResponse
+
+    prime = AsyncMock(return_value=JSONResponse({"status": "dispatched"}))
+    with (
+        _send_stubs(owner_id=USER, stored_model="m-pin", turn_model="m-named") as m,
+        patch(f"{THREADS_MOD}._get_service_token", return_value="svc-token"),
+        patch(f"{THREADS_MOD}._prime_dispatch", new=prime),
+    ):
+        resp = await _send(
+            llm_model="m-named",
+            headers={
+                "X-Service-Token": "svc-token",
+                "X-User-Id": USER,
+                "X-Dispatch": "background",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert _resolved_model(m["resolve"]) == "m-named"
+    kwargs = m["astream"].call_args.kwargs
+    assert kwargs["dispatched"] is True
+    assert kwargs["named_model"] == NamedModel("m-named", seen="m-pin")
+
+
 def _refusal(kind):
     from fastapi import HTTPException
 

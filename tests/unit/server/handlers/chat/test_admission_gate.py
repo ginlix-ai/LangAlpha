@@ -555,3 +555,41 @@ class TestAdmissionConflictDetail:
         detail = admission_conflict_detail("wedged")
         assert detail["code"] == "running"
         assert "still running" in detail["message"].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("running_on", "steered"),
+    [("gpt-6.1-terra", True), ("deepseek-flash", False), (None, False)],
+)
+async def test_a_hand_off_naming_a_model_steers_only_a_turn_running_on_it(
+    running_on, steered
+):
+    """A running turn keeps the model it started on, so a hand-off naming
+    another meets it with a 409. Read off the run at admission, since the
+    thread's model can change while the hand-off waits for its approval."""
+    from fastapi import HTTPException
+
+    from src.server.handlers.chat.admission_gate import wait_or_steer
+
+    row = {**_LIVE_ROW, "metadata": {"llm_model": running_on} if running_on else {}}
+    manager = AsyncMock()
+    manager.wait_for_admission = AsyncMock(return_value=("running", row))
+    with (
+        patch(_ADMIT, new_callable=AsyncMock, create=True, return_value=_accepted()) as admit,
+        patch(_FIND_KEY, new_callable=AsyncMock, return_value=None),
+    ):
+        if steered:
+            ready, _ = await wait_or_steer(
+                manager, "t-1", "size the market", "u-1", on_model="gpt-6.1-terra"
+            )
+            assert ready is False
+            # Kept on the steer, so a run on another model never reads it.
+            assert admit.await_args.kwargs["payload"]["llm_model"] == "gpt-6.1-terra"
+        else:
+            with pytest.raises(HTTPException) as exc_info:
+                await wait_or_steer(
+                    manager, "t-1", "size the market", "u-1", on_model="gpt-6.1-terra"
+                )
+            assert exc_info.value.status_code == 409
+            admit.assert_not_awaited()

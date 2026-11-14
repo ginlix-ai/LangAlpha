@@ -373,7 +373,13 @@ def _fill_thread_cap(cache: FakeCache) -> None:
 
 
 async def _handoff_that_fails(
-    monkeypatch, *, session, approved_in_advance=True, thread_id=None, cache=None
+    monkeypatch,
+    *,
+    session,
+    approved_in_advance=True,
+    thread_id=None,
+    cache=None,
+    model=None,
 ) -> dict:
     monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "test-internal-service-token")
     cache = cache or FakeCache()
@@ -403,6 +409,7 @@ async def _handoff_that_fails(
                 "args": {
                     "question": "analyze this",
                     **target,
+                    **({"model": model} if model else {}),
                     "state": (
                         {"preapproved_calls": ["call-1"]} if approved_in_advance else {}
                     ),
@@ -476,6 +483,32 @@ async def test_a_continuation_approved_in_advance_that_fails_names_its_thread(
         "preapproved": True,
         "workspace_id": _WORKSPACE,
         "workspace_name": "Research",
+        "thread_id": _PTC_THREAD,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_handoff_approved_in_advance_names_its_model_when_it_fails(
+    monkeypatch,
+):
+    """No card showed the model, so the result the card is drawn from does;
+    a busy thread refuses it with the reason a model cannot join a turn."""
+    from src.tools.secretary.dispatch import _THREAD_BUSY_MODEL
+
+    payload = await _handoff_that_fails(
+        monkeypatch,
+        session=FakeSession(FakeResp(status=409)),
+        thread_id=_PTC_THREAD,
+        model="gpt-6.1-terra",
+    )
+
+    assert payload == {
+        "success": False,
+        "error": _THREAD_BUSY_MODEL,
+        "preapproved": True,
+        "workspace_id": _WORKSPACE,
+        "workspace_name": "Research",
+        "model": "gpt-6.1-terra",
         "thread_id": _PTC_THREAD,
     }
 

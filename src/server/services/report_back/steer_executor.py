@@ -65,6 +65,9 @@ async def _agent_steer_body(
         "origin_dispatch_gen": gen if home else None,
         "request_key": steer_request_key(job_id),
         "steer_job_id": job_id,
+        # The model the hand-off named, which the turn it was admitted into
+        # ran on; the thread's own may have changed since.
+        **({"llm_model": model} if (model := payload.get("llm_model")) else {}),
     }
 
 

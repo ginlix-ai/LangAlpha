@@ -38,6 +38,13 @@ describe('preapprovedCard', () => {
     });
   });
 
+  it('carries the model the call named, and none when it named none', () => {
+    const named = preapprovedCard('delegate_to_analyst', { question: 'Q', model: 'gpt-6.1-terra' }, ptcTool());
+    expect(named?.proposal).toMatchObject({ model: 'gpt-6.1-terra' });
+    const unnamed = preapprovedCard('delegate_to_analyst', { question: 'Q' }, ptcTool());
+    expect(unnamed?.proposal).not.toHaveProperty('model');
+  });
+
   it('reads report_back false when the result does not say true', () => {
     const card = preapprovedCard('ptc_agent', { question: 'Q' }, ptcTool({ report_back: false }));
     expect(card?.proposal.report_back).toBe(false);

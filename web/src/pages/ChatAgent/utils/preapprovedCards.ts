@@ -49,6 +49,7 @@ export function preapprovedCard(
       status: 'approved',
       question: typeof args?.question === 'string' ? args.question : '',
       ...(typeof result.workspace_name === 'string' ? { workspace_name: result.workspace_name } : {}),
+      ...(typeof args?.model === 'string' && args.model ? { model: args.model } : {}),
       ...fields,
       report_back,
       ...(toolCallId ? { tool_call_id: toolCallId } : {}),

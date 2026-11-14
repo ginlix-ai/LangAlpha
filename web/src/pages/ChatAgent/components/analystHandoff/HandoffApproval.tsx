@@ -4,6 +4,7 @@ import { Check, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { AUTO_APPROVE, useApproveAlways } from '@/hooks/useAutoApprove';
+import { useModelName } from '@/hooks/useModelName';
 import Markdown from '../Markdown';
 import { RunGlyph } from '../messageList/runCard';
 import { AnalystMark } from './AnalystMark';
@@ -34,6 +35,7 @@ export function HandoffApproval({ proposal, onApprove, onReject }: HandoffApprov
   const [expanded, setExpanded] = useState(false);
   const { approveAlways, saving } = useApproveAlways(AUTO_APPROVE.handoffs);
   const briefId = useId();
+  const modelName = useModelName();
 
   const brief = plainBrief(proposal.question);
   const clampRef = useRef<HTMLParagraphElement>(null);
@@ -75,6 +77,11 @@ export function HandoffApproval({ proposal, onApprove, onReject }: HandoffApprov
               )}
             </span>
           </p>
+          {proposal.model && (
+            <p className="text-xs text-(--color-text-secondary)">
+              {t('chat.ptcCard.onModel', { model: modelName(proposal.model) })}
+            </p>
+          )}
           {expanded ? (
             <div id={briefId} className="mt-0.5 text-(--color-text-secondary)">
               <Markdown variant="compact" content={proposal.question} className="text-[0.8125rem] leading-relaxed" />

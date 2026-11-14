@@ -417,6 +417,9 @@ export interface PTCAgentProposalState {
   /** The call that made the hand-off, which names it in the transcript. */
   tool_call_id?: string;
   report_back?: boolean;
+  /** The model the hand-off names for its turn; absent when it runs the
+   *  thread's own or the user's default. */
+  model?: string | null;
   /** Approved, but the dispatch failed (`utils/dispatchResult.ts`). */
   dispatch_failed?: boolean;
   /** With `dispatch_failed`: the failure left it unknown whether the run

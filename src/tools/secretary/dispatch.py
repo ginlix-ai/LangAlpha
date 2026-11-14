@@ -35,6 +35,11 @@ _THREAD_BUSY = (
     "sent. Tell the user it is busy: they can wait for that turn and ask "
     "again or stop it, or you can start a new thread with workspace_id."
 )
+_THREAD_BUSY_MODEL = (
+    "That thread is mid-turn, and a model applies only from the start of a "
+    "turn, so this was not sent. Wait for the turn to end and hand it off "
+    "again, or start a new thread with workspace_id."
+)
 _REFUSED = "The analyst's thread refused this hand-off: {message}"
 
 
@@ -159,6 +164,7 @@ async def dispatch(
     report_back: bool,
     tool_call_id: str,
     preapproved: bool = False,
+    model: str | None = None,
 ) -> Command:
     """Start ``question`` as a background turn of a workspace's own agent.
 
@@ -166,9 +172,12 @@ async def dispatch(
     the caller refuses a call naming neither. The dispatcher's own workspace is
     refused: a turn there is the dispatcher again, not the agent of the
     workspace it meant. A ``preapproved`` hand-off, one the user approved in
-    advance, starts without asking.
+    advance, starts without asking. A named ``model`` is the turn's and stays
+    the thread's; the server refuses one the user cannot run.
     """
     import aiohttp
+
+    model = (model or "").strip() or None
 
     configurable = config.get("configurable", {})
     user_id = configurable.get("user_id")
@@ -258,6 +267,7 @@ async def dispatch(
                 "thread_id": thread_id,
                 "question": question,
                 "report_back": report_back,
+                "model": model,
                 "tool_call_id": tool_call_id,
             },
         )
@@ -283,6 +293,8 @@ async def dispatch(
             "workspace_id": workspace_id,
             "workspace_name": workspace_name,
         }
+        if model:
+            handed_to["model"] = model
         if is_continuation:
             handed_to["thread_id"] = thread_id
 
@@ -333,6 +345,8 @@ async def dispatch(
                 "status": "steered" if steered else "dispatched",
                 "report_back": slot.wired,
             }
+            if model:
+                result["model"] = model
             if steered:
                 result["note"] = (
                     "The analyst is mid-turn: it takes this in before its next "
@@ -389,6 +403,9 @@ async def dispatch(
                         "origin_dispatch_gen": (
                             slot.dispatch_gen if slot.wired else None
                         ),
+                        # Only when named: an absent model keeps the
+                        # thread's own, or the user's default.
+                        **({"llm_model": model} if model else {}),
                     },
                     headers={
                         "X-Service-Token": service_token,
@@ -408,9 +425,12 @@ async def dispatch(
                             # a 409 means one it cannot ride: stopping,
                             # compacting, or reporting to another Home thread.
                             # Say so, or the model reports a failure and
-                            # retries into the same 409.
+                            # retries into the same 409. One naming a model
+                            # rides only a turn running on it.
                             return error_command(
-                                _THREAD_BUSY, tool_call_id, **handed_to
+                                _THREAD_BUSY_MODEL if model else _THREAD_BUSY,
+                                tool_call_id,
+                                **handed_to,
                             )
                         # A refusal's own words tell the Chief of Staff what
                         # the user can do about it (add a token, pick another
