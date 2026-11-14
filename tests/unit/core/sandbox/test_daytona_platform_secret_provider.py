@@ -222,7 +222,7 @@ async def test_status_less_transient_is_retried():
 
 
 def test_is_transient_daytona_error_classification():
-    from ptc_agent.core.sandbox.providers.daytona_secrets import (
+    from ptc_agent.core.sandbox.providers._daytona_errors import (
         is_transient_daytona_error,
     )
 
@@ -257,7 +257,7 @@ def test_an_exec_whose_reply_never_came_is_transient():
         DaytonaProcessExecutionTimeoutError,
     )
 
-    from ptc_agent.core.sandbox.providers.daytona_secrets import (
+    from ptc_agent.core.sandbox.providers._daytona_errors import (
         is_transient_daytona_error,
     )
 
