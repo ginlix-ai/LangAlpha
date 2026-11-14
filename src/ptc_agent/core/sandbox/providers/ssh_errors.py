@@ -13,6 +13,7 @@ ConnectErrorCode = Literal[
     "unreachable",
     "timeout",
     "not_connected",
+    "paired_elsewhere",
     "gateway_unreachable",
     "host_key_mismatch",
     "host_key_invalid",

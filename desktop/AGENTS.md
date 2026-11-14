@@ -445,9 +445,17 @@ its login item.
   account, Cancel the default. A saas build first refuses any server but its
   `pairingOrigin` (`DESKTOP_PAIRING_ORIGIN`, the deployment's API host), so script
   running in the app cannot pair the Mac elsewhere; an OSS build takes any host,
-  since its server may be reached through a tunnel or a Docker host name. A Mac already paired is torn down only after that yes,
-  since another LangAlpha account signed in on the same macOS account may be using it,
-  and one that cannot be taken down whole is left running as it was.
+  since its server may be reached through a tunnel or a Docker host name. A Mac already
+  paired is replaced only after that yes, since another LangAlpha account signed in on
+  the same macOS account may be using it. A running helper whose `state` says
+  `supersedes=1` does it in place: it pairs on new keys, keeps the old pairing until the
+  new one lands, then logs in to the gateway once with the old tunnel's key to say it was
+  superseded, so the other account's computer says this Mac moved and offers Reconnect.
+  A pairing that fails there leaves the old one as it was and answers `not_replaced`.
+  Any other helper has the folder torn down first, and one that cannot be taken down
+  whole is left running as it was. That branch serves only a helper from before
+  `supersedes`, still running until it restarts for the update, or not running at all;
+  it can go once every helper a supported app may find has the flag.
 - **Never half on.** The login item stays registered only while the Mac is paired or
   waiting for approval in System Settings. A pairing that is refused, never picked up,
   or never ends is undone: the item unregistered and the folder deleted, so no helper

@@ -207,6 +207,8 @@ export interface ComputerSsh {
   tunnel: boolean;
   /** Whether the tunnel is up now; null when the computer has none. */
   tunnel_connected: boolean | null;
+  /** The tunnel is down because its machine paired again, as with another LangAlpha account or server. Reconnecting brings it back. */
+  paired_elsewhere?: boolean;
   /** Answered by LangAlpha's helper (remote control of a Mac) rather than the machine's own sshd. */
   helper: boolean;
   /** The system as `uname -s` names it ("Darwin", "Linux"); null on a computer added before it was kept. */

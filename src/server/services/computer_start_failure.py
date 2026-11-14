@@ -29,7 +29,9 @@ START_FAILED = "start_failed"
 # A folder the computer cannot have is fixed by taking it back or choosing
 # another; a machine that no longer knows the deployment, by pairing it again.
 _REINSTALL_CODES = frozenset({SSHFolderMarked.code_name, "root_dir"})
-_RECONNECT_CODES = frozenset({"not_connected", "auth_failed", "host_key_mismatch"})
+_RECONNECT_CODES = frozenset(
+    {"not_connected", "paired_elsewhere", "auth_failed", "host_key_mismatch"}
+)
 
 
 def remedy_for(code: str, *, kind: str) -> StartFailureRemedy:

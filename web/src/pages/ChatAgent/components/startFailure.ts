@@ -16,23 +16,33 @@ type Translate = ReturnType<typeof useTranslation>['t'];
 /**
  * Why the last start failed, while the machine is at rest after it. A start
  * under way, or one that made it, is newer news than the failure, which the
- * server clears only once a start succeeds.
+ * server clears only once a start succeeds. So is the machine pairing with
+ * another account since, which a failure from before it no longer explains.
  */
 export function shownStartFailure(computer: Computer): ComputerStartFailure | null {
   const failure = computer.start_failure;
   if (!failure || (computer.status !== 'stopped' && computer.status !== 'error')) return null;
+  if (pairedElsewhere(computer) && failure.code !== 'paired_elsewhere') return null;
   return activeSpecChange(computer) ? null : failure;
 }
 
 /**
  * The fix a failed start offers beside Start, or null where Start alone is
  * it. Reinstall and Reconnect are SSH computers' own, and a computer in error
- * is past repair: the routes take only a stopped one.
+ * is past repair: the routes take only a stopped one. A machine that paired
+ * again elsewhere needs no failed start to say so: Start alone cannot work,
+ * and a computer still running on it is stopped on the way.
  */
 export function startFailureRemedy(computer: Computer): 'reinstall' | 'reconnect' | null {
+  if (pairedElsewhere(computer) && (computer.status === 'stopped' || computer.status === 'running')) return 'reconnect';
   if (computer.status !== 'stopped') return null;
   const remedy = shownStartFailure(computer)?.remedy;
   return computer.kind === 'ssh' && (remedy === 'reinstall' || remedy === 'reconnect') ? remedy : null;
+}
+
+/** Whether the machine paired again with another account, which only Reconnect undoes. */
+export function pairedElsewhere(computer: Computer): boolean {
+  return computer.kind === 'ssh' && !!computer.ssh?.paired_elsewhere;
 }
 
 /**

@@ -40,10 +40,19 @@ _LIVE = (
     " AND (disconnected_at IS NULL OR connected_at > disconnected_at) "
     " AND seen_at > NOW() - %(live_within)s)"
 )
+# Down since a newer pairing of its machine superseded it (migration 124). A
+# connect after that stamp, as from a folder restored with the old keys, is
+# the machine back on this tunnel, so its next drop reads as any other.
+_PAIRED_ELSEWHERE = (
+    "(superseded_at IS NOT NULL"
+    " AND (connected_at IS NULL OR superseded_at > connected_at)"
+    f" AND NOT {_LIVE})"
+)
 _COLUMNS = (
     "tunnel_id::text AS tunnel_id, user_id, public_key, fingerprint, hostname, "
     "username, host_key, port, created_at, paired_at, "
-    f"connected_at, disconnected_at, seen_at, {_LIVE} AS live"
+    f"connected_at, disconnected_at, seen_at, {_LIVE} AS live, "
+    f"{_PAIRED_ELSEWHERE} AS paired_elsewhere"
 )
 
 # No computer that is not deleted names the tunnel ``t``, whoever owns it: a
@@ -415,6 +424,18 @@ async def mark_disconnected(tunnel_id: str) -> None:
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE ssh_tunnels SET disconnected_at = NOW() "
+                "WHERE tunnel_id = %s::uuid",
+                (tunnel_id,),
+            )
+
+
+async def mark_superseded(tunnel_id: str) -> None:
+    """A newer pairing of the tunnel's machine superseded it, as its machine
+    said, logged in with the tunnel's key."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE ssh_tunnels SET superseded_at = NOW() "
                 "WHERE tunnel_id = %s::uuid",
                 (tunnel_id,),
             )

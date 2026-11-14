@@ -24,6 +24,7 @@ OWNER = "3cd2aabcfce04ecf83f69a2e2952866c"
         ("folder_marked", "ssh", "reinstall"),
         ("root_dir", "ssh", "reinstall"),
         ("not_connected", "ssh", "reconnect"),
+        ("paired_elsewhere", "ssh", "reconnect"),
         ("auth_failed", "ssh", "reconnect"),
         ("host_key_mismatch", "ssh", "reconnect"),
         ("unreachable", "ssh", "retry"),
@@ -48,6 +49,18 @@ def test_a_marked_folder_names_the_computer_whose_mark_it_is():
         "message": str(exc),
         "owner": OWNER,
         "remedy": "reinstall",
+    }
+
+
+def test_a_machine_that_paired_elsewhere_is_told_in_its_own_words():
+    """No check-the-machine advice: it is not away, it moved."""
+    exc = SSHConnectError("paired_elsewhere", "mac is now connected elsewhere.")
+
+    assert sf.describe_start_failure(exc, kind="ssh") == {
+        "code": "paired_elsewhere",
+        "message": "mac is now connected elsewhere.",
+        "owner": None,
+        "remedy": "reconnect",
     }
 
 

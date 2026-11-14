@@ -24,7 +24,7 @@ import { ArtFrame } from './machineArt/ArtFrame';
 import { MachineArt } from './machineArt/MachineArt';
 import { machineArtOf, machineModelOf, machineStateOf } from './machineArt/machine';
 import { railOrdinal } from './computerRailState';
-import { shownStartFailure, startFailureRemedy } from './startFailure';
+import { pairedElsewhere, shownStartFailure, startFailureRemedy } from './startFailure';
 import type { SheetAction } from '@/components/modelAccess/tokenTarget';
 
 /**
@@ -237,7 +237,8 @@ export function SpecRow({ computer, onChangeSpec }: Pick<ComputerSpecRowsProps, 
 /**
  * Reinstall or Reconnect, after a start that failed for a reason Start alone
  * cannot fix. It leads, and Start stays beside it: the user may have fixed
- * the machine themselves.
+ * the machine themselves. A machine that paired with another account is the
+ * exception, since only Reconnect brings it back.
  */
 export function StartFailureAction({ computer, actions }: { computer: Computer; actions: MachineActions }) {
   const { t } = useTranslation();
@@ -255,15 +256,22 @@ export function StartFailureAction({ computer, actions }: { computer: Computer; 
   );
 }
 
-/** Start or Stop, whichever the machine is not. */
+/** Start or Stop, whichever the machine is not, and no Start for a machine Reconnect alone can bring back. */
 export function PowerButton({ computer, actions }: { computer: Computer; actions: MachineActions }) {
   const { t } = useTranslation();
   const specChange = activeSpecChange(computer);
+  if (computer.status === 'stopped' && pairedElsewhere(computer)) return null;
   // Second to the fix a failed start offers, so one button leads.
   const quiet = startFailureRemedy(computer) !== null;
   if (computer.status === 'running') {
     return (
-      <Button size="sm" disabled={actions.powerBusy || !!specChange} onClick={() => actions.power('stop')} data-computer-power>
+      <Button
+        size="sm"
+        variant={quiet ? 'outline' : 'default'}
+        disabled={actions.powerBusy || !!specChange}
+        onClick={() => actions.power('stop')}
+        data-computer-power
+      >
         {t('computer.stop', 'Stop')}
       </Button>
     );

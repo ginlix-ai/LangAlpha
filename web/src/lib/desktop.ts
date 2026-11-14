@@ -90,7 +90,8 @@ export type RemoteControlError =
   | 'needs_approval'
   | 'not_started'
   | 'failed'
-  /** A Mac paired before could not be taken down, so it was left running as it was. */
+  /** A Mac paired before was left running as it was: it could not be taken down, or a
+   *  helper replacing it in place kept it when the new pairing failed. */
   | 'not_replaced'
   | 'timeout'
   /** This side's, not the shell's: no method, a channel that threw, or no answer. */
@@ -101,7 +102,7 @@ export type RemoteControlResult =
   | {
       ok: false;
       error: RemoteControlError;
-      /** For `failed`: the deployment's own sentence. */
+      /** For `failed`, and `not_replaced` where the pairing failed: the deployment's own sentence. */
       message?: string;
       /** Null only for `unavailable`. */
       status: RemoteControlStatus | null;

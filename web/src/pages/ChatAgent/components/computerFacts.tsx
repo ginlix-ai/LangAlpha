@@ -80,7 +80,10 @@ function helperFacts(t: Translate, ssh: ComputerSsh): ComputerFact[] {
     },
   ];
   if (ssh.tunnel_connected === false) {
-    facts.push({ key: 'offline', node: <span>{t('computer.remoteControl.notConnected', 'Not connected')}</span> });
+    const label = ssh.paired_elsewhere
+      ? t('computer.remoteControl.pairedElsewhere', 'Connected to another account')
+      : t('computer.remoteControl.notConnected', 'Not connected');
+    facts.push({ key: 'offline', node: <span>{label}</span> });
   }
   return facts;
 }
