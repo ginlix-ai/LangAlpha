@@ -23,6 +23,7 @@ from ptc_agent.core.sandbox.providers._ssh_connect import (
 )
 from src.config.logging_config import configure_logging
 from src.config.settings import get_conversation_pool_max
+from src.observability.event_log import write_event
 from src.server.database import ssh_tunnels as tunnels_db
 from src.server.database.encryption import encryption_configured
 from src.server.database.pool import get_db_connection, get_or_create_pool
@@ -308,6 +309,7 @@ class Gateway:
                 exists = None
             if exists:
                 self._marked_up.add(tunnel_id)
+                _tunnel_event("connected", tunnel_id)
         if fwd not in self._forwards.get(tunnel_id, ()):
             return False  # its connection closed while the write was out
         if not exists:
@@ -352,6 +354,7 @@ class Gateway:
             self._marked_up.discard(tunnel_id)
             try:
                 await tunnels_db.mark_disconnected(tunnel_id)
+                _tunnel_event("disconnected", tunnel_id)
             except Exception as e:
                 # The row stops being refreshed, so it lapses on its own.
                 logger.warning("Could not record tunnel %s as down: %s", tunnel_id, e)
@@ -435,6 +438,7 @@ class Gateway:
             logger.warning("Could not record tunnel %s as superseded: %r", tunnel_id, e)
             return False
         logger.info("Tunnel %s superseded: its machine paired again", tunnel_id)
+        _tunnel_event("superseded", tunnel_id)
         return True
 
     async def _relay(
@@ -634,6 +638,7 @@ class Gateway:
         heartbeat: asyncio.Task[None] | None = None
         try:
             closed = await tunnels_db.mark_all_disconnected()
+            _tunnel_event("gateway_start")
             if closed:
                 logger.info("Marked %d tunnels down from the previous run", closed)
             self._swept.set()
@@ -665,8 +670,21 @@ class Gateway:
             return
         try:
             await tunnels_db.mark_all_disconnected()
+            _tunnel_event("gateway_stop")
         except Exception as e:
             logger.warning("Could not mark the tunnels down at shutdown: %s", e)
+
+
+def _tunnel_event(change: str, tunnel_id: str | None = None) -> None:
+    """How long each machine stays reachable, kept in the ``tunnel-events``
+    file (``observability/event_log.py``) rather than beside the tunnel's own
+    row, which holds only its latest state.
+
+    A machine is reachable from ``connected`` until ``disconnected`` (written
+    once its last connection closes) or ``superseded``; a gateway's start or
+    stop ends every connection the gateway held.
+    """
+    write_event("tunnel-events", change, tunnel_id=tunnel_id)
 
 
 def _bound(addr: tuple) -> str:
