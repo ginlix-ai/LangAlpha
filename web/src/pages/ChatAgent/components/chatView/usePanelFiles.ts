@@ -8,7 +8,8 @@ import { useWorkspaceFiles } from '../../hooks/useWorkspaceFiles';
  *
  * `refreshOwn` is for after the agent writes, and lists the view's own files
  * even while a sibling's are on screen: the turn wrote its own, and listing
- * the sibling's would start its computer.
+ * the sibling's would start its computer. It never starts the view's own
+ * either: a write replayed into a thread opened later finds it stopped.
  */
 export function usePanelFiles({ isHome, workspaceId, workspaceName = null, includeSystem }: {
   isHome: boolean;
@@ -35,7 +36,7 @@ export function usePanelFiles({ isHome, workspaceId, workspaceName = null, inclu
     error: shown.error,
     refresh: shown.refresh,
     mentionFiles: showsSibling ? own.files : shown.files,
-    refreshOwn: showsSibling ? own.refresh : shown.refresh,
+    refreshOwn: showsSibling ? own.refreshInBackground : shown.refreshInBackground,
     /** FilePanel's access props, spread onto every mount. */
     panelAccess: showsSibling
       ? {

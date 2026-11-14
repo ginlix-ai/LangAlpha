@@ -12,11 +12,18 @@ interface UseWorkspaceFilesResult {
   files: string[];
   loading: boolean;
   error: string | null;
+  /** For a user's action: starts a stopped computer to list it live. */
   refresh: () => Promise<void>;
+  /**
+   * For a refresh nobody asked for, such as after the agent writes: a stopped
+   * computer answers from its stored copy instead of being started.
+   */
+  refreshInBackground: () => Promise<void>;
 }
 
 interface RefreshSlot {
   again: boolean;
+  autoStart: boolean;
   done: Promise<void>;
 }
 
@@ -57,22 +64,25 @@ export function useWorkspaceFiles(
   // last request, so it still sees the last write.
   const inFlight = useRef(new Map<string, RefreshSlot>());
 
-  const refresh = useCallback((): Promise<void> => {
+  // A user's refresh joining a background one in flight makes the trailing
+  // fetch a starting one, so the click is not answered without the computer.
+  const runRefresh = useCallback((autoStart: boolean): Promise<void> => {
     if (!workspaceId) return Promise.resolve();
     const key = JSON.stringify([workspaceId, includeSystem]);
     const running = inFlight.current.get(key);
     if (running) {
       running.again = true;
+      running.autoStart ||= autoStart;
       return running.done;
     }
-    const slot: RefreshSlot = { again: false, done: Promise.resolve() };
+    const slot: RefreshSlot = { again: false, autoStart, done: Promise.resolve() };
     inFlight.current.set(key, slot);
     slot.done = (async () => {
       try {
         do {
           slot.again = false;
           try {
-            const data = await listWorkspaceFiles(workspaceId, '.', { autoStart: true, includeSystem });
+            const data = await listWorkspaceFiles(workspaceId, '.', { autoStart: slot.autoStart, includeSystem });
             queryClient.setQueryData(queryKeys.workspaceFiles.byWs(workspaceId, { includeSystem }), data);
           } catch {
             // Awaited so the refetch this starts cannot land after, and
@@ -86,11 +96,14 @@ export function useWorkspaceFiles(
     })();
     return slot.done;
   }, [queryClient, workspaceId, includeSystem]);
+  const refresh = useCallback(() => runRefresh(true), [runRefresh]);
+  const refreshInBackground = useCallback(() => runRefresh(false), [runRefresh]);
 
   return {
     files: data?.files || NO_FILES,
     loading: isLoading,
     error: error ? filesErrorText(error) : null,
     refresh,
+    refreshInBackground,
   };
 }
