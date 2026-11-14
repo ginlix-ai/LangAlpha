@@ -6,12 +6,14 @@ import type { ErrorLinkSpec, StructuredError } from '@/utils/rateLimitError';
 import { parseErrorMessage } from '@/pages/ChatAgent/utils/parseErrorMessage';
 import { usePlanClock } from '@/hooks/useClaudeCodePlan';
 import { cn } from '@/lib/utils';
+import { isDesktopShell } from '@/lib/desktop';
 import { useModelName } from '@/hooks/useModelName';
 import {
   isReportable, planStopCopy, planStopOf, UPSTREAM_HINT_I18N_KEY, upstreamFailureCopy, type PlanStop,
 } from '@/lib/upstreamFailure';
 import { ReportDialog } from '@/components/report/ReportDialog';
 import { useReportsEnabled } from '@/hooks/useReportsEnabled';
+import { MediumActionLink } from '@/pages/ChatAgent/components/MediumActionLink';
 
 interface ErrorBannerProps {
   error: string | StructuredError | null | undefined;
@@ -22,18 +24,20 @@ interface ErrorBannerProps {
   reportThreadId?: string;
 }
 
-export function ErrorLink({ url, label, labelKey, external }: ErrorLinkSpec): React.ReactElement {
+export function ErrorLink({ url, label, labelKey, external, console: consolePage, resize }: ErrorLinkSpec): React.ReactElement {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  if (resize) return <MediumActionLink computerId={resize} />;
   // A leading slash is not enough to claim a URL as ours: with a path-shaped
   // VITE_PLATFORM_URL the account portal answers on /account/*, same origin but
   // a different app, and routing to it lands on our catch-all with no network
   // request at all. So the call site declares `external` and we believe it.
-  const isRouterPath = !external && url.startsWith('/') && !url.startsWith('//');
+  const isRouterPath = !external && !consolePage && url.startsWith('/') && !url.startsWith('//');
   // Cross-origin URLs (an upstream provider's status page) open in a new tab so
   // the chat survives the detour; `external` asks for the same treatment on our
-  // own origin, for banners whose state would not survive a navigation.
-  const opensNewTab = external || (!isRouterPath && (() => {
+  // own origin, for banners whose state would not survive a navigation. The
+  // desktop app shows the console in this window instead.
+  const opensNewTab = consolePage ? !isDesktopShell() : external || (!isRouterPath && (() => {
     try {
       return new URL(url, window.location.href).origin !== window.location.origin;
     } catch {

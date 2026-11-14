@@ -80,7 +80,7 @@ function cachedComputerStatus(queryClient: QueryClient, computerId: string): str
 function computersList() {
   return queryOptions({
     queryKey: queryKeys.computers.lists(),
-    queryFn: getComputers,
+    queryFn: () => getComputers(),
     staleTime: 30_000,
     refetchInterval: (query) =>
       query.state.data?.computers.some((c) => activeSpecChange(c)) ? SPEC_CHANGE_POLL_MS : false,

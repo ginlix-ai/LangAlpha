@@ -20,6 +20,11 @@ vi.mock('@/hooks/useClaudeCode', () => ({
   useClaudeCodeStatus: () => ({ enabled: true, runsHere: false, state: 'off', saved: saved.current, email: null, expiresAt: null, isLoading: false }),
   useClaudeCodeComputers: () => ({ computers: [], isLoading: false }),
 }));
+vi.mock('@/hooks/useAllModels', () => ({ useAllModels: () => ({ models: {}, metadata: {} }) }));
+vi.mock('@/hooks/useSlotDefaultModels', async (original) => ({
+  ...(await original<typeof import('@/hooks/useSlotDefaultModels')>()),
+  useDefaultModel: () => null,
+}));
 vi.mock('@/hooks/useProviderCatalog', () => ({
   useProviderCatalog: () => ({ keyGroups: [], planGroups: [], localEntries: [], placeOf: () => undefined, optionFor: () => null }),
 }));

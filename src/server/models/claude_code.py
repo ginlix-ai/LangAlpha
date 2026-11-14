@@ -188,8 +188,9 @@ class ClaudeCodeSetup(BaseModel):
     machine is the user's, so it never sets this. ``cli_in_sandbox``: a turn on
     a cloud computer runs Claude Code inside that computer's sandbox, not on
     this server (``hosted.in_sandbox``). ``too_small``: their cloud
-    computers that refuse it whatever the credential
-    (``hosted.cloud_refusals``), so the entry names what to resize.
+    computers too small to run it inside (``hosted.tier_refusals``),
+    whatever they chose for cloud computers, so the entry names what to
+    resize, and warns of it before they choose to run it there.
     ``chief_of_staff``: where the Chief of Staff's Claude Code runs."""
 
     state: SetupState

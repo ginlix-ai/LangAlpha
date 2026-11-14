@@ -16,10 +16,16 @@ export function PlanUpgradeHint({
   lead,
   testId = 'spec-plan-cta',
   className,
+  planUrl = PLAN_URL,
+  inPlace = false,
 }: {
   lead: string;
   testId?: string;
   className?: string;
+  /** The plan page, where an opener asks it to send the user back. */
+  planUrl?: string | null;
+  /** The page holds nothing to lose, so the plan page opens in its tab. */
+  inPlace?: boolean;
 }) {
   const { t } = useTranslation();
   if (!HAS_PLAN_UPGRADE_PATH) return null;
@@ -27,8 +33,14 @@ export function PlanUpgradeHint({
     <p className={cn('text-xs', className)} data-testid={testId} style={{ color: 'var(--color-text-secondary)' }}>
       {lead}{' '}
       <span style={{ color: 'var(--color-text-primary)' }}>
-        {PLAN_URL && <ErrorLink url={PLAN_URL} label={t('computer.spec.upgradePlan', 'Upgrade plan')} external />}
-        {PLAN_URL && SUPPORT_EMAIL && <span aria-hidden="true"> · </span>}
+        {planUrl && (inPlace ? (
+          <a href={planUrl} style={{ textDecoration: 'underline', fontWeight: 500 }}>
+            {t('computer.spec.upgradePlan', 'Upgrade plan')}
+          </a>
+        ) : (
+          <ErrorLink url={planUrl} label={t('computer.spec.upgradePlan', 'Upgrade plan')} external console />
+        ))}
+        {planUrl && SUPPORT_EMAIL && <span aria-hidden="true"> · </span>}
         {SUPPORT_EMAIL && (
           <a href={`mailto:${SUPPORT_EMAIL}`} style={{ textDecoration: 'underline', fontWeight: 500 }}>
             {t('computer.spec.contactSupport', 'Contact support')}

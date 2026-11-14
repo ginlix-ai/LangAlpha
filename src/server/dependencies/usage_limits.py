@@ -613,11 +613,28 @@ async def get_platform_access_tier(user_id: str) -> int | None:
 # it answered definitively.
 _scope_cache: dict[str, tuple[list[str] | None, float]] = {}
 _SCOPE_CACHE_TTL = 300  # 5 minutes
+_SCOPE_NONE_TTL = 15
+# How old a list may be where a plan just changed would show: a refusal, and
+# what the quota read says a plan opens.
+_SCOPE_REREAD_AGE = 15
+# The same, for a client back from the plan page (``plan_changed``): younger
+# than any trip through it, and still a floor, so a client that says so on
+# every request costs one platform read per user in that time on each worker.
+_SCOPE_PLAN_CHANGED_AGE = 2
 
 
-async def _get_user_scopes(user_id: str) -> list[str] | None:
+def _reread_age(plan_changed: bool) -> float:
+    return _SCOPE_PLAN_CHANGED_AGE if plan_changed else _SCOPE_REREAD_AGE
+
+
+def _scope_ttl(scopes: list[str] | None) -> int:
+    return _SCOPE_CACHE_TTL if scopes is not None else _SCOPE_NONE_TTL
+
+
+async def _get_user_scopes(user_id: str, *, max_age: float = _SCOPE_CACHE_TTL) -> list[str] | None:
     """Return the user's scopes from the auth/quota service; in-process cache
-    (5 min, but only 15 s for a fail-open ``None``).
+    (5 min, but only 15 s for a fail-open ``None``), read again past
+    ``max_age`` unless the platform cannot answer.
 
     Returns None when the platform is unreachable or omits ``scopes`` (the
     fail-open signal — callers allow). An explicit list, *including an empty
@@ -628,17 +645,33 @@ async def _get_user_scopes(user_id: str) -> list[str] | None:
 
     now = time.time()
     cached = _scope_cache.get(user_id)
-    if cached and cached[1] > now:
+    if cached and cached[1] > now and now - (cached[1] - _scope_ttl(cached[0])) <= max_age:
         return cached[0]
 
     result = await _call_validate_for_user(user_id)
     scopes = result["scopes"] if result and "scopes" in result else None
+    # A read again that the platform cannot answer keeps the list still
+    # cached: reading past the cache must not turn a definitive answer into
+    # fail-open.
+    if scopes is None and cached and cached[0] is not None and cached[1] > now:
+        return cached[0]
 
     # Brief negative TTL (mirrors _fetch_platform_membership) so a platform
     # blip doesn't leave gating disabled for the full 5 minutes.
-    ttl = _SCOPE_CACHE_TTL if scopes is not None else 15
-    _scope_cache[user_id] = (scopes, now + ttl)
+    _scope_cache[user_id] = (scopes, now + _scope_ttl(scopes))
     return scopes
+
+
+async def _lacks_scope(user_id: str, scope: str, *, plan_changed: bool = False) -> bool:
+    """Whether the platform's definitive scope list lacks ``scope``. A cached
+    list that lacks it is read again once it is older than ``_reread_age``:
+    otherwise a user who just upgraded their plan is refused on the one they
+    had for as long as the cache holds it."""
+    scopes = await _get_user_scopes(user_id)
+    if scopes is None or scope in scopes:
+        return False
+    scopes = await _get_user_scopes(user_id, max_age=_reread_age(plan_changed))
+    return scopes is not None and scope not in scopes
 
 
 def require_scope(scope: str):
@@ -646,8 +679,7 @@ def require_scope(scope: str):
     async def check(user_id: str = Depends(get_current_user_id)):
         if not platform_gating_active():
             return user_id  # OSS mode: everything allowed
-        scopes = await _get_user_scopes(user_id)
-        if scopes is not None and scope not in scopes:
+        if await _lacks_scope(user_id, scope):
             raise HTTPException(403, detail=f"Requires scope: {scope}")
         return user_id
     return Depends(check)
@@ -657,7 +689,7 @@ def require_scope(scope: str):
 # Workspace entitlement enforcement (hybrid scope + count quota; OSS no-op)
 # ---------------------------------------------------------------------------
 
-async def require_workspace_scope(user_id: str, scope: str) -> None:
+async def require_workspace_scope(user_id: str, scope: str, *, plan_changed: bool = False) -> None:
     """Raise 403 when the platform's definitive scope list lacks ``scope``.
 
     Fail-open (allow) only in OSS mode or when the platform is unreachable /
@@ -666,8 +698,7 @@ async def require_workspace_scope(user_id: str, scope: str) -> None:
     """
     if not platform_gating_active():
         return
-    scopes = await _get_user_scopes(user_id)
-    if scopes is not None and scope not in scopes:
+    if await _lacks_scope(user_id, scope, plan_changed=plan_changed):
         raise HTTPException(403, detail=f"Requires scope: {scope}")
 
 
@@ -798,7 +829,7 @@ async def get_capacity_status(user_id: str, check_quota: str) -> Optional[dict]:
 
 
 async def get_entitlement_statuses(
-    user_id: str, entitlements: dict[str, tuple[str, str]]
+    user_id: str, entitlements: dict[str, tuple[str, str]], *, plan_changed: bool = False
 ) -> dict[str, Optional[dict]]:
     """Display status per entitlement, where a scope the plan lacks reads as ``limit 0``.
 
@@ -807,11 +838,13 @@ async def get_entitlement_statuses(
     tier's count limit whether or not the scope is granted, so a UI reading only
     counts offers an upgrade the gate then refuses with 403. Scopes are read
     once for all keys; None from the platform stays unknown (fail-open), the
-    same reading the gate gives it.
+    same reading the gate gives it. Scopes older than ``_reread_age`` are
+    read again, as the gate reads a scope a cached list lacks, so a plan just
+    upgraded shows what it opens.
     """
     if not platform_gating_active():
         return {key: None for key in entitlements}
-    scopes = await _get_user_scopes(user_id)
+    scopes = await _get_user_scopes(user_id, max_age=_reread_age(plan_changed))
 
     async def status(scope: str, quota: str) -> Optional[dict]:
         if scopes is not None and scope not in scopes:
@@ -853,15 +886,16 @@ async def _assert_hybrid_gate(
     *,
     count: bool = True,
     returning_slot: bool = False,
+    plan_changed: bool = False,
 ) -> None:
     """Shared workspace-entitlement gate: scope 403 then optional count 429."""
-    await require_workspace_scope(user_id, scope)
+    await require_workspace_scope(user_id, scope, plan_changed=plan_changed)
     if count:
         await enforce_capacity(user_id, check_quota, returning_slot=returning_slot)
 
 
 async def assert_spec_allowed(
-    user_id: str, tier: str, *, current_tier: Optional[str] = None
+    user_id: str, tier: str, *, current_tier: Optional[str] = None, plan_changed: bool = False
 ) -> None:
     """Gate a move to ``tier`` (scope 403 + count 429). Standard is never gated.
 
@@ -870,7 +904,9 @@ async def assert_spec_allowed(
     holds, which the platform counts as used, so that one is handed back
     before the count decides: Large to Medium is open on a plan whose one
     slot the Large fills, while a limit of 0 still refuses. A move up from
-    standard takes a new slot. No-op in OSS mode.
+    standard takes a new slot. ``plan_changed``: the client is back from the
+    plan page, so a list lacking the scope is read again past
+    ``_SCOPE_PLAN_CHANGED_AGE``. No-op in OSS mode.
     """
     entitlement = _SPEC_ENTITLEMENTS.get(tier)
     if entitlement is None:
@@ -882,6 +918,7 @@ async def assert_spec_allowed(
         check_quota,
         count=tier != current_tier,
         returning_slot=current_tier in _SPEC_ENTITLEMENTS,
+        plan_changed=plan_changed,
     )
 
 

@@ -1788,6 +1788,96 @@ class TestRequireWorkspaceScope:
 
             await require_workspace_scope("user-1", "workspace:always_on")  # no raise
 
+    @pytest.mark.asyncio
+    async def test_a_cached_list_lacking_the_scope_is_read_again_before_refusing(self):
+        """A plan upgraded while an older list is cached passes at once; a new list still lacking it refuses,
+        and so does a platform that cannot answer, which leaves the cached list in place."""
+        import time
+
+        from src.server.dependencies.usage_limits import _scope_cache, require_workspace_scope
+
+        for answer, refused, kept in (
+            [{"scopes": ["workspace:spec:performance"]}, False, ["workspace:spec:performance"]],
+            [{"scopes": []}, True, []],
+            [None, True, []],
+        ):
+            # Read 20 s ago: past the re-read age, still inside the cache's life.
+            _scope_cache["user-up"] = ([], time.time() + 300 - 20)
+            with (
+                patch(f"{MODULE}.HOST_MODE", "platform"),
+                patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+                patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=answer) as validate,
+            ):
+                if refused:
+                    with pytest.raises(HTTPException):
+                        await require_workspace_scope("user-up", "workspace:spec:performance")
+                else:
+                    await require_workspace_scope("user-up", "workspace:spec:performance")
+            validate.assert_awaited_once()
+            assert _scope_cache["user-up"][0] == kept
+        _scope_cache.pop("user-up", None)
+
+    @pytest.mark.asyncio
+    async def test_a_list_read_moments_ago_is_not_read_again_before_refusing(self):
+        """Refusals for a scope the plan lacks cost no platform call while the list is newer than the re-read age."""
+        import time
+
+        from src.server.dependencies.usage_limits import _scope_cache, require_workspace_scope
+
+        _scope_cache["user-new"] = ([], time.time() + 300 - 5)
+        with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as validate,
+        ):
+            with pytest.raises(HTTPException):
+                await require_workspace_scope("user-new", "workspace:spec:performance")
+        validate.assert_not_awaited()
+        _scope_cache.pop("user-new", None)
+
+    @pytest.mark.asyncio
+    async def test_back_from_the_plan_page_a_list_read_moments_ago_is_read_again(self):
+        """A plan changed in seconds is not refused on the list read just before it, while a list
+        read inside the floor still answers, so the flag cannot turn every request into a read."""
+        import time
+
+        from src.server.dependencies.usage_limits import _scope_cache, require_workspace_scope
+
+        for age, answer, refused in (
+            (5, {"scopes": ["workspace:spec:performance"]}, False),
+            (1, None, True),
+        ):
+            _scope_cache["user-back"] = ([], time.time() + 300 - age)
+            with (
+                patch(f"{MODULE}.HOST_MODE", "platform"),
+                patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+                patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=answer) as validate,
+            ):
+                if refused:
+                    with pytest.raises(HTTPException):
+                        await require_workspace_scope("user-back", "workspace:spec:performance", plan_changed=True)
+                    validate.assert_not_awaited()
+                else:
+                    await require_workspace_scope("user-back", "workspace:spec:performance", plan_changed=True)
+                    validate.assert_awaited_once()
+        _scope_cache.pop("user-back", None)
+
+    @pytest.mark.asyncio
+    async def test_a_cached_list_holding_the_scope_is_not_read_again(self):
+        import time
+
+        from src.server.dependencies.usage_limits import _scope_cache, require_workspace_scope
+
+        _scope_cache["user-ok"] = (["workspace:spec:performance"], time.time() + 300)
+        with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
+            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock) as validate,
+        ):
+            await require_workspace_scope("user-ok", "workspace:spec:performance")
+        validate.assert_not_awaited()
+        _scope_cache.pop("user-ok", None)
+
 
 # ===================================================================
 # Provider gate: a computer on a non-default sandbox provider needs

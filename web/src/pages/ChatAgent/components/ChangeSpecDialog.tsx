@@ -21,6 +21,7 @@ import { DiskBar, diskUpgradeTier, diskUsageLabel, isDiskAlertLevel } from './co
 import { specErrorFiles, type SpecError } from './specErrors';
 import { activeSpecChange, effectiveTier, specChangeLabel } from './specChangeUi';
 import { PlanUpgradeHint } from './planUpgradeHint';
+import type { SpecRequest } from '../hooks/computerPanelStore';
 import { MachinePreview } from './machineArt/MachinePreview';
 import { hostedPreview } from './machineArt/machine';
 
@@ -43,6 +44,12 @@ interface ChangeSpecDialogProps {
   error?: SpecError | null;
   /** Opened over the Computers dialog, which steps back and keeps the page dimmed. */
   stacked?: boolean;
+  /** What the opener needs: its size is picked to start with where the plan
+   *  allows it, and where the plan keeps it closed, the hint says why and
+   *  links the plan page that comes back. */
+  request?: SpecRequest | null;
+  /** The page under the dialog holds nothing to lose: the plan page opens in its tab. */
+  planInPlace?: boolean;
 }
 
 /**
@@ -68,6 +75,8 @@ function ChangeSpecPanel({
   provider,
   error,
   stacked = false,
+  request = null,
+  planInPlace = false,
 }: Omit<ChangeSpecDialogProps, 'target'> & { target: SpecTarget }) {
   const { t } = useTranslation();
   const locale = useLocale();
@@ -88,7 +97,7 @@ function ChangeSpecPanel({
   const tier =
     picked && offer.tiers.includes(picked) && (picked === currentTier || !isTierBlocked(tierCapacity(quota, picked)))
       ? picked
-      : seedTier(currentTier, target, offer, quota);
+      : seedTier(currentTier, target, offer, quota, request?.tier ?? null);
   const isRunning = target.status === 'running';
   const errorFiles = specErrorFiles(error?.files, t, locale);
   const change = activeSpecChange(target);
@@ -196,7 +205,13 @@ function ChangeSpecPanel({
         />
       )}
       {planLimited && (
-        <PlanUpgradeHint lead={t('computer.spec.planLimited', 'Need a bigger spec than your plan includes?')} />
+        <PlanUpgradeHint
+          lead={request && needsBiggerPlan(quota, request.tier)
+            ? t(request.leadKey)
+            : t('computer.spec.planLimited', 'Need a bigger spec than your plan includes?')}
+          planUrl={request?.planUrl ?? undefined}
+          inPlace={planInPlace}
+        />
       )}
       {error && !busy && !change && (
         <div
@@ -221,7 +236,9 @@ function seedTier(
   target: SpecTarget,
   offer: TierOffer,
   quota: WorkspaceQuota | null | undefined,
+  wanted: ResourceTier | null,
 ): ResourceTier {
+  if (wanted && offer.tiers.includes(wanted) && !isTierBlocked(tierCapacity(quota, wanted))) return wanted;
   return (isDiskAlertLevel(target.disk?.level) && diskUpgradeTier(current, offer, quota)) || current;
 }
 

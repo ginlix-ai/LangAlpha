@@ -14,11 +14,13 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { toast } from '@/components/ui/use-toast';
 import { useLocale } from '@/hooks/useLocale';
+import { queryKeys } from '@/lib/queryKeys';
 import type { ResourceTier } from '@/types/api';
 
 import {
   closeComputerSpec,
   closeComputersPanel,
+  useComputersHost,
   useComputersPanel,
 } from '../hooks/computerPanelStore';
 import { computerOutcomeWatch, reduceComputerOutcomes } from '../hooks/computerOutcomes';
@@ -26,6 +28,7 @@ import { takePrepareFailures } from '../hooks/computerPreparation';
 import { useComputerActions } from '../hooks/useComputerActions';
 import { invalidateMachine, invalidateMachineStorage, useComputerProviders, useComputers } from '../hooks/useComputers';
 import { useTierQuota } from '../hooks/useTierQuota';
+import { useResizeParam } from '../hooks/useMediumAction';
 import ChangeSpecDialog from './ChangeSpecDialog';
 import ComputersDialog from './ComputersDialog';
 import { useForgetRecoveredDismissals } from './DiskWarning';
@@ -33,12 +36,30 @@ import { specErrorFiles, specErrorFrom, specErrorFromOutcome, type SpecError } f
 import { normalizeTier, tierLabel } from './tierUi';
 import { WorkspaceMoveOutcomes } from './WorkspaceMoveOutcomes';
 
-/** `currentWorkspaceId` is the workspace the page shows, which a computer's removal can delete. */
-function ComputersDialogHost({ currentWorkspaceId = null }: { currentWorkspaceId?: string | null }) {
+/**
+ * `currentWorkspaceId` is the workspace the page shows, which a computer's
+ * removal can delete. `overSheet`: the page opens Change spec over a sheet
+ * of its own, which steps back for it, as the Computers panel does.
+ * `planInPlace`: the page holds nothing a new tab would save, so the plan
+ * page opens in this tab and the way back is one tab.
+ *
+ * A page that mounts it also takes `RESIZE_PARAM` off its address
+ * (`useResizeParam`).
+ */
+function ComputersDialogHost({ currentWorkspaceId = null, overSheet = false, planInPlace = false }: {
+  currentWorkspaceId?: string | null;
+  overSheet?: boolean;
+  planInPlace?: boolean;
+}) {
   const { t } = useTranslation();
   const locale = useLocale();
   const queryClient = useQueryClient();
-  const { panel, opening, specComputerId } = useComputersPanel();
+  useComputersHost(planInPlace);
+  useResizeParam();
+  // Change spec belongs to the page that opened it: left open, the next page
+  // with a host (Settings, then a chat) would show it unasked.
+  useEffect(() => closeComputerSpec, []);
+  const { panel, opening, specComputerId, specRequest } = useComputersPanel();
   // Always on: the fan-out at the same root reads this list anyway, and the
   // outcome watch below needs every refetch, whoever triggered it.
   const { data, isFetching, isError, refetch } = useComputers();
@@ -95,6 +116,8 @@ function ComputersDialogHost({ currentWorkspaceId = null }: { currentWorkspaceId
       // nowhere else on this path.
       invalidateMachine(queryClient);
       invalidateMachineStorage(queryClient, computer.computer_id);
+      // Whether Claude Code runs on it turns on its size.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() });
       const dialogOpen = specComputerId === computer.computer_id;
       if (change.state === 'succeeded') {
         toast({
@@ -149,7 +172,7 @@ function ComputersDialogHost({ currentWorkspaceId = null }: { currentWorkspaceId
     if (!specComputerId) return;
     setSpecError(null);
     spec.mutate(
-      { computerId: specComputerId, tier },
+      { computerId: specComputerId, tier, planChanged: specRequest?.planChanged },
       { onError: (err) => setSpecError(specErrorFrom(err, t, tier)) },
     );
   };
@@ -167,6 +190,8 @@ function ComputersDialogHost({ currentWorkspaceId = null }: { currentWorkspaceId
       />
       <ChangeSpecDialog
         target={specTarget}
+        request={specRequest}
+        planInPlace={planInPlace}
         onClose={closeComputerSpec}
         onSubmit={submitSpec}
         busy={spec.isPending}
@@ -174,7 +199,7 @@ function ComputersDialogHost({ currentWorkspaceId = null }: { currentWorkspaceId
         provider={specProvider}
         error={specError}
         // Opened from a disk warning there is no Computers panel to dim the page.
-        stacked={!!panel}
+        stacked={!!panel || overSheet}
       />
       {/* The workspace menu hosts tell how a move ended too; this one covers
           a page with none of them mounted, such as a chat on a phone, which

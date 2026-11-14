@@ -14,6 +14,9 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('@/lib/supabase', () => ({ supabase: null }));
 
+// The self-hosted wording: a build with no plan page, whatever the run's host mode.
+vi.mock('@/config/supportLinks', async (original) => ({ ...(await original<typeof import('@/config/supportLinks')>()), PLAN_URL: null }));
+
 vi.mock('../utils/threadStorage', () => ({
   getStoredThreadId: vi.fn().mockReturnValue(null),
   setStoredThreadId: vi.fn(),

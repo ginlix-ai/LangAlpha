@@ -13,6 +13,11 @@ import type { ClaudeCodeComputer, ClaudeCodePlan, ClaudeCodeSetup, ClaudeCodeSta
 
 const h = vi.hoisted(() => ({ width: 0 }));
 
+vi.mock('@/hooks/useAllModels', () => ({ useAllModels: () => ({ models: {}, metadata: {} }) }));
+vi.mock('@/hooks/useSlotDefaultModels', async (original) => ({
+  ...(await original<typeof import('@/hooks/useSlotDefaultModels')>()),
+  useDefaultModel: () => null,
+}));
 vi.mock('@/hooks/useProviderCatalog', () => ({
   useProviderCatalog: () => ({ keyGroups: [], planGroups: [], localEntries: [], placeOf: () => undefined, optionFor: () => null }),
 }));

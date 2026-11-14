@@ -35,6 +35,8 @@ import {
 import { ChatInputModelMenu, ModelTriggerMeasure, type EffortMenuProps } from './chat-input.modelMenu';
 import type { ModelRowStatus } from './chat-input.modelPicker';
 import { claudeCodeHold, isClaudeCodeModel } from '@/lib/claudeCode';
+import { followErrorLink } from '@/lib/desktop';
+import { useMediumHold } from '@/pages/ChatAgent/hooks/useMediumAction';
 import { usePlanReader } from '@/hooks/useClaudeCodePlan';
 import { creditsRefused, pickerPlanHold, planOutOf } from '@/lib/claudeCodePlan';
 import { deriveRecentModels } from './chat-input.models';
@@ -909,6 +911,9 @@ function ChatInput({
   // picker's own minute clock (`now`), so the composer does not turn with the
   // minute.
   const { claudeCode } = turn;
+  // A computer too small for Claude Code holds its models back with what gets
+  // it to Medium, which picking one of them does.
+  const mediumHold = useMediumHold(claudeCode.state === 'needs_bigger_computer' ? claudeCode.smallComputerId : null);
   const planReader = usePlanReader();
   const modelGroupList = useMemo(() => modelGroups({
     models: turn.models,
@@ -926,6 +931,7 @@ function ChatInput({
     .filter((m) => !favorites.models.includes(m));
   const modelRowStatus = (m: string, now: number): ModelRowStatus => {
     if (isClaudeCodeModel(modelMetadata[m])) {
+      if (mediumHold) return mediumHold;
       const hold = claudeCodeHold(claudeCode.state, turn.workspaceId, {
         home: chiefOfStaff, cliComputerName: claudeCode.cliComputerName,
       });
@@ -933,7 +939,7 @@ function ChatInput({
         const { link } = hold;
         return {
           unavailable: t(hold.messageKey, hold.messageValues),
-          fix: link ? () => (link.external ? window.open(link.url, '_blank', 'noopener,noreferrer') : navigate(link.url)) : undefined,
+          fix: link ? () => followErrorLink(link, navigate) : undefined,
         };
       }
       const planOut = planOutOf(preferences?.other_preference);

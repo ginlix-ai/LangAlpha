@@ -12,6 +12,17 @@ vi.mock('@/hooks/useClaudeCodePlan', () => ({
   usePlanClock: () => ({ locale: 'en-US', zone: 'America/New_York', now: Date.parse('2026-11-06T19:05:00Z') }),
 }));
 
+const desktop = vi.hoisted(() => ({ shell: false }));
+vi.mock('@/lib/desktop', async (original) => ({
+  ...(await original<typeof import('@/lib/desktop')>()),
+  isDesktopShell: () => desktop.shell,
+}));
+// The control for a computer too small for Claude Code decides what it reads
+// from the computer's row and plan; here it only names the computer.
+vi.mock('@/pages/ChatAgent/components/MediumActionLink', () => ({
+  MediumActionLink: ({ computerId }: { computerId: string }) => <span>{`medium:${computerId}`}</span>,
+}));
+
 function LocationProbe({ onPath }: { onPath: (path: string) => void }) {
   const loc = useLocation();
   onPath(loc.pathname);
@@ -117,6 +128,52 @@ describe('ErrorBanner', () => {
     const link = screen.getByText('Status');
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('draws a link that resizes a computer as the control for it, not an anchor to the link\'s own url', () => {
+    const err: StructuredError = {
+      message: 'Claude Code needs a Medium cloud computer.',
+      links: [{ url: '?resize=c-1', label: 'Change spec', resize: 'c-1' }],
+    };
+    renderInRouter(<ErrorBanner error={err} />);
+    expect(screen.getByText('medium:c-1')).toBeInTheDocument();
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.queryByText('Change spec')).toBeNull();
+  });
+
+  it('opens an account console page in a new tab in a browser', () => {
+    desktop.shell = false;
+    const err: StructuredError = {
+      message: 'Monthly credit limit reached.',
+      links: [{ url: '/account/plans', label: 'Upgrade plan', console: true }],
+    };
+    let currentPath = '';
+    renderInRouter(<ErrorBanner error={err} />, (p) => { currentPath = p; });
+    const link = screen.getByRole('link', { name: 'Upgrade plan' });
+    expect(link).toHaveAttribute('href', '/account/plans');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    fireEvent.click(link);
+    expect(currentPath).toBe('/start');
+  });
+
+  it('opens an account console page in this window in the desktop app, which would send a new tab to a signed-out browser', () => {
+    desktop.shell = true;
+    const err: StructuredError = {
+      message: 'Monthly credit limit reached.',
+      links: [{ url: '/account/plans', label: 'Upgrade plan', console: true }],
+    };
+    let currentPath = '';
+    renderInRouter(<ErrorBanner error={err} />, (p) => { currentPath = p; });
+    const link = screen.getByRole('link', { name: 'Upgrade plan' });
+    expect(link).toHaveAttribute('href', '/account/plans');
+    expect(link).not.toHaveAttribute('target');
+    const stayPut = (e: Event) => e.preventDefault();
+    document.addEventListener('click', stayPut);
+    fireEvent.click(link);
+    document.removeEventListener('click', stayPut);
+    expect(currentPath).toBe('/start');
+    desktop.shell = false;
   });
 
   it('renders upstream hints as a bulleted list', () => {

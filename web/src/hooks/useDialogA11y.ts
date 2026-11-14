@@ -27,9 +27,11 @@ const openDialogs: HTMLElement[] = [];
  * A dialog left mounted in a view that has since been hidden (a cached chat
  * view, once the user moves to another thread) is not open as far as the page
  * is concerned. It cannot take focus, and an Escape it claimed would throw away
- * a form nobody can see.
+ * a form nobody can see. Nor is one made inert while another opens over it
+ * (`ModalShell`'s `covered`), which can mount after the one over it: a link
+ * that opens both at once.
  */
-const isShown = (node: HTMLElement) => node.checkVisibility?.() ?? true;
+const isShown = (node: HTMLElement) => !node.hasAttribute('inert') && (node.checkVisibility?.() ?? true);
 
 const isTop = (node: HTMLElement) => openDialogs.findLast(isShown) === node;
 
@@ -118,6 +120,9 @@ export function useDialogA11y<T extends HTMLElement>(onClose: () => void) {
     const boxWatch =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => reconcileExposure());
     boxWatch?.observe(node);
+    // Covering and uncovering flips `inert` after the stack has moved.
+    const inertWatch = new MutationObserver(() => reconcileExposure());
+    inertWatch.observe(node, { attributes: true, attributeFilter: ['inert'] });
     const focusFirst = () => (focusables()[0] ?? node).focus();
     focusFirst();
     let lastFocused = node.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
@@ -207,6 +212,7 @@ export function useDialogA11y<T extends HTMLElement>(onClose: () => void) {
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('focusin', onFocusIn);
       boxWatch?.disconnect();
+      inertWatch.disconnect();
       const i = openDialogs.indexOf(node);
       if (i !== -1) openDialogs.splice(i, 1);
       // Unhide before restoring focus, never after: the opener is typically a

@@ -2771,7 +2771,10 @@
       "claudeCodeCliComputerOffline": "{{name}} 目前离线",
       "claudeCodeNeedsBiggerComputer": "需要中型及以上规格的云端计算机，或你自己的电脑",
       "claudeCodeNeedsBiggerComputerHome": "需要中型及以上规格的云端计算机",
-      "claudeCodeNeedsBiggerComputerPlan": "需要中型及以上规格的云端计算机：可更改规格或升级 LangAlpha 套餐，或使用你自己的电脑"
+      "claudeCodeNeedsBiggerComputerPlan": "需要中型及以上规格的云端计算机：可更改规格或升级 LangAlpha 套餐，或使用你自己的电脑",
+      "claudeCodeNeedsMedium": "需要中型及以上的云端计算机。选择即可更改规格。",
+      "claudeCodeNeedsMediumPlan": "需要中型及以上的云端计算机，当前套餐不含。选择即可升级套餐。",
+      "claudeCodeNeedsMediumResizing": "所在计算机正在改为中型。"
     },
     "voice": {
       "start": "开启语音输入",
@@ -7000,7 +7003,10 @@
           "title": "Claude Code 已可使用",
           "body": "它的模型已在模型选择器中。",
           "cliOwn": "你的云端工作区和 Chief of Staff Agent 都在 {{name}} 上运行它。",
-          "cliHome": "你的 Chief of Staff Agent 在 {{name}} 上运行它。"
+          "cliHome": "你的 Chief of Staff Agent 在 {{name}} 上运行它。",
+          "almostTitle": "Claude Code 即将就绪",
+          "almostBody": "{{name}} 改为中型及以上后即可运行。",
+          "startChat": "开始对话"
         },
         "checking": {
           "title": "正在检查 setup token",
@@ -7022,6 +7028,18 @@
         "savedDetailCloud": "用于在你的云端计算机上运行 Claude Code",
         "savedDetailServer": "用于在此服务器上运行 Claude Code",
         "tooSmallTitle": "规格不足，无法运行 Claude Code"
+      },
+      "medium": {
+        "resize": "改为中型",
+        "isSmall": "{{name}} 是小型计算机，而 Claude Code 只在中型及以上的云端计算机上运行。",
+        "restarts": "改为中型会重启它，几分钟后工作区即可恢复使用。",
+        "notOnPlan": "当前套餐不含中型计算机。",
+        "changing": "它正在改为中型。",
+        "ownInstead": "也可以在你自己的电脑上运行 Claude Code：开启远程控制的 Mac，或通过 SSH 连接的电脑。",
+        "row": "Claude Code 只在中型及以上的云端计算机上运行。",
+        "rowResize": "Claude Code 只在中型及以上的计算机上运行。改为中型会让它重启几分钟。",
+        "rowPlan": "Claude Code 只在中型及以上的计算机上运行，而当前套餐不含中型。",
+        "rowResizing": "正在改为中型，完成后 Claude Code 即可在此运行。"
       }
     },
     "claude": {

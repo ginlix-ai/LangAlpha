@@ -43,6 +43,13 @@ export interface ErrorLinkSpec {
    *  and indistinguishable from one of our routes. See ``ErrorLink`` for what
    *  the flag buys. */
   external?: boolean;
+  /** A page of the account console: a new tab in a browser, and this window
+   *  in the desktop app, which shows the console there and would send a new
+   *  tab to the default browser, signed out (as `ConsoleLink`). */
+  console?: boolean;
+  /** The cloud computer to bring to the size Claude Code runs at: the link
+   *  reads as what does that for this user (`MediumActionLink`). */
+  resize?: string;
 }
 
 export interface StructuredError {

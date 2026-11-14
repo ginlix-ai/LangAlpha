@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { aboveDialogs, useBackdropDismiss, useDialogA11y } from '../useDialogA11y';
 
 function Dialog({ onClose }: { onClose: () => void }) {
@@ -166,6 +166,28 @@ describe('useDialogA11y', () => {
     // screen reader for the rest of its life.
     rerender(<Pair second={false} />);
     expect(screen.getByLabelText('probe')).not.toHaveAttribute('aria-hidden');
+  });
+
+  it('leaves the earlier dialog on top while one mounted after it is inert, and hands back when it is not', async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    render(
+      <>
+        <Dialog onClose={first} />
+        <SteppedDialog onClose={second} step={0} />
+      </>,
+    );
+    const stepped = screen.getByLabelText('stepped');
+    stepped.setAttribute('inert', '');
+    await waitFor(() => expect(stepped).toHaveAttribute('aria-hidden', 'true'));
+    expect(screen.getByLabelText('probe')).not.toHaveAttribute('aria-hidden');
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).not.toHaveBeenCalled();
+
+    stepped.removeAttribute('inert');
+    await waitFor(() => expect(stepped).not.toHaveAttribute('aria-hidden'));
+    expect(screen.getByLabelText('probe')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('ignores Escape from a layer outside the dialog', () => {

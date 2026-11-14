@@ -3,8 +3,11 @@
  * app's words where the app words it, with the link that fixes it; any
  * other keeps the server's.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readStreamFailure } from '../streamFailure';
+
+// The self-hosted wording: a build with no plan page, whatever the run's host mode.
+vi.mock('@/config/supportLinks', async (original) => ({ ...(await original<typeof import('@/config/supportLinks')>()), PLAN_URL: null }));
 
 const t = (key: string, opts?: Record<string, unknown>) => (opts ? `${key}:${JSON.stringify(opts)}` : key);
 const SERVER = 'Server words.';

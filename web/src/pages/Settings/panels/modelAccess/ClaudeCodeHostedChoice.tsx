@@ -9,6 +9,8 @@ import { readOAuthError } from '@/api/oauth';
 import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { useClaudeCodeCustody } from '@/hooks/useClaudeCodeCustody';
 import { CLAUDE_CODE_DISCLOSURE, CLAUDE_CODE_DOCS, CLAUDE_CODE_MODE_LABELS } from '@/lib/claudeCode';
+import { MediumActionButton } from '@/pages/ChatAgent/components/MediumActionLink';
+import { useMediumAction } from '@/pages/ChatAgent/hooks/useMediumAction';
 import { useSaveFailedToast } from '../usePreferenceWrite';
 import { ModeCard } from './ModeCard';
 
@@ -41,8 +43,14 @@ type Asking = { kind: 'consent' } | { kind: 'leave' };
  * another saves is dropped, so the one shown is the server's last write. Its dialogs open over the sheet it is in
  * (``onAsking``), portaled out of that sheet's panel, which goes inert and
  * fades while covered.
+ *
+ * Until the user runs it on cloud computers, each of theirs too small for it
+ * (`tooSmall`) is named under that choice, with what gets it to Medium and
+ * the computers of their own it could run on instead, so they learn of it
+ * before adding a token rather than at their first turn.
  */
-export function ClaudeCodeHostedChoice({ onAddToken, onAsking }: {
+export function ClaudeCodeHostedChoice({ tooSmall, onAddToken, onAsking }: {
+  tooSmall: { computer_id: string; name: string }[];
   onAddToken: () => void;
   /** Whether it is asking, in a dialog over its sheet, before it switches. */
   onAsking: (asking: boolean) => void;
@@ -109,6 +117,12 @@ export function ClaudeCodeHostedChoice({ onAddToken, onAsking }: {
           <ModeCard key={mode} name={groupName} mode={mode} checked={shown === mode} label={t(label)} detail={t(detail)} onSelect={select} />
         ))}
       </div>
+      {shown !== 'stored' && custody.offered.includes('stored') && tooSmall.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-md px-3 py-2.5" style={{ backgroundColor: 'var(--color-bg-card)' }}>
+          {tooSmall.map((c) => <TooSmallNote key={c.computer_id} computerId={c.computer_id} name={c.name} />)}
+          <Note>{t('modelAccess.claudeCode.medium.ownInstead')}</Note>
+        </div>
+      )}
       {custody.blocked && <Note>{t('modelAccess.claudeCode.hosted.blocked')}</Note>}
       {paused && <Note>{t('modelAccess.claudeCode.hosted.paused')}</Note>}
       {leaveFailed && <p role="alert" className="text-xs" style={{ color: 'var(--color-loss)' }}>{t(leaveFailed === 'turnsRunning' ? 'modelAccess.claudeCode.turnsRunning' : 'modelAccess.claudeCode.leaveStored.failed')}</p>}
@@ -119,6 +133,25 @@ export function ClaudeCodeHostedChoice({ onAddToken, onAsking }: {
         document.body,
       )}
     </section>
+  );
+}
+
+/** A cloud computer too small for Claude Code, said where its turns could
+ *  be chosen to run there, with what gets it to Medium. */
+function TooSmallNote({ computerId, name }: { computerId: string; name: string }) {
+  const { t } = useTranslation();
+  const action = useMediumAction(computerId);
+  const next = !action ? null
+    : action.kind === 'plan' ? 'modelAccess.claudeCode.medium.notOnPlan'
+      : action.kind === 'resizing' ? 'modelAccess.claudeCode.medium.changing' : 'modelAccess.claudeCode.medium.restarts';
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+      <p className="min-w-0 flex-1 basis-60 text-xs leading-relaxed" style={{ color: 'var(--color-text-primary)' }}>
+        {t('modelAccess.claudeCode.medium.isSmall', { name })}
+        {next && <> {t(next)}</>}
+      </p>
+      {action && <MediumActionButton action={action} className="tap-target" />}
+    </div>
   );
 }
 

@@ -170,14 +170,15 @@ export function specConflictDetail(err: unknown): SpecConflictDetail | null {
  * from the computer. A 200 means the machine is already at that tier. Up-front
  * refusals arrive as 403/429 (plan and quota, platform mode), or as a 409 with
  * a `SpecConflictDetail` (a turn running, a change or other operation already
- * in progress, a backup that could not finish).
+ * in progress, a backup that could not finish). `planChanged`: the user is back
+ * from the plan page, so the server reads the plan again before it refuses.
  */
-export async function setComputerSpec(computerId: string, tier: ResourceTier): Promise<Computer> {
+export async function setComputerSpec(computerId: string, tier: ResourceTier, planChanged = false): Promise<Computer> {
   if (!computerId) throw new Error('Computer ID is required');
   const { data } = await api.post<Computer>(
     `/api/v1/computers/${computerId}/spec`,
     { tier },
-    { timeout: COMPUTER_MUTATION_TIMEOUT_MS },
+    { params: planChanged ? { plan_changed: true } : undefined, timeout: COMPUTER_MUTATION_TIMEOUT_MS },
   );
   return data;
 }

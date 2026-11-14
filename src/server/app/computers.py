@@ -936,6 +936,9 @@ async def set_computer_spec(
     request: ComputerSpecRequest,
     response: Response,
     x_user_id: CurrentUserId,
+    plan_changed: bool = Query(
+        False, description="The client is back from the plan page: read the plan's scopes again."
+    ),
 ):
     """Accept a spec change and run it after answering; the outcome lands on ``spec_change``.
 
@@ -961,6 +964,7 @@ async def set_computer_spec(
                 x_user_id,
                 request.tier,
                 current_tier=computer.get("resource_tier") or "standard",
+                plan_changed=plan_changed,
             )
         claimed = await manager.claim_computer_spec(computer_id, request.tier)
         if claimed is None:

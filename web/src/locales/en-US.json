@@ -2739,7 +2739,10 @@
       "claudeCodeCliComputerOffline": "{{name}} is offline",
       "claudeCodeNeedsBiggerComputer": "Needs a Medium or larger cloud computer, or a computer of your own",
       "claudeCodeNeedsBiggerComputerHome": "Needs a Medium or larger cloud computer",
-      "claudeCodeNeedsBiggerComputerPlan": "Needs a Medium or larger cloud computer: change its spec or upgrade your LangAlpha plan, or use a computer of your own"
+      "claudeCodeNeedsBiggerComputerPlan": "Needs a Medium or larger cloud computer: change its spec or upgrade your LangAlpha plan, or use a computer of your own",
+      "claudeCodeNeedsMedium": "Needs a Medium or larger cloud computer. Select to change its spec.",
+      "claudeCodeNeedsMediumPlan": "Needs a Medium or larger cloud computer, which isn't on your plan. Select to upgrade.",
+      "claudeCodeNeedsMediumResizing": "Its computer is changing to Medium."
     },
     "voice": {
       "start": "Start voice input",
@@ -7082,7 +7085,10 @@
           "title": "Claude Code is ready",
           "body": "Its models are in your model picker.",
           "cliOwn": "It runs on {{name}} for your cloud workspaces and Chief of Staff.",
-          "cliHome": "Your Chief of Staff runs it on {{name}}."
+          "cliHome": "Your Chief of Staff runs it on {{name}}.",
+          "almostTitle": "Claude Code is almost ready",
+          "almostBody": "It runs once {{name}} is Medium or larger.",
+          "startChat": "Start a chat"
         },
         "checking": {
           "title": "Checking your setup tokens",
@@ -7104,6 +7110,18 @@
         "savedDetailCloud": "Runs Claude Code on your cloud computers",
         "savedDetailServer": "Runs Claude Code on this server",
         "tooSmallTitle": "Too small for Claude Code"
+      },
+      "medium": {
+        "resize": "Change to Medium",
+        "isSmall": "{{name}} is Small, and Claude Code runs on Medium or larger cloud computers.",
+        "restarts": "Changing it to Medium restarts it, and its workspaces are back in a few minutes.",
+        "notOnPlan": "Medium isn't on your plan.",
+        "changing": "It's changing to Medium now.",
+        "ownInstead": "Or run Claude Code on your own computers: your Mac with Remote control, or a computer over SSH.",
+        "row": "Claude Code runs on Medium or larger cloud computers.",
+        "rowResize": "Claude Code runs on Medium or larger. Changing it restarts it for a few minutes.",
+        "rowPlan": "Claude Code runs on Medium or larger, and Medium isn't on your plan.",
+        "rowResizing": "Changing to Medium. Claude Code runs here once it's done."
       }
     },
     "claude": {

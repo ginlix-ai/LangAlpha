@@ -185,7 +185,8 @@ describe('useWorkspaceClaudeCode', () => {
     ['signed_in', 'needs_bigger_computer'], ['unverified', 'needs_bigger_computer'], ['rejected', 'rejected'], ['no_token', 'no_token'],
   ])('with the saved token %s on a cloud computer the server names too small, reads %s', async (state, expected) => {
     const { result } = run('cmp-daytona', { ...RUNS_HERE, state }, SMALL);
-    await waitFor(() => expect(result.current).toEqual({ state: expected, computerId: null, known: true }));
+    const small = expected === 'needs_bigger_computer' ? { smallComputerId: 'cmp-daytona' } : {};
+    await waitFor(() => expect(result.current).toEqual({ state: expected, computerId: null, known: true, ...small }));
   });
 
   it('runs on a cloud computer the server does not name', async () => {
@@ -399,7 +400,10 @@ describe('useChiefOfStaffClaudeCode', () => {
   it.each([
     [placed({ kind: 'picked', refusal: 'cli_computer_offline', name: 'Studio Mac' }), { state: 'cli_computer_offline', cliComputerName: 'Studio Mac' }],
     [placed({ kind: 'picked', refusal: 'no_own_computer' }), { state: 'no_own_computer' }],
-    [placed({ kind: 'home_cloud', refusal: 'needs_bigger_computer', name: 'Home desk' }), { state: 'needs_bigger_computer' }],
+    [
+      placed({ kind: 'home_cloud', refusal: 'needs_bigger_computer', computer_id: 'cmp-home', name: 'Home desk' }),
+      { state: 'needs_bigger_computer', smallComputerId: 'cmp-home' },
+    ],
     [placed({ kind: 'home_cloud', refusal: 'signed_out' }), { state: 'no_token' }],
     [placed({ kind: 'home_cloud', refusal: 'token_refused' }), { state: 'rejected' }],
     [placed({ kind: 'own', computer_id: 'cmp-mac', refusal: 'policy_blocked' }), { state: 'policy_blocked' }],

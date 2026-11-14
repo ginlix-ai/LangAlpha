@@ -11,6 +11,8 @@
  * route. `beginMcpOAuth` is a different flow with a different shape, and the
  * comment on it says why it cannot work the same way.
  */
+import type { ErrorLinkSpec } from '@/utils/rateLimitError';
+
 /** What the shell will accept for a PDF export; everything is optional. */
 export interface SavePdfOptions {
   /** Suggested filename. The shell sanitizes it and appends `.pdf`. */
@@ -414,6 +416,27 @@ async function ask<K extends Method>(name: K, ...args: Args<K>): Promise<Awaited
  */
 export function isDesktopShell(): boolean {
   return desktop !== undefined;
+}
+
+/**
+ * Open a page of the account console: in this window in the desktop app,
+ * which keeps the console beside the app, and in a new tab in a browser, so
+ * the page left behind (a chat with a message half typed) survives. A page
+ * with nothing to lose (`inPlace`) gives way in a browser too, so the way
+ * back from the console is one tab.
+ */
+export function openConsolePage(url: string, { inPlace = false }: { inPlace?: boolean } = {}) {
+  if (inPlace || isDesktopShell()) window.location.assign(url);
+  else window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+/** Follows an error's link from code rather than an anchor: a console page
+ *  as `openConsolePage` opens one, a destination outside this SPA in a new
+ *  tab, and anything else as a route. */
+export function followErrorLink(link: ErrorLinkSpec, navigate: (to: string) => void) {
+  if (link.console) openConsolePage(link.url);
+  else if (link.external) window.open(link.url, '_blank', 'noopener,noreferrer');
+  else navigate(link.url);
 }
 
 /**
