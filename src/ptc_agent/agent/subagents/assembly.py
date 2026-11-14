@@ -53,6 +53,7 @@ def compile_subagents(
     skills: BlockReader,
     skill_registry: dict[str, SkillDefinition],
     scratchpad: str | None,
+    model: str = "",
 ) -> list[dict[str, Any]]:
     """The turn's roster for ``role``, as the specs ``SubAgentMiddleware`` takes.
 
@@ -61,6 +62,7 @@ def compile_subagents(
     ``sources``, ``skills`` and ``scratchpad`` are the main agent's, which
     each subagent's baseline narrows to what its definition reaches.
     ``skill_registry`` is the build's, less the skills no subagent gets.
+    ``model`` is the turn's model label, stated by a subagent that runs it.
     """
     tool_sets: dict[str, list[Any]] = {
         "execute_code": [execute_code],
@@ -91,6 +93,7 @@ def compile_subagents(
             sources=sources,
             skills=skills,
             scratchpad=scratchpad,
+            model=model,
         ),
     )
     return create_subagents(turn_roster(config.subagents), compiler, role)

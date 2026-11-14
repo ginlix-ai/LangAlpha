@@ -28,6 +28,7 @@ from ptc_agent.agent.prompts import (
     workspace_path_vars,
 )
 from ptc_agent.agent.subagents.definition import SubagentDefinition
+from src.llms.model_identity import client_label, model_label
 
 if TYPE_CHECKING:
     from ptc_agent.agent.context_stack import SubagentContext
@@ -226,6 +227,7 @@ class SubagentCompiler:
                 files="filesystem" in bound or (runs_code and self._files_mounted),
                 writes_files=runs_code or "filesystem" in bound,
                 guidance=self._guidance(definition),
+                model=self._model_label(definition, resolved),
             )
         sections.update(held, security_policy=runs_code)
         result: dict[str, Any] = {
@@ -322,6 +324,17 @@ class SubagentCompiler:
         ) or resolve_prompt_guidance(
             defn.model or (config.llm.name if config.llm else None)
         )
+
+    def _model_label(self, defn: SubagentDefinition, client: Any | None) -> str | None:
+        """The label of the model this subagent runs, None for the turn's.
+
+        A client is the model and effort it calls. A bare name reaches the
+        graph as a string the manifest never resolves, so no effort goes out
+        with it and none is stated.
+        """
+        if client is not None:
+            return client_label(client)
+        return model_label(defn.model) if defn.model else None
 
     def _identity_line(self, defn: SubagentDefinition) -> str:
         """Build the first-line identity for a subagent."""

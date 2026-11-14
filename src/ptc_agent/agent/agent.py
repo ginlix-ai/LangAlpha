@@ -778,6 +778,7 @@ class PTCAgent:
                 or "",
                 skill_registry=subagent_skill_registry,
                 scratchpad=scratchpad.folder if scratchpad is not None else None,
+                model=turn.label,
             )
             subagents.extend(additional_subagents or [])
 
