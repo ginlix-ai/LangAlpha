@@ -5,8 +5,8 @@
 # rebuild. A thread pinned below rebuild_before rebuilds at its next turn
 # start, whatever its size; a build below a thread's pinned version, a
 # rollback, never forces one. When to bump: templates/AGENTS.md.
-prompt_version: 1
-rebuild_before: 1
+prompt_version: 2
+rebuild_before: 2
 
 defaults:
   # Runtime variables (set at render time, these are just documentation)
