@@ -820,12 +820,15 @@ class TestStopWorkspace:
         async def detached(*_args, **_kwargs):
             yield runtime
         manager._detached_runtime = detached
-        with patch(f"{_LIFECYCLE}.update_computer_activity", AsyncMock()):
+        with patch(f"{_LIFECYCLE}.update_computer_activity", AsyncMock()), \
+                patch(f"{_LIFECYCLE}.note_stop_phases") as phases:
             with pytest.raises(RuntimeError, match="stop failed"):
                 await manager._finish_claimed_stop(
                     _binding("ws-1"), workspace_id="ws-1",
                     durable_sandbox_id="sandbox-abc",
                 )
+        # The refused stop is still timed: the failing stops are worth measuring.
+        phases.assert_called_once_with(_STUB_COMPUTER_ID, backup_ms=ANY, provider_ms=ANY)
         if state == "unreachable":
             manager._settle_machine_stop.assert_not_awaited()
         else:

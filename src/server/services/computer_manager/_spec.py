@@ -672,7 +672,16 @@ class ComputerSpecMixin:
                     await self._assert_machine_disk_fits(computer_id, disk_guard)
             finally:
                 # On any failure, keep the original sandbox stopped and intact.
-                await session.stop()
+                # A refused stop must not mask that failure, nor stop the
+                # destroy below that takes the sandbox down anyway.
+                try:
+                    await session.stop()
+                except Exception:
+                    logger.warning(
+                        f"Stop of sandbox {sandbox_id} of computer {computer_id} "
+                        "was refused during its replacement",
+                        exc_info=True,
+                    )
             if not gone:
                 await self._assert_spec_claim_owned(computer_id, claim_id)
                 # Daytona's metric history goes with the sandbox.

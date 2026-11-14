@@ -19,7 +19,8 @@ import shlex
 import tarfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import structlog
@@ -113,6 +114,21 @@ async def _remove_quietly(container: Any, name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _gone_if_removed(sandbox_id: str) -> Iterator[None]:
+    """A call on this sandbox's own container that finds it missing (404)
+    raises Gone, as a lookup does, so a stop of a container removed outside
+    us counts as done rather than refused."""
+    try:
+        yield
+    except Exception as e:
+        from aiodocker.exceptions import DockerError
+
+        if isinstance(e, DockerError) and e.status == 404:
+            raise SandboxGoneError(sandbox_id, "Docker container was removed") from e
+        raise
+
+
 class DockerRuntime(ExecSessionRuntime):
     """Runtime that wraps a single Docker container."""
 
@@ -166,7 +182,8 @@ class DockerRuntime(ExecSessionRuntime):
         await self._container.start()
 
     async def stop(self, timeout: int = 60, *, force: bool = False) -> None:
-        await self._container.stop(t=0 if force else timeout)
+        with _gone_if_removed(self._id):
+            await self._container.stop(t=0 if force else timeout)
 
     async def delete(self) -> None:
         try:
@@ -182,7 +199,9 @@ class DockerRuntime(ExecSessionRuntime):
         return _DOCKER_STATE_MAP.get(status, RuntimeState.ERROR)
 
     async def get_state(self) -> RuntimeState:
-        return self._state_from_inspect(await self._container.show())
+        with _gone_if_removed(self._id):
+            info = await self._container.show()
+        return self._state_from_inspect(info)
 
     # -- Execution --
 

@@ -1768,20 +1768,27 @@ class SessionLifecycleMixin:
                 return await self._stop_result(computer_id, workspace_id)
 
             provider_started = time.monotonic()
-            if session is not None:
-                await session.stop()
-                self._drop_session(computer_id)
-            elif durable_sandbox_id:
-                await self._detached_sandbox_teardown(
-                    durable_sandbox_id,
-                    delete=False,
-                    binding=binding,
+            try:
+                if session is not None:
+                    try:
+                        await session.stop()
+                    finally:
+                        # Torn down even when the provider refused the stop.
+                        self._drop_session(computer_id)
+                elif durable_sandbox_id:
+                    await self._detached_sandbox_teardown(
+                        durable_sandbox_id,
+                        delete=False,
+                        binding=binding,
+                    )
+            finally:
+                # A refused stop is timed too: the slow and failing stops are
+                # the ones worth measuring.
+                note_stop_phases(
+                    computer_id,
+                    backup_ms=backup_ms,
+                    provider_ms=round((time.monotonic() - provider_started) * 1000),
                 )
-            note_stop_phases(
-                computer_id,
-                backup_ms=backup_ms,
-                provider_ms=round((time.monotonic() - provider_started) * 1000),
-            )
 
             machine = self._machine_if_known(computer_id)
             if machine is not None:

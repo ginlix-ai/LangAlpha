@@ -195,6 +195,24 @@ class TestDockerRuntimeProperties:
     def test_id_property(self, runtime):
         assert runtime.id == "docker-test123"
 
+    @pytest.mark.asyncio
+    async def test_a_container_removed_outside_us_reads_as_gone(self, runtime, container):
+        """So a stop of it counts as done, not refused."""
+        from aiodocker.exceptions import DockerError
+
+        from ptc_agent.core.sandbox.runtime import SandboxGoneError
+
+        container.stop = AsyncMock(side_effect=DockerError(404, {"message": "No such container"}))
+        container.show = AsyncMock(side_effect=DockerError(404, {"message": "No such container"}))
+        with pytest.raises(SandboxGoneError):
+            await runtime.stop()
+        with pytest.raises(SandboxGoneError):
+            await runtime.get_state()
+
+        container.stop = AsyncMock(side_effect=DockerError(500, {"message": "daemon busy"}))
+        with pytest.raises(DockerError):
+            await runtime.stop()
+
     def test_working_dir_property(self, runtime):
         assert runtime.working_dir == "/home/workspace"
 
