@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } 
 import { useTranslation } from 'react-i18next';
 import { Newspaper, Search, X } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { TickerLabel } from '@/components/TickerLogo';
 import { SwapCell } from '@/components/ui/crossfade';
 import { SkeletonBar } from '@/components/ui/skeleton';
 import { useNow } from '@/hooks/useNow';
@@ -105,7 +106,7 @@ function NewsRow({
         </span>
       </td>
       <td className="term-code">
-        {tickers[0] ?? ''}
+        <TickerLabel symbol={tickers[0]} />
         {tickers.length > 1 && <span className="term-t3"> +{tickers.length - 1}</span>}
       </td>
     </tr>

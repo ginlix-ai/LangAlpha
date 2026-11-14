@@ -9,6 +9,7 @@ import { DashWindowDialog } from './DashWindowDialog';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
 import { Loader } from '@/components/ui/loader';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useToast } from '@/components/ui/use-toast';
 import { ContextBus } from '@/lib/contextBus';
 import { createDateFormatter } from '@/lib/format';
@@ -241,7 +242,9 @@ function NewsBody({
                 <tbody>
                   {impact.map((row, i) => (
                     <tr key={`${row.ticker}-${i}`}>
-                      <td className="term-code term-strong">{row.ticker}</td>
+                      <td className="term-code term-strong">
+                        <TickerLabel symbol={row.ticker} />
+                      </td>
                       <td>
                         {row.sentiment ? (
                           <TermStatus tone={sentimentTone(row.sentiment)}>

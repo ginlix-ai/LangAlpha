@@ -5,7 +5,8 @@ import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { useLoadedHomeTimezone } from '@/hooks/useHomeTimezone';
 import type { WakeupArrival } from '@/types/chat';
-import { isPriceArrival, priceAlertText, wakeupRowText } from './wakeupRowLabels';
+import { TickerLogo } from '@/components/TickerLogo';
+import { isPriceArrival, priceAlertSymbol, priceAlertText, wakeupRowText } from './wakeupRowLabels';
 
 interface WakeupRowProps {
   wakeup: WakeupArrival;
@@ -25,13 +26,18 @@ export function WakeupRow({ wakeup }: WakeupRowProps): ReactElement {
   const now = useNow(60 * 60_000);
   const price = isPriceArrival(wakeup);
   const Icon = price ? BellRing : AlarmClock;
+  const logoSymbol = priceAlertSymbol(wakeup);
   const marker = price ? { 'data-market-alert': wakeup.source } : { 'data-wakeup': wakeup.source };
   return (
     <div className="my-1" {...marker}>
       <div className="flex items-center gap-3 py-2">
         <div className="min-w-4 flex-1" style={{ borderTop: '1px solid var(--color-border-muted)' }} />
         <span className="inline-flex min-w-0 items-center gap-1.5 text-xs tabular-nums" style={{ color: 'var(--color-text-tertiary)' }}>
-          <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+          {logoSymbol ? (
+            <TickerLogo symbol={logoSymbol} className="[--ticker-logo-size:14px]" />
+          ) : (
+            <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+          )}
           <span>{price ? priceAlertText(wakeup, t, locale) : wakeupRowText(wakeup, t, locale, now, zone)}</span>
         </span>
         <div className="min-w-4 flex-1" style={{ borderTop: '1px solid var(--color-border-muted)' }} />

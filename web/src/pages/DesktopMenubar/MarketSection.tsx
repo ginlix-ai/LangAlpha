@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { Sparkline } from '@/components/charts/Sparkline';
+import { TickerLabel } from '@/components/TickerLogo';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { openInMain } from '@/lib/desktop';
@@ -68,7 +69,9 @@ function Tile({ tile }: { tile: GlanceTile }) {
       title={name}
       aria-busy={tile.pending || undefined}
     >
-      <span className="mb-tile-name">{name}</span>
+      <span className="mb-tile-name">
+        <TickerLabel symbol={isIndex ? null : symbol}>{name}</TickerLabel>
+      </span>
       {tile.pending ? (
         <Pending className="mb-tile-price" />
       ) : (

@@ -1,7 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { TickerLabel } from '@/components/TickerLogo';
 import { useLocale } from '@/hooks/useLocale';
-import { instrumentLabel, instrumentLogoSymbol } from '@/components/orders/instrument';
+import { InstrumentLabel } from '@/components/orders/InstrumentLabel';
 import { OrderStatusPill } from '@/components/orders/OrderStatusPill';
 import { OrderModeBadge } from '@/components/orders/OrderModeBadge';
 import { useDirectToolVendorLabel } from '@/pages/ChatAgent/components/mcp/useDirectToolVendor';
@@ -122,9 +121,7 @@ function OrderRow({
         </div>
       </td>
       <td role="cell" className="orders-cell orders-cell-instrument">
-        <TickerLabel symbol={instrumentLogoSymbol(summary?.instrument)}>
-          {instrumentLabel(summary?.instrument) || NONE}
-        </TickerLabel>
+        <InstrumentLabel instrument={summary?.instrument} fallback={NONE} />
       </td>
       <td role="cell" className="orders-cell orders-cell-side">
         {sideKey ? t(sideKey) : summary?.side || NONE}

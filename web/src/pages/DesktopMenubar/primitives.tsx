@@ -4,6 +4,7 @@
  * quote row.
  */
 import type { ReactNode } from 'react';
+import { TickerLabel } from '@/components/TickerLogo';
 import { DASH } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { changeDirection } from '@/pages/ChatAgent/components/charts/termChange';
@@ -81,7 +82,9 @@ export function QuoteRowButton({
   return (
     <li>
       <button type="button" className="mb-row mb-row-btn" onClick={onOpen} aria-busy={pending || undefined}>
-        <span className="mb-sym">{symbol}</span>
+        <span className="mb-sym">
+          <TickerLabel symbol={symbol} />
+        </span>
         {aside}
         <span className="mb-figs">
           <span className="mb-figs-main">
