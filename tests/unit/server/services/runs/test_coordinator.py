@@ -9,6 +9,7 @@ steps out of it until some later trigger.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -113,6 +114,21 @@ def test_a_run_end_asks_for_its_threads_archive_prune():
         _coordinator().post_finalize_tail("thread-1", _row("completed"))
 
     assert prune.call_args_list == [call("thread-1")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed", "error", "cancelled"])
+async def test_a_run_end_stamps_its_workspaces_activity(status):
+    """Only the start stamped the idle clock, so a turn longer than the idle
+    timeout ended on a machine the next sweep stopped."""
+    stamp = AsyncMock(return_value=True)
+    with patch(EXPORT), patch(
+        "src.server.database.workspace.update_workspace_activity", stamp
+    ):
+        _coordinator().post_finalize_tail("thread-1", _row(status))
+        await asyncio.sleep(0)
+
+    stamp.assert_awaited_once_with("ws-1")
 
 
 @pytest.mark.asyncio
