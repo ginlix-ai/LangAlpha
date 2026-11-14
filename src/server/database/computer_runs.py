@@ -45,7 +45,8 @@ _RUN_COLS = """
     mem_peak_bytes, mem_peak_excl_cache_bytes, mem_total_bytes,
     disk_peak_bytes, disk_total_bytes, metrics_through, metrics_error,
     metrics_polled_at, metrics_final, oom_kills, size_source, archive_after_s,
-    held_until, held_end, allocation_checked_at, seen_down_at
+    held_until, held_end, allocation_checked_at, seen_down_at, start_cause,
+    start_client, first_down_at
 """
 
 # When the run after this one on the same sandbox started, on a run aliased ``r``.
@@ -84,9 +85,17 @@ _STAMP_CHECKED = f"""
     UPDATE computer_runs r SET allocation_checked_at = NOW() WHERE {_ON_SANDBOX}
 """
 # An answer that found the sandbox down, or gone, which confirms every stop
-# made before it was read.
+# made before it was read. It is a run's first down answer only when no
+# earlier one already saw it down after it ended: a run that ended before
+# first_down_at existed keeps it empty rather than taking today's answer.
 _SEEN_DOWN = f"""
-    UPDATE computer_runs r SET seen_down_at = {_ANSWERED_AT}
+    UPDATE computer_runs r SET seen_down_at = {_ANSWERED_AT},
+        first_down_at = CASE
+            WHEN r.first_down_at IS NULL AND r.ended_at <= {_ANSWERED_AT}
+                 AND NOT COALESCE(r.seen_down_at >= r.ended_at, FALSE)
+                THEN {_ANSWERED_AT}
+            ELSE r.first_down_at
+        END
     WHERE {_ON_SANDBOX}
       AND (r.seen_down_at IS NULL OR r.seen_down_at < {_ANSWERED_AT})
 """
@@ -184,9 +193,11 @@ async def hook_cursor(conn=None):
 
 
 async def get_computer_for_run(cur, computer_id: str) -> Optional[Dict[str, Any]]:
-    """The fields a run is opened from, read on the hook's cursor."""
+    """The fields a run is opened, and a status event written, from, read on
+    the hook's cursor."""
     await cur.execute(
-        "SELECT computer_id, kind, provider_config, resource_tier, status"
+        "SELECT computer_id, user_id, kind, provider_config, provider_ref,"
+        " resource_tier, status, last_activity_at"
         " FROM computers WHERE computer_id = %s",
         (computer_id,),
     )
@@ -221,6 +232,8 @@ async def open_computer_run(
     disk_gb: Optional[float],
     metrics_final: bool,
     provider_sized: bool,
+    start_cause: Optional[str] = None,
+    start_client: Optional[str] = None,
 ) -> None:
     """Make the computer's open run the one for the sandbox it runs now.
 
@@ -243,6 +256,8 @@ async def open_computer_run(
         "disk_gb": disk_gb,
         "metrics_final": metrics_final,
         "provider_sized": provider_sized,
+        "start_cause": start_cause,
+        "start_client": start_client,
     }
     await cur.execute(
         """
@@ -271,7 +286,7 @@ async def open_computer_run(
         INSERT INTO computer_runs (
             computer_id, user_id, provider_kind, provider_sandbox_id,
             resource_tier, cpu, memory_gb, disk_gb, metrics_final,
-            size_source, archive_after_s
+            size_source, archive_after_s, start_cause, start_client
         )
         SELECT c.computer_id, c.user_id, c.kind, c.provider_ref,
                c.resource_tier,
@@ -280,7 +295,7 @@ async def open_computer_run(
                CASE WHEN k.size_source IS NULL THEN %(disk_gb)s ELSE k.disk_gb END,
                %(metrics_final)s,
                CASE WHEN %(provider_sized)s THEN k.size_source ELSE 'tier' END,
-               k.archive_after_s
+               k.archive_after_s, %(start_cause)s, %(start_client)s
         FROM computers c
         LEFT JOIN LATERAL (
             SELECT p.cpu, p.memory_gb, p.disk_gb, p.size_source, p.archive_after_s

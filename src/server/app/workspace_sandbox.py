@@ -42,6 +42,8 @@ from src.server.services.workspace_files import (
 )
 from src.server.services.workspace_layout import WorkspaceLayoutUnavailable
 from src.server.utils.error_sanitization import sandbox_failure_http
+from src.server.services.computer_usage.causes import computer_cause
+from src.server.models.computer_cause import StartCause
 from src.server.services.workspace_manager import WorkspaceManager
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT, WorkspaceLayout
 from ptc_agent.core.sandbox import PTCSandbox
@@ -151,13 +153,14 @@ _PACKAGE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+([<>=!~]+.*)?$")
 # ---------------------------------------------------------------------------
 
 
-async def _get_sandbox(workspace_id: str, user_id: str) -> Any:
+async def _get_sandbox(workspace_id: str, user_id: str, cause: StartCause) -> Any:
     """Validate the workspace and return its sandbox, starting the computer if stopped."""
     await owned_workspace_on_computer(workspace_id, user_id)
 
     manager = WorkspaceManager.get_instance()
     try:
-        session = await manager.get_session_for_workspace(workspace_id, user_id=user_id)
+        with computer_cause(cause):
+            session = await manager.get_session_for_workspace(workspace_id, user_id=user_id)
     except Exception as e:
         # The raw text quotes provider URLs and sandbox ids; it stays in the log.
         logger.warning(f"Sandbox for workspace {workspace_id} not ready: {e}")
@@ -408,7 +411,7 @@ async def _get_full_sandbox_stats(
     workspace: dict[str, Any],
 ) -> SandboxStatsResponse:
     """Get full sandbox stats for running workspaces (disk, packages, MCP, skills)."""
-    session, sandbox = await _get_sandbox(workspace_id, x_user_id)
+    session, sandbox = await _get_sandbox(workspace_id, x_user_id, "refresh")
     view = WorkspaceManager.get_instance().tool_view(session, workspace_id)
     mcp_servers = list(view.mcp_registry.connectors) if view.mcp_registry else []
     provider_kind = await _provider_kind(workspace_id)
@@ -540,7 +543,7 @@ async def install_sandbox_packages(
                 detail=f"Invalid package name: {pkg}",
             )
 
-    _session, sandbox = await _get_sandbox(workspace_id, x_user_id)
+    _session, sandbox = await _get_sandbox(workspace_id, x_user_id, "packages")
 
     quoted = " ".join(shlex.quote(p) for p in body.packages)
     cmd = f"uv pip install {quoted}"
@@ -619,7 +622,7 @@ async def owner_preview(
     read both starts the app and names it: a key taken from a read before the
     wake could belong to a command replaced meanwhile.
     """
-    _session, sandbox = await _get_sandbox(workspace_id, user_id)
+    _session, sandbox = await _get_sandbox(workspace_id, user_id, "preview")
     try:
         # The server starts in the folder, which a settle on any worker would
         # otherwise move between the read and the launch.
@@ -803,7 +806,7 @@ async def restart_preview_server(
     body: PreviewRestartRequest,
 ) -> PreviewRestartResponse:
     """Restart a preview server process in the workspace sandbox."""
-    _session, sandbox = await _get_sandbox(workspace_id, x_user_id)
+    _session, sandbox = await _get_sandbox(workspace_id, x_user_id, "preview")
     # The server starts in the folder, which a settle on any worker would
     # otherwise move between the read and the launch.
     async with held_workspace_row(workspace_id) as workspace:

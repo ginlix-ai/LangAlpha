@@ -43,6 +43,8 @@ from src.server.dependencies.usage_limits import (
     get_entitlement_statuses,
 )
 from src.server.services.background_starts import schedule_start
+from src.server.services.computer_usage.causes import computer_cause, warm_reason
+from src.server.models.computer_cause import StartCause
 from src.server.app.status_stream import (
     SSE_HEADERS,
     sse_status_event,
@@ -239,13 +241,14 @@ async def create_workspace(
     )
     try:
         manager = WorkspaceManager.get_instance()
-        workspace = await manager.create_workspace(
-            user_id=x_user_id,
-            name=request.name,
-            description=request.description,
-            config=request.config,
-            computer_id=computer_id,
-        )
+        with computer_cause("create"):
+            workspace = await manager.create_workspace(
+                user_id=x_user_id,
+                name=request.name,
+                description=request.description,
+                config=request.config,
+                computer_id=computer_id,
+            )
 
         logger.info(
             f"Created workspace {workspace['workspace_id']} for user {x_user_id}"
@@ -541,7 +544,11 @@ async def update_workspace(
 
 
 def _schedule_warm_restart(
-    manager: WorkspaceManager, workspace_id: str, user_id: str
+    manager: WorkspaceManager,
+    workspace_id: str,
+    user_id: str,
+    cause: StartCause = "warm",
+    detail: Optional[str] = None,
 ) -> None:
     """Start a workspace in the background, keyed by the project.
 
@@ -552,10 +559,17 @@ def _schedule_warm_restart(
     uncreated. The chat path dedupes against this via the manager's
     per-workspace locks.
     """
-    schedule_start(
-        f"workspace:{workspace_id}",
-        lambda: manager.get_session_for_workspace(workspace_id, user_id=user_id),
-    )
+    with computer_cause(cause, detail=detail):
+        schedule_start(
+            f"workspace:{workspace_id}",
+            lambda: manager.get_session_for_workspace(workspace_id, user_id=user_id),
+        )
+
+
+def _blocking_start_cause(reason: Optional[str]) -> StartCause:
+    """A blocking start is the create modal's (before its uploads) or a
+    button's."""
+    return "create" if reason == "create" else "button"
 
 
 @router.post("/{workspace_id}/start", response_model=WorkspaceActionResponse)
@@ -569,6 +583,10 @@ async def start_workspace(
             "immediately with status='starting'. If false (default), block "
             "until the session is ready and return status='running'."
         ),
+    ),
+    reason: Optional[str] = Query(
+        None,
+        description="What prompted the start (input, workspace_open, create, ...); telemetry only.",
     ),
 ):
     """
@@ -624,7 +642,9 @@ async def start_workspace(
             Workspace-keyed, not machine-keyed: starting the machine alone
             attaches whichever live sibling it finds, and this project would
             still have no folder when the caller came back."""
-            _schedule_warm_restart(manager, workspace_id, x_user_id)
+            _schedule_warm_restart(
+                manager, workspace_id, x_user_id, detail=warm_reason(reason)
+            )
             logger.info(f"Scheduled warm restart for workspace {workspace_id}")
             payload = WorkspaceActionResponse(
                 workspace_id=workspace_id,
@@ -644,7 +664,8 @@ async def start_workspace(
             # here without one sends the caller to a path nothing has created.
             if lazy:
                 return _warm_in_background()
-            await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
+            with computer_cause(_blocking_start_cause(reason)):
+                await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
             return WorkspaceActionResponse(
                 workspace_id=workspace_id,
                 status="running",
@@ -673,7 +694,8 @@ async def start_workspace(
         # Blocking path. An acquisition for this workspace brings the same
         # machine up as the computer route would and materialises this project
         # on it.
-        await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
+        with computer_cause(_blocking_start_cause(reason)):
+            await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
 
         logger.info(f"Started workspace {workspace_id}")
         return WorkspaceActionResponse(
@@ -704,7 +726,8 @@ async def archive_workspace(
         workspace = await db_get_workspace(workspace_id)
         require_workspace_owner(workspace, user_id=x_user_id)
 
-        await WorkspaceManager.get_instance().archive_workspace(workspace_id)
+        with computer_cause("archive"):
+            await WorkspaceManager.get_instance().archive_workspace(workspace_id)
 
         logger.info(f"Archived workspace {workspace_id}")
         return WorkspaceActionResponse(
@@ -740,9 +763,10 @@ async def set_workspace_spec(
     async with _workspace_action_errors("set spec for", workspace_id):
         workspace = await db_get_workspace(workspace_id)
         require_workspace_owner(workspace, user_id=x_user_id)
-        updated = await WorkspaceManager.get_instance().set_workspace_spec(
-            workspace_id, request.tier, user_id=x_user_id
-        )
+        with computer_cause("spec_change"):
+            updated = await WorkspaceManager.get_instance().set_workspace_spec(
+                workspace_id, request.tier, user_id=x_user_id
+            )
 
         logger.info(
             f"Set workspace {workspace_id} spec to {request.tier!r} for user {x_user_id}"
@@ -776,9 +800,10 @@ async def set_workspace_always_on(
     async with _workspace_action_errors("set always-on for", workspace_id):
         workspace = await db_get_workspace(workspace_id)
         require_workspace_owner(workspace, user_id=x_user_id)
-        updated = await WorkspaceManager.get_instance().set_workspace_always_on(
-            workspace_id, request.enabled, user_id=x_user_id
-        )
+        with computer_cause("always_on"):
+            updated = await WorkspaceManager.get_instance().set_workspace_always_on(
+                workspace_id, request.enabled, user_id=x_user_id
+            )
 
         # Always-on means the sandbox should be up 24/7, so enabling it on a
         # stopped workspace starts it now rather than deferring to the next
@@ -793,7 +818,10 @@ async def set_workspace_always_on(
             # sibling it finds, which would leave this project's folder
             # uncreated on a machine its own row calls running.
             _schedule_warm_restart(
-                WorkspaceManager.get_instance(), workspace_id, x_user_id
+                WorkspaceManager.get_instance(),
+                workspace_id,
+                x_user_id,
+                cause="always_on",
             )
             logger.info(
                 f"Always-on enabled: scheduled warm start for {workspace_id}"
@@ -834,7 +862,8 @@ async def duplicate_workspace(
         require_workspace_owner(workspace, user_id=x_user_id)
 
         manager = WorkspaceManager.get_instance()
-        new_workspace = await manager.duplicate_workspace(workspace_id, x_user_id)
+        with computer_cause("duplicate"):
+            new_workspace = await manager.duplicate_workspace(workspace_id, x_user_id)
 
         logger.info(
             f"Duplicated workspace {workspace_id} to "
@@ -884,9 +913,10 @@ async def choose_files_restore(
     workspace = await db_get_workspace(workspace_id)
     require_workspace_owner(workspace, user_id=x_user_id)
     try:
-        settled = await WorkspaceManager.get_instance().settle_files_restore_offer(
-            workspace_id, user_id=x_user_id, restore=request.restore
-        )
+        with computer_cause("restore"):
+            settled = await WorkspaceManager.get_instance().settle_files_restore_offer(
+                workspace_id, user_id=x_user_id, restore=request.restore
+            )
     except Exception as e:
         logger.warning(f"Restore choice for workspace {workspace_id} failed: {e}")
         raise sandbox_failure_http(e) from None
@@ -943,9 +973,10 @@ async def refresh_workspace(
     require_workspace_owner(workspace, user_id=x_user_id)
 
     try:
-        session = await manager.get_session_for_workspace(
-            workspace_id, user_id=x_user_id
-        )
+        with computer_cause("refresh"):
+            session = await manager.get_session_for_workspace(
+                workspace_id, user_id=x_user_id
+            )
     except (SandboxGoneError, SandboxTransientError):
         # Same reasoning as _workspace_action_errors above: re-raise for the
         # app-level handler that owns both the wording and the sanitizing,

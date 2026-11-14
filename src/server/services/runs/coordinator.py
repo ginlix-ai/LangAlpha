@@ -123,6 +123,8 @@ class RunHandle:
     # The ``pending_input`` stamp a failure or a stop before the graph took
     # this attempt's input records on its row; empty when /retry should replay.
     pending_input: Dict[str, Any] = field(default_factory=dict)
+    # Where the run came from (``turn_kinds.RunOrigin``), as START classified it.
+    origin: Optional[str] = None
 
     @property
     def checkpointer(self) -> Optional[Any]:
@@ -279,6 +281,7 @@ class RunCoordinator:
                 started_at=row["created_at"],
                 guard=guard,
                 pending_input=pending_input or {},
+                origin=origin,
             )
             if guard is not None:
                 guard.bind_owner(handle)

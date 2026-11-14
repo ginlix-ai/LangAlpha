@@ -22,6 +22,10 @@ import structlog
 
 from ptc_agent.core.sandbox.attach_only import SandboxNotRunning, attaching_only
 from ptc_agent.core.sandbox.retry import RetryPolicy
+from ptc_agent.core.sandbox.start_report import (
+    RuntimeStartReport,
+    report_runtime_start,
+)
 from ptc_agent.core.sandbox.runtime import (
     SandboxFailureKind,
     SandboxGoneError,
@@ -110,7 +114,15 @@ async def _reconnect(
     # Check sandbox state before attempting to start
     state = await sandbox.runtime.get_state()
     state_value = state.value
+    state_before = state_value
     _mark_rc("get_state")
+    started_from = time.time()
+    started = False
+
+    async def start(call: Callable[..., Any], *, timeout: int) -> None:
+        nonlocal started
+        started = True
+        await _start_runtime(sandbox, sandbox_id, call, timeout=timeout)
 
     if on_state_observed is not None:
         try:
@@ -135,7 +147,7 @@ async def _reconnect(
         logger.debug(
             "Starting stopped sandbox", sandbox_id=sandbox_id, state=state_value
         )
-        await _start_runtime(sandbox, sandbox_id, sandbox.runtime.start, timeout=60)
+        await start(sandbox.runtime.start, timeout=60)
         _mark_rc("start")
     elif state_value == "starting":
         # Sandbox is already transitioning: wait for it to reach 'running'.
@@ -184,7 +196,7 @@ async def _reconnect(
                 "Sandbox finished stopping, starting it",
                 sandbox_id=sandbox_id,
             )
-            await _start_runtime(sandbox, sandbox_id, sandbox.runtime.start, timeout=60)
+            await start(sandbox.runtime.start, timeout=60)
         else:
             # Same reasoning as the 'starting' wait above: still mid-stop is
             # a sandbox that exists, so this is a retry, not a replacement.
@@ -210,7 +222,7 @@ async def _reconnect(
             "Starting archived sandbox (restore may take longer)",
             sandbox_id=sandbox_id,
         )
-        await _start_runtime(sandbox, sandbox_id, sandbox.runtime.start, timeout=300)
+        await start(sandbox.runtime.start, timeout=300)
         _mark_rc("start_archived")
     elif state_value == "archiving":
         # Never started mid-archive: a start that lands once Daytona has
@@ -250,9 +262,7 @@ async def _reconnect(
                 ),
             )
         if state_value != "running":
-            await _start_runtime(
-                sandbox, sandbox_id, sandbox.runtime.start, timeout=300
-            )
+            await start(sandbox.runtime.start, timeout=300)
         _mark_rc("start_archiving")
     elif state_value == "error":
         # Restarting an errored sandbox the provider will not recover fails
@@ -263,16 +273,24 @@ async def _reconnect(
             "Sandbox in error state, attempting recovery",
             sandbox_id=sandbox_id,
         )
-        await _start_runtime(
-            sandbox, sandbox_id, sandbox.runtime.recover_from_error, timeout=300
-        )
+        await start(sandbox.runtime.recover_from_error, timeout=300)
         _mark_rc("start_error_recovery")
     else:
         raise SandboxGoneError(
             sandbox_id,
             f"unrecoverable state: {state_value}",
         )
+    start_ms = round((time.time() - started_from) * 1000) if started else None
     await _confirm_host_back(sandbox, sandbox_id)
+    report_runtime_start(
+        RuntimeStartReport(
+            sandbox_id=sandbox_id,
+            provider_kind=sandbox.config.sandbox.provider,
+            state_before=state_before,
+            started=started,
+            start_ms=start_ms,
+        )
+    )
 
     # Fetch the actual working dir from the sandbox. The config default
     # may differ from the real dir (e.g. /home/workspace vs /home/daytona)

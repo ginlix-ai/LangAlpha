@@ -50,6 +50,7 @@ from src.server.database.workspace_folders import (
 )
 from src.server.database.workspace_names import checked_workspace_name
 from src.server.models.computer import ComputerStatus
+from src.server.services.computer_usage.events import note_start_failure
 from src.server.services.path_lock_coordination import STOP_HEARTBEAT_UNAVAILABLE_RECOVERY_S
 from src.server.services.computer_errors import (
     ComputerNotFoundError,
@@ -858,6 +859,9 @@ class WorkspaceManager(ComputerManager):
                 machine = self._machine_if_known(computer_id)
                 if machine is not None:
                     machine.pending_lazy_sync = False
+                # Its owner died or hung, so nothing else will say the start
+                # failed: without this it reads as a claim handed back.
+                note_start_failure(computer_id, "abandoned")
                 reverted += 1
             except Exception as e:
                 logger.error(

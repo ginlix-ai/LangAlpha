@@ -49,6 +49,7 @@ from src.server.database.workspace_binding import (
     get_computers_with_folders,
 )
 from src.server.models.computer import ComputerStatus
+from src.server.services.computer_usage.causes import computer_cause
 from src.tools.messaging.tools import ATTACH_MAX_BYTES, SEND_MAX_BYTES
 from src.tools.secretary.utils import spoken_computer_name
 
@@ -416,10 +417,11 @@ class TurnComputers:
         if wake is None or (wake.done() and not _woke(wake, live)):
             # Out of the turn's project: a start lays out the bound project's
             # folder, and Home's has no place on this computer.
-            wake = record.wake = asyncio.get_running_loop().create_task(
-                manager.reach_computer(computer_id, user_id=self._user_id),
-                context=context_without_project(),
-            )
+            with computer_cause("reach"):
+                wake = record.wake = asyncio.get_running_loop().create_task(
+                    manager.reach_computer(computer_id, user_id=self._user_id),
+                    context=context_without_project(),
+                )
             _wakes.add(wake)
             wake.add_done_callback(_wakes.discard)
             wake.add_done_callback(partial(_log_failure, computer_id))

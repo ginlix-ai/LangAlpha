@@ -21,6 +21,7 @@ from ptc_agent.agent.middleware.runtime_context import TurnContext
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.core.project_context import ProjectContext
 from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed, claude_replied_last, is_claude_code_model
+from src.server.services.computer_usage.causes import computer_cause
 from src.server.contracts.run_times import run_settled_at
 from src.server.handlers.cancellation import cancellation_as_http
 from src.server.services.computer_manager import ComputerNotRunning, attaching_only
@@ -171,9 +172,10 @@ async def _thread_agent(
             if session is None:
                 raise ComputerNotRunning(f"workspace {workspace_id} is not running")
         else:
-            session = await workspace_manager.get_session_for_workspace(
-                workspace_id, user_id=user_id
-            )
+            with computer_cause("compact"):
+                session = await workspace_manager.get_session_for_workspace(
+                    workspace_id, user_id=user_id
+                )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:

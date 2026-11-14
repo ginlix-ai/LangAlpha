@@ -82,14 +82,16 @@ async def record_start_failure(
     """
     if not computer_id:
         return
+    failure = describe_start_failure(exc, kind=kind)
     try:
-        await record_computer_start_failure(
-            computer_id, describe_start_failure(exc, kind=kind)
-        )
+        await record_computer_start_failure(computer_id, failure)
     except Exception:
         logger.exception(
             "Could not record the failed start of computer %s", computer_id
         )
+    from src.server.services.computer_usage.events import note_start_failure
+
+    note_start_failure(computer_id, str(failure.get("code") or START_FAILED))
 
 
 def start_failure_from_row(row: Dict[str, Any]) -> Optional[StartFailure]:

@@ -20,6 +20,7 @@ from ptc_agent.config.agent import Admitted
 from ptc_agent.core.sandbox.providers._ssh_transport import Link, Machine
 from ptc_agent.core.sandbox.providers.ssh import SSHProvider
 from src.llms.claude_code import ClaudeTurnFailed
+from src.server.services.computer_usage.causes import computer_cause
 
 from .cli_slots import computer_cli_slot
 from .hosted import OnOwn, Refused, cli_placement, cloud_runs_in
@@ -217,9 +218,11 @@ class _PickedComputer:
         if status != Lifecycle.RUNNING:
             # Out of the turn's workspace: a start lays out the bound one's
             # folder, which has no place on this computer.
-            await asyncio.get_running_loop().create_task(
-                WorkspaceManager.get_instance().wake_computer(self.computer_id, user_id=self.user_id),
-                context=context_without_project(),
-            )
+            with computer_cause("claude_code"):
+                wake_task = asyncio.get_running_loop().create_task(
+                    WorkspaceManager.get_instance().wake_computer(self.computer_id, user_id=self.user_id),
+                    context=context_without_project(),
+                )
+            await wake_task
             computer = await get_computer(self.computer_id) or computer
         return await machine_of(computer)

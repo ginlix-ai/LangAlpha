@@ -33,6 +33,7 @@ from src.server.database.user_vault_secrets import get_user_secrets_decrypted
 from src.server.models.computer import ComputerStatus
 from src.server.models.mcp_server import McpServerInput
 from src.server.services.computer_manager import ComputerManager
+from src.server.services.computer_usage.causes import computer_cause
 from src.server.services.mcp_config import user_row_to_server_config
 from src.server.services.mcp_validation import CheckFailure, Passed
 from src.server.utils.secret_redactor import get_redactor
@@ -185,9 +186,10 @@ async def _wake(manager: Any, computer: dict[str, Any], user_id: str) -> Any:
     """
     if computer.get("status") == ComputerStatus.ERROR:
         raise _Refused(BROKEN_COMPUTER)
-    task = asyncio.ensure_future(
-        manager.wake_computer(str(computer["computer_id"]), user_id=user_id)
-    )
+    with computer_cause("mcp_check"):
+        task = asyncio.ensure_future(
+            manager.wake_computer(str(computer["computer_id"]), user_id=user_id)
+        )
     _wakes.add(task)
     task.add_done_callback(_wakes.discard)
     task.add_done_callback(_log_late_wake_failure)
