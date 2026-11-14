@@ -54,7 +54,10 @@ export function unreachable(where: string, e: unknown): CliError {
   return new CliError(`Cannot reach ${where} (${why})`, Exit.error, { reason: "unreachable" });
 }
 
-export function exitFor(status: number): number {
+/** ``reason`` is the refusal's kind: a request that stopped waiting in the app
+ *  is a 403 that refuses nothing, so it exits as an error. */
+export function exitFor(status: number, reason?: string): number {
+  if (reason === "approval_expired") return Exit.error;
   if (status === 401 || status === 403) return Exit.auth;
   if (status === 404) return Exit.notFound;
   if (status === 409) return Exit.conflict;

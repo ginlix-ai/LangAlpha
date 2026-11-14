@@ -93,6 +93,7 @@ langalpha workspaces archive <ws>
 langalpha workspaces delete <ws> [-y] [--delete-files]
 langalpha threads list [-w WS] [--archived] [--limit N]
 langalpha threads show <id>
+langalpha threads output <id> [--turns N]
 langalpha threads new <message...> -w WS [-m MODEL] [--wait] [--detach]
 langalpha threads send <id> <message...> [-m MODEL] [--wait] [--detach]
 langalpha threads follow <id>
@@ -122,8 +123,9 @@ gave up on exits 7 and says how to run it again: `langalpha threads retry` when 
 failed run was kept, sending the message again when it never started. A delete asks first at a terminal, and with no one there
 needs `--yes`.
 
-Exit codes: 0 ok, 1 error, 2 usage, 3 not signed in or not allowed (401/403), 4 not found,
-5 conflict, 6 the turn is waiting for approval, 7 the turn failed or was cancelled.
+Exit codes: 0 ok, 1 error, 2 usage, 3 not signed in or not allowed (401/403),
+including a request you declined in the app, 4 not found, 5 conflict, 6 the
+turn is waiting for approval, 7 the turn failed or was cancelled.
 
 ## Inside a computer
 
@@ -131,10 +133,40 @@ The [inside a computer](https://docs.langalpha.ai/cli/inside-a-computer/) page i
 
 Every computer gets the bundle with its internal packages, a shim on every
 agent command's `PATH` answering to both `la` and `langalpha`, and a token of
-its own (`lac1.`), which reaches only what that computer holds and never
-deletes, answers an approval, stops its own computer, or sends into the
-conversation the command runs in
-(`src/server/dependencies/principal.py`).
+its own (`lac1.`). Every computer's token follows the same rule. It reaches
+all of your computers and Home, since the Chief of Staff manages everything
+through `la` and an analyst reads the workspaces and threads its work builds
+on. It never adds a computer, answers an approval or an order, stops,
+archives or removes its own computer, rewrites a turn, or sends into the
+conversation the command runs in or the one that sent that conversation its
+current turn (`src/server/dependencies/principal.py`).
+
+Some requests wait for your OK in the LangAlpha app
+(`src/server/dependencies/cli_approval.py`): deleting a thread, a workspace
+or an automation, creating a workspace, removing another computer, and
+starting work on a computer other than the one asking. That last one is
+sending a message into a thread there, starting a thread in a workspace
+there, retrying a turn there, and creating, editing or running an automation
+whose turns run there. Home counts as being on the computer that holds it
+(your primary), so from any other computer a new thread with no workspace
+asks. Reading, cancelling a run, archiving, renaming, and starting or
+stopping another computer never ask, and neither does anything else on the
+computer asking. A workspace is created without asking when you let the
+Chief of Staff create workspaces without asking. The same command sent again
+waits on the same request, and a different message asks anew. The command
+waits: it prints
+`Waiting for your approval in the LangAlpha app (expires in N minutes)…` once and
+asks again until you answer, then prints the real result, or exits 3 when you
+decline. A request unanswered for 30 minutes stops waiting, as the server
+counts it, not the machine's clock, and the command exits 1 having done
+nothing; run it again to ask again. At most five requests
+wait at once, and a sixth exits 1 with the server's message, as it does when
+the server cannot ask right now; run it again shortly. Any other delete from a
+computer's token is refused outright and exits 3.
+
+These limits hold where sign-in is on. With sign-in off (oss mode with no
+auth configured) the API takes calls with no credentials at all, so anything
+on the computer can do what you can.
 
 The shim runs the bundle on the machine's `node`, which needs Node 20 or
 later. Sandboxes ship it; on an SSH machine it is whatever the machine has,
