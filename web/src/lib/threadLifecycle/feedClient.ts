@@ -34,6 +34,7 @@ import {
   streamFetch,
 } from '@/pages/ChatAgent/utils/api/transport';
 import type { ArtifactCommentEvent, ArtifactRecordEvent, Thread } from '@/types/api';
+import { reconcilePendingApprovals, refreshPendingApprovals } from '@/lib/cliApprovals/reconcile';
 import {
   getLifecycleQueryClient,
   listenForSeenElsewhere,
@@ -198,6 +199,8 @@ function onFeedEvent(raw: Record<string, unknown>): void {
   if (eventName === 'snapshot') {
     const snap = raw as unknown as SnapshotFrame;
     applySnapshot(snap);
+    const qc = getLifecycleQueryClient();
+    if (qc) reconcilePendingApprovals(qc, snap.pending_approvals, client.resyncOnSnapshot);
     if (client.resyncOnSnapshot) {
       client.resyncOnSnapshot = false;
       client.pendingFullInvalidate = true;
@@ -388,6 +391,11 @@ function onFeedEvent(raw: Record<string, unknown>): void {
     case 'automation_waiting_ended': {
       client.pendingAutomations = true;
       scheduleInvalidate();
+      return;
+    }
+    case 'cli_approval': {
+      const qc = getLifecycleQueryClient();
+      if (qc) refreshPendingApprovals(qc);
       return;
     }
     case 'artifact_comment':

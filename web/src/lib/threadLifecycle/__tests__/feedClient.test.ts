@@ -846,3 +846,53 @@ describe('threadLifecycleFeed — snapshot invalidation', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.threads.all });
   });
 });
+
+describe('threadLifecycleFeed: agent requests waiting on the user', () => {
+  const pendingKey = queryKeys.cliApprovals.pending();
+  const cached = (ids: string[]) => ids.map((approval_id) => ({ approval_id }));
+  const frame = (seq: number, extra: Record<string, unknown> = {}) => ({
+    event: 'snapshot', as_of_seq: seq, oldest_included_unseen_seq: 0, live: [], unseen: [], ...extra,
+  });
+
+  it('a cli_approval event reads the waiting list again', async () => {
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    queryClient.setQueryData(pendingKey, cached(['ap-1']));
+
+    conns[0].emit({ event: 'thread_lifecycle', type: 'cli_approval', approval_id: 'ap-1', status: 'approved' });
+    await flush();
+
+    expect(queryClient.getQueryState(pendingKey)?.isInvalidated).toBe(true);
+  });
+
+  it('a snapshot reads the list again only when its ids differ from the cached ones', async () => {
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    conns[0].emit(frame(1, { pending_approvals: [] }));
+    await flush(400);
+
+    queryClient.setQueryData(pendingKey, cached(['ap-1', 'ap-2']));
+    conns[0].emit(frame(2, { pending_approvals: ['ap-2', 'ap-1'] }));
+    await flush(400);
+    expect(queryClient.getQueryState(pendingKey)?.isInvalidated).toBe(false);
+
+    conns[0].emit(frame(3, { pending_approvals: ['ap-2'] }));
+    await flush(400);
+    expect(queryClient.getQueryState(pendingKey)?.isInvalidated).toBe(true);
+  });
+
+  it("a snapshot without the field leaves the list alone, except a connection's first", async () => {
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    queryClient.setQueryData(pendingKey, cached(['ap-1']));
+
+    conns[0].emit(frame(1));
+    await flush(400);
+    expect(queryClient.getQueryState(pendingKey)?.isInvalidated).toBe(true);
+
+    queryClient.setQueryData(pendingKey, cached(['ap-1']));
+    conns[0].emit(frame(2));
+    await flush(400);
+    expect(queryClient.getQueryState(pendingKey)?.isInvalidated).toBe(false);
+  });
+});
