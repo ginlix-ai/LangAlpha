@@ -10,6 +10,7 @@ nothing, and that two folds of one run count nothing twice.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxAllocation
+from src.observability import event_log
 from src.server.database import computer_runs as runs_db
 from src.server.database.computer import (
     create_computer,
@@ -32,6 +34,7 @@ from src.server.database.workspace import (
 )
 from src.server.services.computer_usage import reconcile_runs
 from src.server.services.computer_usage import transitions
+from src.server.services.computer_usage.causes import computer_cause
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -1053,3 +1056,54 @@ async def test_a_stop_found_down_is_not_undone_by_a_later_answer_finding_it_up(
 
     [run] = await _runs(test_db_pool, computer_id)
     assert run["ended_at"] == stopped["ended_at"]
+
+
+async def test_first_down_is_the_first_answer_that_found_the_stop_and_only_it(
+    seed_user, test_db_pool
+):
+    computer_id = await _computer(seed_user)
+    await update_computer_status(computer_id, "running")
+    await _stop(computer_id)
+    await _answer("daytona", "sb-1", _alloc("stopped"))
+    [run] = await _runs(test_db_pool, computer_id)
+    assert run["first_down_at"] is not None
+    assert run["first_down_at"] >= run["ended_at"] - timedelta(seconds=1)
+
+    # As a run that ended before the column existed: an earlier answer saw it
+    # down, so a later one is not its first.
+    await _raw(
+        test_db_pool,
+        "UPDATE computer_runs SET first_down_at = NULL WHERE computer_id = %s",
+        computer_id,
+    )
+    await _answer("daytona", "sb-1", _alloc("stopped"))
+    [run] = await _runs(test_db_pool, computer_id)
+    assert run["first_down_at"] is None
+
+
+async def test_a_run_records_the_cause_of_the_start_that_opened_it(
+    seed_user, test_db_pool
+):
+    computer_id = await _computer(seed_user)
+    with computer_cause("warm", client="desktop", detail="composer"):
+        await update_computer_status(computer_id, "running")
+
+    [run] = await _runs(test_db_pool, computer_id)
+    assert (run["start_cause"], run["start_client"]) == ("warm", "desktop")
+
+
+async def test_each_status_write_reaching_the_machine_is_an_event(
+    seed_user, test_db_pool, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("EVENT_LOG_DIR", str(tmp_path))
+    computer_id = await _computer(seed_user)
+    with computer_cause("button", client="browser"):
+        await update_computer_status(computer_id, "starting")
+
+    event_log.flush()
+    [path] = tmp_path.glob("computer-events-*.jsonl")
+    [event] = [json.loads(line) for line in path.read_text().splitlines()]
+    assert (event["computer_id"], event["status"], event["cause"], event["client"]) == (
+        computer_id, "starting", "button", "browser"
+    )
+    assert (event["kind"], event["sandbox"]) == ("daytona", "sb-1")
