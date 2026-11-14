@@ -214,6 +214,43 @@ def test_a_retried_run_carries_its_attempt():
     )
 
 
+class _Catalog:
+    def get_model_config(self, name):
+        return {"display_name": "Model One"} if name == "m-one" else None
+
+
+@pytest.fixture
+def _catalog():
+    with patch("src.llms.llm.LLM.get_model_config", return_value=_Catalog()):
+        yield
+
+
+@pytest.mark.parametrize(
+    ("fields", "named"),
+    [
+        # A settled run's model, its query row's for a row older than the stamp.
+        ({"llm_model": "m-one"}, "on Model One"),
+        # A live run's row read whole, its model in its metadata.
+        ({"metadata": {"llm_model": "m-one"}}, "on Model One"),
+        # A model the catalog does not know reads by its name.
+        ({"llm_model": "m-gone"}, "on m-gone"),
+    ],
+    ids=["settled", "live", "unknown"],
+)
+def test_a_run_names_the_model_it_ran_on(_catalog, fields, named):
+    run = _response(7, created_at=_STARTED, **fields)
+
+    assert _run_block(run, "x", _UTC).startswith(
+        f"[Run started 2026-10-05 18:40 UTC, completed, {named}]"
+    )
+
+
+def test_a_run_with_no_model_recorded_names_none(_catalog):
+    run = _response(8, created_at=_STARTED)
+
+    assert " on " not in _run_block(run, "x", _UTC)
+
+
 def test_a_live_run_without_text_has_none_yet():
     run = _response(5, created_at=_STARTED, status="in_progress")
 

@@ -594,6 +594,9 @@ async def astream_ptc_workflow(
                     # watched, and a run without it predates the stamp.
                     UNWATCHED_RUN_META: turn_context.unwatched,
                     **run_stamp(config),
+                    # Per attempt, since a retry or an automation's turn may
+                    # run another model than the turn's query row recorded.
+                    **({"llm_model": effective_model} if effective_model else {}),
                     **firing,
                     **home.run_metadata(),
                     **(run_metadata or {}),

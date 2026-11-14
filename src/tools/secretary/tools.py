@@ -218,6 +218,16 @@ async def _workspaces_delete(
         return error_command("failed to delete workspace", tool_call_id)
 
 
+def _listed(row: dict) -> dict:
+    """A thread row as the listing shows it, with ``model`` the one its
+    latest turn ran on. The thread's own ``llm_model`` is left out: empty
+    means the account default, which reads as no model at all."""
+    listed = without_keys(row, _OWNER_ID)
+    listed.pop("llm_model", None)
+    listed["model"] = listed.pop("latest_run_model", None)
+    return listed
+
+
 async def threads_list(
     user_id: str,
     workspace_id: str | None,
@@ -253,7 +263,7 @@ async def threads_list(
         content = json.dumps(
             {
                 "success": True,
-                "threads": without_keys(threads, _OWNER_ID),
+                "threads": [_listed(row) for row in threads],
                 "total": total,
             },
             default=str,

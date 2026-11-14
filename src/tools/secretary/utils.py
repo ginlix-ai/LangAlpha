@@ -599,6 +599,18 @@ async def read_computer_placement(user_id: str) -> ComputerPlacement:
     return ComputerPlacement.from_rows(await get_computer_roster(user_id))
 
 
+def _model_display_name(model: str) -> str:
+    """The name the user knows ``model`` by, which a catalog row carries."""
+    # Local import: this module loads at agent import time.
+    from src.llms.llm import LLM
+
+    try:
+        entry = LLM.get_model_config().get_model_config(model) or {}
+    except Exception:
+        entry = {}
+    return entry.get("display_name") or model
+
+
 def _run_block(run: dict[str, Any], text: str, zone: ZoneInfo) -> str:
     """One run's text under a line saying which run it is and how it ended.
 
@@ -617,9 +629,14 @@ def _run_block(run: dict[str, Any], text: str, zone: ZoneInfo) -> str:
         parts = ["Run"]
     status = str(run.get("status") or "")
     parts.append(_RUN_STATUS.get(status, status or "status unknown"))
+    metadata = run.get("metadata")
+    model = run.get("llm_model") or (
+        metadata.get("llm_model") if isinstance(metadata, dict) else None
+    )
+    if model:
+        parts.append(f"on {_model_display_name(model)}")
     if (attempt := run.get("attempt_no") or 1) > 1:
         parts.append(f"attempt {attempt} of the same request")
-    metadata = run.get("metadata")
     if isinstance(metadata, dict) and (
         analyst := metadata.get("report_back_ptc_thread_id")
     ):

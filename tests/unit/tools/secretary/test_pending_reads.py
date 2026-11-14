@@ -76,3 +76,27 @@ async def test_a_listing_is_pending_only_while_another_thread_runs(other_status,
         {"conversation_thread_id": OTHER, "current_status": other_status},
     ]
     assert is_pending_read(await _list(chief_of_staff_threads, rows)) is pending
+
+
+async def test_a_listed_thread_names_the_model_its_latest_turn_ran_on():
+    """The thread's own llm_model is empty on one following the account
+    default, which would read as no model at all, so the row names the one
+    its latest turn ran on instead."""
+    import json
+
+    rows = [
+        {
+            "conversation_thread_id": OTHER,
+            "current_status": "completed",
+            "user_id": USER_ID,
+            "llm_model": None,
+            "latest_run_model": "m-one",
+        },
+        {"conversation_thread_id": OWN, "current_status": "in_progress", "llm_model": "m-two"},
+    ]
+    listed = json.loads((await _list(chief_of_staff_threads, rows)).content)["threads"]
+
+    assert [row["model"] for row in listed] == ["m-one", None]
+    assert all(
+        not {"llm_model", "latest_run_model", "user_id"} & row.keys() for row in listed
+    )

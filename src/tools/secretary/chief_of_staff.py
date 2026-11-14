@@ -147,7 +147,7 @@ async def agent_output(
             live turn.
 
     Returns:
-        The agent's reply text, not its tool calls, each run under a line with its start time, how it ended and whether it was a report-back, and whether the thread is still running.
+        The agent's reply text, not its tool calls, each run under a line with its start time, how it ended, the model it ran on and whether it was a report-back, and whether the thread is still running.
     """
     configurable = config.get("configurable", {})
     user_id = configurable.get("user_id")
