@@ -8,11 +8,11 @@ Each thread's transcript sits in the workspace the thread belongs to:
 
 ```
 .agents/transcripts/<thread>/
-  manifest.json        segments: one entry per turn file, with file, turn, at (when it opened), events
+  manifest.json        segments: one entry per turn file, with file, turn, at (when it opened), model, events
   turn-0001.jsonl      one JSON event per line
   tasks/<task_id>/
     meta.json          task_id, description, subagent_type, created_at, and the latest
-                       run's status and launch_call_id; segments lists the runs
+                       run's status and launch_call_id; segments lists the runs, with their model
     run-0001.jsonl     one file per run of that background task
 ```
 
@@ -26,9 +26,9 @@ Every line carries `seq`, `turn` (`run` in a task file), `type` and `id`.
 
 | `type` | Fields |
 |---|---|
-| `user` | `text`. The first line of a turn has `at`; a message sent while you were working has `steering: true` and text starting `[Steering from User]`; attachments show as `[image]` or `[file: name]` |
-| `assistant` | `text`, the visible reply only |
-| `tool_call` | `call_id`, `tool`, `args` in full, never truncated |
+| `user` | `text`. The first line of a turn has `at` and `model`, the model that answered; a message sent while you were working has `steering: true` and text starting `[Steering from User]`; attachments show as `[image]` or `[file: name]` |
+| `assistant` | `text`, the visible reply only; `model` where the model that answered changes |
+| `tool_call` | `call_id`, `tool`, `args` in full, never truncated; `model` as on `assistant` |
 | `tool_result` | `call_id`, `tool`, `status`, `text` in full; `evicted` names the file a large result was saved to |
 
 Reasoning, compaction summaries and the context rows the harness injects are not kept. A turn file starts at each new user message, and a background task reporting back arrives as one too. An `AskUserQuestion` answer is that call's `tool_result` ("User answered: ..."), and a message sent mid-turn stays in the same turn, so transcript turn numbers can differ from the count the user sees.

@@ -1,12 +1,18 @@
 """How a catalog model is named to a reader: the agent, a transcript, `la`.
 
-The manifest is read only when a label is asked for, so a module that names a
-model this way loads nothing for it at import.
+A leaf on purpose. The transcript renderer and the Claude Code runtime need
+the response-metadata key without loading the middleware that stamps it, and
+the manifest is read only when a label is asked for.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+#: The ``response_metadata`` key naming the catalog model (its models.json
+#: name) that wrote an answer, which a transcript records. The provider's own
+#: ``model_name`` is an API id, and the same id can sit behind several rows.
+CATALOG_MODEL_KEY = "catalog_model"
 
 
 def model_label(name: str | None, effort: str | None = None) -> str:

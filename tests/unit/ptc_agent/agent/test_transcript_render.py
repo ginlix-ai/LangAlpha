@@ -22,6 +22,7 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
 from ptc_agent.agent.middleware.runtime_context.turn import TURN_ROW_KIND
 from ptc_agent.agent.transcript import Window, build_directory, load_manifest
 from ptc_agent.agent.transcript.render import message_turns
+from src.llms.model_identity import CATALOG_MODEL_KEY
 
 
 def _turn(n: int) -> list:
@@ -170,3 +171,65 @@ def test_the_turn_row_and_the_eviction_pointer_read_as_their_producers_write_the
     assert events[0]["at"] == opened.isoformat()
     [result] = [event for event in events if event["type"] == "tool_result"]
     assert result["evicted"] == path
+
+
+def _on(model: str, message: AIMessage) -> AIMessage:
+    message.response_metadata = {CATALOG_MODEL_KEY: model}
+    return message
+
+
+def test_the_first_line_names_the_model_and_a_line_names_it_again_where_it_changes():
+    messages = [
+        HumanMessage(content="question", id="h-1"),
+        _on("m-a", AIMessage(
+            content="",
+            id="a-1",
+            tool_calls=[{"id": "call-1", "name": "Bash", "args": {"command": "ls"}}],
+        )),
+        ToolMessage(content="out", tool_call_id="call-1", id="t-1"),
+        _on("m-a", AIMessage(content="still a", id="a-2")),
+        # A fallback took over.
+        _on("m-b", AIMessage(content="now b", id="a-3")),
+    ]
+
+    directory = build_directory(messages, window=Window())
+    events = [json.loads(line) for line in directory.rendered["turn-0001.jsonl"].splitlines()]
+
+    assert [event.get("model") for event in events] == ["m-a", None, None, None, "m-b"]
+    [entry] = load_manifest(directory.manifest)["segments"]
+    assert entry["model"] == "m-a"
+
+
+def test_a_turn_rendered_before_the_stamp_keeps_its_shape():
+    """An unstamped turn renders as it did before models were recorded, so a
+    stored copy from then is reused rather than rendered again; a stamp
+    changes the shape."""
+    before = load_manifest(build_directory(_thread(2), window=Window()).manifest)
+    for entry in before["segments"]:
+        assert entry.pop("model") is None
+    assert b'"model"' not in b"".join(build_directory(_thread(2), window=Window()).rendered.values())
+
+    again = build_directory(_thread(2), previous=before, window=Window())
+    assert again.rendered == {}
+
+    stamped = _thread(2)
+    _on("m-a", stamped[7])
+    after = build_directory(stamped, previous=before, window=Window())
+    assert set(after.rendered) == {"turn-0002.jsonl"}
+
+
+def test_an_answer_that_writes_no_line_names_no_model():
+    """A stamped answer with nothing to show takes no line, so the answer
+    that writes one is named once, on the first line."""
+    messages = [
+        HumanMessage(content="question", id="h-1"),
+        _on("m-a", AIMessage(content="", id="a-1")),
+        _on("m-b", AIMessage(content="from b", id="a-2")),
+    ]
+
+    directory = build_directory(messages, window=Window())
+    events = [json.loads(line) for line in directory.rendered["turn-0001.jsonl"].splitlines()]
+
+    assert [event.get("model") for event in events] == ["m-b", None]
+    [entry] = load_manifest(directory.manifest)["segments"]
+    assert entry["model"] == "m-b"
