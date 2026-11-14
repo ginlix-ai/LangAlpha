@@ -214,12 +214,12 @@ async def get_thread_output(
     ),
 ):
     """The text each of the thread's latest turns committed, as the Chief of
-    Staff reads an analyst's output: one labeled block per run, times in the
-    user's zone. While a turn runs, only that turn's text so far, and
-    ``status`` says it is still running."""
+    Staff reads an analyst's output with ``la threads output``: one labeled
+    block per run, times in the user's zone. While a turn runs, only that
+    turn's text so far, and ``status`` says it is still running."""
     await auth_api.require_thread_owner(thread_id, x_user_id)
     from src.server.services.wakeups.message import user_timezone
-    from src.tools.secretary.utils import extract_text_from_thread
+    from src.server.services.thread_output import extract_text_from_thread
 
     result = await extract_text_from_thread(
         thread_id, turns=turns, timezone=await user_timezone(x_user_id)

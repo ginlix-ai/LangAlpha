@@ -25,7 +25,7 @@ async def test_output_reads_the_latest_turns_in_the_users_zone():
     )
     with (
         patch("src.server.utils.api.require_thread_owner", new=AsyncMock()) as owner,
-        patch("src.tools.secretary.utils.extract_text_from_thread", new=extract),
+        patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
         patch(
             "src.server.services.wakeups.message.user_timezone",
             new=AsyncMock(return_value="Asia/Tokyo"),
@@ -52,7 +52,7 @@ async def test_output_defaults_to_the_latest_turn_and_takes_zero_for_history():
     extract = AsyncMock(return_value={"text": "", "status": "running", "workspace_id": "ws-1"})
     with (
         patch("src.server.utils.api.require_thread_owner", new=AsyncMock()),
-        patch("src.tools.secretary.utils.extract_text_from_thread", new=extract),
+        patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
         patch("src.server.services.wakeups.message.user_timezone", new=AsyncMock(return_value="UTC")),
     ):
         async with AsyncClient(transport=ASGITransport(app=_app()), base_url="http://test") as c:
@@ -74,7 +74,7 @@ async def test_output_of_a_thread_the_caller_does_not_own_is_refused():
             "src.server.utils.api.require_thread_owner",
             new=AsyncMock(side_effect=HTTPException(status_code=404, detail="Thread not found")),
         ),
-        patch("src.tools.secretary.utils.extract_text_from_thread", new=extract),
+        patch("src.server.services.thread_output.extract_text_from_thread", new=extract),
     ):
         async with AsyncClient(transport=ASGITransport(app=_app()), base_url="http://test") as c:
             resp = await c.get(f"/api/v1/threads/{THREAD}/output")

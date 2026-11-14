@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.tools.secretary.utils import _qualify_file_paths
+from src.server.services.thread_output import _qualify_file_paths
 
 WID = "20cc68e8-d057-41f4-9bb1-57aa8d310704"
 Q = f"__wsref__/{WID}"
