@@ -161,7 +161,7 @@ async def test_a_follow_up_launched_from_a_resumed_turn_reaches_the_subagent(
     monkeypatch.setattr(sa, "arun_subagent_streaming", run)
     registry = MagicMock()
     registry.get_by_tool_call_id.return_value = SimpleNamespace(
-        completed=False, task_id="task-1", subagent_type="research", task_run_id=None
+        completed=False, task_id="task-1", subagent_type="research", task_run_id=None, runs_on=None,
     )
     tool = sa._create_task_tool(
         subagent_graphs={"research": graph}, registry=registry, checkpointer=saver

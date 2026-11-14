@@ -39,6 +39,7 @@ from ptc_agent.agent.middleware.background_subagent.spawn import (
     spawn_task_writer,
     stopped_launch_artifact,
 )
+from ptc_agent.config.agent import TaskModel, TaskModelRefused
 
 if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.middleware import (
@@ -85,6 +86,11 @@ async def handle_task_action(
     action = args.get("action", "init")
     target_task_id = bare_task_id(args.get("task_id"))
     subagent_type = args.get("subagent_type")
+    model = args.get("model")
+    if model is not None and not isinstance(model, str):
+        # Malformed: the Task tool's own schema refuses it in place.
+        return await handler(request)
+    model = model.strip() or None if model else None
 
     # Extract parent_thread_id for hydration fallback
     parent_thread_id = (
@@ -106,6 +112,13 @@ async def handle_task_action(
     ) or runtime_config.get("run_id")
 
     if action == "update":
+        if model:
+            return ToolMessage(
+                content="Error: model applies to init and resume; a running task keeps its model.",
+                tool_call_id=tool_call_id,
+                name="Task",
+                status="error",
+            )
         return await _handle_update(
             mw,
             target_task_id=target_task_id,
@@ -126,6 +139,7 @@ async def handle_task_action(
             description=description,
             prompt=prompt,
             args=args,
+            model=model,
             parent_thread_id=parent_thread_id,
             tool_call_id=tool_call_id,
             current_run_id=current_run_id,
@@ -143,9 +157,56 @@ async def handle_task_action(
         subagent_type=subagent_type,
         description=description,
         prompt=prompt,
+        model=model,
         tool_call_id=tool_call_id,
         current_run_id=current_run_id,
     )
+
+
+async def _resolve_model(
+    mw: "BackgroundSubagentMiddleware", name: str, subagent_type: str, *, keep: bool = False
+) -> TaskModel | TaskModelRefused | None:
+    """The model ``name`` for one task of ``subagent_type``, gated as the
+    turn's own model was; None where it is that subagent's own, unless
+    ``keep`` (``TaskModelResolver.resolve``)."""
+    if mw.task_models is None:
+        return TaskModelRefused(
+            "Error: a task cannot be given a model of its own here. Leave model out.",
+            "a task cannot be given a model of its own here",
+        )
+    try:
+        return await mw.task_models.resolve(name, subagent_type, keep=keep)
+    except Exception:
+        logger.warning("task model resolution failed", model=name, exc_info=True)
+        return TaskModelRefused(
+            f"Error: {name} could not be checked just now. Try again, or leave model out.",
+            "it could not be checked just now",
+        )
+
+
+async def _last_model(mw: "BackgroundSubagentMiddleware", task: BackgroundTask) -> str | None:
+    """The model a resume that names none runs the task on: the one its last
+    run was admitted on, read off the ledger, since another worker may have
+    resumed it on another model since. A failed read raises: the subagent's
+    own model in its place would be recorded on the new run, and every later
+    resume would follow it."""
+    ledger = mw.registry.run_ledger
+    if ledger is None:
+        return None
+    row = await ledger.get_latest_run(task.task_id)
+    return ((row or {}).get("replay_facts") or {}).get("model_override") or None
+
+
+def _named_own(model: str | None, override: TaskModel | None) -> str | None:
+    """The model a Task named when it is its subagent's own (``_resolve_model``
+    resolved it to None), which the run records all the same."""
+    if override is not None:
+        return None
+    return (model or "").strip() or None
+
+
+def _refusal(content: str, tool_call_id: str) -> ToolMessage:
+    return ToolMessage(content=content, tool_call_id=tool_call_id, name="Task", status="error")
 
 
 def _settle_resume_failure(task: BackgroundTask, exc: Exception) -> None:
@@ -396,8 +457,14 @@ async def _handle_resume(
     parent_thread_id: str,
     tool_call_id: str,
     current_run_id: str | None,
+    model: str | None = None,
 ) -> ToolMessage:
-    """RESUME: reset a completed task and respawn it in the background."""
+    """RESUME: reset a completed task and respawn it in the background.
+
+    The run goes on the model ``model`` names, else the one the task last
+    ran on, resolved again here: a model the user could run then may be off
+    their plan or out of keys now.
+    """
     resolved = await mw._resolve_or_error(
         target_task_id,
         parent_thread_id,
@@ -507,6 +574,35 @@ async def _handle_resume(
         )
     mw._resume_claims.add(task.task_id)
     try:
+        # Before the fence, so a refused model holds nothing once the claim
+        # drops on the way out.
+        try:
+            named = model or await _last_model(mw, task)
+        except Exception:
+            logger.warning("latest run read failed", task_id=task.task_id, exc_info=True)
+            return _refusal(
+                f"Error: the model {task.display_id} last ran on could not be checked "
+                "just now. Try again.",
+                tool_call_id,
+            )
+        # Carried over, the model stays recorded even while it is the
+        # subagent's own: that follows the chat's model, which may change.
+        override = (
+            await _resolve_model(mw, named, task.subagent_type, keep=model is None)
+            if named
+            else None
+        )
+        if isinstance(override, TaskModelRefused):
+            return _refusal(
+                override.message
+                if model
+                else (
+                    f"Error: {task.display_id} ran on {named}, which is not available now "
+                    f"({override.reason}). Resume it with model set to another from "
+                    "`la models list`."
+                ),
+                tool_call_id,
+            )
         if mw.namespace_owner is not None:
             # Not live in THIS process: the namespace lock is the
             # cluster-wide arbiter. Contended = a writer on another
@@ -545,6 +641,8 @@ async def _handle_resume(
         # BEFORE the v1 reset destroys the prior round's streams — a
         # rejected resume must leave them intact.
         resume_run_id = current_run_id or mw.registry.current_run_id
+        task.runs_on = override
+        task.named_own = _named_own(model, override)
         try:
             admitted = await mw.admit_task_run(
                 task,
@@ -632,6 +730,7 @@ async def _handle_resume(
     pseudo_result = (
         f"Resumed **{task.display_id}** in background with new instructions.\n"
         f"- Type: {task.subagent_type}\n"
+        f"{_model_line(override)}"
         f"- New task: {short_description}\n"
         f"- Status: Running (resumed with full previous context)\n\n"
         f"You will be notified when it finishes."
@@ -649,9 +748,18 @@ async def _handle_resume(
                 "description": description,
                 "prompt": prompt,
                 "type": task.subagent_type,
+                **_model_artifact(override),
             }
         },
     )
+
+
+def _model_line(override: TaskModel | None) -> str:
+    return f"- Model: {override.display_name}\n" if override is not None else ""
+
+
+def _model_artifact(override: TaskModel | None) -> dict[str, str]:
+    return {"model": override.name} if override is not None else {}
 
 
 async def _handle_init(
@@ -664,10 +772,16 @@ async def _handle_init(
     prompt: str,
     tool_call_id: str,
     current_run_id: str | None,
+    model: str | None = None,
 ) -> ToolMessage:
     """INIT (default): register, admit, and spawn a new background task."""
     if subagent_type is None:
         subagent_type = "general-purpose"
+
+    # Before the task exists, so a refused model leaves nothing registered.
+    override = await _resolve_model(mw, model, subagent_type) if model else None
+    if isinstance(override, TaskModelRefused):
+        return _refusal(override.message, tool_call_id)
 
     # Register the task first to get the task_id. A checkpoint
     # re-execution of an already-spawned call raises TaskWriterLive
@@ -721,8 +835,11 @@ async def _handle_init(
         display_id=task.display_id,
         subagent_type=subagent_type,
         description=description[:100],
+        model_override=override.name if override is not None else None,
     )
 
+    task.runs_on = override
+    task.named_own = _named_own(model, override)
     try:
         admitted = await mw.admit_task_run(
             task,
@@ -765,6 +882,7 @@ async def _handle_init(
     pseudo_result = (
         f"Background subagent deployed: **{task.display_id}**\n"
         f"- Type: {subagent_type}\n"
+        f"{_model_line(override)}"
         f"- Task: {short_description}\n"
         f"- Status: Running in background\n\n"
         f"You will be notified when it finishes."
@@ -782,6 +900,7 @@ async def _handle_init(
                 "description": description,
                 "prompt": prompt,
                 "type": subagent_type,
+                **_model_artifact(override),
             }
         },
     )

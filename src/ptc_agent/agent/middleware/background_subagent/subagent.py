@@ -1,8 +1,9 @@
 """Middleware for providing subagents to an agent via a `Task` tool."""
 
 import time
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import aclosing, contextmanager
+from functools import partial
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 import structlog
@@ -38,6 +39,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
     TransportLostError,
 )
+from ptc_agent.agent.middleware.background_subagent.task import BackgroundTask
 from ptc_agent.agent.middleware.background_subagent.token_forwarder import (
     _SubagentTokenForwarder,
 )
@@ -47,6 +49,7 @@ from ptc_agent.agent.middleware.runtime_context.turn import (
     TURN_TIME_LIMIT_KEY,
 )
 from ptc_agent.agent.state import DeltaAgentState
+from ptc_agent.config.agent import Admitted, RunOn, SubagentModel, TaskModel
 from src.llms.claude_code import ClaudeCodeTarget
 from src.llms.llm import narrow_prompt_cache_key
 from src.observability.langsmith_tracer import with_run_tracer
@@ -181,6 +184,7 @@ Args:
     subagent_type: Which subagent to use (e.g. "general-purpose"). Required for "init".
     action: "init" (new task, default), "update" (instruct a running task), "resume" (continue a completed or stopped task from its checkpoint, with its prior context intact)
     task_id: The target task's short alphanumeric ID. Required for "update" and "resume".
+    model: Run this task on another model instead of the subagent's own, named as in `la models list`. Pass it only when the user asks for a model or a skill's procedure names one. On resume, omitted keeps the model the task last ran on.
 
 Returns:
     A task ID immediately, not the subagent's work. The subagent runs
@@ -204,14 +208,14 @@ def _get_subagents(
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
     subagents: list[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
+    build: Callable[[SubAgent], Any],
     checkpointer: Any | None = None,
-    claude_code: ClaudeCodeSubagent | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Build compiled subagent instances from specs.
+    """Build compiled subagent instances from specs, each spec through
+    ``build``.
 
     Returns ``(agent_dict, description_list)`` where ``agent_dict`` maps
-    agent names to runnable instances. A spec whose model is a Claude Code
-    row runs on Claude Code, through ``claude_code``, when it is given.
+    agent names to runnable instances.
     """
     # Use empty list if None (no default middleware)
     default_subagent_middleware = default_middleware or []
@@ -247,33 +251,74 @@ def _get_subagents(
             custom_agent = cast("CompiledSubAgent", agent_)
             agents[custom_agent["name"]] = custom_agent["runnable"]
             continue
-        _tools = agent_.get("tools", list(default_tools))
-
-        subagent_model = agent_.get("model", default_model)
-
-        _middleware = (
-            [*default_subagent_middleware, *agent_["middleware"]]
-            if "middleware" in agent_
-            else [*default_subagent_middleware]
-        )
-
-        interrupt_on = agent_.get("interrupt_on", default_interrupt_on)
-        if interrupt_on:
-            _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-
-        compiled = create_agent(
-            narrow_prompt_cache_key(subagent_model, agent_["name"]),
-            system_prompt=agent_["system_prompt"],
-            tools=_tools,
-            middleware=_middleware,
-            name=agent_["name"],
-            checkpointer=checkpointer,
-            state_schema=DeltaAgentState,
-        )
-        if claude_code is not None and isinstance(subagent_model, ClaudeCodeTarget):
-            compiled = claude_code(compiled, agent_, subagent_model)
-        agents[agent_["name"]] = compiled
+        agents[agent_["name"]] = build(cast("SubAgent", agent_))
     return agents, subagent_descriptions
+
+
+def claude_code_target(spec: SubAgent, default_model: Any) -> ClaudeCodeTarget | None:
+    """The Claude Code row a spec runs on, None where it runs another model."""
+    model = spec.get("model", default_model)
+    return model if isinstance(model, ClaudeCodeTarget) else None
+
+
+def run_on_by_type(
+    specs: Iterable[SubAgent | CompiledSubAgent],
+    *,
+    default_model: Any,
+    models: Mapping[str, SubagentModel],
+    claude_code: Admitted | None,
+) -> dict[str, RunOn]:
+    """What each type's runs are admitted on: the model ``models`` gives it,
+    and for a spec ``build_subagent_graph`` runs on Claude Code (a CLI can
+    run here, ``claude_code``, and its model is a Claude Code row) where its
+    CLI was placed and the model it runs."""
+    targets = {
+        spec["name"]: target
+        for spec in specs
+        if claude_code is not None
+        and "runnable" not in spec
+        and (target := claude_code_target(cast("SubAgent", spec), default_model)) is not None
+    }
+    return {
+        name: RunOn(
+            model=models.get(name),
+            claude_code=claude_code if name in targets else None,
+            claude_code_model=targets[name].model if name in targets else None,
+        )
+        for name in {*models, *targets}
+    }
+
+
+def build_subagent_graph(
+    spec: SubAgent,
+    *,
+    default_model: str | BaseChatModel,
+    default_tools: Sequence[BaseTool | Callable | dict[str, Any]] = (),
+    default_middleware: list[AgentMiddleware] | None = None,
+    default_interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    checkpointer: Any | None = None,
+    claude_code: ClaudeCodeSubagent | None = None,
+) -> Any:
+    """One spec's graph: ``create_agent`` on its model, wrapped by
+    ``claude_code`` when that model is a Claude Code row."""
+    subagent_model = spec.get("model", default_model)
+    target = claude_code_target(spec, default_model)
+    middleware = [*(default_middleware or []), *spec.get("middleware", [])]
+    interrupt_on = spec.get("interrupt_on", default_interrupt_on)
+    if interrupt_on:
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+    compiled = create_agent(
+        narrow_prompt_cache_key(subagent_model, spec["name"]),
+        system_prompt=spec["system_prompt"],
+        tools=spec.get("tools", list(default_tools)),
+        middleware=middleware,
+        name=spec["name"],
+        checkpointer=checkpointer,
+        state_schema=DeltaAgentState,
+    )
+    if claude_code is not None and target is not None:
+        compiled = claude_code(compiled, spec, target)
+    return compiled
 
 
 def _without_stream_tee(config: dict) -> dict:
@@ -608,12 +653,16 @@ def _create_task_tool(
     task_description: str = TASK_TOOL_DESCRIPTION,
     registry: BackgroundTaskRegistry | None = None,
     checkpointer: Any | None = None,
+    graph_on: Callable[[str, TaskModel], Runnable] | None = None,
 ) -> BaseTool:
     """Build a StructuredTool that dispatches Task tool calls to compiled subagents.
 
     ``subagent_graphs`` are pre-compiled via ``_get_subagents`` by the caller
     (``SubAgentMiddleware``) so the Task tool and any direct dispatch path
-    invoke the same graph instances.
+    invoke the same graph instances. ``graph_on`` is the graph of a task on
+    the model its call named (``BackgroundTask.runs_on``), which the
+    background middleware resolved and gated before admitting the run; the
+    call's own ``model`` argument is only ever read there.
     """
 
     async def _arun_subagent_streaming(
@@ -625,10 +674,23 @@ def _create_task_tool(
             subagent, state, config, registry=registry
         )
 
+    def _background_task() -> BackgroundTask | None:
+        bg_tool_call_id = current_background_tool_call_id.get()
+        if not bg_tool_call_id or registry is None:
+            return None
+        return registry.get_by_tool_call_id(bg_tool_call_id)
+
+    def _graph(subagent_type: str) -> Runnable:
+        bg_task = _background_task()
+        runs_on = bg_task.runs_on if bg_task is not None else None
+        if runs_on is not None and graph_on is not None:
+            return graph_on(subagent_type, runs_on)
+        return subagent_graphs[subagent_type]
+
     def _validate_and_prepare_state(
         subagent_type: str, prompt: str, runtime: ToolRuntime
     ) -> tuple[Runnable, dict]:
-        subagent = subagent_graphs[subagent_type]
+        subagent = _graph(subagent_type)
         # Create a new state dict to avoid mutating the original
         subagent_state = {
             k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS
@@ -656,12 +718,7 @@ def _create_task_tool(
             "subagent_type": effective_type,
             "description": prompt[:200],
         }
-        bg_tool_call_id = current_background_tool_call_id.get()
-        bg_task = (
-            registry.get_by_tool_call_id(bg_tool_call_id)
-            if bg_tool_call_id and registry
-            else None
-        )
+        bg_task = _background_task()
         if bg_task is not None and bg_task.task_run_id:
             md["task_run_id"] = bg_task.task_run_id
         return md
@@ -686,6 +743,10 @@ def _create_task_tool(
         task_id: Annotated[
             str | None,
             "Task ID. Required for update and resume actions.",
+        ] = None,
+        model: Annotated[
+            str | None,
+            "A model name from `la models list`; only when the user asks for one or a skill's procedure names one.",
         ] = None,
         runtime: ToolRuntime = None,  # type: ignore[assignment]
     ) -> str | ToolMessage | Command:
@@ -786,6 +847,10 @@ def _create_task_tool(
             str | None,
             "Task ID. Required for update and resume actions.",
         ] = None,
+        model: Annotated[
+            str | None,
+            "A model name from `la models list`; only when the user asks for one or a skill's procedure names one.",
+        ] = None,
         runtime: ToolRuntime = None,  # type: ignore[assignment]
     ) -> str | ToolMessage | Command:
         # Resolve subagent_type based on action
@@ -817,7 +882,7 @@ def _create_task_tool(
                     runtime,
                 )
 
-        subagent = subagent_graphs[effective_type]
+        subagent = _graph(effective_type)
 
         # Start from the parent config for its configurable and tags, minus
         # its callbacks: the run names only its own tracker, and
@@ -950,6 +1015,10 @@ class SubAgentMiddleware(AgentMiddleware):
         task_description: Description for the Task tool.
         claude_code: Builds the graph of a subagent whose model is a Claude
             Code row; without it every subagent runs on ``create_agent``.
+        compile_on: Compiles a subagent type's spec on the model a Task
+            named for it; without it a Task names none.
+        claude_code_on: ``claude_code`` for a task on a Claude Code row a
+            Task named, from where its admission placed the CLI.
 
     Example:
         ```python
@@ -995,9 +1064,21 @@ class SubAgentMiddleware(AgentMiddleware):
         registry: BackgroundTaskRegistry | None = None,
         checkpointer: Any | None = None,
         claude_code: ClaudeCodeSubagent | None = None,
+        compile_on: Callable[[str, TaskModel], SubAgent] | None = None,
+        claude_code_on: Callable[[Admitted], ClaudeCodeSubagent] | None = None,
     ) -> None:
         super().__init__()
         self.system_prompt = system_prompt
+        # One assembly for every subagent graph, the roster's and a task's on
+        # a model its call names, so the two differ only in their spec.
+        self._build_graph = partial(
+            build_subagent_graph,
+            default_model=default_model,
+            default_tools=default_tools or [],
+            default_middleware=default_middleware,
+            default_interrupt_on=default_interrupt_on,
+            checkpointer=checkpointer,
+        )
         # Compiled once and shared: the Task tool and any direct dispatch
         # path (e.g. the workflow driver) must invoke the SAME graph
         # instances so model resolution and middleware wiring are identical.
@@ -1008,16 +1089,38 @@ class SubAgentMiddleware(AgentMiddleware):
             default_interrupt_on=default_interrupt_on,
             subagents=subagents or [],
             general_purpose_agent=general_purpose_agent,
+            build=partial(self._build_graph, claude_code=claude_code),
             checkpointer=checkpointer,
-            claude_code=claude_code,
         )
+        # A task's graph on a model its call names, built once per type and
+        # model. This middleware is built per turn, on the turn's worker, so
+        # these are that turn's execution context and nothing else reads them.
+        self._compile_on = compile_on
+        self._claude_code_on = claude_code_on
+        self._model_graphs: dict[tuple[str, str, Admitted | None], Runnable] = {}
         task_tool = _create_task_tool(
             subagent_graphs=self.subagent_graphs,
             task_description=task_description,
             registry=registry,
             checkpointer=checkpointer,
+            graph_on=self._graph_on if compile_on is not None else None,
         )
         self.tools = [task_tool]
+
+    def _graph_on(self, subagent_type: str, on: TaskModel) -> Runnable:
+        # Where Claude Code was placed too: two Tasks resolving at once can be
+        # placed apart, and the graph keeps the computer it was built for.
+        key = (subagent_type, on.name, on.claude_code)
+        if key not in self._model_graphs:
+            claude_code = (
+                self._claude_code_on(on.claude_code)
+                if on.claude_code is not None and self._claude_code_on is not None
+                else None
+            )
+            self._model_graphs[key] = self._build_graph(
+                self._compile_on(subagent_type, on), claude_code=claude_code
+            )
+        return self._model_graphs[key]
 
     def wrap_model_call(
         self,

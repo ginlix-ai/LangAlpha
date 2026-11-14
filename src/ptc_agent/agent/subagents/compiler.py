@@ -189,12 +189,26 @@ class SubagentCompiler:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def compile(self, definition: SubagentDefinition) -> dict[str, Any]:
-        """Compile a single definition into a ``SubAgent`` TypedDict."""
+    def compile(
+        self,
+        definition: SubagentDefinition,
+        *,
+        client: Any | None = None,
+        guidance: str | None = None,
+    ) -> dict[str, Any]:
+        """Compile a single definition into a ``SubAgent`` TypedDict.
+
+        ``client`` and ``guidance`` run it on a model one Task names, over
+        the client and scaffolding its definition would get.
+        """
+        if guidance is None:
+            guidance = self._guidance(definition)
         # A credentialed user's resolved client outranks the definition's
         # string model name.
         resolved = (
-            self._config.client_for_role(
+            client
+            if client is not None
+            else self._config.client_for_role(
                 f"subagent:{definition.name}", fallback_to_main=False
             )
             if self._config is not None
@@ -226,14 +240,14 @@ class SubagentCompiler:
                 # mount serves; code and shell reach them only through it.
                 files="filesystem" in bound or (runs_code and self._files_mounted),
                 writes_files=runs_code or "filesystem" in bound,
-                guidance=self._guidance(definition),
+                guidance=guidance,
                 model=self._model_label(definition, resolved),
             )
         sections.update(held, security_policy=runs_code)
         result: dict[str, Any] = {
             "name": definition.name,
             "description": definition.description,
-            "system_prompt": self._resolve_prompt(definition, sections),
+            "system_prompt": self._resolve_prompt(definition, sections, guidance=guidance),
             "tools": self._resolve_tools(definition),
         }
         if model is not None:
@@ -249,7 +263,7 @@ class SubagentCompiler:
     # ── Prompt resolution ─────────────────────────────────────────────
 
     def _resolve_prompt(
-        self, defn: SubagentDefinition, sections: dict[str, bool]
+        self, defn: SubagentDefinition, sections: dict[str, bool], *, guidance: str
     ) -> str:
         """Resolve the system prompt based on priority.
 
@@ -273,7 +287,7 @@ class SubagentCompiler:
         # Shared template variables
         template_kwargs = subagent_template_vars(
             defn,
-            guidance=self._guidance(defn),
+            guidance=guidance,
             current_time=self._current_time,
             thread_id=self._thread_id,
             files_mounted=self._files_mounted,

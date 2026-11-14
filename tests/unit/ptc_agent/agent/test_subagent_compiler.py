@@ -106,6 +106,26 @@ class TestSubagentCompilerClientInjection:
 
         assert "model" not in result
 
+    def test_a_tasks_own_model_outranks_the_subagents_client_and_scaffolding(self):
+        """A Task that names a model compiles the definition on that client,
+        scaffolded for that model rather than the one the subagent pins."""
+        stored = _FakeClient(name="byok-subagent-model")
+        cfg = _config(
+            subsidiary_llm_clients={"subagent:research": stored},
+            role_prompt_guidance={"subagent:research": "detailed"},
+        )
+        compiler = _compiler(config=cfg)
+        picked = _FakeClient(name="task-model")
+
+        own = compiler.compile(_base_path_defn())
+        lean = compiler.compile(_base_path_defn(), client=picked, guidance="lean")
+
+        assert lean["model"] is picked
+        assert lean["system_prompt"] != own["system_prompt"]
+        assert compiler.compile(_base_path_defn(), client=picked, guidance="detailed")[
+            "system_prompt"
+        ] == own["system_prompt"]
+
     def test_consumption_shape(self):
         """agent_.get('model', default_model) returns the injected instance (exact consumer expression)."""
         stored = _FakeClient(name="byok-subagent-model")

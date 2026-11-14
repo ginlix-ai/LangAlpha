@@ -6,7 +6,8 @@ allowing the main agent to continue working without blocking.
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Collection
+from dataclasses import replace
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -32,7 +33,7 @@ from ptc_agent.agent.middleware.background_subagent import (
     run_executor,
     task_actions,
 )
-from ptc_agent.config.agent import SubagentModel
+from ptc_agent.config.agent import RunOn, TaskModelResolver
 
 #: Why a resume on Claude Code is refused for a task another model last
 #: answered (a pin that ran on the turn's model then), as the refusal reads
@@ -77,7 +78,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         registry: BackgroundTaskRegistry | None = None,
         checkpointer: Any | None = None,
         namespace_owner: Any | None = None,
-        subagent_models: dict[str, SubagentModel] | None = None,
+        run_on: Mapping[str, RunOn] | None = None,
+        task_models: TaskModelResolver | None = None,
     ) -> None:
         """
         Args:
@@ -89,8 +91,11 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 (``acquire_task_ns(task_id) -> bool`` / ``release_task_ns``, e.g.
                 the run's WriterGuard). None = single-writer deployment; spawn and
                 resume skip the fence.
-            subagent_models: the subagent types that run a model other than
-                the main agent's; each run of one carries it from admission.
+            run_on: what each subagent type's runs are admitted on, for a
+                type that runs a model other than the main agent's or runs
+                on Claude Code; any other type's on none of that.
+            task_models: resolves the model a Task names for that task,
+                gated as the turn's own model was; None refuses the argument.
         """
         super().__init__()
         self.registry = registry or BackgroundTaskRegistry()
@@ -99,18 +104,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         self.checkpointer = checkpointer
         self.namespace_owner = namespace_owner
         self.subagent_types = frozenset(subagent_types)
-        self.subagent_models = dict(subagent_models or {})
-        #: The subagent types whose runs each run a Claude Code CLI, which
-        #: their computer counts; set once their graphs are built.
-        self.claude_code_types: frozenset[str] = frozenset()
-        #: Whether those CLIs sign in with the setup token the user stored,
-        #: as the build that launches them was let to.
-        self.claude_code_stored = False
-        #: The model each of those types' CLIs runs, by type.
-        self.claude_code_models: dict[str, str] = {}
-        #: The own computer those CLIs run on for a workspace on another
-        #: computer, whose count bounds them rather than the thread's.
-        self.cli_computer: str | None = None
+        self.run_on = dict(run_on or {})
+        self.task_models = task_models
         # Task ids with a resume mid-flight: the liveness check and the
         # writer spawn are separated by awaits, so two parallel resume calls
         # in one model step could otherwise both pass and double-spawn (the
@@ -213,6 +208,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         fence or record is a run we do not start, and the fence is released on
         the way out so no writer is stranded behind it. ``acquire_fence=False``
         is for a caller already holding it for its own arbitration (resume).
+        The run is admitted on the model its Task named (``runs_on``), else
+        on its type's.
         """
         if acquire_fence and self.namespace_owner is not None:
             if not await self._acquire_task_ns(task.task_id):
@@ -223,9 +220,16 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     "its checkpoint namespace could not be fenced. Try again"
                 )
 
+        run_on = (
+            task.runs_on.run_on
+            if task.runs_on is not None
+            else self.run_on.get(task.subagent_type, RunOn())
+        )
+        if task.runs_on is None and task.named_own:
+            run_on = replace(run_on, model_override=task.named_own)
         if (
             cause == "resume"
-            and task.subagent_type in self.claude_code_types
+            and run_on.claude_code is not None
             and await self._another_model_answered(task)
         ):
             await self._release_task_ns(task.task_id)
@@ -242,11 +246,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 subagent_type=task.subagent_type,
                 parent_run_id=parent_run_id,
                 launch_tool_call_id=launch_tool_call_id,
-                model=self.subagent_models.get(task.subagent_type),
-                claude_code=task.subagent_type in self.claude_code_types,
-                stored_token=self.claude_code_stored,
-                claude_code_model=self.claude_code_models.get(task.subagent_type),
-                cli_computer=self.cli_computer,
+                **run_on.admission_kwargs(),
             )
         except TaskRunRejected as e:
             logger.warning(

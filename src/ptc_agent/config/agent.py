@@ -372,6 +372,36 @@ class Admitted(NamedTuple):
 
 
 @dataclass(frozen=True)
+class RunOn:
+    """What one subagent run is admitted on: its subagent type's, or the
+    model its Task named (``TaskModel.run_on``).
+
+    ``model`` is what the run's card shows, None on its launcher's model.
+    ``claude_code`` is where admission placed its CLI, set only for a run on
+    a Claude Code row, and ``claude_code_model`` the model that CLI runs.
+    ``model_override`` is the catalog name a Task named, which the run's row
+    keeps for a resume that names none.
+    """
+
+    model: SubagentModel | None = None
+    claude_code: Admitted | None = None
+    claude_code_model: str | None = None
+    model_override: str | None = None
+
+    def admission_kwargs(self) -> dict[str, Any]:
+        """The run ledger's ``start_task_run`` facts."""
+        admitted = self.claude_code
+        return {
+            "model": self.model,
+            "claude_code": admitted is not None,
+            "stored_token": bool(admitted is not None and admitted.saved),
+            "claude_code_model": self.claude_code_model,
+            "cli_computer": admitted.cli_computer if admitted is not None else None,
+            **({"model_override": self.model_override} if self.model_override else {}),
+        }
+
+
+@dataclass(frozen=True)
 class TaskModel:
     """The model one Task runs on in place of its subagent's own, resolved
     and gated as a turn's own model is.
@@ -392,6 +422,15 @@ class TaskModel:
     @property
     def on_claude_code(self) -> bool:
         return self.claude_code is not None
+
+    @property
+    def run_on(self) -> RunOn:
+        return RunOn(
+            model=self.model,
+            claude_code=self.claude_code,
+            claude_code_model=self.client.model if self.on_claude_code else None,
+            model_override=self.name,
+        )
 
 
 class TaskModelRefused(NamedTuple):

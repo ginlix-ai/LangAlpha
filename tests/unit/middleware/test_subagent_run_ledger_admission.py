@@ -30,6 +30,7 @@ from ptc_agent.agent.middleware.background_subagent.subagent import (
     _unknown_type_refusal,
 )
 from ptc_agent.agent.middleware.credit_gate import CreditStopError
+from ptc_agent.config.agent import Admitted, RunOn
 from src.server.contracts.status import CREDIT_STOP_ERROR_TYPE
 
 
@@ -73,6 +74,9 @@ class FakeLedger:
     async def mark_result_delivered(self, task_run_id: str) -> bool:
         self.delivered.append(task_run_id)
         return True
+
+    async def get_latest_run(self, task_id: str):
+        return None
 
     async def start_task_run(self, **kwargs) -> str:
         self.started.append(kwargs)
@@ -121,7 +125,7 @@ async def _ok_handler(_request) -> ToolMessage:
     return ToolMessage(content="done", tool_call_id="tc-1", name="Task")
 
 
-def _middleware(owner, ledger, subagent_models=None) -> BackgroundSubagentMiddleware:
+def _middleware(owner, ledger, run_on=None) -> BackgroundSubagentMiddleware:
     registry = BackgroundTaskRegistry(thread_id="")
     registry.run_ledger = ledger
     return BackgroundSubagentMiddleware(
@@ -129,7 +133,7 @@ def _middleware(owner, ledger, subagent_models=None) -> BackgroundSubagentMiddle
         enabled=True,
         subagent_types={"general-purpose"},
         namespace_owner=owner,
-        subagent_models=subagent_models,
+        run_on=run_on,
     )
 
 
@@ -143,9 +147,10 @@ def _middleware(owner, ledger, subagent_models=None) -> BackgroundSubagentMiddle
 async def test_a_task_is_admitted_with_the_credential_its_build_launches_it_on(stored):
     owner = FakeOwner()
     ledger = FakeLedger(reject="stop here")
-    mw = _middleware(owner, ledger)
-    mw.claude_code_types = frozenset({"general-purpose"})
-    mw.claude_code_stored = stored
+    mw = _middleware(
+        owner, ledger,
+        run_on={"general-purpose": RunOn(claude_code=Admitted(saved="stored_token" if stored else None))},
+    )
 
     await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
 
@@ -158,9 +163,9 @@ async def test_a_task_is_admitted_with_the_credential_its_build_launches_it_on(s
 async def test_a_task_is_admitted_on_the_own_computer_its_build_runs_the_cli_on(computer):
     owner = FakeOwner()
     ledger = FakeLedger(reject="stop here")
-    mw = _middleware(owner, ledger)
-    mw.claude_code_types = frozenset({"general-purpose"})
-    mw.cli_computer = computer
+    mw = _middleware(
+        owner, ledger, run_on={"general-purpose": RunOn(claude_code=Admitted(cli_computer=computer))},
+    )
 
     await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
 
@@ -236,7 +241,9 @@ async def test_admission_records_the_model_its_type_runs(models):
     """The row is born with the model, so every reader, live or replayed,
     gets the one value; a type on the main agent's model records none."""
     ledger = FakeLedger(admit="run-uuid-9")
-    mw = _middleware(FakeOwner(), ledger, subagent_models=models)
+    mw = _middleware(
+        FakeOwner(), ledger, run_on={name: RunOn(model=model) for name, model in (models or {}).items()},
+    )
     mw.registry.write_task_meta = AsyncMock()
 
     await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
@@ -790,8 +797,7 @@ async def test_run_end_skipped_when_the_stream_is_torn(monkeypatch):
 @pytest.mark.parametrize("types", [frozenset({"general-purpose"}), frozenset()])
 async def test_admission_says_whether_the_run_is_a_claude_code_cli_its_computer_counts(types):
     ledger = FakeLedger(admit="run-uuid-9")
-    mw = _middleware(FakeOwner(), ledger)
-    mw.claude_code_types = types
+    mw = _middleware(FakeOwner(), ledger, run_on={name: RunOn(claude_code=Admitted()) for name in types})
     mw.registry.write_task_meta = AsyncMock()
 
     await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
@@ -809,9 +815,10 @@ M2 = (
 @pytest.mark.asyncio
 async def test_a_task_the_claude_plan_refuses_answers_in_the_refusals_own_words():
     ledger = FakeLedger(reject=M2, whole=True)
-    mw = _middleware(FakeOwner(), ledger)
-    mw.claude_code_types = frozenset({"general-purpose"})
-    mw.claude_code_models = {"general-purpose": "claude-sonnet-5-5"}
+    mw = _middleware(
+        FakeOwner(), ledger,
+        run_on={"general-purpose": RunOn(claude_code=Admitted(), claude_code_model="claude-sonnet-5-5")},
+    )
 
     result = await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
 
@@ -823,8 +830,10 @@ async def test_a_task_the_claude_plan_refuses_answers_in_the_refusals_own_words(
 @pytest.mark.asyncio
 async def test_a_task_on_a_platform_model_names_no_claude_code_model():
     ledger = FakeLedger(reject="stop here")
-    mw = _middleware(FakeOwner(), ledger)
-    mw.claude_code_models = {"research": "claude-sonnet-5-5"}
+    mw = _middleware(
+        FakeOwner(), ledger,
+        run_on={"research": RunOn(claude_code=Admitted(), claude_code_model="claude-sonnet-5-5")},
+    )
 
     await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
 

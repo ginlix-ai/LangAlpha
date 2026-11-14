@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from ptc_agent.config.agent import TaskModel
     from src.utils.cache.stream_quota import StreamQuota
     from src.utils.stream_coalescing import DeltaCoalescer
 
@@ -207,6 +208,16 @@ class BackgroundTask:
     ``registry.current_run_id`` at register time. Collectors filter by this
     so subagents from prior turns can't get claimed by a later turn's
     collector after the registry is reused across turns."""
+
+    runs_on: TaskModel | None = None
+    """The model this round's Task named, resolved and gated before it is
+    admitted; None on its subagent's own. Admission records it and the Task
+    tool runs the graph built for it, so both read the one value."""
+
+    named_own: str | None = None
+    """The subagent's own model when this round's Task named it: the run
+    keeps its subagent's graph, and admission records the name, so a resume
+    naming none stays on it once the subagent's model moves."""
 
     task_run_id: str | None = None
     """This execution's ledger identity (subagent_runs row). Stamped by the
