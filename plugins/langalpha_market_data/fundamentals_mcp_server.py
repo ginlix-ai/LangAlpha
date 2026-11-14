@@ -207,12 +207,33 @@ async def _cn_first(disp: str, cn_read, fmp_read, *, data_type: str, **extra) ->
     return {**answer, "fallback_from": _SOURCE_TUSHARE}
 
 
+#: Set by ``_add_quarterly_empty_note``; omitted unless a quarterly read is empty.
+_QUARTERLY_NOTE = described(
+    STR, "Why a quarterly read returned no records; omitted otherwise."
+)
+
+
+def _add_quarterly_empty_note(result: dict, period: str) -> None:
+    if period == "quarter" and result.get("count") == 0:
+        result["note"] = (
+            "Quarterly data returned 0 records. The symbol may have no "
+            "quarterly filings, or the FMP subscription tier may not include "
+            "quarterly fundamentals. Try period='annual'."
+        )
+
+
 _OUT_GET_FINANCIAL_STATEMENTS = output_model(
     "GetFinancialStatementsOut",
     envelope_schema(
         ANY,
         frame=("symbol",),
-        echo={"data_type": STR, "statement_type": STR, "period": STR, **_FALLBACK},
+        echo={
+            "data_type": STR,
+            "statement_type": STR,
+            "period": STR,
+            "note": _QUARTERLY_NOTE,
+            **_FALLBACK,
+        },
     ),
 )
 
@@ -235,12 +256,13 @@ async def get_financial_statements(
 
     Returns:
         dict: {symbol, count, data, source, data_type, statement_type, period,
-        fallback_from?}. One statement_type → a list of period records; "all" →
-        {income_statement, balance_sheet, cash_flow} lists with count the total.
-        Common camelCase fields: date, revenue, netIncome, eps, totalAssets,
-        operatingCashFlow. date is "YYYY-MM-DD"; records are newest-first.
-        fallback_from: source that failed before FMP answered. On error:
-        {error: <code>, detail, symbol}.
+        fallback_from?, note?}. One statement_type → a list of period records;
+        "all" → {income_statement, balance_sheet, cash_flow} lists with count the
+        total. Common camelCase fields: date, revenue, netIncome, eps,
+        totalAssets, operatingCashFlow. date is "YYYY-MM-DD"; records are
+        newest-first. fallback_from: source that failed before FMP answered.
+        An empty quarterly read adds a note. On error: {error: <code>, detail,
+        symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
@@ -275,7 +297,7 @@ async def get_financial_statements(
             "cash_flow": cash_flow or [],
         }
 
-    return await _cn_first(
+    result = await _cn_first(
         disp,
         _cn_statements,
         _fmp_statements,
@@ -283,6 +305,8 @@ async def get_financial_statements(
         statement_type=statement_type,
         period=period,
     )
+    _add_quarterly_empty_note(result, period)
+    return result
 
 
 _OUT_GET_FINANCIAL_RATIOS = output_model(
@@ -290,7 +314,7 @@ _OUT_GET_FINANCIAL_RATIOS = output_model(
     envelope_schema(
         RECORDS_BY_KEY,
         frame=("symbol",),
-        echo={"data_type": STR, "period": STR, **_FALLBACK},
+        echo={"data_type": STR, "period": STR, "note": _QUARTERLY_NOTE, **_FALLBACK},
     ),
 )
 
@@ -309,16 +333,16 @@ async def get_financial_ratios(
         limit: Number of periods (default 10).
 
     Returns:
-        dict: {symbol, count, data, source, data_type, period, fallback_from?}.
-        data is {key_metrics, ratios}: period records, newest first.
+        dict: {symbol, count, data, source, data_type, period, fallback_from?,
+        note?}. data is {key_metrics, ratios}: period records, newest first.
         key_metrics fields: marketCap, enterpriseValue, evToEBITDA,
         freeCashFlowYield. ratios fields: netProfitMargin, returnOnEquity,
         currentRatio, debtToEquityRatio, priceToEarningsRatio. source "tushare"
-        rows lack both lists' price-based fields; market cap and EV are in
-        get_historical_valuation. date is "YYYY-MM-DD". A quarter row's
-        flow-based fields cover that quarter alone; its P/E fields annualize
-        the quarter's EPS (x4). fallback_from: source that failed before FMP
-        answered. On error: {error: <code>, detail, symbol}.
+        rows lack price-based fields (see get_historical_valuation). date is
+        "YYYY-MM-DD". Quarter rows: flow-based fields cover that quarter alone;
+        P/E fields annualize its EPS (x4). fallback_from: source that failed
+        before FMP answered. An empty quarterly read adds a note. On error:
+        {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
@@ -338,9 +362,11 @@ async def get_financial_ratios(
     # CN rows carry the accounting half only: ginlix-data prices no period, so
     # they have no marketCap, enterpriseValue or priceToEarningsRatio, and FMP's
     # are not mixed in to stand for them.
-    return await _cn_first(
+    result = await _cn_first(
         disp, _cn_ratios, _fmp_ratios, data_type="financial_ratios", period=period
     )
+    _add_quarterly_empty_note(result, period)
+    return result
 
 
 _OUT_GET_GROWTH_METRICS = output_model(
@@ -348,7 +374,7 @@ _OUT_GET_GROWTH_METRICS = output_model(
     envelope_schema(
         RECORDS_BY_KEY,
         frame=("symbol",),
-        echo={"data_type": STR, "period": STR, **_FALLBACK},
+        echo={"data_type": STR, "period": STR, "note": _QUARTERLY_NOTE, **_FALLBACK},
     ),
 )
 
@@ -367,15 +393,16 @@ async def get_growth_metrics(
         limit: Number of periods (default 10).
 
     Returns:
-        dict: {symbol, count, data, source, data_type, period, fallback_from?}.
-        data is {financial_growth, income_statement_growth}, each a list, newest
-        first; count is the total. financial_growth fields: date, revenueGrowth,
-        netIncomeGrowth, epsgrowth; income_statement_growth fields: date,
-        growthRevenue, growthNetIncome, growthEPS. Growth values are decimal
-        fractions (0.1 = 10%); a quarter row grows on the prior quarter, not the
-        year-ago one. Field names are FMP-native camelCase; date is
+        dict: {symbol, count, data, source, data_type, period, fallback_from?,
+        note?}. data is {financial_growth, income_statement_growth}, each a
+        list, newest first; count is the total. financial_growth fields: date,
+        revenueGrowth, netIncomeGrowth, epsgrowth; income_statement_growth
+        fields: date, growthRevenue, growthNetIncome, growthEPS. Growth values
+        are decimal fractions (0.1 = 10%); a quarter row grows on the prior
+        quarter, not the year-ago one. Field names are FMP-native camelCase; date is
         "YYYY-MM-DD". fallback_from: source that failed before FMP answered.
-        On error: {error: <code>, detail, symbol}.
+        An empty quarterly read adds a note. On error: {error: <code>, detail,
+        symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
@@ -388,13 +415,15 @@ async def get_growth_metrics(
             "income_statement_growth": income_growth or [],
         }
 
-    return await _cn_first(
+    result = await _cn_first(
         disp,
         lambda ts: ts.get_growth_periods(disp, period=period, limit=limit),
         _fmp_growth,
         data_type="growth_metrics",
         period=period,
     )
+    _add_quarterly_empty_note(result, period)
+    return result
 
 
 _OUT_GET_HISTORICAL_VALUATION = output_model(

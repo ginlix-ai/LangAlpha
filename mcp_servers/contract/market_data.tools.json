@@ -4,7 +4,7 @@
     "tools": [
       {
         "name": "get_financial_statements",
-        "description": "Fetch raw historical financial statements for trend analysis or model\nbuilding. statement_type=\"all\" returns income, balance sheet, and cash flow.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    statement_type: \"income\" | \"balance\" | \"cash\" | \"all\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, statement_type, period,\n    fallback_from?}. One statement_type → a list of period records; \"all\" →\n    {income_statement, balance_sheet, cash_flow} lists with count the total.\n    Common camelCase fields: date, revenue, netIncome, eps, totalAssets,\n    operatingCashFlow. date is \"YYYY-MM-DD\"; records are newest-first.\n    fallback_from: source that failed before FMP answered. On error:\n    {error: <code>, detail, symbol}.\n",
+        "description": "Fetch raw historical financial statements for trend analysis or model\nbuilding. statement_type=\"all\" returns income, balance sheet, and cash flow.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    statement_type: \"income\" | \"balance\" | \"cash\" | \"all\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, statement_type, period,\n    fallback_from?, note?}. One statement_type → a list of period records;\n    \"all\" → {income_statement, balance_sheet, cash_flow} lists with count the\n    total. Common camelCase fields: date, revenue, netIncome, eps,\n    totalAssets, operatingCashFlow. date is \"YYYY-MM-DD\"; records are\n    newest-first. fallback_from: source that failed before FMP answered.\n    An empty quarterly read adds a note. On error: {error: <code>, detail,\n    symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -83,6 +83,10 @@
             "period": {
               "type": "string"
             },
+            "note": {
+              "description": "Why a quarterly read returned no records; omitted otherwise.",
+              "type": "string"
+            },
             "fallback_from": {
               "description": "Present if the first source failed and FMP answered instead; names that source.",
               "type": "string"
@@ -102,7 +106,7 @@
       },
       {
         "name": "get_financial_ratios",
-        "description": "Fetch raw historical key metrics and financial ratios.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period, fallback_from?}.\n    data is {key_metrics, ratios}: period records, newest first.\n    key_metrics fields: marketCap, enterpriseValue, evToEBITDA,\n    freeCashFlowYield. ratios fields: netProfitMargin, returnOnEquity,\n    currentRatio, debtToEquityRatio, priceToEarningsRatio. source \"tushare\"\n    rows lack both lists' price-based fields; market cap and EV are in\n    get_historical_valuation. date is \"YYYY-MM-DD\". A quarter row's\n    flow-based fields cover that quarter alone; its P/E fields annualize\n    the quarter's EPS (x4). fallback_from: source that failed before FMP\n    answered. On error: {error: <code>, detail, symbol}.\n",
+        "description": "Fetch raw historical key metrics and financial ratios.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period, fallback_from?,\n    note?}. data is {key_metrics, ratios}: period records, newest first.\n    key_metrics fields: marketCap, enterpriseValue, evToEBITDA,\n    freeCashFlowYield. ratios fields: netProfitMargin, returnOnEquity,\n    currentRatio, debtToEquityRatio, priceToEarningsRatio. source \"tushare\"\n    rows lack price-based fields (see get_historical_valuation). date is\n    \"YYYY-MM-DD\". Quarter rows: flow-based fields cover that quarter alone;\n    P/E fields annualize its EPS (x4). fallback_from: source that failed\n    before FMP answered. An empty quarterly read adds a note. On error:\n    {error: <code>, detail, symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -175,6 +179,10 @@
             "period": {
               "type": "string"
             },
+            "note": {
+              "description": "Why a quarterly read returned no records; omitted otherwise.",
+              "type": "string"
+            },
             "fallback_from": {
               "description": "Present if the first source failed and FMP answered instead; names that source.",
               "type": "string"
@@ -194,7 +202,7 @@
       },
       {
         "name": "get_growth_metrics",
-        "description": "Fetch raw historical growth rates.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period, fallback_from?}.\n    data is {financial_growth, income_statement_growth}, each a list, newest\n    first; count is the total. financial_growth fields: date, revenueGrowth,\n    netIncomeGrowth, epsgrowth; income_statement_growth fields: date,\n    growthRevenue, growthNetIncome, growthEPS. Growth values are decimal\n    fractions (0.1 = 10%); a quarter row grows on the prior quarter, not the\n    year-ago one. Field names are FMP-native camelCase; date is\n    \"YYYY-MM-DD\". fallback_from: source that failed before FMP answered.\n    On error: {error: <code>, detail, symbol}.\n",
+        "description": "Fetch raw historical growth rates.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period, fallback_from?,\n    note?}. data is {financial_growth, income_statement_growth}, each a\n    list, newest first; count is the total. financial_growth fields: date,\n    revenueGrowth, netIncomeGrowth, epsgrowth; income_statement_growth\n    fields: date, growthRevenue, growthNetIncome, growthEPS. Growth values\n    are decimal fractions (0.1 = 10%); a quarter row grows on the prior\n    quarter, not the year-ago one. Field names are FMP-native camelCase; date is\n    \"YYYY-MM-DD\". fallback_from: source that failed before FMP answered.\n    An empty quarterly read adds a note. On error: {error: <code>, detail,\n    symbol}.\n",
         "inputSchema": {
           "properties": {
             "symbol": {
@@ -265,6 +273,10 @@
               "type": "string"
             },
             "period": {
+              "type": "string"
+            },
+            "note": {
+              "description": "Why a quarterly read returned no records; omitted otherwise.",
               "type": "string"
             },
             "fallback_from": {
