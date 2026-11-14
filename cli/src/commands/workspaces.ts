@@ -1,5 +1,5 @@
 import { CliError, Exit, usage } from "../errors.js";
-import { type Api, p } from "../http.js";
+import { type Api, p, type Query } from "../http.js";
 import { print, table } from "../output.js";
 import { type Command, command, remove, type Row, YES } from "./command.js";
 
@@ -12,6 +12,15 @@ interface WorkspaceRow {
   name: string;
 }
 
+/** Every workspace the query lists, a page at a time. */
+async function* everyWorkspace<T>(api: Api, query: Query): AsyncGenerator<T> {
+  for (let offset = 0; ; offset += PAGE) {
+    const page = await api.json<{ workspaces: T[] }>("GET", "/api/v1/workspaces", { query: { ...query, limit: PAGE, offset } });
+    yield* page.workspaces;
+    if (page.workspaces.length < PAGE) break;
+  }
+}
+
 /** ``home``, a workspace id, or a workspace's exact name. The server filters
  *  by no name, so a name is looked for across every page. */
 export async function resolveWorkspace(api: Api, ref: string): Promise<string> {
@@ -21,12 +30,8 @@ export async function resolveWorkspace(api: Api, ref: string): Promise<string> {
   }
   if (UUID.test(ref)) return ref;
   const matches = new Set<string>();
-  for (let offset = 0; ; offset += PAGE) {
-    const page = await api.json<{ workspaces: WorkspaceRow[] }>("GET", "/api/v1/workspaces", {
-      query: { limit: PAGE, offset, include_home: true, sort_by: "name" },
-    });
-    for (const w of page.workspaces) if (w.name === ref) matches.add(w.workspace_id);
-    if (page.workspaces.length < PAGE) break;
+  for await (const w of everyWorkspace<WorkspaceRow>(api, { include_home: true, sort_by: "name" })) {
+    if (w.name === ref) matches.add(w.workspace_id);
   }
   const [only, ...others] = matches;
   if (only === undefined) throw new CliError(`No workspace named "${ref}"`, Exit.notFound);
@@ -40,16 +45,23 @@ export const workspaces: Command[] = [
     summary: "your workspaces",
     flags: {
       "include-home": { type: "bool", help: "list Home as well" },
-      limit: { type: "int", value: "N", help: "at most this many (default 100)" },
+      limit: { type: "int", value: "N", help: "at most this many, up to 100 (default: all)" },
     },
     async run({ api, args, json }) {
-      const page = await api.json<{ workspaces: Row[] }>("GET", "/api/v1/workspaces", {
-        query: { limit: args.int("limit") ?? PAGE, include_home: args.has("include-home") || undefined },
-      });
+      const query = { include_home: args.has("include-home") || undefined };
+      const limit = args.int("limit");
+      // All of them by default: an agent finding a workspace takes a missing
+      // one for one that does not exist.
+      let listed: Row[] = [];
+      if (limit !== undefined) {
+        listed = (await api.json<{ workspaces: Row[] }>("GET", "/api/v1/workspaces", { query: { ...query, limit } })).workspaces;
+      } else {
+        for await (const w of everyWorkspace<Row>(api, query)) listed.push(w);
+      }
       // A workspace's folder sits at its computer's root; the computer goes by
       // its name, which is what a person, or the agent's tools, call it.
-      const rows = page.workspaces.map((w) => ({ ...w, folder: w.dir_name, computer: w.computer_name }));
-      print(json, page.workspaces, () => table(rows, ["workspace_id", "name", "folder", "computer", "status"]));
+      const rows = listed.map((w) => ({ ...w, folder: w.dir_name, computer: w.computer_name }));
+      print(json, listed, () => table(rows, ["workspace_id", "name", "folder", "computer", "status"]));
     },
   }),
   command({

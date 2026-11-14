@@ -1,12 +1,12 @@
 """Fixtures and fakes shared by the secretary tool suite.
 
 The fakes below, imported via ``from .conftest import ...``, stand in for the
-workspace manager and for the background dispatch POST.
+background dispatch POST.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -20,13 +20,6 @@ def _no_committed_texts():
         AsyncMock(return_value={}),
     ):
         yield
-
-
-def workspace_manager(row: dict) -> MagicMock:
-    """A ``WorkspaceManager`` whose create returns ``row``."""
-    mgr = MagicMock()
-    mgr.create_workspace = AsyncMock(return_value=row)
-    return mgr
 
 
 class FakeResp:

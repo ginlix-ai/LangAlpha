@@ -1,9 +1,10 @@
 """What a turn's checkpoints committed, for readers outside replay.
 
-The secretary's ``agent_output`` reads a thread's newest turns while its own
-turn waits. A turn's stored slice serves it while the slice is the turn's on
-the current branch, by the rule replay applies (``slices.stored_spans``);
-only a turn without one waits for its projection. Replay's stored lines would
+A thread's output (``GET /threads/{id}/output``, ``la threads output``)
+reads its newest turns while the caller waits. A turn's stored slice serves
+it while the slice is the turn's on the current branch, by the rule replay
+applies (``slices.stored_spans``); only a turn without one waits for its
+projection. Replay's stored lines would
 serve the same text, but checking them reads every row of the thread, which
 costs this path several times what the slice read does. A legacy turn its
 checkpoints never covered reads the stream its row archived instead, which is

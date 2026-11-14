@@ -634,7 +634,7 @@ async def summary_started(
 async def overtaking_run(run_id, ptc_thread_id: str) -> str | None:
     """The newer run on the analyst's thread that took over ``run_id``'s
     report-back, if one started: the summary turn names only the thread, and
-    ``agent_output`` reads its latest turns, so a summary posted after a
+    ``la threads output`` reads its latest turns, so a summary posted after a
     newer run starts would describe that run's output as this one's. The
     newer run carries the same pair and reports back when it ends."""
     from src.server.database.runs import lifecycle as tl_db

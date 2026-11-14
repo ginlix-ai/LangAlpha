@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass
 from typing import Annotated, Literal, Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import asyncio
 
@@ -39,7 +39,6 @@ from src.server.dependencies.principal import (
     Principal,
     ReadUserId,
     RunPrincipal,
-    RunUserId,
     stamp_origin,
 )
 from src.server.dependencies.usage_limits import (
@@ -1370,18 +1369,24 @@ async def get_dispatches_liveness(
 @router.post("/{thread_id}/cancel", status_code=200)
 async def cancel_thread(
     thread_id: str,
-    x_user_id: RunUserId,
-    run_id: Optional[str] = Query(None),
+    principal: RunPrincipal,
+    # Typed, so a malformed id is a 422 here rather than a failed query.
+    run_id: Optional[UUID] = Query(None),
 ):
     """Cancel a running workflow for this thread.
 
     ``run_id`` targets a specific run so a retried stop can't cancel a newer
     turn started after the stopped one ended (defaults to latest active run).
+    A computer's token is an agent's `la`, so its stop is an agent's: the
+    user's queued messages stay queued rather than going back to a command
+    that cannot show them.
     """
-    await auth_api.require_thread_owner(thread_id, x_user_id)
+    await auth_api.require_thread_owner(thread_id, principal.user_id)
     from src.server.services.cancel_dispatch import cancel_workflow
 
-    return await cancel_workflow(thread_id, run_id)
+    return await cancel_workflow(
+        thread_id, str(run_id) if run_id else None, by_user=principal.computer_id is None
+    )
 
 
 @router.post("/{thread_id}/summarize", status_code=200)

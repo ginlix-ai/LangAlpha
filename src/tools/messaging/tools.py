@@ -525,7 +525,7 @@ async def _send(
             return _refusal(
                 "failed",
                 "invalid_request",
-                "workspace_id is not a workspace id; take it from manage_workspaces. "
+                "workspace_id is not a workspace id; take it from `la workspaces list`. "
                 "Nothing was sent.",
             )
 
@@ -659,7 +659,7 @@ def _send_from_home(computers: ComputerReach | None) -> BaseTool:
         ] = None,
         workspace_id: Annotated[
             str | None,
-            "The id of the workspace the files are in, from manage_workspaces, when they "
+            "The id of the workspace the files are in, from `la workspaces list`, when they "
             "are not in Home. Omit it for Home's files.",
         ] = None,
         target: _TARGET_ARG = None,

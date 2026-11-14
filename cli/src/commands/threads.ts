@@ -48,16 +48,19 @@ export const threads: Command[] = [
       workspace: WORKSPACE,
       archived: { type: "bool", help: "archived threads instead (needs --workspace)" },
       limit: { type: "int", value: "N", help: "at most this many (default 20)" },
+      offset: { type: "int", value: "N", help: "skip the N newest, for the next page" },
     },
     async run({ api, args, json }) {
       const ref = args.str("workspace");
+      const offset = args.int("offset") ?? 0;
       // The server keeps no list of archived threads across workspaces.
       if (args.has("archived") && !ref) throw usage("--archived lists one workspace's threads: name it with --workspace");
-      const page = await api.json<{ threads: Row[] }>("GET", "/api/v1/threads", {
+      const page = await api.json<{ threads: Row[]; total?: number }>("GET", "/api/v1/threads", {
         query: {
           workspace_id: ref ? await resolveWorkspace(api, ref) : undefined,
           archived: args.has("archived") || undefined,
           limit: args.int("limit") ?? 20,
+          offset: offset || undefined,
         },
       });
       // The thread's own llm_model is empty while it follows the account
@@ -66,6 +69,14 @@ export const threads: Command[] = [
       print(json, page.threads, () =>
         table(rows, ["thread_id", "title", "current_status", "model", "workspace_id", "updated_at"]),
       );
+      // On stderr, so --json stays the rows: a page is not every thread, and
+      // a thread looked for and not on it may be on the next.
+      const shown = offset + page.threads.length;
+      if (typeof page.total === "number" && page.threads.length > 0 && shown < page.total) {
+        process.stderr.write(
+          `Showing threads ${offset + 1}-${shown} of ${page.total}, newest first; pass --offset ${shown} for the next ones.\n`,
+        );
+      }
     },
   }),
   command({
@@ -160,9 +171,23 @@ export const threads: Command[] = [
     words: ["threads", "cancel"],
     summary: "stop the turn a thread is running",
     operands: ["id"],
+    flags: {
+      run: { type: "string", value: "RUN_ID", help: "stop only this turn, so a stop meant for it never ends a later one" },
+    },
     async run({ api, args, json }) {
-      const result = await api.json<Row>("POST", p`/api/v1/threads/${args.op("id")}/cancel`);
-      print(json, result, () => "Cancel requested.");
+      const run = args.str("run");
+      // The server reads an empty id as none named, which stops whatever runs.
+      if (run === "") throw usage("--run needs a run id");
+      const result = await api.json<Row>("POST", p`/api/v1/threads/${args.op("id")}/cancel`, {
+        query: { run_id: run },
+      });
+      // Said here, not only in the prompt: an agent told to wait for the report
+      // read the thread at once and reported the stop twice. A stop that found
+      // nothing to stop has no report coming, and the server says why.
+      print(json, result, () =>
+        result.cancelled === false
+          ? String(result.message ?? "Nothing was cancelled.")
+          : "Cancel requested. A report-back, if one is coming, says how far the turn got.");
     },
   }),
   command({

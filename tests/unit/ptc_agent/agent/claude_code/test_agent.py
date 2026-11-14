@@ -308,14 +308,11 @@ async def test_a_claude_code_turn_refuses_the_order_cards_a_later_run_cut_off():
     ledger.abandon.assert_awaited_once_with("m1", "c1")
 
 
-def test_a_chief_of_staff_call_waits_for_the_user_only_with_an_action_that_puts_a_card_to_them():
+def test_a_chief_of_staff_call_waits_for_the_user_only_when_it_puts_a_card_to_them():
+    """A hand-off asks on its card; ``la``'s requests wait in the app, not on the turn."""
     waits = waits_for_user(frozenset())
     assert waits("AskUserQuestion", {}) and waits("delegate_to_analyst", {})
-    assert waits("manage_workspaces", {"action": "create"}) and not waits("manage_workspaces", {"action": "list"})
-    assert waits("manage_threads", {"action": "delete"}) and not waits("manage_threads", {"action": "list"})
-    assert not waits("manage_workspaces", {"action": ["create"]}) and not waits("manage_threads", {"action": {"x": 1}})
-    assert waits("delegate_to_analyst", {"action": ["create"]})
-    assert not waits("Bash", {})
+    assert not waits("Bash", {"command": "la workspaces create Research"})
 
 
 def test_a_claude_code_turn_takes_reports_steers_and_task_resumes_in():

@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from src.tools.secretary._commands import (
-    decline_routing_command,
+    decline_handoff_command,
     error_command,
     hitl_confirm,
     success_command,
@@ -91,8 +91,8 @@ def _unknown_dispatch_command(
     handed_to: dict | None = None,
 ) -> Command:
     """Ambiguous dispatch outcome: the reservation is retained and the run may
-    already be live on ``thread_id`` — surface that id so the model checks
-    agent_output before re-dispatching (a blind retry would occupy a second
+    already be live on ``thread_id`` — surface that id so the model reads the
+    thread before re-dispatching (a blind retry would occupy a second
     cap slot and can produce a duplicate report-back). ``handed_to`` is what
     a pre-approved hand-off's card is drawn from."""
     return Command(
@@ -109,9 +109,9 @@ def _unknown_dispatch_command(
                             "workspace_id": workspace_id,
                             "note": (
                                 "Dispatch outcome unknown — the analysis may "
-                                "already be running on this thread. Check "
-                                "agent_output with this thread_id before "
-                                "re-dispatching."
+                                "already be running on this thread. Read it "
+                                "with `la threads output <thread_id>` before "
+                                "handing it off again."
                             ),
                         }
                     ),
@@ -273,7 +273,7 @@ async def dispatch(
         )
 
         if not approved:
-            return decline_routing_command("the hand-off", response, tool_call_id)
+            return decline_handoff_command(response, tool_call_id)
 
         # The card's report-back switch, when the user moved it. A resume
         # that names no overrides keeps what the call asked for.

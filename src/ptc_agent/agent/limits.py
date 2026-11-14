@@ -40,10 +40,10 @@ def is_refusal(message: Any) -> bool:
 
 
 # Set on the artifact of a status read that found its work still running:
-# TaskOutput on a live task, ThreadStatus listing running work, agent_output
-# on a thread mid-run. The text cannot say it, since a read of live work never
-# reads the same twice (elapsed time, growing output). The artifact never
-# reaches the model, and the checkpoint and result eviction both keep it.
+# TaskOutput on a live task, ThreadStatus listing running work. The text
+# cannot say it, since a read of live work never reads the same twice
+# (elapsed time, growing output). The artifact never reaches the model, and
+# the checkpoint and result eviction both keep it.
 PENDING_READ_KEY = "pending_read"
 
 

@@ -91,7 +91,7 @@ langalpha workspaces list [--include-home] [--limit N]
 langalpha workspaces create <name> [--description D] [--computer C]
 langalpha workspaces archive <ws>
 langalpha workspaces delete <ws> [-y] [--delete-files]
-langalpha threads list [-w WS] [--archived] [--limit N]
+langalpha threads list [-w WS] [--archived] [--limit N] [--offset N]
 langalpha threads show <id>
 langalpha threads output <id> [--turns N]
 langalpha threads new <message...> -w WS [-m MODEL] [--wait] [--detach]

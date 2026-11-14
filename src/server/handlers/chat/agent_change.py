@@ -104,7 +104,9 @@ async def _cancel_tool_calls(
     }
     unanswered = [call for call in last_ai.tool_calls if call["id"] not in answered]
     # By name, as the resume runs a call: the agents share some names (a
-    # question, the workspace tool), and each resumes those itself.
+    # question), and each resumes those itself. A card a retired tool left
+    # waiting, such as the Chief of Staff's old workspace tool, is answered
+    # as cancelled the same way.
     if not unanswered or not (
         unseen_wait or (tool_names is not None and any(call["name"] not in tool_names for call in unanswered))
     ):
