@@ -1048,6 +1048,7 @@ class PTCAgent:
             files_mounted=files_mounted,
             switches=ProfileSwitches(channels=gates.channels, wakeups=wakeups_on),
             blocks={
+                "model": lambda _state, label=turn.label: label,
                 "mcp_servers": lambda _state: tool_summary,
                 "skills": lambda state: skill_loader_middleware.build_manifest(state)
                 or "",

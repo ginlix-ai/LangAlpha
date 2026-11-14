@@ -29,10 +29,10 @@ from itertools import groupby
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
-from langchain_core.runnables.base import RunnableBindingBase
 from langgraph.constants import TAG_NOSTREAM
 
 from src.llms.content_utils import format_llm_content
+from src.llms.model_identity import api_model_id
 from ptc_agent.agent.middleware.compaction.model import max_input_tokens
 from ptc_agent.agent.middleware.compaction.summary_request import render_history, trim_for_summary
 from ptc_agent.agent.middleware.compaction.types import _DEFAULT_FALLBACK_MESSAGE_COUNT
@@ -123,21 +123,12 @@ Prepare = Callable[[int | None], Awaitable[tuple[list[AnyMessage], list[AnyMessa
 Progress = Callable[[int], None]
 
 
-def model_label(model: Any) -> str | None:
-    target = model.bound if isinstance(model, RunnableBindingBase) else model
-    for attr in ("model_name", "model", "model_id", "deployment_name"):
-        value = getattr(target, attr, None)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
 def is_other_model(model: Any, other: Any) -> bool:
     """Whether ``other`` is worth a try after ``model`` failed: the same
     model would most likely fail the same way."""
     if other is None or other is model:
         return False
-    name, other_name = model_label(model), model_label(other)
+    name, other_name = api_model_id(model), api_model_id(other)
     return name is None or other_name is None or name != other_name
 
 
@@ -400,7 +391,7 @@ def _log_failure(source: str, model: Any, error: BaseException) -> None:
     logger.warning(
         "[Compaction] %s summary failed with %s (%s)",
         source,
-        model_label(model) or type(model).__name__,
+        api_model_id(model) or type(model).__name__,
         type(error).__name__,
     )
 

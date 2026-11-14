@@ -883,7 +883,12 @@ def _file_row(
     if observed.get(read.kind) == current_sha:
         return None
     observed[read.kind] = current_sha
-    if entry.sha256 == current_sha:
+    harness = harness_block_for(read.update_kind)
+    if harness is not None and harness.value_intro:
+        # A value block's row states the value outright, a return to the
+        # frozen copy included.
+        text = read.content
+    elif entry.sha256 == current_sha:
         # Back to what the baseline block already says. Still a row: it
         # supersedes an earlier "changed" notice that is now wrong.
         text = f"{read.path} matches its frozen copy again."
@@ -899,7 +904,7 @@ def _file_row(
                 entry.text,
                 current,
                 read.path,
-                readable=harness_block_for(read.update_kind) is None,
+                readable=harness is None,
             )
     return DurableUpdate(
         kind=read.update_kind,

@@ -39,6 +39,7 @@ from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
+from src.llms.model_identity import api_model_id
 from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.runtime_context.epoch import BaselineEpoch
 from ptc_agent.agent.middleware.runtime_context.state import (
@@ -136,12 +137,11 @@ def _kept(state: Any, model: Any) -> dict[str, Any] | None:
     to the system message, and a call to another model takes the build's
     message at once."""
     from ptc_agent.agent.middleware.compaction.measure import is_claude
-    from ptc_agent.agent.middleware.compaction.summarize import model_label
 
     pin = as_dict(state_get(state, STATE_SYSTEM_PIN))
     if pin.get("content") is None or not is_claude(model):
         return None
-    return pin if pin.get("model") == (model_label(model) or "") else None
+    return pin if pin.get("model") == (api_model_id(model) or "") else None
 
 
 def pinned_static(state: Any, model: Any, view: Sequence[AnyMessage]) -> str | None:
@@ -291,9 +291,8 @@ def _pin(
     a fallback answering for Claude, whose thinking is still bound to the pin.
     """
     from ptc_agent.agent.middleware.compaction.measure import is_claude
-    from ptc_agent.agent.middleware.compaction.summarize import model_label
 
-    built = request.system_message
+    built =request.system_message
     if built is None or not is_claude(request.model):
         return None, None, None
     stored = _kept(getattr(request, "state", None), request.model)
@@ -314,7 +313,7 @@ def _pin(
     else:
         previous = as_dict(state_get(getattr(request, "state", None), STATE_SYSTEM_PIN))
         change = "first" if previous.get("content") is None else "model_changed"
-    model = model_label(request.model) or ""
+    model = api_model_id(request.model) or ""
     return None, {"model": model, "content": built.content, **_build_sources()}, change
 
 

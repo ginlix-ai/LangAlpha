@@ -1,0 +1,16 @@
+{# The model this thread runs on, rendered into the cached per-thread
+   baseline: byte-deterministic for equal inputs, so no timestamps and no
+   guidance fence. `content` is its label (`src/llms/model_identity.py`): the display
+   name, and the reasoning effort when one was set. A switch between turns
+   files a `model_changed` row rather than moving this block. A subagent
+   cannot pick its model or run `la`, so it gets the fact alone. No model
+   renders nothing. #}
+{% if content %}
+<model>
+{% if subagent | default(false) %}
+You run on {{ content }}.
+{% else %}
+You run on {{ content }}. The user picks the model; `la models list` shows the models they can run and who each one bills to.
+{% endif %}
+</model>
+{% endif %}

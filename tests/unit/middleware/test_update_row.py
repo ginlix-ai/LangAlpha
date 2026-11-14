@@ -158,6 +158,19 @@ class TestHarnessRows:
             "+- polygon"
         )
 
+    def test_the_model_row_states_the_model_the_thread_runs_on_now(self):
+        """The block is stated whole, so the row is the new model, not a diff."""
+        assert _row(
+            "model_changed",
+            text="Claude Opus 5.5, reasoning effort low",
+            source="harness",
+        ) == (
+            "The model changed after the copy in <model> was frozen\n"
+            "\n"
+            "From this turn on you run on Claude Opus 5.5, reasoning effort low. "
+            "Where <model> says otherwise, this row is current."
+        )
+
     @pytest.mark.parametrize("kind", list(HARNESS_BLOCKS))
     def test_every_block_maps_to_its_row_kind_and_back(self, kind):
         assert harness_block_for(harness_update_kind(kind)) is HARNESS_BLOCKS[kind]
