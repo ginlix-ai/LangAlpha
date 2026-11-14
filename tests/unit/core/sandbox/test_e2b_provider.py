@@ -182,6 +182,25 @@ class TestKeepAlive:
         assert seconds > 7200
 
     @pytest.mark.asyncio
+    async def test_a_shorter_window_keeps_the_deadline_work_needs(self):
+        """Applied outright, a lowered auto-stop paused a command in flight."""
+        client = _client(_info(left_s=7200))
+        runtime = self._runtime(client)
+
+        await runtime.set_autostop_interval(10)
+
+        client.AsyncSandbox.set_timeout.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_longer_window_extends_the_deadline(self):
+        client = _client(_info(left_s=600))
+        runtime = self._runtime(client)
+
+        await runtime.set_autostop_interval(0)
+
+        client.AsyncSandbox.set_timeout.assert_awaited_once_with("sbx-1", 86400)
+
+    @pytest.mark.asyncio
     async def test_a_sandbox_paused_under_a_held_handle_is_not_renewed(self):
         client = _client(_info("paused", left_s=0))
         runtime = self._runtime(client)
