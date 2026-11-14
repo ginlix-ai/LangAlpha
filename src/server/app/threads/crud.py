@@ -194,6 +194,45 @@ async def get_thread(thread_id: str, x_user_id: ReadUserId):
     return _thread_list_item(thread)
 
 
+class ThreadOutputResponse(BaseModel):
+    thread_id: str
+    workspace_id: Optional[str]
+    status: str
+    text: str
+
+
+@router.get("/{thread_id}/output", response_model=ThreadOutputResponse)
+async def get_thread_output(
+    thread_id: str,
+    x_user_id: ReadUserId,
+    turns: int = Query(
+        1,
+        ge=0,
+        description="How many of the latest turns to include; 0 for the recent history",
+    ),
+):
+    """The text each of the thread's latest turns committed, as the Chief of
+    Staff reads an analyst's output: one labeled block per run, times in the
+    user's zone. While a turn runs, only that turn's text so far, and
+    ``status`` says it is still running."""
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    from src.server.services.wakeups.message import user_timezone
+    from src.tools.secretary.utils import extract_text_from_thread
+
+    result = await extract_text_from_thread(
+        thread_id, turns=turns, timezone=await user_timezone(x_user_id)
+    )
+    # The read is by id alone, and a deleted thread's id can be taken again,
+    # so it is the caller's only if the thread still is.
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    return ThreadOutputResponse(
+        thread_id=thread_id,
+        workspace_id=result["workspace_id"] or None,
+        status=result["status"],
+        text=result["text"],
+    )
+
+
 class ThreadSeenRequest(BaseModel):
     run_id: str = Field(
         ...,
