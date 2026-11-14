@@ -283,6 +283,7 @@ async def get_workspace(
             await cur.execute(
                 f"""
                 SELECT {_ws_cols("w")}, c.root_dir AS computer_root_dir,
+                       c.name AS computer_name,
                        c.kind AS computer_kind,
                        c.provider_config AS computer_provider_config
                 FROM workspaces w
@@ -1126,14 +1127,19 @@ async def get_workspaces_for_user(
 
             # The root rides on each row as on the detail read, so a page that
             # seeds a workspace from its list reads its paths without waiting on
-            # the computers. A subquery, since a join would make the bare
-            # columns the ordering names ambiguous.
+            # the computers, and the computer's name, which `la` and the
+            # agent's tools call it by. A lateral of aliased columns only, since
+            # a plain join would make the bare columns the ordering names
+            # ambiguous.
             await cur.execute(
                 f"""
-                SELECT {_WS_COLS},
-                       (SELECT c.root_dir FROM computers c
-                        WHERE c.computer_id = workspaces.computer_id) AS computer_root_dir
+                SELECT {_WS_COLS}, c.computer_root_dir, c.computer_name
                 FROM workspaces
+                LEFT JOIN LATERAL (
+                    SELECT root_dir AS computer_root_dir, name AS computer_name
+                    FROM computers
+                    WHERE computers.computer_id = workspaces.computer_id
+                ) c ON TRUE
                 WHERE user_id = %(user_id)s {status_filter} {home_filter}
                 ORDER BY {order_clause}, workspace_id DESC
                 LIMIT %(limit)s OFFSET %(offset)s

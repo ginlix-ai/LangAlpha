@@ -60,8 +60,11 @@ export const threads: Command[] = [
           limit: args.int("limit") ?? 20,
         },
       });
+      // The thread's own llm_model is empty while it follows the account
+      // default, so the model shown is the one its latest turn ran on.
+      const rows = page.threads.map((t) => ({ ...t, model: t.latest_run_model }));
       print(json, page.threads, () =>
-        table(page.threads, ["thread_id", "title", "current_status", "workspace_id", "updated_at"]),
+        table(rows, ["thread_id", "title", "current_status", "model", "workspace_id", "updated_at"]),
       );
     },
   }),

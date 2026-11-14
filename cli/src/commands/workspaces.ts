@@ -46,7 +46,10 @@ export const workspaces: Command[] = [
       const page = await api.json<{ workspaces: Row[] }>("GET", "/api/v1/workspaces", {
         query: { limit: args.int("limit") ?? PAGE, include_home: args.has("include-home") || undefined },
       });
-      print(json, page.workspaces, () => table(page.workspaces, ["workspace_id", "name", "status", "computer_id"]));
+      // A workspace's folder sits at its computer's root; the computer goes by
+      // its name, which is what a person, or the agent's tools, call it.
+      const rows = page.workspaces.map((w) => ({ ...w, folder: w.dir_name, computer: w.computer_name }));
+      print(json, page.workspaces, () => table(rows, ["workspace_id", "name", "folder", "computer", "status"]));
     },
   }),
   command({

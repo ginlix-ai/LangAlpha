@@ -190,6 +190,7 @@ def _workspace_to_response(workspace: dict) -> WorkspaceResponse:
         description=workspace.get("description"),
         sandbox_id=workspace.get("sandbox_id"),
         computer_id=str(computer_id) if computer_id else None,
+        computer_name=workspace.get("computer_name") or None,
         dir_name=workspace.get("dir_name"),
         previous_dir_names=list(workspace.get("previous_dir_names") or ()),
         root_dir=workspace.get("computer_root_dir") or None,

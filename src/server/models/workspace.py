@@ -149,6 +149,14 @@ class WorkspaceResponse(BaseModel):
             "first computer, or one not bound to a computer)"
         ),
     )
+    computer_name: Optional[str] = Field(
+        None,
+        description=(
+            "The name of the computer this workspace runs on, which `la` and "
+            "the agent's tools call it by; given on the detail and the list, "
+            "null on the answer to a change"
+        ),
+    )
     dir_name: Optional[str] = Field(
         None,
         description=(
