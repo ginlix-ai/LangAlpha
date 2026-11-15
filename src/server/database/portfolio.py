@@ -309,7 +309,7 @@ async def upsert_portfolio_holding(
             name, quantity, average_cost, currency, account_name,
             notes, metadata, first_purchased_at, created_at, updated_at
     """
-    symbol = normalize_symbol(symbol)
+    symbol = normalize_symbol(symbol, instrument_type)
     currency, average_cost = canonical_holding_cost(currency, average_cost)
 
     async with get_db_connection() as conn:
