@@ -112,16 +112,28 @@ describe('leaving a draft', () => {
     expect(state.hover).toBeNull();
   });
 
-  it('asks first when there are words, and goes on the second', () => {
+  it('asks first when there are words, and a second close does not answer for the writer', () => {
     const asked = run(picked, { type: 'write', text: 'words' }, { type: 'leave' });
     expect(asked).toMatchObject({ confirmDiscard: true, text: 'words' });
-    const left = boxReducer(asked, { type: 'leave' });
-    expect(left).toMatchObject({ open: null, text: '', confirmDiscard: false });
+    expect(boxReducer(asked, { type: 'leave' })).toMatchObject({ confirmDiscard: true, text: 'words', open: { kind: 'draft' } });
+    expect(boxReducer(asked, { type: 'endDraft', keepHover: false })).toMatchObject({ open: null, text: '', confirmDiscard: false });
   });
 
   it('writing again takes the question back', () => {
     const state = run(picked, { type: 'write', text: 'a' }, { type: 'leave' }, { type: 'write', text: 'ab' });
     expect(state.confirmDiscard).toBe(false);
+  });
+});
+
+describe('Esc in a draft', () => {
+  it('closes an empty one at once', () => {
+    expect(run(picked, { type: 'escape' })).toMatchObject({ open: null, text: '' });
+  });
+
+  it('asks over words, and a second Esc takes the question back rather than the words', () => {
+    const asked = run(picked, { type: 'write', text: 'words' }, { type: 'escape' });
+    expect(asked).toMatchObject({ confirmDiscard: true, text: 'words' });
+    expect(boxReducer(asked, { type: 'escape' })).toMatchObject({ confirmDiscard: false, text: 'words', open: { kind: 'draft' } });
   });
 });
 

@@ -122,6 +122,13 @@ export default function CommentLayer({
   };
   const { open } = box;
   const boxDraft = open?.kind === 'draft' ? open.draft : null;
+  // Leaving the mode lets an empty draft over the page go with it; one with
+  // words stays open, its words the writer's to send or let go.
+  const [modeSeen, setModeSeen] = useState(mode);
+  if (modeSeen !== mode) {
+    setModeSeen(mode);
+    if (!mode && boxDraft && !box.text.trim()) dispatchBox({ type: 'endDraft', keepHover: false });
+  }
   // The comment being written, in its box over the page or waiting in the list.
   const draft = boxDraft ?? box.listed?.draft ?? null;
   // The live file's hash, stored with a new comment. Read only once one is
@@ -158,6 +165,17 @@ export default function CommentLayer({
   const startDraft = (pick: PagePick, selected = false) => dispatch({ type: 'pick', pick, path: docPath, selected });
   const closeBox = (of: BoxOf) => dispatch({ type: 'closeBox', of, keepHover: false });
   const leaveDraft = () => dispatch({ type: 'leave' });
+  const escapeDraft = () => dispatch({ type: 'escape' });
+  const exitMode = () => ui.setMode(tabId, false);
+  // Esc steps back one layer, wherever it was pressed (the page, the box,
+  // the viewer): the draft over the page (or its question), then an open
+  // card, then the mode. A draft waiting in the list takes its own Esc
+  // (`DraftCard`), being where the key was pressed.
+  const escapeOneLayer = () => {
+    if (boxDraft) escapeDraft();
+    else if (open?.kind === 'card') closeBox(open);
+    else if (mode) exitMode();
+  };
   const reports = usePageReports(bridge, view, mode, {
     anchors,
     draftSerial: box.serial,
@@ -169,16 +187,14 @@ export default function CommentLayer({
     },
     onPick: startDraft,
     // The page's keys reach the viewer only when they would here: C toggles
-    // the mode, Esc steps back out of it. Neither writes anything.
+    // the mode, Esc steps back one layer. Neither writes anything.
     onKey: (key) => {
       if (key === 'c') ui.setMode(tabId, !mode);
-      else if (mode && boxDraft) leaveDraft();
-      else if (mode && open?.kind === 'card') closeBox(open);
-      else if (mode) ui.setMode(tabId, false);
+      else escapeOneLayer();
     },
   });
   const { positions, fresh, settled } = reports;
-  useModeKeys(active, mode, open !== null, (on) => ui.setMode(tabId, on));
+  useModeKeys(active, mode, (on) => ui.setMode(tabId, on), escapeOneLayer);
 
   // Words picked in comment mode stay selected in a page that cannot mark
   // them, until their draft goes.
@@ -308,6 +324,7 @@ export default function CommentLayer({
       confirmDiscard: box.confirmDiscard,
       onKeepWriting: () => dispatch({ type: 'keepWriting' }),
       onDiscard: () => dispatch({ type: 'endDraft', keepHover: false }),
+      onClose: leaveDraft,
     };
     const as: ComposerMode = !inList && heading
       ? { kind: 'over', head: heading.label, quote: heading.quote, fullQuote: draft?.anchor.kind === 'text', ...writing }
@@ -361,8 +378,18 @@ export default function CommentLayer({
         <AnimatePresence>
           {mode && !listOpen && (
             <motion.div key="hint" className="page-comments-hint-row" initial={HINT_HIDDEN} animate={HINT_SHOWN} exit={HINT_GONE}>
-              <div className="page-comments-hint" role="status">
-                {t('pageViewer.comments.modeHint')}
+              <div className="page-comments-hint">
+                <span className="page-comments-hint-text" role="status">{t('pageViewer.comments.modeHint')}</span>
+                <button
+                  type="button"
+                  className="page-comments-hint-exit tap-target"
+                  onClick={exitMode}
+                  aria-label={t('pageViewer.comments.exitModeLabel')}
+                  aria-keyshortcuts="Escape"
+                >
+                  {t('pageViewer.comments.exitMode')}
+                  <kbd aria-hidden>Esc</kbd>
+                </button>
               </div>
             </motion.div>
           )}
@@ -385,6 +412,7 @@ export default function CommentLayer({
                     ? basename(box.listed.draft.path)
                     : draftRect ? null : t('pageViewer.comments.outdated')}
                   onLeave={leaveDraft}
+                  onEscape={escapeDraft}
                 >
                   {composer(true)}
                 </DraftCard>
@@ -412,9 +440,10 @@ export default function CommentLayer({
               arrival={isCurrent && openComment !== null && box.arrivalId === openComment.comment_id}
               replaced={current !== null}
               draft={isCurrent && boxDraft
-                ? { words: !!box.text.trim(), onLeave: leaveDraft, onAskDiscard: () => dispatch({ type: 'askDiscard' }) }
+                ? { words: !!box.text.trim(), onAskDiscard: () => dispatch({ type: 'askDiscard' }) }
                 : null}
               onDismiss={() => closeBox(item.of)}
+              onEscape={escapeOneLayer}
               onGone={() => gone(item.key)}
             >
               {!isCurrent ? null : boxDraft ? (

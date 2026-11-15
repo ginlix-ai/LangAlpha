@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { AnimatePresence, motion } from '@/lib/framer';
+import { isImeComposing } from '@/lib/ime';
 import { DURATION, TWEEN } from '@/lib/motion';
 import { scrollMotion } from '@/lib/reducedMotion';
 import type { ArtifactComment } from '@/types/api';
@@ -219,8 +220,10 @@ interface DraftCardProps {
   quote: string | null;
   /** The version it is placed on, said as a card says it, when that is not the one on screen. */
   tag: string | null;
-  /** Close, or Esc: leaving asks first when there are words. */
+  /** Its ×: leaving asks first when there are words. */
   onLeave: () => void;
+  /** Esc: as the ×, or, while it asks, back to the words. */
+  onEscape: () => void;
   /** The composer, holding the words written so far. */
   children: React.ReactNode;
 }
@@ -231,7 +234,7 @@ interface DraftCardProps {
  * words in it: the reader can send it, or scroll its spot back and pick it
  * again, and the words go with them.
  */
-export function DraftCard({ label, quote, tag, onLeave, children }: DraftCardProps): React.ReactElement {
+export function DraftCard({ label, quote, tag, onLeave, onEscape, children }: DraftCardProps): React.ReactElement {
   const { t } = useTranslation();
   return (
     <div
@@ -239,9 +242,9 @@ export function DraftCard({ label, quote, tag, onLeave, children }: DraftCardPro
       className="page-comment-card"
       data-open=""
       onKeyDown={(e) => {
-        if (e.key !== 'Escape' || e.nativeEvent.isComposing) return;
+        if (e.key !== 'Escape' || isImeComposing(e)) return;
         e.stopPropagation();
-        onLeave();
+        onEscape();
       }}
     >
       <div className="flex min-h-[26px] min-w-0 items-center gap-[7px]">
