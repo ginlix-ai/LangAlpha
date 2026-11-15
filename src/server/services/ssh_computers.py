@@ -757,6 +757,22 @@ def tunnel_of(computer: Dict[str, Any]) -> str:
     return (computer.get("provider_config") or {}).get("tunnel") or ""
 
 
+_TUNNEL_DOWN = (
+    "The machine is not connected. It connects by itself whenever it is on "
+    "and online, so check that it is awake and has internet."
+)
+
+
+def tunnel_down_error(computer_id: Optional[str]) -> SSHConnectError:
+    """The failure of a machine :func:`computer_unreachable` found away, known
+    without a dial: the connect code a dial through the gateway would get,
+    naming the computer for its ``computer_unreachable`` frame."""
+    exc = SSHConnectError("not_connected", _TUNNEL_DOWN)
+    if computer_id:
+        exc.unreachable_computer_id = str(computer_id)
+    return exc
+
+
 async def computer_unreachable(computer: Optional[Mapping[str, Any]], *, conn=None) -> bool:
     """Whether *computer* is a machine the user brings that connects out
     through a tunnel, and that tunnel is not up.

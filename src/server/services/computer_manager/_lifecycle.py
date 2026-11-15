@@ -143,6 +143,29 @@ class SessionLifecycleMixin:
             )
         return claimed
 
+    @staticmethod
+    async def _refuse_machine_away(binding: ComputerBinding) -> None:
+        """Raise what a dial would for a machine whose tunnel is down.
+
+        A session this worker holds does not change when the machine goes
+        away, so it passes every check above and each call on it then fails
+        "not connected", after the turn has paid for its model calls. A cold
+        acquire dials and gets the gateway's own answer, which this matches.
+        One Postgres read, and none for a computer without a tunnel.
+        """
+        from src.server.services.ssh_computers import (
+            computer_unreachable,
+            tunnel_down_error,
+        )
+
+        machine = {
+            "computer_id": binding.computer_id,
+            "kind": binding.kind,
+            "provider_config": binding.provider_config,
+        }
+        if await computer_unreachable(machine):
+            raise tunnel_down_error(binding.computer_id)
+
     async def _acquire_session(
         self,
         workspace_id: str,
@@ -185,6 +208,7 @@ class SessionLifecycleMixin:
         ):
             session = await self._take_valid_cached_session(binding, _mark)
             if session is not None:
+                await self._refuse_machine_away(binding)
                 if not session.sandbox.is_ready():
                     if session.sandbox.has_failed():
                         init_err = session.sandbox.init_error

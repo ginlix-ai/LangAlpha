@@ -14,7 +14,6 @@ from fastapi import HTTPException
 from ptc_agent.core.paths import WorkspaceLayout
 from ptc_agent.core.sandbox.providers.ssh_errors import (
     UNANSWERED_CODES,
-    SSHConnectError,
     connect_failure,
 )
 from src.observability import safe_record, workspace_fs_bytes
@@ -30,7 +29,7 @@ from src.server.database.workspace_folders import (
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.models.computer_cause import StartCause
 from src.server.models.workspace import served_from_mirror
-from src.server.services.ssh_computers import computer_unreachable
+from src.server.services.ssh_computers import computer_unreachable, tunnel_down_error
 from src.server.services.workspace_file_containment import (
     contained_absolute_path,
     contained_sandbox_path,
@@ -147,12 +146,6 @@ def unanswered_code(exc: BaseException) -> str | None:
 
 # What the machine's own connect says of a tunnel that is down, the machine
 # unnamed.
-_TUNNEL_DOWN = (
-    "The machine is not connected. It connects by itself whenever it is on "
-    "and online, so check that it is awake and has internet."
-)
-
-
 @dataclass(frozen=True)
 class FromBackup:
     """Files answered from the backup rather than the machine.
@@ -233,7 +226,7 @@ async def _backup_up_front(
     }
     if not await computer_unreachable(machine):
         return None
-    failure = sandbox_failure_http(SSHConnectError("not_connected", _TUNNEL_DOWN))
+    failure = sandbox_failure_http(tunnel_down_error(workspace.get("computer_id")))
     return await _backup_kept(workspace_id, "not_connected", failure)
 
 
