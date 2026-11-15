@@ -160,4 +160,4 @@ async def test_a_turn_nobody_watches_says_so_on_its_run(query_type):
 
     stamped, _, _ = await _start(request, PriorThread(), failed_run={})
 
-    assert stamped.get(UNWATCHED_RUN_META, False) is (query_type is not None)
+    assert stamped[UNWATCHED_RUN_META] is (query_type is not None)

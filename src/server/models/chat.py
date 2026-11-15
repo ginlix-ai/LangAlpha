@@ -651,14 +651,6 @@ class ChatRequest(BaseModel):
         "Internal use only.",
     )
 
-    # Server-set: a turn the server posts to carry on a turn a person was
-    # watching (a restart's resume of it), which is as watched as that turn.
-    continues_watched_turn: Optional[bool] = Field(
-        default=None,
-        description="This server-posted turn continues a turn someone was "
-        "watching. Set by the server only.",
-    )
-
     # Internal: the parked steer this turn is posted for. START claims the
     # job in its own transaction, so a steer some running turn already read
     # never also becomes a turn of its own.

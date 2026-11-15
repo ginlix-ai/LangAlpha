@@ -29,7 +29,6 @@ from src.server.contracts.status import (
     is_user_stop,
     restart_resume_expired,
 )
-from src.server.contracts.turn_kinds import UNWATCHED_RUN_META
 from src.server.database.runs.hook_jobs import RESTART_RESUME_HOOK
 from src.server.services.report_back.notify_turn import (
     NotOwed,
@@ -68,10 +67,6 @@ class OwedResume:
     tasks: Sequence[StoppedTask] = ()
     #: The interrupted run, when its input never reached the graph.
     retry_run_id: Optional[str] = None
-    #: A person was watching the stopped turn, so its resume is theirs too
-    #: and a machine of theirs that stops answering during it is not given
-    #: up on as though nobody were there.
-    watched: bool = False
 
     @property
     def report_source(self) -> None:
@@ -113,10 +108,7 @@ def resume_turn(owed: OwedResume, request_key: str) -> tuple[str, dict]:
     it never reached the graph, with the subagents the restart stopped as
     a directive beside it, else the hidden message."""
     if owed.retry_run_id is None:
-        route, body = message_turn(owed, request_key)
-        if owed.watched:
-            body["continues_watched_turn"] = True
-        return route, body
+        return message_turn(owed, request_key)
     body = {
         "run_id": owed.retry_run_id,
         "workspace_id": owed.workspace_id,
@@ -191,7 +183,6 @@ async def resume_verdict(job: Mapping[str, Any]) -> OwedResume | NotOwed | NotYe
         interrupted=interrupted,
         tasks=tuple(tasks),
         retry_run_id=retry_run_id,
-        watched=not (state["metadata"] or {}).get(UNWATCHED_RUN_META),
     )
 
 

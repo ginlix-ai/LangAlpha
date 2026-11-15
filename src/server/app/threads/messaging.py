@@ -313,7 +313,6 @@ _SERVER_ONLY_FIELDS = (
     "steer_job_id",
     "artifact_comments",
     "checked_computer_id",
-    "continues_watched_turn",
 )
 
 

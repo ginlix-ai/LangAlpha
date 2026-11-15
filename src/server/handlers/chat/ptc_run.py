@@ -418,6 +418,7 @@ async def astream_ptc_workflow(
                 disk_known=disk_known,
                 inherits_rules=inherits_rules,
                 sent_at=start_time,
+                carried_unwatched=await carry.carried_unwatched(request, thread_id),
             )
 
             query_type, fork = _resolve_fork(request=request, thread_id=thread_id)
@@ -564,9 +565,10 @@ async def astream_ptc_workflow(
                         inherits_rules=turn_context.inherits_rules,
                     ),
                     **automation_delivery.turn_metadata(extra_configurable),
-                    # A restart's resume reads it off the run, to keep one
-                    # of a watched turn watched.
-                    **({UNWATCHED_RUN_META: True} if turn_context.unwatched else {}),
+                    # Recorded once, here, either way: a restart's resume
+                    # reads it off the run, to keep one of a watched turn
+                    # watched, and a run without it predates the stamp.
+                    UNWATCHED_RUN_META: turn_context.unwatched,
                     **run_stamp(config),
                     **firing,
                     **(run_metadata or {}),

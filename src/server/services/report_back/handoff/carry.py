@@ -1,10 +1,14 @@
 """What a turn takes over from the turn before it: the report-back pair of an
 interrupted summary, the automation run a resumed or retried turn sends for,
-and the automation firing of a turn a restart stopped."""
+and the automation firing of a turn a restart stopped and whether anyone was
+watching it."""
 
 from __future__ import annotations
 
-from src.server.contracts.status import is_restart_interrupted
+from typing import Optional
+
+from src.server.contracts.status import is_restart_interrupted, restart_resume_expired
+from src.server.contracts.turn_kinds import run_unwatched
 
 
 async def carried_pair(request, thread_id: str) -> dict:
@@ -106,3 +110,26 @@ async def carried_firing(request, thread_id: str) -> dict:
     if not (meta.get("automation_execution_id") and meta.get("automation_id")):
         return {}
     return {key: meta[key] for key in ("automation_execution_id", "automation_id")}
+
+
+async def carried_unwatched(request, thread_id: str) -> Optional[bool]:
+    """Whether nobody watched the turn a restart stopped, as recorded on its
+    run, for the server's own turn that resumes it; None for any other turn,
+    and for a stopped run admitted before the record, which are judged by
+    their own request (``is_unwatched_turn``), as every resume was then.
+
+    A stopped turn holds its thread for its resume as long as one may come
+    (``holds_notifications``), so the server's own turn on it meanwhile is
+    that resume. A person's own turn cut short stays theirs, and one nobody
+    watched stays unwatched.
+    """
+    if getattr(request, "query_type", None) != "system":
+        return None
+    from src.server.database.runs import lifecycle as tl_db
+
+    prev = await tl_db.get_latest_attempt(thread_id)
+    if not is_restart_interrupted(prev) or restart_resume_expired(
+        prev["cancel_requested_at"]
+    ):
+        return None
+    return run_unwatched(prev)
