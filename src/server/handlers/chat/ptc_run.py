@@ -78,6 +78,7 @@ from src.server.utils.multimodal_context import (
 )
 
 from ptc_agent.agent.graph import build_ptc_graph_with_session
+from src.server.services.home_placement import home_back_notice
 from ptc_agent.agent.middleware.compaction.brief import BRIEF_CONFIG_KEY
 from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
 
@@ -463,6 +464,12 @@ async def astream_ptc_workflow(
                 inherits_rules=inherits_rules,
                 sent_at=start_time,
                 carried_unwatched=carry.carried_unwatched(request, prior),
+                home_away=route.away.as_metadata() if route.away else None,
+                home_back=(
+                    await home_back_notice(user_id)
+                    if route.role == "chief_of_staff" and route.away is None and user_id
+                    else None
+                ),
             )
 
             query_type, fork = _resolve_fork(request=request, thread_id=thread_id)

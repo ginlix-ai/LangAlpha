@@ -90,6 +90,8 @@ def build_context_middleware(
             inherits_rules=turn.inherits_rules,
             disk_free_mb=turn.disk_free_mb,
             disk_known=turn.disk_known,
+            home_away=turn.home_away,
+            home_back=turn.home_back,
         ),
         baseline=BaselineContextMiddleware(
             session=session,

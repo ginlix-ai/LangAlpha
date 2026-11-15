@@ -10,6 +10,7 @@ adding one meant editing every signature between them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from datetime import datetime
 
 
@@ -55,6 +56,16 @@ class TurnContext:
     # Whether a current reading backs disk_free_mb being None; only then may a
     # turn take back an earlier low-disk line.
     disk_known: bool = False
+    # A Home turn in Home's stand-in on a cloud computer, rather than on the
+    # machine Home lives on: ``computer_name``, ``cloud_name`` and ``reason``
+    # (``unreachable``, or ``command`` for a report on a command that ran
+    # there). None on every other turn.
+    home_away: dict[str, Any] | None = None
+    # On a Home turn back on Home's own computer: that computer's name, and
+    # the last hand-back of what the stand-in's turns wrote (``folder``,
+    # ``files``), or ``pending`` while it is still owed. Stated only after a
+    # row that said Home was away.
+    home_back: dict[str, Any] | None = None
     # The zone the profile or the request names. The stamp, the identity block
     # and a subagent's row state it, so "9am tomorrow" means the same thing to
     # the model and a tool. None when neither names one: the stamp then keeps
