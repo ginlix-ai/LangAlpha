@@ -23,7 +23,8 @@ OWNER = "3cd2aabcfce04ecf83f69a2e2952866c"
     [
         ("folder_marked", "ssh", "reinstall"),
         ("root_dir", "ssh", "reinstall"),
-        ("not_connected", "ssh", "reconnect"),
+        # A machine whose tunnel is down is asleep or offline, not unpaired.
+        ("not_connected", "ssh", "retry"),
         ("paired_elsewhere", "ssh", "reconnect"),
         ("auth_failed", "ssh", "reconnect"),
         ("host_key_mismatch", "ssh", "reconnect"),
@@ -78,7 +79,7 @@ def test_a_machine_that_did_not_answer_is_found_behind_its_wrapper():
 
     assert failure["code"] == "not_connected"
     assert failure["message"] == cause.for_owner
-    assert failure["remedy"] == "reconnect"
+    assert failure["remedy"] == "retry"
     assert failure["owner"] is None
 
 
@@ -149,3 +150,21 @@ def test_every_computer_response_carries_it(sample_computer_dict):
     assert body["start_failure"]["remedy"] == "reinstall"
     assert body["start_failure"]["at"].startswith("2026-10-25T16:33:00")
     assert computer_to_response({**row, "start_failure": None}).start_failure is None
+
+
+def test_a_failure_recorded_under_an_older_rule_offers_todays_fix():
+    """A sleeping machine's failed start once recorded the reconnect remedy,
+    which sends its owner back through pairing; read now, it is a retry."""
+    parsed = sf.start_failure_from_row(
+        {
+            "kind": "ssh",
+            "start_failure": {
+                "code": "not_connected",
+                "message": "m",
+                "owner": None,
+                "remedy": "reconnect",
+                "at": "2026-10-25T16:33:00+00:00",
+            },
+        }
+    )
+    assert parsed is not None and parsed.remedy == "retry"

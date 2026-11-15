@@ -97,6 +97,22 @@ describe('warmWorkspace', () => {
     expect(mockPost).toHaveBeenCalledWith('/api/v1/workspaces/ws-1/start?lazy=true');
   });
 
+  it('leaves a machine whose tunnel is down alone: it connects by itself once awake', async () => {
+    const qc = makeClient();
+    qc.setQueryData(queryKeys.workspaces.detail('ws-1'), {
+      workspace_id: 'ws-1',
+      status: 'stopped',
+      computer_id: 'comp-1',
+    });
+    qc.setQueryData(queryKeys.computers.lists(), {
+      computers: [{ computer_id: 'comp-1', status: 'stopped', ssh: { tunnel: true, tunnel_connected: false } }],
+    });
+
+    await warmWorkspace('ws-1', qc);
+
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
   it('writes response status into detail cache', async () => {
     const qc = makeClient();
     qc.setQueryData(queryKeys.workspaces.detail('ws-1'), {

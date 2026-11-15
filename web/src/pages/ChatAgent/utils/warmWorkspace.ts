@@ -130,6 +130,16 @@ async function homeComputerId(queryClient: QueryClient, workspaceId: string): Pr
   return row?.computer_id ?? null;
 }
 
+/** Whether the computer list caches hold the machine with its tunnel down:
+ * asleep or offline, it connects by itself once awake. */
+function cachedTunnelDown(queryClient: QueryClient, computerId: string): boolean {
+  for (const [, data] of queryClient.getQueriesData<ComputersResponse>({ queryKey: queryKeys.computers.lists() })) {
+    const computer = data?.computers?.find((c) => c.computer_id === computerId);
+    if (computer) return computer.ssh?.tunnel_connected === false;
+  }
+  return false;
+}
+
 /** What the caches believe a machine is doing: its own row, else a workspace
  * bound to it. */
 function cachedComputerStatus(queryClient: QueryClient, computerId: string): string | undefined {
@@ -215,6 +225,8 @@ export function warmWorkspace(
     try {
       const detail = cached ?? (await queryClient.fetchQuery(workspaceDetailQuery(workspaceId)));
       if (!detail?.status || !['stopped', 'running'].includes(detail.status)) return;
+      // A warm now could only fail beside the card that says the machine is away.
+      if (detail.computer_id && cachedTunnelDown(queryClient, detail.computer_id)) return;
 
       const resp = await startWorkspace(workspaceId, { lazy: true, reason });
       // Only reflect the 202 'starting' if nothing has advanced the cache past

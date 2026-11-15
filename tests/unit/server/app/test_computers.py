@@ -2907,6 +2907,9 @@ async def test_the_start_alias_addresses_this_project_not_the_machine(
             "src.server.app.workspaces.db_get_workspace",
             AsyncMock(return_value=_ws(status="stopped")),
         ),
+        patch(
+            "src.server.app.workspaces.computer_away", AsyncMock(return_value=None)
+        ),
         patch("src.server.app.workspaces.WorkspaceManager") as MockWM,
         patch(
             "src.server.app.computers._computer_manager",

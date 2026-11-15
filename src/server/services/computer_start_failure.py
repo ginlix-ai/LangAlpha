@@ -4,8 +4,9 @@ A start runs behind a 202, so its failure otherwise reaches the owner only as
 a frame on a stream they may not be reading. Every start path records it as
 it fails, and the server, not the client, decides what fixes it: an SSH
 machine whose folder is taken needs a reinstall, one that lost its pairing a
-reconnect, and anything else a retry. Importable without the provider stack,
-because the router reads it on every computer list.
+reconnect, and anything else (a machine that was only asleep included) a
+retry. Importable without the provider stack, because the router reads it on
+every computer list.
 """
 
 from __future__ import annotations
@@ -28,10 +29,11 @@ START_FAILED = "start_failed"
 
 # A folder the computer cannot have is fixed by taking it back or choosing
 # another; a machine that no longer knows the deployment, by pairing it again.
+# A machine whose tunnel is down (``not_connected``) is neither: it is asleep
+# or offline, still paired, and connects by itself once it wakes, so pairing
+# it again would only send its owner through setup for nothing.
 _REINSTALL_CODES = frozenset({SSHFolderMarked.code_name, "root_dir"})
-_RECONNECT_CODES = frozenset(
-    {"not_connected", "paired_elsewhere", "auth_failed", "host_key_mismatch"}
-)
+_RECONNECT_CODES = frozenset({"paired_elsewhere", "auth_failed", "host_key_mismatch"})
 
 
 def remedy_for(code: str, *, kind: str) -> StartFailureRemedy:
@@ -95,10 +97,18 @@ async def record_start_failure(
 
 
 def start_failure_from_row(row: Dict[str, Any]) -> Optional[StartFailure]:
-    """The row's last failed start, None when there is none or it does not parse."""
+    """The row's last failed start, None when there is none or it does not parse.
+
+    The remedy is derived again from the code, so a failure recorded under an
+    older rule (a sleeping machine sent back through pairing) offers the fix
+    the server would choose now.
+    """
     value = row.get("start_failure")
     if not isinstance(value, dict):
         return None
+    kind = row.get("kind")
+    if kind and isinstance(value.get("code"), str):
+        value = {**value, "remedy": remedy_for(value["code"], kind=kind)}
     try:
         return StartFailure.model_validate(value)
     except ValueError:
