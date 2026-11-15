@@ -24,7 +24,11 @@ def _ssh(root_dir, *, host="203.0.113.10", port=22, host_key=_KEY, kind="ssh"):
 
 @pytest.mark.parametrize(
     "root_dir",
-    ["/home/ubuntu/langalpha", "/home/ubuntu/langalpha/sub", "/home/ubuntu"],
+    [
+        "/home/ubuntu/langalpha",
+        "/home/ubuntu/langalpha/sub",
+        "/home/ubuntu",
+    ],
 )
 def test_a_folder_in_or_around_anothers_is_refused(root_dir):
     sibling = _ssh("/home/ubuntu/langalpha")
@@ -34,6 +38,21 @@ def test_a_folder_in_or_around_anothers_is_refused(root_dir):
     )
 
     assert found is sibling
+
+
+def test_a_folder_named_in_other_letter_case_is_another_folder():
+    """On a disk that keeps case they are two folders; a Mac's disk, which
+    takes either, has the probe spell the folder as the disk does, and the
+    create checks that spelling again before it commits."""
+    found = computer_sharing_folder(
+        [_ssh("/home/ubuntu/langalpha")],
+        host="203.0.113.10",
+        port=22,
+        host_key=_KEY,
+        root_dir="/home/ubuntu/LangAlpha/sub",
+    )
+
+    assert found is None
 
 
 def test_a_name_prefix_is_not_a_parent():

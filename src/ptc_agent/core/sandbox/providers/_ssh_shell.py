@@ -17,6 +17,7 @@ from ptc_agent.core.paths import (
     LEFTOVERS_TRASH_PREFIX,
     SandboxLayout,
     WorkspaceLayout,
+    name_fold,
 )
 from ptc_agent.core.sandbox.providers import _ssh_bootstrap as bootstrap
 from ptc_agent.core.sandbox.providers._proc_sh import EXEC_MARK, PROC_SH, ps_start_sh
@@ -496,8 +497,10 @@ def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> st
     (with passwordless sudo where the user cannot), an empty one, or one a
     computer marked as its root, and never one every account may write in,
     such as ``/tmp``, where anyone can plant entries the computer would then
-    treat as its own, or one named through a symbolic link (or, on a Mac, in
-    other letter case), whose files the server would read as outside it.
+    treat as its own, or one named through a symbolic link, whose files the
+    server would read as outside it. A name in other letter case or Unicode
+    normalization, which a Mac's disk takes for the same folder, exits 12 as
+    well, and the caller checks the disk's spelling instead (``adopted_root``).
     The folder must be the login's own, and taking it leaves only the login
     able to write in it and in the workspace folders at its top: another
     account that could would swap in a folder of its own, whose
@@ -508,11 +511,12 @@ def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> st
     keeps a root without the mark when the computer's own folder under
     *computers* exists, so a lost mark does not lock a computer out of its
     files. A root marked by another computer that still exists is refused
-    with exit 10, and the id the mark holds printed. Claims on one login run
-    one at a time and make the claiming computer's folder under *computers*,
-    so two starts at once cannot both take a folder; exit 15 is one that
-    waited too long for its turn. Any other exit is one ``root_dir_error``
-    words.
+    with exit 10, and the id the mark holds printed; exit 12 prints the
+    folder it checked and the real path it has (``adopted_root``). Claims on
+    one login run one at a time and make the claiming computer's folder under
+    *computers*, so two starts at once cannot both take a folder; exit 15
+    is one that waited too long for its turn. Any other exit is one
+    ``root_dir_error`` words.
     """
     i = SandboxLayout.INTERNAL_DIR
     if computer_id is None:
@@ -544,7 +548,8 @@ def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> st
         '  mkdir -p -- "$c/$me" && chmod 700 "$c/$me" || exit 9\n'
         "  exit 0\n"
         "}\n"
-        'real() { [ "$(cd -P -- "$1" 2>/dev/null && env pwd -P)" = "$1" ] || exit 12; }\n'
+        'real() { r=$(cd -P -- "$1" 2>/dev/null && env pwd -P); [ "$r" = "$1" ] && return; '
+        "printf '%s\\n%s\\n' \"$1\" \"$r\"; exit 12; }\n"
         'if [ -d "$w" ]; then\n'
         '  real "$w"\n'
         '  [ -r "$w" ] && [ -w "$w" ] && [ -x "$w" ] || exit 4\n'
@@ -569,6 +574,32 @@ def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> st
         'case "$e" in *tty*) exit 5 ;; esac\n'
         "exit 3\n"
     )
+
+
+def adopted_root(path: str, stdout: str) -> str | None:
+    """*path* spelled as the disk has it, from ``root_dir_script``'s exit 12,
+    when the two differ only in letter case or Unicode normalization, else
+    None, which leaves the exit refusing it as a symbolic link.
+
+    A case-insensitive disk (a Mac's, by default) takes either spelling for
+    the same folder, but the server compares paths as strings, and what
+    commands there print is the disk's. A link whose target differs from its
+    name only so is adopted as its target, which is then checked like any
+    other folder.
+    """
+    lines = stdout.splitlines()
+    if len(lines) < 2:
+        return None
+    checked, real = lines[-2], lines[-1]
+    if (
+        not real
+        or real == checked
+        or "\ufffd" in real
+        or not path.startswith(checked)
+        or name_fold(real) != name_fold(checked)
+    ):
+        return None
+    return real + path[len(checked) :]
 
 
 def root_dir_error(

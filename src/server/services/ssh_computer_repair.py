@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import posixpath
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ptc_agent.config.core import SSHConfig
 from ptc_agent.core.sandbox.providers import ssh as ssh_provider
@@ -276,6 +276,47 @@ async def check_new_root(
         root = normal_root_dir(requested)
     except ValueError as e:
         raise ComputerRepairRefused("root_dir", str(e), status=422) from None
+    computers = await get_computers_for_user(str(computer["user_id"]))
+    _refuse_placement(computer, computers, target, root)
+    try:
+        found, owner = await _probe_folder(
+            computer, key, target, root, settings=settings, take_over=take_over
+        )
+    except SSHConnectError as e:
+        if e.code != "root_dir":
+            raise
+        raise ComputerRepairRefused("root_dir", str(e), status=422) from None
+    if not found.supported:
+        raise SSHConnectError(
+            "unsupported",
+            " ".join(found.problems) or f"{target['host']} cannot host a computer.",
+        )
+    if found.root_dir != root:
+        # A Mac's disk took another spelling of the folder, which the checks
+        # above compared as written: a sibling's folder in other letter case.
+        root = found.root_dir
+        _refuse_placement(computer, computers, target, root)
+    state = posixpath.join(found.home or "/", STATE_DIR)
+    if found.home and _nested(state, root):
+        # Every computer's own folder is in there, and its removal deletes it.
+        raise ComputerRepairRefused(
+            "root_dir",
+            f"{root} is inside or around {state}, where LangAlpha keeps each "
+            "computer's own files. Choose a folder outside it.",
+            status=422,
+        )
+    return NewRoot(root_dir=root, take_over=owner)
+
+
+def _refuse_placement(
+    computer: Dict[str, Any],
+    computers: List[Dict[str, Any]],
+    target: Dict[str, Any],
+    root: str,
+) -> None:
+    """Refuse *root* as the computer's new folder when it is too long to keep,
+    in or around its current one, or another of the owner's computers works
+    in or around it."""
     if len(root) > ROOT_DIR_MAX:
         raise ComputerRepairRefused(
             "root_dir",
@@ -290,7 +331,6 @@ async def check_new_root(
             "Choose a folder outside it.",
             status=422,
         )
-    computers = await get_computers_for_user(str(computer["user_id"]))
     sibling = computer_sharing_folder(
         [c for c in computers if str(c["computer_id"]) != str(computer["computer_id"])],
         host=target["host"],
@@ -306,29 +346,6 @@ async def check_new_root(
             f"{sibling.get('root_dir')} on this machine. Choose a folder outside it.",
             computer_id=str(sibling["computer_id"]),
         )
-    try:
-        found, owner = await _probe_folder(
-            computer, key, target, root, settings=settings, take_over=take_over
-        )
-    except SSHConnectError as e:
-        if e.code != "root_dir":
-            raise
-        raise ComputerRepairRefused("root_dir", str(e), status=422) from None
-    if not found.supported:
-        raise SSHConnectError(
-            "unsupported",
-            " ".join(found.problems) or f"{target['host']} cannot host a computer.",
-        )
-    state = posixpath.join(found.home or "/", STATE_DIR)
-    if found.home and _nested(state, root):
-        # Every computer's own folder is in there, and its removal deletes it.
-        raise ComputerRepairRefused(
-            "root_dir",
-            f"{root} is inside or around {state}, where LangAlpha keeps each "
-            "computer's own files. Choose a folder outside it.",
-            status=422,
-        )
-    return NewRoot(root_dir=root, take_over=owner)
 
 
 async def plan_reconnect(
