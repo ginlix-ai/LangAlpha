@@ -62,14 +62,21 @@ class ServerBackend:
     def is_running(self, server: str) -> bool:
         raise NotImplementedError
 
-    def call(self, server: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Raw JSON-RPC reply. The caller settles it, so errors stay typed."""
-        raise NotImplementedError
-
-    def call_with_timeout(
-        self, server: str, tool: str, args: dict[str, Any], timeout: float
+    def call(
+        self,
+        server: str,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        timeout: float,
+        call_id: str = "",
     ) -> dict[str, Any]:
-        return self.call(server, tool, args)
+        """Raw JSON-RPC reply. The caller settles it, so errors stay typed.
+
+        ``call_id`` names the tool call the request is made for, which this
+        daemon's own environment cannot, having been started by an earlier one.
+        """
+        raise NotImplementedError
 
     def drop(self, server: str) -> None:
         raise NotImplementedError
@@ -118,13 +125,18 @@ class ClientBackend(ServerBackend):
     def running(self) -> list[str]:
         return list(self._c.running_servers())
 
-    def call(self, server: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        return self._c.raw_tool_reply(server, tool, args)
-
-    def call_with_timeout(
-        self, server: str, tool: str, args: dict[str, Any], timeout: float
+    def call(
+        self,
+        server: str,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        timeout: float,
+        call_id: str = "",
     ) -> dict[str, Any]:
-        return self._c.raw_tool_reply(server, tool, args, timeout=timeout)
+        return self._c.raw_tool_reply(
+            server, tool, args, timeout=timeout, call_id=call_id
+        )
 
     def drop(self, server: str) -> None:
         self._c.drop_server(server)
@@ -463,7 +475,13 @@ class Supervisor:
             # otherwise be reaped out from under itself.
             self._claim(server)
             try:
-                reply = self.backend.call_with_timeout(server, tool, args, remaining)
+                reply = self.backend.call(
+                    server,
+                    tool,
+                    args,
+                    timeout=remaining,
+                    call_id=str(request.get("call_id") or ""),
+                )
             except Exception as exc:  # noqa: BLE001 - one bad server is not fatal
                 self._log(f"call failed {server}.{tool}: {exc}")
                 conn.send(

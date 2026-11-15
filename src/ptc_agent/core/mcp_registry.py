@@ -391,15 +391,16 @@ class MCPServerConnector:
         try:
             tools_response = await self.session.list_tools()
 
-            self.tools = []
-            for tool in tools_response.tools:
-                tool_info = MCPToolInfo(
+            listed = [
+                MCPToolInfo(
                     name=tool.name,
                     description=tool.description or "",
                     input_schema=tool.input_schema or {},
                     server_name=self.config.name,
                 )
-                self.tools.append(tool_info)
+                for tool in tools_response.tools
+            ]
+            self.tools = self._allowed(listed)
 
             logger.debug(
                 "Discovered tools",
@@ -419,6 +420,38 @@ class MCPServerConnector:
             raise
         finally:
             span.end()
+
+    def _allowed(self, listed: list[MCPToolInfo]) -> list[MCPToolInfo]:
+        """``listed`` cut to the server's ``tools`` allowlist, when it has one.
+
+        Filtered here, where a built-in's tools are first held, because every
+        reader (wrappers, docs, the roster, the schema hash that regenerates a
+        warm sandbox's wrappers) takes them from this list. A vendor that lists
+        far more than the agent should see would otherwise cost prompt and
+        wrapper weight for tools nobody chose.
+        """
+        allow = self.config.tools
+        if allow is None:
+            return listed
+        allowed = set(allow)
+        kept = [t for t in listed if t.name in allowed]
+        if withheld := len(listed) - len(kept):
+            logger.info(
+                "Withheld MCP tools outside the allowlist",
+                server=self.config.name,
+                listed=len(listed),
+                kept=len(kept),
+                withheld=withheld,
+            )
+        # A vendor rename drops the tool silently otherwise.
+        listed_names = {t.name for t in listed}
+        if missing := [name for name in allow if name not in listed_names]:
+            logger.warning(
+                "Allowlisted MCP tools the server did not list",
+                server=self.config.name,
+                missing=missing,
+            )
+        return kept
 
     async def _discover_tools_with_retry(self, *, max_retries: int = 3) -> None:
         """Discover tools with exponential backoff, for SSE only.

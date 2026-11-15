@@ -28,7 +28,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ptc_agent.config.core import MCPServerConfig, VaultBlueprint
+from ptc_agent.config.core import MCPServerConfig, ServerAuth, VaultBlueprint
 from ptc_agent.config.file_utils import substitute_env_vars
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,9 @@ class ServerMeta(BaseModel):
     # The mark this server wears when it is a different brand from its
     # package's, as a site or the https address of the image itself.
     icon: str | None = None
+    # Bundles only, like ``vault_blueprints``: see MCPServerConfig.
+    auth: ServerAuth | None = None
+    tools: list[str] | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -191,20 +194,28 @@ def _expand(value: Any) -> Any:
     return value
 
 
-def _server_metas(block: dict[str, Any], bundle: str) -> dict[str, ServerMeta]:
+def _server_metas(block: dict[str, Any], bundle: str) -> dict[str, ServerMeta | None]:
+    """Each declared server's meta, None for one whose block does not validate.
+
+    None rather than a blank meta: the block can carry the server's ``auth``
+    and its ``tools`` allowlist, and a server read without them would run as a
+    plain built-in exposing every tool its vendor lists, on a credential it
+    was never meant to have.
+    """
     declared = block.get("servers")
     if not isinstance(declared, dict):
         return {}
-    metas: dict[str, ServerMeta] = {}
+    metas: dict[str, ServerMeta | None] = {}
     for key, payload in declared.items():
         try:
             metas[key] = ServerMeta(**payload)
         except (TypeError, ValueError) as e:
-            # The server still runs; it just reaches the prompt undescribed.
             logger.warning(
-                "bundled plugin %s: server %r has an unusable meta block: %s",
+                "bundled plugin %s: server %r has an unusable meta block, so it "
+                "is not loaded: %s",
                 bundle, key, e,
             )
+            metas[key] = None
     return metas
 
 
@@ -221,6 +232,8 @@ def _server(
         "instruction": meta.instruction,
         "tool_exposure_mode": meta.tool_exposure_mode,
         "vault_blueprints": list(meta.vault_blueprints),
+        "tools": meta.tools,
+        "auth": meta.auth,
     }
     if transport == "stdio":
         return MCPServerConfig(
@@ -265,8 +278,11 @@ def bundled_mcp_servers() -> list[MCPServerConfig]:
         for key, entry in bundle.servers.items():
             if not isinstance(key, str) or not isinstance(entry, dict):
                 continue
+            meta = metas.get(key, ServerMeta())
+            if meta is None:
+                continue
             try:
-                server = _server(key, entry, metas.get(key) or ServerMeta())
+                server = _server(key, entry, meta)
             except (TypeError, ValueError) as e:
                 logger.warning(
                     "bundled plugin %s: server %r is unusable: %s",
