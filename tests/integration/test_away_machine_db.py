@@ -122,6 +122,8 @@ async def _bind(pool, workspace_id: str, computer_id: str | None) -> None:
         )
 
 
+_AGENT_STEER = {"sender": "analyst", "target": "thread", "message": "Look again"}
+
 
 async def test_a_machine_back_within_the_week_keeps_its_parked_notifications(
     machine, test_db_pool
@@ -190,6 +192,90 @@ async def test_a_machine_gone_a_week_releases_an_analysts_watch(machine, test_db
     assert clear["payload"]["error_wake"] is True
     assert clear["payload"]["refuse_if_pointer"] is True
     assert clear["payload"]["dispatch_gen"] == 2
+
+
+async def test_a_machine_gone_a_week_has_its_agents_steers_dropped(machine, test_db_pool):
+    """The sender reads an outcome, as for a steer out of attempts, rather
+    than a steer closed with none."""
+    await machine.seen(timedelta(days=8))
+    job = await _parked(
+        test_db_pool, machine, "steer", payload=_AGENT_STEER,
+        ordering_key=ob.steer_ordering_key(machine.thread_id),
+    )
+
+    closed = await ob.close_for_lost_computers()
+
+    assert job in {str(r["hook_outbox_id"]) for r in closed}
+    row = await _job(test_db_pool, job)
+    assert (row["status"], row["payload"]["outcome"]) == ("done", "dropped")
+
+
+async def test_the_steer_safety_net_leaves_a_steer_parked_for_its_computer(
+    machine, test_db_pool
+):
+    """A thread with no live run would hand an unowned parked steer to its
+    executor; one waiting for its computer waits for that computer's return."""
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO conversation_responses (conversation_thread_id, turn_index,"
+            " status, created_at) VALUES (%s, 0, 'in_progress', NOW())",
+            (machine.thread_id,),
+        )
+        await conn.execute(
+            "UPDATE conversation_responses SET status = 'completed'"
+            " WHERE conversation_thread_id = %s",
+            (machine.thread_id,),
+        )
+    job = await _parked(
+        test_db_pool, machine, "steer", payload=_AGENT_STEER,
+        ordering_key=ob.steer_ordering_key(machine.thread_id),
+    )
+
+    claimed = await ob.claim_outbox_jobs(limit=500)
+    assert job not in {str(r["hook_outbox_id"]) for r in claimed}
+
+    # The same steer parked by no computer is the safety net's to take.
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE hook_outbox SET payload = payload - %s WHERE hook_outbox_id = %s",
+            (ob.AWAITS_COMPUTER, job),
+        )
+    claimed = await ob.claim_outbox_jobs(limit=500)
+    assert job in {str(r["hook_outbox_id"]) for r in claimed}
+
+
+async def test_a_job_whose_workspace_moved_off_its_computer_is_released(
+    machine, test_db_pool
+):
+    """The machine is still away, but the thread no longer runs there: its
+    executor looks at the computer the workspace is on now."""
+    from src.server.database.computer import create_computer
+
+    await _bind(test_db_pool, machine.workspace_id, machine.computer_id)
+    report = await _parked(test_db_pool, machine, "task_report_back")
+    steer = await _parked(
+        test_db_pool, machine, "steer", payload=_AGENT_STEER,
+        ordering_key=ob.steer_ordering_key(machine.thread_id),
+    )
+    try:
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+        assert not {report, steer} & released
+
+        other = await create_computer(machine.user_id, name="cloud", status="running")
+        await _bind(test_db_pool, machine.workspace_id, str(other["computer_id"]))
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+
+        assert {report, steer} <= released
+        row = await _job(test_db_pool, report)
+        assert (row["status"], row["waiting"]) == ("pending", False)
+        assert ob.AWAITS_COMPUTER not in row["payload"]
+        # A steer is due by its due_at, never by next_retry_at.
+        row = await _job(test_db_pool, steer)
+        assert (row["status"], row["waiting"]) == ("pending", True)
+        assert "due_at" in row["payload"]
+        assert ob.AWAITS_COMPUTER not in row["payload"]
+    finally:
+        await _bind(test_db_pool, machine.workspace_id, None)
 
 
 async def test_an_analysts_report_back_waits_on_the_thread_it_reports_to(

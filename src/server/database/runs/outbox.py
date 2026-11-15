@@ -99,6 +99,10 @@ async def enqueue_hooks(
             )
 
 
+# The computer a parked notification waits for (``park_for_computer``).
+AWAITS_COMPUTER = "awaits_computer"
+
+
 # A pending steer keeps ``next_retry_at='infinity'`` for its whole life, so a
 # build without a steer executor never sees it: across a blue/green flip the
 # old color's drainer claims any pending row whose ``next_retry_at`` is due and
@@ -129,12 +133,15 @@ _STEER_DUE_SQL = """(
 # thread like a thread steer. Its head is then due like any other, so the
 # chain behind it moves too. A steer that ran out of attempts
 # (``_exhaust_steers``) waits for a run's ending or the user instead: handing
-# it straight back to the executor that gave up on it would loop.
-_STEER_SAFETY_NET_SQL = """(
+# it straight back to the executor that gave up on it would loop. So does one
+# parked for its computer (``park_for_computer``), which waits for that
+# computer's return.
+_STEER_SAFETY_NET_SQL = f"""(
     o.hook_type = 'steer'
     AND o.next_retry_at = 'infinity'::timestamptz
     AND NOT (o.payload ? 'due_at')
     AND NOT (o.payload ? 'exhausted')
+    AND NOT (o.payload ? '{AWAITS_COMPUTER}')
     AND CASE WHEN o.payload->>'target' = 'task'
                   AND o.ordering_key LIKE '%%:task:%%' THEN
         NOT EXISTS (
@@ -1306,10 +1313,6 @@ async def defer_claimed_job(
                 )
                 row = await cur.fetchone()
                 return row["status"] if row else None
-
-
-# The computer a parked notification waits for (``park_for_computer``).
-AWAITS_COMPUTER = "awaits_computer"
 
 
 async def park_for_computer(job_id: str, *, attempts: int, computer_id: str) -> bool:

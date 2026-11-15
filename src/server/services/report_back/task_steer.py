@@ -509,6 +509,7 @@ async def execute_task_steer(job: dict) -> None:
     from src.server.services.report_back.notify_turn import (
         TURN_ROOM_WAIT_S,
         await_run_terminal,
+        park_while_computer_away,
         park_while_thread_busy,
         post_notification_turn,
     )
@@ -559,6 +560,12 @@ async def execute_task_steer(job: dict) -> None:
     user_id, workspace_id = await _owner(payload, thread_id)
     if not user_id:
         await settle("the thread has no owner")
+        return
+    # A turn of its own that nobody watches: it waits for a machine of the
+    # user's own that is asleep rather than fail at its connect.
+    if await park_while_computer_away(
+        job_id, attempts, thread_id, workspace_id=workspace_id, log_prefix=_LOG, subject=subject
+    ):
         return
     lap = int(payload.get("resume_turns") or 0)
     if lap >= MAX_RESUME_TURNS:

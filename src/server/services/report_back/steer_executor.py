@@ -76,6 +76,7 @@ async def execute_steer(job: dict) -> None:
     from src.server.services.hook_outbox import LEASE_SECONDS, MAX_ATTEMPTS
     from src.server.services.report_back.notify_turn import (
         TURN_ROOM_WAIT_S,
+        park_while_computer_away,
         park_while_thread_busy,
         post_notification_turn,
     )
@@ -128,6 +129,18 @@ async def execute_steer(job: dict) -> None:
     user_id, workspace_id = await _owner(payload, thread_id)
     if not user_id:
         await finish("dropped")
+        return
+    # Another agent's message runs as a turn nobody watches, so it waits for
+    # a machine of the user's own that is asleep. The user's own steer is
+    # theirs to see fail and retry.
+    if sender != "user" and await park_while_computer_away(
+        job_id,
+        attempts,
+        thread_id,
+        workspace_id=workspace_id,
+        log_prefix=_LOG,
+        subject=subject,
+    ):
         return
 
     if sender == "user":

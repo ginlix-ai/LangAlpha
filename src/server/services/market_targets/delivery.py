@@ -153,6 +153,7 @@ async def execute_market_target(job: dict) -> None:
     from src.server.services.report_back.notify_turn import (
         TURN_ROOM_WAIT_S,
         earlier_wake,
+        park_while_computer_away,
         park_while_thread_busy,
         post_notification_turn,
         release_if_a_turn_ended,
@@ -263,6 +264,17 @@ async def execute_market_target(job: dict) -> None:
             log_prefix=_LOG,
             subject=subject,
             parks_at_ceiling=True,
+        ):
+            return
+        # The user's machine asleep: its notice waits, unread, for the
+        # machine to connect, rather than a wake that fails at its connect.
+        if await park_while_computer_away(
+            job_id,
+            attempts,
+            thread_id,
+            workspace_id=str(thread["workspace_id"]),
+            log_prefix=_LOG,
+            subject=subject,
         ):
             return
 

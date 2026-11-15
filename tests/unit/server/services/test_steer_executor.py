@@ -57,12 +57,15 @@ def _payload(**over) -> dict:
     }
 
 
-async def _execute(payload: dict, *, latest_status: str = "completed", post=None):
+async def _execute(
+    payload: dict, *, latest_status: str = "completed", post=None, away: bool = False
+):
     mocks = {
         "finish": AsyncMock(return_value=True),
         "defer": AsyncMock(return_value="pending"),
         "post": post or AsyncMock(return_value=("dispatched", "run-new")),
         "park": AsyncMock(return_value=False),
+        "away": AsyncMock(return_value=away),
     }
     with ExitStack() as stack:
         enter = stack.enter_context
@@ -78,6 +81,7 @@ async def _execute(payload: dict, *, latest_status: str = "completed", post=None
         )
         enter(patch(f"{_RUNS}.get_run", AsyncMock(return_value={"id": "run-new"})))
         enter(patch(f"{_NOTIFY}.park_while_thread_busy", mocks["park"]))
+        enter(patch(f"{_NOTIFY}.park_while_computer_away", mocks["away"]))
         enter(patch(f"{_NOTIFY}.post_notification_turn", mocks["post"]))
         await steer_executor.execute_steer(_job())
     return mocks
@@ -184,3 +188,23 @@ async def test_the_exhaust_followup_hands_a_task_steer_to_its_refresh():
         await steer_executor._on_exhausted(job)
 
     refresh.assert_awaited_once_with(job)
+
+
+@pytest.mark.asyncio
+async def test_another_agents_steer_waits_for_an_asleep_machine():
+    """Its turn is nobody's to watch, so it parks for the user's machine
+    rather than fail at its connect."""
+    payload = _payload(sender="chief_of_staff", origin={"id": "home-1"})
+    mocks = await _execute(payload, away=True)
+
+    mocks["post"].assert_not_awaited()
+    mocks["finish"].assert_not_awaited()
+    assert mocks["away"].await_args.kwargs["workspace_id"] == "ws-1"
+
+
+@pytest.mark.asyncio
+async def test_the_users_own_steer_is_posted_for_them_to_see():
+    mocks = await _execute(_payload(), away=True)
+
+    mocks["away"].assert_not_awaited()
+    mocks["post"].assert_awaited_once()
