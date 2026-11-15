@@ -515,17 +515,33 @@ def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> st
     folder it checked and the real path it has (``adopted_root``). Claims on
     one login run one at a time and make the claiming computer's folder under
     *computers*, so two starts at once cannot both take a folder; exit 15
-    is one that waited too long for its turn. Any other exit is one
-    ``root_dir_error`` words.
+    is one that waited too long for its turn. Exit 16 is a folder macOS's
+    privacy controls keep the login from listing, which would otherwise read
+    as empty. A check refuses a new folder under Desktop, Documents or
+    Downloads with exit 16 even when the login may list it, since iCloud can
+    sync Desktop and Documents with no sign in the path, and one in iCloud
+    Drive with exit 17: iCloud would upload the credentials the computer
+    keeps there. A computer already working in one keeps starting. Any other
+    exit is one ``root_dir_error`` words.
     """
     i = SandboxLayout.INTERNAL_DIR
     if computer_id is None:
         make, sudo, claim, hold = "exit 0", "sudo -n true", "exit 0", ""
+        # Compared in lower case: a Mac's disk takes any case for these, and a
+        # folder not made yet has no spelling of its own to compare.
+        synced = (
+            '[ "$(uname -s)" = Darwin ] || return 0; '
+            "f=$(printf '%s/' \"$1\" | LC_ALL=C tr A-Z a-z); "
+            "h=$(printf '%s/' \"$hd\" | LC_ALL=C tr A-Z a-z); "
+            'case "$f" in "${h}library/mobile documents/"*) exit 17 ;; '
+            '"${h}desktop/"* | "${h}documents/"* | "${h}downloads/"*) exit 16 ;; esac'
+        )
     else:
         make = 'mkdir -p -- "$w" 2>/dev/null && claim'
         sudo = 'sudo -n install -d -o "$(id -un)" -g "$(id -gn)" -- "$w"'
         claim = "claim"
         hold = _CLAIM_HOLD
+        synced = ":"
     return (
         f"w={shlex.quote(path)}; c={shlex.quote(computers)}; "
         f'me={shlex.quote(computer_id or "")}; m="$w/{ROOT_MARKER}"; o=\n'
@@ -548,10 +564,21 @@ def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> st
         '  mkdir -p -- "$c/$me" && chmod 700 "$c/$me" || exit 9\n'
         "  exit 0\n"
         "}\n"
-        'real() { r=$(cd -P -- "$1" 2>/dev/null && env pwd -P); [ "$r" = "$1" ] && return; '
+        'hd=$(cd -P -- "$HOME" 2>/dev/null && env pwd -P)\n'
+        'real() { r=$(cd -P -- "$1" 2>/dev/null && env pwd -P); '
+        '[ "$r" = "$1" ] && return; '
         "printf '%s\\n%s\\n' \"$1\" \"$r\"; exit 12; }\n"
+        # Only a check refuses a folder macOS keeps private or iCloud syncs: a
+        # computer already working in one keeps starting.
+        f"synced() {{ {synced} ; }}\n"
+        # The privacy controls deny with EPERM, where file modes deny with
+        # EACCES, and may deny a folder whose modes let the login in.
+        'tcc() { case $(LC_ALL=C ls -A -- "$1" 2>&1 >/dev/null) in '
+        '*"not permitted"*) exit 16 ;; esac; }\n'
+        # Where the folder is, asked of it or of the parent it would be made in.
+        'place() { real "$1"; synced "$1"; tcc "$1"; }\n'
         'if [ -d "$w" ]; then\n'
-        '  real "$w"\n'
+        '  place "$w"\n'
         '  [ -r "$w" ] && [ -w "$w" ] && [ -x "$w" ] || exit 4\n'
         '  [ -z "$(find "$w" -prune -perm -0002 2>/dev/null)" ] || exit 11\n'
         '  [ -O "$w" ] || exit 13\n'
@@ -560,7 +587,8 @@ def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> st
         '    if [ -n "$o" ] && [ "$o" != "$me" ] && [ -d "$c/$o" ]; then\n'
         "      printf '%s\\n' \"$o\"; exit 10\n"
         "    fi\n"
-        '  elif [ -n "$(ls -A -- "$w" | head -n 1)" ]; then\n'
+        # A listing that fails reads as one with files, never as empty.
+        '  elif [ -n "$({ ls -A -- "$w" || echo /; } 2>/dev/null | head -n 1)" ]; then\n'
         '    [ -n "$me" ] && [ -d "$c/$me" ] || exit 8\n'
         "  fi\n"
         f"  {claim}\n"
@@ -568,7 +596,10 @@ def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> st
         '[ -e "$w" ] && exit 6\n'
         'p=$w; while [ ! -e "$p" ]; do p=$(dirname -- "$p"); done\n'
         '[ -d "$p" ] || exit 7\n'
-        'real "$p"\n'
+        'place "$p"\n'
+        # Asked of the folder itself too: a missing Documents or iCloud folder
+        # leaves its nearest parent, which is outside it.
+        'synced "$w"\n'
         f'if [ -w "$p" ] && [ -x "$p" ]; then {make}; fi\n'
         f"e=$(LC_ALL=C {sudo} </dev/null 2>&1 >/dev/null) && {claim}\n"
         'case "$e" in *tty*) exit 5 ;; esac\n'
@@ -641,6 +672,17 @@ def root_dir_error(
     elif exit_code == 14:
         message = f"Could not make {path} on {host} writable by {user} alone."
         choose = "Choose a folder on a disk that keeps file permissions."
+    elif exit_code == 16:
+        message = f"{path} on {host} is in a folder macOS keeps private."
+        choose = (
+            "Choose a folder outside Desktop, Documents, Downloads and iCloud Drive."
+        )
+    elif exit_code == 17:
+        message = (
+            f"{path} on {host} is in iCloud Drive, which would upload the "
+            "credentials the computer keeps in its folder."
+        )
+        choose = "Choose a folder outside iCloud Drive."
     else:
         message = (
             f"Could not create {path} on {host}: {user} cannot write to its "

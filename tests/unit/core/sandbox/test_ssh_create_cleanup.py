@@ -271,3 +271,110 @@ def test_taking_a_root_leaves_its_top_writable_by_the_login_alone(tmp_path):
     assert (root / "ws").stat().st_mode & 0o777 == 0o755
     # Below the top the folders are the owner's to keep as they are.
     assert (root / "ws" / ".agents").stat().st_mode & 0o777 == 0o775
+
+
+_ICLOUD = "Library/Mobile Documents/com~apple~CloudDocs/la"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
+@pytest.mark.parametrize(
+    "folder,computer_id,system,denied,exit_code",
+    [
+        ("Projects/existing", None, "Darwin", "Projects", 16),
+        ("Documents/existing", "c" * 32, "Darwin", "Documents", 16),
+        ("Documents/new", None, "Darwin", "Documents", 16),
+        ("Documents/existing", None, "Darwin", None, 16),
+        ("Desktop/la", None, "Darwin", None, 16),
+        ("Downloads/la", None, "Darwin", None, 16),
+        ("Documents/existing", "c" * 32, "Darwin", None, 0),
+        (_ICLOUD, None, "Darwin", None, 17),
+        (_ICLOUD, "c" * 32, "Darwin", None, 0),
+        (_ICLOUD, None, "Linux", None, 0),
+        ("Documents/existing", None, "Linux", None, 0),
+    ],
+    ids=[
+        "privacy-elsewhere",
+        "privacy-already-working",
+        "privacy-new",
+        "documents-with-full-disk-access",
+        "desktop-new",
+        "downloads-new",
+        "documents-already-working",
+        "icloud-new",
+        "icloud-already-working",
+        "icloud-path-off-a-mac",
+        "documents-off-a-mac",
+    ],
+)
+def test_a_folder_the_mac_keeps_private_or_syncs_is_refused(
+    tmp_path, folder, computer_id, system, denied, exit_code
+):
+    """macOS's privacy controls fail a listing the file modes allow, which
+    reads as an empty folder. iCloud can sync Desktop and Documents with no
+    sign in the path, and would upload the computer's credentials, so a new
+    folder there is refused even where the login may list it, but a working
+    one starts. The same paths on another system are only folders."""
+    home = tmp_path.resolve() / "home"
+    (home / "Documents" / "existing").mkdir(parents=True)
+    (home / "Projects" / "existing").mkdir(parents=True)
+    (home / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "la").mkdir(
+        parents=True
+    )
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    if denied:
+        (shim / "ls").write_text(
+            f'#!/bin/sh\nfor a; do case $a in */{denied}*) '
+            'echo "ls: $a: Operation not permitted" >&2; exit 1;; esac; done\n'
+            'exec /bin/ls "$@"\n'
+        )
+        (shim / "ls").chmod(0o755)
+    (shim / "uname").write_text(f"#!/bin/sh\necho {system}\n")
+    (shim / "uname").chmod(0o755)
+    script = root_dir_script(
+        f"{home}/{folder}", computers=computers_dir(str(home)), computer_id=computer_id
+    )
+
+    done = subprocess.run(
+        ["bash", "-c", script],
+        env={"PATH": f"{shim}:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home)},
+        capture_output=True,
+    )
+
+    assert done.returncode == exit_code
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
+@pytest.mark.parametrize(
+    "folder,exit_code",
+    [
+        (_ICLOUD, 17),
+        ("Library/mobile documents/com~apple~CloudDocs/la", 17),
+        ("documents/la", 16),
+    ],
+    ids=["icloud", "icloud-other-case", "documents-other-case"],
+)
+def test_a_new_folder_in_icloud_is_refused_before_icloud_holds_anything(
+    tmp_path, folder, exit_code
+):
+    """With nothing yet under Mobile Documents the nearest folder that exists
+    is outside it, so the folder asked for is what the check reads, in any
+    case, since a Mac's disk takes any."""
+    home = tmp_path.resolve() / "home"
+    (home / "Library").mkdir(parents=True)
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    (shim / "uname").chmod(0o755)
+    script = root_dir_script(
+        f"{home}/{folder}", computers=computers_dir(str(home)), computer_id=None
+    )
+
+    done = subprocess.run(
+        ["bash", "-c", script],
+        env={"PATH": f"{shim}:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home)},
+        capture_output=True,
+    )
+
+    assert done.returncode == exit_code
+
