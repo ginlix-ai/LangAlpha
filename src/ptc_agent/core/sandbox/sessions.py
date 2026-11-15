@@ -15,6 +15,7 @@ import structlog
 from ptc_agent.core.sandbox.retry import RetryPolicy
 from ptc_agent.core.sandbox.runtime import (
     PreviewInfo,
+    PreviewPortInUse,
     SessionCommandResult,
 )
 
@@ -101,9 +102,7 @@ async def start_preview_server(
     if port in sandbox._preview_sessions:
         prior_owner = sandbox._preview_owners.get(port)
         if owner is not None and prior_owner is not None and prior_owner != owner:
-            raise RuntimeError(
-                f"Port {port} is already in use on this computer. Choose another port."
-            )
+            raise PreviewPortInUse(port)
         old_sid, _old_cmd = sandbox._preview_sessions[port]
         try:
             await sandbox._runtime_call(
@@ -212,9 +211,7 @@ async def start_and_get_preview_url(
         )
         if occupied.exit_code == 0:
             if owner is None or sandbox._preview_owners.get(port) != owner:
-                raise RuntimeError(
-                    f"Port {port} is already in use on this computer. Choose another port."
-                )
+                raise PreviewPortInUse(port)
             if await sandbox._is_preview_reachable(port):
                 return await sandbox.get_preview_url(port, expires_in)
         await sandbox.start_preview_server(command, port, owner=owner)
