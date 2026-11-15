@@ -508,7 +508,7 @@ describe('FilePanel reference opens', () => {
     fireEvent.change(await screen.findByTestId('editor'), { target: { value: '# Notes\n\nEdited body.' } });
     fireEvent.click(screen.getByTitle('Save (Cmd+S)'));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(api.writeWorkspaceFile).toHaveBeenCalledWith('ws', 'notes.md', '# Notes\n\nEdited body.', null));
+    await waitFor(() => expect(api.writeWorkspaceFile).toHaveBeenCalledWith('ws', 'notes.md', '# Notes\n\nEdited body.', null, expect.any(String)));
 
     rerender(<FilePanel workspaceId="ws" onClose={() => {}} files={EDIT_FILES} target={{ kind: 'file', path: 'report.py' }} />);
     await waitFor(() => expect(api.readWorkspaceFile).toHaveBeenCalledWith('ws', 'report.py'));

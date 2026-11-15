@@ -5,6 +5,7 @@
  * machine is back. A save also names the version its edit began from, so a
  * file changed since is refused rather than overwritten.
  */
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, act, within, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
@@ -84,6 +85,21 @@ describe('FilePanel editing while the computer is away', () => {
     expect(screen.queryByTitle('Edit file')).toBeNull();
   });
 
+  it('refuses to open the editor on a stopped workspace\'s backup, which gives no version to save against', async () => {
+    const stoppedBackup = { ...LIVE, version: undefined, source: 'database' };
+    vi.mocked(readWorkspaceFile).mockResolvedValue(stoppedBackup);
+    vi.mocked(readWorkspaceFileFull).mockResolvedValue(stoppedBackup);
+    renderWithProviders(panel());
+    fireEvent.click(await screen.findByTitle('Edit file'));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({
+      description: 'The sandbox is not available. Start the workspace to access files.',
+      variant: 'destructive',
+    }));
+    expect(screen.queryByTestId('editor')).toBeNull();
+    expect(writeWorkspaceFile).not.toHaveBeenCalled();
+  });
+
   it('saves against the version it read, and keeps the draft when the file changed since', async () => {
     vi.mocked(readWorkspaceFile).mockResolvedValue(LIVE);
     vi.mocked(readWorkspaceFileFull).mockResolvedValue(LIVE);
@@ -99,8 +115,26 @@ describe('FilePanel editing while the computer is away', () => {
     const dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
 
-    await waitFor(() => expect(writeWorkspaceFile).toHaveBeenCalledWith('ws', 'notes.md', '# Notes, revised', 'v1'));
+    // The text it began from goes by digest too, so a file only touched since still takes the save.
+    const loaded = createHash('sha256').update('# Notes').digest('hex');
+    await waitFor(() => expect(writeWorkspaceFile).toHaveBeenCalledWith('ws', 'notes.md', '# Notes, revised', 'v1', loaded));
     expect(await screen.findByText(/This file changed after you started editing/)).toBeTruthy();
     expect((screen.getByTestId('editor') as HTMLTextAreaElement).value).toBe('# Notes, revised');
+  });
+
+  it('waits for a read with a version before opening the editor', async () => {
+    // Read while the agent rewrote it, the file has no version, and a save
+    // naming none would land unchecked over whatever comes next.
+    vi.mocked(readWorkspaceFile).mockResolvedValue(LIVE);
+    vi.mocked(readWorkspaceFileFull).mockResolvedValue({ ...LIVE, version: null });
+    renderWithProviders(panel());
+    fireEvent.click(await screen.findByTitle('Edit file'));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({
+      description: 'This file was changing as it opened for editing. Try Edit again in a moment.',
+      variant: 'destructive',
+    }));
+    expect(screen.queryByTestId('editor')).toBeNull();
+    expect(screen.getByTitle('Edit file')).toBeTruthy();
   });
 });
