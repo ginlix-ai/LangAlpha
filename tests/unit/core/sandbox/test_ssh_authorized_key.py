@@ -264,10 +264,13 @@ class TestTurns:
             assert path.read_text() == "".join(f"{x}\n" for x in _OTHERS)
             assert not (home / ".ssh" / "authorized_keys.langalpha.lock").exists()
 
-    def test_a_lock_left_by_a_run_that_died_is_broken(self, tmp_path):
+    @pytest.mark.parametrize("left_by", ["this script", "an older script"])
+    def test_a_lock_left_by_a_run_that_died_is_broken(self, tmp_path, left_by):
         path = _keys(tmp_path, _OTHERS[0], _KEY)
         lock = tmp_path / ".ssh" / "authorized_keys.langalpha.lock"
         lock.mkdir()
+        if left_by == "this script":
+            (lock / "held").touch()
         os.utime(lock, (time.time() - 300, time.time() - 300))
 
         assert _remove(tmp_path) == "removed"

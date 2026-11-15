@@ -255,7 +255,7 @@ def uninstall_script(root: str, sandbox_id: str) -> str:
         # Not this computer's (its mark gone, or another's): left as it is.
         'elif [ -e "$r" ] || [ -L "$r" ]; then echo root kept\n'
         "fi\n"
-        'rmdir -- "$h" 2>/dev/null\n'
+        'trap - EXIT; rm -f -- "$h"\n'
         'if [ -d "$s" ] && [ ! -L "$s" ]; then\n'
         # The install's lock, so none starts, or is part done, while the
         # runtime goes; under it, a ``.install.*`` left is a dead install's.
@@ -411,13 +411,16 @@ ROOT_MARKER = ".langalpha-root"
 # between its look at the mark and what it deletes. Held in ``$c``, the
 # computers folder. A claim takes moments, so a hold older than that was cut
 # off; one still held after the wait is exit 15, inside the command's timeout.
+# The hold is a file the shell creates exclusively (noclobber), since a uutils
+# mkdir reports success for a folder another run made at the same moment; an
+# older script's hold is a folder.
 _CLAIM_HOLD = (
     'h="$c/.claiming"; n=0; mkdir -p -- "$c" || exit 9\n'
-    'until mkdir -- "$h" 2>/dev/null; do\n'
+    'until (set -C && : > "$h") 2>/dev/null; do\n'
     '  n=$((n + 1)); [ "$n" -le 20 ] || exit 15\n'
-    '  if [ -n "$(find "$h" -prune -mmin +2 2>/dev/null)" ]; then rmdir -- "$h" 2>/dev/null; else sleep 1; fi\n'
+    '  if [ -n "$(find "$h" -prune -mmin +2 2>/dev/null)" ]; then rm -f -- "$h" 2>/dev/null || rmdir -- "$h" 2>/dev/null; else sleep 1; fi\n'
     "done\n"
-    "trap 'rmdir -- \"$h\" 2>/dev/null' EXIT; trap 'exit 1' HUP INT TERM\n"
+    "trap 'rm -f -- \"$h\"' EXIT; trap 'exit 1' HUP INT TERM\n"
 )
 
 
