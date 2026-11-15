@@ -1396,6 +1396,11 @@ class PTCSandbox:
     async def awrite_file_text(self, filepath: str, content: str) -> bool:
         return await _files.awrite_file_text(self, filepath, content)
 
+    async def awrite_file_text_guarded(
+        self, filepath: str, content: str, guard: "_files.WriteGuard"
+    ) -> str | None:
+        return await _files.awrite_file_text_guarded(self, filepath, content, guard)
+
     def path_write_lock(self, normalized_path: str):
         return _files.path_write_lock(self, normalized_path)
 

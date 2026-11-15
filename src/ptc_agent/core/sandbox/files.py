@@ -11,10 +11,12 @@ import errno
 import functools
 import hashlib
 import json
+import os
 import posixpath
 import shlex
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +64,8 @@ logger = structlog.get_logger(__name__)
 # 64 KiB of text stays well under the cap; larger files take the upload path.
 _INLINE_TEXT_WRITE_LIMIT = 64 * 1024
 _INLINE_TEXT_MARKER = "__LANGALPHA_TEXT_PAYLOAD__"
+# A guarded write that found its file changed, outside sed's and the shell's.
+_GUARD_REFUSED_EXIT = 75
 # Outside sed's own exit codes (0, 1, 2, 4); EISDIR's number, for the reader.
 _IS_DIRECTORY_EXIT = errno.EISDIR
 # Grep output past this renders off the event loop. Rendering costs about
@@ -104,6 +108,54 @@ class SandboxWriteVerificationError(SandboxTransientError):
     edit path keeps re-raising it instead of answering the agent with "your edit
     was wrong" for a write that never landed.
     """
+
+
+class WritePreconditionFailed(Exception):
+    """A guarded write found its file changed since the caller read it, and
+    wrote nothing."""
+
+
+@dataclass(frozen=True)
+class WriteGuard:
+    """Shell a text write runs in its own script on the machine, under a lock
+    every guarded write of the file takes, so no other lands between the check
+    and the rename.
+
+    ``holds`` is a test of ``"$target"`` that passes while the file is as the
+    caller last read it; a file that already holds the bytes being written
+    passes too, so a retried write is not refused over its own first landing.
+    ``stamp`` runs after the rename and prints what the caller names next time.
+    """
+
+    holds: str
+    stamp: str
+
+
+def sha256_is(path: str, digest: str) -> str:
+    """Shell that passes while the file at ``path`` (a shell word) hashes to
+    ``digest``: ``sha256sum`` where coreutils has it, ``shasum`` on a Mac.
+    Neither there, it fails, as a file that differs does."""
+    return (
+        f"{{ __h=$(sha256sum < {path} 2>/dev/null "
+        f"|| shasum -a 256 < {path} 2>/dev/null) "
+        f'&& [ "${{__h%% *}}" = {shlex.quote(digest)} ]; }}'
+    )
+
+
+def _guard_lock(normalized_path: str) -> str:
+    """The lock directory guarded writes of one file take on the machine.
+
+    Outside the workspace folder, so a listing or a backup never meets it,
+    and named by a digest so any path makes one name.
+    """
+    key = hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()[:32]
+    return f"/tmp/.langalpha-save-{key}"
+
+
+# How many tenths of a second a guarded write waits on the lock before it
+# takes it as left by a writer that died without releasing it. A holder only
+# checks and renames, which takes far less.
+_GUARD_LOCK_TRIES = 50
 
 
 def _lock_scope(sandbox: "PTCSandbox") -> str:
@@ -484,34 +536,111 @@ async def _upload_once(
 
 
 async def _exec_text_write_once(
-    sandbox: "PTCSandbox", filepath: str, normalized_path: str, content: bytes
-) -> tuple[bool, int | None]:
-    payload = base64.b64encode(content).decode("ascii")
+    sandbox: "PTCSandbox",
+    filepath: str,
+    normalized_path: str,
+    content: bytes,
+    guard: WriteGuard | None = None,
+    staged: str | None = None,
+) -> tuple[bool, int | None, str]:
+    """One write, its landed size, and what ``guard.stamp`` printed.
+
+    The bytes go inline, or were uploaded to ``staged`` beside the target for
+    a payload too large to inline; either way the rename is this script's.
+    A guarded write holds the file's lock from its check until it has printed
+    the stamp, so the stamp is its own write's.
+    """
     target = shlex.quote(normalized_path)
+    # The lock is released by the same trap, once it is held.
+    cleanup = '[ -z "$tmp" ] || rm -f -- "$tmp"'
+    if guard is not None:
+        cleanup += '; [ -z "$held" ] || rmdir -- "$held" 2>/dev/null || true'
+    trap = f"trap '{cleanup}' EXIT HUP INT TERM"
+    if staged is None:
+        payload = base64.b64encode(content).decode("ascii")
+        staging = [
+            'mkdir -p -- "$(dirname -- "$target")"',
+            'tmp=$(mktemp "${target}.tmp.XXXXXX")',
+            trap,
+            f"base64 -d > \"$tmp\" <<'{_INLINE_TEXT_MARKER}'",
+            payload,
+            _INLINE_TEXT_MARKER,
+        ]
+    else:
+        staging = [
+            f"tmp={shlex.quote(staged)}",
+            trap,
+            'mkdir -p -- "$(dirname -- "$target")"',
+        ]
+    lock = (
+        [
+            f"lk={shlex.quote(_guard_lock(normalized_path))}",
+            "n=0",
+            'until mkdir -- "$lk" 2>/dev/null; do',
+            "  n=$((n + 1))",
+            f'  if [ "$n" -gt {_GUARD_LOCK_TRIES} ]; then',
+            '    rm -rf -- "$lk"',
+            '    mkdir -- "$lk"',
+            "    break",
+            "  fi",
+            "  sleep 0.1 2>/dev/null || sleep 1",
+            "done",
+            'held=$lk',
+        ]
+        if guard is not None
+        else []
+    )
+    check = (
+        [
+            f"if ! {{ {guard.holds}; }}; then",
+            f'  cmp -s -- "$tmp" "$target" || exit {_GUARD_REFUSED_EXIT}',
+            "fi",
+        ]
+        if guard is not None
+        else []
+    )
+    write = [
+        'count=$(wc -c < "$tmp")',
+        *check,
+        # BSD mv (a macOS machine) has no -T. As -T does, refuse a
+        # directory, and replace a link to one rather than move into it.
+        'if [ "$(uname -s)" = Darwin ]; then',
+        '  if [ -d "$target" ]; then',
+        '    [ -L "$target" ] || { echo "mv: $target: Is a directory" >&2; exit 1; }',
+        '    rm -f -- "$target"',
+        "  fi",
+        '  mv -f -- "$tmp" "$target"',
+        "else",
+        '  mv -fT -- "$tmp" "$target"',
+        "fi",
+    ]
+    if staged is not None:
+        # A staged payload is gone once renamed into place. The script run
+        # again, its first run's answer lost on the way back, finds the file
+        # holding these bytes and says so, rather than failing a write that
+        # landed.
+        landed = sha256_is('"$target"', hashlib.sha256(content).hexdigest())
+        write = [
+            'if [ ! -e "$tmp" ]; then',
+            f"  {landed} || exit 1",
+            '  count=$(wc -c < "$target")',
+            "else",
+            *(f"  {line}" for line in write),
+            "fi",
+        ]
     command = "\n".join(
         [
             "set -eu",
             f"target={target}",
-            'mkdir -p -- "$(dirname -- "$target")"',
-            'tmp=$(mktemp "${target}.tmp.XXXXXX")',
-            "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM",
-            f"base64 -d > \"$tmp\" <<'{_INLINE_TEXT_MARKER}'",
-            payload,
-            _INLINE_TEXT_MARKER,
-            'count=$(wc -c < "$tmp")',
-            # BSD mv (a macOS machine) has no -T. As -T does, refuse a
-            # directory, and replace a link to one rather than move into it.
-            'if [ "$(uname -s)" = Darwin ]; then',
-            '  if [ -d "$target" ]; then',
-            '    [ -L "$target" ] || { echo "mv: $target: Is a directory" >&2; exit 1; }',
-            '    rm -f -- "$target"',
-            "  fi",
-            '  mv -f -- "$tmp" "$target"',
-            "else",
-            '  mv -fT -- "$tmp" "$target"',
-            "fi",
-            "trap - EXIT HUP INT TERM",
+            "tmp=",
+            "held=",
+            *staging,
+            *lock,
+            *write,
+            # Renamed into place: nothing left for the trap to remove.
+            "tmp=",
             "printf '%s\\n' \"$count\"",
+            *([guard.stamp] if guard is not None else []),
         ]
     )
     try:
@@ -538,8 +667,10 @@ async def _exec_text_write_once(
             normalized_path=normalized_path,
             error=str(e),
         )
-        return False, None
+        return False, None, ""
 
+    if guard is not None and exit_code == _GUARD_REFUSED_EXIT:
+        raise WritePreconditionFailed(normalized_path)
     if exit_code != 0:
         # The sandbox answered, so this is the script failing on the file (a
         # permission, a full disk, a directory in the way), not the runtime
@@ -552,12 +683,13 @@ async def _exec_text_write_once(
             exit_code=exit_code,
             stderr=(getattr(result, "stderr", "") or "").strip()[:500],
         )
-        return False, None
+        return False, None, ""
     safe_record(workspace_fs_bytes, len(content), {"op": "write"})
+    count, _, stamp = (getattr(result, "stdout", "") or "").strip().partition("\n")
     try:
-        return True, int((getattr(result, "stdout", "") or "").strip())
+        return True, int(count), stamp.strip()
     except ValueError:
-        return True, None
+        return True, None, stamp.strip()
 
 
 async def awrite_file_text(sandbox: "PTCSandbox", filepath: str, content: str) -> bool:
@@ -575,40 +707,111 @@ async def awrite_file_text(sandbox: "PTCSandbox", filepath: str, content: str) -
 
     if len(encoded) >= _INLINE_TEXT_WRITE_LIMIT:
         return await sandbox.aupload_file_bytes(filepath, encoded, verify=True)
+    written, _ = await _write_text(sandbox, filepath, encoded, None)
+    return written
 
+
+async def awrite_file_text_guarded(
+    sandbox: "PTCSandbox", filepath: str, content: str, guard: WriteGuard
+) -> str | None:
+    """``awrite_file_text`` that lands only while ``guard.holds``, checked in
+    the script that renames the file into place; what ``guard.stamp``
+    printed, or None for a path validation refused.
+
+    A payload too large to inline is uploaded beside the target first, so
+    the check and the rename stay one script at any size.
+
+    Raises:
+        WritePreconditionFailed: The file changed since the caller read it.
+    """
+    try:
+        encoded = content.encode("utf-8")
+    except UnicodeEncodeError as e:
+        logger.debug("Failed to encode file as utf-8", filepath=filepath, error=str(e))
+        return None
+    written, stamp = await _write_text(sandbox, filepath, encoded, guard)
+    return stamp if written else None
+
+
+async def _write_text(
+    sandbox: "PTCSandbox", filepath: str, encoded: bytes, guard: WriteGuard | None
+) -> tuple[bool, str]:
     await sandbox._wait_ready()
     normalized_path = sandbox.normalize_path(filepath)
     if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(
         filepath
     ):
         logger.error(f"Access denied: {filepath} is not in allowed directories")
-        return False
+        return False, ""
 
     async with path_write_lock(sandbox, normalized_path):
         for attempt in (1, 2):
-            written, landed_size = await _exec_text_write_once(
-                sandbox, filepath, normalized_path, encoded
-            )
+            staged = None
+            if len(encoded) >= _INLINE_TEXT_WRITE_LIMIT:
+                staged = f"{normalized_path}.tmp.{os.urandom(6).hex()}"
+            # Whatever ends the write short of the script's own end, an upload
+            # that broke off or a script that never ran, leaves the staged
+            # payload beside the file: in the workspace, in its listing.
+            consumed = staged is None
+            try:
+                if staged is not None and not await _upload_once(
+                    sandbox, filepath, staged, encoded
+                ):
+                    return False, ""
+                try:
+                    written, landed_size, stamp = await _exec_text_write_once(
+                        sandbox, filepath, normalized_path, encoded, guard, staged
+                    )
+                except WritePreconditionFailed:
+                    consumed = True  # The script's trap removed it.
+                    raise
+                consumed = written
+            finally:
+                if not consumed:
+                    await _discard_staged(sandbox, staged)
             if not written:
-                return False
+                return False, ""
             landed = (
                 landed_size == len(encoded)
                 if landed_size is not None
                 else await _write_landed(sandbox, normalized_path, encoded)
             )
             if landed:
-                return True
+                return True, stamp
             logger.warning(
                 "File did not read back as written",
                 normalized_path=normalized_path,
                 attempt=attempt,
                 size=len(encoded),
             )
+            if guard is not None:
+                # The file now holds this write's own short landing, which
+                # the rewrite replaces whatever its stamps say.
+                guard = replace(guard, holds="true")
 
     raise SandboxWriteVerificationError(
         f"Write verification failed for {normalized_path}: the file does not match "
         f"the {len(encoded)} bytes written, after one rewrite"
     )
+
+
+async def _discard_staged(sandbox: "PTCSandbox", staged: str | None) -> None:
+    """Remove a staged payload its write left behind, once: a machine that has
+    stopped answering is not waited on for it."""
+    if staged is None:
+        return
+    try:
+        assert sandbox.runtime is not None
+        await sandbox._runtime_call(
+            sandbox.runtime.exec,
+            f"rm -f -- {shlex.quote(staged)}",
+            timeout=10,
+            retry_policy=RetryPolicy.UNSAFE,
+        )
+    except Exception as e:
+        logger.warning(
+            "Staged write payload left behind", staged=staged, error=str(e)
+        )
 
 
 async def aread_file_range(

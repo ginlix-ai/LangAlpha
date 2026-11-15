@@ -22,6 +22,7 @@ from urllib.parse import unquote
 from uuid import uuid4
 
 from ptc_agent.core.paths import SANDBOX_ROOTS, SandboxLayout, strip_previous_dir_name
+from ptc_agent.core.sandbox.files import WriteGuard, sha256_is
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from src.server.utils.error_sanitization import single_line
 
@@ -127,13 +128,17 @@ class ContainedFile:
     ``content`` is None when the file is still at the version the caller
     named, which the read then leaves unread. ``version`` is None when the
     file has none that tells it from its next write, or it changed while it
-    was read.
+    was read. ``stamps`` are the ones the read saw however recent, for a save
+    to name (:func:`edit_version`): checked exactly on the machine, not
+    trusted as a cache validator. None where stat gave none, or the file
+    changed while it was read.
     """
 
     canonical: str
     size: int
     version: str | None
     content: bytes | None
+    stamps: str | None = None
 
 
 @dataclass(frozen=True)
@@ -624,13 +629,61 @@ async def read_contained_sandbox_file_versioned(
     if after != before or len(content) != size:
         # Rewritten while it was read: the bytes are good, the version is not
         # theirs.
-        version = None
-    return ContainedFile(canonical, len(content), version, content)
+        return ContainedFile(canonical, len(content), None, content)
+    return ContainedFile(
+        canonical, size, version, content, "-".join(stamps) if stamps else None
+    )
 
 
 def version_etag(size: int, version: str) -> str:
     """The validator a file's version gives a download, ranged or whole."""
     return f"{size}-{version}"
+
+
+def edit_version(read: ContainedFile) -> str | None:
+    """The version a save names as the text it edited, in ``version_etag``'s
+    form; None when the read saw none."""
+    return version_etag(read.size, read.stamps) if read.stamps else None
+
+
+# What a guarded write prints after its rename: the file's version line.
+_STAMP = f'tt=$target; {_VERSION_LINE}printf "%s\\n" "$v"'
+
+
+def write_guard(
+    base_version: str | None, base_sha256: str | None = None
+) -> WriteGuard | None:
+    """The guard a save that edited ``base_version`` writes under, holding
+    while the file's version line is still the one that version was made
+    from; with no base, one that always holds. None for a version no read
+    gave, which no file can still be at.
+
+    ``base_sha256``, the digest of the text the edit began from, holds it too
+    where the version moved but not the bytes: a ``touch``, a rewrite of the
+    same text, a restore that brought a new inode. Hashed only once the
+    version has failed, so a save of an untouched file reads nothing more.
+    """
+    same_bytes = sha256_is('"$tt"', base_sha256) if base_sha256 else None
+    if base_version is None:
+        holds = f'tt=$target; [ -f "$tt" ] && {same_bytes}' if same_bytes else "true"
+        return WriteGuard(holds=holds, stamp=_STAMP)
+    lines = stamps_of_etag(f'"{base_version}"')
+    if len(lines) != 1:
+        return None
+    same = f'{{ {_VERSION_LINE}}} && [ "$v" = {shlex.quote(lines[0])} ]'
+    if same_bytes:
+        same = f"{{ {same}; }} || {same_bytes}"
+    return WriteGuard(holds=f'tt=$target; [ -f "$tt" ] && {{ {same}; }}', stamp=_STAMP)
+
+
+def written_version(stamp: str | None) -> str | None:
+    """The version a guarded write's stamp names, for the next save from the
+    same edit; None where stat gave none."""
+    parsed = _size_and_stamps(stamp or "")
+    if parsed is None or parsed[1] is None:
+        return None
+    size, stamps = parsed
+    return version_etag(size, "-".join(stamps))
 
 
 # One entity-tag of an If-None-Match list: quoted, so a comma inside one is

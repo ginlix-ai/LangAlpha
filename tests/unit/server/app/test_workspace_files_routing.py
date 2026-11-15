@@ -610,12 +610,75 @@ async def test_a_file_the_backup_lacks_answers_as_the_away_machine_not_as_missin
     assert refused.value.headers == {"X-Computer-Unreachable": "not_connected"}
 
 
-def _live_sandbox_for_write(on_machine: bytes | None):
-    """A running workspace whose file holds *on_machine* (None: no such file)."""
-    from contextlib import asynccontextmanager
+class _LocalShell:
+    """A machine that is this one: the commands the file routes send run here."""
 
-    sandbox = MagicMock()
-    sandbox.awrite_file_text = AsyncMock(return_value=True)
+    async def exec(self, command: str, timeout: int = 60):
+        import subprocess
+
+        done = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
+        return SimpleNamespace(stdout=done.stdout, stderr=done.stderr, exit_code=done.returncode)
+
+
+class _LocalSandbox:
+    """The sandbox surface the read and the guarded write use, over a folder here."""
+
+    sandbox_id = "sb-local"
+
+    def __init__(self, root: str) -> None:
+        self.runtime = _LocalShell()
+        self.config = SimpleNamespace(
+            filesystem=SimpleNamespace(enable_path_validation=False, denied_directories=[])
+        )
+
+    async def _wait_ready(self) -> None:
+        return None
+
+    async def _runtime_call(self, func, *args, retry_policy, **kwargs):
+        return await func(*args, **kwargs)
+
+    def normalize_path(self, path: str) -> str:
+        return path
+
+    def validate_path(self, path: str) -> bool:
+        return True
+
+    async def awrite_file_text_guarded(self, filepath, content, guard):
+        from ptc_agent.core.sandbox.files import awrite_file_text_guarded
+
+        return await awrite_file_text_guarded(self, filepath, content, guard)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("since", "lands"),
+    [(None, True), ("# Notes, written by the agent", False), ("", False)],
+    ids=["unchanged", "changed-since", "gone-since"],
+)
+async def test_a_save_names_the_version_it_edited_and_never_overwrites_a_newer_file(
+    tmp_path, since, lands
+):
+    """A save made from text read earlier (a backup shown while the machine
+    slept, or a live read the agent has since written over) would replace
+    what the file now holds unseen. Naming the version it began from, it
+    lands only on the file it was read from, checked in the write's own
+    script on the machine."""
+    import os
+    from contextlib import ExitStack, asynccontextmanager
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    from src.server.app.workspace_files.crud import (
+        WriteFileRequest,
+        read_workspace_file,
+        write_workspace_file,
+    )
+
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    sandbox = _LocalSandbox(root)
     row = {**_workspace("ws-live", "user-1", status="running")}
 
     @asynccontextmanager
@@ -623,60 +686,30 @@ def _live_sandbox_for_write(on_machine: bytes | None):
         yield sandbox, row
 
     crud = "src.server.app.workspace_files.crud"
-    patches = (
-        patch(f"{crud}.owned_workspace_on_computer", AsyncMock(return_value=row)),
-        patch(f"{crud}.owner_work_dir", return_value="/home/workspace"),
-        patch(f"{crud}.acquire_sandbox_to_change", acquire),
-        patch(
-            f"{crud}.contained_target",
-            AsyncMock(return_value="/home/workspace/notes.md"),
-        ),
-        patch(
-            f"{crud}.read_contained_sandbox_file",
-            AsyncMock(
-                return_value=None
-                if on_machine is None
-                else ("/home/workspace/notes.md", on_machine)
-            ),
-        ),
-        patch(f"{crud}.to_client_path", return_value="notes.md"),
-        patch(f"{crud}.keep_updated_after_change"),
-    )
-    return sandbox, patches
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("on_machine", "lands"),
-    [(b"# Notes", True), (b"# Notes, written by the agent", False), (None, False)],
-    ids=["unchanged", "changed-since", "gone-since"],
-)
-async def test_a_save_names_the_version_it_edited_and_never_overwrites_a_newer_file(
-    on_machine, lands
-):
-    """A save made from text read earlier (a backup shown while the machine
-    slept, or a live read the agent has since written over) would replace
-    what the file now holds unseen. Naming the version it began from, it
-    lands only on the bytes it was read from."""
-    from contextlib import ExitStack
-
-    from fastapi import HTTPException
-
-    from src.server.app.workspace_files.crud import (
-        WriteFileRequest,
-        file_text_version,
-        write_workspace_file,
-    )
-
-    sandbox, patches = _live_sandbox_for_write(on_machine)
-    body = WriteFileRequest(
-        content="# Notes, edited", base_version=file_text_version(b"# Notes")
-    )
     with ExitStack() as stack:
-        for p in patches:
+        for p in (
+            patch(f"{crud}.owned_workspace_on_computer", AsyncMock(return_value=row)),
+            patch(f"{crud}.owner_work_dir", return_value=root),
+            patch(f"{crud}.acquire_sandbox_to_change", acquire),
+            patch(f"{crud}.contained_target", AsyncMock(return_value=str(notes))),
+            patch(f"{crud}.to_client_path", return_value="notes.md"),
+            patch(f"{crud}.get_vault_secrets_for_redaction", AsyncMock(return_value=[])),
+            patch(f"{crud}.keep_updated_after_change"),
+        ):
             stack.enter_context(p)
+        read = await read_workspace_file(
+            workspace_id="ws-live", x_user_id="user-1", path="notes.md",
+            offset=0, limit=100, unlimited=True,
+        )
+        if since == "":
+            notes.unlink()
+        elif since is not None:
+            notes.write_text(since)
         call = write_workspace_file(
-            workspace_id="ws-live", x_user_id="user-1", path="notes.md", body=body
+            workspace_id="ws-live",
+            x_user_id="user-1",
+            path="notes.md",
+            body=WriteFileRequest(content="# Notes, edited", base_version=read["version"]),
         )
         if lands:
             result = await call
@@ -684,12 +717,282 @@ async def test_a_save_names_the_version_it_edited_and_never_overwrites_a_newer_f
             with pytest.raises(HTTPException) as refused:
                 await call
 
+    assert read["content"] == "# Notes" and read["version"]
     if lands:
-        sandbox.awrite_file_text.assert_awaited_once_with(
-            "/home/workspace/notes.md", "# Notes, edited"
-        )
-        assert result["version"] == file_text_version(b"# Notes, edited")
+        assert notes.read_text() == "# Notes, edited"
+        assert result["version"] and result["version"] != read["version"]
     else:
-        sandbox.awrite_file_text.assert_not_awaited()
         assert refused.value.status_code == 409
         assert refused.value.detail["code"] == "file_changed"
+        assert (notes.read_text() if notes.exists() else None) == (since or None)
+    # Nothing staged for the write is left beside the file.
+    assert sorted(os.listdir(root)) == (["notes.md"] if since != "" else [])
+
+
+class _AsyncLocalShell(_LocalShell):
+    """``_LocalShell`` whose commands run beside the event loop, so two saves
+    and a lock held from outside actually overlap, and which takes uploads."""
+
+    async def exec(self, command: str, timeout: int = 60):
+        proc = await asyncio.create_subprocess_exec(
+            "/bin/sh", "-c", command,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        return SimpleNamespace(
+            stdout=out.decode(), stderr=err.decode(), exit_code=proc.returncode
+        )
+
+    async def upload_file(self, content: bytes, path: str) -> None:
+        with open(path, "wb") as f:
+            f.write(content)
+
+
+def _save_patches(sandbox, row: dict, root: str, notes) -> list:
+    """The routes' reach, narrowed to ``sandbox`` over a folder here."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def acquire(*_args, **_kwargs):
+        yield sandbox, row
+
+    crud = "src.server.app.workspace_files.crud"
+    return [
+        patch(f"{crud}.owned_workspace_on_computer", AsyncMock(return_value=row)),
+        patch(f"{crud}.owner_work_dir", return_value=root),
+        patch(f"{crud}.acquire_sandbox_to_change", acquire),
+        patch(f"{crud}.contained_target", AsyncMock(return_value=str(notes))),
+        patch(f"{crud}.to_client_path", return_value="notes.md"),
+        patch(f"{crud}.get_vault_secrets_for_redaction", AsyncMock(return_value=[])),
+        patch(f"{crud}.keep_updated_after_change"),
+    ]
+
+
+async def _read_then_save(sandbox, root, notes, between=None, *, with_sha=True, content="# Notes, edited"):
+    """Read ``notes`` as the editor does, run ``between``, then save over it."""
+    import hashlib
+    from contextlib import ExitStack
+
+    from src.server.app.workspace_files.crud import (
+        WriteFileRequest,
+        read_workspace_file,
+        write_workspace_file,
+    )
+
+    row = _workspace("ws-live", "user-1", status="running")
+    with ExitStack() as stack:
+        for p in _save_patches(sandbox, row, root, notes):
+            stack.enter_context(p)
+        read = await read_workspace_file(
+            workspace_id="ws-live", x_user_id="user-1", path="notes.md",
+            offset=0, limit=100, unlimited=True,
+        )
+        if between is not None:
+            between()
+        digest = hashlib.sha256(read["content"].encode()).hexdigest()
+        return await write_workspace_file(
+            workspace_id="ws-live",
+            x_user_id="user-1",
+            path="notes.md",
+            body=WriteFileRequest(
+                content=content,
+                base_version=read["version"],
+                base_sha256=digest if with_sha else None,
+            ),
+        )
+
+
+def _touched(path):
+    """A change of the file's stamps alone, as ``touch`` makes."""
+    import os
+
+    def touch() -> None:
+        st = os.stat(path)
+        os.utime(path, (st.st_atime + 5, st.st_mtime + 5))
+
+    return touch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_sha", [True, False], ids=["content-named", "version-only"])
+async def test_a_save_over_a_file_only_touched_since_lands_when_it_names_the_content(
+    tmp_path, with_sha
+):
+    """A ``touch``, a rewrite of the same text or a restore moves the version
+    and not one byte. A save that names the content it began from lands on
+    it; the only other way past would be throwing the draft away."""
+    import os
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    call = _read_then_save(
+        _LocalSandbox(root), root, notes, _touched(notes), with_sha=with_sha
+    )
+    if with_sha:
+        result = await call
+        assert result["version"]
+        assert notes.read_text() == "# Notes, edited"
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await call
+        assert refused.value.status_code == 409
+        assert notes.read_text() == "# Notes"
+    assert os.listdir(root) == ["notes.md"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_version",
+    ["not-a-version", "12-1.5-1.5-9-extra"],
+    ids=["garbage", "too-many-parts"],
+)
+async def test_a_base_version_no_read_gave_is_a_client_error_not_a_concurrent_edit(
+    base_version,
+):
+    """A 409 ``file_changed`` sends the person to reread over an edit that
+    never happened; the client's bug says so, before the machine is reached."""
+    from fastapi import HTTPException
+
+    from src.server.app.workspace_files.crud import (
+        WriteFileRequest,
+        write_workspace_file,
+    )
+
+    row = _workspace("ws-live", "user-1", status="running")
+    acquire = MagicMock(side_effect=AssertionError("the machine is not reached"))
+    crud = "src.server.app.workspace_files.crud"
+    with (
+        patch(f"{crud}.owned_workspace_on_computer", AsyncMock(return_value=row)),
+        patch(f"{crud}.owner_work_dir", return_value="/w"),
+        patch(f"{crud}.acquire_sandbox_to_change", acquire),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await write_workspace_file(
+            workspace_id="ws-live",
+            x_user_id="user-1",
+            path="notes.md",
+            body=WriteFileRequest(content="x", base_version=base_version),
+        )
+
+    assert refused.value.status_code == 422
+    assert refused.value.detail["code"] == "invalid_base_version"
+
+
+def test_a_base_version_is_bounded_and_a_content_digest_is_hex():
+    from pydantic import ValidationError
+
+    from src.server.app.workspace_files.crud import WriteFileRequest
+
+    with pytest.raises(ValidationError):
+        WriteFileRequest(content="x", base_version="1" * 129)
+    with pytest.raises(ValidationError):
+        WriteFileRequest(content="x", base_sha256="Z" * 64)
+
+
+class _AnswerLostSandbox(_LocalSandbox):
+    """A machine whose first answer to the write script is lost on the way
+    back after the script ran, so the runtime runs it again, as a retried
+    exec does."""
+
+    def __init__(self, root: str) -> None:
+        super().__init__(root)
+        self.runtime = _AsyncLocalShell()
+        self.lost = 0
+
+    async def _runtime_call(self, func, *args, retry_policy, **kwargs):
+        answer = await func(*args, **kwargs)
+        if args and "mv -f" in str(args[0]) and not self.lost:
+            self.lost += 1
+            answer = await func(*args, **kwargs)
+        return answer
+
+
+class _ScriptUnreachedSandbox(_LocalSandbox):
+    """A machine that takes the staged upload and then stops answering."""
+
+    def __init__(self, root: str) -> None:
+        super().__init__(root)
+        self.runtime = _AsyncLocalShell()
+
+    async def _runtime_call(self, func, *args, retry_policy, **kwargs):
+        if args and "mv -f" in str(args[0]):
+            raise SandboxTransientError("connection dropped")
+        return await func(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_large_save_run_again_after_it_landed_reports_it_landed(tmp_path, monkeypatch):
+    """Past the inline limit the bytes are staged beside the file, and the
+    rename takes the staged copy away. A run of the script repeated after the
+    first landed found nothing to rename and failed a save that had landed."""
+    import os
+    from pathlib import Path
+
+    monkeypatch.setattr("ptc_agent.core.sandbox.files._INLINE_TEXT_WRITE_LIMIT", 8)
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    sandbox = _AnswerLostSandbox(root)
+
+    result = await _read_then_save(sandbox, root, notes, content="# Notes, a long edit")
+
+    assert sandbox.lost == 1
+    assert result["version"] and result["size"] == len("# Notes, a long edit")
+    assert notes.read_text() == "# Notes, a long edit"
+    assert os.listdir(root) == ["notes.md"]
+
+
+@pytest.mark.asyncio
+async def test_a_large_save_that_never_reached_its_script_leaves_nothing_staged(
+    tmp_path, monkeypatch
+):
+    """The staged copy sits in the workspace folder, where the file panel lists
+    it and a backup keeps it, so a write cut short removes it."""
+    import os
+    from pathlib import Path
+
+    monkeypatch.setattr("ptc_agent.core.sandbox.files._INLINE_TEXT_WRITE_LIMIT", 8)
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+
+    with pytest.raises(SandboxTransientError):
+        await _read_then_save(_ScriptUnreachedSandbox(root), root, notes)
+
+    assert notes.read_text() == "# Notes"
+    assert os.listdir(root) == ["notes.md"]
+
+
+@pytest.mark.asyncio
+async def test_a_save_waits_for_another_saves_check_and_rename(tmp_path):
+    """Two saves of one file through different workers both passed the check
+    before either renamed, and the second wrote over the first unseen. The
+    check and the rename hold a lock on the machine."""
+    import os
+    from pathlib import Path
+
+    from ptc_agent.core.sandbox.files import _guard_lock
+
+    root = os.path.realpath(tmp_path)
+    notes = Path(root, "notes.md")
+    notes.write_text("# Notes")
+    sandbox = _LocalSandbox(root)
+    sandbox.runtime = _AsyncLocalShell()
+    lock = _guard_lock(str(notes))
+    os.mkdir(lock)
+    try:
+        save = asyncio.create_task(_read_then_save(sandbox, root, notes))
+        await asyncio.sleep(0.5)
+        assert not save.done()
+        assert notes.read_text() == "# Notes"
+    finally:
+        os.rmdir(lock)
+    result = await asyncio.wait_for(save, 10)
+
+    assert result["version"]
+    assert notes.read_text() == "# Notes, edited"
+    assert not os.path.exists(lock)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import shlex
 import time
@@ -20,6 +19,7 @@ from pydantic import BaseModel, Field
 from src.server.utils.api import CurrentUserId, require_workspace_owner
 from src.server.services.persistence.transfer import held_bytes_budget, scan_cap_bytes
 from ptc_agent.agent.backends.db_json_route import DbJsonRoute
+from ptc_agent.core.sandbox.files import WritePreconditionFailed
 from ptc_agent.core.sandbox.runtime import STREAM_CHUNK_BYTES
 from ptc_agent.core.paths import logged_path
 from src.server.utils.uploads import read_capped
@@ -66,8 +66,11 @@ from src.server.services.workspace_file_containment import (
     contained_sandbox_path,
     is_within,
     normalize_requested_path,
-    read_contained_sandbox_file,
+    ContainedFile,
+    edit_version,
     read_contained_sandbox_file_versioned,
+    write_guard,
+    written_version,
     stamps_of_etag,
     version_etag,
     read_contained_sandbox_range,
@@ -148,21 +151,30 @@ _UNSAVED_LISTED = 100
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Workspace Files"])
 
 
+# How many times a read rewritten under it is read again for a version.
+_UNVERSIONED_READ_TRIES = 3
+
+
 async def _read_contained_target(
     sandbox: Any, path: str, work_dir: str, previous_dirs: Sequence[str] = ()
-) -> tuple[str, bytes]:
+) -> ContainedFile:
     candidate = contained_absolute_path(path, work_dir, previous_dirs)
     if candidate is None or not sandbox.validate_path(candidate):
         raise HTTPException(status_code=404, detail="File not found")
-    try:
-        resolved = await read_contained_sandbox_file(
-            sandbox, candidate, work_dir=work_dir
-        )
-    except FileTooLargeToServe:
-        raise HTTPException(status_code=413, detail=TOO_LARGE_DETAIL) from None
-    if resolved is None:
-        raise HTTPException(status_code=404, detail="File not found")
-    return resolved
+    for _ in range(_UNVERSIONED_READ_TRIES):
+        try:
+            read = await read_contained_sandbox_file_versioned(
+                sandbox, candidate, work_dir=work_dir
+            )
+        except FileTooLargeToServe:
+            raise HTTPException(status_code=413, detail=TOO_LARGE_DETAIL) from None
+        if read is None or read.content is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        # Rewritten while it was read, it has no version, and an edit started
+        # from it would save unchecked; read again while it may have settled.
+        if read.stamps is not None:
+            break
+    return read
 
 
 async def _load_virtual_file(route: type[DbJsonRoute], path: str, user_id: str) -> str:
@@ -503,9 +515,8 @@ async def _read_live(
         work_dir = owner_work_dir(workspace)
         previous_dirs = previous_dir_names_of(workspace)
 
-        normalized, raw_bytes = await _read_contained_target(
-            sandbox, path, work_dir, previous_dirs
-        )
+        read = await _read_contained_target(sandbox, path, work_dir, previous_dirs)
+    normalized, raw_bytes = read.canonical, read.content or b""
 
     # Check for known binary extensions
     if _is_binary(normalized):
@@ -550,15 +561,10 @@ async def _read_live(
         "content": content,
         "mime": mime,
         "truncated": truncated,
-        "version": file_text_version(raw_bytes),
+        # Of the bytes on the machine, before redaction: what a save names
+        # as the text it edited.
+        "version": edit_version(read),
     }
-
-
-def file_text_version(raw: bytes) -> str:
-    """The version a save names as the file it was based on: a hash of the
-    bytes on the machine, before redaction, so a file that changed under the
-    editor is told apart from one that did not."""
-    return hashlib.sha256(raw).hexdigest()
 
 
 MAX_WRITE_BYTES = 10 * 1024 * 1024  # 10MB text write limit
@@ -568,10 +574,21 @@ class WriteFileRequest(BaseModel):
     content: str = Field(..., description="File content to write.")
     base_version: str | None = Field(
         None,
+        max_length=128,
         description=(
             "The `version` /files/read returned for the text this save edits. "
             "Given, the write is refused with 409 `file_changed` when the file "
-            "no longer holds those bytes."
+            "has changed since, checked on the machine in the write itself. "
+            "One no read gave is refused with 422 `invalid_base_version`."
+        ),
+    )
+    base_sha256: str | None = Field(
+        None,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "SHA-256 (lowercase hex) of the UTF-8 text /files/read returned. "
+            "Given, a file whose version moved but whose bytes still hash to "
+            "it (a touch, a rewrite of the same text) takes the save."
         ),
     )
 
@@ -579,6 +596,10 @@ class WriteFileRequest(BaseModel):
 FILE_CHANGED_DETAIL = {
     "code": "file_changed",
     "message": "The file changed since it was read. Read it again before saving.",
+}
+INVALID_BASE_VERSION_DETAIL = {
+    "code": "invalid_base_version",
+    "message": "base_version is not a version /files/read returns.",
 }
 
 
@@ -614,17 +635,23 @@ async def write_workspace_file(
     if len(content_bytes) > MAX_WRITE_BYTES:
         raise HTTPException(status_code=413, detail="File content too large (max 10MB)")
 
+    guard = write_guard(body.base_version, body.base_sha256)
+    if guard is None:
+        # A client's bug, not a concurrent edit: no read gave it.
+        raise HTTPException(status_code=422, detail=INVALID_BASE_VERSION_DETAIL)
+
     async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
         work_dir = owner_work_dir(workspace)
         previous_dirs = previous_dir_names_of(workspace)
 
         normalized = await contained_target(sandbox, path, work_dir, previous_dirs)
-        if body.base_version is not None:
-            await _require_base_version(sandbox, normalized, work_dir, body.base_version)
-
-        # ``awrite_file_text`` takes this path's write lock for the write itself.
-        ok = await sandbox.awrite_file_text(normalized, body.content)
-    if not ok:
+        # The write takes this path's write lock, and checks the guard in the
+        # script that renames the file into place.
+        try:
+            stamp = await sandbox.awrite_file_text_guarded(normalized, body.content, guard)
+        except WritePreconditionFailed:
+            raise HTTPException(status_code=409, detail=FILE_CHANGED_DETAIL) from None
+    if stamp is None:
         raise HTTPException(status_code=500, detail="Write failed")
 
     # Invalidate agent.md cache when user edits agent.md via UI
@@ -657,23 +684,8 @@ async def write_workspace_file(
         "workspace_id": workspace_id,
         "path": client_path,
         "size": len(content_bytes),
-        "version": file_text_version(content_bytes),
+        "version": written_version(stamp),
     }
-
-
-async def _require_base_version(
-    sandbox: Any, normalized: str, work_dir: str, base_version: str
-) -> None:
-    """Refuse a save whose edit began from bytes the file no longer holds: the
-    agent, or the machine's owner, wrote it since, and the save would overwrite
-    that unseen. The check and the write are two requests, so a write landing
-    between them still wins; the window is the gap between them, not the edit."""
-    try:
-        current = await read_contained_sandbox_file(sandbox, normalized, work_dir=work_dir)
-    except FileTooLargeToServe:
-        current = None
-    if current is None or file_text_version(current[1]) != base_version:
-        raise HTTPException(status_code=409, detail=FILE_CHANGED_DETAIL)
 
 
 # How long a large download waits for a stream slot before answering 503.
