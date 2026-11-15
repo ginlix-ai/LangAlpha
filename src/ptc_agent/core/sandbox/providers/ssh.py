@@ -40,18 +40,20 @@ from ptc_agent.core.sandbox.providers._ssh_connect import (
     is_public_address,
     set_gateway_loader,
 )
-from ptc_agent.core.sandbox.providers._ssh_shell import (
-    SUDO_CHECK,
+from ptc_agent.core.sandbox.providers._ssh_root import (
     adopted_root,
     claim_root_script,
+    folder_marked_message,
+    root_dir_error,
+    root_dir_script,
+)
+from ptc_agent.core.sandbox.providers._ssh_shell import (
+    SUDO_CHECK,
     computer_dir,
     knows_computer_script,
     computers_dir,
     delete_script,
-    folder_marked_message,
     home_problem,
-    root_dir_error,
-    root_dir_script,
     stop_script,
 )
 from ptc_agent.core.sandbox.providers._ssh_pool import pool

@@ -16,12 +16,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from ptc_agent.core.sandbox.providers._ssh_root import root_dir_script
 from ptc_agent.core.sandbox.providers._ssh_shell import (
     computer_dir,
     computers_dir,
     delete_script,
     layout_script,
-    root_dir_script,
 )
 from ptc_agent.core.sandbox.providers._ssh_transport import HostFacts, Link
 from ptc_agent.core.sandbox.providers.ssh_runtime import SSHRuntime

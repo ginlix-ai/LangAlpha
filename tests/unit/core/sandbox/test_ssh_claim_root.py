@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import subprocess
 
-from ptc_agent.core.sandbox.providers._ssh_shell import ROOT_MARKER, claim_root_script
+from ptc_agent.core.sandbox.providers._ssh_root import ROOT_MARKER, claim_root_script
 
 ME = "a" * 32
 GONE = "3cd2aabcfce04ecf83f69a2e2952866c"

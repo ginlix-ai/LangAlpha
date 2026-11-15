@@ -42,6 +42,11 @@ from ptc_agent.core.sandbox.providers._ssh_authorized_key import (
 )
 from ptc_agent.core.sandbox.providers._exec_sessions import ExecSessionRuntime
 from ptc_agent.core.sandbox.providers._ssh_connect import SSHTarget
+from ptc_agent.core.sandbox.providers._ssh_root import (
+    folder_marked_message,
+    root_dir_error,
+    root_dir_script,
+)
 from ptc_agent.core.sandbox.providers._ssh_shell import (
     BOOT_KEY_SH,
     SUDO_CHECK,
@@ -50,13 +55,10 @@ from ptc_agent.core.sandbox.providers._ssh_shell import (
     computers_dir,
     delete_script,
     env_file,
-    folder_marked_message,
     framed_script,
     layout_script,
     mark_running_script,
     read_state_script,
-    root_dir_error,
-    root_dir_script,
     stop_script,
 )
 from ptc_agent.core.sandbox.providers._ssh_pool import pool
