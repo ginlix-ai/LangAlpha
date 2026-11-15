@@ -4,8 +4,9 @@ Home lives on the user's primary computer, which may be a machine of their
 own. While that machine can't be reached (its tunnel is down, the signal the
 "can't be reached" card reads), a Home turn runs in Home's stand-in instead: a
 hidden workspace on a cloud computer the user already has, placed again on
-another only when its own fails or is retired with nothing owed to Home. None
-is ever built for it: a user with no cloud computer waits for their machine,
+another only when its own fails or is retired with nothing owed to Home. A
+turn builds none for it (one the plan grants is made ahead, see
+``ComputerManager.ensure_stand_in_host``): a user with no cloud computer waits for their machine,
 as does one whose stand-in keeps owed files on a computer that failed, the
 turn failing as any turn on it does (``home_stand_in``). Two workers admitting
 at once read the same rows and converge on the stand-in's fixed id; nothing

@@ -424,6 +424,12 @@ async def get_computers_by_status(
         return [dict(r) for r in await cur.fetchall()]
 
 
+# Mark a pending retirement as its owner's remove of the computer, and that
+# remove as one that has already torn the machine down.
+RETIRE_BY_OWNER = "retire_by_owner"
+RETIRE_TORN_DOWN = "retire_torn_down"
+
+
 async def get_retirement_pending_computers(
     limit: int = 100,
     *,
@@ -449,13 +455,22 @@ async def get_retirement_pending_computers(
 async def mark_computer_retirement_pending(
     computer_id: str,
     *,
+    by_owner: bool = False,
+    torn_down: bool = False,
     conn=None,
 ) -> bool:
     """Durably ask cleanup to finish retiring this machine once it is empty.
 
     True only when this call set the marker, so a request that takes back its
-    own marker can tell it from one another delete left owed.
+    own marker can tell it from one another delete left owed. ``by_owner``
+    also records that the retirement is its owner's remove
+    (``RETIRE_BY_OWNER``), on a marker already set too, so a sweep that
+    finishes it retires it as the owner's; True then when it wrote either.
+    ``torn_down`` adds ``RETIRE_TORN_DOWN`` beside it.
     """
+    owner = {RETIRE_BY_OWNER: True} if by_owner else {}
+    if torn_down:
+        owner[RETIRE_TORN_DOWN] = True
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             f"""
@@ -464,14 +479,13 @@ async def mark_computer_retirement_pending(
                     COALESCE(config, '{{}}'::jsonb),
                     '{{retire_when_empty}}',
                     'true'::jsonb
-                ),
+                ) || %s::jsonb,
                 updated_at = NOW()
             WHERE computer_id = %s
               AND {FENCE_NOT_DELETED}
-              AND NOT COALESCE(config, '{{}}'::jsonb)
-                    @> '{{"retire_when_empty": true}}'::jsonb
+              AND NOT COALESCE(config, '{{}}'::jsonb) @> %s::jsonb
             """,
-            (computer_id,),
+            (Json(owner), computer_id, Json({"retire_when_empty": True, **owner})),
         )
         return cur.rowcount > 0
 
@@ -513,7 +527,8 @@ async def clear_computer_retirement_pending(
             f"""
             UPDATE computers
             SET config = COALESCE(config, '{{}}'::jsonb)
-                    #- '{{retire_when_empty}}',
+                    #- '{{retire_when_empty}}' #- '{{{RETIRE_BY_OWNER}}}'
+                    #- '{{{RETIRE_TORN_DOWN}}}',
                 updated_at = NOW()
             WHERE computer_id = %s
               AND {FENCE_NOT_DELETED}
@@ -943,6 +958,9 @@ async def update_computer_status(
     expected_provider_ref: Optional[str] = None,
     require_provider_ref: bool = False,
     run_end_reason: Optional[str] = None,
+    drop_config_key: str | None = None,
+    unless_config_key: str | None = None,
+    merge_config: dict[str, Any] | None = None,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
     """Only try_bind_computer_provider_ref may change the durable machine binding.
@@ -952,7 +970,13 @@ async def update_computer_status(
     primary flag: every probe fences on the tombstone, so a deleted row holding
     it would wedge ensure_primary_computer against the partial unique index.
     run_end_reason is why the machine's usage run is ending, for a cause the
-    status does not say (an idle stop).
+    status does not say (an idle stop). drop_config_key leaves the row's
+    config without that key in the same write, so nothing written to it
+    between a caller's read of the config and this write survives it, unless
+    the row holds unless_config_key by then. merge_config lands with the
+    status in the one write, so a transition that must carry why it was
+    taken is never seen without it, and a write the guard refuses leaves
+    nothing behind.
     """
     if status not in COMPUTER_STATUSES:
         raise ValueError(f"Not a computer status: {status!r}")
@@ -973,6 +997,17 @@ async def update_computer_status(
         )
     stopped_clause = ", stopped_at = NOW()" if status == "stopped" else ""
     primary_clause = ", is_primary = FALSE" if status == "deleted" else ""
+    config_value = "COALESCE(config, '{}'::jsonb)"
+    if drop_config_key:
+        config_value = (
+            f"CASE WHEN {config_value} ? %(unless_key)s"
+            f" THEN config ELSE {config_value} - %(drop_key)s::text END"
+        )
+    if merge_config:
+        config_value = f"({config_value}) || %(merge)s::jsonb"
+    config_clause = (
+        f", config = {config_value}" if drop_config_key or merge_config else ""
+    )
     # Running is a start that succeeded, which ends any host outage and the
     # last start's failure; a revert to stopped after a refused start keeps
     # the clock going and the failure shown.
@@ -989,6 +1024,9 @@ async def update_computer_status(
         "updated_before": updated_before,
         "expected_always_on": expected_always_on,
         "expected_ref": expected_provider_ref,
+        "drop_key": drop_config_key,
+        "unless_key": unless_config_key,
+        "merge": Json(merge_config or {}),
     }
     async with _computer_cursor(conn) as cur:
         await cur.execute(
@@ -996,7 +1034,7 @@ async def update_computer_status(
                 authority="computer",
                 computer_set=(
                     f"status = %(status)s{stopped_clause}{primary_clause}"
-                    f"{running_clause}"
+                    f"{running_clause}{config_clause}"
                 ),
                 workspace_set=f"status = %(status)s{stopped_clause}",
                 computer_guard=expected_clause,

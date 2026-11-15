@@ -19,6 +19,9 @@ from src.server.database.workspace import (
     get_or_create_home_workspace,
 )
 from src.server.dependencies.principal import ReadPrincipal, ReadUserId
+from src.server.models.computer import ComputerStatus
+from src.server.services.background_starts import schedule_start
+from src.server.services.computer_usage.causes import computer_cause
 from src.server.models.home import (
     HomeHandbackOut,
     HomeHandbacksResponse,
@@ -44,7 +47,6 @@ async def get_home_workspace(principal: ReadPrincipal):
     x_user_id = principal.user_id
     try:
         workspace = await get_or_create_home_workspace(x_user_id)
-        return _workspace_to_response(workspace)
     except HomeWorkspaceTaken:
         # The owner check's answer for a row another account holds; no retry
         # makes this one the caller's.
@@ -52,6 +54,30 @@ async def get_home_workspace(principal: ReadPrincipal):
     except Exception as e:
         logger.exception(f"Error ensuring Home: {e}")
         raise HTTPException(status_code=500, detail="Failed to ensure Home")
+    if principal.unlimited:
+        # The app's own load only: a token that may not add computers adds none.
+        schedule_start(f"stand-in-host:{x_user_id}", lambda: _make_stand_in_host(x_user_id))
+    return _workspace_to_response(workspace)
+
+
+async def _make_stand_in_host(user_id: str) -> None:
+    """While Home lives on the user's own machine and the plan grants a cloud
+    computer, the next app load keeps one for Home's stand-in: a cloud
+    computer they have is marked, or one is made in the background and its
+    first build started. Best effort: the next load tries again."""
+    from src.server.app.computers import schedule_computer_start
+    from src.server.services.computer_manager import ComputerManager
+
+    try:
+        computer = await ComputerManager.get_instance().ensure_stand_in_host(user_id)
+    except Exception:
+        logger.warning(
+            "Could not make Home's stand-in a computer for user %s", user_id, exc_info=True
+        )
+        return
+    if computer is not None and computer["status"] == ComputerStatus.CREATING:
+        with computer_cause("create"):
+            await schedule_computer_start(str(computer["computer_id"]))
 
 
 @router.get("/home/placement", response_model=HomePlacementResponse)

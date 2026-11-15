@@ -60,6 +60,12 @@ export const RESIZE_PARAM = 'resize';
  *  what it read before the trip. */
 export const PLAN_CHANGED_PARAM = 'plan_changed';
 
+/** `RESIZE_PARAM`'s value that names Home's computer rather than one by id:
+ *  how the plan page, once an upgrade lets Home be larger, offers to resize
+ *  it, at the size `TIER_PARAM` names. */
+export const RESIZE_HOME = 'home';
+export const TIER_PARAM = 'tier';
+
 const INITIAL: ComputersPanelState = { panel: null, opening: 0, specComputerId: null, specRequest: null };
 const store = createValueStore<ComputersPanelState>(INITIAL);
 // Survives the page unmount, so a sign-out must not reopen it for the next account.

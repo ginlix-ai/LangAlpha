@@ -160,7 +160,16 @@ interface TierRadioGroupProps {
    * mirroring the backend's skip.
    */
   currentTier?: ResourceTier | null;
+  /**
+   * An option ahead of the sizes for leaving the size to the plan, for a
+   * computer the server sizes by it. `checked` while it is the selection,
+   * in place of `value`; picking it calls `onSelect`, never `onChange`.
+   */
+  automatic?: { checked: boolean; onSelect: () => void };
 }
+
+/** The automatic option's value, which no tier can be. */
+const AUTOMATIC = 'automatic';
 
 /**
  * The tier picker, one row per size. In platform mode a size the plan
@@ -175,9 +184,10 @@ export function TierRadioGroup({
   label,
   quota,
   currentTier = null,
+  automatic,
 }: TierRadioGroupProps) {
   const { t } = useTranslation();
-  const options: RadioCardOption<ResourceTier>[] = offer.tiers.map((id) => {
+  const sizes: RadioCardOption<ResourceTier>[] = offer.tiers.map((id) => {
     const capacity = tierCapacity(quota, id);
     return {
       value: id,
@@ -192,9 +202,18 @@ export function TierRadioGroup({
   // A computer already bigger than Small holds the slot itself, and the rows
   // say what it can move to.
   const slot = isPlatformMode && (currentTier ?? 'standard') === 'standard' ? largerSlot(quota) : null;
+  const options: RadioCardOption<ResourceTier | typeof AUTOMATIC>[] = automatic
+    ? [{ value: AUTOMATIC, title: t('computer.tierAutomatic', 'Automatic (follows your plan)'), disabled: false }, ...sizes]
+    : sizes;
   return (
     <div className="flex flex-col gap-1.5">
-      <RadioCardGroup options={options} value={value} onChange={onChange} label={label} layout="rows" />
+      <RadioCardGroup
+        options={options}
+        value={automatic?.checked ? AUTOMATIC : value}
+        onChange={(choice) => (choice === AUTOMATIC ? automatic?.onSelect() : onChange(choice))}
+        label={label}
+        layout="rows"
+      />
       {slot && (
         <p className="text-xs" data-testid="tier-slot" style={{ color: 'var(--color-text-tertiary)' }}>
           {slotLine(t, slot)}

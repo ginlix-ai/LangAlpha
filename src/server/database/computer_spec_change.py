@@ -24,6 +24,10 @@ from src.server.database.sql_fences import (
 # dicts built here; a unit test holds both to ComputerSpecChange's fields.
 _OWNED_BY_CLAIM = "spec_change->>'claim_id' = %(claim_id)s"
 _IN_PROGRESS = "spec_change->>'state' = 'in_progress'"
+# The config key that marks a size the owner chose: a change settling
+# succeeded writes it, as does a create at a size the owner picked
+# (spec_change.sized_by_owner reads it).
+SIZED_BY_OWNER = "sized_by_owner"
 
 
 # A claim that takes over a stale record is the settle its dead worker never
@@ -163,10 +167,14 @@ async def settle_computer_spec_change(
     )
     async with _computer_cursor(conn) as cur:
         if error is None:
+            # A size the owner reached is theirs, whatever a later change does
+            # (spec_change.sized_by_owner reads this mark).
             await cur.execute(
                 f"""
                 UPDATE computers c
-                SET {new_record}
+                SET {new_record},
+                    config = COALESCE(c.config, '{{}}'::jsonb)
+                        || jsonb_build_object('{SIZED_BY_OWNER}', true)
                 WHERE c.computer_id = %(computer_id)s
                   AND c.{_IN_PROGRESS}
                   AND c.{_OWNED_BY_CLAIM}

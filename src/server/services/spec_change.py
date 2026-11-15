@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from fastapi import HTTPException
 
+from src.server.database.computer_spec_change import SIZED_BY_OWNER
 from src.server.models.computer import (
     ComputerSpecChange,
     SpecChangeError,
@@ -129,3 +130,16 @@ def spec_change_from_row(computer: Dict[str, Any]) -> Optional[ComputerSpecChang
             code="interrupted", message=SPEC_CHANGE_INTERRUPTED
         )
     return change
+
+
+def sized_by_owner(computer: Dict[str, Any]) -> bool:
+    """Whether the owner chose this computer's size: they created it at a size
+    they picked, or a spec change of theirs succeeded. The mark is kept in the
+    row's config, so a later change that fails leaves an earlier choice
+    standing; a last succeeded change counts too, for one settled before the
+    mark existed."""
+    if (computer.get("config") or {}).get(SIZED_BY_OWNER):
+        return True
+    change = spec_change_from_row(computer)
+    return change is not None and change.state == "succeeded"
+

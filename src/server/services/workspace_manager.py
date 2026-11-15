@@ -435,6 +435,7 @@ class WorkspaceManager(ComputerManager):
         *,
         delete_files: bool = False,
         on_computer: Optional[str] = None,
+        owner_removing: bool = False,
     ) -> bool:
         """
         Delete a workspace: the project only, never its machine by itself.
@@ -455,6 +456,8 @@ class WorkspaceManager(ComputerManager):
             delete_files: The owner asked for the folder on their machine to go too.
             on_computer: Only from this computer; a workspace a move has
                 taken elsewhere is left alone.
+            owner_removing: Its owner is removing the computer, so a
+                retirement this delete ends in is their remove.
 
         Returns:
             True if deleted successfully
@@ -523,7 +526,11 @@ class WorkspaceManager(ComputerManager):
                 )
 
                 retired = await self._retire_machine_if_empty(
-                    computer_id, workspace_id, workspace, keep_folder=keep_folder
+                    computer_id,
+                    workspace_id,
+                    workspace,
+                    keep_folder=keep_folder,
+                    owner_removing=owner_removing,
                 )
 
                 logger.info(f"Workspace {workspace_id} deleted successfully")
@@ -638,7 +645,10 @@ class WorkspaceManager(ComputerManager):
         for workspace_id in workspace_ids:
             try:
                 await self.delete_workspace(
-                    workspace_id, delete_files=delete_files, on_computer=computer_id
+                    workspace_id,
+                    delete_files=delete_files,
+                    on_computer=computer_id,
+                    owner_removing=True,
                 )
             except WorkspaceBusyError:
                 # A move or a run that started since the check above.

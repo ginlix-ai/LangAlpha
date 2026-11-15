@@ -37,6 +37,12 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.computer_names import insert_under_free_name
+from src.server.database.home_stand_in import (
+    STAND_IN_HOST,
+    adopt_stand_in_host,
+    stand_in_host_marked,
+    stand_in_needed,
+)
 from src.server.database.user import get_user
 from src.server.database.home_workspace import get_home_workspace_id, is_home_row
 from src.server.database.workspace_folders import folder_allocation, takes_name_folders
@@ -229,6 +235,57 @@ class MachineLifecycleMixin:
             # A racing delete can remove the winner; never return the tombstoned loser.
             raise RuntimeError(f"User {user_id} has no primary computer")
         return winner
+
+    async def ensure_stand_in_host(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Give Home's stand-in a cloud computer to stand on where the plan
+        grants one, while Home lives on a machine of the user's own. A cloud
+        computer they already have is marked ``STAND_IN_HOST``
+        (``adopt_stand_in_host``), and takes the plan's size only if it has
+        not been built yet (``_first_build_tier``); with none, one is made,
+        not primary and marked, at standard, which its first build takes to
+        the plan's size. It is returned ``creating`` when the caller is to
+        start that build now, stopped unless the plan's running limit
+        definitively has room for it. It never takes Home. None when there is
+        nothing to make: OSS, a deployment that builds none, Home on the
+        cloud, one marked already (or removed by its owner, which is not
+        replaced), or a plan that grants none or cannot be read. Under the
+        capacity lock, so loads racing settle on one.
+        """
+        from src.server.dependencies.usage_limits import (
+            computer_slot_granted,
+            platform_gating_active,
+        )
+
+        kind = self.config.sandbox.provider
+        if (
+            not platform_gating_active()
+            or not builds_computers(self.config.sandbox)
+            or not provider_class(kind).recreatable
+        ):
+            return None
+
+        if not await stand_in_needed(user_id) or await stand_in_host_marked(user_id):
+            return None
+        async with computer_capacity_lock(user_id) as conn:
+            if (
+                not await stand_in_needed(user_id, conn=conn)
+                or await stand_in_host_marked(user_id, conn=conn)
+                or await adopt_stand_in_host(user_id, conn=conn)
+            ):
+                return None
+            if not await computer_slot_granted(user_id):
+                return None
+            computer = await self.create_computer_for_user(
+                user_id,
+                kind=kind,
+                prepare=await computer_slot_granted(user_id, running=True),
+                config={STAND_IN_HOST: True},
+            )
+        logger.info(
+            "Made computer %s for user %s for Home's stand-in",
+            computer["computer_id"], user_id,
+        )
+        return computer
 
     async def ensure_home_bound(self, user_id: str) -> Dict[str, Any]:
         """Put the user's Home on their primary computer, and return that computer.

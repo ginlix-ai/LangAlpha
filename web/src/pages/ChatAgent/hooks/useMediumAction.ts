@@ -16,17 +16,20 @@ import { openConsolePage } from '@/lib/desktop';
 import { CLAUDE_CODE_CHOICE_URL, CLAUDE_CODE_MIN_TIER } from '@/lib/claudeCode';
 import type { ComputerSpecChange } from '@/types/api';
 
+import { providerManagesSpec } from '../components/providerUi';
 import { activeSpecChange, effectiveTier } from '../components/specChangeUi';
-import { TIER_ORDER, needsBiggerPlan, normalizeTier, offeredTiers, quotaForSpecChange } from '../components/tierUi';
+import { TIER_ORDER, knownTier, needsBiggerPlan, normalizeTier, offeredTiers, quotaForSpecChange } from '../components/tierUi';
 import {
   PLAN_CHANGED_PARAM,
+  RESIZE_HOME,
   RESIZE_PARAM,
+  TIER_PARAM,
   computersHostMounted,
   openComputerSpec,
   plansOpenInPlace,
   type SpecRequest,
 } from './computerPanelStore';
-import { useComputerProviders, useComputers } from './useComputers';
+import { fetchComputerList, useComputerProviders, useComputers } from './useComputers';
 import { readQuotaAfterPlanChange, useTierQuota } from './useTierQuota';
 
 export type MediumAction =
@@ -69,23 +72,55 @@ export const claudeCodeSpecRequest = (computerId: string, back = CLAUDE_CODE_CHO
  *  needs it on that computer: how a link that runs no code asks for it (a
  *  refusal kept in a thread, the plan page's way back). Back from the plan
  *  page (`PLAN_CHANGED_PARAM`), the next quota read and the change ask the
- *  server to read the plan again. For the page that mounts the dialogs. */
+ *  server to read the plan again. For the page that mounts the dialogs.
+ *
+ *  `RESIZE_HOME` opens it on Home's computer instead, at `TIER_PARAM`'s
+ *  size where that is larger than Home is now, and always as back from the
+ *  plan page, the only page that links it. Home's computer is read off a
+ *  fresh list, since a cached one can name a primary another device has
+ *  since replaced. Home on a machine of the user's own, or on none yet, has
+ *  no size to change, so the link opens nothing. */
 export function useResizeParam() {
   const queryClient = useQueryClient();
   const { pathname } = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const resize = searchParams.get(RESIZE_PARAM);
   const planChanged = searchParams.has(PLAN_CHANGED_PARAM);
+  const wanted = knownTier(searchParams.get(TIER_PARAM));
   useEffect(() => {
     if (!resize) return;
-    if (planChanged) void readQuotaAfterPlanChange(queryClient);
-    openComputerSpec(resize, { ...claudeCodeSpecRequest(resize, backTo(pathname)), planChanged });
-    setSearchParams((params) => {
+    const clear = () => setSearchParams((params) => {
       params.delete(RESIZE_PARAM);
       params.delete(PLAN_CHANGED_PARAM);
+      params.delete(TIER_PARAM);
       return params;
     }, { replace: true });
-  }, [resize, planChanged, pathname, queryClient, setSearchParams]);
+    if (resize !== RESIZE_HOME) {
+      if (planChanged) void readQuotaAfterPlanChange(queryClient);
+      openComputerSpec(resize, { ...claudeCodeSpecRequest(resize, backTo(pathname)), planChanged });
+      clear();
+      return;
+    }
+    let live = true;
+    void fetchComputerList(queryClient).then(({ computers }) => computers, () => []).then((computers) => {
+      if (!live) return;
+      const home = computers.find((c) => c.is_primary && c.status !== 'deleted');
+      if (home && providerManagesSpec(home.kind)) {
+        const current = effectiveTier(home);
+        void readQuotaAfterPlanChange(queryClient);
+        openComputerSpec(home.computer_id, {
+          tier: wanted && TIER_ORDER.indexOf(wanted) > TIER_ORDER.indexOf(current) ? wanted : current,
+          planUrl: null,
+          leadKey: 'computer.spec.planLimited',
+          planChanged: true,
+        });
+      }
+      clear();
+    });
+    return () => {
+      live = false;
+    };
+  }, [resize, wanted, planChanged, pathname, queryClient, setSearchParams]);
 }
 
 /**
