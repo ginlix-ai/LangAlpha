@@ -672,9 +672,23 @@ async def start_workspace(
                 # its threads are there now, and the id is gone for every read.
                 raise HTTPException(status_code=404, detail="Workspace not found")
 
+        # Opening Home warms the computer its next turn would run on: Home's
+        # stand-in while the machine Home lives on can't be reached. Placing
+        # its row is cheap and builds nothing; the response still names Home.
+        warm_id = workspace_id
+        if is_home_row(workspace):
+            from src.server.services.home_placement import place_home_turn
+
+            placement = await place_home_turn(x_user_id)
+            if placement.away is not None:
+                warm_id = placement.runs_in
+                workspace = await db_get_workspace(warm_id)
+                if not workspace:
+                    raise HTTPException(status_code=404, detail="Workspace not found")
+
         if workspace["status"] == "stopping":
             await manager.reconcile_stopping_computer(str(workspace["computer_id"]))
-            workspace = await db_get_workspace(workspace_id)
+            workspace = await db_get_workspace(warm_id)
             require_workspace_owner(workspace, user_id=x_user_id)
 
         if lazy and workspace["status"] in {"stopped", "running"}:
@@ -682,7 +696,7 @@ async def start_workspace(
             # that is asleep or offline it could only fail, show a start beside
             # the card saying the machine is away, and record that failure on
             # the computer. The machine connects by itself once awake.
-            if await computer_away(workspace_id):
+            if await computer_away(warm_id):
                 return WorkspaceActionResponse(
                     workspace_id=workspace_id,
                     status=workspace["status"],
@@ -696,9 +710,9 @@ async def start_workspace(
             attaches whichever live sibling it finds, and this project would
             still have no folder when the caller came back."""
             _schedule_warm_restart(
-                manager, workspace_id, x_user_id, detail=warm_reason(reason)
+                manager, warm_id, x_user_id, detail=warm_reason(reason)
             )
-            logger.info(f"Scheduled warm restart for workspace {workspace_id}")
+            logger.info(f"Scheduled warm restart for workspace {warm_id}")
             payload = WorkspaceActionResponse(
                 workspace_id=workspace_id,
                 status="starting",
@@ -718,7 +732,7 @@ async def start_workspace(
             if lazy:
                 return _warm_in_background()
             with computer_cause(_blocking_start_cause(reason)):
-                await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
+                await manager.get_session_for_workspace(warm_id, user_id=x_user_id)
             return WorkspaceActionResponse(
                 workspace_id=workspace_id,
                 status="running",
@@ -748,7 +762,7 @@ async def start_workspace(
         # machine up as the computer route would and materialises this project
         # on it.
         with computer_cause(_blocking_start_cause(reason)):
-            await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
+            await manager.get_session_for_workspace(warm_id, user_id=x_user_id)
 
         logger.info(f"Started workspace {workspace_id}")
         return WorkspaceActionResponse(

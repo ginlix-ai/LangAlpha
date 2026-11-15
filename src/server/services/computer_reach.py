@@ -407,6 +407,15 @@ class TurnComputers:
                 f'Computer "{name}" failed and cannot start until the user repairs '
                 "or rebuilds it in Computers."
             )
+        from src.server.services.ssh_computers import computer_unreachable
+
+        if await computer_unreachable(row):
+            # Its tunnel is down, which Postgres already says: dialing it
+            # would only wait out a connect that cannot land.
+            raise ComputerUnreachable(
+                f'Computer "{name}" can\'t be reached now, so its files and the '
+                "workspaces on it can't be read until it is back."
+            )
         # Only the row says whether another worker stopped the computer since
         # the last wake; this worker's handle outlives that, and a call on it
         # would bring the machine back up past admission with the row stopped.

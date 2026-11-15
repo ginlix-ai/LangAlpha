@@ -111,6 +111,8 @@ async def _precheck(row: dict[str, Any]) -> _Thread:
     that is not running."""
     from src.server.database.computer import get_computer_for_workspace
     from src.server.database.conversation import get_thread_by_id, threads_read
+    from src.server.handlers.thread_maintenance import thread_runs_in
+    from src.server.services.ssh_computers import computer_unreachable
     from src.server.services.thread_agent import thread_route
     from src.server.utils.checkpoint_helpers import build_checkpoint_config, get_checkpointer, interrupt_records
     from src.tools.thread_status.tool import pending_work
@@ -141,9 +143,15 @@ async def _precheck(row: dict[str, Any]) -> _Thread:
     )
     if pending is not None:
         raise _Skip("skip", f"pending_{pending}")
-    computer = await get_computer_for_workspace(str(meta["workspace_id"]))
+    # The computer the summary would use: for Home while its machine can't
+    # be reached, the stand-in already placed (none is placed for this).
+    with attach_only():
+        runs_in = await thread_runs_in(str(meta["workspace_id"]), row["user_id"])
+    computer = await get_computer_for_workspace(runs_in)
     if computer is None or computer.get("status") != "running":
         raise _Skip("skip", "computer_stopped")
+    if await computer_unreachable(computer):
+        raise _Skip("skip", "computer_unreachable")
     return _Thread(meta, route)
 
 

@@ -55,6 +55,14 @@ class ThreadAgent:
     project: ProjectContext | None
     #: Whether the thread runs on Claude Code, whose graph runs a CLI session.
     claude_code: bool = False
+    #: The workspace whose folder ``backend`` is pinned to, when not the
+    #: thread's: Home's stand-in while the machine Home lives on can't be
+    #: reached.
+    runs_in: str | None = None
+
+    @property
+    def folder_id(self) -> str:
+        return self.runs_in or self.workspace_id
 
     async def ask(self, ask, values: dict | None = None):
         """``ask`` answered by the agent's own model chain
@@ -166,20 +174,24 @@ async def _thread_agent(
     # The row holds a uuid.UUID; the session and its asset sync key on the str
     # the request paths pass.
     workspace_id = str(workspace_id)
+    # Where the thread's next turn would run: Home's stand-in while the
+    # machine Home lives on can't be reached, so the agent is built as that
+    # turn builds it, and nothing waits on the machine.
+    runs_in = await thread_runs_in(workspace_id, user_id)
 
     # Session
     workspace_manager = WorkspaceManager.get_instance()
     try:
         if attaching_only():
             session = await workspace_manager.get_session_if_running(
-                workspace_id, user_id=user_id
+                runs_in, user_id=user_id
             )
             if session is None:
-                raise ComputerNotRunning(f"workspace {workspace_id} is not running")
+                raise ComputerNotRunning(f"workspace {runs_in} is not running")
         else:
             with computer_cause("compact"):
                 session = await workspace_manager.get_session_for_workspace(
-                    workspace_id, user_id=user_id
+                    runs_in, user_id=user_id
                 )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -195,15 +207,15 @@ async def _thread_agent(
     backend = None
     if hasattr(session, "sandbox") and session.sandbox is not None:
         try:
-            await held.enter_async_context(workspace_folder_in_use(workspace_id))
+            await held.enter_async_context(workspace_folder_in_use(runs_in))
         except WorkspaceFolderMoving as e:
             raise HTTPException(status_code=503, detail=sandbox_unreachable_detail(e)) from None
-        row = await get_workspace(workspace_id) or {}
+        row = await get_workspace(runs_in) or {}
         dir_name = row.get("dir_name")
         if dir_name and not is_top_level(dir_name):
             raise HTTPException(
                 status_code=503,
-                detail=sandbox_unreachable_detail(WorkspaceFolderMoving(workspace_id)),
+                detail=sandbox_unreachable_detail(WorkspaceFolderMoving(runs_in)),
             )
         layout = SandboxLayout(session.sandbox.working_dir).for_workspace(dir_name)
         backend = SandboxBackend(session.sandbox, layout.workspace)
@@ -221,10 +233,11 @@ async def _thread_agent(
     inputs = await AgentInputs.read(
         session,
         user_id=user_id,
-        workspace_id=workspace_id,
+        workspace_id=runs_in,
         thread_id=thread_id,
         role=role,
         user_profile=await get_user_profile_for_prompt(user_id) if user_id else None,
+        acting_for=workspace_id,
     )
     graph = await build_ptc_graph_with_session(
         session=session,
@@ -266,7 +279,23 @@ async def _thread_agent(
         backend=backend,
         project=inputs.project,
         claude_code=isinstance(getattr(effective_config, "llm_client", None), ClaudeCodeTarget),
+        runs_in=runs_in,
     )
+
+
+async def thread_runs_in(workspace_id: str, user_id: str | None) -> str:
+    """The workspace whose computer the thread's next turn would run on,
+    decided as its admission decides it (``place_home_turn``), with no stretch
+    on the cloud marked: work between turns writes nothing a hand-back would
+    carry. Only attaching, as an idle compaction does, places no stand-in."""
+    from src.server.database.home_workspace import is_home_id
+
+    if not user_id or not is_home_id(user_id, workspace_id):
+        return workspace_id
+    from src.server.services.home_placement import place_home_turn
+
+    placement = await place_home_turn(user_id, make=not attaching_only())
+    return placement.runs_in
 
 
 async def _update_graph_state(
@@ -480,7 +509,8 @@ async def _summarize(agent: ThreadAgent, config):
         config,
         thread_id=agent.thread_id,
         backend=agent.backend,
-        workspace_id=agent.workspace_id,
+        # The folder a transcript pointer is read from.
+        workspace_id=agent.folder_id,
         notes_dir=scratchpad.notes_dir if scratchpad is not None else None,
     )
 
@@ -789,7 +819,7 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
                     settings,
                     thread_id=thread_id,
                     backend=agent.backend,
-                    workspace_id=agent.workspace_id,
+                    workspace_id=agent.folder_id,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))

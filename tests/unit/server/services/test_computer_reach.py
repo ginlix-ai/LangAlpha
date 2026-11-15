@@ -193,6 +193,22 @@ async def test_a_computer_in_error_is_refused_without_a_start():
 
 
 @pytest.mark.asyncio
+async def test_a_machine_that_cannot_be_reached_is_refused_without_a_dial():
+    """Home's stand-in reaching for the machine Home lives on, while it is away."""
+    manager = _manager()
+    with (
+        patch("src.server.services.ssh_computers.computer_unreachable", AsyncMock(return_value=True)),
+        pytest.raises(ComputerUnreachable) as e,
+    ):
+        await _reach(manager, "Studio Mac")
+    assert str(e.value) == (
+        'Computer "Studio Mac" can\'t be reached now, so its files and the '
+        "workspaces on it can't be read until it is back."
+    )
+    manager.reach_computer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_another_computer_is_reached_at_its_root_with_its_folders_as_siblings():
     session = SimpleNamespace(sandbox=None)
     manager = _manager(session)
