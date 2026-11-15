@@ -27,7 +27,7 @@ import { DiskBar, DiskUsageText } from './computerDiskUi';
 import { activeSpecChange, effectiveTier } from './specChangeUi';
 import { COMPUTER_NAME_MAX, computerNameTakenMessage } from '../utils/computerName';
 import { MakePrimaryButton } from './MakePrimaryDialog';
-import { providerCanBePrimary, providerManagesSpec } from './providerUi';
+import { providerManagesSpec } from './providerUi';
 import { ComputerFacts } from './computerFacts';
 import { ComputerClaudeCode } from './ComputerClaudeCode';
 import {
@@ -71,7 +71,6 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
   // Workspaces on it do not hold it: the confirmation offers to delete them.
   const removeHeld = computer.is_primary ? null : removeBlock(computer, actions.powerBusy);
   const removeHint = removeHeld ? removeBlockHint(t, removeHeld) : null;
-  const canBePrimary = !computer.is_primary && providerCanBePrimary(computer.kind);
   const hasSettings = (managesSpec && computer.is_always_on) || computer.kind === 'ssh';
 
   // The view replaced the button that opened it, so focus starts on the way back.
@@ -100,28 +99,24 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
           <div className="computer-details-actions">
             <StartFailureAction computer={computer} actions={actions} />
             <PowerButton computer={computer} actions={actions} />
-            {(canBePrimary || !computer.is_primary) && (
+            {!computer.is_primary && (
               <div className="computer-details-rarer">
-                {canBePrimary && (
-                  <MakePrimaryButton
-                    movingHome={actions.movingHome}
-                    disabled={actions.makePrimaryHeld || !!specChange || !takesWorkspaces(computer)}
-                    onClick={actions.makePrimary}
-                  />
-                )}
-                {!computer.is_primary && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="ml-auto"
-                    onClick={actions.remove}
-                    disabled={!!removeHeld}
-                    // A preparing computer already says why, in its own hint.
-                    aria-describedby={removeHeld === 'preparing' ? prepareHintId : removeHint ? removeHintId : undefined}
-                  >
-                    {t('computer.remove', 'Remove')}
-                  </Button>
-                )}
+                <MakePrimaryButton
+                  movingHome={actions.movingHome}
+                  disabled={actions.makePrimaryHeld || !!specChange || !takesWorkspaces(computer)}
+                  onClick={actions.makePrimary}
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  onClick={actions.remove}
+                  disabled={!!removeHeld}
+                  // A preparing computer already says why, in its own hint.
+                  aria-describedby={removeHeld === 'preparing' ? prepareHintId : removeHint ? removeHintId : undefined}
+                >
+                  {t('computer.remove', 'Remove')}
+                </Button>
               </div>
             )}
             {/* Under the buttons, so its arriving moves none of them. */}

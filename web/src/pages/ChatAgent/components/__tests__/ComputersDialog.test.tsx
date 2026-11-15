@@ -505,13 +505,13 @@ describe('ComputersDialog: removing a computer', () => {
     expect(screen.getByRole('button', { name: 'Make primary' })).toBeInTheDocument();
   });
 
-  it('never offers Make primary on a machine its owner brought', async () => {
+  it('offers Make primary on a machine its owner brought too', async () => {
     mockGetComputers.mockResolvedValue(
       withSecond({ kind: 'ssh', ssh: { host: 'box.example.com', port: 22, username: 'dev', fingerprint: 'SHA256:x' } }),
     );
     open();
     await openDetails(userEvent.setup(), 'Second machine');
-    expect(screen.queryByRole('button', { name: 'Make primary' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Make primary' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument();
   });
 

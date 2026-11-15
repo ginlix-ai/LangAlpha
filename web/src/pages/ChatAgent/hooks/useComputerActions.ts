@@ -236,7 +236,8 @@ export function useComputerActions() {
   // its ending is told wherever the user is by then. The name rides in the
   // variables for that toast.
   const makePrimary = useMutation({
-    mutationFn: ({ computerId }: { computerId: string; name: string }) => makeComputerPrimary(computerId),
+    mutationFn: ({ computerId, fromBackup = false }: { computerId: string; name: string; fromBackup?: boolean }) =>
+      makeComputerPrimary(computerId, { fromBackup }),
     onSuccess: async (res, { name }) => {
       if (!res.move) {
         invalidateMachine(queryClient);

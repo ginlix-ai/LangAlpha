@@ -5,7 +5,7 @@
  */
 import { useId, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, Laptop, Star } from 'lucide-react';
+import { AlertCircle, House, Laptop } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -93,7 +93,7 @@ export function MachineFrame({ computer, index, thisMac, inert, onOpen }: Machin
         (computer.is_primary || thisMac) && (
           <>
             {computer.is_primary && (
-              <Pill icon={Star} title={t('computer.primaryBadgeTitle', 'New workspaces are created on this computer')}>
+              <Pill icon={House} title={t('computer.primaryBadgeTitle', 'New workspaces are created on this computer')}>
                 {t('computer.primaryBadge', 'Primary')}
               </Pill>
             )}

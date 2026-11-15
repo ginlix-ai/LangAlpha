@@ -69,6 +69,7 @@ export const queryKeys = {
     detail: (id: string) => [...queryKeys.workspaces.details(), id],
     home:   () => [...queryKeys.workspaces.all, 'home'],
     quota:  () => [...queryKeys.workspaces.all, 'quota'],
+    homePlacement: () => [...queryKeys.workspaces.all, 'home-placement'],
   },
   // A workspace's latest move to another computer, polled while it runs. Its
   // own root, not under `workspaces`: the read that sees a move end refreshes

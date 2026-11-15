@@ -231,14 +231,21 @@ export async function deleteComputer(
  * Make this the computer new workspaces and Home land on. A 200 means the
  * flip landed now (Home was on no computer yet, or already on this one). A
  * 202 means Home's files move first: `move` is that move, read back like any
- * other, and the flip lands when it commits. Refusals are a 409 in the move's
- * error shape (`moveRefusal`).
+ * other, and the flip lands when it commits. `fromBackup` lays Home on it
+ * from Home's last backup, for when Home's computer can't be reached.
+ * Refusals are a 409 in the move's error shape (`moveRefusal`), among them
+ * `not_backed_up` (this computer's file backup is off) and `no_backup`.
  */
-export async function makeComputerPrimary(computerId: string): Promise<MakePrimaryResponse> {
+export async function makeComputerPrimary(
+  computerId: string,
+  { fromBackup = false }: { fromBackup?: boolean } = {},
+): Promise<MakePrimaryResponse> {
   if (!computerId) throw new Error('Computer ID is required');
-  const { data } = await api.post<MakePrimaryResponse>(`/api/v1/computers/${computerId}/make-primary`, null, {
-    timeout: COMPUTER_MUTATION_TIMEOUT_MS,
-  });
+  const { data } = await api.post<MakePrimaryResponse>(
+    `/api/v1/computers/${computerId}/make-primary`,
+    fromBackup ? { from_backup: true } : null,
+    { timeout: COMPUTER_MUTATION_TIMEOUT_MS },
+  );
   return data;
 }
 

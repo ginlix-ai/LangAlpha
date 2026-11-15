@@ -132,6 +132,43 @@ export async function moveWorkspace(
   return data;
 }
 
+/**
+ * Where Home stands: the computer it is on, whether that computer is one of
+ * the user's own machines that can't be reached now, and the cloud computer
+ * the user already has that Home's turns use meanwhile (`stand_in`, null when
+ * they have none and Home's turns wait for the machine instead).
+ */
+export interface HomePlacement {
+  computer_id: string | null;
+  computer_name: string | null;
+  /** `ssh` for a machine the user brings. */
+  computer_kind: string | null;
+  unreachable: boolean;
+  stand_in: { computer_id: string; name: string; status: string } | null;
+  /** Files written on the stand-in are still to be copied back into Home. */
+  handback_owed: boolean;
+  handback: {
+    handback_id: string;
+    /** Relative to Home. */
+    folder: string;
+    files: number;
+    /** Too large to copy, so left on the cloud computer. */
+    left_on_cloud: string[];
+    computer_name: string;
+    cloud_name: string;
+    created_at: string;
+  } | null;
+  move: WorkspaceMove | null;
+}
+
+/** A pure read, so it can be polled. */
+export async function getHomePlacement(): Promise<HomePlacement> {
+  const { data } = await api.get<HomePlacement>('/api/v1/workspaces/home/placement', {
+    timeout: WORKSPACE_QUERY_TIMEOUT_MS,
+  });
+  return data;
+}
+
 /** The workspace's latest move, running or ended; null when it has never moved. */
 export async function getWorkspaceMove(workspaceId: string): Promise<WorkspaceMove | null> {
   if (!workspaceId) throw new Error('Workspace ID is required');

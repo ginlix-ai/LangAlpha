@@ -18,6 +18,7 @@
  */
 import { Suspense, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from '@/lib/framer';
 
@@ -27,6 +28,8 @@ import { Loader } from '@/components/ui/loader';
 import { useHomeWorkspaceId } from '@/hooks/useHomeWorkspace';
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
 import { DURATION } from '@/lib/motion';
+import { queryKeys } from '@/lib/queryKeys';
+import { retryUnlessClientError } from '@/api/errors';
 import type { Computer, ComputerCreate, ComputerReinstall } from '@/types/api';
 
 import { useComputerProviders, useComputers } from '../hooks/useComputers';
@@ -43,7 +46,7 @@ import './computerCards.css';
 import FilesBackupOffDialog from './FilesBackupOffDialog';
 import RemoveComputerDialog from './RemoveComputerDialog';
 import ReinstallDialog from './ReinstallDialog';
-import MakePrimaryDialog from './MakePrimaryDialog';
+import MakePrimaryDialog, { type MakePrimaryChoice } from './MakePrimaryDialog';
 import { ClaudeCodeTokenModal, RemoveClaudeCodeTokenDialog } from '@/components/modelAccess/ClaudeCodeToken';
 import { computerTokenTarget, type SheetAction } from '@/components/modelAccess/tokenTarget';
 import { PlanUpgradeHint } from './planUpgradeHint';
@@ -55,7 +58,7 @@ import {
   rowsShowProvider,
   THIS_MAC_OPTION,
 } from './providerUi';
-import { apiErrorObject, apiErrorReason, apiErrorStatus } from '../utils/api';
+import { apiErrorObject, apiErrorReason, apiErrorStatus, getHomePlacement } from '../utils/api';
 import { denialMessage } from '../utils/denialMessage';
 import { entitlementErrorMessage } from '../utils/entitlementErrors';
 import { folderMarkedOwner, sshLimitMessage } from '../utils/sshLimit';
@@ -205,6 +208,12 @@ function ComputersPanel({
   const homeId = useHomeWorkspaceId() ?? makePrimary.data?.move?.workspace_id;
   const { data: homeMove } = useWorkspaceMove(homeId, { enabled: true });
   const homeMoving = isMoveActive(homeMove) ? homeMove : null;
+  // Where Home stands, for what making a computer primary does to it.
+  const { data: placement } = useQuery({
+    queryKey: queryKeys.workspaces.homePlacement(),
+    queryFn: getHomePlacement,
+    retry: retryUnlessClientError,
+  });
   // A refused start relays the quota service's own sentence (denialMessage).
   const error = power.error ? denialMessage(power.error, t) : null;
   // A taken name is said under the name field; anything else under the form.
@@ -348,12 +357,15 @@ function ComputersPanel({
     setBackupOffTargetId(null);
   };
 
-  const confirmMakePrimary = () => {
-    if (!primaryTarget || makePrimary.isPending) return;
-    makePrimary.mutate(
-      { computerId: primaryTarget.computer_id, name: primaryTarget.name },
-      { onSuccess: () => setPrimaryTargetId(null) },
-    );
+  // Backup goes on first where it was off; a refusal to turn it on is told
+  // by its own toast and leaves the confirmation open.
+  const confirmMakePrimary = ({ turnOnBackup, fromBackup }: MakePrimaryChoice) => {
+    if (!primaryTarget || makePrimary.isPending || setFilesBackup.isPending) return;
+    const { computer_id: computerId, name } = primaryTarget;
+    const makeIt = () =>
+      makePrimary.mutate({ computerId, name, fromBackup }, { onSuccess: () => setPrimaryTargetId(null) });
+    if (turnOnBackup) setFilesBackup.mutate({ computerId, enabled: true }, { onSuccess: makeIt });
+    else makeIt();
   };
 
   return (
@@ -532,11 +544,11 @@ function ComputersPanel({
       <AnimatePresence propagate>
         {primaryTarget && (
           <MakePrimaryDialog
-            computerId={primaryTarget.computer_id}
-            name={primaryTarget.name}
-            onClose={() => { if (!makePrimary.isPending) setPrimaryTargetId(null); }}
+            computer={primaryTarget}
+            placement={placement}
+            onClose={() => { if (!makePrimary.isPending && !setFilesBackup.isPending) setPrimaryTargetId(null); }}
             onConfirm={confirmMakePrimary}
-            busy={makePrimary.isPending}
+            busy={makePrimary.isPending || pendingFor(setFilesBackup, primaryTarget.computer_id)}
             error={makePrimary.error}
           />
         )}
