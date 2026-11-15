@@ -131,6 +131,7 @@ TOOL_TO_SERVICE_MAPPING = {
     "WebFetchTool": "web_fetch",
     "FirecrawlCrawlTool": "firecrawl_crawl",
     "FirecrawlMapTool": "firecrawl_map",
+    "FirecrawlCredits": "firecrawl_credits",
     "TavilyResearchTool": "tavily_research",
     "ExaResearchTool": "exa_research",
     "ParallelResearchTool": "parallel_research",

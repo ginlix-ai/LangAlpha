@@ -5,12 +5,13 @@ A grant binds (user, workspace, credential) to one exact destination captured
 at creation. The relay authorizes every request with one query here; grant or
 connection status flips deny the next request with no sandbox convergence.
 
-Two kinds share the table, and they differ only in what resolves the
+Three kinds share the table, and they differ only in what resolves the
 credential: ``oauth_mcp`` names the connection whose token the relay spends,
-``header_mcp`` names the catalog row whose own headers it sends. Neither
-stores a credential value; the grant stores the *reference*, so a rotated
-secret and a revoked connection both take effect on the next request rather
-than on the next sync.
+``header_mcp`` names the catalog row whose own headers it sends, and
+``platform_mcp`` names a built-in server whose key the host holds for the user
+(a provisioned vendor account). None stores a credential value; the grant
+stores the *reference*, so a rotated secret and a revoked connection both take
+effect on the next request rather than on the next sync.
 """
 
 import json
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 GRANT_KIND_OAUTH_MCP = "oauth_mcp"
 GRANT_KIND_HEADER_MCP = "header_mcp"
+GRANT_KIND_PLATFORM_MCP = "platform_mcp"
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,9 @@ class GrantRef:
     kind: str
     server_name: str
     connection_id: str | None = None
+    # ``platform_mcp`` only. A built-in has no row to pin its address from, so
+    # the address comes from the operator's config, which no user can edit.
+    destination_url: str | None = None
 
     @property
     def subject(self) -> str:
@@ -530,6 +535,61 @@ async def _upsert_header_grants(
     }
 
 
+async def _upsert_platform_grants(
+    cur: Any,
+    *,
+    user_id: str,
+    workspace_id: str,
+    computer_id: Any | None,
+    refs: Sequence[GrantRef],
+) -> dict[str, str]:
+    """Upsert one grant per built-in server whose key the host holds for the
+    user; returns name -> grant_id.
+
+    The address comes from the ref, unlike the other two kinds, because a
+    built-in has no row to pin it from: the operator's config is the only
+    record, and no user can edit it. The relay re-reads that config per
+    request, address and tools alike, so a config change retires the grant's
+    reach before the next sync does.
+    """
+    if computer_id is not None:
+        await _adopt_grants_onto_computer(
+            cur,
+            workspace_id=workspace_id,
+            computer_id=computer_id,
+            kind=GRANT_KIND_PLATFORM_MCP,
+        )
+    await cur.execute(
+        f"""
+        INSERT INTO sandbox_egress_grants
+            (user_id, workspace_id, computer_id, kind, server_name,
+             destination_url, policy_required,
+             status, created_at, updated_at)
+        SELECT %s, %s::uuid, %s::uuid, %s, t.server_name, t.url,
+               false, 'active', NOW(), NOW()
+        FROM unnest(%s::text[], %s::text[]) AS t(server_name, url)
+        ON CONFLICT {_conflict_target(computer_id)}
+        DO UPDATE SET
+            computer_id = EXCLUDED.computer_id,
+            destination_url = EXCLUDED.destination_url,
+            status = 'active',
+            updated_at = NOW()
+        RETURNING server_name, grant_id
+        """,
+        (
+            user_id,
+            workspace_id,
+            computer_id,
+            GRANT_KIND_PLATFORM_MCP,
+            [r.server_name for r in refs],
+            [r.destination_url for r in refs],
+        ),
+    )
+    return {
+        str(row["server_name"]): str(row["grant_id"]) for row in await cur.fetchall()
+    }
+
+
 async def sync_egress_grants(
     *,
     user_id: str,
@@ -655,6 +715,25 @@ async def sync_egress_grants(
                             workspace_id=workspace_id,
                             computer_id=computer_id,
                             server_names=server_names,
+                        )
+                    ).items()
+                }
+
+            platform_refs = [
+                r
+                for r in refs
+                if r.kind == GRANT_KIND_PLATFORM_MCP and r.destination_url
+            ]
+            if platform_refs:
+                granted |= {
+                    (GRANT_KIND_PLATFORM_MCP, subject): grant_id
+                    for subject, grant_id in (
+                        await _upsert_platform_grants(
+                            cur,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                            computer_id=computer_id,
+                            refs=platform_refs,
                         )
                     ).items()
                 }

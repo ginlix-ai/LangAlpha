@@ -62,10 +62,12 @@ _TIME_WAKEUP_KINDS = ("at", "cron")
 @dataclass(frozen=True)
 class OwedCommandReport:
     """A command's notice still owed: its row as ``read_notice`` reads it,
-    and the time wakeups pending on its thread when the verdict was read."""
+    the time wakeups pending on its thread when the verdict was read, and
+    the line naming what its paid data calls cost ("" for none)."""
 
     row: Mapping[str, Any]
     wakeups: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    paid_calls: str = ""
 
     @property
     def report(self) -> "CommandReport":
@@ -85,7 +87,9 @@ class OwedCommandReport:
         return str(self.row.get("thread_workspace_id") or self.row["workspace_id"])
 
     def message(self, *, steered: bool) -> str:
-        return command_report_message(self.row, self.wakeups, steered=steered)
+        return command_report_message(
+            self.row, self.wakeups, steered=steered, paid_calls=self.paid_calls
+        )
 
 
 async def _pending_time_wakeups(thread_id: str) -> list[dict]:
@@ -104,6 +108,18 @@ async def _pending_time_wakeups(thread_id: str) -> list[dict]:
             exc_info=True,
         )
         return []
+
+
+async def _paid_calls(row: Mapping[str, Any]) -> str:
+    """What the command's paid data calls cost, under the call id it ran as;
+    "" when it ran as none or charged nothing."""
+    job_ref = row.get("job_ref")
+    call_id = job_ref.get("call_id") if isinstance(job_ref, Mapping) else None
+    if not call_id:
+        return ""
+    from src.server.services.metered_charges import command_charges
+
+    return await command_charges(str(row["user_id"]), str(call_id))
 
 
 async def command_report_verdict(job: Mapping[str, Any]) -> OwedCommandReport | NotOwed:
@@ -136,7 +152,9 @@ async def command_report_verdict(job: Mapping[str, Any]) -> OwedCommandReport | 
     if run_id and stop_already_covered(await tl_db.get_run(str(run_id)), row.get("ended_at")):
         return NotOwed("its turn was stopped after it ended")
     thread_id = str(row["conversation_thread_id"])
-    return OwedCommandReport(row, await _pending_time_wakeups(thread_id))
+    return OwedCommandReport(
+        row, await _pending_time_wakeups(thread_id), await _paid_calls(row)
+    )
 
 
 async def stamp_seen(jobs: Sequence[Mapping[str, Any]]) -> None:

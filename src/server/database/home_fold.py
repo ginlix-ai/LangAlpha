@@ -65,6 +65,12 @@ MOVES: dict[str, str] = {
         UPDATE conversation_usages SET workspace_id = %(home)s
         WHERE workspace_id = %(former)s
     """,
+    # A paid call with no known thread is charged to the latest thread of the
+    # workspace it ran in, and those threads are now Home's.
+    "metered_vendor_calls": """
+        UPDATE metered_vendor_calls SET workspace_id = %(home)s
+        WHERE workspace_id = %(former)s
+    """,
     # A layer whose id Home's chart already has was renamed first
     # (``_rename_colliding_layers``), so both charts' layers land in Home. Only
     # a legacy annotation that collides, which no read shows, is left on the

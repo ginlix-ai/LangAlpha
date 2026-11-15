@@ -2,7 +2,7 @@
 
 import asyncio
 import shlex
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -107,6 +107,9 @@ class PTCSandbox:
         # Set by the host: files who each command's call runs for, which a
         # save through the mount and a call the ``la`` CLI makes both read.
         self.call_filer: CallFiler | None = None
+        # Set by the host while it meters paid relay calls: the line naming
+        # what a command's calls, under its call id, cost.
+        self.paid_calls: Callable[[str], Awaitable[str]] | None = None
         # Set by the host on a machine the mount never serves, whose past
         # threads the file tools then read in process.
         self.history: HistoryFiles | None = None

@@ -447,6 +447,42 @@ class UsagePersistenceService:
         )
 
 
+async def persist_between_turns(
+    *,
+    thread_id: str,
+    workspace_id: str,
+    user_id: str,
+    verb: str,
+    records: Optional[list] = None,
+    tool_usage: Optional[Dict[str, int]] = None,
+    status: str = "completed",
+    is_byok: bool = False,
+    conn: Optional[Any] = None,
+) -> bool:
+    """Write a usage row for work on a thread outside any turn, marked
+    ``between_turns`` with ``verb`` so the platform's rollup leaves it out of
+    message counts, and on a response id of its own so a replay never takes
+    it for a turn's.
+
+    With ``conn`` a failed write raises instead of returning False: the row
+    is the charge for whatever the caller's transaction takes, so the two
+    commit or roll back together.
+    """
+    usage = UsagePersistenceService(
+        thread_id=thread_id, workspace_id=workspace_id, user_id=user_id
+    )
+    if records is not None:
+        await usage.track_llm_usage(records)
+    usage.record_tool_usage_batch(tool_usage or {})
+    usage._token_usage = {**(usage._token_usage or {}), "between_turns": verb}
+    written = await usage.persist_usage(
+        response_id=str(uuid4()), status=status, conn=conn, is_byok=is_byok
+    )
+    if conn is not None and not written:
+        raise RuntimeError(f"no {verb} usage row written for thread {thread_id}")
+    return written
+
+
 # Singleton pattern for easy access (optional, can also use direct instantiation)
 _service_instances: Dict[str, UsagePersistenceService] = {}
 

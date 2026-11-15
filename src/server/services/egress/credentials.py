@@ -1,19 +1,21 @@
 """The vendor credential one grant puts on the wire, resolved per request.
 
-A grant stores a reference, never a value, so this is where the two kinds part
-company: ``oauth_mcp`` mints a bearer from the connection's token store, and
+A grant stores a reference, never a value, so this is where the kinds part
+company: ``oauth_mcp`` mints a bearer from the connection's token store,
 ``header_mcp`` expands the catalog row's own headers against the user's vault,
-the tier the row's probe verdict was earned against.
-Both are read fresh on every call, which is what makes a rotated key and a
+the tier the row's probe verdict was earned against, and ``platform_mcp``
+sends the key the host holds for the user, which no sandbox file carries.
+All are read fresh on every call, which is what makes a rotated key and a
 revoked connection take effect on the next request rather than at the next
-sync. The same value also rides the sandbox's vault file for every workspace
-the user runs, so resolving per request buys rotation and revocation, not
-confinement.
+sync. A header value also rides the sandbox's vault file for every workspace
+the user runs, so for that kind resolving per request buys rotation and
+revocation, not confinement.
 
-Resolution is also the second half of revocation, for either kind. The relay
+Resolution is also the second half of revocation, for every kind. The relay
 authorizes against the grant row, and a catalog row that has been deleted,
-switched off, taken out of delivery by its plugin, or (for headers) repointed
-has no credential to resolve -- so the call is refused here, before anything is
+switched off, taken out of delivery by its plugin, or (for headers) repointed,
+like a built-in the operator dropped or the user switched off, has no
+credential to resolve -- so the call is refused here, before anything is
 dialled, however long the grant row itself takes to be retired.
 """
 
@@ -22,7 +24,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.server.database.egress_grants import GRANT_KIND_HEADER_MCP
 from src.server.database.mcp_oauth import (
@@ -32,13 +34,21 @@ from src.server.database.mcp_oauth import (
 )
 from src.server.database.mcp_servers import get_catalog_server
 from src.server.database.user_vault_secrets import get_user_secrets_decrypted
-from src.server.services.egress import RelayError, RelayRejection
+from src.server.services.egress import AccountUnavailable, RelayError, RelayRejection
+from src.server.services.egress.platform_accounts import (
+    PLATFORM_ACCOUNTS,
+    PlatformServer,
+)
 from src.server.services.mcp_oauth.lifecycle import (
     AccessToken,
     TokenUnavailable,
     ensure_fresh_access_token,
 )
+from src.server.services.vendor_terms import TERMS_REQUIRED
 from src.server.utils.egress_guard import RESERVED_HEADERS
+
+if TYPE_CHECKING:
+    from ptc_agent.config.core import MCPServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +66,16 @@ class VendorCredential:
     token: AccessToken | None = None
 
 
-async def resolve_vendor_credential(grant: Mapping[str, Any]) -> VendorCredential:
-    """Ready the credential for one authorized grant, or refuse the request."""
+async def resolve_vendor_credential(
+    grant: Mapping[str, Any], platform: PlatformServer | None = None
+) -> VendorCredential:
+    """Ready the credential for one authorized grant, or refuse the request.
+
+    ``platform`` is the built-in a platform grant names, already resolved by
+    ``platform_server``.
+    """
+    if platform is not None:
+        return await _platform_credential(grant["user_id"], platform)
     if grant.get("kind") == GRANT_KIND_HEADER_MCP:
         return await _header_credential(grant)
     return await _oauth_credential(grant)
@@ -167,3 +185,59 @@ async def _header_credential(grant: Mapping[str, Any]) -> VendorCredential:
             k.lower(): v for k, v in headers.items() if k.lower() not in RESERVED_HEADERS
         }
     )
+
+
+def _builtin_server(name: str) -> MCPServerConfig | None:
+    """The operator's config for built-in ``name``, if it still declares one."""
+    from src.server.app import setup
+
+    config = setup.agent_config
+    if config is None:
+        return None
+    return next((s for s in config.mcp.servers if s.name == name and s.enabled), None)
+
+
+async def platform_server(grant: Mapping[str, Any]) -> PlatformServer:
+    """The built-in a platform grant names, as the operator's config declares
+    it now, or the refusal.
+
+    Read per request rather than trusted from the grant row, for the reason
+    the other kinds re-read their row: a deploy that drops the server, its
+    credential or its address, and a user who switches it off for the
+    account, have to stop the relay spending the key before the next sync
+    retires the grant.
+    """
+    from src.server.services.mcp_config import account_disabled_builtins
+
+    name = grant.get("server_name") or ""
+    server = _builtin_server(name)
+    account = PLATFORM_ACCOUNTS.get(server.auth or "") if server is not None else None
+    if server is None or account is None:
+        raise _unconfigured(name, "the built-in is gone or holds no per-user credential")
+    if server.url != grant.get("destination_url"):
+        raise _unconfigured(name, "the built-in now points somewhere else")
+    if name in await account_disabled_builtins(grant["user_id"]):
+        raise _unconfigured(name, "the user has switched it off")
+    return PlatformServer(config=server, account=account)
+
+
+async def _platform_credential(user_id: str, platform: PlatformServer) -> VendorCredential:
+    try:
+        key = await platform.account.key_for(user_id)
+    except AccountUnavailable as e:
+        logger.warning(
+            "[egress_relay] no %s key for user %s: %s", platform.config.name, user_id, e.code
+        )
+        if e.code == TERMS_REQUIRED:
+            raise RelayRejection(
+                403,
+                RelayError.TERMS_REQUIRED,
+                f"the user has not accepted {platform.account.name}'s Terms of Service",
+            ) from e
+        raise RelayRejection(
+            503 if e.retryable else 403,
+            RelayError.CREDENTIAL_UNAVAILABLE,
+            "this service's account could not be set up for this user",
+            retry_after=30 if e.retryable else None,
+        ) from e
+    return VendorCredential(headers={"authorization": f"Bearer {key}"})

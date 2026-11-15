@@ -107,6 +107,7 @@ from .request_prep import (
 from src.server.contracts.turn_kinds import UNWATCHED_RUN_META, announced
 from src.server.services import automation_delivery, automation_settlement
 from src.server.services.credit_gate_port import build_run_credit_gate
+from src.server.services.metered_charges import charge_owed
 from src.server.services.report_back.handoff import carry
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
 from src.server.services.runs.admission import (
@@ -611,6 +612,10 @@ async def astream_ptc_workflow(
         # =====================================================================
 
         token_callback, tool_tracker = init_tracking(thread_id)
+        # Whatever servers are configured now, so calls left by one the
+        # operator since turned off or removed are still charged; one indexed
+        # probe when nothing is owed.
+        await charge_owed(user_id, thread_id, workspace_id)
 
         # Runtime credit gate (None when platform gating is inactive): the
         # run's spend meter, lease, and refresher. Admission above is its

@@ -14,7 +14,9 @@ thread's lifecycle for the user. Frame contract (thread-lifecycle v6 §2.2):
   client's seq-aware merge owns correctness), including ``cli_approval``
   (``approval_id``, ``status``) when what a computer's ``la`` asks the user to
   approve is written or changes; the snapshot's ``pending_approvals`` lists
-  the ids still waiting.
+  the ids still waiting; and ``vendor_terms`` (``vendors``) when a vendor's
+  Terms of Service start or stop waiting on the user, with the snapshot's
+  ``pending_vendor_terms`` listing the vendors still waiting.
 
 Redis is transport only: a runtime pub/sub failure abandons the subscription
 and degrades to the 30s DB cadence with ≥30s-paced resubscribe attempts —
@@ -35,7 +37,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from src.server.database.conversation import get_thread_lifecycle_rows
-from src.server.services import cli_approvals
+from src.server.services import cli_approvals, vendor_terms
 from src.server.services.thread_lifecycle import project_lifecycle
 from src.server.services.thread_lifecycle_feed import (
     LIFECYCLE_EVENT,
@@ -98,6 +100,9 @@ async def _read_snapshot(user_id: str) -> dict:
         # What a computer's `la` waits on the user to approve, oldest first:
         # the backstop for a `cli_approval` event the transport dropped.
         "pending_approvals": await _pending_approvals(user_id),
+        # The vendors whose terms the user is asked to accept, the backstop
+        # for a dropped `vendor_terms` event.
+        "pending_vendor_terms": await _pending_vendor_terms(user_id),
     }
 
 
@@ -107,6 +112,14 @@ async def _pending_approvals(user_id: str) -> list[str]:
     except Exception as exc:
         # The lifecycle sets stay worth sending without it.
         logger.warning("thread-feed approvals read failed (user=%s): %s", user_id, exc)
+        return []
+
+
+async def _pending_vendor_terms(user_id: str) -> list[str]:
+    try:
+        return [terms["vendor"] for terms in await vendor_terms.pending(user_id)]
+    except Exception as exc:
+        logger.warning("thread-feed vendor terms read failed (user=%s): %s", user_id, exc)
         return []
 
 

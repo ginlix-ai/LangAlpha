@@ -1,0 +1,41 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "firecrawl",
+  "version": "1.0.0",
+  "description": "A catalog of structured data providers (earnings call transcripts, segment KPIs, analyst ratings, options activity, SEC filing sections, FedWatch, futures positioning, alternative data) plus web search, scraping, mapping and crawling, all callable from code.",
+  "author": {
+    "name": "LangAlpha",
+    "url": "https://langalpha.ai"
+  },
+  "homepage": "https://langalpha.ai",
+  "repository": "https://github.com/ginlix/langalpha",
+  "license": "Apache-2.0",
+  "keywords": [
+    "firecrawl",
+    "alternative-data",
+    "transcripts",
+    "web-scraping"
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "servers": {
+        "firecrawl": {
+          "description": "Catalog of structured data providers (transcripts, segment KPIs, analyst ratings, options activity, filing sections, FedWatch, positioning, alternative data) plus web search, scrape, map and crawl from code. Paid per call.",
+          "instruction": "For data: firecrawl_find_tools(query=...) finds a provider tool and shows its inputs and creditsCost (free); firecrawl_scrape(alexandria={\"provider\", \"capability\", \"options\"}) runs it (paid; a list of up to 10 runs several in one call). Prefer the built-in market data servers when they cover the request; use this catalog for what they do not. Read skills/data-catalog/ before first use. For web pages in code: firecrawl_scrape(url=...), firecrawl_search, firecrawl_map, firecrawl_crawl. Every call except find_tools is charged to the user, and the run's result reports the cost.",
+          "tool_exposure_mode": "summary",
+          "icon": "firecrawl.dev",
+          "auth": "firecrawl_account",
+          "tools": [
+            "firecrawl_find_tools",
+            "firecrawl_scrape",
+            "firecrawl_search",
+            "firecrawl_map",
+            "firecrawl_crawl",
+            "firecrawl_check_crawl_status"
+          ]
+        }
+      },
+      "icon": "firecrawl.dev"
+    }
+  }
+}

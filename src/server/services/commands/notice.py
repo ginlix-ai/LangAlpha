@@ -90,13 +90,17 @@ def command_report_message(
     wakeups: Sequence[Mapping[str, Any]] = (),
     *,
     steered: bool = False,
+    paid_calls: str = "",
 ) -> str:
     """The notice the agent reads when a command ends, as its own turn or as
     a steer into a live one.
 
     "while you were working" only when a live turn takes it in, and never
     for a command the after-turn limit stopped, which ended while no turn
-    ran, or one the user stopped, which the user saw happen."""
+    ran, or one the user stopped, which the user saw happen. ``paid_calls``
+    is the line naming what its paid data calls cost, set apart after the
+    output as a result that returned in time carries it: a handed-off
+    command's result is a placeholder, so this is where the agent learns it."""
     code_run = row.get("tool") == "ExecuteCode"
     noun = "code run" if code_run else "command"
     description = _one_line(str(row.get("description") or ""))
@@ -141,6 +145,8 @@ def command_report_message(
         body = f"FAILED{exited} after {took}{when}. Output: {log}"
 
     lines = ["<system>", f"{head} {body}"]
+    if paid_calls:
+        lines += ["", paid_calls]
     if pending := wakeups_line(wakeups):
         lines.append(pending)
     lines.append("</system>")

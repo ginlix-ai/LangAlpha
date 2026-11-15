@@ -27,15 +27,24 @@ from ptc_agent.agent.provenance.types import hash_args
 from src.config.env import EGRESS_RELAY_SECRET
 from src.server.database.egress_grants import (
     GRANT_KIND_HEADER_MCP,
+    GRANT_KIND_OAUTH_MCP,
+    GRANT_KIND_PLATFORM_MCP,
     fetch_grant_for_relay,
 )
 from src.server.database.order_attempts import claim_dispatch, fetch_attempt_status
 from src.server.services.brokerage_capabilities import order_tool
 from src.server.services.brokerage_orders import AttemptStatus
 from src.server.services.brokerages import brokerage_for_url
-from src.server.services.egress import RelayError, RelayRejection, folded_contains
+from src.server.services.egress import (
+    Dispatch,
+    RelayError,
+    RelayRejection,
+    folded_contains,
+    header,
+)
 from src.server.services.egress.credentials import (
     VendorCredential,
+    platform_server,
     resolve_vendor_credential,
 )
 from src.server.services.egress.execution_token import (
@@ -49,6 +58,7 @@ from src.server.services.egress.jsonrpc import (
     JsonRpcRejected,
     canonicalize_request,
 )
+from src.server.services.egress.platform_accounts import PlatformServer
 from src.server.services.egress.relay_jwt import (
     CALLER_HOST,
     RelayClaims,
@@ -134,6 +144,8 @@ class PreparedRelay:
     canonical: CanonicalRequest
     credential: VendorCredential
     order: OrderFrame | None = None
+    #: The built-in a platform grant names, resolved once for the request.
+    platform: PlatformServer | None = None
 
 
 _client: httpx.AsyncClient | None = None
@@ -200,13 +212,6 @@ def authenticate_relay(authorization: str | None) -> RelayClaims:
         raise RelayRejection(401, RelayError.RELAY_AUTH)
 
 
-def _execution_header(headers: Mapping[str, str] | None) -> str:
-    for key, value in (headers or {}).items():
-        if key.lower() == EXECUTION_HEADER.lower():
-            return value or ""
-    return ""
-
-
 async def _authorize_order(
     canonical: CanonicalRequest,
     *,
@@ -229,7 +234,7 @@ async def _authorize_order(
     for a 403 with no reason beside it.
     """
     tool = canonical.tool_name or ""
-    token = _execution_header(headers)
+    token = header(headers, EXECUTION_HEADER) or ""
     if not token:
         logger.warning(
             "[egress_relay] order frame refused: tool=%r vendor=%r user=%s "
@@ -360,11 +365,15 @@ async def prepare_relay(
     ):
         raise RelayRejection(404, RelayError.NOT_FOUND)
 
-    # A header grant has no connection to be servable: what stands in for this
-    # check is the credential resolution below, which finds no headers to send
-    # the moment the row is deleted, switched off or repointed.
-    if grant["kind"] != GRANT_KIND_HEADER_MCP and grant["connection_status"] not in SERVABLE:
+    # Only an OAuth grant has a connection to be servable. For a header grant
+    # what stands in for this check is the credential resolution below, which
+    # finds nothing to send the moment the row is gone; a platform grant's
+    # built-in is resolved here, before any check reads it.
+    if grant["kind"] == GRANT_KIND_OAUTH_MCP and grant["connection_status"] not in SERVABLE:
         raise RelayRejection(401, RelayError.NEEDS_REAUTH)
+    platform = (
+        await platform_server(grant) if grant["kind"] == GRANT_KIND_PLATFORM_MCP else None
+    )
 
     # HTTP-verb grant policy (defaults to ["POST"]). The route is POST-only
     # today, so this bites only when a grant is deliberately narrowed to [].
@@ -418,6 +427,18 @@ async def prepare_relay(
                 RelayError.TOOL_BLOCKED,
                 "tool is bound directly to the model and is not callable from the sandbox",
             )
+        # A built-in's declared tools are enforced here as well as in the
+        # generated wrappers: the sandbox can write a frame by hand, and every
+        # tool on a platform account bills the deployment. Exact, not folded:
+        # the meter prices exact names, so a respelling the vendor still runs
+        # would otherwise be priced as an unknown tool.
+        offered = platform.config.tools if platform is not None else None
+        if offered is not None and canonical.tool_name not in offered:
+            raise RelayRejection(
+                403, RelayError.TOOL_BLOCKED, "tool is not offered on this server"
+            )
+    if platform is not None:
+        _check_platform_frame(canonical)
 
     order: OrderFrame | None = None
     if canonical.method == "tools/call":
@@ -435,9 +456,36 @@ async def prepare_relay(
         claims=claims,
         grant=grant,
         canonical=canonical,
-        credential=await resolve_vendor_credential(grant),
+        credential=await resolve_vendor_credential(grant, platform),
         order=order,
+        platform=platform,
     )
+
+
+# What a platform grant forwards: the handshake, the tool list and tool
+# calls. Any other method reaches the deployment's paid account with nothing
+# that meters it. ``server/discover`` is the sandbox client's first probe.
+_PLATFORM_METHODS = frozenset(
+    {
+        "initialize",
+        "notifications/initialized",
+        "server/discover",
+        "ping",
+        "tools/list",
+        "tools/call",
+    }
+)
+
+
+def _check_platform_frame(canonical: CanonicalRequest) -> None:
+    if canonical.method not in _PLATFORM_METHODS:
+        raise RelayRejection(
+            403, RelayError.METHOD_BLOCKED, "JSON-RPC method not offered on this server"
+        )
+    # A notification is answered 202 with no result, which settles free,
+    # while the vendor may still have run and billed the tool.
+    if canonical.method == "tools/call" and canonical.is_notification:
+        raise RelayRejection(400, RelayError.BAD_REQUEST, "tools/call needs an id")
 
 
 def _grant_label(grant: Mapping[str, Any]) -> str:
@@ -541,11 +589,15 @@ def _schedule_credential_recheck(grant: Mapping[str, Any]) -> None:
 
 
 async def open_upstream(
-    prepared: PreparedRelay, incoming_headers: dict[str, str]
+    prepared: PreparedRelay,
+    incoming_headers: dict[str, str],
+    dispatch: Dispatch | None = None,
 ) -> httpx.Response:
     """Send the canonical body to the pinned destination; one 401 retry when
     the stored bundle has visibly rotated since we read it. A vendor redirect
-    is refused rather than followed or relayed on."""
+    is refused rather than followed or relayed on. ``dispatch`` records how
+    far the request got, which a paid call's charge depends on when this
+    raises."""
     destination = prepared.grant["destination_url"]
     try:
         target = await pin_public_url(destination, require_https=True)
@@ -564,6 +616,8 @@ async def open_upstream(
     url, headers, extensions = target.pinned_kwargs(
         _vendor_headers(prepared, incoming_headers)
     )
+    if dispatch is not None:
+        extensions = {**extensions, "trace": dispatch.trace}
     connection_id = prepared.grant["connection_id"]
 
     async def _send(hdrs: dict[str, str]) -> httpx.Response:
@@ -582,6 +636,8 @@ async def open_upstream(
                 _grant_label(prepared.grant), _upstream_reason(e),
             )
             raise RelayRejection(502, RelayError.UPSTREAM_UNREACHABLE)
+        if dispatch is not None:
+            dispatch.status = response.status_code
         if _is_vendor_redirect(response.status_code):
             # Following the hop would carry the vendor bearer to whatever host
             # the redirect names, but relaying the 3xx on is worse than useless:
