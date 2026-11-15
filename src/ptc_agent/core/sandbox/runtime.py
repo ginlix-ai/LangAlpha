@@ -421,6 +421,14 @@ class SandboxRuntime(ABC):
         traffic through its preview proxy, and Docker never stops on idle.
         """
 
+    async def hold_awake(self, seconds: int) -> bool:
+        """Keep the machine from idle sleep for ``seconds``, while work the
+        machine cannot see (a turn thinking between its calls) is under way.
+        False where the machine never sleeps on its own, so the caller stops
+        asking.
+        """
+        return False
+
     # -- Execution --
 
     @abstractmethod

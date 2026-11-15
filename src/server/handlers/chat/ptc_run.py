@@ -35,6 +35,7 @@ from src.server.services.history.window import runs_held
 from src.server.services.llm.claude_code import run_stamp
 from src.server.services.runs.pending_input import needs_resend, pending_input_stamp
 from src.server.services.runs.sse_producer import RunSSEProducer
+from src.server.services.turn_awake import held_awake
 from src.server.models.chat import (
     ChatRequest,
     serialize_hitl_response_map,
@@ -1092,15 +1093,20 @@ async def astream_ptc_workflow(
                 project,
                 run_with_credit_gate(
                     credit_gate,
-                    # Relay sessions for direct tools open and close with the
-                    # run, in the run's task, not with this request's generator.
-                    direct_mcp.drive(
-                        handler.stream_workflow(
-                            graph=ptc_graph,
-                            input_state=input_state,
-                            config=graph_config,
-                            settled_results=cancelled_calls,
-                        )
+                    # A Mac the turn runs on stays out of idle sleep until the
+                    # turn ends, between its calls as well as in them.
+                    held_awake(
+                        lambda: getattr(getattr(session, "sandbox", None), "runtime", None),
+                        # Relay sessions for direct tools open and close with the
+                        # run, in the run's task, not with this request's generator.
+                        direct_mcp.drive(
+                            handler.stream_workflow(
+                                graph=ptc_graph,
+                                input_state=input_state,
+                                config=graph_config,
+                                settled_results=cancelled_calls,
+                            )
+                        ),
                     ),
                 ),
             ),

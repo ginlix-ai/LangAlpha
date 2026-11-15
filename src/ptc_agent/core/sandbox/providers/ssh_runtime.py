@@ -56,6 +56,7 @@ from ptc_agent.core.sandbox.providers._ssh_shell import (
     delete_script,
     env_file,
     framed_script,
+    hold_awake_script,
     layout_script,
     mark_running_script,
     read_state_script,
@@ -368,6 +369,16 @@ class SSHRuntime(ExecSessionRuntime):
 
     async def get_state(self) -> RuntimeState:
         return await self._on_live_link(self._read_state)
+
+    async def hold_awake(self, seconds: int) -> bool:
+        """A Mac sleeps when left alone, and the turn's next call then finds it
+        gone. The hold is a timed ``caffeinate``, so one the server stops
+        renewing (a turn that ended, a server that died) lets go by itself."""
+        link = await self._link()
+        if link.facts is None or link.facts.os != "Darwin":
+            return False
+        await self._run(link, hold_awake_script(seconds))
+        return True
 
     async def _read_state(self, link: Link) -> RuntimeState:
         """Running only when marked so on the machine's current boot.

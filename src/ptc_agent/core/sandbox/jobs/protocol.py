@@ -39,7 +39,12 @@ from typing import TYPE_CHECKING, Literal
 
 import structlog
 
-from ptc_agent.core.sandbox.providers._proc_sh import EXEC_MARK, PROC_SH, ps_start_sh
+from ptc_agent.core.sandbox.providers._proc_sh import (
+    EXEC_MARK,
+    HOLD_AWAKE_SH,
+    PROC_SH,
+    ps_start_sh,
+)
 from ptc_agent.core.sandbox.runtime import ExecResult
 
 if TYPE_CHECKING:
@@ -325,7 +330,8 @@ _PRUNE_SH = _LEFT_SH + (
 # own ``exit`` still reaches the exit write, with no arguments and none of the
 # wrapper's variables. Both records are written in place, one short write
 # each: a reader takes an empty pid record for a job still launching, and an
-# exit code still being written for one still running.
+# exit code still being written for one still running. On a Mac the job holds
+# the machine awake while it runs (``HOLD_AWAKE_SH``).
 _WRAPPER_SH = (
     "__la_j=$1 __la_l=$2 __la_c=$3; "
     'if { read -r __la_s < "/proc/$$/stat"; } 2>/dev/null; then '
@@ -333,7 +339,8 @@ _WRAPPER_SH = (
     "else __la_s=$(" + ps_start_sh("$$") + "); fi; "
     'echo "$$ $__la_s" > "$__la_j/pid" || exit 1; '
     '[ ! -e "$__la_j/stop" ] || exit 1; '
-    f'export {EXEC_MARK}="$$-$__la_s"; '
+    + HOLD_AWAKE_SH
+    + f'export {EXEC_MARK}="$$-$__la_s"; '
     '( exec >> "$__la_l" 2>&1; set --; unset __la_j __la_l __la_s; '
     'eval "unset __la_c; $__la_c" ); '
     'echo $? > "$__la_j/exit"'
