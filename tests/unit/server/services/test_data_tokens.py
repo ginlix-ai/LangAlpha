@@ -806,19 +806,13 @@ class TestSweepSparesIdleComputers:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("own_machine", "kept"), [(True, True), (False, False)])
-    async def test_a_command_left_running_keeps_an_own_machines_token_fresh(
+    async def test_an_own_machine_keeps_its_token_fresh_however_long_it_is_quiet(
         self, own_machine, kept
     ):
-        """No sweep stops a machine of the user's own, so a command there may
-        call the data servers hours after the last turn stamped it."""
-        with (
-            self._manager(own_machine=own_machine),
-            self._executor(False),
-            patch(
-                "src.server.database.runs.command_runs.computer_has_running_command",
-                AsyncMock(return_value=True),
-            ),
-        ):
+        """No sweep stops a machine of the user's own, so a server or an app
+        the agent left running there may call the data servers hours after
+        the last turn stamped it, with no command of the agent's in flight."""
+        with self._manager(own_machine=own_machine), self._executor(False):
             assert await data_token_sweep.keeps_running(self._idle_row(4 * 3600)) is kept
 
     @pytest.mark.asyncio

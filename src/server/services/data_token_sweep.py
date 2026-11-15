@@ -4,7 +4,8 @@ A turn's start writes a fresh token when the current one runs low, but a
 sandbox can go on working with no turn starting: a long turn, a background
 task, an always-on computer. This sweep writes one into each running computer
 whose token runs low and that the idle reaper would keep running: always-on,
-used lately, or with work in flight. An idle one is left alone, since writing
+used lately, with work in flight, or a machine of the user's own, which is
+never stopped for being idle. An idle one is left alone, since writing
 into a sandbox counts as activity at its provider (Daytona's auto-stop, E2B's
 pause deadline) and would hold off that stop for good; its next turn's start
 writes the token before any of that turn's code runs. Every worker runs the
@@ -90,19 +91,20 @@ async def keeps_running(row: dict[str, Any]) -> bool:
     flight, failing toward active as the reaper does. Settings no
     provider can be built from rule out a write as well.
 
-    A machine of the user's own is never stopped for being idle, so a
-    command left running there counts as work in flight: it may still call
-    the data servers hours after the last turn, with nothing else stamping
-    the machine active."""
+    A machine of the user's own is never stopped for being idle, so it always
+    is: a server or an app the agent left running there calls the data
+    servers hours after the last turn, with nothing stamping the machine
+    active, and a write there holds off no provider's stop. One whose tunnel
+    is down is passed over at the write (``computer_unreachable``)."""
     if row.get("is_always_on"):
         return True
-    from src.server.database.runs.command_runs import computer_has_running_command
     from src.server.services.computer_manager import ComputerManager
     from src.server.services.runs.executor import LocalRunExecutor
 
     manager = ComputerManager.get_instance()
     try:
-        own_machine = not manager.stops_when_idle(row)
+        if not manager.stops_when_idle(row):
+            return True
         # The reaper's own limit, so a computer it is about to stop for
         # being idle is not the one thing keeping it awake at the provider.
         idle_timeout = manager._idle_timeout_for(row)
@@ -116,10 +118,9 @@ async def keeps_running(row: dict[str, Any]) -> bool:
         if idle_seconds <= idle_timeout:
             return True
 
-    computer_id = str(row["computer_id"])
-    if own_machine and await computer_has_running_command(computer_id):
-        return True
-    return await LocalRunExecutor.get_instance().has_active_tasks_for_computer(computer_id)
+    return await LocalRunExecutor.get_instance().has_active_tasks_for_computer(
+        str(row["computer_id"])
+    )
 
 
 class DataTokenSweeper:
