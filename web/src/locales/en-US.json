@@ -7801,5 +7801,87 @@
   },
   "desktopApp": {
     "untitledThread": "Untitled thread"
+  },
+  "cliApproval": {
+    "title": {
+      "threadDelete": "Delete thread “{{name}}”?",
+      "threadDeleteUnnamed": "Delete this thread?",
+      "workspaceDelete": "Delete workspace “{{name}}”?",
+      "workspaceCreate": "Create workspace “{{name}}”?",
+      "automationDelete": "Delete automation “{{name}}”?",
+      "computerRemove": "Remove computer “{{name}}”?",
+      "threadSend": "Send a message to “{{name}}”?",
+      "threadSendUnnamed": "Send a message to this thread?",
+      "threadRetry": "Retry the failed turn in “{{name}}”?",
+      "threadRetryUnnamed": "Retry the failed turn in this thread?",
+      "threadCreate": "Start a thread in “{{name}}”?",
+      "threadCreateHome": "Start a thread with your Chief of Staff?",
+      "automationCreate": "Create automation “{{name}}”?",
+      "automationEdit": "Change automation “{{name}}”?",
+      "automationTrigger": "Run automation “{{name}}”?",
+      "automationResume": "Resume automation “{{name}}”?"
+    },
+    "ask": {
+      "threadDelete": "delete this thread",
+      "workspaceDelete": "delete this workspace and its threads",
+      "workspaceDeleteFiles": "delete this workspace, its threads and its files",
+      "workspaceCreate": "create this workspace",
+      "workspaceCreateOn": "create this workspace on “{{computer}}”",
+      "automationDelete": "delete this automation",
+      "computerRemove": "remove this computer",
+      "computerRemoveWorkspaces": "remove this computer and delete the workspaces on it",
+      "threadSend": "send a message to this thread",
+      "threadSendOn": "send a message to this thread on “{{computer}}”",
+      "threadRetry": "run this thread's failed turn again",
+      "threadRetryOn": "run this thread's failed turn again on “{{computer}}”",
+      "threadCreate": "start a thread in this workspace",
+      "threadCreateOn": "start a thread in this workspace on “{{computer}}”",
+      "threadCreateHome": "start a thread with your Chief of Staff",
+      "threadCreateHomeOn": "start a thread with your Chief of Staff on “{{computer}}”",
+      "automationCreate": "create this automation",
+      "automationCreateWhere": "create this automation, which runs {{where}}",
+      "automationEdit": "change this automation",
+      "automationEditWhere": "change this automation, which runs {{where}}",
+      "automationTrigger": "run this automation now",
+      "automationTriggerWhere": "run this automation now, {{where}}",
+      "automationResume": "resume this automation",
+      "automationResumeWhere": "resume this automation, which runs {{where}}"
+    },
+    "where": {
+      "workspace": "in “{{workspace}}”",
+      "workspaceOn": "in “{{workspace}}” on “{{computer}}”",
+      "home": "with your Chief of Staff",
+      "homeOn": "with your Chief of Staff on “{{computer}}”",
+      "on": "on “{{computer}}”"
+    },
+    "from": {
+      "chiefOfStaff": "Your Chief of Staff asked to {{ask}}.",
+      "chiefOfStaffInThread": "Your Chief of Staff asked in <thread>“{{thread}}”</thread> to {{ask}}.",
+      "analyst": "An analyst asked to {{ask}}.",
+      "analystInThread": "An analyst asked in <thread>“{{thread}}”</thread> to {{ask}}.",
+      "analystOf": "The analyst in “{{workspace}}” asked to {{ask}}.",
+      "analystOfInThread": "The analyst in “{{workspace}}” asked in <thread>“{{thread}}”</thread> to {{ask}}.",
+      "command": "A command on one of your computers asked to {{ask}}.",
+      "commandInThread": "A command from <thread>“{{thread}}”</thread> asked to {{ask}}.",
+      "commandOn": "A command on “{{computer}}” asked to {{ask}}.",
+      "commandOnInThread": "A command from <thread>“{{thread}}”</thread> on “{{computer}}” asked to {{ask}}."
+    },
+    "note": {
+      "computerFiles": "LangAlpha's files on the machine are deleted too.",
+      "computerKey": "Our key is removed from ~/.ssh/authorized_keys too.",
+      "computerWorkspaces": "Its workspaces are deleted with it: {{names}}.",
+      "cannotUndo": "This can't be undone."
+    },
+    "expiresIn": "Expires in {{time}}",
+    "more": "+{{count}} more waiting",
+    "remove": "Remove",
+    "failed": "Couldn't send your answer. Try again.",
+    "send": "Send",
+    "start": "Start",
+    "run": "Run",
+    "resume": "Resume",
+    "decline": "Decline",
+    "alwaysApprove": "Always allow",
+    "alwaysApproveHint": "Create this and later workspaces without asking. Turn it off in Settings."
   }
 }

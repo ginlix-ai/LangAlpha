@@ -9,11 +9,13 @@ agent_config.yaml via AgentConfig (ptc_agent.config).
 import logging
 import math
 import os
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from src.config.core import get_infrastructure_config
 from src.config.models import (
     ClaudeCodeConfig,
+    CliApprovalsConfig,
     McpDescriptionsConfig,
     NewsPollConfig,
     OrderReconcileConfig,
@@ -389,6 +391,26 @@ def get_market_watch_target_warning_minutes() -> int:
 
 def get_claude_code_config() -> ClaudeCodeConfig:
     return get_infrastructure_config().claude_code
+
+
+def get_cli_approvals_config() -> CliApprovalsConfig:
+    return get_infrastructure_config().cli_approvals
+
+
+def get_cli_approval_hold_seconds() -> float:
+    return get_cli_approvals_config().hold_seconds
+
+
+def get_cli_approval_pending_ttl() -> timedelta:
+    return timedelta(minutes=get_cli_approvals_config().pending_minutes)
+
+
+def get_cli_approval_approved_ttl() -> timedelta:
+    return timedelta(minutes=get_cli_approvals_config().approved_minutes)
+
+
+def get_cli_approval_max_pending() -> int:
+    return get_cli_approvals_config().max_pending
 
 
 def get_redis_ttl_market_watch() -> int:

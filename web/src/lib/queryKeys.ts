@@ -384,6 +384,12 @@ export const queryKeys = {
     all:     ['automationDelivery'],
     options: (workspaceId: string | null) => [...queryKeys.automationDelivery.all, 'options', workspaceId],
   },
+  // Actions the agent asked to take from a command that wait on the user. The
+  // user feed invalidates the pending list when one arrives or is answered.
+  cliApprovals: {
+    all:     ['cliApprovals'],
+    pending: () => [...queryKeys.cliApprovals.all, 'pending'],
+  },
   // Per-symbol quote cache — the unified snapshot layer (see lib/quotes/).
   // Key = uppercase legacy symbol spelling (indexes stripped of a leading '^').
   // Interim keying until Phase 4 re-keys on the canonical instrument_key.

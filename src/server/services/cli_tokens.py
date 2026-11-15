@@ -6,8 +6,9 @@ opaque and stored as a digest like the file mount's (see
 ``src.server.auth.computer_token_core``), but its own kind. It differs from
 the mount's in who may read it, since agent code reads this one by design,
 and in what it reaches: the API routes that declare a scope in ``SCOPES``,
-and on them only what the computer itself holds
-(``src.server.dependencies.principal``).
+for every computer of the user's and Home, under the rules every computer's
+token shares (``src.server.dependencies.principal``), among them the user's
+OK in the app before it starts work on another computer.
 
 Same lifecycle as the market-data token: written on acquire, start and
 reconnect, and by the sweep (``cli_token_sweep``) for a computer left
@@ -38,8 +39,9 @@ PREFIX = "lac1"
 REFRESH_BELOW = timedelta(minutes=30)
 
 # What a computer's token may do: every one may do the same, so the row keeps
-# none. Hard deletes, approvals and orders are not scopes at all: the
-# principal refuses them to a computer whatever it holds.
+# none. Approvals and orders are not scopes at all: the principal refuses
+# them to a computer whatever it holds, and the deletes it may make wait for
+# the user's OK in the app (``dependencies.cli_approval``).
 SCOPES: tuple[str, ...] = (
     "agent:read",
     "agent:run",

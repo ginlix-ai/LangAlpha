@@ -146,7 +146,7 @@ class TestModelOnCreate:
     @patch(f"{_LIFECYCLE}.auto_db")
     async def test_a_claude_code_model_is_created_in_home_as_in_a_workspace(self, mock_auto_db, models):
         """Chief of Staff, which runs Home's automations, runs on one too, so
-        only where its CLI would run can refuse it (``_check_claude_code_hosted``)."""
+        only where its CLI would run can refuse it (``check_claude_code_hosted``)."""
         models.return_value = ("system", {"model_id": "claude-haiku-5-5"})
         mock_auto_db.create_automation = AsyncMock(return_value=_row(llm_model="claude-haiku-5-5-code"))
         await create_automation(OWNER, _create_data(llm_model="claude-haiku-5-5-code"))
@@ -180,7 +180,7 @@ class TestClaudeCodeCheckOnTheCallersConnection:
             patch("src.server.services.claude_code.hosted.checks_automations", return_value=True),
             patch("src.server.services.claude_code.hosted.cli_placement", placement),
         ):
-            await lifecycle._check_claude_code_hosted(OWNER, "claude-haiku-5-5-code", "ws-1", conn)
+            await lifecycle.check_claude_code_hosted(OWNER, "claude-haiku-5-5-code", "ws-1", conn)
 
         placement.assert_awaited_once_with(OWNER, "ws-1", conn=conn)
 

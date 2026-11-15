@@ -748,45 +748,45 @@ async def test_settings_reads_and_saves_the_choice(client):
 
 @pytest.mark.asyncio
 async def test_an_automation_on_a_cloud_computer_is_refused_where_its_turns_would_be():
-    from src.server.services.automations.lifecycle import AutomationRefusal, _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import AutomationRefusal, check_claude_code_hosted
 
     for cli in [(None, None), (None, "Studio"), (STUDIO, None)]:
         with platform(mode="local", computer=SMALL, cli=cli):
-            await _check_claude_code_hosted("user-1", CODE, "ws-1")
+            await check_claude_code_hosted("user-1", CODE, "ws-1")
     with platform(mode="local", computer=OWN):
-        await _check_claude_code_hosted("user-1", CODE, "ws-1")
+        await check_claude_code_hosted("user-1", CODE, "ws-1")
     with platform(mode="stored"):
-        await _check_claude_code_hosted("user-1", CODE, "ws-1")
+        await check_claude_code_hosted("user-1", CODE, "ws-1")
     with platform(mode="stored", computer=SMALL), pytest.raises(AutomationRefusal) as refused:
-        await _check_claude_code_hosted("user-1", CODE, "ws-1")
+        await check_claude_code_hosted("user-1", CODE, "ws-1")
     assert (str(refused.value), refused.value.field) == (TOO_SMALL, "llm_model")
     with (
         platform(computer=SMALL), patch("src.config.settings.HOST_MODE", "oss"),
         patch(f"{HOSTED}.backend_available", lambda: True), pytest.raises(AutomationRefusal) as refused,
     ):
-        await _check_claude_code_hosted("user-1", CODE, "ws-1")
+        await check_claude_code_hosted("user-1", CODE, "ws-1")
     assert (str(refused.value), refused.value.field) == (TOO_SMALL_SELF_HOSTED, "llm_model")
     with platform(stored=False) as reads:
-        await _check_claude_code_hosted("user-1", CODE, "ws-1")
+        await check_claude_code_hosted("user-1", CODE, "ws-1")
     reads.mode.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_an_automation_relayed_a_stored_token_is_saved_with_the_cli_off_the_sandbox():
-    from src.server.services.automations.lifecycle import _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import check_claude_code_hosted
 
     with (
         platform(mode="stored", placement=False, computer=OWN),
         patch("src.server.services.claude_code.machine.read_answer", AsyncMock(return_value=None)),
     ):
-        await _check_claude_code_hosted("user-1", CODE, "ws-1")
+        await check_claude_code_hosted("user-1", CODE, "ws-1")
 
 
 @pytest.mark.asyncio
 async def test_an_automation_checked_inside_a_save_reads_on_the_saves_own_connection():
     """A file save holds its connection and the user's locks through the
     check, so a read on a second pool slot could wait out the pool."""
-    from src.server.services.automations.lifecycle import AutomationRefusal, _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import AutomationRefusal, check_claude_code_hosted
 
     conn = object()
     with (
@@ -794,7 +794,7 @@ async def test_an_automation_checked_inside_a_save_reads_on_the_saves_own_connec
         patch("src.server.database.computer.get_computer_for_workspace", AsyncMock(return_value=SMALL)) as computer,
         pytest.raises(AutomationRefusal),
     ):
-        await _check_claude_code_hosted("user-1", CODE, "ws-1", conn)
+        await check_claude_code_hosted("user-1", CODE, "ws-1", conn)
     computer.assert_awaited_once_with("ws-1", conn=conn)
     reads.mode.assert_awaited_once_with("user-1", conn=conn)
 

@@ -75,6 +75,9 @@ export interface SnapshotFrame {
   oldest_included_unseen_seq: number;
   live: SnapshotEntry[];
   unseen: SnapshotEntry[];
+  /** The ids of the agent's requests waiting on the user, read by the feed
+   *  client rather than this store. Absent from an older server. */
+  pending_approvals?: string[];
 }
 
 // Hand mirror of the wire authority — LIVE_PUBLIC_STATUSES /

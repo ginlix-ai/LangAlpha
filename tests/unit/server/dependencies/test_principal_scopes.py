@@ -17,7 +17,6 @@ from httpx import ASGITransport, AsyncClient
 from ptc_agent.core.sandbox.livefs_mount import CallContext
 from src.server.auth import computer_token_core
 from src.server.auth.pats import PatPrincipal
-from src.server.database import principal_reach as reach
 from src.server.database.home_workspace import get_home_workspace_id
 from src.server.dependencies.principal import (
     CALL_HEADER,
@@ -37,7 +36,6 @@ from tests.unit.server.dependencies.reach_world import (
     OTHER_THREAD,
     OTHER_WORKSPACE,
     THREAD,
-    UNKNOWN,
     USER,
     WORKSPACE,
     ReachWorld,
@@ -124,6 +122,22 @@ def _build_app() -> FastAPI:
     ):
         return ok(principal)
 
+    @app.delete("/t/{thread_id}")
+    async def delete_thread(
+        thread_id: str,
+        principal: Principal = Depends(require_scopes("workspace:write", gated=True)),
+    ):
+        return ok(principal)
+
+    @app.delete("/c/{computer_id}")
+    async def remove_computer(
+        computer_id: str,
+        principal: Principal = Depends(
+            require_scopes("computer:write", own_computer=False, gated=True)
+        ),
+    ):
+        return ok(principal)
+
     @app.get("/both")
     async def needs_both(
         principal: Principal = Depends(require_scopes("agent:read", "agent:run"))
@@ -207,7 +221,6 @@ async def test_a_session_may_delete(client, world):
     resp = await client.delete(f"/w/{OTHER_WORKSPACE}")
 
     assert resp.status_code == 200
-    assert world.lookups == 0
 
 
 @pytest.mark.asyncio
@@ -218,7 +231,6 @@ async def test_the_servers_own_call_passes_as_the_user_it_names(client, world):
     )
 
     assert resp.json() == {"user_id": "user-named-by-service", "auth": "service"}
-    assert world.lookups == 0
 
 
 @pytest.mark.asyncio
@@ -266,7 +278,7 @@ async def test_a_token_holding_every_scope_passes(client, pat):
 
 
 @pytest.mark.asyncio
-async def test_a_computer_token_lacking_the_scope_is_refused_before_any_reach_check(
+async def test_a_computer_token_lacking_the_scope_is_refused(
     client, world, computer_token
 ):
     computer_token["scopes"] = ("agent:run",)
@@ -275,14 +287,13 @@ async def test_a_computer_token_lacking_the_scope_is_refused_before_any_reach_ch
 
     assert resp.status_code == 403
     assert resp.json()["detail"]["type"] == "insufficient_scope"
-    assert world.lookups == 0
 
 
 # -- a personal access token -----------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_reach_applies_only_to_a_computer_token_so_a_pat_reaches_any_computer(
+async def test_a_pat_reaches_any_computer_and_deletes(
     client, world, pat
 ):
     resp = await client.get(f"/c/{OTHER_COMPUTER}", headers=_pat())
@@ -290,10 +301,9 @@ async def test_reach_applies_only_to_a_computer_token_so_a_pat_reaches_any_compu
 
     assert resp.status_code == 200
     assert deleted.status_code == 200
-    assert world.lookups == 0
 
 
-# -- a computer's token: what it may reach --------------------------------------
+# -- a computer's token: every computer of the user's, and Home -----------------
 
 
 @pytest.mark.asyncio
@@ -305,26 +315,38 @@ async def test_a_computer_token_reads_its_own_computer(client, computer_token):
 
 
 @pytest.mark.asyncio
-async def test_a_computer_token_cannot_reach_another_computer(client, computer_token):
-    resp = await client.get(f"/c/{OTHER_COMPUTER}", headers=_computer())
+async def test_a_computer_token_reaches_every_computer_of_the_users_and_home(
+    client, world, computer_token
+):
+    """One rule for every computer's token, whichever computer holds Home:
+    an analyst reads the workspaces and threads it builds on."""
+    paths = [
+        f"/c/{OTHER_COMPUTER}",
+        f"/w/{OTHER_WORKSPACE}",
+        f"/t/{OTHER_THREAD}",
+        f"/a/{OTHER_AUTOMATION}",
+        f"/w/{HOME}",
+        f"/t/{THREAD}",
+        f"/a/{AUTOMATION}",
+        f"/w/{WORKSPACE}",
+        f"/threads?workspace_id={HOME}",
+        f"/threads?workspace_id={OTHER_WORKSPACE}",
+    ]
+    answers = [(await client.get(path, headers=_computer())).status_code for path in paths]
 
-    assert resp.status_code == 403
-    assert resp.json()["detail"]["type"] == "forbidden_for_token"
+    assert answers == [200] * len(paths)
 
 
 @pytest.mark.asyncio
-async def test_a_computer_token_cannot_stop_its_own_computer(client, computer_token):
-    resp = await client.post(f"/c/{COMPUTER}/stop", headers=_computer())
+async def test_a_computer_token_stops_another_computer_but_never_its_own(
+    client, world, computer_token
+):
+    other = await client.post(f"/c/{OTHER_COMPUTER}/stop", headers=_computer())
+    own = await client.post(f"/c/{COMPUTER}/stop", headers=_computer())
 
-    assert resp.status_code == 403
-    assert "itself" in resp.json()["detail"]["message"]
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_cannot_stop_another_computer_either(client, computer_token):
-    resp = await client.post(f"/c/{OTHER_COMPUTER}/stop", headers=_computer())
-
-    assert resp.status_code == 403
+    assert other.status_code == 200
+    assert own.status_code == 403
+    assert "itself" in own.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -335,40 +357,13 @@ async def test_a_session_may_stop_a_computer(client):
 
 
 @pytest.mark.asyncio
-async def test_a_computer_token_cannot_delete(client, world, computer_token):
-    resp = await client.delete(f"/w/{WORKSPACE}", headers=_computer())
+async def test_a_computer_token_cannot_delete_on_a_route_that_is_not_gated(
+    client, world, computer_token
+):
+    resp = await client.delete(f"/w/{OTHER_WORKSPACE}", headers=_computer())
 
     assert resp.status_code == 403
     assert "cannot delete" in resp.json()["detail"]["message"]
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_reads_a_workspace_on_its_computer(
-    client, world, computer_token
-):
-    resp = await client.get(f"/w/{WORKSPACE}", headers=_computer())
-
-    assert resp.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_cannot_reach_a_workspace_on_another_computer(
-    client, world, computer_token
-):
-    resp = await client.get(f"/w/{OTHER_WORKSPACE}", headers=_computer())
-
-    assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_passes_a_workspace_the_user_does_not_have(
-    client, world, computer_token
-):
-    """The route answers its own 404; the guard must not turn it into a 403
-    that tells the computer which ids exist elsewhere."""
-    resp = await client.get(f"/w/{UNKNOWN}", headers=_computer())
-
-    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -378,82 +373,6 @@ async def test_a_computer_token_passes_an_id_that_is_not_a_uuid_to_the_route(
     resp = await client.get("/w/not-a-uuid", headers=_computer())
 
     assert resp.status_code == 200
-    assert world.lookups == 0
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_cannot_reach_a_workspace_that_sits_on_no_computer(
-    client, world, computer_token
-):
-    world.computers[WORKSPACE] = None
-
-    resp = await client.get(f"/w/{WORKSPACE}", headers=_computer())
-
-    assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_reaches_its_threads_and_not_another_computers(
-    client, world, computer_token
-):
-    own = await client.get(f"/t/{THREAD}", headers=_computer())
-    other = await client.get(f"/t/{OTHER_THREAD}", headers=_computer())
-
-    assert (own.status_code, other.status_code) == (200, 403)
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_reaches_its_automations_and_not_another_computers(
-    client, world, computer_token
-):
-    own = await client.get(f"/a/{AUTOMATION}", headers=_computer())
-    other = await client.get(f"/a/{OTHER_AUTOMATION}", headers=_computer())
-
-    assert (own.status_code, other.status_code) == (200, 403)
-
-
-# -- a computer's token: never Home ----------------------------------------------
-
-
-def _never_home(resp) -> None:
-    assert resp.status_code == 403
-    assert resp.json()["detail"]["message"] == "A computer's token never reaches Home"
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_cannot_reach_home_though_home_sits_on_its_computer(
-    client, world, computer_token
-):
-    """A turn in Home runs the Chief of Staff, whose tools reach every computer."""
-    world.computers[HOME] = COMPUTER
-
-    _never_home(await client.get(f"/w/{HOME}", headers=_computer()))
-    assert world.lookups == 0
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_cannot_reach_home_before_its_row_exists(
-    client, world, computer_token
-):
-    """The lookup would answer MISSING, which passes to the route's 404; a
-    route naming Home's id would create it instead."""
-    _never_home(await client.get(f"/w/{HOME}", headers=_computer()))
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_cannot_filter_a_list_to_home(client, world, computer_token):
-    _never_home(await client.get(f"/threads?workspace_id={HOME}", headers=_computer()))
-
-
-@pytest.mark.asyncio
-async def test_a_computer_token_cannot_reach_a_thread_or_automation_in_home(
-    client, world, computer_token
-):
-    world.computers[THREAD] = reach.HOME
-    world.computers[AUTOMATION] = reach.HOME
-
-    _never_home(await client.get(f"/t/{THREAD}", headers=_computer()))
-    _never_home(await client.get(f"/a/{AUTOMATION}", headers=_computer()))
 
 
 @pytest.mark.asyncio
@@ -487,13 +406,6 @@ async def test_a_session_and_a_pat_may_add_a_computer(client, world, pat):
     assert (session.status_code, token.status_code) == (200, 200)
 
 
-@pytest.mark.asyncio
-async def test_the_lookup_is_made_for_the_token_owner(client, world, computer_token):
-    await client.get(f"/w/{WORKSPACE}", headers=_computer())
-
-    assert world.asked("workspace") == [(USER, WORKSPACE)]
-
-
 # -- a computer's token: not into the thread its call came from -----------------
 
 
@@ -513,10 +425,9 @@ async def test_a_computer_token_cannot_run_into_the_thread_its_call_came_from(
 
 
 @pytest.mark.asyncio
-async def test_a_computer_token_runs_into_another_thread_of_its_computer(
+async def test_a_computer_token_runs_into_another_thread(
     client, world, computer_token, filed_call
 ):
-    world.computers[OTHER_THREAD] = COMPUTER
     filed_call["thread_id"] = THREAD
 
     resp = await client.post(
@@ -591,67 +502,82 @@ async def test_a_pat_may_run_into_a_thread_whatever_the_call_header_says(
     outcomes.call_context.assert_not_awaited()
 
 
+# -- a computer's token: not into the thread that sent it its turn --------------
+
+SENT_THREAD = "b2200000-0000-4000-8000-000000000003"
+
+
 @pytest.mark.asyncio
-async def test_a_computer_token_cannot_trigger_an_automation_into_its_own_thread(
+async def test_a_computer_token_cannot_send_into_the_thread_that_sent_its_turn(
     client, world, computer_token, filed_call
 ):
-    """The run would start a turn in the thread the call runs in."""
+    """An analyst a hand-off started, answering into the Chief of Staff's
+    thread, would start that thread's next turn, and so on round."""
+    world.senders[THREAD] = SENT_THREAD
     filed_call["thread_id"] = THREAD
-    world.automation_threads[AUTOMATION] = THREAD
 
     resp = await client.post(
-        f"/a/{AUTOMATION}/trigger", headers=_computer({CALL_HEADER: CALL_ID})
+        f"/t/{SENT_THREAD}/run", headers=_computer({CALL_HEADER: CALL_ID})
     )
 
     assert resp.status_code == 403
-    assert "conversation it runs in" in resp.json()["detail"]["message"]
-    world.thread_of.assert_awaited_once_with(USER, AUTOMATION)
+    assert "sent it its current turn" in resp.json()["detail"]["message"]
+    world.sender_of.assert_awaited_once_with(USER, THREAD)
 
 
 @pytest.mark.asyncio
-async def test_a_computer_token_triggers_an_automation_into_a_sibling_thread(
+async def test_a_computer_token_sends_into_a_thread_that_did_not_send_its_turn(
     client, world, computer_token, filed_call
 ):
+    world.senders[THREAD] = OTHER_THREAD
     filed_call["thread_id"] = THREAD
-    world.automation_threads[AUTOMATION] = OTHER_THREAD
 
     resp = await client.post(
-        f"/a/{AUTOMATION}/trigger", headers=_computer({CALL_HEADER: CALL_ID})
+        f"/t/{SENT_THREAD}/run", headers=_computer({CALL_HEADER: CALL_ID})
     )
 
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_a_trigger_from_no_thread_never_looks_up_the_automations(
-    client, world, computer_token, filed_call
+async def test_a_computer_token_still_adds_no_computer_and_deletes_nothing_ungated(
+    client, world, computer_token
 ):
-    resp = await client.post(f"/a/{AUTOMATION}/trigger", headers=_computer())
+    added = await client.post("/c", headers=_computer())
+    deleted = await client.delete(f"/w/{OTHER_WORKSPACE}", headers=_computer())
 
-    assert resp.status_code == 200
-    world.thread_of.assert_not_awaited()
+    assert (added.status_code, deleted.status_code) == (403, 403)
+    assert "cannot delete" in deleted.json()["detail"]["message"]
 
 
-# -- a computer's token: what a query names ------------------------------------
+# -- a delete the route gates itself ----------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_a_list_filtered_to_a_workspace_of_its_computer_is_allowed(
-    client, world, computer_token
-):
-    resp = await client.get(f"/threads?workspace_id={WORKSPACE}", headers=_computer())
+async def test_a_gated_delete_reaches_the_route_for_a_computer_token(client, computer_token):
+    """The route then asks the user itself (``cli_approval``); the dependency
+    only stops an ungated delete from running unasked."""
+    own_computer_thread = await client.delete(f"/t/{THREAD}", headers=_computer())
+    other_computer_thread = await client.delete(f"/t/{OTHER_THREAD}", headers=_computer())
 
-    assert resp.status_code == 200
+    assert (own_computer_thread.status_code, other_computer_thread.status_code) == (200, 200)
 
 
 @pytest.mark.asyncio
-async def test_a_list_filtered_to_a_workspace_of_another_computer_is_refused(
-    client, world, computer_token
-):
-    resp = await client.get(f"/threads?workspace_id={OTHER_WORKSPACE}", headers=_computer())
+async def test_a_computer_may_not_remove_itself_even_on_a_gated_route(client, computer_token):
+    own = await client.delete(f"/c/{COMPUTER}", headers=_computer())
+    other = await client.delete(f"/c/{OTHER_COMPUTER}", headers=_computer())
 
-    assert resp.status_code == 403
-    assert resp.json()["detail"]["type"] == "forbidden_for_token"
+    assert (own.status_code, other.status_code) == (403, 200)
+    assert "itself" in own.json()["detail"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_session_and_a_pat_pass_a_gated_delete(client, pat):
+    session = await client.delete(f"/t/{OTHER_THREAD}")
+    token = await client.delete(f"/t/{OTHER_THREAD}", headers=_pat())
+
+    assert (session.status_code, token.status_code) == (200, 200)
 
 
 # -- a refused or throttled computer token --------------------------------------

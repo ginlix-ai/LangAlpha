@@ -166,18 +166,46 @@ async def test_a_computer_token_cannot_point_an_automation_at_its_own_thread(com
 
 
 @pytest.mark.asyncio
-async def test_a_computer_token_cannot_place_an_automation_in_home(computer_client):
-    from src.server.database.home_workspace import get_home_workspace_id
+async def test_a_computer_tokens_automation_change_asks_the_gate_before_it_runs(
+    computer_client, monkeypatch
+):
+    """Whether it waits for the user is the gate's; the routes hand it the
+    request and what the change would run, before they act."""
+    from src.server.dependencies import cli_approval
 
-    with patch(f"{HANDLER}.create_automation", new_callable=AsyncMock) as create:
-        resp = await computer_client.post(
-            "/api/v1/automations",
-            json={**_CRON, "workspace_id": get_home_workspace_id(USER)},
+    order: list[str] = []
+    hold = AsyncMock(side_effect=lambda *a, **kw: order.append(f"hold:{a[2]}"))
+    monkeypatch.setattr(cli_approval, "automation_runs", hold)
+    auto = _automation(user_id=USER)
+
+    def acted(name):
+        return AsyncMock(side_effect=lambda *a, **kw: order.append(name) or auto)
+
+    with (
+        patch(f"{HANDLER}.create_automation", new=acted("create")),
+        patch(f"{HANDLER}.update_automation", new=acted("edit")),
+        patch(f"{HANDLER}.trigger_automation", new=acted("trigger")),
+        patch(f"{HANDLER}.resume_automation", new=acted("resume")),
+    ):
+        created = await computer_client.post(
+            "/api/v1/automations", json={**_CRON, "workspace_id": WORKSPACE}
         )
+        edited = await computer_client.patch(
+            f"/api/v1/automations/{AUTO_ID}", json={"instruction": "Shorter"}
+        )
+        triggered = await computer_client.post(f"/api/v1/automations/{AUTO_ID}/trigger")
+        resumed = await computer_client.post(f"/api/v1/automations/{AUTO_ID}/resume")
 
-    assert resp.status_code == 403
-    assert "never reaches Home" in resp.json()["detail"]["message"]
-    create.assert_not_awaited()
+    assert (created.status_code, edited.status_code, triggered.status_code) == (201, 200, 200)
+    assert resumed.status_code == 200
+    assert order == [
+        "hold:create", "create", "hold:edit", "edit", "hold:trigger", "trigger",
+        "hold:resume", "resume",
+    ]
+    assert hold.await_args_list[0].kwargs["body"].instruction == _CRON["instruction"]
+    assert hold.await_args_list[1].kwargs["automation_id"] == AUTO_ID
+    assert hold.await_args_list[1].kwargs["body"].instruction == "Shorter"
+    assert hold.await_args_list[2].kwargs == {"automation_id": AUTO_ID}
 
 
 @pytest.mark.asyncio
@@ -262,7 +290,7 @@ async def test_list_automations_with_filters(client):
 
     assert resp.status_code == 200
     mock_list.assert_awaited_once_with(
-        "test-user-123", status="active", limit=10, offset=5, computer_id=None
+        "test-user-123", status="active", limit=10, offset=5
     )
 
 
@@ -1264,3 +1292,18 @@ async def test_update_with_an_overlong_delivery_entry_is_refused(client):
         {"entry": entry, "message": "longer than 256 characters"}
     ]
     update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_run_now_starts_held_to_the_computer_the_gate_checked(
+    computer_client, monkeypatch
+):
+    from src.server.dependencies import cli_approval
+
+    monkeypatch.setattr(cli_approval, "automation_runs", AsyncMock(return_value="computer-1"))
+    trigger = AsyncMock(return_value={"execution_id": "e", "automation_id": AUTO_ID, "status": "triggered"})
+    with patch(f"{HANDLER}.trigger_automation", new=trigger):
+        resp = await computer_client.post(f"/api/v1/automations/{AUTO_ID}/trigger")
+
+    assert resp.status_code == 200
+    assert trigger.await_args.kwargs == {"checked_computer_id": "computer-1"}

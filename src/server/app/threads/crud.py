@@ -5,7 +5,7 @@ from typing import Literal, Optional
 from uuid import UUID
 
 
-from fastapi import HTTPException, Query
+from fastapi import HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from src.server.database.market_targets import cancel_targets, list_thread_targets
@@ -30,9 +30,11 @@ from src.server.services.thread_lifecycle_feed import (
     publish_thread_unarchived,
 )
 from src.server.services.workspace_manager import prune_thread_dirs_soon
+from src.server.dependencies import cli_approval
 from src.server.dependencies.principal import (
     ReadPrincipal,
     ReadUserId,
+    WorkspaceDeletePrincipal,
     WorkspaceWriteUserId,
 )
 # require_thread_owner is called through the module (auth_api.…) so a single
@@ -138,7 +140,6 @@ async def list_threads(
                 sort_by=sort_by,
                 sort_order=sort_order,
                 platform_prefix=platform_prefix,
-                computer_id=principal.computer_id,
             )
 
         thread_items = [
@@ -192,6 +193,45 @@ async def get_thread(thread_id: str, x_user_id: ReadUserId):
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     return _thread_list_item(thread)
+
+
+class ThreadOutputResponse(BaseModel):
+    thread_id: str
+    workspace_id: Optional[str]
+    status: str
+    text: str
+
+
+@router.get("/{thread_id}/output", response_model=ThreadOutputResponse)
+async def get_thread_output(
+    thread_id: str,
+    x_user_id: ReadUserId,
+    turns: int = Query(
+        1,
+        ge=0,
+        description="How many of the latest turns to include; 0 for the recent history",
+    ),
+):
+    """The text each of the thread's latest turns committed, as the Chief of
+    Staff reads an analyst's output: one labeled block per run, times in the
+    user's zone. While a turn runs, only that turn's text so far, and
+    ``status`` says it is still running."""
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    from src.server.services.wakeups.message import user_timezone
+    from src.tools.secretary.utils import extract_text_from_thread
+
+    result = await extract_text_from_thread(
+        thread_id, turns=turns, timezone=await user_timezone(x_user_id)
+    )
+    # The read is by id alone, and a deleted thread's id can be taken again,
+    # so it is the caller's only if the thread still is.
+    await auth_api.require_thread_owner(thread_id, x_user_id)
+    return ThreadOutputResponse(
+        thread_id=thread_id,
+        workspace_id=result["workspace_id"] or None,
+        status=result["status"],
+        text=result["text"],
+    )
 
 
 class ThreadSeenRequest(BaseModel):
@@ -322,7 +362,9 @@ async def cancel_market_watch_target(
 
 
 @router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
-async def delete_thread_endpoint(thread_id: str, x_user_id: WorkspaceWriteUserId):
+async def delete_thread_endpoint(
+    thread_id: str, principal: WorkspaceDeletePrincipal, request: Request
+):
     """
     Delete a thread and all its queries/responses.
 
@@ -334,6 +376,7 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: WorkspaceWriteUserId
         MutationUnavailable,
     )
 
+    x_user_id = principal.user_id
     try:
         await auth_api.require_thread_owner(thread_id, x_user_id)
         # Read the row pre-delete: the thread_deleted feed event needs the
@@ -342,6 +385,7 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: WorkspaceWriteUserId
             thread_row = await get_thread_by_id(thread_id)
         except Exception:
             thread_row = None
+        await cli_approval.thread_delete(request, principal, thread_id, thread_row)
         # Guarded delete (v4 2.4): exclusive T(thread) refuses while a fenced
         # run or tail writer is live on ANY worker; the ledger gate refuses on
         # an in_progress row (cancel the run first). The delete statement runs

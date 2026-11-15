@@ -146,6 +146,9 @@ async def execute_steer(job: dict) -> None:
         if body is None:
             await finish("dropped")
             return
+    if payload.get("checked_computer_id"):
+        # Its send was checked to run there; the START holds it to that.
+        body["checked_computer_id"] = payload["checked_computer_id"]
 
     async def fence() -> bool:
         return await outbox_db.extend_job_lease(

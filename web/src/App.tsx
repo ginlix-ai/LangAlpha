@@ -26,6 +26,7 @@ import { StaleBuildBoundary } from './components/StaleBuildBoundary';
 import { ConnectConsentHost } from './pages/Plugins/components/ConnectConsentHost';
 import { ConnectLandingHost } from './pages/Plugins/components/ConnectLandingHost';
 import { ThreadLifecycleFeed } from './lib/threadLifecycle/ThreadLifecycleFeed';
+import { CliApprovalHost } from './components/CliApproval/CliApprovalHost';
 import { WarmHome } from './components/WarmHome';
 import { HostedSignInGate } from './components/HostedSignInGate';
 import { forgetHostedSignIn, hostedSignInReturn, landAfterSignIn } from './lib/hostedSignIn';
@@ -361,6 +362,7 @@ function AuthenticatedShell() {
   return (
     <OnboardingProvider>
       <ThreadLifecycleFeed />
+      <CliApprovalHost />
       <WarmHome />
       {onWelcome ? (
         // Full screen and none of the app's chrome: the flow is the page.

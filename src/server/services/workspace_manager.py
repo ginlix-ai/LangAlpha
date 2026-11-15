@@ -527,6 +527,36 @@ class WorkspaceManager(ComputerManager):
 
         return True
 
+    async def removal_refusal(
+        self,
+        computer: Dict[str, Any],
+        named: Collection[str] = (),
+        *,
+        workspace_ids: Optional[Collection[str]] = None,
+    ) -> Optional[Retirement]:
+        """What would refuse removing ``computer`` with the workspaces
+        ``named``, before anything is deleted or anyone asked to approve it:
+        the primary, a transition, a workspace not named, Home, and a
+        workspace a move holds or a run is working in. ``workspace_ids`` are
+        the ones on it as the caller read them, read here when not given."""
+        held = self.removal_held(computer)
+        if held is not None:
+            return held
+        if workspace_ids is None:
+            workspace_ids = await get_live_workspace_ids_for_computer(
+                str(computer["computer_id"])
+            )
+        shown = {str(i) for i in named}
+        for workspace_id in workspace_ids:
+            row = await self.workspace_row(workspace_id)
+            if str(workspace_id) not in shown or (row and is_home_row(row)):
+                return Retirement.HAS_WORKSPACES
+            if await workspace_is_moving(workspace_id) or await workspace_has_active_work(
+                workspace_id
+            ):
+                return Retirement.BUSY
+        return None
+
     async def remove_computer_with_workspaces(
         self,
         computer_id: str,
@@ -539,10 +569,8 @@ class WorkspaceManager(ComputerManager):
 
         ``named`` are the workspaces its owner was shown, and every one on it
         must be among them, so an empty computer needs none. What would refuse
-        the remove anyway is asked first (``removal_held``), so a refusal
-        deletes nothing: the primary, a transition, a workspace not named, a
-        workspace a move holds or a run is working in, and Home, which no
-        delete takes. A named one no longer on it is left alone, and is not
+        the remove anyway is asked first (``removal_refusal``), so a refusal
+        deletes nothing. A named one no longer on it is left alone, and is not
         among those answered, so the client forgets only what went. Each goes
         as its own delete would take it, so a machine the user brought keeps
         its folders unless ``delete_files``. On a provider that builds machines
@@ -557,19 +585,8 @@ class WorkspaceManager(ComputerManager):
         computer = await get_computer(computer_id)
         if computer is None:
             raise ValueError(f"Computer {computer_id} not found")
-        held = self.removal_held(computer)
         workspace_ids = await get_live_workspace_ids_for_computer(computer_id)
-        shown = {str(i) for i in named}
-        for workspace_id in workspace_ids if held is None else ():
-            row = await self.workspace_row(workspace_id)
-            if str(workspace_id) not in shown or (row and is_home_row(row)):
-                held = Retirement.HAS_WORKSPACES
-            elif await workspace_is_moving(workspace_id) or await workspace_has_active_work(
-                workspace_id
-            ):
-                held = Retirement.BUSY
-            if held is not None:
-                break
+        held = await self.removal_refusal(computer, named, workspace_ids=workspace_ids)
         if held is not None:
             raise ComputerRemovalRefused(held)
         deleted: list[str] = []

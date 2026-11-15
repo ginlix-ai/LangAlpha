@@ -51,6 +51,17 @@ def turn_route(user_id: str, workspace: Optional[Dict[str, Any]]) -> TurnRoute:
     return TurnRoute(get_home_workspace_id(user_id), "chief_of_staff")
 
 
+def named_workspace_id(
+    workspace_id: Optional[str], thread: Optional[Dict[str, Any]]
+) -> Optional[str]:
+    """The workspace a turn's request names: its own, else its thread's
+    (``thread`` the caller's read of that row). None for a new thread naming
+    none, which ``requested_workspace`` refuses."""
+    if workspace_id:
+        return workspace_id
+    return str(thread["workspace_id"]) if thread else None
+
+
 async def requested_workspace(
     user_id: str, workspace_id: Optional[str]
 ) -> Optional[Dict[str, Any]]:

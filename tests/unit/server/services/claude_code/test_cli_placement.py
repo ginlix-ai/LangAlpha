@@ -508,21 +508,21 @@ async def test_an_own_computer_in_error_not_ready_or_not_theirs_since_admission_
 async def test_an_automation_with_no_own_computer_awake_now_is_saved_since_one_may_be_when_it_fires(
     model, cli, workspace,
 ):
-    from src.server.services.automations.lifecycle import _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import check_claude_code_hosted
 
     with platform(mode="local", cli=cli):
-        await _check_claude_code_hosted("user-1", model, workspace, pref={"preferred_model": CODE})
+        await check_claude_code_hosted("user-1", model, workspace, pref={"preferred_model": CODE})
 
 
 @pytest.mark.asyncio
 async def test_an_automation_whose_cli_runs_on_an_own_computer_relayed_the_stored_token_is_saved():
-    from src.server.services.automations.lifecycle import _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import check_claude_code_hosted
 
     with (
         platform(mode="local", cli=(STUDIO, None)),
         patch(f"{MACHINES}.read_answer", AsyncMock(return_value=MachineAnswer("none"))),
     ):
-        await _check_claude_code_hosted("user-1", CODE, HOME)
+        await check_claude_code_hosted("user-1", CODE, HOME)
 
 
 def _self_hosted_on_a_small_computer():
@@ -537,11 +537,11 @@ def _self_hosted_on_a_small_computer():
 @pytest.mark.asyncio
 async def test_a_home_automation_on_a_claude_code_model_too_small_to_run_is_refused_naming_homes_computer():
     """Home moves to no other computer, so only its spec is offered."""
-    from src.server.services.automations.lifecycle import AutomationRefusal, _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import AutomationRefusal, check_claude_code_hosted
 
     deployment, host, backend = _self_hosted_on_a_small_computer()
     with deployment, host, backend, pytest.raises(AutomationRefusal) as refused:
-        await _check_claude_code_hosted("user-1", CODE, HOME)
+        await check_claude_code_hosted("user-1", CODE, HOME)
     assert (str(refused.value), refused.value.field) == (
         "Claude Code runs on Medium or larger cloud computers, and Home's computer is smaller. Change its spec.",
         "llm_model",
@@ -552,14 +552,14 @@ async def test_a_home_automation_on_a_claude_code_model_too_small_to_run_is_refu
 async def test_a_home_automation_naming_no_model_is_saved_where_the_claude_code_default_has_nowhere_to_run():
     """Its firing runs the deployment's model in that default's place; in a
     workspace the same default is refused, as every firing there would fail."""
-    from src.server.services.automations.lifecycle import AutomationRefusal, _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import AutomationRefusal, check_claude_code_hosted
 
     pref = {"preferred_model": CODE}
     deployment, host, backend = _self_hosted_on_a_small_computer()
     with deployment, host, backend:
-        await _check_claude_code_hosted("user-1", None, HOME, pref=pref)
+        await check_claude_code_hosted("user-1", None, HOME, pref=pref)
         with pytest.raises(AutomationRefusal) as refused:
-            await _check_claude_code_hosted("user-1", None, "ws-1", pref=pref)
+            await check_claude_code_hosted("user-1", None, "ws-1", pref=pref)
     assert str(refused.value) == TOO_SMALL_SELF_HOSTED
 
 
@@ -639,12 +639,12 @@ async def test_a_user_who_chose_to_store_their_token_where_cloud_computers_run_n
 async def test_the_chief_of_staff_runs_a_claude_code_default_on_the_stored_token():
     """Its wakeups and automations run on that token as its other turns do,
     so a Home row naming Claude Code is saved."""
-    from src.server.services.automations.lifecycle import _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import check_claude_code_hosted
 
     with platform(mode="stored"):
         assert await chief_of_staff_default_runs("user-1", HOME) == OnCloud(Hosted("stored_token"), CLOUD)
-        await _check_claude_code_hosted("user-1", None, HOME, pref={"preferred_model": CODE})
-        await _check_claude_code_hosted("user-1", CODE, HOME)
+        await check_claude_code_hosted("user-1", None, HOME, pref={"preferred_model": CODE})
+        await check_claude_code_hosted("user-1", CODE, HOME)
     with platform(mode="local", cli=(STUDIO, None)):
         assert await chief_of_staff_default_runs("user-1", HOME) == OnOwn(STUDIO, picked=True)
 
@@ -702,7 +702,7 @@ async def test_whether_claude_code_is_off_is_the_callers_to_check_before_the_chi
     """Home's default is judged on where its CLI would run alone: the server
     and account switches are the caller's (``resolve_llm_config``), checked
     before this is asked."""
-    from src.server.services.automations.lifecycle import _check_claude_code_hosted
+    from src.server.services.automations.lifecycle import check_claude_code_hosted
 
     flags = AsyncMock(return_value={"claude_code_runtime": on})
     with (
@@ -711,7 +711,7 @@ async def test_whether_claude_code_is_off_is_the_callers_to_check_before_the_chi
         patch(f"{MACHINES}.read_answer", AsyncMock(return_value=None)),
     ):
         assert await chief_of_staff_default_runs("user-1", HOME) == OnOwn(STUDIO, picked=True)
-        await _check_claude_code_hosted("user-1", None, HOME, pref={"preferred_model": CODE})
+        await check_claude_code_hosted("user-1", None, HOME, pref={"preferred_model": CODE})
     flags.assert_not_awaited()
 
 

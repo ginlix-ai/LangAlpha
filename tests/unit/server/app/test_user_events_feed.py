@@ -6,6 +6,7 @@ DB read failure degrades to a keepalive instead of killing a 600s stream.
 """
 
 import json
+from types import SimpleNamespace
 
 import psycopg
 import pytest
@@ -31,11 +32,15 @@ def _row(branch, seq, *, status="completed", last_seen=0, **over):
     return row
 
 
-def _patch_rows(monkeypatch, rows, as_of):
+def _patch_rows(monkeypatch, rows, as_of, pending_approvals=()):
     async def _fake(user_id, *, unseen_cap=256):
         return rows, as_of
 
+    async def _pending(user_id):
+        return [SimpleNamespace(approval_id=a) for a in pending_approvals]
+
     monkeypatch.setattr(user_events, "get_thread_lifecycle_rows", _fake)
+    monkeypatch.setattr(user_events.cli_approvals, "pending", _pending)
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +164,33 @@ async def test_empty_snapshot_still_carries_the_watermark(monkeypatch):
         "oldest_included_unseen_seq": 0,
         "live": [],
         "unseen": [],
+        "pending_approvals": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_lists_the_approvals_waiting_on_the_user(monkeypatch):
+    """The backstop for a ``cli_approval`` event the transport dropped."""
+    _patch_rows(monkeypatch, [], as_of=1, pending_approvals=["a-1", "a-2"])
+
+    frame = await _read_snapshot("u-1")
+
+    assert frame["pending_approvals"] == ["a-1", "a-2"]
+
+
+@pytest.mark.asyncio
+async def test_an_approvals_read_that_fails_still_sends_the_lifecycle_sets(monkeypatch):
+    _patch_rows(monkeypatch, [_row("live", 3, status="in_progress")], as_of=3)
+
+    async def _broken(user_id):
+        raise psycopg.OperationalError("connection lost")
+
+    monkeypatch.setattr(user_events.cli_approvals, "pending", _broken)
+
+    frame = await _read_snapshot("u-1")
+
+    assert [e["thread_id"] for e in frame["live"]] == ["t-3"]
+    assert frame["pending_approvals"] == []
 
 
 @pytest.mark.asyncio

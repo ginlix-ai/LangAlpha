@@ -367,6 +367,7 @@ async def astream_ptc_workflow(
                     request, dispatched=dispatched, steerable=steerable
                 ),
                 artifact_comments=request.artifact_comments,
+                checked_computer_id=request.checked_computer_id,
             )
             if held_by is None:
                 ready, steering_event = await admit()

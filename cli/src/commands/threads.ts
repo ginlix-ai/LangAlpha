@@ -80,6 +80,24 @@ export const threads: Command[] = [
     },
   }),
   command({
+    words: ["threads", "output"],
+    summary: "the text a thread's latest turns wrote",
+    operands: ["id"],
+    flags: {
+      turns: { type: "int", value: "N", help: "this many of the latest turns (default 1); 0 for the recent history" },
+    },
+    async run({ api, args, json }) {
+      const id = args.op("id");
+      const out = await api.json<{ thread_id: string; workspace_id: string | null; status: string; text: string }>(
+        "GET",
+        p`/api/v1/threads/${id}/output`,
+        { query: { turns: args.int("turns") } },
+      );
+      if (out.status === "running" && !json) process.stderr.write(`Thread ${id} is still running; this is its text so far.\n`);
+      print(json, out, () => out.text);
+    },
+  }),
+  command({
     words: ["threads", "new"],
     summary: "start a thread in a workspace with a message, and run its turn",
     operands: ["message..."],

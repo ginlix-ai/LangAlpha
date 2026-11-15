@@ -12,6 +12,8 @@
  * - A thread read anywhere takes its notification down.
  * - The dock badge and attention list follow the store, debounced.
  * - "Mark as read" on a notification stamps the thread seen.
+ * - A request the agent made from a command posts until it is answered
+ *   (`ApprovalNotifier`).
  */
 import { useEffect, type ReactElement } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
@@ -36,6 +38,7 @@ import {
 } from '@/lib/threadLifecycle/store';
 import { threadDetailQuery } from '@/pages/ChatAgent/utils/threadQueries';
 import type { Thread } from '@/types/api';
+import { ApprovalNotifier } from './ApprovalNotifier';
 import {
   ATTENTION_LIST_MAX,
   buildAttention,
@@ -225,5 +228,11 @@ function ActiveNotifier(): null {
 
 /** Renders nothing; does nothing where the shell cannot post notifications. */
 export function DesktopNotifier(): ReactElement | null {
-  return canNotify() ? <ActiveNotifier /> : null;
+  if (!canNotify()) return null;
+  return (
+    <>
+      <ActiveNotifier />
+      <ApprovalNotifier />
+    </>
+  );
 }

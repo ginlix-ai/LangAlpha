@@ -34,8 +34,9 @@ ${groups.join("\n\n")}
 Options:
 ${flagList(GLOBAL)}
 
-Exit codes: 0 ok, 1 error, 2 usage, 3 not signed in or not allowed, 4 not found, 5 conflict,
-            6 the turn is waiting for approval, 7 the turn failed or was cancelled.
+Exit codes: 0 ok, 1 error, 2 usage, 3 not signed in, not allowed, or declined in the app,
+            4 not found, 5 conflict, 6 the turn is waiting for approval,
+            7 the turn failed or was cancelled.
 `;
 }
 

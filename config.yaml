@@ -326,6 +326,20 @@ claude_code:
 
 
 # =============================================================================
+# APPROVALS FOR WHAT A COMPUTER'S `la` ASKS TO DO
+# =============================================================================
+# Deleting a thread, workspace or automation, creating a workspace, or
+# removing a computer through a computer's token waits for the user's OK in
+# the app. One request holds open this long for the answer (keep it under the
+# edge's limit on one request); the CLI asks again until the request expires.
+cli_approvals:
+  hold_seconds: 50
+  pending_minutes: 30          # A request with no answer expires after this
+  approved_minutes: 5          # An approval its command never used expires after this
+  max_pending: 5               # Requests one user may have waiting at once
+
+
+# =============================================================================
 # MARKET INSIGHT CONFIGURATION
 # =============================================================================
 market_insight:

@@ -519,6 +519,34 @@ class PromptConfig(BaseModel):
     )
 
 
+class CliApprovalsConfig(BaseModel):
+    """How long what a computer's ``la`` asks the user to approve waits.
+
+    A request holds open for ``hold_seconds`` for the answer, under the
+    edge's limit on one request, and the CLI asks again until the request
+    expires."""
+
+    hold_seconds: float = Field(
+        default=50.0, gt=0, le=90, description="How long one request waits for the user's answer"
+    )
+    pending_minutes: int = Field(
+        default=30, ge=1, description="How long a request waits for an answer before it expires"
+    )
+    approved_minutes: int = Field(
+        default=5, ge=1, description="How long an approval waits for its command to use it"
+    )
+    max_pending: int = Field(
+        default=5, ge=1, description="Requests one user may have waiting at once"
+    )
+
+    @model_validator(mode="after")
+    def _a_hold_ends_before_its_request(self) -> "CliApprovalsConfig":
+        # A request that expired mid-hold would be asked again under a new id.
+        if self.hold_seconds >= self.pending_minutes * 60:
+            raise ValueError("hold_seconds must be shorter than pending_minutes")
+        return self
+
+
 class InfrastructureConfig(BaseModel):
     """Root model for infrastructure configuration (config.yaml)."""
 
@@ -550,6 +578,7 @@ class InfrastructureConfig(BaseModel):
     )
     market_watch: MarketWatchConfig = Field(default_factory=MarketWatchConfig)
     claude_code: ClaudeCodeConfig = Field(default_factory=ClaudeCodeConfig)
+    cli_approvals: CliApprovalsConfig = Field(default_factory=CliApprovalsConfig)
 
     # User-facing product features (deployment overrides of the code catalog
     # in src/config/features.py). Distinct from the infra toggles above, which

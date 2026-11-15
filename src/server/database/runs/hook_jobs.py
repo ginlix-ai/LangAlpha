@@ -112,18 +112,26 @@ AUTOMATION_HANDOFF_HOOK = "automation_handoff"
 
 
 def automation_handoff_job(
-    *, execution_id: str, automation_id: str, user_id: str
+    *,
+    execution_id: str,
+    automation_id: str,
+    user_id: str,
+    checked_computer_id: str | None = None,
 ) -> HookJob:
     """A firing is handed on again each time a process drains before it
-    starts, so each hand-off is a job of its own."""
+    starts, so each hand-off is a job of its own. One a computer token ran
+    keeps the computer it was checked to run on."""
+    payload = {
+        "execution_id": execution_id,
+        "automation_id": automation_id,
+        "user_id": user_id,
+    }
+    if checked_computer_id is not None:
+        payload["checked_computer_id"] = checked_computer_id
     return HookJob(
         hook_type=AUTOMATION_HANDOFF_HOOK,
         idempotency_key=f"{execution_id}:{AUTOMATION_HANDOFF_HOOK}:{uuid.uuid4()}",
-        payload={
-            "execution_id": execution_id,
-            "automation_id": automation_id,
-            "user_id": user_id,
-        },
+        payload=payload,
     )
 
 

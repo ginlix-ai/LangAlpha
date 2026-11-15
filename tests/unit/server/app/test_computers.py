@@ -1925,6 +1925,8 @@ async def test_stop_forbidden_for_another_user(
 
 
 def _removing(row, manager):
+    # A bare mock would answer a truthy refusal; no code means nothing holds it.
+    manager.removal_refusal = AsyncMock(return_value=None)
     return (
         patch("src.server.app.computers.get_computer", AsyncMock(return_value=row)),
         patch("src.server.app.computers._computer_manager", return_value=manager),
@@ -2140,6 +2142,33 @@ async def test_remove_is_forbidden_for_another_user(
 async def test_a_refused_remove_is_409_with_the_code_the_client_words(
     client, computer, mock_computer_manager, code
 ):
+    """Read before the user is asked, so an approval is never spent on a
+    removal the manager would refuse."""
+    from src.server.services.computer_errors import ComputerRemovalRefused
+
+    get_row, get_manager = _removing(computer, mock_computer_manager)
+    mock_computer_manager.removal_refusal = AsyncMock(return_value=code)
+    gate = AsyncMock()
+    with (
+        get_row,
+        get_manager,
+        patch("src.server.app.computers.cli_approval.computer_remove", gate),
+    ):
+        resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {"code": code, "message": str(ComputerRemovalRefused(code))}
+    gate.assert_not_awaited()
+    mock_computer_manager.remove_computer_with_workspaces.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["primary", "has_workspaces", "busy"])
+async def test_a_remove_refused_after_the_gate_is_409_too(
+    client, computer, mock_computer_manager, code
+):
+    """The manager reads it again, decisively, and a change in between still
+    answers as a refusal."""
     from src.server.services.computer_errors import ComputerRemovalRefused
 
     refusal = ComputerRemovalRefused(code)
@@ -2150,7 +2179,27 @@ async def test_a_refused_remove_is_409_with_the_code_the_client_words(
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == {"code": code, "message": str(refusal)}
-    assert str(refusal)
+
+
+@pytest.mark.asyncio
+async def test_a_remove_reaches_the_gate_before_the_manager_removes(
+    client, computer, mock_computer_manager
+):
+    order: list[str] = []
+    gate = AsyncMock(side_effect=lambda *a, **kw: order.append("gate"))
+    mock_computer_manager.remove_computer_with_workspaces.side_effect = (
+        lambda *a, **kw: order.append("remove") or []
+    )
+    get_row, get_manager = _removing(computer, mock_computer_manager)
+    with (
+        get_row,
+        get_manager,
+        patch("src.server.app.computers.cli_approval.computer_remove", gate),
+    ):
+        resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
+
+    assert resp.status_code == 200
+    assert order == ["gate", "remove"]
 
 
 @pytest.mark.asyncio
