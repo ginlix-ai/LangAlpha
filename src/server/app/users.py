@@ -2,8 +2,8 @@
 
 import asyncio
 import logging
-from datetime import datetime
-from typing import Literal, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import File, UploadFile
@@ -17,6 +17,10 @@ from src.llms.preferences import (
 from src.utils.storage import get_public_url, upload_bytes
 
 from src.server.auth.jwt_bearer import get_current_auth_info, AuthInfo
+from src.server.database.onboarding_progress import (
+    get_onboarding_progress,
+    patch_onboarding_progress,
+)
 from src.server.database.pool import get_db_connection
 from src.server.dependencies.principal import CurrentPrincipal, ReadUserId
 from src.server.database.user import (
@@ -51,6 +55,11 @@ from src.server.services.llm.user_models import model_preference_of
 from src.server.services.claude_code.plan import credits_unknown
 from src.server.services.features import granted_override_keys
 from src.server.services.onboarding import maybe_complete_onboarding
+from src.server.models.onboarding import (
+    ACCOUNT_SETUP_KEY,
+    OnboardingProgressPatch,
+    OnboardingProgressResponse,
+)
 from src.server.models.profile_vocabulary import STRUCTURED_PREFERENCES, check_profile
 from src.server.models.user import (
     UserBase,
@@ -472,9 +481,14 @@ def _refuse_renamed_model_keys(*bags: dict | None) -> None:
 def _refuse_server_owned_keys(other_pref: dict | None) -> None:
     """Refuse ``feature_overrides``, which only the server writes: a user sets
     a feature through PUT /features, which refuses the gates they may not set
-    (a ``grant`` among them)."""
+    (a ``grant`` among them). Refuse the account setup stamp
+    (``ACCOUNT_SETUP_KEY``) too, set or cleared: /users/me/onboarding reads it
+    as the time the hosted onboarding finished, which a user's write could fake
+    or erase."""
     if other_pref and "feature_overrides" in other_pref:
         raise HTTPException(status_code=422, detail="feature_overrides is set through /api/v1/features.")
+    if other_pref and ACCOUNT_SETUP_KEY in other_pref:
+        raise HTTPException(status_code=422, detail=f"{ACCOUNT_SETUP_KEY} is not a user preference.")
 
 
 def _validate_default_model_choices(model_pref: dict) -> None:
@@ -714,7 +728,8 @@ async def update_preferences(
 async def delete_preferences(user_id: CurrentUserId):
     """Delete all user preferences and reset onboarding_completed to false.
     A feature the server granted (``granted_override_keys``) stays granted: the
-    user never set it, and a grant lost here could not be given back."""
+    user never set it, and a grant lost here could not be given back. The
+    account setup stamp stays for the same reason (``delete_user_preferences``)."""
     user = await db_get_user(user_id)
     if not user:
         raise_not_found("User")
@@ -726,6 +741,46 @@ async def delete_preferences(user_id: CurrentUserId):
 
     logger.info(f"Cleared preferences and reset onboarding for user {user_id}")
     return {"success": True, "message": "Preferences cleared"}
+
+
+@router.get("/users/me/onboarding", response_model=OnboardingProgressResponse)
+@handle_api_exceptions("get onboarding progress", logger)
+async def get_onboarding(user_id: CurrentUserId):
+    """Every field null for a user who has not started: no row is written until one is."""
+    return await _onboarding_response(user_id, await get_onboarding_progress(user_id))
+
+
+@router.patch("/users/me/onboarding", response_model=OnboardingProgressResponse)
+@handle_api_exceptions("update onboarding progress", logger)
+async def patch_onboarding(request: OnboardingProgressPatch, user_id: CurrentUserId):
+    """Write only the keys sent; an explicit null clears one. Each onboarding
+    surface writes its own keys of one record, so none may overwrite what
+    another left out."""
+    row = await patch_onboarding_progress(
+        user_id, {key: getattr(request, key) for key in request.model_fields_set}
+    )
+    if row is None:
+        raise_not_found("User")
+    return await _onboarding_response(user_id, row)
+
+
+async def _onboarding_response(
+    user_id: str, row: Optional[Dict[str, Any]]
+) -> OnboardingProgressResponse:
+    """The record beside the stamp set when the account's hosted onboarding
+    finished, read from preferences without the cache, which could hide a
+    fresh stamp for a day from a gate that waits on it."""
+    preferences = await db_get_user_preferences(user_id, cached=False) or {}
+    stamp = (preferences.get("other_preference") or {}).get(ACCOUNT_SETUP_KEY)
+    try:
+        at = datetime.fromisoformat(stamp) if isinstance(stamp, str) else None
+    except ValueError:
+        at = None
+    if at is not None and at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return OnboardingProgressResponse.model_validate(
+        {**(row or {}), "account_setup_completed_at": at}
+    )
 
 
 class UserModelsResponse(BaseModel):
