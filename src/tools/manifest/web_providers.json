@@ -324,7 +324,7 @@
             {
               "name": "stealth",
               "display_name": "Stealth",
-              "credits": 20,
+              "credits": 4,
               "native_params": {
                 "proxy": "stealth"
               }

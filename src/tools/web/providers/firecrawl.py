@@ -9,6 +9,7 @@ native param ("auto" | "stealth") comes from the manifest level — the
 
 import asyncio
 import logging
+import math
 import os
 from typing import Any, Dict, List, Optional
 
@@ -74,6 +75,23 @@ def _scrape_error(e: httpx.HTTPError) -> WebError:
                 http_status=400,
                 retryable=True,
             )
+    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 403:
+        # A 403 from /scrape is Firecrawl declining the URL without touching
+        # the target, in about 0.1s: a site it does not scrape
+        # (UNSUPPORTED_SITE, often with no code), or one only an Alexandria
+        # data provider serves that is off for the org
+        # (THIRD_PARTY_DATA_NOT_ENABLED, e.g. Investopedia). A target's own
+        # 403 arrives as a 200 with the page's status code.
+        try:
+            code = e.response.json().get("code")
+        except (ValueError, AttributeError):
+            code = None
+        return WebError(
+            type=WebErrorType.REFUSED,
+            message=clip_error(e.response.text),
+            http_status=403,
+            native_kind=str(code).lower() if code else "unsupported_site",
+        )
     return error_from_httpx(e, status_overrides=_STATUS_OVERRIDES)
 
 
@@ -197,19 +215,26 @@ class FirecrawlFetchAdapter:
                 ),
             )
 
+        # Firecrawl returned a page, which it bills whatever the page is
+        # (docs.firecrawl.dev/billing): a target's 403 or 404 and an empty
+        # page fail here but are still charged.
         page = data.get("data") or {}
         metadata = page.get("metadata") or {}
+        cost = _reported_credits(metadata)
         target_status = metadata.get("statusCode")
         if isinstance(target_status, int):
             err = _target_status_error(target_status)
             if err is not None:
-                return FetchResult(url=url, error=err)
+                return FetchResult(url=url, error=err, billed=True, vendor_credits=cost)
 
         markdown = page.get("markdown") or ""
         if is_empty_markdown(markdown):
-            return FetchResult(url=url, error=empty_content_error())
+            return FetchResult(
+                url=url, error=empty_content_error(), billed=True, vendor_credits=cost
+            )
         return FetchResult(
             url=url,
+            vendor_credits=cost,
             final_url=metadata.get("sourceURL") or url,
             title=metadata.get("title"),
             markdown=markdown,
@@ -242,23 +267,39 @@ def _page_from_item(item: Dict[str, Any]) -> CrawlPage:
     if isinstance(title, str):  # live pages embed stray whitespace/newlines
         title = title.strip() or None
 
+    # Firecrawl bills every page a crawl returns, failed here or not.
+    cost = _reported_credits(metadata)
     page_error = metadata.get("error")
     if page_error:
         return CrawlPage(
             url=url,
             title=title,
             error=WebError(type=WebErrorType.PROVIDER_ERROR, message=clip_error(str(page_error))),
+            billed=True,
+            vendor_credits=cost,
         )
     target_status = metadata.get("statusCode")
     if isinstance(target_status, int):
         err = _target_status_error(target_status)
         if err is not None:
-            return CrawlPage(url=url, title=title, error=err)
+            return CrawlPage(url=url, title=title, error=err, billed=True, vendor_credits=cost)
 
     markdown = item.get("markdown") or ""
     if is_empty_markdown(markdown):
-        return CrawlPage(url=url, title=title, error=empty_content_error())
-    return CrawlPage(url=url, title=title, markdown=markdown)
+        return CrawlPage(
+            url=url, title=title, error=empty_content_error(), billed=True, vendor_credits=cost
+        )
+    return CrawlPage(url=url, title=title, markdown=markdown, vendor_credits=cost)
+
+
+def _reported_credits(metadata: Dict[str, Any]) -> Optional[float]:
+    """The page's ``creditsUsed``: one for a web page, one a page for a PDF
+    (checked live 2026-11-16), whatever proxy fetched it. None when absent
+    or not a non-negative number, which charges the page as one."""
+    value = metadata.get("creditsUsed")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) and value >= 0 else None
 
 
 _CRAWL_STATES = {

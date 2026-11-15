@@ -8,6 +8,8 @@ schemas stay provider-native — only responses and errors are normalized.
 Data-only module: stdlib imports only.
 """
 
+import math
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
@@ -26,6 +28,11 @@ class WebErrorType(str, Enum):
     NOT_FOUND = "not_found"
     TIMEOUT = "timeout"
     FORBIDDEN = "forbidden"
+    # The provider declined the site by its own policy (Firecrawl's sites it
+    # will not scrape), so the target never saw a request. The in-house
+    # crawler keeps no such list, which makes it the one fetcher left for the
+    # URL, whatever the chain says.
+    REFUSED = "refused"
     PAYWALL = "paywall"
     ANTI_BOT = "anti_bot"
     UNSUPPORTED_URL = "unsupported_url"
@@ -48,6 +55,7 @@ _RETRYABLE_TYPES = frozenset(
     {
         WebErrorType.TIMEOUT,
         WebErrorType.ANTI_BOT,
+        WebErrorType.REFUSED,
         WebErrorType.EMPTY,
         WebErrorType.RATE_LIMITED,
         WebErrorType.CIRCUIT_OPEN,
@@ -189,6 +197,17 @@ class FetchResult:
     author: Optional[str] = None
     source: Literal["live", "cache"] = "live"
     error: Optional[WebError] = None
+    #: Whether the provider charged for this URL; defaults to ``ok``. Set
+    #: on a failure Firecrawl still bills (it charges every page it returns,
+    #: a target's 404 or an empty page included).
+    billed: Optional[bool] = None
+    #: What the provider reported this URL cost in its own credits, which it
+    #: is charged by instead of one unit: Firecrawl bills a PDF by the page.
+    vendor_credits: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.billed is None:
+            object.__setattr__(self, "billed", self.ok)
 
     @property
     def ok(self) -> bool:
@@ -276,6 +295,14 @@ class CrawlPage:
     title: Optional[str] = None
     markdown: Optional[str] = None
     error: Optional[WebError] = None
+    #: Whether the provider charged for this page (see ``FetchResult``).
+    billed: Optional[bool] = None
+    #: What the provider reported this page cost (see ``FetchResult``).
+    vendor_credits: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.billed is None:
+            object.__setattr__(self, "billed", self.ok)
 
     @property
     def ok(self) -> bool:
@@ -353,3 +380,15 @@ class ResearchResult:
     model: Optional[str] = None
     response_time: Optional[float] = None
     usage: Optional[Dict[str, Any]] = None
+
+
+def billed_units(results: Iterable["FetchResult | CrawlPage"]) -> int:
+    """The units of a level's price ``results`` charge: what the provider
+    reported each cost where it reports one, else one for each it billed."""
+    return math.ceil(
+        sum(
+            1.0 if r.vendor_credits is None else r.vendor_credits
+            for r in results
+            if r.billed
+        )
+    )

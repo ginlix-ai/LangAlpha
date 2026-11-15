@@ -53,7 +53,10 @@ _CONTENTS_ERROR_TAGS = {
     "CRAWL_NOT_FOUND": WebErrorType.NOT_FOUND,
     "CRAWL_TIMEOUT": WebErrorType.TIMEOUT,
     "CRAWL_LIVECRAWL_TIMEOUT": WebErrorType.TIMEOUT,
-    "SOURCE_NOT_AVAILABLE": WebErrorType.FORBIDDEN,
+    # Exa reports a target's own 403 as CRAWL_HTTP_403; this tag is Exa unable
+    # or unwilling to reach the source at all (reddit, facebook), which the
+    # in-house crawler often still can.
+    "SOURCE_NOT_AVAILABLE": WebErrorType.REFUSED,
     "CRAWL_UNKNOWN_ERROR": WebErrorType.PROVIDER_ERROR,
 }
 
@@ -324,6 +327,7 @@ class ExaFetchAdapter:
                         type=etype,
                         message=f"Exa contents error: {tag or 'unknown'}",
                         http_status=(status.get("error") or {}).get("httpStatusCode"),
+                        native_kind=tag.lower() or None,
                     ),
                 )
 

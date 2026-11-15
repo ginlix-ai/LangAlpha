@@ -34,7 +34,9 @@ class LevelSpec:
     """One level a capability offers (ordered fastest → deepest).
 
     ``credits`` is priced in the verb's natural unit: per call for search
-    and map, per URL for fetch, per delivered page for crawl.
+    and map, per URL for fetch, per delivered page for crawl. A provider
+    that reports what each URL or page cost in its own credits is priced
+    per those credits instead (``FetchResult.vendor_credits``).
     """
 
     name: str
