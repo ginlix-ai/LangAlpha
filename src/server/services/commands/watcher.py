@@ -51,6 +51,7 @@ from ptc_agent.core.sandbox import jobs
 
 from src.server.database.runs import command_runs as cr_db
 from src.server.database.runs.command_runs import Outcome
+from src.server.database.runs.outbox import COMMAND_NOTICE_TTL_DAYS
 from src.server.services.commands.control import (
     ComputerAway,
     computer_jobs_runtime,
@@ -85,6 +86,17 @@ CHECK_INTERVAL_S = 15.0
 #: again: one read of the tunnel's record, so a machine back from sleep has
 #: them judged within a minute without anything dialing it meanwhile.
 AWAY_RECHECK_S = 60.0
+#: How often the commands of a machine dialed directly that did not answer
+#: are looked at again: each look is a dial, so it is spaced further apart.
+DIAL_RECHECK_S = 300.0
+#: How long a machine may stay away before its commands settle as lost: as
+#: long as a command's notice is kept (``COMMAND_NOTICE_TTL_DAYS``), so one
+#: that never comes back stops being looked at.
+AWAY_LIMIT = timedelta(days=COMMAND_NOTICE_TTL_DAYS)
+#: As ``AWAY_LIMIT``, for a stopped computer on a machine dialed directly: its
+#: owner stopped it, and only a stop the machine missed could have left a job
+#: there, which a day of unanswered dials gives up on.
+STOPPED_DIAL_LIMIT = timedelta(days=1)
 # How long a claim's computers have, counted from the claim: a computer still
 # waiting for a slot or still answering when it runs out is left to its
 # lease, so a dark machine holds up nobody else's commands, and a claim with
@@ -129,6 +141,43 @@ async def _stuck_between(computer: Mapping[str, Any], now: datetime) -> bool:
 
     # None (Redis did not answer) counts as no stopper: the row is old enough.
     return await computer_stop_heartbeat_present(str(computer["computer_id"])) is not True
+
+
+class _StillAway(Exception):
+    """The computer's machine did not answer and has not been away for long
+    enough to give its commands up: they are looked at again in
+    ``recheck_s``, quietly, since that is how a machine of the user's own
+    spends much of its time."""
+
+    def __init__(self, recheck_s: float) -> None:
+        super().__init__(f"its machine is away; looked at again in {recheck_s:.0f}s")
+        self.recheck_s = recheck_s
+
+
+def _machine_away(e: BaseException) -> bool:
+    """A failure that is the machine's silence: its tunnel down
+    (``ComputerAway``), or a direct dial it did not answer. The tunnel
+    gateway down is ours and fails the look as any other error does."""
+    from ptc_agent.core.sandbox.unreachable import unreachable_code
+
+    return isinstance(e, ComputerAway) or unreachable_code(e) is not None
+
+
+def _away_too_long(
+    rows: Sequence[Mapping[str, Any]],
+    computer: Mapping[str, Any],
+    now: datetime,
+    *,
+    dialed: bool,
+) -> bool:
+    """Whether the machine has been away past its limit, by the earliest
+    ``away_since`` among the rows (none yet: away since this look)."""
+    since = [r["away_since"] for r in rows if r.get("away_since") is not None]
+    if not since:
+        return False
+    stopped = computer.get("status") == "stopped"
+    limit = STOPPED_DIAL_LIMIT if dialed and stopped else AWAY_LIMIT
+    return now - min(since) >= limit
 
 
 async def _covered_now(row: Mapping[str, Any]) -> bool:
@@ -259,17 +308,15 @@ class CommandWatcher:
         gate = asyncio.Semaphore(_COMPUTER_CONCURRENCY)
 
         checked: List[Dict[str, Any]] = []
-        away: List[Dict[str, Any]] = []
+        away: Dict[float, List[Dict[str, Any]]] = defaultdict(list)
 
         async def one(computer_id: str, group: List[Dict[str, Any]]) -> int:
             try:
                 # The wait for a slot counts: the claim's lease does not wait.
                 async with asyncio.timeout_at(deadline), gate:
                     ended = await self._check_computer(computer_id, group, coverage, now)
-            except ComputerAway:
-                # Asleep or offline, which is how a user's own machine spends
-                # much of its time: nothing to warn about.
-                away.extend(group)
+            except _StillAway as e:
+                away[e.recheck_s].extend(group)
                 return 0
             except Exception as e:  # noqa: BLE001 - the rows come due again
                 logger.warning(
@@ -290,15 +337,14 @@ class CommandWatcher:
                 [(str(r["command_id"]), r["next_check_at"]) for r in checked],
                 self._interval,
             )
-            if away:
-                await cr_db.schedule_next_check(
-                    [(str(r["command_id"]), r["next_check_at"]) for r in away],
-                    AWAY_RECHECK_S,
+            for recheck_s, group in away.items():
+                await cr_db.schedule_away_check(
+                    [(str(r["command_id"]), r["next_check_at"]) for r in group],
+                    recheck_s,
                 )
         except Exception as e:  # noqa: BLE001 - the lease brings them back
-            logger.warning(
-                f"{_LOG} rescheduling {len(checked) + len(away)} commands failed: {e}"
-            )
+            waiting = len(checked) + sum(len(g) for g in away.values())
+            logger.warning(f"{_LOG} rescheduling {waiting} commands failed: {e}")
         return sum(counts)
 
     async def _check_computer(
@@ -332,6 +378,38 @@ class CommandWatcher:
         hour_applies = window is not None or computer is None
         if reach == "gone":
             return await self._settle_gone(rows, computer, coverage, now, hour_applies)
+        try:
+            return await self._read_computer(
+                computer, reach, rows, coverage, now, manager, window, hour_applies
+            )
+        except Exception as e:
+            if not _machine_away(e):
+                raise
+            dialed = not isinstance(e, ComputerAway)
+            if not _away_too_long(rows, computer, now, dialed=dialed):
+                raise _StillAway(DIAL_RECHECK_S if dialed else AWAY_RECHECK_S) from e
+        logger.info(
+            f"{_LOG} computer {computer_id}'s machine has not answered since "
+            f"{min(r['away_since'] for r in rows if r.get('away_since')).isoformat()}; "
+            f"settling its {len(rows)} commands as lost"
+        )
+        return await self._settle_gone(rows, computer, coverage, now, hour_applies)
+
+    async def _read_computer(
+        self,
+        computer: Mapping[str, Any],
+        reach: str,
+        rows: List[Dict[str, Any]],
+        coverage: Mapping[str, Coverage],
+        now: datetime,
+        manager,
+        window: Optional["IdleWindow"],
+        hour_applies: bool,
+    ) -> int:
+        """Read the computer's jobs and settle its rows by them; raises as
+        ``computer_jobs_runtime`` does, and with the machine's own failure
+        when a read finds it silent."""
+        computer_id = str(computer["computer_id"])
         async with computer_jobs_runtime(computer) as runtime:
             if runtime is None:
                 # Its provider says the sandbox is gone, ahead of the row.

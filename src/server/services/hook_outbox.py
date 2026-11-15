@@ -316,6 +316,28 @@ class HookOutboxDrainer:
                         "[HookOutbox] alert close sweep failed",
                         exc_info=True,
                     )
+                try:
+                    for gave_up in await outbox_db.close_for_lost_computers():
+                        logger.info(
+                            f"[HookOutbox] gave up job="
+                            f"{gave_up.get('hook_outbox_id')} "
+                            f"type={gave_up.get('hook_type')}: its computer has "
+                            f"not connected for "
+                            f"{outbox_db.COMMAND_NOTICE_TTL_DAYS} days"
+                        )
+                        # Settled as a steer out of attempts is, or closed
+                        # as a dead report-back is: the same followups.
+                        if gave_up.get("hook_type") == "steer":
+                            await self._exhaust_followup(gave_up)
+                        elif gave_up.get("status") == "done":
+                            await self._close_followup(gave_up)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error(
+                        "[HookOutbox] lost computer sweep failed",
+                        exc_info=True,
+                    )
 
             # A notification parked while its computer was away is due again
             # once the computer connects: the gateway writes that to the
@@ -479,6 +501,9 @@ class HookOutboxDrainer:
             f"type={job.get('hook_type')} out of attempts after "
             f"{job.get('attempts')}; settled by its type"
         )
+        await self._exhaust_followup(job)
+
+    async def _exhaust_followup(self, job: Dict[str, Any]) -> None:
         followup = _EXHAUST_FOLLOWUPS.get(job.get("hook_type") or "")
         if followup is None:
             return

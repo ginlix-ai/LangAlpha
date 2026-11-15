@@ -46,7 +46,11 @@ from src.server.database.runs.command_runs import (
     notice_ordering_key as command_notice_key,
 )
 from src.server.database.market_targets import ordering_key as market_target_key
-from src.server.database.ssh_tunnels import LIVE_WITHIN, computer_tunnel_down_sql
+from src.server.database.ssh_tunnels import (
+    LIVE_WITHIN,
+    computer_tunnel_down_sql,
+    computer_tunnel_lost_sql,
+)
 from src.server.database.wakeups.contract import WAKEUP_OWED_SQL
 from src.server.database.wakeups.contract import ordering_key as wakeup_key
 from src.server.utils.pg_sanitize import SafeJson
@@ -1395,6 +1399,60 @@ async def release_for_reachable_computers() -> List[Dict[str, Any]]:
                 {"live_within": LIVE_WITHIN},
             )
             return [dict(r) for r in await cur.fetchall()]
+
+
+async def close_for_lost_computers() -> List[Dict[str, Any]]:
+    """Give up the notifications parked for a computer whose machine has not
+    connected for ``COMMAND_NOTICE_TTL_DAYS`` (``park_for_computer``); the
+    rows closed or held, with the status each was left in.
+
+    A machine that never comes back would hold them pending for good, each
+    costing every claim's scan. A report-back is closed as not owed, its
+    result still on its ledger row for the agent to read; an analyst's
+    releases its watch as a dead one does (an error ``watch_clear`` in the
+    same statement). A steer settles as one out of attempts does
+    (``_exhaust_steers``), so its sender learns it was not delivered. An
+    alert (a wake, a price target's notice) is held for its thread's next
+    turn instead, as one whose wake was refused is (``_exhaust_alerts``), so
+    its notice still reaches the agent; it keeps naming the computer, so a
+    machine that does come back still brings its wake. One a live turn holds
+    is left to that turn. Guarded statements in one transaction, so every
+    worker may run them at once."""
+    parked = (
+        "o.status = 'pending'"
+        " AND o.next_retry_at = 'infinity'::timestamptz"
+        f" AND o.payload ? '{AWAITS_COMPUTER}'"
+        " AND NOT (o.payload ? 'steered_run_id')"
+        " AND NOT (o.payload ? 'exhausted')"
+        " AND "
+        + computer_tunnel_lost_sql(
+            f"o.payload->>'{AWAITS_COMPUTER}'", COMMAND_NOTICE_TTL_DAYS
+        )
+    )
+    clears = _watch_clear_insert_sql(
+        "closed", suffix="lost_clear", error_wake=True, refuse_if_pointer=True
+    )
+    async with pool.get_db_connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                held = await _exhaust_alerts(cur, parked, {})
+                steers = await _exhaust_steers(cur, parked, {})
+                await cur.execute(
+                    f"""
+                    WITH closed AS (
+                        UPDATE hook_outbox o
+                        SET status = 'done', completed_at = NOW(),
+                            next_retry_at = NULL,
+                            payload = o.payload - '{AWAITS_COMPUTER}'
+                        WHERE o.hook_type NOT IN {_sql_list(("steer", *ALERT_HOOK_TYPES))}
+                          AND {parked}
+                        RETURNING o.*
+                    ),
+                    clears AS ({clears})
+                    SELECT * FROM closed
+                    """
+                )
+                return [*held, *steers, *(dict(r) for r in await cur.fetchall())]
 
 
 async def list_open_notification_jobs(

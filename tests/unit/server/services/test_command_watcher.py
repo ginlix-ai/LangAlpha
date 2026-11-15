@@ -165,9 +165,12 @@ class _Harness:
         *,
         window=IdleWindow(NOW + timedelta(minutes=50), TIMEOUT_S),
         machine_runs=False,
+        unanswered=None,
     ):
         # A stopped computer whose machine still marks it running.
         self.machine_runs = machine_runs
+        # What reaching the computer raises: its machine away.
+        self.unanswered = unanswered
         self.calls = MagicMock()
         self.runtime = MagicMock()
         self.manager = MagicMock()
@@ -205,6 +208,8 @@ class _Harness:
 
         @asynccontextmanager
         async def jobs_runtime(computer):
+            if self.unanswered is not None:
+                raise self.unanswered
             reached = computer and (computer.get("status") == "running" or self.machine_runs)
             yield runtime if reached else None
 
@@ -594,23 +599,97 @@ async def test_an_away_machines_commands_are_looked_at_again_quietly_without_a_d
 
     async def check_computer(self, computer_id, rows, coverage, now):
         if computer_id == "away":
-            raise w.ComputerAway("its machine is not connected")
+            raise w._StillAway(w.AWAY_RECHECK_S)
         return 0
 
-    scheduled = AsyncMock()
+    scheduled, away = AsyncMock(), AsyncMock()
     with (
         patch.object(w.CommandWatcher, "_check_computer", check_computer),
         patch.object(w.cr_db, "thread_coverage", new=AsyncMock(return_value={})),
         patch.object(w.cr_db, "schedule_next_check", new=scheduled),
+        patch.object(w.cr_db, "schedule_away_check", new=away),
         patch.object(w.logger, "warning") as warned,
     ):
         await w.CommandWatcher().check([reached, asleep])
 
-    assert scheduled.await_args_list == [
-        call([("bg-00000000000a", lease)], w.CHECK_INTERVAL_S),
-        call([("bg-00000000000b", lease)], w.AWAY_RECHECK_S),
-    ]
+    assert scheduled.await_args_list == [call([("bg-00000000000a", lease)], w.CHECK_INTERVAL_S)]
+    assert away.await_args_list == [call([("bg-00000000000b", lease)], w.AWAY_RECHECK_S)]
     warned.assert_not_called()
+
+
+def _dial_unanswered():
+    """A direct dial the machine did not answer, as the runtime raises it."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+    from ptc_agent.core.sandbox.runtime import SandboxTransientError
+
+    try:
+        raise SSHConnectError("timeout", "mini did not answer within 10 seconds.")
+    except SSHConnectError as e:
+        try:
+            raise SandboxTransientError(str(e)) from e
+        except SandboxTransientError as wrapped:
+            return wrapped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("unanswered", "status", "away_for", "recheck_s"),
+    [
+        (w.ComputerAway("its machine is not connected"), "running", None, w.AWAY_RECHECK_S),
+        (w.ComputerAway("its machine is not connected"), "stopped", timedelta(days=6), w.AWAY_RECHECK_S),
+        (_dial_unanswered(), "running", timedelta(days=6), w.DIAL_RECHECK_S),
+        (_dial_unanswered(), "stopped", timedelta(hours=20), w.DIAL_RECHECK_S),
+    ],
+    ids=["tunnel-down", "tunnel-down-a-while", "dial-a-while", "stopped-dial-a-while"],
+)
+async def test_an_away_machines_commands_wait_for_it_until_their_limit(
+    unanswered, status, away_for, recheck_s
+):
+    """Asleep or offline is how a user's own machine spends much of its time:
+    its commands are looked at again later, a dialed one less often."""
+    row = _row(away_since=None if away_for is None else NOW - away_for)
+    machine = _computer(kind="ssh", status=status, stopped_at=NOW - timedelta(days=9))
+    with _Harness(machine, {}, window=None, unanswered=unanswered) as h:
+        with pytest.raises(w._StillAway) as still:
+            await _pass(h, [row])
+    assert still.value.recheck_s == recheck_s
+    h.calls.finalize.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("unanswered", "status", "away_for"),
+    [
+        (w.ComputerAway("its machine is not connected"), "running", timedelta(days=7)),
+        (_dial_unanswered(), "running", timedelta(days=8)),
+        (_dial_unanswered(), "stopped", timedelta(days=1)),
+    ],
+    ids=["tunnel-down", "dial", "stopped-dial"],
+)
+async def test_a_machine_that_never_comes_back_has_its_commands_settled_as_lost(
+    unanswered, status, away_for
+):
+    """Looked at forever otherwise: a week away (as long as a command's
+    notice is kept), or a day of unanswered dials for a computer its owner
+    stopped, settles them as on a computer that is gone."""
+    row = _row(away_since=NOW - away_for)
+    machine = _computer(kind="ssh", status=status, stopped_at=NOW - timedelta(days=9))
+    with _Harness(machine, {}, window=None, unanswered=unanswered) as h:
+        assert await _pass(h, [row]) == 1
+    assert h.outcomes() == {row["command_id"]: Outcome("failed", "lost", up=False)}
+
+
+@pytest.mark.asyncio
+async def test_the_tunnel_gateway_down_is_not_the_machine_away():
+    """Ours to fix, and no reason to give the machine's commands up."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    row = _row(away_since=NOW - timedelta(days=30))
+    gateway = SSHConnectError("gateway_unreachable", "The tunnel is not answering.")
+    with _Harness(_computer(kind="ssh"), {}, window=None, unanswered=gateway) as h:
+        with pytest.raises(SSHConnectError):
+            await _pass(h, [row])
+    h.calls.finalize.assert_not_called()
 
 
 @pytest.mark.asyncio

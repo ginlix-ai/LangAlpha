@@ -90,6 +90,24 @@ def computer_tunnel_down_sql(computer_id: str) -> str:
                 AND {_LIVE}))"""
 
 
+def computer_tunnel_lost_sql(computer_id: str, days: int) -> str:
+    """SQL true while the computer ``computer_id`` (an SQL text expression)
+    connects out through a tunnel the gateway has not seen for ``days`` days,
+    or that is gone: a machine that has not come back in that long, which
+    work waiting on it gives up on. A computer reached directly or deleted is
+    never lost."""
+    return f"""EXISTS (
+        SELECT 1 FROM computers c
+        WHERE c.computer_id::text = {computer_id}
+          AND c.kind = 'ssh' AND c.{FENCE_NOT_DELETED}
+          AND COALESCE(c.provider_config->>'tunnel', '') <> ''
+          AND NOT EXISTS (
+              SELECT 1 FROM ssh_tunnels
+              WHERE ssh_tunnels.tunnel_id::text = c.provider_config->>'tunnel'
+                AND COALESCE(ssh_tunnels.seen_at, ssh_tunnels.created_at)
+                    > NOW() - make_interval(days => {int(days)})))"""
+
+
 class TunnelKeyTaken(Exception):
     """Another user's tunnel has this key."""
 

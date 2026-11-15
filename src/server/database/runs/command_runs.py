@@ -292,15 +292,32 @@ async def schedule_next_check(
     """Move each claimed row's next check to ``in_s`` from now, where it
     still holds the lease its claim set (``leases``: id and that
     ``next_check_at``). A row a stop marked since keeps the stop's grace, and
-    one that ended has no check."""
+    one that ended has no check. Its computer was read, so it is no longer
+    away (``away_since``)."""
+    await _schedule(leases, in_s, away_since="NULL")
+
+
+async def schedule_away_check(
+    leases: Sequence[Tuple[str, datetime]], in_s: float
+) -> None:
+    """``schedule_next_check`` for rows whose computer's machine is away:
+    ``away_since`` keeps when it was first found so, which the watcher reads
+    to give up on a machine that never comes back."""
+    await _schedule(leases, in_s, away_since="COALESCE(c.away_since, NOW())")
+
+
+async def _schedule(
+    leases: Sequence[Tuple[str, datetime]], in_s: float, *, away_since: str
+) -> None:
     if not leases:
         return
     async with pool.get_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
+                f"""
                 UPDATE command_runs c
                 SET next_check_at = clock_timestamp() + make_interval(secs => %s),
+                    away_since = {away_since},
                     updated_at = NOW()
                 FROM unnest(%s::text[], %s::timestamptz[]) AS t(command_id, lease)
                 WHERE c.command_id = t.command_id

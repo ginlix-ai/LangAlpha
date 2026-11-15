@@ -1093,6 +1093,7 @@ class TestAlertSweeps:
             "revive_dead_alerts": AsyncMock(return_value=[]),
             "close_unowed_waiting_alerts": AsyncMock(return_value=[]),
             "release_for_reachable_computers": AsyncMock(return_value=[]),
+            "close_for_lost_computers": AsyncMock(return_value=[]),
             "purge_terminal_jobs": AsyncMock(return_value=0),
             "claim_outbox_jobs": AsyncMock(return_value=[]),
             **overrides,
@@ -1158,6 +1159,24 @@ class TestAlertSweeps:
             await self._passes(drainer, 3)
         mocks["release_for_reachable_computers"].assert_awaited_once()
         assert calls[:2] == ["release", "claim"]
+
+    @pytest.mark.asyncio
+    async def test_notifications_for_a_machine_that_never_comes_back_are_given_up(self):
+        """Parked for good otherwise: the close sweep gives them up once the
+        machine has been gone as long as a command's notice is kept."""
+        import contextlib
+
+        drainer = HookOutboxDrainer()
+        mocks, patches = self._sweeps(
+            close_for_lost_computers=AsyncMock(
+                return_value=[{"hook_outbox_id": "r-1", "hook_type": "subagent_report_back"}]
+            ),
+        )
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            await self._passes(drainer, 3)
+        mocks["close_for_lost_computers"].assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_the_close_runs_on_a_shorter_clock_than_the_revive(self):
