@@ -43,7 +43,7 @@ import asyncio
 import logging
 import random
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -143,15 +143,14 @@ async def _stuck_between(computer: Mapping[str, Any], now: datetime) -> bool:
     return await computer_stop_heartbeat_present(str(computer["computer_id"])) is not True
 
 
-class _StillAway(Exception):
-    """The computer's machine did not answer and has not been away for long
-    enough to give its commands up: they are looked at again in
-    ``recheck_s``, quietly, since that is how a machine of the user's own
-    spends much of its time."""
+@dataclass(frozen=True)
+class _StillAway:
+    """A look's result when the computer's machine did not answer and has not
+    been away for long enough to give its commands up: they are looked at
+    again in ``recheck_s``, quietly, since that is how a machine of the
+    user's own spends much of its time."""
 
-    def __init__(self, recheck_s: float) -> None:
-        super().__init__(f"its machine is away; looked at again in {recheck_s:.0f}s")
-        self.recheck_s = recheck_s
+    recheck_s: float
 
 
 def _machine_away(e: BaseException) -> bool:
@@ -314,10 +313,7 @@ class CommandWatcher:
             try:
                 # The wait for a slot counts: the claim's lease does not wait.
                 async with asyncio.timeout_at(deadline), gate:
-                    ended = await self._check_computer(computer_id, group, coverage, now)
-            except _StillAway as e:
-                away[e.recheck_s].extend(group)
-                return 0
+                    looked = await self._check_computer(computer_id, group, coverage, now)
             except Exception as e:  # noqa: BLE001 - the rows come due again
                 logger.warning(
                     f"{_LOG} computer {computer_id} not checked "
@@ -325,8 +321,11 @@ class CommandWatcher:
                     "their lease"
                 )
                 return 0
+            if isinstance(looked, _StillAway):
+                away[looked.recheck_s].extend(group)
+                return 0
             checked.extend(group)
-            return ended
+            return looked
 
         counts = await asyncio.gather(*(one(c, g) for c, g in by_computer.items()))
         try:
@@ -353,7 +352,9 @@ class CommandWatcher:
         rows: List[Dict[str, Any]],
         coverage: Mapping[str, Coverage],
         now: datetime,
-    ) -> int:
+    ) -> int | _StillAway:
+        """How many of the computer's commands ended, or ``_StillAway`` when
+        its machine is silent and they wait for it."""
         from src.server.database.computer import get_computer
         from src.server.services.workspace_manager import WorkspaceManager
 
@@ -387,7 +388,7 @@ class CommandWatcher:
                 raise
             dialed = not isinstance(e, ComputerAway)
             if not _away_too_long(rows, computer, now, dialed=dialed):
-                raise _StillAway(DIAL_RECHECK_S if dialed else AWAY_RECHECK_S) from e
+                return _StillAway(DIAL_RECHECK_S if dialed else AWAY_RECHECK_S)
         logger.info(
             f"{_LOG} computer {computer_id}'s machine has not answered since "
             f"{min(r['away_since'] for r in rows if r.get('away_since')).isoformat()}; "

@@ -599,7 +599,7 @@ async def test_an_away_machines_commands_are_looked_at_again_quietly_without_a_d
 
     async def check_computer(self, computer_id, rows, coverage, now):
         if computer_id == "away":
-            raise w._StillAway(w.AWAY_RECHECK_S)
+            return w._StillAway(w.AWAY_RECHECK_S)
         return 0
 
     scheduled, away = AsyncMock(), AsyncMock()
@@ -650,9 +650,7 @@ async def test_an_away_machines_commands_wait_for_it_until_their_limit(
     row = _row(away_since=None if away_for is None else NOW - away_for)
     machine = _computer(kind="ssh", status=status, stopped_at=NOW - timedelta(days=9))
     with _Harness(machine, {}, window=None, unanswered=unanswered) as h:
-        with pytest.raises(w._StillAway) as still:
-            await _pass(h, [row])
-    assert still.value.recheck_s == recheck_s
+        assert await _pass(h, [row]) == w._StillAway(recheck_s)
     h.calls.finalize.assert_not_called()
 
 
