@@ -7,10 +7,10 @@ import hashlib
 import logging
 import shlex
 import time
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any
 
 import anyio
@@ -83,6 +83,7 @@ from src.server.services.served_paths import (
 from src.server.services.workspace_files import (
     HOME_NOT_ON_COMPUTER_REASON,
     acquire_sandbox_to_change,
+    backup_stands_in,
     contained_target,
     not_running_for_upload,
     owned_workspace_on_computer,
@@ -143,6 +144,21 @@ async def _read_contained_target(
     return resolved
 
 
+@contextmanager
+def _missing_means(failure: BaseException) -> Iterator[None]:
+    """A file the backup lacks, read while its machine is away, answers as
+    the machine's failure: it may well be on the machine, written since the
+    last backup, and a 404 would say it is gone."""
+    try:
+        yield
+    except HTTPException as e:
+        if e.status_code != 404:
+            raise
+        if isinstance(failure, HTTPException):
+            raise failure from None
+        raise sandbox_failure_http(failure) from None
+
+
 async def _load_virtual_file(route: type[DbJsonRoute], path: str, user_id: str) -> str:
     try:
         text = await route.load(path, user_id)
@@ -175,7 +191,7 @@ async def list_workspace_files(
         description="If True, auto-start a stopped workspace instead of returning DB-cached files.",
     ),
 ) -> dict[str, Any]:
-    """List files in a workspace's sandbox, or from DB if stopped."""
+    """List files in a workspace's sandbox, or from DB if stopped or its machine is away."""
 
     workspace = await db_get_workspace(workspace_id)
     require_workspace_owner(workspace, user_id=x_user_id)
@@ -194,28 +210,9 @@ async def list_workspace_files(
 
     # DB fallback for stopped workspaces (unless auto_start requested)
     if not auto_start and served_from_mirror(workspace.get("status")):
-        file_tree = await FilePersistenceService.get_file_tree(workspace_id)
-        # Filter by path prefix if specified
-        normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
-        if normalized_path:
-            file_tree = [
-                f
-                for f in file_tree
-                if f["path"].startswith(normalized_path + "/")
-                or f["path"] == normalized_path
-            ]
-        allow_hidden = _requested_hidden_ok(path, work_dir, previous_dirs)
-        files = [
-            f["path"]
-            for f in file_tree
-            if panel_lists_stored_file(
-                f["path"], include_system=include_system, include_hidden=allow_hidden
-            )
-            # A row at a virtual path predates the backup skipping its folder;
-            # a read answers from the DB, so only the splice may list one.
-            and not _virtual_file(f["path"])
-        ]
-        files = await _with_virtual_files(files, normalized_path, workspace["user_id"])
+        files = await _listing_from_backup(
+            workspace_id, workspace, path, include_system, work_dir, previous_dirs
+        )
         return {
             "workspace_id": workspace_id,
             "path": path,
@@ -224,18 +221,66 @@ async def list_workspace_files(
             "source": "database",
         }
 
-    async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
-        # Fast path: return empty list if sandbox is still initializing and wait_for_sandbox=False
-        # This allows CLI autocomplete to populate later without blocking startup
-        if not wait_for_sandbox and not sandbox.is_ready():
-            return {"files": [], "sandbox_ready": False}
-        files = await _live_listing(sandbox, workspace, path, pattern, include_system)
+    try:
+        async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
+            # Fast path: return empty list if sandbox is still initializing and wait_for_sandbox=False
+            # This allows CLI autocomplete to populate later without blocking startup
+            if not wait_for_sandbox and not sandbox.is_ready():
+                return {"files": [], "sandbox_ready": False}
+            files = await _live_listing(sandbox, workspace, path, pattern, include_system)
+    except Exception as e:
+        unreachable = await backup_stands_in(workspace_id, e)
+        if unreachable is None:
+            raise
+        files = await _listing_from_backup(
+            workspace_id, workspace, path, include_system, work_dir, previous_dirs
+        )
+        return {
+            "workspace_id": workspace_id,
+            "path": path,
+            "files": files,
+            "sandbox_ready": False,
+            "source": "database",
+            "unreachable": unreachable,
+        }
     return {
         "workspace_id": workspace_id,
         "path": path,
         "files": files,
         "sandbox_ready": True,
     }
+
+
+async def _listing_from_backup(
+    workspace_id: str,
+    workspace: dict[str, Any],
+    path: str,
+    include_system: bool,
+    work_dir: str,
+    previous_dirs: Sequence[str],
+) -> list[str]:
+    file_tree = await FilePersistenceService.get_file_tree(workspace_id)
+    # Filter by path prefix if specified
+    normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
+    if normalized_path:
+        file_tree = [
+            f
+            for f in file_tree
+            if f["path"].startswith(normalized_path + "/")
+            or f["path"] == normalized_path
+        ]
+    allow_hidden = _requested_hidden_ok(path, work_dir, previous_dirs)
+    files = [
+        f["path"]
+        for f in file_tree
+        if panel_lists_stored_file(
+            f["path"], include_system=include_system, include_hidden=allow_hidden
+        )
+        # A row at a virtual path predates the backup skipping its folder;
+        # a read answers from the DB, so only the splice may list one.
+        and not _virtual_file(f["path"])
+    ]
+    return await _with_virtual_files(files, normalized_path, workspace["user_id"])
 
 
 async def _live_listing(
@@ -369,42 +414,57 @@ async def resolve_workspace_file(
         }
 
     name = candidates[0].rsplit("/", 1)[-1]
+    unreachable: str | None = None
     if served_from_mirror(workspace.get("status")):
-        file_tree = await FilePersistenceService.get_file_tree(workspace_id)
-        paths = [f["path"] for f in file_tree if f["path"].rsplit("/", 1)[-1] == name]
+        paths = await _backup_paths_named(workspace_id, name)
         source = "database"
     else:
-        async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
-            if not sandbox.is_ready():
-                return {
-                    "status": "unavailable",
-                    "reason": "sandbox_starting",
-                    "matches": [],
-                }
-            # The acquisition may have moved the folder, so the reference folds
-            # again against the row it left.
-            work_dir, refolded, recent_writes = _folded_refs(body, workspace)
-            candidates = refolded or candidates
-            # The search runs over this workspace's folder, canonicalised the way a
-            # listing's root is: the handle's own root is the computer, which holds
-            # every sibling's namesakes.
-            glob_root = await contained_sandbox_path(sandbox, work_dir, work_dir=work_dir)
-            if glob_root is None:
-                raise HTTPException(status_code=404, detail="Not found")
-            absolute_paths: list[str] = await sandbox.aglob_files(
-                name_glob(name), path=glob_root
-            )
-        paths = [
-            to_client_path(sandbox, p, work_dir)
-            for p in absolute_paths
-            if is_within(work_dir, p)
-        ]
-        source = "sandbox"
+        try:
+            async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
+                if not sandbox.is_ready():
+                    return {
+                        "status": "unavailable",
+                        "reason": "sandbox_starting",
+                        "matches": [],
+                    }
+                # The acquisition may have moved the folder, so the reference folds
+                # again against the row it left.
+                work_dir, refolded, recent_writes = _folded_refs(body, workspace)
+                candidates = refolded or candidates
+                # The search runs over this workspace's folder, canonicalised the way a
+                # listing's root is: the handle's own root is the computer, which holds
+                # every sibling's namesakes.
+                glob_root = await contained_sandbox_path(sandbox, work_dir, work_dir=work_dir)
+                if glob_root is None:
+                    raise HTTPException(status_code=404, detail="Not found")
+                absolute_paths: list[str] = await sandbox.aglob_files(
+                    name_glob(name), path=glob_root
+                )
+        except Exception as e:
+            unreachable = await backup_stands_in(workspace_id, e)
+            if unreachable is None:
+                raise
+            paths = await _backup_paths_named(workspace_id, name)
+            source = "database"
+        else:
+            paths = [
+                to_client_path(sandbox, p, work_dir)
+                for p in absolute_paths
+                if is_within(work_dir, p)
+            ]
+            source = "sandbox"
 
     result = resolve_file_ref(
         candidates, visible_paths(paths, candidates), recent_writes
     )
+    if unreachable is not None:
+        return {**result, "source": source, "unreachable": unreachable}
     return {**result, "source": source}
+
+
+async def _backup_paths_named(workspace_id: str, name: str) -> list[str]:
+    file_tree = await FilePersistenceService.get_file_tree(workspace_id)
+    return [f["path"] for f in file_tree if f["path"].rsplit("/", 1)[-1] == name]
 
 
 @router.get("/{workspace_id}/files/read")
@@ -424,7 +484,7 @@ async def read_workspace_file(
         description="Return the full file content without line-range pagination.",
     ),
 ) -> dict[str, Any]:
-    """Read a file from the workspace's sandbox, or from DB if stopped."""
+    """Read a file from the workspace's sandbox, or from DB if stopped or its machine is away."""
 
     workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
 
@@ -459,56 +519,27 @@ async def read_workspace_file(
 
     # DB fallback for stopped workspaces
     if served_from_mirror(workspace.get("status")):
-        normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
-        if not normalized_path:
-            raise HTTPException(status_code=400, detail="File path is required")
-
-        # Parallel: fetch vault secrets + file content in one round-trip window
-        vault_secrets, file_record = await asyncio.gather(
-            get_vault_secrets_for_redaction(workspace["user_id"]),
-            FilePersistenceService.get_file_content(workspace_id, normalized_path),
+        return await _read_from_backup(
+            workspace_id, workspace, path, work_dir, previous_dirs, offset, limit, unlimited
         )
-        if not file_record:
-            raise HTTPException(status_code=404, detail="File not found")
 
-        if file_record.get("is_binary"):
-            raise HTTPException(
-                status_code=415,
-                detail="Cannot read binary file as text. Use GET /files/download instead.",
+    try:
+        async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
+            work_dir = owner_work_dir(workspace)
+            previous_dirs = previous_dir_names_of(workspace)
+
+            normalized, raw_bytes = await _read_contained_target(
+                sandbox, path, work_dir, previous_dirs
             )
-
-        # Never `.get("content_text", "")` — the key exists with a NULL value on
-        # a blob-backed row, so the default never fires and redact() would be
-        # handed None.
-        text_content = await http_file_text(file_record, user_id=workspace["user_id"])
-        text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
-        if unlimited:
-            content = text_content
-            truncated = False
-        else:
-            lines = text_content.splitlines()
-            content = "\n".join(lines[offset : offset + limit])
-            truncated = len(lines) > offset + limit
-        mime = file_record.get("mime_type") or "text/plain"
-
-        return {
-            "workspace_id": workspace_id,
-            "path": normalized_path,
-            "offset": offset,
-            "limit": limit,
-            "content": content,
-            "mime": mime,
-            "truncated": truncated,
-            "source": "database",
-        }
-
-    async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
-        work_dir = owner_work_dir(workspace)
-        previous_dirs = previous_dir_names_of(workspace)
-
-        normalized, raw_bytes = await _read_contained_target(
-            sandbox, path, work_dir, previous_dirs
-        )
+    except Exception as e:
+        unreachable = await backup_stands_in(workspace_id, e)
+        if unreachable is None:
+            raise
+        with _missing_means(e):
+            answer = await _read_from_backup(
+                workspace_id, workspace, path, work_dir, previous_dirs, offset, limit, unlimited
+            )
+        return {**answer, "unreachable": unreachable}
 
     # Check for known binary extensions
     if _is_binary(normalized):
@@ -553,6 +584,60 @@ async def read_workspace_file(
         "content": content,
         "mime": mime,
         "truncated": truncated,
+    }
+
+
+async def _read_from_backup(
+    workspace_id: str,
+    workspace: dict[str, Any],
+    path: str,
+    work_dir: str,
+    previous_dirs: Sequence[str],
+    offset: int,
+    limit: int,
+    unlimited: bool,
+) -> dict[str, Any]:
+    normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
+    if not normalized_path:
+        raise HTTPException(status_code=400, detail="File path is required")
+
+    # Parallel: fetch vault secrets + file content in one round-trip window
+    vault_secrets, file_record = await asyncio.gather(
+        get_vault_secrets_for_redaction(workspace["user_id"]),
+        FilePersistenceService.get_file_content(workspace_id, normalized_path),
+    )
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if file_record.get("is_binary"):
+        raise HTTPException(
+            status_code=415,
+            detail="Cannot read binary file as text. Use GET /files/download instead.",
+        )
+
+    # Never `.get("content_text", "")`: the key exists with a NULL value on
+    # a blob-backed row, so the default never fires and redact() would be
+    # handed None.
+    text_content = await http_file_text(file_record, user_id=workspace["user_id"])
+    text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
+    if unlimited:
+        content = text_content
+        truncated = False
+    else:
+        lines = text_content.splitlines()
+        content = "\n".join(lines[offset : offset + limit])
+        truncated = len(lines) > offset + limit
+    mime = file_record.get("mime_type") or "text/plain"
+
+    return {
+        "workspace_id": workspace_id,
+        "path": normalized_path,
+        "offset": offset,
+        "limit": limit,
+        "content": content,
+        "mime": mime,
+        "truncated": truncated,
+        "source": "database",
     }
 
 
@@ -958,7 +1043,7 @@ async def download_workspace_file(
         False, description="Ask the browser to save the file rather than show it."
     ),
 ) -> Response:
-    """Download raw bytes from the workspace's sandbox, or from DB if stopped."""
+    """Download raw bytes from the workspace's sandbox, or from DB if stopped or its machine is away."""
     disposition = "attachment" if attachment else "inline"
     byte_range = requested_byte_range(request.headers)
 
@@ -980,48 +1065,10 @@ async def download_workspace_file(
 
     # DB fallback for stopped workspaces
     if served_from_mirror(workspace.get("status")):
-        normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
-        if not normalized_path:
-            raise HTTPException(status_code=400, detail="File path is required")
-
-        if byte_range is None:
-            # Parallel: fetch vault secrets + file content in one round-trip window
-            vault_secrets, file_record = await asyncio.gather(
-                get_vault_secrets_for_redaction(workspace["user_id"]),
-                FilePersistenceService.get_file_content(workspace_id, normalized_path),
-            )
-        else:
-            # A ranged answer is never redacted, so the secrets wait for the
-            # row to say whether the range applies.
-            file_record = await FilePersistenceService.get_file_content(
-                workspace_id, normalized_path
-            )
-        if not file_record:
-            raise HTTPException(status_code=404, detail="File not found")
-
-        filename = file_record.get("file_name", "download")
-        mime = file_record.get("mime_type") or "application/octet-stream"
-
-        if byte_range is not None:
-            if not is_text_content_type(mime):
-                ranged = await _stored_range_response(
-                    file_record,
-                    byte_range,
-                    filename,
-                    mime,
-                    disposition,
-                    user_id=workspace["user_id"],
-                )
-                if ranged is not None:
-                    return ranged
-            vault_secrets = await get_vault_secrets_for_redaction(workspace["user_id"])
-
-        content = await http_file_bytes(file_record, user_id=workspace["user_id"])
-
-        if is_text_content_type(mime) or is_utf8(content):
-            content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
-
-        return _build_download_response(content, filename, mime, request, disposition)
+        return await _download_from_backup(
+            workspace_id, workspace, path, work_dir, previous_dirs,
+            byte_range, request, disposition,
+        )
 
     if byte_range is not None:
         candidate = contained_absolute_path(path, work_dir, previous_dirs)
@@ -1038,87 +1085,151 @@ async def download_workspace_file(
                 # find again.
                 byte_range = None
 
-    async with AsyncExitStack() as folder:
-        # A streamed file is read by path chunk after chunk, so its hold goes
-        # with the response; a settle moving the folder between two chunks
-        # would end the download.
-        sandbox, workspace = await folder.enter_async_context(
-            acquire_sandbox_to_change(workspace_id, x_user_id)
-        )
-        work_dir = owner_work_dir(workspace)
-        previous_dirs = previous_dir_names_of(workspace)
+    try:
+        async with AsyncExitStack() as folder:
+            # A streamed file is read by path chunk after chunk, so its hold goes
+            # with the response; a settle moving the folder between two chunks
+            # would end the download.
+            sandbox, workspace = await folder.enter_async_context(
+                acquire_sandbox_to_change(workspace_id, x_user_id)
+            )
+            work_dir = owner_work_dir(workspace)
+            previous_dirs = previous_dir_names_of(workspace)
 
-        candidate = contained_absolute_path(path, work_dir, previous_dirs)
-        if candidate is None or not sandbox.validate_path(candidate):
-            raise HTTPException(status_code=404, detail="File not found")
-        if byte_range is not None and not is_text_content_type(
-            resolve_content_type(candidate.rsplit("/", 1)[-1])
-        ):
-            ranged = await _live_range_response(
-                sandbox, candidate, work_dir, byte_range, disposition
+            candidate = contained_absolute_path(path, work_dir, previous_dirs)
+            if candidate is None or not sandbox.validate_path(candidate):
+                raise HTTPException(status_code=404, detail="File not found")
+            if byte_range is not None and not is_text_content_type(
+                resolve_content_type(candidate.rsplit("/", 1)[-1])
+            ):
+                ranged = await _live_range_response(
+                    sandbox, candidate, work_dir, byte_range, disposition
+                )
+                if ranged is not None:
+                    return ranged
+            # A browser asking again names the version it holds, and a file still
+            # at it is answered without a byte of it read or sent.
+            if_none_match = request.headers.get("if-none-match")
+            try:
+                read = await read_contained_sandbox_file_versioned(
+                    sandbox, candidate, work_dir=work_dir, unless=stamps_of_etag(if_none_match)
+                )
+                too_large = None
+            except FileTooLargeToServe as e:
+                read, too_large = None, e
+            if read is None and too_large is None:
+                raise HTTPException(status_code=404, detail="File not found")
+            normalized = too_large.canonical if too_large is not None else read.canonical
+            content = (read.content if read is not None else None) or b""
+
+            client_path = to_client_path(sandbox, normalized, work_dir)
+            if is_always_hidden_path(client_path):
+                raise HTTPException(status_code=404, detail="File not found")
+
+            filename = client_path.split("/")[-1] if client_path else "download"
+            mime = resolve_content_type(filename)
+
+            if read is not None and read.content is None:
+                return Response(
+                    status_code=304,
+                    headers={
+                        "Content-Disposition": content_disposition(
+                            filename, disposition=disposition
+                        ),
+                        # Its stamps matched one of ours, aged before it went out.
+                        "ETag": f'"{version_etag(read.size, read.version)}"'
+                        if read.version
+                        else (if_none_match or ""),
+                        "Cache-Control": "private, no-cache",
+                    },
+                )
+
+            if too_large is not None:
+                return await _stream_large_file(
+                    workspace_id, sandbox, too_large, filename, mime, disposition, folder=folder
+                )
+
+            # Redacted bytes are not the file's, so only the file's own go out
+            # under its version.
+            version = read.version if read is not None else None
+            if is_text_content_type(mime) or is_utf8(content):
+                vault_secrets = await get_vault_secrets_for_redaction(workspace["user_id"])
+                content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
+                version = None
+
+            record_fs_bytes("download", len(content))
+
+            return _build_download_response(
+                content,
+                filename,
+                mime,
+                request,
+                disposition,
+                etag=version_etag(len(content), version) if version else None,
+            )
+    except Exception as e:
+        unreachable = await backup_stands_in(workspace_id, e)
+        if unreachable is None:
+            raise
+        with _missing_means(e):
+            return await _download_from_backup(
+                workspace_id, workspace, path, work_dir, previous_dirs,
+                byte_range, request, disposition,
+            )
+
+
+async def _download_from_backup(
+    workspace_id: str,
+    workspace: dict[str, Any],
+    path: str,
+    work_dir: str,
+    previous_dirs: Sequence[str],
+    byte_range: tuple[int, int] | None,
+    request: Request,
+    disposition: str,
+) -> Response:
+    normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
+    if not normalized_path:
+        raise HTTPException(status_code=400, detail="File path is required")
+
+    if byte_range is None:
+        # Parallel: fetch vault secrets + file content in one round-trip window
+        vault_secrets, file_record = await asyncio.gather(
+            get_vault_secrets_for_redaction(workspace["user_id"]),
+            FilePersistenceService.get_file_content(workspace_id, normalized_path),
+        )
+    else:
+        # A ranged answer is never redacted, so the secrets wait for the
+        # row to say whether the range applies.
+        file_record = await FilePersistenceService.get_file_content(
+            workspace_id, normalized_path
+        )
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    filename = file_record.get("file_name", "download")
+    mime = file_record.get("mime_type") or "application/octet-stream"
+
+    if byte_range is not None:
+        if not is_text_content_type(mime):
+            ranged = await _stored_range_response(
+                file_record,
+                byte_range,
+                filename,
+                mime,
+                disposition,
+                user_id=workspace["user_id"],
             )
             if ranged is not None:
                 return ranged
-        # A browser asking again names the version it holds, and a file still
-        # at it is answered without a byte of it read or sent.
-        if_none_match = request.headers.get("if-none-match")
-        try:
-            read = await read_contained_sandbox_file_versioned(
-                sandbox, candidate, work_dir=work_dir, unless=stamps_of_etag(if_none_match)
-            )
-            too_large = None
-        except FileTooLargeToServe as e:
-            read, too_large = None, e
-        if read is None and too_large is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        normalized = too_large.canonical if too_large is not None else read.canonical
-        content = (read.content if read is not None else None) or b""
+        vault_secrets = await get_vault_secrets_for_redaction(workspace["user_id"])
 
-        client_path = to_client_path(sandbox, normalized, work_dir)
-        if is_always_hidden_path(client_path):
-            raise HTTPException(status_code=404, detail="File not found")
+    content = await http_file_bytes(file_record, user_id=workspace["user_id"])
 
-        filename = client_path.split("/")[-1] if client_path else "download"
-        mime = resolve_content_type(filename)
+    if is_text_content_type(mime) or is_utf8(content):
+        content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
-        if read is not None and read.content is None:
-            return Response(
-                status_code=304,
-                headers={
-                    "Content-Disposition": content_disposition(
-                        filename, disposition=disposition
-                    ),
-                    # Its stamps matched one of ours, aged before it went out.
-                    "ETag": f'"{version_etag(read.size, read.version)}"'
-                    if read.version
-                    else (if_none_match or ""),
-                    "Cache-Control": "private, no-cache",
-                },
-            )
-
-        if too_large is not None:
-            return await _stream_large_file(
-                workspace_id, sandbox, too_large, filename, mime, disposition, folder=folder
-            )
-
-        # Redacted bytes are not the file's, so only the file's own go out
-        # under its version.
-        version = read.version if read is not None else None
-        if is_text_content_type(mime) or is_utf8(content):
-            vault_secrets = await get_vault_secrets_for_redaction(workspace["user_id"])
-            content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
-            version = None
-
-        record_fs_bytes("download", len(content))
-
-        return _build_download_response(
-            content,
-            filename,
-            mime,
-            request,
-            disposition,
-            etag=version_etag(len(content), version) if version else None,
-        )
+    return _build_download_response(content, filename, mime, request, disposition)
 
 
 async def _stream_large_file(
@@ -1207,34 +1318,47 @@ async def workspace_file_download_url(
         return {"url": None}
 
     if served_from_mirror(workspace.get("status")):
-        normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
-        if not normalized_path:
-            raise HTTPException(status_code=400, detail="File path is required")
-        if is_always_hidden_path(normalized_path):
-            raise HTTPException(status_code=404, detail="File not found")
-        return {"url": await mirror_download_link(workspace, normalized_path)}
+        return {"url": await _backup_download_link(workspace, path, work_dir, previous_dirs)}
 
-    # Held through the export too, which reads the file by path.
-    async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
-        layout = owner_layout(workspace)
-        work_dir = layout.workspace
-        previous_dirs = previous_dir_names_of(workspace)
-        try:
-            canonical = await contained_target(sandbox, path, work_dir, previous_dirs)
-        except HTTPException:
-            # This check is the project folder's; reads also admit shared tiers
-            # outside it. /files/download applies the read policy and refuses the
-            # rest itself, so it decides, and no answer here says which it was.
-            return {"url": None}
-        client_path = to_client_path(sandbox, canonical, work_dir)
-        if is_always_hidden_path(client_path):
-            raise HTTPException(status_code=404, detail="File not found")
-        rel_path = canonical[len(work_dir.rstrip("/")) + 1 :]
-        try:
-            url = await live_download_link(workspace, sandbox, rel_path, layout=layout)
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="File not found") from None
+    try:
+        # Held through the export too, which reads the file by path.
+        async with acquire_sandbox_to_change(workspace_id, x_user_id) as (sandbox, workspace):
+            layout = owner_layout(workspace)
+            work_dir = layout.workspace
+            previous_dirs = previous_dir_names_of(workspace)
+            try:
+                canonical = await contained_target(sandbox, path, work_dir, previous_dirs)
+            except HTTPException:
+                # This check is the project folder's; reads also admit shared tiers
+                # outside it. /files/download applies the read policy and refuses the
+                # rest itself, so it decides, and no answer here says which it was.
+                return {"url": None}
+            client_path = to_client_path(sandbox, canonical, work_dir)
+            if is_always_hidden_path(client_path):
+                raise HTTPException(status_code=404, detail="File not found")
+            rel_path = canonical[len(work_dir.rstrip("/")) + 1 :]
+            try:
+                url = await live_download_link(workspace, sandbox, rel_path, layout=layout)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail="File not found") from None
+    except Exception as e:
+        if await backup_stands_in(workspace_id, e) is None:
+            raise
+        # No link for a file the backup lacks: /files/download then says
+        # what the machine's failure is.
+        url = await _backup_download_link(workspace, path, work_dir, previous_dirs)
     return {"url": url}
+
+
+async def _backup_download_link(
+    workspace: dict[str, Any], path: str, work_dir: str, previous_dirs: Sequence[str]
+) -> str | None:
+    normalized_path = normalize_requested_path(path, work_dir, previous_dirs)
+    if not normalized_path:
+        raise HTTPException(status_code=400, detail="File path is required")
+    if is_always_hidden_path(normalized_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return await mirror_download_link(workspace, normalized_path)
 
 
 @router.post("/{workspace_id}/files/upload")

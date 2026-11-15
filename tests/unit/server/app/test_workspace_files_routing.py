@@ -367,3 +367,139 @@ async def test_backup_status_falls_back_when_the_folder_is_moving(moving):
         "files_backup": True,
         "files_restore_offered_at": None,
     }
+
+
+def _away_machine_manager() -> MagicMock:
+    """A workspace manager whose acquisition finds the owner's machine's tunnel down."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    manager = MagicMock()
+    manager.get_instance.return_value.get_session_for_workspace = AsyncMock(
+        side_effect=SSHConnectError("not_connected", "mac-mini is not connected.")
+    )
+    return manager
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backs_up", "has_backup"),
+    [(True, True), (False, True), (True, False)],
+    ids=["backup-kept", "backups-off", "no-backup"],
+)
+async def test_a_running_workspace_whose_machine_is_away_lists_its_backup(
+    backs_up, has_backup
+):
+    """A sleeping machine's workspace still reads as running, so the stopped
+    check never routes it to the backup. The machine not answering does,
+    read-only and marked, where a backup is kept; with none, the 503 and its
+    code stand."""
+    from fastapi import HTTPException
+
+    row = {
+        **_workspace("ws-away", "user-1", status="running"),
+        "computer_root_dir": "/Users/me/langalpha",
+    }
+    with (
+        patch(_DATA_FILES, new=AsyncMock(return_value=[])),
+        patch(
+            "src.server.app.workspace_files.crud.db_get_workspace",
+            AsyncMock(return_value=row),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.owner_work_dir",
+            return_value="/Users/me/langalpha/ws",
+        ),
+        patch(
+            "src.server.services.workspace_files.WorkspaceManager",
+            _away_machine_manager(),
+        ),
+        patch(
+            "src.server.services.workspace_files.computer_backs_up_files",
+            AsyncMock(return_value=backs_up),
+        ),
+        patch(
+            "src.server.services.workspace_files.workspace_has_backup",
+            AsyncMock(return_value=has_backup),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.FilePersistenceService.get_file_tree",
+            AsyncMock(return_value=[{"path": "notes.md"}]),
+        ),
+    ):
+        call = list_workspace_files(
+            workspace_id="ws-away",
+            x_user_id="user-1",
+            path=".",
+            include_system=False,
+            pattern="**/*",
+            wait_for_sandbox=False,
+            auto_start=False,
+        )
+        if backs_up and has_backup:
+            result = await call
+        else:
+            with pytest.raises(HTTPException) as refused:
+                await call
+
+    if backs_up and has_backup:
+        assert result["files"] == ["notes.md"]
+        assert (result["source"], result["unreachable"]) == ("database", "not_connected")
+    else:
+        assert refused.value.status_code == 503
+        assert refused.value.headers == {"X-Computer-Unreachable": "not_connected"}
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_backup_lacks_answers_as_the_away_machine_not_as_missing():
+    """Written since the last backup, it may well be on the machine: a 404
+    would say it is gone, so the machine's 503 stands."""
+    from fastapi import HTTPException
+
+    from src.server.app.workspace_files.crud import read_workspace_file
+
+    row = {
+        **_workspace("ws-away", "user-1", status="running"),
+        "computer_root_dir": "/Users/me/langalpha",
+    }
+    with (
+        patch(
+            "src.server.services.workspace_files.db_get_workspace",
+            AsyncMock(return_value=row),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.owner_work_dir",
+            return_value="/Users/me/langalpha/ws",
+        ),
+        patch(
+            "src.server.services.workspace_files.WorkspaceManager",
+            _away_machine_manager(),
+        ),
+        patch(
+            "src.server.services.workspace_files.computer_backs_up_files",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "src.server.services.workspace_files.workspace_has_backup",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.get_vault_secrets_for_redaction",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.FilePersistenceService.get_file_content",
+            AsyncMock(return_value=None),
+        ),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await read_workspace_file(
+            workspace_id="ws-away",
+            x_user_id="user-1",
+            path="new-draft.md",
+            offset=0,
+            limit=100,
+            unlimited=False,
+        )
+
+    assert refused.value.status_code == 503
+    assert refused.value.headers == {"X-Computer-Unreachable": "not_connected"}

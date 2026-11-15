@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -10,9 +11,15 @@ from typing import Any
 from fastapi import HTTPException
 
 from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.sandbox.providers.ssh_errors import (
+    UNANSWERED_CODES,
+    connect_failure,
+)
 from src.observability import safe_record, workspace_fs_bytes
 from src.server.database.home_workspace import is_unbound
+from src.server.database.workspace import computer_backs_up_files
 from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.database.workspace_file import workspace_has_backup
 from src.server.database.workspace_folders import (
     WorkspaceFolderMoving,
     is_top_level,
@@ -32,6 +39,7 @@ from src.server.services.workspace_layout import (
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.utils.api import require_workspace_owner
 from src.server.utils.error_sanitization import (
+    COMPUTER_UNREACHABLE_HEADER,
     sandbox_failure_http,
     sandbox_unreachable_detail,
     single_line,
@@ -119,6 +127,35 @@ async def acquire_sandbox_to_change(
     sandbox, _ = await acquire_sandbox(workspace_id, user_id, cause)
     async with held_workspace_row(workspace_id) as workspace:
         yield sandbox, workspace
+
+
+def unanswered_code(exc: BaseException) -> str | None:
+    """The connect code of an owner's machine that did not answer, from the
+    failure itself or from the 503 ``sandbox_failure_http`` made of it."""
+    if isinstance(exc, HTTPException):
+        code = (exc.headers or {}).get(COMPUTER_UNREACHABLE_HEADER)
+        return code if code in UNANSWERED_CODES else None
+    failure = connect_failure(exc)
+    return failure.code if failure is not None and not failure.answered else None
+
+
+async def backup_stands_in(workspace_id: str, exc: BaseException) -> str | None:
+    """The code to answer a read from the backup with, when *exc* is the
+    owner's machine not answering; None to let the failure stand.
+
+    A machine asleep or offline still reads as running, so the status check
+    never sends its reads to the backup, though its files are there as of the
+    last backup. Not where backups are off or none has run: an empty or
+    abandoned copy would read as the folder's real contents. Asked only after
+    the machine failed, so a reachable one pays nothing for it.
+    """
+    code = unanswered_code(exc)
+    if code is None:
+        return None
+    backs_up, has_backup = await asyncio.gather(
+        computer_backs_up_files(workspace_id), workspace_has_backup(workspace_id)
+    )
+    return code if backs_up and has_backup else None
 
 
 @asynccontextmanager
