@@ -222,6 +222,17 @@ async def _purge_terminal_jobs() -> list:
     return []
 
 
+async def _purge_relayed_sources() -> list:
+    """Drop the relay's held sources past retention (``relayed_sources``),
+    which nothing collects once their command's report is long gone. Here
+    rather than as each reply is held, which would run it per paid call."""
+    from src.server.database.relayed_sources import purge_expired
+
+    if purged := await purge_expired(batch_size=PURGE_BATCH):
+        logger.info(f"[HookOutbox] purged {purged} relayed sources past retention")
+    return []
+
+
 class HookOutboxDrainer:
     """Per-process drainer: claim → execute concurrently → ack/nack, forever.
 
@@ -303,6 +314,9 @@ class HookOutboxDrainer:
             # the table (and the sweeps above) stays flat on a long-lived
             # deployment.
             _Sweep("retention purge", PURGE_INTERVAL, _purge_terminal_jobs, _no_row),
+            _Sweep(
+                "relayed sources purge", PURGE_INTERVAL, _purge_relayed_sources, _no_row
+            ),
         )
 
     def start(self) -> None:

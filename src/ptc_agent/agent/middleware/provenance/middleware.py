@@ -20,6 +20,7 @@ from the LangGraph namespace.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import logging
 import uuid
@@ -36,6 +37,10 @@ from ptc_agent.agent.middleware.provenance.body_store import (
 )
 from ptc_agent.agent.middleware.provenance.command_trace import (
     CommandTraceReader,
+    RelayReader,
+    RelaySettleWait,
+    await_relay_settled,
+    collect_relayed,
     read_command_trace,
     reported_commands,
     shown_commands,
@@ -51,7 +56,12 @@ from ptc_agent.agent.provenance import (
     hash_args,
     redact_args,
 )
-from ptc_agent.agent.provenance.trace import now_iso, sources_from_trace
+from ptc_agent.agent.provenance.trace import (
+    RELAY_CALL_KEY,
+    now_iso,
+    sources_from_relay,
+    sources_from_trace,
+)
 from ptc_agent.core.paths import (
     AGENT_HISTORY_DIRS,
     LEGACY_ROOT_TOOLS_DIR,
@@ -231,6 +241,13 @@ def _strip_mcp_trace(result: Any) -> None:
     artifact = getattr(result, "artifact", None)
     if isinstance(artifact, dict):
         artifact.pop("mcp_trace", None)
+        artifact.pop(RELAY_CALL_KEY, None)
+
+
+def _relay_call_id(result: Any) -> str | None:
+    artifact = getattr(result, "artifact", None)
+    call_id = artifact.get(RELAY_CALL_KEY) if isinstance(artifact, dict) else None
+    return str(call_id) if call_id else None
 
 
 def _is_error_result(result: Any) -> bool:
@@ -288,7 +305,12 @@ class ProvenanceMiddleware(AgentMiddleware):
     start with; without it only the stock roots are recognised.
 
     ``command_traces`` reads a background command's stored MCP trace; the
-    default reads the command's ledger row.
+    default reads the command's ledger row. ``relay_sources`` takes the
+    sources the egress relay held under a call id; the default takes
+    ``user_id``'s, and none without one. ``relay_settled`` waits for a
+    handed-off command's paid calls to settle before those are taken, which
+    a code run's result has already done, once for all the commands a call
+    reads; the default reads ``user_id``'s.
     """
 
     def __init__(
@@ -296,11 +318,20 @@ class ProvenanceMiddleware(AgentMiddleware):
         redactor: Callable[[str | None], str | None] | None = None,
         sandbox_root: str | None = None,
         command_traces: CommandTraceReader | None = None,
+        relay_sources: RelayReader | None = None,
+        user_id: str | None = None,
+        relay_settled: RelaySettleWait | None = None,
     ) -> None:
         super().__init__()
         self._redactor = redactor
         self._sandbox_root = sandbox_root
         self._command_traces = command_traces or read_command_trace
+        self._relay_sources = relay_sources or (
+            functools.partial(collect_relayed, str(user_id)) if user_id else None
+        )
+        self._relay_settled = relay_settled or (
+            functools.partial(await_relay_settled, str(user_id)) if user_id else None
+        )
         # Background body-store writes in flight (strong refs so they aren't GC'd
         # mid-flush), owned by this instance and drained best-effort at agent end.
         # Bounded concurrency + exception consumption live in body_store.
@@ -358,6 +389,15 @@ class ProvenanceMiddleware(AgentMiddleware):
 
             try:
                 sources = list(extractor(request, result))
+                if tool_name in _MCP_TRACE_TOOLS:
+                    call_id = _relay_call_id(result)
+                    # As a handed-off command's notice does: a settle that
+                    # outran its finish budget has not held its sources yet.
+                    if call_id and self._relay_sources and self._relay_settled:
+                        await self._relay_settled([call_id])
+                    sources = await self._with_relayed(
+                        sources, call_id, tool_call.get("id")
+                    )
             finally:
                 # mcp_trace is provenance-only scaffolding carrying raw in-sandbox
                 # args + snippets. Strip it from the artifact (after extraction
@@ -411,11 +451,37 @@ class ProvenanceMiddleware(AgentMiddleware):
         thread_id = _main_thread_id() if command_ids else None
         if thread_id is None:
             return
-        for command_id in command_ids:
-            trace = await self._command_traces(thread_id, command_id)
-            await self._emit(
-                sources_from_trace(trace, record_seed=command_id), command_id
+        traces = await asyncio.gather(
+            *(self._command_traces(thread_id, command_id) for command_id in command_ids)
+        )
+        call_ids = [trace.call_id for trace in traces if trace.call_id]
+        if call_ids and self._relay_sources and self._relay_settled:
+            await self._relay_settled(call_ids)
+        for command_id, trace in zip(command_ids, traces):
+            sources = await self._with_relayed(
+                sources_from_trace(trace.entries, record_seed=command_id),
+                trace.call_id,
+                record_seed=command_id,
             )
+            await self._emit(sources, command_id)
+
+    async def _with_relayed(
+        self,
+        sources: list[ProvenanceSource],
+        call_id: str | None,
+        tool_call_id: str | None = None,
+        *,
+        record_seed: str | None = None,
+    ) -> list[ProvenanceSource]:
+        """``sources`` with the relay's for the paid calls made under
+        ``call_id`` in place of the trace entries those calls' tools left,
+        whose relay sources say the same with the whole reply behind them."""
+        if not call_id or self._relay_sources is None:
+            return sources
+        batch = await self._relay_sources(call_id)
+        return sources_from_relay(
+            batch.sources, tool_call_id, record_seed=record_seed
+        ) + [s for s in sources if s.identifier not in batch.calls]
 
     async def _emit(self, sources: list[ProvenanceSource], label: str | None) -> None:
         """Verify, redact and stream ``sources``, then queue their bodies."""

@@ -108,15 +108,21 @@ class JobRef:
     log_path: str
     trace_path: str
     log_relpath: str
+    # The id the job's code runs under, which the egress relay files its paid
+    # calls and their sources by: a handed-off command's are collected by it.
+    call_id: str | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        ref = {
             "command_id": self.command_id,
             "state_dir": self.state_dir,
             "log_path": self.log_path,
             "trace_path": self.trace_path,
             "log_relpath": self.log_relpath,
         }
+        if self.call_id:
+            ref["call_id"] = self.call_id
+        return ref
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> JobRef:
@@ -126,6 +132,7 @@ class JobRef:
             log_path=str(d["log_path"]),
             trace_path=str(d["trace_path"]),
             log_relpath=str(d["log_relpath"]),
+            call_id=str(d["call_id"]) if d.get("call_id") else None,
         )
 
 
@@ -566,6 +573,7 @@ def job_paths(
     workspace: WorkspaceLayout,
     thread_id: str | None,
     command_id: str,
+    call_id: str | None = None,
 ) -> JobRef:
     """A new job's ref.
 
@@ -588,4 +596,5 @@ def job_paths(
         log_path=log_path,
         trace_path=trace_path,
         log_relpath=relpath,
+        call_id=call_id,
     )

@@ -13,6 +13,8 @@ field is re-clamped host-side before it can reach an event, a row or a render.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +22,7 @@ from ptc_agent.agent.provenance.types import (
     RESULT_BODY_MAX_BYTES,
     SNIPPET_MAX_CHARS,
     ProvenanceSource,
+    fingerprint_result,
     hash_args,
     redact_args,
 )
@@ -123,7 +126,7 @@ def sources_from_trace(
                     else str(uuid.uuid4())
                 ),
                 source_type="mcp_tool",
-                identifier=f"{server}:{tool}",
+                identifier=relayed_call(server, tool),
                 timestamp=timestamp,
                 provider=f"mcp:{server}",
                 tool_call_id=tool_call_id,
@@ -140,6 +143,92 @@ def sources_from_trace(
                 result_body=clamp_body_bytes(
                     entry.get("result_body"), RESULT_BODY_MAX_BYTES
                 ),
+            )
+        )
+    return sources
+
+
+# The call id a code run's paid relay calls were filed under, which the tool
+# puts on its artifact so the sources the relay held for them can be collected.
+RELAY_CALL_KEY = "relay_call_id"
+
+
+@dataclass(frozen=True)
+class RelayedSource:
+    """One source the egress relay read off a paid reply, written by host code
+    from the vendor's own reply; ``body`` is whole. ``held_id`` is the row a
+    collection took it from, which seeds its record id: a command's sources
+    can be taken over more than one collection, and an id from its place in
+    a batch would repeat in the next."""
+
+    source_type: str
+    identifier: str
+    title: str | None = None
+    provider: str | None = None
+    site: str | None = None
+    args: dict[str, Any] | None = None
+    cost_credits: float | None = None
+    body: str | None = None
+    held_id: int | None = None
+
+
+def relayed_call(server: str, tool: str) -> str:
+    """A relayed call named as :func:`sources_from_trace` names its entry, so
+    the trace entries the relay's sources stand in for can be matched."""
+    return f"{server[:IDENT_PART_MAX_CHARS]}:{tool[:IDENT_PART_MAX_CHARS]}"
+
+
+@dataclass(frozen=True)
+class RelayBatch:
+    """The sources one collection took under a call id, and every tool the
+    relay held sources for under it, taken now or before, as
+    :func:`relayed_call` names it. By tool, not server: a free tool of a
+    paid server leaves no relayed source, so its trace entry is its only
+    one."""
+
+    sources: tuple[RelayedSource, ...] = ()
+    calls: frozenset[str] = frozenset()
+
+
+def sources_from_relay(
+    relayed: Iterable[RelayedSource],
+    tool_call_id: str | None = None,
+    *,
+    record_seed: str | None = None,
+) -> list[ProvenanceSource]:
+    """Sources from the relay's held ones. The body is whole, so its hash is
+    computed here, and it is the hash the middleware's check then reproduces.
+    Record ids follow ``sources_from_trace``, keyed by the held row where
+    there is one."""
+    sources: list[ProvenanceSource] = []
+    for index, held in enumerate(relayed):
+        sha = size = snippet = None
+        if held.body:
+            sha, size, snippet = fingerprint_result(held.body)
+        sources.append(
+            ProvenanceSource(
+                record_id=(
+                    record_id_for(
+                        f"{record_seed}:relay",
+                        index if held.held_id is None else held.held_id,
+                    )
+                    if record_seed
+                    else str(uuid.uuid4())
+                ),
+                source_type=held.source_type,
+                identifier=held.identifier[:2048],
+                timestamp=now_iso(),
+                title=truncate(held.title, IDENT_PART_MAX_CHARS),
+                provider=truncate(held.provider, IDENT_PART_MAX_CHARS),
+                tool_call_id=tool_call_id,
+                args_fingerprint=hash_args(held.args),
+                args=held.args,
+                result_sha256=sha,
+                result_size=size,
+                result_snippet=snippet,
+                result_body=held.body if sha else None,
+                cost_credits=held.cost_credits,
+                site=held.site,
             )
         )
     return sources

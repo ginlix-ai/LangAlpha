@@ -8,6 +8,7 @@ from psycopg.rows import dict_row
 
 from src.server.database import pool
 from src.server.database.conversation import _sql
+from src.server.database.provenance import PROVENANCE_READ_COLUMNS
 from src.server.database.replay_facts import RUN_FACTS_SQL
 from src.server.utils.pg_sanitize import normalize_uuid
 
@@ -162,11 +163,7 @@ async def get_replay_thread_data(thread_id: str) -> ThreadRows | None:
 
             # 6. Provenance rows (table-sourced provenance reconstruction)
             await cur.execute(
-                """SELECT provenance_record_id, conversation_response_id,
-                          turn_index, tool_call_id, source_type, identifier,
-                          title, detail, args_fingerprint, args, result_sha256,
-                          result_size, result_snippet, agent, provider,
-                          source_timestamp, emitted_at, created_at
+                f"""SELECT {PROVENANCE_READ_COLUMNS}
                    FROM provenance_records
                    WHERE conversation_thread_id = %s
                    ORDER BY turn_index ASC,
