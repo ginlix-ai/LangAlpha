@@ -127,18 +127,23 @@ if [ -L "$f" ] || [ ! -f "$f" ] || [ ! -O "$f" ]; then echo skipped; exit 0; fi
 LC_ALL=C; export LC_ALL
 umask 077
 # One rewrite at a time, or two that overlap each put back the line the other
-# took out. A folder that takes no new file is read but never rewritten.
+# took out. A folder that takes no new file is read but never rewritten. The
+# lock is a folder, which a script from before ``held`` waits on too, and the
+# run that makes the file in it exclusively (noclobber) holds it: a uutils
+# mkdir reports success for a folder another run made at the same moment.
 if [ -w "${{f%/*}}" ]; then
   l="$f.langalpha.lock"
   i=0
-  until mkdir "$l" 2>/dev/null; do
+  until mkdir "$l" 2>/dev/null && (set -C && : > "$l/held") 2>/dev/null; do
     i=$((i + 1))
     [ "$i" -le 10 ] || {{ echo "Could not lock $f to rewrite it" >&2; exit 1; }}
     # A lock a minute old was left by a run that died.
-    find "$l" -prune -mmin +1 -exec rmdir {{}} \\; 2>/dev/null
+    if [ -n "$(find "$l" -prune -mmin +1 2>/dev/null)" ]; then
+      rm -f "$l/held"; rmdir "$l" 2>/dev/null
+    fi
     [ -d "$l" ] && sleep 1
   done
-  trap 'rmdir "$l" 2>/dev/null' EXIT
+  trap 'rm -f "$l/held"; rmdir "$l" 2>/dev/null' EXIT
   trap 'exit 1' HUP INT TERM
 fi
 s=$(cksum < "$f")

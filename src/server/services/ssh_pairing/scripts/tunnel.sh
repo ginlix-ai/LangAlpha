@@ -13,12 +13,15 @@ put() {
 }
 
 # One run at a time sets the tunnel up, so a second one started beside it
-# waits, then finds the first one's key and with it the same tunnel. mkdir is
-# the lock because it is atomic everywhere, and macOS has no flock.
+# waits, then finds the first one's key and with it the same tunnel. The lock
+# is a file holding the run's pid, which the shell creates exclusively
+# (noclobber): macOS has no flock, and a uutils mkdir reports success for a
+# folder another run made at the same moment. An older script's lock is a
+# folder with the pid inside.
 lock_setup() {
   waited=0
-  until mkdir "$lock" 2>/dev/null; do
-    owner=$(cat "$lock/pid" 2>/dev/null)
+  until (set -C && echo $$ > "$lock") 2>/dev/null; do
+    owner=$(cat "$lock" 2>/dev/null || cat "$lock/pid" 2>/dev/null)
     # A run killed while holding it leaves it behind: its pid is gone, or the
     # lock is older than any setup takes, should the pid have been reused.
     if { [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; } \
@@ -34,7 +37,6 @@ lock_setup() {
   done
   held=1
   trap unlock_setup EXIT
-  echo $$ > "$lock/pid"
 }
 
 unlock_setup() {

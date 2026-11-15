@@ -103,7 +103,8 @@ def test_the_claim_waits_on_the_hold_starts_take(tmp_path):
     root = tmp_path / "la"
     root.mkdir()
     computers = tmp_path / "computers"
-    (computers / ".claiming").mkdir(parents=True)
+    computers.mkdir()
+    (computers / ".claiming").touch()
     script = _claim(root, computers)
 
     held = subprocess.Popen(["bash", "-c", script])
@@ -114,7 +115,7 @@ def test_the_claim_waits_on_the_hold_starts_take(tmp_path):
     assert held.poll() is None
     assert not (root / ROOT_MARKER).exists()
 
-    (computers / ".claiming").rmdir()
+    (computers / ".claiming").unlink()
     assert held.wait(timeout=5) == 0
     assert (root / ROOT_MARKER).read_text() == ME
     # The hold goes with the claim.
