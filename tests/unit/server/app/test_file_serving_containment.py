@@ -44,8 +44,8 @@ from src.server.services.workspace_file_containment import (
     resolve_in_sandbox,
     serving_roots,
 )
+from src.server.app.workspace_files._shared import RANGE_MAX_BYTES
 from src.server.app.workspace_files.crud import (
-    RANGE_MAX_BYTES,
     download_workspace_file,
     read_workspace_file,
 )
@@ -1036,7 +1036,7 @@ async def test_workspace_download_returns_a_contained_file(tree) -> None:
 
 _CRUD_VAULT = "src.server.app.workspace_files.crud.get_vault_secrets_for_redaction"
 _CRUD_READ_RANGE = "src.server.app.workspace_files.crud.read_contained_sandbox_range"
-_RANGE_MAX = "src.server.app.workspace_files.crud.RANGE_MAX_BYTES"
+_RANGE_MAX = "src.server.app.workspace_files._shared.RANGE_MAX_BYTES"
 _CRUD_WARM = "src.server.app.workspace_files.crud.warm_sandbox"
 VAULT_SECRET = "vault-secret-value-1234"
 # A version line as stat prints it (size, mtime, ctime, inode), and the clock.

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import hashlib
 import logging
 import re
 from collections.abc import Iterator, Mapping, Sequence
@@ -13,7 +14,8 @@ from contextlib import contextmanager
 from typing import Any
 
 from charset_normalizer import from_bytes
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
+from fastapi.responses import Response
 
 
 from ptc_agent.agent.backends.db_json_route import DbJsonRoute
@@ -38,6 +40,7 @@ from src.server.services.workspace_file_containment import normalize_requested_p
 from src.server.services.served_paths import SYSTEM_DIR_PREFIXES
 from src.server.services.workspace_files import layout_for
 from src.server.utils.error_sanitization import single_line
+from src.server.utils.http_headers import content_disposition
 
 logger = logging.getLogger(__name__)
 
@@ -397,3 +400,91 @@ def may_be_utf8(head: bytes, *, whole: bool) -> bool:
     return True
 
 
+def _build_download_response(
+    content: bytes,
+    filename: str,
+    mime: str,
+    request: Request,
+    disposition: str = "inline",
+    etag: str | None = None,
+) -> Response:
+    """A download the browser revalidates on every read.
+
+    The agent rewrites a file in place (a chart re-rendered at the same path),
+    so a max-age would hand a later read the bytes it replaced; the ETag keeps
+    an unchanged file to a bodiless 304. ``etag`` is the file's version when
+    the bytes go as the file holds them; anything else is told by its bytes.
+    """
+    etag = etag or hashlib.md5(content).hexdigest()
+    headers: dict[str, str] = {
+        "Content-Disposition": content_disposition(filename, disposition=disposition),
+        "ETag": f'"{etag}"',
+        "Cache-Control": "private, no-cache",
+    }
+
+    # Return 304 if client already has this version
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match and if_none_match.strip('" ') == etag:
+        return Response(status_code=304, headers=headers)
+
+    return Response(content=content, media_type=mime, headers=headers)
+
+
+# The most one ranged answer carries, so a range of any width holds a bounded
+# slice in memory and a client loops on a short answer. It also bounds a live
+# slice's exec output, so it must not pass EXEC_READ_MAX_BYTES, the most one
+# exec read may carry.
+RANGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _range_length(first: int, last: int) -> int:
+    """The most a range is answered with; the file's end can cut it shorter."""
+    return min(last - first + 1, RANGE_MAX_BYTES)
+
+
+def _starts_as_text(head: bytes, size: int) -> bool:
+    """Whether a file whose first bytes are ``head`` might be text, which goes
+    whole so that it is redacted like any other text answer."""
+    return may_be_utf8(head, whole=len(head) >= size)
+
+
+def _range_response(
+    content: bytes,
+    first: int,
+    size: int,
+    etag: str,
+    filename: str,
+    mime: str,
+    disposition: str,
+) -> Response:
+    """A 206 carrying ``content`` from byte ``first`` of a binary file.
+
+    Unredacted, like a streamed download and the signed link: redaction needs
+    the whole body, so only a file whose type and first bytes already rule out
+    text takes a range, and its whole answer would not be redacted either.
+    """
+    return Response(
+        content=content,
+        status_code=206,
+        media_type=mime,
+        headers={
+            "Content-Range": f"bytes {first}-{first + len(content) - 1}/{size}",
+            "Accept-Ranges": "bytes",
+            "ETag": f'"{etag}"',
+            # The reader holds what it fetched. A slice the browser stored would
+            # only be revalidated against a route that answers every range anew.
+            # Each slice is held to the first's exact ETag; re-encoding weakens it.
+            "Cache-Control": "private, no-store, no-transform",
+            "Content-Disposition": content_disposition(
+                filename, disposition=disposition
+            ),
+        },
+    )
+
+
+def _unsatisfiable(size: int) -> HTTPException:
+    return HTTPException(
+        status_code=416,
+        detail="Requested range not satisfiable",
+        headers={"Content-Range": f"bytes */{size}"},
+    )

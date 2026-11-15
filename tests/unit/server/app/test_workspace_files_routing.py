@@ -43,7 +43,7 @@ def _workspace(ws_id: str, user_id: str, status: str) -> dict:
 @pytest.mark.asyncio
 @patch(_DATA_FILES, new=AsyncMock(return_value=[]))
 @patch("src.server.app.workspace_files.crud.owner_work_dir", return_value="/home/workspace")
-@patch("src.server.app.workspace_files.crud.FilePersistenceService")
+@patch("src.server.app.workspace_files.backup_reads.FilePersistenceService")
 @patch("src.server.app.workspace_files.crud.db_get_workspace")
 async def test_starting_status_routes_to_db_fallback(
     mock_get_ws, mock_fp, _mock_wd,
@@ -78,7 +78,7 @@ async def test_starting_status_routes_to_db_fallback(
 @pytest.mark.asyncio
 @patch(_DATA_FILES, new=AsyncMock(return_value=[]))
 @patch("src.server.app.workspace_files.crud.owner_work_dir", return_value="/home/workspace")
-@patch("src.server.app.workspace_files.crud.FilePersistenceService")
+@patch("src.server.app.workspace_files.backup_reads.FilePersistenceService")
 @patch("src.server.app.workspace_files.crud.db_get_workspace")
 async def test_files_during_concurrent_failing_lazy_init(
     mock_get_ws, mock_fp, _mock_wd,
@@ -422,7 +422,7 @@ async def test_a_running_workspace_whose_machine_is_away_lists_its_backup(
             AsyncMock(return_value=has_backup),
         ),
         patch(
-            "src.server.app.workspace_files.crud.FilePersistenceService.get_file_tree",
+            "src.server.app.workspace_files.backup_reads.FilePersistenceService.get_file_tree",
             AsyncMock(return_value=[{"path": "notes.md"}]),
         ),
     ):
@@ -434,6 +434,7 @@ async def test_a_running_workspace_whose_machine_is_away_lists_its_backup(
             pattern="**/*",
             wait_for_sandbox=False,
             auto_start=False,
+            backup_ok=True,
         )
         if backs_up and has_backup:
             result = await call
@@ -447,6 +448,109 @@ async def test_a_running_workspace_whose_machine_is_away_lists_its_backup(
     else:
         assert refused.value.status_code == 503
         assert refused.value.headers == {"X-Computer-Unreachable": "not_connected"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tunnel", ["tun-1", None], ids=["tunneled", "dialed"])
+async def test_a_client_that_has_not_said_it_shows_a_backup_gets_the_away_machine(tunnel):
+    """An older client ignores the marks and edits what a read answers, and a
+    running workspace takes its saves: older backed-up text would be saved
+    over the file once the machine is back. Only a client that opts in is
+    answered from the backup."""
+    from fastapi import HTTPException
+
+    from src.server.app.workspace_files.crud import read_workspace_file
+
+    row = _mac_row("ws-away", tunnel=tunnel)
+    backup_read = AsyncMock()
+    with (
+        patch("src.server.services.ssh_computers.computer_tunnel_down", _tunnel_down()),
+        patch(
+            "src.server.services.workspace_files.db_get_workspace",
+            AsyncMock(return_value=row),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.owned_workspace_on_computer",
+            AsyncMock(return_value=row),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.owner_work_dir",
+            return_value="/Users/me/langalpha/ws",
+        ),
+        patch(
+            "src.server.services.workspace_files.WorkspaceManager",
+            _away_machine_manager(),
+        ),
+        patch(
+            "src.server.services.workspace_files.computer_backs_up_files",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "src.server.services.workspace_files.workspace_has_backup",
+            AsyncMock(return_value=True),
+        ),
+        patch("src.server.app.workspace_files.crud.read_from_backup", backup_read),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await read_workspace_file(
+            workspace_id="ws-away",
+            x_user_id="user-1",
+            path="notes.md",
+            offset=0,
+            limit=100,
+            unlimited=True,
+        )
+
+    assert refused.value.status_code == 503
+    assert refused.value.headers == {"X-Computer-Unreachable": "not_connected"}
+    backup_read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("away", [True, False], ids=["machine-away", "stopped"])
+async def test_bytes_from_the_backup_say_by_header_that_the_machine_is_away(away):
+    """An image or a PDF has no field to carry the marks a text read does, so
+    the viewer would show the backup's bytes as the live file's. A stopped
+    workspace's backup is no news and carries nothing."""
+    from fastapi.responses import Response
+
+    from src.server.app.workspace_files.crud import download_workspace_file
+
+    row = _mac_row("ws-away") if away else _workspace("ws-away", "user-1", status="stopped")
+    with (
+        patch("src.server.services.ssh_computers.computer_tunnel_down", _tunnel_down()),
+        patch(
+            "src.server.app.workspace_files.crud.owned_workspace_on_computer",
+            AsyncMock(return_value=row),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.owner_work_dir",
+            return_value="/Users/me/langalpha/ws",
+        ),
+        patch(
+            "src.server.services.workspace_files.computer_backs_up_files",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "src.server.services.workspace_files.workspace_has_backup",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "src.server.app.workspace_files.crud.download_from_backup",
+            AsyncMock(return_value=Response(b"%PDF-1.7", media_type="application/pdf")),
+        ),
+    ):
+        response = await download_workspace_file(
+            workspace_id="ws-away",
+            x_user_id="user-1",
+            request=SimpleNamespace(headers={}),
+            path="report.pdf",
+            attachment=False,
+            backup_ok=True,
+        )
+
+    assert response.body == b"%PDF-1.7"
+    assert response.headers.get("X-Computer-Unreachable") == ("not_connected" if away else None)
 
 
 @pytest.mark.asyncio
@@ -483,11 +587,11 @@ async def test_a_file_the_backup_lacks_answers_as_the_away_machine_not_as_missin
             AsyncMock(return_value=True),
         ),
         patch(
-            "src.server.app.workspace_files.crud.get_vault_secrets_for_redaction",
+            "src.server.app.workspace_files.backup_reads.get_vault_secrets_for_redaction",
             AsyncMock(return_value=[]),
         ),
         patch(
-            "src.server.app.workspace_files.crud.FilePersistenceService.get_file_content",
+            "src.server.app.workspace_files.backup_reads.FilePersistenceService.get_file_content",
             AsyncMock(return_value=None),
         ),
         pytest.raises(HTTPException) as refused,
@@ -499,6 +603,7 @@ async def test_a_file_the_backup_lacks_answers_as_the_away_machine_not_as_missin
             offset=0,
             limit=100,
             unlimited=False,
+            backup_ok=True,
         )
 
     assert refused.value.status_code == 503

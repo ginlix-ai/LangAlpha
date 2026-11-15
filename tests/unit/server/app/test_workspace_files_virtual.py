@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from ptc_agent.agent.backends.automations import AutomationsBackend
 from ptc_agent.agent.backends.user_data import UserDataBackend
 from ptc_agent.agent.filesystem_routes import route_for
-from src.server.app.workspace_files import crud
+from src.server.app.workspace_files import backup_reads, crud
 from src.server.app.workspace_files._shared import (
     _present_virtual_file,
     _virtual_file,
@@ -238,8 +238,8 @@ def held_elsewhere(monkeypatch):
 
     unreachable = AsyncMock(side_effect=AssertionError("a data file reached the stored copy"))
     monkeypatch.setattr(crud, "acquire_sandbox_to_change", _acquire)
-    monkeypatch.setattr(crud.FilePersistenceService, "get_file_content", unreachable)
-    monkeypatch.setattr(crud, "mirror_download_link", unreachable)
+    monkeypatch.setattr(backup_reads.FilePersistenceService, "get_file_content", unreachable)
+    monkeypatch.setattr(backup_reads, "mirror_download_link", unreachable)
     return _status
 
 

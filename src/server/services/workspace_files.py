@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from dataclasses import dataclass
+from typing import Any, TypeVar
 
 from fastapi import HTTPException
 
 from ptc_agent.core.paths import WorkspaceLayout
 from ptc_agent.core.sandbox.providers.ssh_errors import (
     UNANSWERED_CODES,
+    SSHConnectError,
     connect_failure,
 )
 from src.observability import safe_record, workspace_fs_bytes
@@ -27,6 +29,8 @@ from src.server.database.workspace_folders import (
 )
 from src.server.services.computer_usage.causes import computer_cause
 from src.server.models.computer_cause import StartCause
+from src.server.models.workspace import served_from_mirror
+from src.server.services.ssh_computers import computer_unreachable
 from src.server.services.workspace_file_containment import (
     contained_absolute_path,
     contained_sandbox_path,
@@ -46,6 +50,8 @@ from src.server.utils.error_sanitization import (
 )
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 # Home joins the user's computer on its first start or turn (ensure_home);
@@ -139,23 +145,119 @@ def unanswered_code(exc: BaseException) -> str | None:
     return failure.code if failure is not None and not failure.answered else None
 
 
-async def backup_stands_in(workspace_id: str, exc: BaseException) -> str | None:
-    """The code to answer a read from the backup with, when *exc* is the
-    owner's machine not answering; None to let the failure stand.
+# What the machine's own connect says of a tunnel that is down, the machine
+# unnamed.
+_TUNNEL_DOWN = (
+    "The machine is not connected. It connects by itself whenever it is on "
+    "and online, so check that it is awake and has internet."
+)
+
+
+@dataclass(frozen=True)
+class FromBackup:
+    """Files answered from the backup rather than the machine.
+
+    ``unreachable`` is the connect code of a machine that did not answer, None
+    for a stopped workspace. ``failure`` is that machine's answer, which a
+    file the backup lacks gets instead of a 404: written since the last
+    backup, it may well be on the machine.
+    """
+
+    unreachable: str | None = None
+    failure: HTTPException | None = None
+
+    @property
+    def marks(self) -> dict[str, str]:
+        """What an answer from the backup carries: its source, and why."""
+        if self.unreachable is None:
+            return {"source": "database"}
+        return {"source": "database", "unreachable": self.unreachable}
+
+    @contextmanager
+    def missing_is_away(self) -> Iterator[None]:
+        try:
+            yield
+        except HTTPException as e:
+            if e.status_code != 404 or self.failure is None:
+                raise
+            raise self.failure from None
+
+
+async def files_from(
+    workspace_id: str,
+    workspace: Mapping[str, Any],
+    live: Callable[[], Awaitable[T]],
+    backup: Callable[[FromBackup], Awaitable[T]],
+    *,
+    away_ok: bool,
+    stopped: bool = True,
+) -> T:
+    """``live()``, or ``backup()`` where the backup stands in for the machine.
+
+    The one place a file read decides where its files come from. A stopped
+    workspace (unless ``stopped`` is False, a read that starts it) and a
+    machine whose tunnel is down are known before any dial, from Postgres. A
+    machine the server dials directly is known not to answer only by trying,
+    so its failure is caught.
+
+    A machine that is away is answered from the backup only with ``away_ok``,
+    a client that says it shows the backup read-only. Its workspace still
+    runs, so its saves are taken, and a client that ignores the marks would
+    edit the older backed-up text and save it over the file once the machine
+    is back; for it the machine's failure stands.
+    """
+    source = await _backup_up_front(
+        workspace_id, workspace, stopped=stopped, away_ok=away_ok
+    )
+    if source is None:
+        try:
+            return await live()
+        except Exception as e:
+            source = await _backup_after(workspace_id, e) if away_ok else None
+            if source is None:
+                raise
+    return await backup(source)
+
+
+async def _backup_up_front(
+    workspace_id: str, workspace: Mapping[str, Any], *, stopped: bool, away_ok: bool
+) -> FromBackup | None:
+    if stopped and served_from_mirror(workspace.get("status")):
+        return FromBackup()
+    if not away_ok:
+        return None
+    machine = {
+        "kind": workspace.get("computer_kind"),
+        "provider_config": workspace.get("computer_provider_config"),
+    }
+    if not await computer_unreachable(machine):
+        return None
+    failure = sandbox_failure_http(SSHConnectError("not_connected", _TUNNEL_DOWN))
+    return await _backup_kept(workspace_id, "not_connected", failure)
+
+
+async def _backup_after(workspace_id: str, exc: BaseException) -> FromBackup | None:
+    code = unanswered_code(exc)
+    if code is None:
+        return None
+    failure = exc if isinstance(exc, HTTPException) else sandbox_failure_http(exc)
+    return await _backup_kept(workspace_id, code, failure)
+
+
+async def _backup_kept(
+    workspace_id: str, code: str, failure: HTTPException
+) -> FromBackup | None:
+    """The backup standing in for a machine that is away, where one is kept.
 
     A machine asleep or offline still reads as running, so the status check
     never sends its reads to the backup, though its files are there as of the
     last backup. Not where backups are off or none has run: an empty or
-    abandoned copy would read as the folder's real contents. Asked only after
-    the machine failed, so a reachable one pays nothing for it.
+    abandoned copy would read as the folder's real contents.
     """
-    code = unanswered_code(exc)
-    if code is None:
-        return None
     backs_up, has_backup = await asyncio.gather(
         computer_backs_up_files(workspace_id), workspace_has_backup(workspace_id)
     )
-    return code if backs_up and has_backup else None
+    return FromBackup(code, failure) if backs_up and has_backup else None
 
 
 @asynccontextmanager
