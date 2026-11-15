@@ -381,6 +381,18 @@ describe('ChangeSpecDialog, opened for the size its opener needs', () => {
     expect(apply()).toBeEnabled();
   });
 
+  it('never seeds below the size the computer has reached since the request was read', () => {
+    const request = { tier: 'performance' as const, planUrl: null, leadKey: 'computer.spec.planLimited' };
+    const dialog = (target: React.ComponentProps<typeof ChangeSpecDialog>['target']) => (
+      <ChangeSpecDialog target={target} onClose={() => {}} onSubmit={() => {}} busy={false} provider={DAYTONA} quota={PRO} request={request} />
+    );
+    const { rerender } = renderWithProviders(dialog(HEALTHY));
+    expect(radio('Medium')).toBeChecked();
+    rerender(dialog({ ...HEALTHY, resource_tier: 'max' }));
+    expect(radio('Large')).toBeChecked();
+    expect(radio('Medium')).not.toBeChecked();
+  });
+
   it('opens on the current size without a wanted one', () => {
     renderWithProviders(
       <ChangeSpecDialog target={HEALTHY} onClose={() => {}} onSubmit={() => {}} busy={false} provider={DAYTONA} quota={ON_PLAN} />,
@@ -456,5 +468,25 @@ describe('ChangeSpecDialog, opened for the size its opener needs', () => {
       />,
     );
     expect(radio('Small')).toBeChecked();
+  });
+});
+
+describe('ChangeSpecDialog, what a change keeps', () => {
+  it('says unpushed git work is lost, whether the computer is running or stopped', () => {
+    const HEALTHY = { ...LOW_DISK, disk: null };
+    for (const status of ['running', 'stopped'] as const) {
+      const { unmount } = renderWithProviders(
+        <ChangeSpecDialog target={{ ...HEALTHY, status }} onClose={() => {}} onSubmit={() => {}} busy={false} quota={ON_PLAN} />,
+      );
+      expect(screen.getByText(/Unpushed git commits, branches and stashes on this computer are not kept\./)).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('is read as the dialog\'s description when it opens', () => {
+    renderWithProviders(
+      <ChangeSpecDialog target={{ ...LOW_DISK, disk: null }} onClose={() => {}} onSubmit={() => {}} busy={false} quota={ON_PLAN} />,
+    );
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription(/Unpushed git commits, branches and stashes on this computer are not kept\.$/);
   });
 });

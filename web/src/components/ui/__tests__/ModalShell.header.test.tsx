@@ -16,4 +16,22 @@ describe('ModalShell header', () => {
     );
     expect(screen.getByRole('heading', { name: /Remove the setup token/ }).parentElement).toHaveClass('pr-12');
   });
+
+  it('describes the dialog by its subtitle, and by nothing without one', () => {
+    const { unmount } = renderWithProviders(
+      <ModalShell labelId="t" title="Change spec" subtitle="Unpushed git commits are not kept." onClose={() => {}}>
+        <p>body</p>
+      </ModalShell>,
+    );
+    expect(screen.getByRole('dialog', { name: 'Change spec' })).toHaveAccessibleDescription(
+      'Unpushed git commits are not kept.',
+    );
+    unmount();
+    renderWithProviders(
+      <ModalShell labelId="t" title="Change spec" onClose={() => {}}>
+        <p>body</p>
+      </ModalShell>,
+    );
+    expect(screen.getByRole('dialog', { name: 'Change spec' })).not.toHaveAttribute('aria-describedby');
+  });
 });

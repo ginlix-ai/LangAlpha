@@ -13,7 +13,13 @@ import pytest
 
 from src.server.database import home_stand_in
 from src.server.database import workspace as workspaces
-from src.server.database.computer import create_computer, update_computer_status
+from src.server.database.computer import (
+    RETIRE_BY_OWNER,
+    clear_computer_retirement_pending,
+    create_computer,
+    mark_computer_retirement_pending,
+    update_computer_status,
+)
 from src.server.database.home_workspace import (
     get_home_stand_in_id,
     get_home_workspace_id,
@@ -441,3 +447,222 @@ async def test_the_stand_in_is_needed_only_while_the_primary_is_the_users_own(se
     await update_computer_status(cloud, "deleted")
     await _computer(user_id, "Mac", primary=True, kind="ssh")
     assert await home_stand_in.stand_in_needed(user_id) is True
+
+
+async def _config(db_conn, computer_id) -> dict:
+    cur = await db_conn.execute(
+        "SELECT COALESCE(config, '{}'::jsonb) AS config FROM computers WHERE computer_id = %s",
+        (computer_id,),
+    )
+    return (await cur.fetchone())["config"]
+
+
+async def _marked(db_conn, computer_id) -> bool:
+    cur = await db_conn.execute(
+        "SELECT COALESCE(config, '{}'::jsonb) ? %s AS marked FROM computers"
+        " WHERE computer_id = %s",
+        (home_stand_in.STAND_IN_HOST, computer_id),
+    )
+    return (await cur.fetchone())["marked"]
+
+
+async def test_adoption_marks_the_computer_the_stand_in_stands_on(seed_user, db_conn):
+    """Sizing follows the mark and Home's turns follow the placement, so the
+    two must name one computer, whatever an older one would have been."""
+    user_id = seed_user["user_id"]
+    older = await _computer(user_id, "Older", primary=True)
+    newer = await _computer(user_id, "Newer")
+    await _touch(db_conn, newer)
+    placed = await home_stand_in.place_home_stand_in(user_id)
+    assert str(placed.computer["computer_id"]) == newer
+
+    assert await home_stand_in.adopt_stand_in_host(user_id)
+
+    assert await _marked(db_conn, newer)
+    assert not await _marked(db_conn, older)
+
+
+async def test_adoption_passes_over_a_computer_being_stopped_or_retired(seed_user, db_conn):
+    """An owner's removal keeps the mark on its tombstone, so marking a
+    computer on its way out would read as its owner turning the stand-in's
+    computer down."""
+    user_id = seed_user["user_id"]
+    retiring = await _computer(user_id, "Retiring", primary=True)
+    await update_computer_status(retiring, "stopping")
+
+    assert await home_stand_in.adopt_stand_in_host(user_id)
+
+    assert not await _marked(db_conn, retiring)
+
+
+@pytest.mark.parametrize(
+    ("marked_status", "other_status", "touched", "placed_on"),
+    [
+        ("stopped", "running", "marked", "other"),
+        ("running", "running", "other", "marked"),
+        ("starting", "stopped", "other", "marked"),
+        ("stopping", "stopped", "marked", "other"),
+        ("stopping", "running", "marked", "other"),
+        ("stopped", "stopped", "other", "marked"),
+    ],
+    ids=[
+        "running-beats-a-stopped-mark",
+        "mark-wins-among-running",
+        "starting-beats-stopped",
+        "stopped-beats-a-stopping-mark",
+        "running-beats-a-stopping-mark",
+        "mark-wins-among-stopped",
+    ],
+)
+async def test_the_stand_in_goes_by_status_first_then_to_the_marked_computer(
+    seed_user, db_conn, marked_status, other_status, touched, placed_on
+):
+    """A turn waits out any start or stop ahead of it, so the status decides
+    first; within one status the marked computer wins, however recently the
+    other was used."""
+    user_id = seed_user["user_id"]
+    marked = await _computer(user_id, "Marked", primary=True)
+    assert await home_stand_in.adopt_stand_in_host(user_id)
+    assert await _marked(db_conn, marked)
+    other = await _computer(user_id, "Other")
+    await db_conn.execute(
+        "UPDATE computers SET status = %s WHERE computer_id = %s", (marked_status, marked)
+    )
+    await db_conn.execute(
+        "UPDATE computers SET status = %s WHERE computer_id = %s", (other_status, other)
+    )
+    await _touch(db_conn, marked if touched == "marked" else other)
+
+    placed = await home_stand_in.place_home_stand_in(user_id)
+
+    assert str(placed.computer["computer_id"]) == (marked if placed_on == "marked" else other)
+
+
+@pytest.mark.parametrize(
+    ("by_owner", "torn_down"),
+    [(False, False), (True, False), (True, True)],
+    ids=["delete", "owners-remove", "owners-remove-torn-down"],
+)
+async def test_the_retirement_marker_carries_whose_remove_it_is(
+    seed_user, db_conn, by_owner, torn_down
+):
+    """Marked by a delete first, the owner's remove still records itself on
+    the marker a sweep reads, and keeping the computer takes every mark off."""
+    user_id = seed_user["user_id"]
+    computer = await _computer(user_id, "Retiring")
+    assert await mark_computer_retirement_pending(computer)
+    assert (
+        await mark_computer_retirement_pending(computer, by_owner=by_owner, torn_down=torn_down)
+        is by_owner
+    )
+
+    config = await _config(db_conn, computer)
+    assert config.get("retire_when_empty") is True
+    assert config.get("retire_by_owner") is (True if by_owner else None)
+    assert config.get("retire_torn_down") is (True if torn_down else None)
+
+    assert await clear_computer_retirement_pending(computer)
+    config = await _config(db_conn, computer)
+    assert not {"retire_when_empty", "retire_by_owner", "retire_torn_down"} & set(config)
+
+
+async def test_adoption_leaves_a_computer_whose_retirement_is_pending(seed_user, db_conn):
+    """Its retirement read it unmarked before the tombstone it is about to
+    write, so a mark landing in between would read as its owner's remove."""
+    user_id = seed_user["user_id"]
+    pending = await _computer(user_id, "Pending")
+    assert await mark_computer_retirement_pending(pending)
+
+    assert await home_stand_in.adopt_stand_in_host(user_id)
+
+    assert not await _marked(db_conn, pending)
+
+
+async def test_adoption_with_no_stand_in_picks_where_one_would_be_placed(seed_user, db_conn):
+    """Sizing follows the mark and the stand-in, once placed, follows the
+    placement rule, so the mark goes where the placement would go."""
+    user_id = seed_user["user_id"]
+    older = await _computer(user_id, "Older", primary=True)
+    newer = await _computer(user_id, "Newer")
+    await update_computer_status(older, "stopped")
+
+    assert await home_stand_in.adopt_stand_in_host(user_id)
+
+    assert await _marked(db_conn, newer)
+    assert not await _marked(db_conn, older)
+    assert str((await home_stand_in.stand_in_computer(user_id))["computer_id"]) == newer
+
+
+@pytest.mark.parametrize(
+    ("drop", "by_owner"),
+    [(True, False), (False, False), (True, True)],
+    ids=["dropped", "kept", "kept-for-an-owners-remove-begun-since"],
+)
+async def test_a_tombstone_can_drop_a_config_key_in_its_own_write(seed_user, db_conn, drop, by_owner):
+    """A retirement the owner did not ask for clears the stand-in's mark in the
+    same statement that deletes the row, so an adoption between the two
+    cannot leave the mark on the tombstone; but not once the row says it is
+    its owner's remove, which may have begun after the retirement read it."""
+    user_id = seed_user["user_id"]
+    computer = await _computer(user_id, "Cloud", primary=True)
+    await db_conn.execute(
+        "UPDATE computers SET config = COALESCE(config, '{}'::jsonb)"
+        " || jsonb_build_object(%s::text, true, 'other', 1) WHERE computer_id = %s",
+        (home_stand_in.STAND_IN_HOST, computer),
+    )
+    if by_owner:
+        assert await mark_computer_retirement_pending(computer, by_owner=True)
+
+    row = await update_computer_status(
+        computer,
+        "deleted",
+        expected="running",
+        drop_config_key=home_stand_in.STAND_IN_HOST if drop else None,
+        unless_config_key=RETIRE_BY_OWNER,
+    )
+
+    assert row is not None and row["status"] == "deleted"
+    assert await _marked(db_conn, computer) is not (drop and not by_owner)
+    cur = await db_conn.execute(
+        "SELECT config->>'other' AS other FROM computers WHERE computer_id = %s", (computer,)
+    )
+    assert (await cur.fetchone())["other"] == "1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expected", ["running", "stopped"], ids=["claimed", "missed"])
+async def test_a_claim_carries_its_owners_remove_in_its_own_write(
+    seed_user, db_conn, expected
+):
+    """An owner's remove is durable from the moment its claim lands, so no
+    exit after it can leave an ordinary retirement; and a claim that misses
+    marks nothing for the sweep to read as the owner's."""
+    user_id = seed_user["user_id"]
+    computer = await _computer(user_id, "Cloud", primary=True)
+    await db_conn.execute(
+        "UPDATE computers SET config = COALESCE(config, '{}'::jsonb)"
+        " || jsonb_build_object(%s::text, true) WHERE computer_id = %s",
+        (home_stand_in.STAND_IN_HOST, computer),
+    )
+
+    row = await update_computer_status(
+        computer,
+        "stopping",
+        expected=expected,
+        merge_config={"retire_when_empty": True, RETIRE_BY_OWNER: True},
+    )
+
+    cur = await db_conn.execute(
+        "SELECT status, config FROM computers WHERE computer_id = %s", (computer,)
+    )
+    stored = await cur.fetchone()
+    if expected == "running":
+        assert row is not None and stored["status"] == "stopping"
+        assert stored["config"] == {
+            home_stand_in.STAND_IN_HOST: True,
+            "retire_when_empty": True,
+            RETIRE_BY_OWNER: True,
+        }
+    else:
+        assert row is None and stored["status"] == "running"
+        assert stored["config"] == {home_stand_in.STAND_IN_HOST: True}

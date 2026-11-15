@@ -8,7 +8,8 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { useLocation } from 'react-router';
 import { useState } from 'react';
 
-import { renderWithProviders } from '@/test/utils';
+import { createTestQueryClient, renderWithProviders } from '@/test/utils';
+import { queryKeys } from '@/lib/queryKeys';
 import { runAuthResets } from '@/lib/authResets';
 import type { Computer } from '@/types/api';
 
@@ -59,13 +60,13 @@ function Probe() {
   return <span data-testid="probe">{`at:${pathname}${search} spec:${specComputerId}/${specRequest?.tier ?? null}`}</span>;
 }
 
-function mount(route: string) {
+function mount(route: string, queryClient = createTestQueryClient()) {
   return renderWithProviders(
     <>
       <ComputersDialogHost />
       <Probe />
     </>,
-    { route },
+    { route, queryClient },
   );
 }
 
@@ -135,5 +136,73 @@ describe('ComputersDialogHost, the resize query', () => {
     await act(async () => {});
     expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=model spec:null/null');
     expect(screen.queryByRole('radio')).toBeNull();
+  });
+});
+
+describe('ComputersDialogHost, the resize query for Home', () => {
+  const OWN_MAC = { ...SMALL, computer_id: 'c-mac', kind: 'ssh', name: 'Mac', is_primary: true } as Computer;
+  const OTHER = { ...SMALL, computer_id: 'c-2', name: 'Other cloud', is_primary: false } as Computer;
+
+  it("opens Change spec on Home's computer at the size the plan now opens, once, asking the server to read the plan again", async () => {
+    host.platform = true;
+    vi.mocked(getComputers).mockResolvedValue({ computers: [OTHER, SMALL], total: 2 });
+    vi.mocked(getWorkspaceQuota).mockResolvedValue({ performance: { used: 0, limit: 1 }, max: { used: 0, limit: 1 }, always_on: null });
+    vi.mocked(setComputerSpec).mockRejectedValue(new Error('refused'));
+    mount('/settings?tab=plan&resize=home&tier=max');
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=plan spec:c-1/max'));
+    expect(await screen.findByRole('radio', { name: /^Large/ })).toBeChecked();
+    expect(vi.mocked(getWorkspaceQuota).mock.calls[0]).toEqual([true]);
+    fireEvent.click(screen.getByRole('button', { name: 'Back up and change spec' }));
+    await waitFor(() => expect(setComputerSpec).toHaveBeenCalledWith('c-1', 'max', true));
+    act(() => closeComputerSpec());
+    await act(async () => {});
+    expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=plan spec:null/null');
+  });
+
+  it('opens with nothing picked for a size the provider does not offer, or one this build does not know', async () => {
+    for (const tier of ['xlarge', 'enormous']) {
+      const { unmount } = mount(`/settings?resize=home&tier=${tier}`);
+      await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent(/^at:\/settings spec:c-1\//));
+      expect(await screen.findByRole('radio', { name: /^Small/ })).toBeChecked();
+      expect(screen.getByRole('button', { name: 'Back up and change spec' })).toBeDisabled();
+      act(() => closeComputerSpec());
+      unmount();
+    }
+  });
+
+  it('never picks a size smaller than Home is now', async () => {
+    vi.mocked(getComputers).mockResolvedValue({ computers: [{ ...SMALL, resource_tier: 'max' }], total: 1 });
+    mount('/settings?resize=home&tier=performance');
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings spec:c-1/max'));
+    expect(await screen.findByRole('radio', { name: /^Large/ })).toBeChecked();
+  });
+
+  it("opens nothing where Home is on the user's own machine, or on no computer, and takes the query off", async () => {
+    for (const computers of [[OWN_MAC, OTHER], [OTHER], []]) {
+      vi.mocked(getComputers).mockResolvedValue({ computers, total: computers.length });
+      const { unmount } = mount('/settings?tab=plan&resize=home&tier=max');
+      await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=plan spec:null/null'));
+      expect(screen.queryByRole('radio')).toBeNull();
+      unmount();
+    }
+  });
+
+  it('reads Home off a fresh list, where the cached one names a primary another device has since replaced', async () => {
+    const FORMER = { ...SMALL, computer_id: 'c-old', name: 'Former primary' } as Computer;
+    for (const cached of [FORMER, { ...OWN_MAC, computer_id: 'c-old' } as Computer]) {
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(queryKeys.computers.lists(), { computers: [cached, OTHER], total: 2 });
+      vi.mocked(getComputers).mockResolvedValue({ computers: [{ ...cached, is_primary: false }, SMALL], total: 2 });
+      const { unmount } = mount('/settings?tab=plan&resize=home&tier=performance', queryClient);
+      await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=plan spec:c-1/performance'));
+      act(() => closeComputerSpec());
+      unmount();
+    }
+  });
+
+  it('opens nothing where the list cannot be read', async () => {
+    vi.mocked(getComputers).mockRejectedValue(new Error('down'));
+    mount('/settings?tab=plan&resize=home&tier=max');
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('at:/settings?tab=plan spec:null/null'), { timeout: 5000 });
   });
 });
