@@ -83,7 +83,8 @@ _ROWS = {
 
 @contextmanager
 def _route_reads():
-    """The rows the turn route reads, and the Home bind."""
+    """The rows the turn route reads, its computer reachable, and the Home
+    bind."""
     with (
         patch(
             "src.server.services.workspace_manager.WorkspaceManager.get_instance",
@@ -92,6 +93,10 @@ def _route_reads():
         patch(
             "src.server.database.workspace.get_workspace",
             new=AsyncMock(side_effect=_ROWS.get),
+        ),
+        patch(
+            "src.server.services.ssh_computers.computer_away",
+            new=AsyncMock(return_value=None),
         ),
     ):
         yield

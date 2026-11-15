@@ -310,6 +310,7 @@ const SKIP_REASON_NOTE: Record<SkipReason, string | null> = {
   user: null,
   thread_busy: 'automation.skippedThreadBusy',
   interrupted: 'automation.skippedInterrupted',
+  computer_unreachable: null,
 };
 
 /** The line a failed run carries when the failure was not the automation's.

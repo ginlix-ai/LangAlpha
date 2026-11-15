@@ -613,8 +613,14 @@ ExecutionStatus = Literal[
 ]
 # Why a ``skipped`` firing did not run to its end: someone skipped it or
 # stopped its run, its thread stayed busy (or an earlier firing was already
-# waiting), or the server stopped while it waited.
-SkipReason = Literal["user", "thread_busy", "interrupted"]
+# waiting), the server stopped while it waited, or the computer its turn runs
+# on (a machine of the user's own) could not be reached: not back before the
+# automation's next firing, or not answering when its turn started.
+SkipReason = Literal["user", "thread_busy", "interrupted", "computer_unreachable"]
+# What a ``waiting`` firing waits for: the turn running in its thread, or the
+# computer its turn runs on to be reachable again. Kept once the wait ends,
+# each a wait that can end in the skip of the same name.
+WaitReason = Literal["thread_busy", "computer_unreachable"]
 # Why a ``failed`` firing failed, when it was not the automation's own doing:
 # a usage limit refused it or paused its run, the Claude plan of its Claude
 # Code model refused or stopped it (``claude_plan``), another subscription's
@@ -640,6 +646,7 @@ class AutomationExecutionResponse(BaseModel):
     error_message: Optional[str] = None
     skip_reason: Optional[str] = None
     failure_reason: Optional[str] = None
+    wait_reason: Optional[str] = None
     server_id: Optional[str] = None
     delivery_result: Optional[List[Dict[str, Any]]] = None
     created_at: datetime

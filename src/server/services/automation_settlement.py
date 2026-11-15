@@ -57,8 +57,13 @@ logger = logging.getLogger(__name__)
 
 INTERRUPTED_ERROR = "The server restarted during the run"
 STOPPED_ERROR = "Stopped by the user"
+UNREACHABLE_ERROR = "The computer could not be reached"
 
 _ERROR_MAX_CHARS = 500
+
+# The run ledger's ``error_kind`` for a turn whose computer did not answer,
+# as the turn's failure frame names it.
+COMPUTER_UNREACHABLE = "computer_unreachable"
 
 # A provider's refusal of the credential that made the model call. Only a
 # 401 says the credential itself is bad; a 403 is a working key refused one
@@ -101,6 +106,11 @@ class Outcome(StrEnum):
     # event still goes out, since it is the one terminal event a channel
     # clears its "started" notice on.
     STOPPED = "stopped"
+    # The computer the turn runs on did not answer: a machine of the user's
+    # own asleep, offline or disconnected. Not the automation's doing, so it
+    # reads as a skip for that reason, as a wait for the computer that ran
+    # out does: no strike, and it counts as the firing.
+    UNREACHABLE = "unreachable"
     SKIPPED = "skipped"
 
 
@@ -203,6 +213,18 @@ _POLICIES: Dict[Outcome, _Policy] = {
         error=STOPPED_ERROR,
         skip_reason="user",
     ),
+    # As a stop, the failure event still goes out: it is the one terminal
+    # event a channel clears a started notice on.
+    Outcome.UNREACHABLE: _Policy(
+        status="skipped",
+        from_statuses=("pending", "waiting", "running"),
+        metric="unreachable",
+        schedule="close",
+        webhook="automation.failed",
+        finish="failed",
+        error=UNREACHABLE_ERROR,
+        skip_reason="computer_unreachable",
+    ),
     # Not a failure: no strike, no webhook. It still counts as the firing,
     # so the schedule moves on as it would after a run.
     Outcome.SKIPPED: _Policy(
@@ -227,7 +249,8 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     """How a firing ended, by its admitted run's ledger row; None while the
     run is still going.
 
-    A run a restart stopped goes on in the turn that takes it over, for as
+    A run that ended because its computer did not answer was skipped for
+    that, whichever role ran it. A run a restart stopped goes on in the turn that takes it over, for as
     long as one may (``carried_firing``). Any other cancel the reader did
     not ask for is a server stopping, and an error
     written by the ledger's recovery is a worker lost: both are ours. A run
@@ -247,6 +270,8 @@ def ledger_outcome(run: Optional[Dict[str, Any]]) -> Optional[Outcome]:
     if status == "completed":
         return Outcome.COMPLETED
     metadata = run.get("metadata") or {}
+    if status == "error" and metadata.get("error_kind") == COMPUTER_UNREACHABLE:
+        return Outcome.UNREACHABLE
     if status == "cancelled":
         if is_restart_interrupted(run) and not restart_resume_expired(
             run["cancel_requested_at"]

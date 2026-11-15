@@ -11,6 +11,7 @@ here ends.
 
 import asyncio
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -79,12 +80,14 @@ def _run(run_id, status="completed", **metadata):
 
 
 @contextmanager
-def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
+def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,), away=()):
     """Patch everything a firing touches.
 
     ``turns`` stand in for successive astream calls. ``runs`` maps a turn's
     index to what the ledger says of its run (in progress by default).
-    ``busy`` is what successive idle checks of the thread answer.
+    ``busy`` is what successive idle checks of the thread answer, and
+    ``away`` what successive looks at the turn's computer do (reachable
+    once they run out).
     """
     runs = runs or {}
     db = MagicMock()
@@ -101,6 +104,7 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
     db.update_automation = AsyncMock()
     db.get_execution_status = AsyncMock(return_value="waiting")
     db.has_earlier_waiting_execution = AsyncMock(return_value=False)
+    db.has_later_execution = AsyncMock(return_value=False)
     db.get_automation = AsyncMock(return_value=fresh)
     run_ids: list[str] = []
 
@@ -116,6 +120,7 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
         return _run(run_id, run)
 
     busy_answers = iter(busy)
+    away_answers = iter(away)
     fx = SimpleNamespace(
         db=db,
         run_ids=run_ids,
@@ -143,6 +148,10 @@ def _firing(turns, *, runs=None, busy=(), fresh=None, is_byok=(False,)):
         patch(
             "src.server.services.workspace_manager.WorkspaceManager.get_instance",
             return_value=MagicMock(ensure_home_bound=AsyncMock()),
+        ),
+        patch(
+            "src.server.services.ssh_computers.computer_away",
+            new=AsyncMock(side_effect=lambda *_, **__: next(away_answers, None)),
         ),
         patch(f"{_MOD}.WebhookClient", return_value=MagicMock(fire_event=fx.started)),
         patch(
@@ -244,6 +253,23 @@ async def test_a_failed_look_keeps_the_firing_waiting():
 
     assert fx.astream.call_count == 1
     assert _left_to_run(fx) == fx.run_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_a_wait_for_the_thread_says_what_it_waits_for():
+    pinned = _automation(thread_strategy="continue", conversation_thread_id="thread-1")
+    with _firing([_streams], busy=(True,), fresh=pinned) as fx:
+        await AutomationExecutor().execute(pinned, _EXEC)
+
+    assert _wait_reasons(fx) == ["thread_busy"]
+
+
+def _wait_reasons(fx):
+    return [
+        c.kwargs.get("wait_reason")
+        for c in fx.db.transition_execution.await_args_list
+        if c.kwargs["to"] == "waiting"
+    ]
 
 
 @pytest.mark.asyncio
@@ -918,3 +944,109 @@ async def test_a_run_now_starts_its_turn_held_to_the_computer_it_was_checked_on(
         await AutomationExecutor().execute(_automation(), _EXEC, checked_computer_id=checked)
 
     assert _turn_args(fx)["request"].checked_computer_id == checked
+
+
+_MAC = {"computer_id": "mac-1", "name": "MacBook"}
+
+
+@pytest.mark.asyncio
+async def test_a_firing_waits_for_its_computer_and_runs_once_it_is_back():
+    """A machine asleep is not the automation failing: the firing waits for
+    it rather than fail at its connect and count a strike."""
+    with _firing([_streams], fresh=_automation(), away=(_MAC, _MAC)) as fx:
+        with patch(f"{_MOD}._COMPUTER_POLL_SECONDS", new=0):
+            await AutomationExecutor().execute(_automation(), _EXEC)
+
+    moves = [c.kwargs["to"] for c in fx.db.transition_execution.call_args_list]
+    assert moves[:3] == ["running", "waiting", "running"]
+    assert _wait_reasons(fx) == ["computer_unreachable"]
+    # The credit gate is asked after the wait, whose length its verdict
+    # must not outlive.
+    assert fx.credit.await_count == 1
+    assert _left_to_run(fx) == fx.run_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_a_wait_for_the_computer_gives_way_to_the_next_firing():
+    """Missed runs come back as one run: the next firing takes the wait over."""
+    with _firing([_streams], fresh=_automation(), away=(_MAC,) * 10) as fx:
+        fx.db.has_later_execution = AsyncMock(side_effect=[False, True])
+        fx.db.settle_execution.return_value["settled_from"] = "waiting"
+        with patch(f"{_MOD}._COMPUTER_POLL_SECONDS", new=0):
+            await AutomationExecutor().execute(_automation(), _EXEC)
+
+    fx.astream.assert_not_called()
+    fx.credit.assert_not_awaited()
+    assert _settled(fx)["to"] == "skipped"
+    assert _settled(fx)["skip_reason"] == "computer_unreachable"
+    assert _settled(fx)["strike"] is None
+    fx.settled_webhook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_wait_for_the_computer_ends_at_its_cap():
+    with (
+        _firing([_streams], fresh=_automation(), away=(_MAC,) * 10) as fx,
+        patch(f"{_MOD}._COMPUTER_WAIT_CAP_SECONDS", new=0),
+    ):
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    fx.astream.assert_not_called()
+    assert _settled(fx)["skip_reason"] == "computer_unreachable"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_leaves_a_wait_for_the_computer_to_the_next_process():
+    executor = AutomationExecutor()
+    executor.stop_waiting()
+    with _firing([_streams], fresh=_automation(), away=(_MAC,) * 10) as fx:
+        with patch(f"{_MOD}._COMPUTER_POLL_SECONDS", new=60):
+            await asyncio.wait_for(executor.execute(_automation(), _EXEC), timeout=5)
+
+    fx.astream.assert_not_called()
+    fx.db.settle_execution.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_wait_runs_from_where_it_was_left():
+    with _firing([_streams], fresh=_automation()) as fx:
+        await AutomationExecutor().execute(
+            _automation(), _EXEC, waiting_since=datetime.now(timezone.utc)
+        )
+
+    moves = fx.db.transition_execution.call_args_list
+    # Already waiting: no start from pending, and on to running.
+    assert moves[0].kwargs["to"] == "running"
+    assert moves[0].kwargs["from_statuses"] == ("waiting",)
+    assert _left_to_run(fx) == fx.run_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_computer_did_not_answer_is_skipped_not_struck():
+    """Before its turn reached the ledger: three nights of a machine asleep
+    must not switch the automation off."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    try:
+        raise RuntimeError("could not start") from SSHConnectError("not_connected", "asleep")
+    except RuntimeError as e:
+        refused = e
+    with _firing([_loses(refused)], runs={0: None}) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _settled(fx)["to"] == "skipped"
+    assert _settled(fx)["skip_reason"] == "computer_unreachable"
+    assert _settled(fx)["strike"] is None
+    # The terminal event a channel clears its started notice on still goes.
+    assert fx.settled_webhook.await_args.args[0] == "automation.failed"
+
+
+@pytest.mark.asyncio
+async def test_a_machine_that_answered_and_refused_is_the_automations_failure():
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    with _firing([_loses(SSHConnectError("auth_failed", "refused"))], runs={0: None}) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _settled(fx)["to"] == "failed"
+    assert _settled(fx)["strike"] == "count"

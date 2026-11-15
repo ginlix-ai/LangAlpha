@@ -26,6 +26,7 @@ from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
     RUN_FAILURES,
     STOPPED_ERROR,
+    UNREACHABLE_ERROR,
     Outcome,
     _settle_finished_run,
     drain_tails,
@@ -75,6 +76,7 @@ EXPECTED = {
     Outcome.FAILED_OURS: ("failed", _ANY, None, REARMS, "automation.failed", None, "server_error", "failure"),
     Outcome.INTERRUPTED: ("failed", ("pending", "running"), None, REARMS, "automation.failed", None, "interrupted", "interrupted"),
     Outcome.STOPPED: ("skipped", ("running",), None, CLOSES, "automation.failed", "user", None, "stopped"),
+    Outcome.UNREACHABLE: ("skipped", _ANY, None, CLOSES, "automation.failed", "computer_unreachable", None, "unreachable"),
     Outcome.SKIPPED: ("skipped", ("waiting",), None, CLOSES, None, None, None, "skipped"),
 }
 
@@ -220,6 +222,8 @@ async def test_outcome_effects(outcome, trigger):
         assert written["error_message"] == INTERRUPTED_ERROR
     if outcome is Outcome.STOPPED:
         assert written["error_message"] == STOPPED_ERROR
+    if outcome is Outcome.UNREACHABLE:
+        assert written["error_message"] == UNREACHABLE_ERROR
 
     if webhook:
         assert fx.fire.await_args.args[0] == webhook
@@ -248,6 +252,7 @@ FINISHES = {
     Outcome.FAILED_OURS: "failed",
     Outcome.INTERRUPTED: "failed",
     Outcome.STOPPED: "stopped",
+    Outcome.UNREACHABLE: "failed",
 }
 
 
@@ -1157,8 +1162,10 @@ _REJECTED = ["AuthenticationError: invalid x-api-key"]
         (_ended("error", _REJECTED, error_status_code=401, error_credential_owned=True), "failed", "fuse", "provider_auth", _REJECTED[0]),
         (_ended("error", _REJECTED, error_status_code=401, error_credential_owned=False), "failed", None, "server_error", _REJECTED[0]),
         (_paused("Daily limit reached."), "failed", None, "usage_limit", "Daily limit reached."),
+        # A machine of the user's own asleep is no strike against the automation.
+        (_ended("error", ["The machine is not connected."], error_kind="computer_unreachable"), "skipped", None, None, UNREACHABLE_ERROR),
     ],
-    ids=["completed", "user_stop", "shutdown", "failed", "users_key", "platform_key", "credit_pause"],
+    ids=["completed", "user_stop", "shutdown", "failed", "users_key", "platform_key", "credit_pause", "computer_unreachable"],
 )
 async def test_a_finished_run_settles_the_firing_it_ran_for(run, to, strike, failure_reason, error):
     with _finished(run, _automation("cron")) as fx:
@@ -1170,6 +1177,8 @@ async def test_a_finished_run_settles_the_firing_it_ran_for(run, to, strike, fai
     assert written["strike"] == strike
     assert written["failure_reason"] == failure_reason
     assert written["error_message"] == error
+    if run["metadata"].get("error_kind") == "computer_unreachable":
+        assert written["skip_reason"] == "computer_unreachable"
     assert written["conversation_thread_id"] == _THREAD
     assert written["conversation_response_id"] == _RUN
     # The answer is read from the run's own checkpoint, and only a completed

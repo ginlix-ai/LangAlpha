@@ -1,7 +1,7 @@
 """Execution history queries for automations: transitions, settlement, delivery and the run feed."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Sequence
 from uuid import uuid4
 
@@ -401,6 +401,24 @@ async def has_earlier_waiting_execution(
             return await cur.fetchone() is not None
 
 
+async def has_later_execution(automation_id: str, execution_id: str) -> bool:
+    """Whether a firing of this automation came after this one, by creation
+    then id, whatever became of it."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT 1
+                FROM automation_executions w
+                JOIN automation_executions me
+                  ON me.automation_execution_id = %s
+                WHERE w.automation_id = %s
+                  AND (w.created_at, w.automation_execution_id)
+                      > (me.created_at, me.automation_execution_id)
+                LIMIT 1
+            """, (execution_id, automation_id))
+            return await cur.fetchone() is not None
+
+
 async def get_execution_status(
     execution_id: str, *, automation_id: Optional[str] = None
 ) -> Optional[str]:
@@ -478,7 +496,7 @@ async def list_abandoned_executions(
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(f"""
-                SELECT e.automation_execution_id, e.automation_id, e.status,
+                SELECT e.automation_execution_id, e.automation_id, e.status, e.wait_reason,
                        e.conversation_thread_id, e.conversation_response_id,
                        a.user_id, t.workspace_id
                 FROM automation_executions e
@@ -498,6 +516,36 @@ async def list_abandoned_executions(
                 LIMIT %s
             """, (quiet_seconds, RESTART_INTERRUPTED_META, RESTART_RESUME_TTL, limit))
             return [dict(row) for row in await cur.fetchall()]
+
+
+async def adopt_waiting_execution(
+    execution_id: str, quiet_seconds: int
+) -> Optional[Dict[str, Any]]:
+    """Take over a firing an earlier process left waiting for its computer:
+    ``since``, when that wait began, and ``checked_computer_id``, the computer
+    a computer token's run was checked to run on; None when another worker
+    took it first or it moved on.
+
+    A guarded touch of the heartbeat, so of the workers whose sweeps reach
+    the row exactly one resumes it.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("""
+                UPDATE automation_executions SET heartbeat_at = NOW()
+                WHERE automation_execution_id = %s AND status = 'waiting'
+                  AND wait_reason = 'computer_unreachable'
+                  AND heartbeat_at < NOW() - make_interval(secs => %s)
+                RETURNING started_at, checked_computer_id
+            """, (execution_id, quiet_seconds))
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            checked = row["checked_computer_id"]
+            return {
+                "since": row["started_at"] or datetime.now(timezone.utc),
+                "checked_computer_id": str(checked) if checked else None,
+            }
 
 
 async def hand_off_execution(

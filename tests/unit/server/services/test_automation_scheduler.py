@@ -395,6 +395,95 @@ class TestSweep:
         mock_settle.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @patch(f"{_MOD}.settle_abandoned")
+    @patch(f"{_MOD}.exec_db")
+    @patch(f"{_MOD}.auto_db")
+    @patch(f"{_MOD}.AutomationExecutor")
+    async def test_a_wait_for_the_computer_left_by_a_stopped_process_is_resumed(
+        self, mock_executor_cls, mock_auto_db, mock_exec_db, mock_settle
+    ):
+        """A deploy while the machine sleeps must not cost the run it waits for."""
+        executor = AsyncMock()
+        mock_executor_cls.get_instance.return_value = executor
+        waiting = {
+            **_abandoned_row("auto-1"),
+            "status": "waiting",
+            "wait_reason": "computer_unreachable",
+        }
+        since = datetime(2026, 11, 10, 1, tzinfo=timezone.utc)
+        automation = _make_automation(automation_id="auto-1")
+        mock_exec_db.settle_legacy_executions = AsyncMock(return_value=0)
+        mock_exec_db.list_abandoned_executions = AsyncMock(return_value=[waiting])
+        mock_exec_db.adopt_waiting_execution = AsyncMock(
+            return_value={"since": since, "checked_computer_id": "computer-1"}
+        )
+        mock_auto_db.get_automation = AsyncMock(return_value=automation)
+
+        scheduler = AutomationScheduler()
+        await scheduler._sweep_abandoned_firings()
+        await asyncio.gather(*scheduler._running_tasks)
+
+        mock_settle.assert_not_awaited()
+        execution_id = waiting["automation_execution_id"]
+        mock_exec_db.adopt_waiting_execution.assert_awaited_once_with(
+            execution_id, ABANDONED_AFTER_SECONDS
+        )
+        executor.execute.assert_awaited_once_with(
+            automation,
+            execution_id,
+            checked_computer_id="computer-1",
+            waiting_since=since,
+        )
+
+    @pytest.mark.asyncio
+    @patch(f"{_MOD}.exec_db")
+    @patch(f"{_MOD}.auto_db")
+    @patch(f"{_MOD}.AutomationExecutor")
+    async def test_a_wait_another_worker_adopted_is_left_to_it(
+        self, mock_executor_cls, mock_auto_db, mock_exec_db
+    ):
+        executor = AsyncMock()
+        mock_executor_cls.get_instance.return_value = executor
+        mock_exec_db.settle_legacy_executions = AsyncMock(return_value=0)
+        mock_exec_db.list_abandoned_executions = AsyncMock(
+            return_value=[{
+                **_abandoned_row("auto-1"),
+                "status": "waiting",
+                "wait_reason": "computer_unreachable",
+            }]
+        )
+        mock_exec_db.adopt_waiting_execution = AsyncMock(return_value=None)
+        mock_auto_db.get_automation = AsyncMock(return_value=_make_automation())
+
+        scheduler = AutomationScheduler()
+        await scheduler._sweep_abandoned_firings()
+
+        assert not scheduler._running_tasks
+        executor.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_MOD}.settle_abandoned")
+    @patch(f"{_MOD}.exec_db")
+    @patch(f"{_MOD}.auto_db")
+    @patch(f"{_MOD}.AutomationExecutor")
+    async def test_a_wait_for_the_thread_left_by_a_stopped_process_is_settled(
+        self, mock_executor_cls, mock_auto_db, mock_exec_db, mock_settle
+    ):
+        mock_executor_cls.get_instance.return_value = AsyncMock()
+        waiting = {**_abandoned_row("auto-1"), "status": "waiting", "wait_reason": "thread_busy"}
+        automation = _make_automation(automation_id="auto-1")
+        mock_exec_db.settle_legacy_executions = AsyncMock(return_value=0)
+        mock_exec_db.list_abandoned_executions = AsyncMock(return_value=[waiting])
+        mock_exec_db.adopt_waiting_execution = AsyncMock()
+        mock_auto_db.get_automation = AsyncMock(return_value=automation)
+        mock_settle.side_effect = AsyncMock(return_value=Outcome.SKIPPED)
+
+        await AutomationScheduler()._sweep_abandoned_firings()
+
+        mock_exec_db.adopt_waiting_execution.assert_not_awaited()
+        mock_settle.assert_awaited_once_with(automation, waiting, ABANDONED_AFTER_SECONDS)
+
+    @pytest.mark.asyncio
     @patch(f"{_MOD}.AutomationExecutor")
     async def test_shutdown_ends_waits_and_start_allows_them(self, mock_executor_cls):
         executor = MagicMock()
