@@ -51,6 +51,12 @@ export interface ErrorLinkSpec {
   /** The cloud computer to bring to the size Claude Code runs at: the link
    *  reads as what does that for this user (`MediumActionLink`). */
   resize?: string;
+  /** The user has no computer: the link opens the way to add one, worded
+   *  for the device it is on (`AddComputerLink`). */
+  addComputer?: boolean;
+  /** The computer whose backup is off: the link opens its details, where
+   *  backup is turned on (`ComputerDetailsLink`). */
+  computerDetails?: { computerId: string; name: string };
 }
 
 export interface StructuredError {

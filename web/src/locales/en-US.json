@@ -1674,6 +1674,10 @@
       "starting": "You can remove it once it has started.",
       "stopping": "You can remove it once it has stopped."
     },
+    "removeHomeFiles": {
+      "failed": "Files written here while {{mac}} was away couldn't be copied into Home. Removing this computer deletes them.",
+      "left": "Left here and not in Home: {{files}}. Removing this computer deletes them."
+    },
     "removeRefused": {
       "primary": "This is your primary computer. Make another computer primary first, and Home moves there.",
       "hasWorkspaces": "A workspace not listed here is on it now. Check the list and try again.",
@@ -6876,6 +6880,25 @@
       "handoff": "handed to an analyst",
       "taskHandoff": "task handed to an analyst"
     }
+  },
+  "homePlacement": {
+    "onCloud": "{{mac}} can't be reached, so the Chief of Staff is working on {{cloud}} for now. What it writes is copied into Home on {{mac}} once it's back.",
+    "waiting": "{{mac}} can't be reached, so the Chief of Staff is waiting for it. Messages sent now won't run.",
+    "handedBack_one": "{{count}} file written on {{cloud}} is now in Home/{{folder}} on {{mac}}.",
+    "handedBack_other": "{{count}} files written on {{cloud}} are now in Home/{{folder}} on {{mac}}.",
+    "leftOnCloud": "Too large to copy, so left on {{cloud}}: {{files}}.",
+    "unreadable": "Couldn't be read, so left on {{cloud}}: {{files}}.",
+    "handbackFailed": "The files written on {{cloud}} while {{mac}} was away couldn't be copied into Home. They're still on {{cloud}}.",
+    "andMore_one": "{{count}} more",
+    "andMore_other": "{{count}} more",
+    "dismiss": "Dismiss",
+    "homeComputer": "Home's computer",
+    "ranOn": "Ran on {{cloud}}",
+    "needsComputer": "You don't have a computer for your agents to work on yet.",
+    "needsBackup": "Backup is off on {{name}}, so Home can't live there. Turn backup on, and {{name}} can be Home's computer.",
+    "addComputer": "Add a computer",
+    "setUpThisMac": "Set up this Mac",
+    "openComputer": "Open {{name}}"
   },
   "payer": {
     "subscription": "Subscription",

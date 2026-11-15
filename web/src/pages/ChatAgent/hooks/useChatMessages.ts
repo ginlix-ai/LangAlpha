@@ -28,6 +28,7 @@ import { useReportBackWatch } from './useReportBackWatch';
 import { useChatFeedback } from './useChatFeedback';
 import { toast } from '@/components/ui/use-toast';
 import { buildRateLimitError, type ErrorLinkSpec, type StructuredError } from '@/utils/rateLimitError';
+import { isNeedsComputer, needsBackupError, needsBackupOf, needsComputerError } from '../utils/needsComputer';
 import { isClientError } from '@/api/errors';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
@@ -2081,6 +2082,11 @@ export function useChatMessages(
     }
     // The transport words an upload too large for the server itself.
     if (errObj.status === 413) return { banner: (err as Error).message, answered: false };
+    // No computer to run on, and none will be built: the way out is adding one.
+    if (isNeedsComputer(err)) return { banner: needsComputerError(t), answered: true };
+    // A computer Home could live on, but with its backup off: the way out is turning it on.
+    const needsBackup = needsBackupOf(err);
+    if (needsBackup) return { banner: needsBackupError(t, needsBackup), answered: true };
     // A busy chat's refusal, in the view's words: the server's name the CLI's
     // commands.
     if (isBusyCode(errorInfo?.code)) {

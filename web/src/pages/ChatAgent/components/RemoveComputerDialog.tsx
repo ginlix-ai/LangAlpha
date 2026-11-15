@@ -8,7 +8,9 @@
  * A primary the user brought takes Home with it, so removing one first asks
  * which computer Home moves to; that computer becomes primary, and the
  * removal follows once Home is there. The user's only computer can't be
- * removed, so the dialog offers to add another instead.
+ * removed, so the dialog offers to add another instead. Files Home's
+ * Chief of Staff wrote on it while Home's machine was away and that never
+ * reached Home go with it, so the dialog names them.
  *
  * Opened over the Computers dialog, which owns the request and the refusal;
  * mounted only while open.
@@ -21,8 +23,10 @@ import { CheckboxChoice } from '@/components/ui/choice';
 import { Loader } from '@/components/ui/loader';
 import { ModalShell } from '@/components/ui/ModalShell';
 import { useAllWorkspaces } from '@/hooks/useAllWorkspaces';
+import { useLocale } from '@/hooks/useLocale';
 import type { Computer } from '@/types/api';
 
+import { machineName, namedFiles } from '../hooks/useHomePlacement';
 import { PREPARING_UI, computerStatusUi, isComputerPreparing, takesWorkspaces } from '../utils/computerStatus';
 import { providerIsOwnMachine, providerLabel } from './providerUi';
 import { RadioCardGroup, type RadioCardOption } from './radioCardGroup';
@@ -50,6 +54,11 @@ interface RemoveComputerDialogProps {
   homeTargets?: readonly Computer[] | null;
   /** This computer can't be reached, so Home is restored from its backup. */
   homeFromBackup?: boolean;
+  /**
+   * Files Home's stand-in holds here that a hand-back left and Home lacks,
+   * named by the computer Home lives on; null when there are none.
+   */
+  homeFilesLeft?: { failed: boolean; paths: string[]; homeComputer: string | null } | null;
   /** Home is moving to the computer picked, ahead of the removal. */
   movingHome?: boolean;
   /** Opens New computer, for a user whose only computer this is. */
@@ -79,6 +88,7 @@ function RemoveComputerDialog({
   turnsOffRemoteControl = false,
   homeTargets = null,
   homeFromBackup = false,
+  homeFilesLeft = null,
   movingHome = false,
   onAddComputer,
   onClose,
@@ -88,6 +98,7 @@ function RemoveComputerDialog({
   onlyComputer = false,
 }: RemoveComputerDialogProps) {
   const { t } = useTranslation();
+  const locale = useLocale();
   const titleId = useId();
   // On by default: a login left behind on a machine we no longer use is the
   // surprise, taking it out is not. Mounted only while open, so each open starts here.
@@ -165,6 +176,13 @@ function RemoveComputerDialog({
               )
           : t('computer.removeBody', "Its sandbox and everything on its disk are deleted. This can't be undone.")}
       </p>
+      {homeFilesLeft && (
+        <p data-testid="remove-computer-home-files" className="text-sm" style={{ color: 'var(--color-text-primary)' }}>
+          {homeFilesLeft.failed || homeFilesLeft.paths.length === 0
+            ? t('computer.removeHomeFiles.failed', { mac: machineName(t, homeFilesLeft.homeComputer) })
+            : t('computer.removeHomeFiles.left', { files: namedFiles(t, homeFilesLeft.paths, locale) })}
+        </p>
+      )}
       {homeTargets && homeTargets.length > 0 && (
         <div className="flex flex-col gap-1.5" data-testid="remove-computer-home">
           <RadioCardGroup

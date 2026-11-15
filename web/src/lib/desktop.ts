@@ -418,6 +418,11 @@ export function isDesktopShell(): boolean {
   return desktop !== undefined;
 }
 
+/** Whether this page runs in the desktop shell on a Mac. */
+export function isMacDesktop(): boolean {
+  return desktop?.platform === 'darwin';
+}
+
 /**
  * Open a page of the account console: in this window in the desktop app,
  * which keeps the console beside the app, and in a new tab in a browser, so

@@ -26,6 +26,8 @@ import { useStableHandler } from '@/hooks/useStableHandler';
 import { useEditDraft, useEditDraftStore } from '../../hooks/utils/editDrafts';
 import { isSteeringUserMessage } from './messagePredicates';
 import { UserBubble } from './UserBubble';
+import { HomeTurnBadge } from './HomeTurnBadge';
+import type { HomeFallback } from '@/types/sse';
 import { MessageTime } from './MessageTime';
 import { assistantText, userMessageText } from './messageText';
 import { EditMessageField } from './EditMessageField';
@@ -157,6 +159,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   const chartSelections = message.chartSelections as SelectionPreviewShape[] | undefined;
   const hasChartSelections = isUser && chartSelections && chartSelections.length > 0;
   const provenance = isUser ? (message.provenance as MessageProvenance | undefined) : undefined;
+  const homeFallback = isUser ? (message.homeFallback as HomeFallback | undefined) : undefined;
 
   // Edit mode lives in the host's draft store, so a reload that remounts the
   // bubble reopens the box with what was typed in it.
@@ -697,9 +700,12 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         <>
         {/* ===== NORMAL MODE ===== */}
         {isUser ? (
-          <UserBubble provenance={provenance} steered={!!message.steeringDelivered} readOnly={readOnly} isMobile={isMobile}>
-            {bubbleContent}
-          </UserBubble>
+          <>
+            <UserBubble provenance={provenance} steered={!!message.steeringDelivered} readOnly={readOnly} isMobile={isMobile}>
+              {bubbleContent}
+            </UserBubble>
+            {homeFallback && <HomeTurnBadge fallback={homeFallback} />}
+          </>
         ) : (
           <div
             className={`rounded-lg rounded-tl-none pl-0 pr-0 ${showTurnFiles ? 'pb-0' : isMobile ? 'pb-2' : 'pb-3'}`}

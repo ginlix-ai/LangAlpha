@@ -565,7 +565,12 @@ function ComputersPanel({
             holdsOurKey={providerHoldsOurKey(removeTarget.kind) && !removeTarget.ssh?.helper}
             turnsOffRemoteControl={thisMac.of(removeTarget) !== null}
             homeTargets={homeTargets}
-            homeFromBackup={removeTarget.ssh?.tunnel_connected === false}
+            homeFromBackup={homeFromBackup}
+            homeFilesLeft={
+              placement?.left_on_stand_in && placement.stand_in?.computer_id === removeTarget.computer_id
+                ? { ...placement.left_on_stand_in, homeComputer: placement.computer_name }
+                : null
+            }
             movingHome={handOffHome.isPending}
             onAddComputer={() => {
               setRemoveTargetId(null);

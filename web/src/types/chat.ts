@@ -545,6 +545,9 @@ export type UserMessage = {
   /** On a report-back's row only: the run it opened. History and a live
    *  attach can both draw that row, and know it by this. */
   runId?: string;
+  /** On a Home turn that ran on the cloud stand-in while Home's own machine
+   *  could not be reached: drawn as a quiet line under the message. */
+  homeFallback?: import('./sse').HomeFallback;
   steeringDelivered?: boolean;
   steering?: boolean;
   /** The request key this view sent the message under. A delivery that

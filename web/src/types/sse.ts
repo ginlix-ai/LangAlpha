@@ -37,7 +37,8 @@ export type SSEEventType =
   | 'steering_delivered'
   | 'task_steering_accepted'
   | 'interrupt'
-  | 'finish';
+  | 'finish'
+  | 'turn_placement';
 
 /** Base interface for all SSE events */
 export interface BaseSSEEvent {
@@ -502,6 +503,29 @@ export interface FinishEvent extends BaseSSEEvent {
   finish_reason?: string;
 }
 
+/**
+ * Where a Home turn ran while the machine Home lives on could not be reached:
+ * on the user's cloud computer (`cloud_*`) standing in for it. `reason` is
+ * `command` for a report-back from a command that ran there. Carried by the
+ * `turn_placement` frame live and by the turn's query metadata on replay.
+ */
+export interface HomeFallback {
+  computer_id: string;
+  computer_name: string;
+  cloud_computer_id: string;
+  cloud_name: string;
+  /** When the turn was admitted (ISO): the first hand-back after it holds its files. */
+  at?: string;
+  reason?: 'unreachable' | 'command';
+}
+
+/** Sent once near the start of a Home turn that runs on the cloud stand-in. */
+export interface TurnPlacementEvent extends BaseSSEEvent {
+  event: 'turn_placement';
+  home_fallback: HomeFallback;
+  workspace_id: string;
+}
+
 /** Discriminated union of all SSE events */
 export type SSEEvent =
   | MetadataEvent
@@ -522,4 +546,5 @@ export type SSEEvent =
   | TaskSteeringAcceptedEvent
   | UserMessageEvent
   | InterruptEvent
-  | FinishEvent;
+  | FinishEvent
+  | TurnPlacementEvent;

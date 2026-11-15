@@ -71,6 +71,82 @@ export async function getHomeWorkspace(): Promise<Workspace> {
   return data;
 }
 
+/** The user's cloud computer Home's turns use while Home's own machine can't be reached. */
+export interface HomeStandIn {
+  computer_id: string;
+  name: string;
+  status: string;
+}
+
+/** The last hand-back of files written on the stand-in, until the user dismisses it. */
+export interface HomeHandback {
+  handback_id: string;
+  /** Relative to Home, e.g. `From the cloud/2026-11-15 2`; null when nothing was copied. */
+  folder: string | null;
+  files: number;
+  /** Paths too large to copy, still only on the cloud computer. */
+  left_on_cloud: string[];
+  /** Paths that couldn't be read there, still only on the cloud computer. */
+  unreadable?: string[];
+  /** The copy kept failing and was given up: every file is still only on the cloud computer. */
+  failed?: boolean;
+  computer_name: string;
+  cloud_name: string;
+  created_at: string;
+}
+
+/**
+ * Where Home lives and where its next turn runs. `stand_in` is named whether
+ * or not Home's machine answers; null means the user has no cloud computer,
+ * so a turn waits for the machine. A pure read: polling it starts nothing.
+ */
+export interface HomePlacement {
+  computer_id: string | null;
+  computer_name: string | null;
+  /** `ssh` for a machine the user brought. */
+  computer_kind: string | null;
+  unreachable: boolean;
+  stand_in: HomeStandIn | null;
+  handback_owed: boolean;
+  handback: HomeHandback | null;
+  /**
+   * Files the last hand-back left on the stand-in's computer (`stand_in`),
+   * kept after its notice is dismissed: removing that computer deletes them.
+   * `failed` when it gave up, so which files is not known.
+   */
+  left_on_stand_in?: { failed: boolean; paths: string[] } | null;
+  move: WorkspaceMove | null;
+}
+
+export async function getHomePlacement(): Promise<HomePlacement> {
+  const { data } = await api.get<HomePlacement>('/api/v1/workspaces/home/placement', {
+    timeout: WORKSPACE_QUERY_TIMEOUT_MS,
+  });
+  return data;
+}
+
+/** Dismiss the hand-back notice. */
+export async function markHomeHandbackSeen(handbackId: string): Promise<void> {
+  await api.post('/api/v1/workspaces/home/placement/seen', { handback_id: handbackId });
+}
+
+/**
+ * Where Home's cloud turns' files are now: each hand-back's folder in Home and
+ * the paths, relative to the stand-in's folder, it carried there (oldest
+ * first). A path none carried yet is only in the stand-in workspace.
+ */
+export interface HomeHandbacks {
+  stand_in_workspace_id: string;
+  handbacks: { through: string; folder: string; files: string[] }[];
+}
+
+export async function getHomeHandbacks(): Promise<HomeHandbacks> {
+  const { data } = await api.get<HomeHandbacks>('/api/v1/workspaces/home/handbacks', {
+    timeout: WORKSPACE_QUERY_TIMEOUT_MS,
+  });
+  return data;
+}
+
 export async function updateWorkspace(workspaceId: string, updates: Record<string, unknown>) {
   if (!workspaceId) throw new Error('Workspace ID is required');
   const { data } = await api.put(`/api/v1/workspaces/${workspaceId}`, updates);
@@ -129,43 +205,6 @@ export async function moveWorkspace(
     { computer_id: computerId, ...(options.fromBackup ? { from_backup: true } : {}) },
     { timeout: WORKSPACE_MUTATION_TIMEOUT_MS },
   );
-  return data;
-}
-
-/**
- * Where Home stands: the computer it is on, whether that computer is one of
- * the user's own machines that can't be reached now, and the cloud computer
- * the user already has that Home's turns use meanwhile (`stand_in`, null when
- * they have none and Home's turns wait for the machine instead).
- */
-export interface HomePlacement {
-  computer_id: string | null;
-  computer_name: string | null;
-  /** `ssh` for a machine the user brings. */
-  computer_kind: string | null;
-  unreachable: boolean;
-  stand_in: { computer_id: string; name: string; status: string } | null;
-  /** Files written on the stand-in are still to be copied back into Home. */
-  handback_owed: boolean;
-  handback: {
-    handback_id: string;
-    /** Relative to Home. */
-    folder: string;
-    files: number;
-    /** Too large to copy, so left on the cloud computer. */
-    left_on_cloud: string[];
-    computer_name: string;
-    cloud_name: string;
-    created_at: string;
-  } | null;
-  move: WorkspaceMove | null;
-}
-
-/** A pure read, so it can be polled. */
-export async function getHomePlacement(): Promise<HomePlacement> {
-  const { data } = await api.get<HomePlacement>('/api/v1/workspaces/home/placement', {
-    timeout: WORKSPACE_QUERY_TIMEOUT_MS,
-  });
   return data;
 }
 

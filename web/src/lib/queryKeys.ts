@@ -68,8 +68,12 @@ export const queryKeys = {
     details: () => [...queryKeys.workspaces.all, 'detail'],
     detail: (id: string) => [...queryKeys.workspaces.details(), id],
     home:   () => [...queryKeys.workspaces.all, 'home'],
+    // Where Home lives, and the cloud computer its turns use while that
+    // machine can't be reached, with what came back from it.
+    homePlacement: () => [...queryKeys.workspaces.all, 'home', 'placement'],
+    // Where each hand-back put the files Home's cloud turns wrote, for their cards.
+    homeHandbacks: () => [...queryKeys.workspaces.all, 'home', 'handbacks'],
     quota:  () => [...queryKeys.workspaces.all, 'quota'],
-    homePlacement: () => [...queryKeys.workspaces.all, 'home-placement'],
   },
   // A workspace's latest move to another computer, polled while it runs. Its
   // own root, not under `workspaces`: the read that sees a move end refreshes

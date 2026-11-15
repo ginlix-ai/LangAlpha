@@ -242,4 +242,22 @@ describe('ComputersDialog: refusals to remove', () => {
       "Files written on this computer while Office Mac was away haven't been copied back into Home yet. Try again once Office Mac is back.",
     );
   });
+
+  it('says which of Home\'s files a removal deletes once a hand-back left them there', async () => {
+    mockPlacement.mockResolvedValue(placement({ left_on_stand_in: { failed: false, paths: ['huge.bin'] } }));
+    const { confirm } = await openRemove('Second machine');
+
+    expect(await within(confirm).findByTestId('remove-computer-home-files')).toHaveTextContent(
+      'Left here and not in Home: huge.bin. Removing this computer deletes them.',
+    );
+  });
+
+  it('says a given-up hand-back\'s files go with the computer', async () => {
+    mockPlacement.mockResolvedValue(placement({ left_on_stand_in: { failed: true, paths: [] } }));
+    const { confirm } = await openRemove('Second machine');
+
+    expect(await within(confirm).findByTestId('remove-computer-home-files')).toHaveTextContent(
+      "Files written here while Office Mac was away couldn't be copied into Home. Removing this computer deletes them.",
+    );
+  });
 });

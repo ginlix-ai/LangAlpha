@@ -12,7 +12,8 @@ import { formatBytes } from '@/lib/format';
 import type { Computer, Workspace } from '@/types/api';
 import { apiErrorCoded } from '@/api/errors';
 import { startWorkspace, uploadWorkspaceFile } from '../utils/api';
-import { openComputersPanel } from '../hooks/computerPanelStore';
+import { needsBackupOf, type NeedsBackup } from '../utils/needsComputer';
+import { addsThisMac, useOpenComputers } from '../hooks/useOpenComputers';
 import { createWorkspaceDenialMessage, denialMessage } from '../utils/denialMessage';
 import { clampWorkspaceName } from '../utils/workspaceName';
 import type { NewWorkspace } from '../hooks/useCreateWorkspace';
@@ -60,8 +61,12 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
   const [description, setDescription] = useState('');
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
-  // The user has no computer for the workspace, and none is built for them.
+  // The user has no computer for the workspace, and none is built for them;
+  // or the one they have can't hold Home with its backup off.
   const [needsComputer, setNeedsComputer] = useState(false);
+  const [needsBackup, setNeedsBackup] = useState<NeedsBackup | null>(null);
+  const openComputers = useOpenComputers();
+  const thisMac = addsThisMac();
   const [pickedComputerId, setPickedComputerId] = useState<string | null>(null);
   const computerFieldId = useId();
 
@@ -204,6 +209,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
     setSubmitting(true);
     setError(null);
     setNeedsComputer(false);
+    setNeedsBackup(null);
 
     let workspace: Workspace;
     try {
@@ -216,7 +222,9 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
       // A refusal keeps the user on the form with their input intact. On a 429
       // the sentence is the quota service's, relayed as it arrived.
       setSubmitting(false);
+      const backupOff = needsBackupOf(err);
       if (apiErrorCoded(err, 'needs_computer')) setNeedsComputer(true);
+      else if (backupOff) setNeedsBackup(backupOff);
       else setError(createWorkspaceDenialMessage(err, t));
       return;
     }
@@ -250,6 +258,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
     setQueuedFiles([]);
     setError(null);
     setNeedsComputer(false);
+    setNeedsBackup(null);
     setPickedComputerId(null);
     setPhase('form');
     setCreationStep('uploading');
@@ -525,16 +534,51 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
                   "Workspaces live on a computer, and you don't have one yet. Add a computer, then create the workspace.",
                 )}
               </p>
+              <div className="flex flex-wrap gap-2">
+                {thisMac && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      resetAndClose();
+                      openComputers({ view: 'create', pick: 'thisMac' });
+                    }}
+                  >
+                    {t('homePlacement.setUpThisMac')}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    resetAndClose();
+                    openComputers({ view: 'create' });
+                  }}
+                >
+                  {t('computer.card.add', 'Add a computer')}
+                </Button>
+              </div>
+            </div>
+          )}
+          {needsBackup && (
+            <div
+              role="alert"
+              className="mb-2 flex flex-col items-start gap-2 rounded-md px-3 py-2.5 text-sm"
+              style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-primary)' }}
+            >
+              <p>{t('homePlacement.needsBackup', { name: needsBackup.name })}</p>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={() => {
                   resetAndClose();
-                  openComputersPanel({ view: 'create' });
+                  openComputers({ view: 'details', computerId: needsBackup.computerId });
                 }}
               >
-                {t('computer.card.add', 'Add a computer')}
+                {t('homePlacement.openComputer', { name: needsBackup.name })}
               </Button>
             </div>
           )}

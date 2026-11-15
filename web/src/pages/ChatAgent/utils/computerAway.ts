@@ -25,7 +25,7 @@ const UNREACHABLE_HEADER = 'x-computer-unreachable';
 export const SERVICE_CODE = 'gateway_unreachable';
 
 /** How often a view showing a machine that went away asks again, so it returns to live by itself. */
-const AWAY_REFETCH_MS = 15_000;
+export const AWAY_REFETCH_MS = 15_000;
 
 /** The queries polling for a computer. Held weakly, so an entry goes with its query. */
 const polling = new WeakSet<object>();

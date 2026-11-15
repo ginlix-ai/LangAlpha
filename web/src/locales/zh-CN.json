@@ -1716,6 +1716,10 @@
       "starting": "启动完成后即可移除。",
       "stopping": "停止后即可移除。"
     },
+    "removeHomeFiles": {
+      "failed": "{{mac}} 离线期间在这台计算机上写的文件没能复制到 Home。移除这台计算机会删除它们。",
+      "left": "以下文件留在这台计算机上，不在 Home 里：{{files}}。移除这台计算机会删除它们。"
+    },
     "removeRefused": {
       "primary": "这是你的默认计算机。请先将另一台计算机设为默认，Home 会随之迁移过去。",
       "hasWorkspaces": "它上面有一个未列出的工作区。请查看列表后重试。",
@@ -6794,6 +6798,25 @@
       "handoff": "已交给分析师",
       "taskHandoff": "任务已交给分析师"
     }
+  },
+  "homePlacement": {
+    "onCloud": "{{mac}} 暂时无法连接，Chief of Staff Agent 目前在 {{cloud}} 上工作。它写的文件会在 {{mac}} 恢复后复制到那里的 Home。",
+    "waiting": "{{mac}} 暂时无法连接，Chief of Staff Agent 正在等它恢复，现在发送的消息不会运行。",
+    "handedBack_one": "在 {{cloud}} 上写的 {{count}} 个文件已复制到 {{mac}} 的 Home/{{folder}}。",
+    "handedBack_other": "在 {{cloud}} 上写的 {{count}} 个文件已复制到 {{mac}} 的 Home/{{folder}}。",
+    "leftOnCloud": "以下文件太大，没有复制，仍留在 {{cloud}} 上：{{files}}。",
+    "unreadable": "以下文件无法读取，没有复制，仍留在 {{cloud}} 上：{{files}}。",
+    "handbackFailed": "{{mac}} 无法连接期间在 {{cloud}} 上写的文件没能复制到 Home，仍留在 {{cloud}} 上。",
+    "andMore_one": "另外 {{count}} 个",
+    "andMore_other": "另外 {{count}} 个",
+    "dismiss": "关闭",
+    "homeComputer": "Home 所在的计算机",
+    "ranOn": "在 {{cloud}} 上运行",
+    "needsComputer": "你还没有可供 Agent 工作的计算机。",
+    "needsBackup": "{{name}} 的备份已关闭，所以 Home 不能放在上面。开启备份后，{{name}} 就可以成为 Home 所在的计算机。",
+    "addComputer": "添加计算机",
+    "setUpThisMac": "设置这台 Mac",
+    "openComputer": "打开 {{name}}"
   },
   "payer": {
     "subscription": "订阅",

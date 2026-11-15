@@ -14,6 +14,7 @@ import {
 import { ReportDialog } from '@/components/report/ReportDialog';
 import { useReportsEnabled } from '@/hooks/useReportsEnabled';
 import { MediumActionLink } from '@/pages/ChatAgent/components/MediumActionLink';
+import { AddComputerLink, ComputerDetailsLink } from '@/pages/ChatAgent/components/AddComputerLink';
 
 interface ErrorBannerProps {
   error: string | StructuredError | null | undefined;
@@ -24,10 +25,12 @@ interface ErrorBannerProps {
   reportThreadId?: string;
 }
 
-export function ErrorLink({ url, label, labelKey, external, console: consolePage, resize }: ErrorLinkSpec): React.ReactElement {
+export function ErrorLink({ url, label, labelKey, external, console: consolePage, resize, addComputer, computerDetails }: ErrorLinkSpec): React.ReactElement {
   const navigate = useNavigate();
   const { t } = useTranslation();
   if (resize) return <MediumActionLink computerId={resize} />;
+  if (addComputer) return <AddComputerLink />;
+  if (computerDetails) return <ComputerDetailsLink {...computerDetails} />;
   // A leading slash is not enough to claim a URL as ours: with a path-shaped
   // VITE_PLATFORM_URL the account portal answers on /account/*, same origin but
   // a different app, and routing to it lands on our catch-all with no network
