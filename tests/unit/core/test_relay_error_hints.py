@@ -31,3 +31,26 @@ def test_hints_are_actionable_sentences():
         assert hint.strip(), f"empty hint for {code}"
         assert hint != code
         assert " " in hint, f"hint for {code} is not a sentence: {hint!r}"
+
+
+def test_a_refusal_shows_the_relays_detail_after_its_hint():
+    """The hint alone dropped what only the relay knew: what the call would
+    cost, the auth service's reason for a denial."""
+    import httpx
+
+    from ptc_agent.core.sandbox.mcp_client_runtime import _relay_error
+
+    def refusal(code: str, body: str) -> httpx.Response:
+        return httpx.Response(402, headers={"x-relay-error": code}, content=body.encode())
+
+    message = _relay_error(
+        refusal("cost_exceeds_balance", "this call would cost about 160 credits"), "fc"
+    )
+    assert message == (
+        "MCP server fc: relay rejected the call [cost_exceeds_balance]: "
+        f"{_RELAY_ERROR_HINTS['cost_exceeds_balance']} (this call would cost about 160 credits)"
+    )
+    # A body that only repeats the code adds nothing.
+    assert _relay_error(refusal("not_found", "not_found"), "fc").endswith(
+        _RELAY_ERROR_HINTS["not_found"]
+    )

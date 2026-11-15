@@ -19,10 +19,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ptc_agent.agent.middleware.runtime_context.turn import TURN_DEADLINE_KEY, TURN_TIME_LIMIT_KEY
+from ptc_agent.agent.provenance.trace import RELAY_CALL_KEY
 from ptc_agent.agent.tools.bash import bash_description, create_execute_bash_tool
 from ptc_agent.agent.tools.command_handoff import HandOff
 from ptc_agent.core.sandbox.execution import JobExecFailed
 from ptc_agent.core.sandbox.jobs import LOST_MESSAGE, JobNotLaunched, JobSpec, StoppedJob
+from ptc_agent.core.sandbox.livefs_mount import CallContext
 from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from tests.unit.ptc_agent.agent.job_fakes import COMMAND_ID, LOG, LOST, outcome, tool_call
 
@@ -33,6 +35,12 @@ THREAD = "6a7c8021-0000-4000-8000-000000000001"
 WORKSPACE = "00000000-0000-4000-8000-00000000aaaa"
 COMPUTER = "00000000-0000-4000-8000-00000000cccc"
 RUN = "00000000-0000-4000-8000-00000000dddd"
+
+
+def _without_call_id(artifact: dict) -> dict:
+    """The artifact minus the relay call id every run carries, which only
+    provenance reads (``RELAY_CALL_KEY``)."""
+    return {k: v for k, v in artifact.items() if k != RELAY_CALL_KEY}
 
 
 @pytest.fixture(autouse=True)
@@ -106,9 +114,14 @@ class TestEndedWithinTheWait:
     @pytest.mark.asyncio
     async def test_success_surfaces_mcp_trace_on_artifact(self):
         trace = [{"server": "marketdata", "tool": "quote", "result_sha256": "a" * 64}]
-        tool = _main(_backend(outcome(output="ok", mcp_trace=trace)))
+        backend = _backend(outcome(output="ok", mcp_trace=trace))
+        # Every computer the host runs files its calls, which mints the id.
+        backend.sandbox.call_filer = AsyncMock()
+        tool = _main(backend, call_context=CallContext(thread_id=THREAD))
         msg = await tool.ainvoke(tool_call("Bash", command="python analysis.py"), _CONFIG)
-        assert msg.artifact == {"mcp_trace": trace}
+        assert _without_call_id(msg.artifact) == {"mcp_trace": trace}
+        # The relay files the command's paid calls under this id.
+        assert len(msg.artifact[RELAY_CALL_KEY]) == 16
         assert msg.content == "ok"
 
     @pytest.mark.asyncio
@@ -117,7 +130,7 @@ class TestEndedWithinTheWait:
         trace = [{"server": "finance", "tool": "get_prices", "result_sha256": "b" * 64}]
         tool = _main(_backend(outcome(exit_code=1, output="boom", mcp_trace=trace)))
         msg = await tool.ainvoke(tool_call("Bash", command="python analysis.py"), _CONFIG)
-        assert msg.artifact == {"mcp_trace": trace}
+        assert _without_call_id(msg.artifact) == {"mcp_trace": trace}
         assert msg.content == "ERROR: Command failed (exit code 1)\nboom"
 
     @pytest.mark.asyncio
@@ -132,7 +145,7 @@ class TestEndedWithinTheWait:
         with patch(_RECORD, new=AsyncMock()) as record:
             msg = await _main(backend).ainvoke(tool_call("Bash", command="mkdir foo"), _CONFIG)
         assert msg.content == "Command completed successfully"
-        assert msg.artifact == {"mcp_trace": []}
+        assert _without_call_id(msg.artifact) == {"mcp_trace": []}
         record.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -478,7 +491,7 @@ class TestHandOff:
 
         assert msg.content == HANDED_OFF
         # The id rides the artifact too, which the web refreshes on.
-        assert msg.artifact == {"mcp_trace": [], "command_id": COMMAND_ID}
+        assert _without_call_id(msg.artifact) == {"mcp_trace": [], "command_id": COMMAND_ID}
         backend.stop_job.assert_not_awaited()
         backend.continue_job.assert_not_awaited()
         kw = record.await_args.kwargs
@@ -547,7 +560,7 @@ class TestHandOff:
         assert backend.start_bash_job.await_args.kwargs["wait_s"] == 0
         record.assert_awaited_once()
         assert msg.content == STARTED_IN_BACKGROUND
-        assert msg.artifact == {"mcp_trace": [], "command_id": COMMAND_ID}
+        assert _without_call_id(msg.artifact) == {"mcp_trace": [], "command_id": COMMAND_ID}
 
     @pytest.mark.asyncio
     async def test_an_unrecorded_command_is_waited_on_to_its_end(self):

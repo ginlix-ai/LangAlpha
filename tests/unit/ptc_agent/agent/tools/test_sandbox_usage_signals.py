@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ptc_agent.agent.provenance.trace import RELAY_CALL_KEY
 from ptc_agent.agent.tools import utils
 from ptc_agent.agent.tools.bash import create_execute_bash_tool
 from ptc_agent.agent.tools.code_execution import create_execute_code_tool
@@ -21,6 +22,12 @@ from ptc_agent.agent.tools.command_handoff import HandOff
 from tests.unit.ptc_agent.agent.job_fakes import outcome
 
 RECORD = "src.server.database.computer_runs.record_oom_kill"
+
+
+def _without_call_id(artifact: dict) -> dict:
+    """The artifact minus the relay call id every run carries, which only
+    provenance reads (``RELAY_CALL_KEY``)."""
+    return {k: v for k, v in artifact.items() if k != RELAY_CALL_KEY}
 
 
 @pytest.fixture(autouse=True)
@@ -220,7 +227,7 @@ class TestOomKillCount:
         out = await tool.ainvoke(_bash_call())
 
         assert "exit code 137" in out.content
-        assert out.artifact == {"mcp_trace": []}
+        assert _without_call_id(out.artifact) == {"mcp_trace": []}
 
     @pytest.mark.asyncio
     async def test_a_hanging_record_is_cut_off(self, _computer_runs, monkeypatch):

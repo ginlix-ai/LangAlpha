@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ptc_agent.agent.middleware.runtime_context.turn import TURN_DEADLINE_KEY, TURN_TIME_LIMIT_KEY
+from ptc_agent.agent.provenance.trace import RELAY_CALL_KEY
 from ptc_agent.agent.tools.code_execution import code_description, create_execute_code_tool
 from ptc_agent.agent.tools.command_handoff import HandOff
 from ptc_agent.core.sandbox.jobs import LOST_MESSAGE, StoppedJob
@@ -27,6 +28,12 @@ _GET = "src.server.database.runs.command_runs.get_thread_command"
 THREAD = "6a7c8021-0000-4000-8000-000000000001"
 RUN = "00000000-0000-4000-8000-00000000dddd"
 _CONFIG = {"metadata": {"run_id": RUN}}
+
+
+def _without_call_id(artifact: dict) -> dict:
+    """The artifact minus the relay call id every run carries, which only
+    provenance reads (``RELAY_CALL_KEY``)."""
+    return {k: v for k, v in artifact.items() if k != RELAY_CALL_KEY}
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +88,7 @@ class TestEndedWithinTheWait:
         msg = await _main(backend).ainvoke(tool_call("ExecuteCode", code="print(42)"), _CONFIG)
 
         assert msg.content == "SUCCESS\n42\n"
-        assert msg.artifact == {"mcp_trace": trace}
+        assert _without_call_id(msg.artifact) == {"mcp_trace": trace}
         assert backend.start_code_job.await_args.kwargs["wait_s"] == 300
 
     @pytest.mark.asyncio
@@ -159,7 +166,7 @@ class TestHandOff:
             f"Still running after 5m, so it moved to the background as command_id {COMMAND_ID}. "
             f"Its output goes to {LOG} as it runs"
         )
-        assert msg.artifact == {"mcp_trace": [], "command_id": COMMAND_ID}
+        assert _without_call_id(msg.artifact) == {"mcp_trace": [], "command_id": COMMAND_ID}
         backend.stop_job.assert_not_awaited()
         kw = record.await_args.kwargs
         assert (kw["tool"], kw["description"], kw["command_preview"]) == (
