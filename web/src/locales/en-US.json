@@ -2786,6 +2786,7 @@
         "market_data": "Market data",
         "mcp_tool": "Financial data tools"
       },
+      "cost": "Cost: {{count}} credits",
       "fingerprint": {
         "checksum": "Checksum",
         "size": "Size",

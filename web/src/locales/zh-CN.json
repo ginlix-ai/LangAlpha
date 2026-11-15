@@ -2818,6 +2818,7 @@
         "market_data": "市场数据",
         "mcp_tool": "金融数据工具"
       },
+      "cost": "费用：{{count}} 积分",
       "fingerprint": {
         "checksum": "校验值",
         "size": "大小",
