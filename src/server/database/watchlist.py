@@ -412,7 +412,7 @@ async def create_watchlist_item(
         ValueError: If watchlist doesn't exist or doesn't belong to user
     """
     watchlist_item_id = str(uuid4())
-    symbol = normalize_symbol(symbol)
+    symbol = normalize_symbol(symbol, instrument_type)
 
     async with get_db_connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:

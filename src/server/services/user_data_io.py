@@ -362,13 +362,14 @@ def parse_portfolio(content: str) -> list[dict[str, Any]]:
         # agent and the UI agree on row identity (uppercase ticker, lowercase
         # instrument type). Without this, agent writes like "aapl"/"Stock"
         # bypass dedup against existing "AAPL"/"stock" rows.
-        symbol = normalize_symbol(
-            _require_nonempty_str(item.get("symbol"), file=file, path=f"holdings[{idx}].symbol")
-        )
         instrument_type = normalize_instrument_type(
             _require_nonempty_str(
                 item.get("instrument_type"), file=file, path=f"holdings[{idx}].instrument_type",
             )
+        )
+        symbol = normalize_symbol(
+            _require_nonempty_str(item.get("symbol"), file=file, path=f"holdings[{idx}].symbol"),
+            instrument_type,
         )
         quantity = _coerce_decimal(item.get("quantity"), file, f"holdings[{idx}].quantity")
         _reject_negative(quantity, file=file, path=f"holdings[{idx}].quantity")
@@ -717,17 +718,18 @@ def parse_watchlist(content: str) -> list[dict[str, Any]]:
                 file=file, path=f"watchlists[{wl_idx}].items[{it_idx}]",
             )
 
-            symbol = normalize_symbol(
-                _require_nonempty_str(
-                    item.get("symbol"), file=file,
-                    path=f"watchlists[{wl_idx}].items[{it_idx}].symbol",
-                )
-            )
             instrument_type = normalize_instrument_type(
                 _require_nonempty_str(
                     item.get("instrument_type"), file=file,
                     path=f"watchlists[{wl_idx}].items[{it_idx}].instrument_type",
                 )
+            )
+            symbol = normalize_symbol(
+                _require_nonempty_str(
+                    item.get("symbol"), file=file,
+                    path=f"watchlists[{wl_idx}].items[{it_idx}].symbol",
+                ),
+                instrument_type,
             )
 
             dup_key = (symbol, instrument_type)
