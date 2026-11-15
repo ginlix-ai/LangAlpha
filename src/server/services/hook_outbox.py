@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Iterable, Optional
 
+from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
 from src.server.database.runs import outbox as outbox_db
 from src.server.database.ssh_tunnels import AWAY_GIVE_UP_DAYS
 
@@ -198,7 +199,7 @@ async def _log_closed_alert(row: Dict[str, Any]) -> None:
 async def _log_released_for_computer(row: Dict[str, Any]) -> None:
     logger.info(
         f"[HookOutbox] released job={row.get('hook_outbox_id')} "
-        f"type={row.get('hook_type')}: its computer can be reached again"
+        f"type={row.get('hook_type')}: its turn can run now"
     )
 
 
@@ -307,7 +308,9 @@ class HookOutboxDrainer:
             # claim after the sweeps takes what it releases on the same pass.
             _Sweep(
                 "computer release", COMPUTER_RELEASE_INTERVAL,
-                lambda: outbox_db.release_for_reachable_computers(),
+                lambda: outbox_db.release_for_reachable_computers(
+                    stand_in_kinds=RECREATABLE_KINDS
+                ),
                 _log_released_for_computer,
             ),
             # Retention: purge terminal rows past every read-back window so

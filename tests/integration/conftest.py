@@ -367,6 +367,7 @@ _ALL_TABLES = [
     "user_api_keys",
     "user_preferences",
     "workspaces",
+    "home_away",
     "users",
 ]
 

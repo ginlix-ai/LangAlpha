@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import json
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from functools import partial
 from typing import Any
@@ -26,6 +27,7 @@ from src.server.app import setup
 from src.server.database.conversation.threads_read import (
     read_thread_subagents_allowed,
 )
+from src.server.database.home_workspace import STAND_IN_COMPUTER
 from src.server.database.user import get_user_profile_for_prompt
 from src.server.database.workspace import update_workspace_activity
 from src.server.services.commands.mirror import mirror_computer
@@ -136,6 +138,37 @@ def _turn_held(data: dict) -> str:
     """A ``turn_held`` frame. Id 0 like ``workspace_status``: it comes before
     the run has a stream to resume, so no cursor counts it."""
     return f"id: 0\nevent: turn_held\ndata: {json.dumps(data)}\n\n"
+
+
+def _in_start(
+    then: Callable[[Any], Awaitable[None]] | None, *, away_user: str | None
+) -> Callable[[Any], Awaitable[None]] | None:
+    """What the START transaction also writes. A Home turn placed in Home's
+    stand-in marks its user away there, so the mark commits with its run row
+    and after Home's row lock, which the hand-back reads under."""
+    if away_user is None:
+        return then
+
+    async def run(conn: Any) -> None:
+        from src.server.database.home_away import StandInGone, mark_away
+
+        try:
+            await mark_away(away_user, conn=conn)
+        except StandInGone:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "busy",
+                    "message": (
+                        "The computer this Home turn was to run on was just "
+                        "removed. Send it again."
+                    ),
+                },
+            ) from None
+        if then is not None:
+            await then(conn)
+
+    return run
 
 
 async def _admit_attachments(
@@ -253,6 +286,10 @@ async def astream_ptc_workflow(
     connection alive from there (``SetupKeepaliveResponse``).
     """
     workspace_id = route.workspace_id
+    # The workspace whose computer and folder the turn runs in: Home's
+    # stand-in while the machine Home lives on can't be reached, else the
+    # thread's own. The thread, its admission and its records stay Home's.
+    runs_in = route.computer_workspace_id
     start_time = time.time()
     handler = None
     run_handle = None
@@ -331,13 +368,17 @@ async def astream_ptc_workflow(
             # neither a run nor a turn (v4 identity model); its content is archived
             # on the owning response's metadata at finalize.
             workspace_manager = WorkspaceManager.get_instance()
-            needs_startup = not workspace_manager.has_ready_session(workspace_id)
-            # When the workspace was evicted/restarted, any in-BTM LocalRunExecution for
-            # this thread holds a stale sandbox reference — cancel it first so
-            # admission/steering routes against live state only (this run isn't
-            # registered anywhere yet; its row commits at START, below).
-            if needs_startup:
-                await manager.cancel_stale_workflow(thread_id)
+            needs_startup = not workspace_manager.has_ready_session(runs_in)
+            # When the workspace a running LocalRunExecution for this thread
+            # works in was evicted/restarted, it holds a stale sandbox reference;
+            # cancel it first so admission/steering routes against live state
+            # only (this run isn't registered anywhere yet; its row commits at
+            # START, below). Judged where that run works, not where this turn
+            # would: a Home turn in the stand-in lives on when Home comes back.
+            await manager.cancel_stale_workflow(
+                thread_id,
+                is_stale=lambda ws: not workspace_manager.has_ready_session(ws),
+            )
             from src.server.services.thread_mutation import ThreadMutationRunner
 
             # A send held behind a thread mutation (a /compact, the hand-off at a
@@ -409,7 +450,7 @@ async def astream_ptc_workflow(
             request, inherits_rules = await retried_on_its_surface(request)
             # The attempts this turn may continue, read once for all it carries.
             prior = await carry.prior_attempt(request, thread_id)
-            disk_free_mb, disk_known = await read_disk_notice(workspace_id)
+            disk_free_mb, disk_known = await read_disk_notice(runs_in)
             user_profile = (
                 await get_user_profile_for_prompt(user_id) if user_id else None
             )
@@ -461,6 +502,9 @@ async def astream_ptc_workflow(
                 # The resolved one: a request may name a former Home row.
                 "workspace_id": workspace_id,
             }
+            if route.away is not None:
+                # Read back with the turn, so a reload still says where it ran.
+                query_metadata["home_fallback"] = route.away.as_metadata()
             if effective_model:
                 query_metadata["llm_model"] = effective_model
             query_metadata.update(provenance_metadata(request))
@@ -574,9 +618,15 @@ async def astream_ptc_workflow(
                     UNWATCHED_RUN_META: turn_context.unwatched,
                     **run_stamp(config),
                     **firing,
+                    # Where it runs, for the idle sweep to count it there.
+                    **(
+                        {STAND_IN_COMPUTER: route.away.cloud_computer_id}
+                        if route.away is not None
+                        else {}
+                    ),
                     **(run_metadata or {}),
                 },
-                in_start=(
+                in_start=_in_start(
                     partial(
                         _admit_attachments,
                         turn_attachments,
@@ -584,8 +634,12 @@ async def astream_ptc_workflow(
                         history=attachment_history,
                     )
                     if turn_attachments
-                    else None
+                    else None,
+                    away_user=user_id if route.away is not None else None,
                 ),
+                # Where it runs, which START holds a turn checked for a
+                # computer's token to (``refuse_moved_off``).
+                runs_in=runs_in if route.away is not None else None,
             )
             if firing:
                 await automation_settlement.take_over_firing(
@@ -666,10 +720,13 @@ async def astream_ptc_workflow(
             platform=request.platform,
             delegated=bool(getattr(request, "origin_home_thread_id", None)),
         )
+        if route.away is not None:
+            # Where the turn runs, said before the computer it runs on starts.
+            yield f"id: 0\nevent: turn_placement\ndata: {json.dumps({'home_fallback': route.away.as_metadata(), 'workspace_id': workspace_id})}\n\n"
         if not needs_startup:
             with computer_cause(turn_cause_name, client=turn_client):
                 session = await workspace_manager.get_session_for_workspace(
-                    workspace_id,
+                    runs_in,
                     user_id=user_id,
                     skills_signature=skills_signature,
                     run_id=run_id,
@@ -694,7 +751,7 @@ async def astream_ptc_workflow(
             with computer_cause(turn_cause_name, client=turn_client):
                 session_task = asyncio.create_task(
                     workspace_manager.get_session_for_workspace(
-                        workspace_id,
+                        runs_in,
                         user_id=user_id,
                         on_state_observed=_on_state,
                         skills_signature=skills_signature,
@@ -761,12 +818,12 @@ async def astream_ptc_workflow(
         if route.role == "chief_of_staff":
             # Home is often the workspace whose turn recreated the sandbox,
             # and its agent reads and edits the other workspaces' folders.
-            await workspace_manager.restore_sibling_folders(session, workspace_id)
+            await workspace_manager.restore_sibling_folders(session, runs_in)
 
         # Fire-and-forget: update workspace activity (conditional SQL, skip if <60s)
         _fire_and_forget(
-            update_workspace_activity(workspace_id),
-            name=f"update_activity_{workspace_id[:8]}",
+            update_workspace_activity(runs_in),
+            name=f"update_activity_{runs_in[:8]}",
         )
 
         registry_store = BackgroundRegistryStore.get_instance()
@@ -792,10 +849,11 @@ async def astream_ptc_workflow(
         inputs = await AgentInputs.read(
             session,
             user_id=user_id,
-            workspace_id=workspace_id,
+            workspace_id=runs_in,
             thread_id=thread_id,
             role=route.role,
             user_profile=user_profile,
+            acting_for=workspace_id,
         )
         project = inputs.project
         # One relay session per directly bound server, held for the run.
@@ -1042,8 +1100,7 @@ async def astream_ptc_workflow(
 
         # ``manager`` was acquired at the top of this handler for the early
         # steering-routing check; reuse it here. ``cancel_stale_workflow``
-        # already ran there (gated on ``needs_startup``) so steering routed
-        # against live state.
+        # already ran there so steering routed against live state.
 
         # Runs inside _finalize_run, before the terminal txn that records
         # what it captured.
@@ -1069,13 +1126,13 @@ async def astream_ptc_workflow(
                 # The run is terminal, so a settle may move the folder now: the
                 # pass reads it under the folder hold, not from the turn start.
                 await ws_manager.reconcile_skills_if_running(
-                    workspace_id, user_id, source="post_turn"
+                    runs_in, user_id, source="post_turn"
                 )
             try:
                 # Any project on the machine may have changed, not only this
                 # one: the sweep finds which, and mirrors those.
                 await ws_manager.backup_changed_projects(
-                    workspace_id, session=session
+                    runs_in, session=session
                 )
             except Exception as e:
                 logger.warning(
@@ -1124,6 +1181,7 @@ async def astream_ptc_workflow(
             ),
             metadata={
                 "workspace_id": workspace_id,
+                "runs_in": runs_in,
                 "user_id": user_id,
                 "sandbox_id": sandbox_id,
                 "sandbox": session.sandbox if session else None,

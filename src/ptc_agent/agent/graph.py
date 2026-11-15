@@ -65,6 +65,10 @@ _HOME_DESCRIPTION = (
 )
 
 
+# The `<workspace>` block's facts of the computer, as get_workspace_naming reads them.
+_COMPUTER_FACTS = ("computer_name", "computers", "computer_kind", "provider_config", "root_dir")
+
+
 async def _read_harness_blocks(
     user_id: str | None,
     session: Session,
@@ -93,7 +97,9 @@ async def _read_harness_blocks(
     from src.tools.secretary.activity import read_activity
 
     try:
-        computers = await get_computer_roster(user_id)
+        computers = _home_where_the_turn_runs(
+            await get_computer_roster(user_id), session.computer_id
+        )
     except Exception:  # noqa: BLE001 - the turn runs on its own computer
         logger.warning("Could not read the computers of %s", user_id, exc_info=True)
         return {"activity": None}, None
@@ -108,8 +114,25 @@ async def _read_harness_blocks(
     return {"activity": activity}, reach
 
 
+def _home_where_the_turn_runs(
+    computers: list[dict[str, Any]], computer_id: str | None
+) -> list[dict[str, Any]]:
+    """The roster with ``is_home`` on the computer the turn runs on.
+
+    The same computer as Home's, except on a Home turn in its stand-in, which
+    runs on a cloud computer while the machine Home is on can't be reached:
+    there Home's tools run on the cloud computer, and the machine is one of
+    the others.
+    """
+    if not computer_id:
+        return computers
+    return [
+        {**c, "is_home": str(c["computer_id"]) == str(computer_id)} for c in computers
+    ]
+
+
 async def _read_workspace_naming(
-    workspace_id: str, role: AgentRole = "analyst"
+    workspace_id: str, role: AgentRole = "analyst", *, runs_in: str | None = None
 ) -> Workspace | None:
     """The workspace's name, description and computer for the `<workspace>` block.
 
@@ -127,6 +150,11 @@ async def _read_workspace_naming(
         from src.server.database.workspace import get_workspace_naming
 
         row = await get_workspace_naming(workspace_id) or {}
+        if runs_in and runs_in != workspace_id:
+            # The computer is the one the folder the turn runs in is on:
+            # Home's stand-in's, for a Home turn there.
+            placed = await get_workspace_naming(runs_in) or {}
+            row = {**row, **{key: placed.get(key) for key in _COMPUTER_FACTS}}
     except Exception as e:
         logger.warning(f"Failed to read the name of workspace {workspace_id}: {e}")
         return None
@@ -286,10 +314,14 @@ async def build_ptc_graph_with_session(
     ) = await asyncio.gather(
         fetch_user_data_counts(user_id),
         asyncio.to_thread(PTCAgent, config),
-        _read_workspace_naming(workspace_id, role),
+        _read_workspace_naming(
+            project.owner_id if project else "",
+            role,
+            runs_in=project.workspace_id if project else None,
+        ),
         _read_harness_blocks(
-            user_id, session, workspace_id, thread_id, turn_context, role,
-            reached_computers,
+            user_id, session, project.owner_id if project else "", thread_id,
+            turn_context, role, reached_computers,
         ),
     )
 

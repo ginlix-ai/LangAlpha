@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
 from src.server.contracts.status import TERMINAL_STATUSES
 from src.server.database.runs.outbox import (
     build_finalize_jobs,
@@ -1150,7 +1151,7 @@ class TestAlertSweeps:
         calls = []
         mocks, patches = self._sweeps(
             release_for_reachable_computers=AsyncMock(
-                side_effect=lambda: calls.append("release")
+                side_effect=lambda **_: calls.append("release")
                 or [{"hook_outbox_id": "w-1", "hook_type": "wakeup"}]
             ),
             claim_outbox_jobs=AsyncMock(
@@ -1161,7 +1162,11 @@ class TestAlertSweeps:
             for p in patches:
                 stack.enter_context(p)
             await self._passes(drainer, 3)
-        mocks["release_for_reachable_computers"].assert_awaited_once()
+        # A Home job Home's stand-in can run is released too, on the
+        # computers it may be placed on.
+        mocks["release_for_reachable_computers"].assert_awaited_once_with(
+            stand_in_kinds=RECREATABLE_KINDS
+        )
         assert calls[:2] == ["release", "claim"]
 
     @pytest.mark.asyncio

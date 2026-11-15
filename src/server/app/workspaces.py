@@ -24,6 +24,7 @@ import logging
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse
 
 from src.server.services.persistence.sync_result import BackupIncomplete
@@ -301,6 +302,39 @@ async def get_home_workspace(principal: ReadPrincipal):
     except Exception as e:
         logger.exception(f"Error ensuring Home: {e}")
         raise HTTPException(status_code=500, detail="Failed to ensure Home")
+
+
+@router.get("/home/placement")
+async def get_home_placement(x_user_id: ReadUserId):
+    """Where Home is and where its next turn would run, for the client.
+
+    ``unreachable`` is Home's computer, a machine of the user's own, not
+    answering; ``stand_in`` is the cloud computer Home's turns use meanwhile
+    (null: they wait for the machine); ``handback`` is the last copy of what
+    they wrote there into Home, until dismissed. A read: polling it never
+    places a stand-in or starts a computer.
+    """
+    from src.server.services.home_placement import home_placement_view
+
+    view = await home_placement_view(x_user_id)
+    if view.get("move") is not None:
+        view["move"] = view["move"].model_dump(mode="json")
+    return view
+
+
+class HomeHandbackSeen(BaseModel):
+    handback_id: Optional[str] = None
+
+
+@router.post("/home/placement/seen", status_code=204)
+async def mark_home_handback_seen(
+    x_user_id: CurrentUserId, request: Optional[HomeHandbackSeen] = None
+):
+    """The user dismissed the notice of what came back from the cloud."""
+    from src.server.database.home_away import mark_handback_seen
+
+    await mark_handback_seen(x_user_id, request.handback_id if request else None)
+    return Response(status_code=204)
 
 
 @router.post("/reorder", status_code=204)

@@ -20,10 +20,13 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
+from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
 from src.server.database import automation_executions as ex
 from src.server.database import ssh_tunnels as tunnels_db
 from src.server.database.runs import command_runs as cr
 from src.server.database.runs import outbox as ob
+
+KINDS = RECREATABLE_KINDS
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -307,12 +310,12 @@ async def test_a_job_whose_workspace_moved_off_its_computer_is_released(
         ordering_key=ob.steer_ordering_key(machine.thread_id),
     )
     try:
-        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers(stand_in_kinds=KINDS)}
         assert not {report, steer} & released
 
         other = await create_computer(machine.user_id, name="cloud", status="running")
         await _bind(test_db_pool, machine.workspace_id, str(other["computer_id"]))
-        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers(stand_in_kinds=KINDS)}
 
         assert {report, steer} <= released
         row = await _job(test_db_pool, report)
@@ -353,7 +356,7 @@ async def test_an_analysts_report_back_waits_on_the_thread_it_reports_to(
             ordering_key=machine.thread_id, thread_id=analyst_thread,
         )
 
-        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers(stand_in_kinds=KINDS)}
 
         assert job not in released
         assert (await _job(test_db_pool, job))["waiting"] is True
@@ -513,13 +516,13 @@ async def _parked_verdict(execution_id: str) -> dict | None:
     """The sweep's verdict on a parked firing; None when the sweep is not
     shown it, as nothing it could do would change it."""
     rows = [
-        r for r in await ex.list_parked_executions(limit=500)
+        r for r in await ex.list_parked_executions(stand_in_kinds=KINDS, limit=500)
         if str(r["automation_execution_id"]) == execution_id
     ]
     if not rows:
         return None
     (row,) = rows
-    return {k: row[k] for k in ("superseded", "reachable", "expired")}
+    return {k: row[k] for k in ("superseded", "reachable", "stand_in", "expired")}
 
 
 async def test_a_firing_parked_for_a_machine_is_released_once_and_only_once_it_is_back(
@@ -534,7 +537,7 @@ async def test_a_firing_parked_for_a_machine_is_released_once_and_only_once_it_i
     # Its heartbeat is quiet, yet no process lost it.
     abandoned = await ex.list_abandoned_executions(60, limit=500)
     assert execution_id not in {str(r["automation_execution_id"]) for r in abandoned}
-    assert await ex.release_parked_execution(execution_id) is False
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is False
 
     async with test_db_pool.connection() as conn:
         await conn.execute(
@@ -543,7 +546,7 @@ async def test_a_firing_parked_for_a_machine_is_released_once_and_only_once_it_i
         )
     assert (await _parked_verdict(execution_id))["reachable"] is True
     taken = await asyncio.gather(
-        *(ex.release_parked_execution(execution_id) for _ in range(4))
+        *(ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) for _ in range(4))
     )
     assert sorted(taken) == [False, False, False, True]
     async with test_db_pool.connection() as conn:
@@ -555,6 +558,90 @@ async def test_a_firing_parked_for_a_machine_is_released_once_and_only_once_it_i
         )
         row = await cur.fetchone()
     assert (row["status"], row["conversation_thread_id"], row["beating"]) == ("pending", None, True)
+
+
+async def _home_on_machine(pool, machine) -> str:
+    """The user's Home, on the machine's computer; its id."""
+    from src.server.database.workspace import get_or_create_home_workspace
+
+    home_id = str((await get_or_create_home_workspace(machine.user_id))["workspace_id"])
+    await _bind(pool, home_id, machine.computer_id)
+    return home_id
+
+
+async def test_a_parked_home_firing_its_stand_in_runs_is_released_with_the_machine_away(
+    machine, test_db_pool
+):
+    """Once the user has a cloud computer for Home's stand-in, a Home firing
+    need not wait for the machine: the sweep is shown it, though the machine
+    is still away, and it is still released only once."""
+    from src.server.database.computer import create_computer
+
+    automation_id, execution_id = await _parked_firing(test_db_pool, machine)
+    home_id = await _home_on_machine(test_db_pool, machine)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automations SET workspace_id = %s WHERE automation_id = %s",
+            (home_id, automation_id),
+        )
+    assert await _parked_verdict(execution_id) is None
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is False
+
+    await create_computer(machine.user_id, kind="daytona", name="cloud", status="running",
+                          provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+    assert (await _parked_verdict(execution_id))["stand_in"] is True
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is True
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is False
+
+
+async def test_a_home_job_its_stand_in_runs_is_released_with_the_machine_away(
+    machine, test_db_pool
+):
+    """A wake parked for the machine Home lives on is due again once the
+    user has a computer Home's stand-in can run on; a job of any other
+    workspace on the machine keeps waiting for it."""
+    from src.server.database.computer import create_computer
+    from src.server.database.conversation import create_thread
+
+    home_id = await _home_on_machine(test_db_pool, machine)
+    home_thread = str(uuid.uuid4())
+    await create_thread(
+        conversation_thread_id=home_thread, workspace_id=home_id, current_status="completed"
+    )
+    await _bind(test_db_pool, machine.workspace_id, machine.computer_id)
+    home_wake = await _parked(test_db_pool, machine, "wakeup_fire", thread_id=home_thread)
+    other_wake = await _parked(test_db_pool, machine, "wakeup_fire")
+    try:
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers(stand_in_kinds=KINDS)}
+        assert not {home_wake, other_wake} & released
+
+        # One being retired takes no stand-in.
+        await create_computer(machine.user_id, kind="daytona", name="old", status="running",
+                              provider_ref="sb-old", config={"retire_when_empty": True})
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers(stand_in_kinds=KINDS)}
+        assert not {home_wake, other_wake} & released
+
+        await create_computer(machine.user_id, kind="daytona", name="cloud", status="running",
+                              provider_ref=f"sb-{uuid.uuid4().hex[:8]}")
+        released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers(stand_in_kinds=KINDS)}
+        assert home_wake in released
+        assert other_wake not in released
+    finally:
+        await _bind(test_db_pool, machine.workspace_id, None)
+        async with test_db_pool.connection() as conn:
+            await conn.execute("DELETE FROM hook_outbox WHERE conversation_thread_id = %s", (home_thread,))
+            await conn.execute("DELETE FROM conversation_threads WHERE workspace_id = %s", (home_id,))
+            await conn.execute("DELETE FROM workspaces WHERE workspace_id = %s", (home_id,))
+
+
+async def test_home_is_told_apart_by_its_id_in_sql(test_db_pool):
+    from src.server.database.home_workspace import get_home_workspace_id, home_id_sql
+
+    users = ["user-1", f"away-test-{uuid.uuid4().hex}", "ünïcode@example.com"]
+    async with test_db_pool.connection() as conn:
+        for user_id in users:
+            cur = await conn.execute(f"SELECT {home_id_sql('%s')}::text AS home_id", (user_id,))
+            assert (await cur.fetchone())["home_id"] == get_home_workspace_id(user_id)
 
 
 async def test_a_parked_firing_a_later_one_took_over_is_never_released(machine, test_db_pool):
@@ -572,7 +659,7 @@ async def test_a_parked_firing_a_later_one_took_over_is_never_released(machine, 
     )
 
     assert (await _parked_verdict(execution_id))["superseded"] is True
-    assert await ex.release_parked_execution(execution_id) is False
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is False
 
 
 async def test_a_tunnel_reads_down_only_under_a_settled_gateway(machine, test_db_pool):
@@ -654,7 +741,7 @@ async def test_a_firing_parked_for_a_machine_its_workspace_left_is_released(
             (cloud["computer_id"], machine.workspace_id),
         )
     assert (await _parked_verdict(execution_id))["reachable"] is True
-    assert await ex.release_parked_execution(execution_id) is True
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is True
 
 
 async def test_a_firing_parked_for_its_machine_is_not_ahead_in_the_thread_line(
@@ -709,7 +796,7 @@ async def test_a_firing_parked_again_keeps_the_deadline_its_first_park_set(
             "UPDATE ssh_tunnels SET disconnected_at = NULL, seen_at = NOW() WHERE user_id = %s",
             (machine.user_id,),
         )
-    assert await ex.release_parked_execution(execution_id) is True
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is True
     async with test_db_pool.connection() as conn:
         await conn.execute(
             "UPDATE ssh_tunnels SET disconnected_at = NOW() WHERE user_id = %s",
@@ -751,7 +838,7 @@ async def test_a_parked_firing_past_its_deadline_is_not_released(machine, test_d
             " WHERE automation_execution_id = %s",
             (execution_id,),
         )
-    assert await ex.release_parked_execution(execution_id) is False
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is False
     verdict = await _parked_verdict(execution_id)
     assert (verdict["expired"], verdict["reachable"]) == (True, True)
 
@@ -929,7 +1016,7 @@ async def test_a_parked_firing_stays_parked_while_a_new_gateway_settles(
         )
     await _gateway(test_db_pool, started=timedelta(minutes=1), seen=timedelta(seconds=1))
 
-    assert await ex.release_parked_execution(execution_id) is False
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is False
 
     await _gateway(test_db_pool, started=timedelta(hours=1), seen=timedelta(seconds=1))
-    assert await ex.release_parked_execution(execution_id) is True
+    assert await ex.release_parked_execution(execution_id, stand_in_kinds=KINDS) is True

@@ -24,7 +24,7 @@ from src.server.database.computer_names import (
     name_taken,
 )
 from src.server.database.conversation.errors import _unique_violation_constraint
-from src.server.database.home_workspace import get_home_workspace_id
+from src.server.database.home_workspace import get_home_workspace_id, home_id_sql
 from src.server.database.pool import get_db_connection
 from src.server.database.sql_fences import (
     COMPUTER_COLS as _COMPUTER_COLS,
@@ -399,6 +399,71 @@ async def get_home_computer(user_id: str, *, conn=None) -> Optional[Dict[str, An
     return await get_computer_for_workspace(
         get_home_workspace_id(user_id), conn=conn
     ) or await get_primary_computer(user_id, conn=conn)
+
+
+def holds_stand_in(computer: Dict[str, Any]) -> bool:
+    """Whether Home's stand-in may stay on ``computer``: it works and still
+    takes workspaces (``FENCE_TAKES_WORKSPACES``). A turn needing the stand-in
+    places it on another computer otherwise, unless files Home is owed are
+    on this one (``place_home_stand_in``)."""
+    if computer.get("status") in ("deleted", "error"):
+        return False
+    return bool(computer.get("is_primary")) or not (computer.get("config") or {}).get(
+        "retire_when_empty"
+    )
+
+
+def stand_in_host_sql(c: str = "computers") -> str:
+    """Whether computer row ``c`` may take Home's stand-in now: of the kinds
+    the deployment builds (bound as ``%(stand_in_kinds)s``), taking
+    workspaces, not being retired and past its first build."""
+    return (
+        f"{c}.kind = ANY(%(stand_in_kinds)s)"
+        f" AND {c}.status NOT IN ('deleted', 'error')"
+        f" AND NOT COALESCE({c}.config, '{{}}'::jsonb)"
+        " @> '{\"retire_when_empty\": true}'::jsonb"
+        f" AND ({c}.provider_ref IS NOT NULL OR {c}.status NOT IN ('creating', 'starting'))"
+    )
+
+
+def home_stand_in_could_run_sql(ws: str) -> str:
+    """Whether workspace row ``ws`` is its user's Home and the user has a
+    computer Home's stand-in could run on now (``pick_stand_in_computer``),
+    so a Home turn need not wait for the machine Home lives on. Binds
+    ``%(stand_in_kinds)s``."""
+    return (
+        f"{ws}.workspace_id = {home_id_sql(f'{ws}.user_id')}"
+        " AND EXISTS (SELECT 1 FROM computers host"
+        f" WHERE host.user_id = {ws}.user_id AND {stand_in_host_sql('host')})"
+    )
+
+
+async def pick_stand_in_computer(
+    user_id: str, kinds: Sequence[str], *, conn=None
+) -> Optional[Dict[str, Any]]:
+    """The cloud computer Home's stand-in would be placed on now, among the
+    user's existing computers of ``kinds`` (those the deployment builds):
+    one that takes workspaces, is not being retired and is past its first
+    build (``stand_in_host_sql``). A running one first, as the turn need not
+    wait for a start, then the most recently used, then the oldest. None
+    when the user has none: nothing is ever built for the stand-in."""
+    if not kinds:
+        return None
+    async with _computer_cursor(conn) as cur:
+        await cur.execute(
+            f"""
+            SELECT {_COMPUTER_COLS}
+            FROM computers
+            WHERE user_id = %(user)s AND {stand_in_host_sql()}
+            ORDER BY (status = 'running') DESC,
+                     last_activity_at DESC NULLS LAST,
+                     created_at, computer_id
+            LIMIT 1
+            """,
+            {"user": user_id, "stand_in_kinds": list(kinds)},
+        )
+        row = await cur.fetchone()
+    return dict(row) if row else None
 
 
 async def promote_primary_computer(user_id: str) -> Optional[Dict[str, Any]]:

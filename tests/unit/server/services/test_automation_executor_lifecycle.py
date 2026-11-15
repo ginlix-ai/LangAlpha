@@ -943,7 +943,7 @@ async def test_a_chief_of_staff_automation_runs_in_home():
 
     turn = fx.astream.call_args.kwargs
     assert turn["request"].workspace_id == _HOME
-    assert turn["route"] == TurnRoute(_HOME, "chief_of_staff")
+    assert turn["route"] == TurnRoute(_HOME, "chief_of_staff", runs_in=_HOME)
     manager.ensure_home_bound.assert_awaited_once_with(_USER)
 
 
@@ -973,6 +973,7 @@ def _parked(automation_id="auto-1", **verdict):
         "parked_status": "active",
         "superseded": False,
         "reachable": False,
+        "stand_in": False,
         "expired": False,
         **verdict,
     }
@@ -1057,7 +1058,8 @@ async def test_a_wait_for_the_computer_gives_way_to_the_next_firing():
 
 @pytest.mark.asyncio
 async def test_a_wait_for_the_computer_ends_at_its_cap():
-    with _firing([_streams], fresh=_automation()) as fx:
+    # Home's machine still away, and no cloud computer for its stand-in.
+    with _firing([_streams], fresh=_automation(), away=(_MAC,)) as fx:
         await _sweep_parked(fx, _parked(expired=True))
 
     fx.astream.assert_not_called()
@@ -1182,3 +1184,17 @@ class TestARunReleasedLate:
 
         row = self._row(timedelta(minutes=due_ago_min), wait_reason)
         assert await computer_wait.late_note({}, row) is None
+
+
+@pytest.fixture(autouse=True)
+def _home_runs_at_home():
+    """Home's turn runs on Home's own computer here; where it runs while that
+    computer can't be reached is ``test_home_placement``'s."""
+    from src.server.database.home_workspace import get_home_workspace_id
+    from src.server.services.home_placement import HomePlacement
+
+    async def place(user_id, **_):
+        return HomePlacement(get_home_workspace_id(user_id))
+
+    with patch("src.server.services.home_placement.place_home_turn", side_effect=place):
+        yield

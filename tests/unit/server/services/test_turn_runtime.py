@@ -72,11 +72,43 @@ def test_every_other_turn_runs_the_chief_of_staff_in_home(workspace):
 async def test_binding_a_route_puts_only_home_on_the_computer(workspace, binds):
     """An analyst's workspace is on its computer already; Home gets the row
     the caller read, which spares the upsert."""
-    with patch(
-        "src.server.services.turn_runtime.ensure_home", new=AsyncMock()
-    ) as ensure:
-        await turn_route(USER, workspace).bind(USER, workspace)
+    from src.server.services.home_placement import HomePlacement
+
+    with (
+        patch("src.server.services.turn_runtime.ensure_home", new=AsyncMock()) as ensure,
+        patch(
+            "src.server.services.home_placement.place_home_turn",
+            new=AsyncMock(return_value=HomePlacement(HOME)),
+        ) as place,
+    ):
+        route = await turn_route(USER, workspace).bind(USER, workspace)
     assert ensure.await_args_list == ([call(USER, workspace)] if binds else [])
+    assert place.await_count == (1 if binds else 0)
+    assert route.computer_workspace_id == route.workspace_id
+
+
+@pytest.mark.asyncio
+async def test_a_home_turn_on_its_stand_in_runs_there_for_home():
+    """The thread and its records stay Home's; the folder and computer are
+    the stand-in's."""
+    from src.server.database.home_workspace import get_home_stand_in_id
+    from src.server.services.home_placement import HomeAway, HomePlacement
+
+    away = HomeAway("mac", "Mac", "cloud", "Cloud")
+    with (
+        patch("src.server.services.turn_runtime.ensure_home", new=AsyncMock()),
+        patch(
+            "src.server.services.home_placement.place_home_turn",
+            new=AsyncMock(return_value=HomePlacement(get_home_stand_in_id(USER), away)),
+        ),
+    ):
+        route = await turn_route(USER, None).bind(USER, None)
+        unplaced = await turn_route(USER, None).bind(USER, None, place=False)
+
+    assert route.workspace_id == HOME
+    assert route.computer_workspace_id == get_home_stand_in_id(USER)
+    assert route.away is away
+    assert unplaced.computer_workspace_id == HOME and unplaced.away is None
 
 
 @pytest.mark.asyncio

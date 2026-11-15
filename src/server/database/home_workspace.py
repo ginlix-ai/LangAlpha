@@ -23,16 +23,38 @@ UNBOUND = "unbound"
 # row alone (``EXCLUDE_HOME``) without knowing whose it is.
 HOME_STAND_IN_KEY = "home_stand_in"
 
+# The key a run in Home's stand-in names the stand-in's computer under, on its
+# turn's run row and on the task runs that turn starts: the thread is Home's,
+# on another computer, so a machine-scoped read of live work (the idle sweep)
+# finds the run only by this.
+STAND_IN_COMPUTER = "stand_in_computer"
+
 
 def get_home_workspace_id(user_id: str) -> str:
     return str(uuid.uuid5(HOME_WORKSPACE_NAMESPACE, user_id))
 
 
+def home_id_sql(user_id_sql: str) -> str:
+    """``get_home_workspace_id`` of the SQL expression ``user_id_sql``, as a
+    uuid: a version 5 uuid over pgcrypto's sha1 (migration 001), so a
+    statement can tell a user's Home by its id, which no row marks."""
+    hashed = (
+        f"substring(digest(decode('{HOME_WORKSPACE_NAMESPACE.hex}', 'hex')"
+        f" || convert_to(({user_id_sql})::text, 'UTF8'), 'sha1') from 1 for 16)"
+    )
+    return (
+        "(SELECT encode(set_byte(set_byte(h, 6, (get_byte(h, 6) & 15) | 80),"
+        " 8, (get_byte(h, 8) & 63) | 128), 'hex')::uuid"
+        f" FROM (SELECT {hashed} AS h) AS home_hash)"
+    )
+
+
 def get_home_stand_in_id(user_id: str) -> str:
     """Home's stand-in: a folder on one of the user's cloud computers where a
     Home turn runs while the machine Home lives on can't be reached. A hidden
-    workspace row, placed once and never moved; never Home itself, so callers
-    that mean it name it (``is_home_stand_in_id``)."""
+    workspace row, placed once and again only when its computer can no longer
+    keep it (``place_home_stand_in``); never Home itself, so callers that mean
+    it name it (``is_home_stand_in_id``)."""
     return str(uuid.uuid5(HOME_WORKSPACE_NAMESPACE, f"{user_id}/stand-in"))
 
 

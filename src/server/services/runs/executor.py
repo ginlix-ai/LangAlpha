@@ -1624,11 +1624,20 @@ class LocalRunExecutor:
         self,
         thread_id: str,
         timeout: float = 10.0,
+        *,
+        is_stale: Optional[Callable[[str], bool]] = None,
     ) -> bool:
-        """Cancel a stale workflow on the given thread."""
+        """Cancel a stale workflow on the given thread. ``is_stale`` judges
+        the workspace that workflow runs in, which for a Home turn in its
+        stand-in is not the thread's own."""
         async with self.task_lock:
             task_info = self._find_active_for_thread(thread_id)
             if not task_info:
+                return False
+            runs_in = task_info.metadata.get("runs_in") or task_info.metadata.get(
+                "workspace_id"
+            )
+            if is_stale is not None and not is_stale(runs_in):
                 return False
 
             task_info.cancel_event.set()

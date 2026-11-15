@@ -1009,7 +1009,7 @@ class AutomationExecutor:
             await enforce_credit_limit(user_id, byok=has_cred)
 
             # ─── Resolve workspace + thread ───────────────────────
-            await route.bind(user_id, place.workspace)
+            route = await route.bind(user_id, place.workspace)
             firing.route = route
             firing.thread_id = (
                 str(handed_thread)

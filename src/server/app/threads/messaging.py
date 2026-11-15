@@ -633,7 +633,7 @@ async def _handle_send_message(
 
         request = await inline_image_urls(request)
 
-        await route.bind(user_id, workspace)
+        route = await route.bind(user_id, workspace)
 
     except BaseException:
         await scope.release_slot()

@@ -476,6 +476,10 @@ def rows(monkeypatch) -> SimpleNamespace:
         prefs={},
         senders={},
         homes_bound=[],
+        # Whether Home's computer can't be reached, and the cloud computer
+        # Home's stand-in would run on then.
+        home_away=False,
+        stand_in=None,
     )
 
     async def auth_meta(thread_id):
@@ -527,6 +531,19 @@ def rows(monkeypatch) -> SimpleNamespace:
         world.homes_bound.append(user_id)
 
     monkeypatch.setattr(cli_approval, "ensure_home", bind_home)
+
+    async def computer_for_workspace(workspace_id):
+        return {"computer_id": HOME.computer_id}
+
+    async def unreachable(computer):
+        return world.home_away
+
+    async def stand_in(user_id):
+        return world.stand_in
+
+    monkeypatch.setattr(cli_approval, "get_computer_for_workspace", computer_for_workspace)
+    monkeypatch.setattr(cli_approval, "computer_unreachable", unreachable)
+    monkeypatch.setattr(cli_approval, "stand_in_computer", stand_in)
 
     async def any_place(user_id, name, workspace_id, conn=None, pref=None):
         return None
@@ -843,6 +860,26 @@ async def test_a_new_thread_in_home_asks_off_the_computer_that_holds_it(built, r
 
     assert built[0].action == "thread_create"
     assert built[0].details["in_home"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_home_turn_from_homes_machine_asks_when_it_would_run_in_the_stand_in(
+    built, rows
+):
+    # Home lives on the token's own machine, which can't be reached, so the
+    # turn would run in Home's stand-in on a cloud computer.
+    token = Principal(USER, "computer", scopes=SCOPES, computer_id=OTHER_COMPUTER)
+    say = _say("Plan", workspace_id="home-id")
+    here = await cli_approval.admit_turn(_request(), token, say, None)
+    rows.home_away = True
+    rows.stand_in = {"computer_id": COMPUTER, "name": "Cloud"}
+    there = await cli_approval.admit_turn(_request(), token, say, None)
+
+    assert built[0] is None
+    assert built[1].action == "thread_create"
+    assert built[1].details["computer_name"] == "Cloud"
+    # Its START is held to the stand-in's computer.
+    assert (here, there) == (OTHER_COMPUTER, COMPUTER)
 
 
 @pytest.mark.asyncio

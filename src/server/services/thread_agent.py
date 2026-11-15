@@ -117,7 +117,13 @@ class AgentInputs:
         thread_id: str,
         role: AgentRole,
         user_profile: dict[str, Any] | None,
+        acting_for: str | None = None,
     ) -> AgentInputs:
+        """``workspace_id`` is the one whose folder the turn runs in;
+        ``acting_for`` the thread's, when that is another (Home's turn in its
+        stand-in)."""
+        from dataclasses import replace
+
         from src.server.services.egress.direct_tools import direct_tools_for_turn
         from src.server.services.trading_rule import with_trading_rule
         from src.server.services.workspace_layout import resolve_project_context
@@ -129,7 +135,13 @@ class AgentInputs:
             thread_id=thread_id,
             workspace_id=workspace_id,
             role=role,
-            project=await resolve_project_context(session, workspace_id),
+            project=(
+                replace(project, acting_for=acting_for)
+                if (project := await resolve_project_context(session, workspace_id))
+                and acting_for
+                and acting_for != workspace_id
+                else project
+            ),
             tool_view=tool_view,
             # Off the resolve, not the bind, so it moves only when a setting does.
             user_profile=with_trading_rule(user_profile, tool_view.trading_rule),

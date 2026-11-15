@@ -80,6 +80,37 @@ async def test_a_stand_in_whose_computer_is_gone_is_placed_again(seed_user):
     assert placed["status"] != "deleted"
 
 
+@pytest.mark.parametrize(
+    "breaks",
+    [
+        "UPDATE computers SET status = 'error' WHERE computer_id = %s",
+        "UPDATE computers SET config = '{\"retire_when_empty\": true}' WHERE computer_id = %s",
+    ],
+    ids=["failed", "retiring"],
+)
+@pytest.mark.parametrize("owed", [False, True], ids=["handed-back", "owed"])
+async def test_a_stand_in_whose_computer_cannot_keep_it_moves_unless_owed(
+    seed_user, db_conn, breaks, owed
+):
+    user_id = seed_user["user_id"]
+    broken = await _computer(user_id, "Broken")
+    healthy = await _computer(user_id, "Healthy")
+    await workspaces.place_home_stand_in(user_id, broken)
+    await db_conn.execute(breaks, (broken,))
+    if owed:
+        await db_conn.execute(
+            "INSERT INTO home_away (user_id, home_id, away_since, last_away_at) "
+            "VALUES (%s, %s, NOW(), NOW())",
+            (user_id, get_home_workspace_id(user_id)),
+        )
+
+    placed = await workspaces.place_home_stand_in(user_id, healthy)
+
+    # Owed files are only where it is, so it stays with them.
+    assert str(placed["computer_id"]) == (broken if owed else healthy)
+    assert placed["status"] != "deleted"
+
+
 async def test_a_computer_being_retired_takes_no_stand_in(seed_user, db_conn):
     user_id = seed_user["user_id"]
     retiring = await _computer(user_id, "Retiring")
@@ -125,3 +156,121 @@ async def test_the_stand_in_never_moves(seed_user):
             target_computer_id=other,
         )
     assert refused.value.code == "not_movable"
+
+
+async def test_a_removal_holding_the_stand_in_and_a_turn_starting_exclude_each_other(
+    seed_user, db_conn
+):
+    """A removal reads what Home is owed and deletes the stand-in under the
+    exclusive side; a Home turn's owed mark, in its START transaction, takes
+    the shared side, so the turn is never admitted between the two."""
+    import psycopg
+
+    from src.server.database import home_away
+    from src.server.database.pool import get_db_connection
+    from src.server.services import home_placement
+
+    user_id = seed_user["user_id"]
+    await workspaces.place_home_stand_in(user_id, await _computer(user_id, "Cloud"))
+
+    # A turn's START holding its mark keeps a removal out.
+    async with get_db_connection() as conn, conn.transaction():
+        await home_away.mark_away(user_id, conn=conn)
+        async with home_placement.stand_in_held(user_id) as held:
+            assert not held
+
+    # A removal holding it makes a START wait for it.
+    async with home_placement.stand_in_held(user_id) as held:
+        assert held
+        async with get_db_connection() as conn:
+            await conn.execute("SET lock_timeout = '200ms'")
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                async with conn.transaction():
+                    await home_away.mark_away(user_id, conn=conn)
+            await conn.execute("RESET lock_timeout")
+        await db_conn.execute(
+            "UPDATE workspaces SET status = 'deleted' WHERE workspace_id = %s",
+            (get_home_stand_in_id(user_id),),
+        )
+    # And once it deleted the stand-in, the turn is refused, not written there.
+    with pytest.raises(home_away.StandInGone):
+        await home_away.mark_away(user_id)
+
+
+async def test_a_home_turn_in_the_stand_in_keeps_the_stand_in_computer_busy(seed_user):
+    """The thread is Home's, on the machine Home lives on, so the idle sweep
+    finds the turn and the task runs it starts on the stand-in's computer only
+    by the computer their rows name."""
+    from src.server.database.conversation import create_thread
+    from src.server.database.home_workspace import STAND_IN_COMPUTER
+    from src.server.database.runs import subagent_runs
+    from src.server.database.runs.lifecycle import computer_has_active_run, start_run
+
+    user_id = seed_user["user_id"]
+    mac = await _computer(user_id, "Mac", kind="ssh")
+    cloud = await _computer(user_id, "Cloud")
+    # The join does not ask whose thread it is: any thread on the Mac stands for Home.
+    home = await workspaces.create_workspace_on_computer(user_id, computer_id=mac, name="Notes")
+    thread_id = str(uuid.uuid4())
+    await create_thread(
+        conversation_thread_id=thread_id,
+        workspace_id=str(home["workspace_id"]),
+        current_status="in_progress",
+        msg_type="ptc",
+    )
+    assert not await computer_has_active_run(cloud)
+
+    run_id = str(uuid.uuid4())
+    await start_run(
+        run_id=run_id,
+        thread_id=thread_id,
+        request_key=str(uuid.uuid4()),
+        turn_index=1,
+        metadata={"msg_type": "ptc", "user_id": user_id, STAND_IN_COMPUTER: cloud},
+    )
+    task = await subagent_runs.start_task_run(
+        task_run_id=str(uuid.uuid4()),
+        thread_id=thread_id,
+        task_id="k1",
+        cause="init",
+        parent_run_id=run_id,
+    )
+
+    assert task["replay_facts"] == {STAND_IN_COMPUTER: cloud}
+    assert await computer_has_active_run(cloud)
+    assert await subagent_runs.count_open_runs_for_computer(cloud) == 1
+
+
+async def test_a_turn_checked_for_the_stand_ins_computer_starts_only_there(seed_user):
+    """A computer token's Home turn is checked on the computer Home's stand-in
+    is on, and its START holds it there, not on Home's own."""
+    from src.server.database.conversation import create_thread
+    from src.server.database.runs.lifecycle import start_run
+
+    user_id = seed_user["user_id"]
+    mac = await _computer(user_id, "Mac", kind="ssh")
+    cloud = await _computer(user_id, "Cloud")
+    notes = await workspaces.create_workspace_on_computer(user_id, computer_id=mac, name="Notes")
+    stand_in = str((await workspaces.place_home_stand_in(user_id, cloud))["workspace_id"])
+    thread_id = str(uuid.uuid4())
+    await create_thread(
+        conversation_thread_id=thread_id,
+        workspace_id=str(notes["workspace_id"]),
+        current_status="completed",
+        msg_type="ptc",
+    )
+
+    async def checked_on(computer_id):
+        key = str(uuid.uuid4())
+        return await start_run(
+            run_id=key,
+            thread_id=thread_id,
+            request_key=key,
+            before_commit=lambda conn: workspaces.refuse_moved_off(
+                conn, thread_id, computer_id, runs_in=stand_in
+            ),
+        )
+
+    with pytest.raises(workspaces.WorkspaceMovingError):
+        await checked_on(mac)
+    assert await checked_on(cloud)

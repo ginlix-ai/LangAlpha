@@ -186,7 +186,7 @@ async def claim_workspace_move(
             if workspace["computer_id"] is None or workspace["status"] == "unbound":
                 raise MoveRefused("not_movable")
             if is_home_stand_in_id(user_id, workspace_id):
-                # Placed once and never moved: its files are what Home's next
+                # Never moved with its files: they are what Home's next
                 # hand-back reads, where Home's turns on the cloud left them.
                 raise MoveRefused("not_movable")
             # Home lives on the primary, so it moves only as the primary changes,

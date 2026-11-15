@@ -20,6 +20,7 @@ from src.server.database.computer import (
     COMPUTER_STATUSES,
     get_computer,
 )
+from src.server.database.home_away import OWED_SQL, handback_owed
 from src.server.database.home_fold import fold_former_homes
 from src.server.database.livefs_links import drop_workspace_links
 from src.server.database.mcp_servers import start_new_workspace_selection
@@ -217,38 +218,50 @@ async def get_or_create_home_workspace(user_id: str, conn=None) -> Dict[str, Any
     return dict(result)
 
 
+# Whether files Home's stand-in holds are owed to Home, as SQL beside the stand-in's
+# row: they keep it on its computer, however that computer fares.
+_STAND_IN_OWED = (
+    f"SELECT 1 FROM home_away WHERE home_away.user_id = workspaces.user_id AND {OWED_SQL}"
+)
+
+
 async def place_home_stand_in(
     user_id: str, computer_id: str
 ) -> Optional[Dict[str, Any]]:
     """Home's stand-in on ``computer_id``, placed there unless it already
-    stands on a live computer.
+    stands on a computer that can keep it.
 
     Inserted already bound, as a workspace created on a computer is, never
     ``unbound``: an unbound row at another id is what the Home fold takes in.
-    A stand-in on a live computer stays where it is and is returned
-    unchanged, so its files are where the next turn on the cloud looks; one
-    whose row or computer is gone is placed again here, in a folder no
-    workspace can take (``HOME_STAND_IN_FOLDER``). Its tool selection is
-    Home's, read through (``home_workspace.selection_scope``), never a copy.
-    Two workers placing it at once converge on the fixed id: the loser reads
-    the winner's row. None when ``computer_id`` is gone or being retired.
+    A stand-in stays where it is and is returned unchanged while its computer
+    works and takes workspaces (``holds_stand_in``), so its files are where
+    the next turn on the cloud looks, and also while files Home is owed are
+    there, wherever that is, since they are nowhere else. Otherwise, its row
+    or computer gone, or that computer failed or being retired, it is placed
+    again here, in a folder no workspace can take (``HOME_STAND_IN_FOLDER``).
+    Its tool selection is Home's, read through
+    (``home_workspace.selection_scope``), never a copy. Two workers placing it
+    at once converge on the fixed id: the loser reads the winner's row. None
+    when ``computer_id`` takes no stand-in and none stands anywhere.
     """
     from psycopg.types.json import Json
 
-    from src.server.database.computer import get_computer_for_workspace
+    from src.server.database.computer import get_computer_for_workspace, holds_stand_in
 
     computer_id = normalize_uuid(computer_id)
     if computer_id is None:
         return None
     workspace_id = get_home_stand_in_id(user_id)
 
-    async def placed() -> Optional[Dict[str, Any]]:
-        if await get_computer_for_workspace(workspace_id) is None:
-            return None
+    async def placed() -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        computer = await get_computer_for_workspace(workspace_id)
+        if computer is None:
+            return None, None
         row = await get_workspace(workspace_id)
-        return row if row is not None and row.get("status") != "deleted" else None
+        return (row if row is not None and row.get("status") != "deleted" else None), computer
 
-    if (existing := await placed()) is not None:
+    existing, current = await placed()
+    if existing is not None and (holds_stand_in(current) or await handback_owed(user_id)):
         return existing
     async with folder_allocation(computer_id) as owned, _ws_cursor(owned) as cur:
         await lock_user_writes(cur, user_id)
@@ -267,7 +280,7 @@ async def place_home_stand_in(
                        provider_ref, platform_secret_version
                 FROM computers
                 WHERE computer_id = %(computer_id)s AND {FENCE_NOT_DELETED}
-                  AND {FENCE_TAKES_WORKSPACES}
+                  AND status <> 'error' AND {FENCE_TAKES_WORKSPACES}
                   AND user_id = %(user_id)s
                 FOR SHARE
             )
@@ -297,6 +310,9 @@ async def place_home_stand_in(
                   SELECT 1 FROM computers c
                   WHERE c.computer_id = workspaces.computer_id
                     AND c.{FENCE_NOT_DELETED}
+                    AND (EXISTS ({_STAND_IN_OWED}) OR (
+                        c.status <> 'error' AND {FENCE_TAKES_WORKSPACES}
+                    ))
               ))
             RETURNING {_WS_COLS}
             """,
@@ -316,8 +332,9 @@ async def place_home_stand_in(
                 cur, computer_id=computer_id, workspace_id=workspace_id, folder=dir_name
             )
     if row is None:
-        # Another worker placed it first, or the computer is gone.
-        return await placed()
+        # Another worker placed it first, ``computer_id`` takes no stand-in,
+        # or the computer it stands on keeps it.
+        return (await placed())[0]
     logger.info(
         f"Placed Home's stand-in {workspace_id} for user {user_id} on computer "
         f"{computer_id} as {row['dir_name']}"
@@ -1752,21 +1769,36 @@ async def lock_run_workspace(conn, thread_id: str) -> None:
         raise WorkspaceMovingError(str(workspace["workspace_id"]))
 
 
-async def refuse_moved_off(conn, thread_id: str, computer_id: str) -> None:
+async def refuse_moved_off(
+    conn, thread_id: str, computer_id: str, *, runs_in: Optional[str] = None
+) -> None:
     """Refuse a turn checked to run on ``computer_id`` once its workspace is
     on another. Read on START's connection after ``lock_run_workspace``, so a
     move cannot commit between the two: one committed before is seen here,
     and one claimed after finds this run. A workspace on no computer yet
-    binds at its turn, so it is not held to one."""
+    binds at its turn, so it is not held to one.
+
+    ``runs_in`` is the workspace the turn runs in when it is not its
+    thread's: Home's stand-in, where a Home turn runs while Home's computer
+    can't be reached, so the turn is held to the stand-in's computer. Its row
+    is held from here to the commit, read after the turn's mark took the lock
+    a removal of that computer holds (``home_away.mark_away``)."""
     async with conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """
-            SELECT w.workspace_id, w.computer_id FROM workspaces w
-            JOIN conversation_threads t ON t.workspace_id = w.workspace_id
-            WHERE t.conversation_thread_id = %s
-            """,
-            (thread_id,),
-        )
+        if runs_in is not None:
+            await cur.execute(
+                "SELECT workspace_id, computer_id FROM workspaces"
+                " WHERE workspace_id = %s FOR SHARE",
+                (runs_in,),
+            )
+        else:
+            await cur.execute(
+                """
+                SELECT w.workspace_id, w.computer_id FROM workspaces w
+                JOIN conversation_threads t ON t.workspace_id = w.workspace_id
+                WHERE t.conversation_thread_id = %s
+                """,
+                (thread_id,),
+            )
         workspace = await cur.fetchone()
     if workspace and workspace["computer_id"] and str(workspace["computer_id"]) != computer_id:
         raise WorkspaceMovingError(str(workspace["workspace_id"]))
