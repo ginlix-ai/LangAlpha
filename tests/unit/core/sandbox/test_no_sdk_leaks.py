@@ -144,6 +144,7 @@ ALLOWED_ASYNCSSH_IMPORTS = {
     # The tunnel gateway is an SSH server of its own, run beside the backend.
     "src/server/ssh_gateway/server.py",
     "src/server/ssh_gateway/admission.py",
+    "src/server/ssh_gateway/relay.py",
 }
 
 
