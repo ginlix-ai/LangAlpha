@@ -357,6 +357,8 @@ async def test_result_body_not_on_emitted_event(middleware):
         "result_snippet",
         "timestamp",
         "agent",
+        "cost_credits",
+        "site",
     }
 
 

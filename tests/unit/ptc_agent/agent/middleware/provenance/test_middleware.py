@@ -6,12 +6,13 @@ safety net, and execute_code mcp_trace extraction. Neutral placeholder data.
 """
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from ptc_agent.agent.middleware.provenance import ProvenanceMiddleware
 from ptc_agent.agent.provenance import hash_args
+from ptc_agent.agent.provenance.trace import RELAY_CALL_KEY, RelayBatch, RelayedSource
 
 _WRITER_PATH = (
     "ptc_agent.agent.middleware.provenance.middleware.get_stream_writer"
@@ -1158,3 +1159,65 @@ async def test_an_unstamped_tool_is_still_left_alone(middleware):
     request.tool = SimpleNamespace(metadata=None)
     await _run(middleware, request, _result(content="{}"), emitted)
     assert emitted == []
+
+
+@pytest.mark.asyncio
+async def test_a_code_runs_relayed_sources_stand_in_for_its_paid_trace_entries():
+    """The relay's sources replace the trace entries of the tools it held
+    sources for, also on a second read that takes none."""
+    held = RelayedSource(
+        "web_fetch", "https://example.com/a", provider="firecrawl", site="example.com",
+        cost_credits=1.5, body="page body",
+    )
+    reader = AsyncMock(side_effect=[
+        RelayBatch((held,), frozenset({"firecrawl:scrape"})),
+        RelayBatch((), frozenset({"firecrawl:scrape"})),
+    ])
+    middleware = ProvenanceMiddleware(relay_sources=reader)
+    trace = [
+        {"server": "firecrawl", "tool": "scrape", "args": {}},
+        {"server": "prices", "tool": "quote", "args": {}},
+    ]
+
+    reads = []
+    for _ in range(2):
+        emitted, artifact = [], {"mcp_trace": list(trace), RELAY_CALL_KEY: "c0ffee00"}
+        await _run(
+            middleware,
+            _make_request("ExecuteCode", {"code": "..."}, tool_call_id="ec-1"),
+            _result(artifact=artifact),
+            emitted,
+        )
+        assert RELAY_CALL_KEY not in artifact
+        reads.append([(e["identifier"], e["cost_credits"], e["site"]) for e in emitted])
+
+    reader.assert_awaited_with("c0ffee00")
+    assert reads == [
+        [("https://example.com/a", 1.5, "example.com"), ("prices:quote", None, None)],
+        [("prices:quote", None, None)],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_code_run_waits_for_its_calls_to_settle_before_taking_their_sources():
+    """A settle that outran its finish budget has not held its sources yet, so
+    a collection made as the run returned would miss them."""
+    order: list[str] = []
+
+    async def settled(call_ids):
+        order.append(f"settled:{','.join(call_ids)}")
+
+    async def reader(call_id):
+        order.append(f"collect:{call_id}")
+        return RelayBatch()
+
+    middleware = ProvenanceMiddleware(relay_sources=reader, relay_settled=settled)
+    artifact = {"mcp_trace": [], RELAY_CALL_KEY: "c0ffee00"}
+    await _run(
+        middleware,
+        _make_request("ExecuteCode", {"code": "..."}, tool_call_id="ec-1"),
+        _result(artifact=artifact),
+        [],
+    )
+
+    assert order == ["settled:c0ffee00", "collect:c0ffee00"]

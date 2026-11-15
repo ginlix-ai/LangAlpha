@@ -583,4 +583,32 @@ describe('SourcesPanel', () => {
     expect(screen.getByText('X1')).toBeInTheDocument();
     expect(screen.getByText('X2')).toBeInTheDocument();
   });
+
+  it('shows the provider favicon for a catalog mcp_tool and its cost in the dialog only', () => {
+    const records = asMap([
+      rec({
+        record_id: 'r1',
+        source_type: 'mcp_tool',
+        identifier: 'fiscal-ai/events/transcript?ticker=NVDA',
+        title: 'Earnings call transcript · Fiscal.ai',
+        provider: 'firecrawl',
+        site: 'fiscal.ai',
+        cost_credits: 1200,
+      }),
+    ]);
+    const { container } = render(<SourcesPanel provenanceRecords={records} />);
+    expect(container.querySelector('img[src*="domain=fiscal.ai"]')).not.toBeNull();
+    expect(screen.queryByText(/^Cost:/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Earnings call transcript · Fiscal.ai'));
+    expect(screen.getByText('Cost: 1,200 credits')).toBeInTheDocument();
+  });
+
+  it('omits the cost line when cost_credits is null or zero', () => {
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'mcp_tool', identifier: 's:t', title: 'Free', cost_credits: 0 }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+    fireEvent.click(screen.getByText('Free'));
+    expect(screen.queryByText(/^Cost:/)).not.toBeInTheDocument();
+  });
 });

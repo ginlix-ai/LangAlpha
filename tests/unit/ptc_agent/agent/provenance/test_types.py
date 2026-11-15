@@ -187,6 +187,8 @@ def test_build_event_has_full_key_set():
         "result_snippet",
         "timestamp",
         "agent",
+        "cost_credits",
+        "site",
     }
     assert set(event.keys()) == expected_keys
 
@@ -229,6 +231,8 @@ def test_build_event_never_carries_result_body():
         "result_snippet",
         "timestamp",
         "agent",
+        "cost_credits",
+        "site",
     }
     # build_provenance_event takes no result_body kwarg (a TypeError guards the
     # contract that the body can't be injected through the builder either).

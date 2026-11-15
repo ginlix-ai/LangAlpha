@@ -22,10 +22,12 @@ from ptc_agent.agent.middleware.background_subagent.context import (
 from ptc_agent.agent.middleware.provenance import ProvenanceMiddleware
 from ptc_agent.agent.middleware.provenance.command_trace import (
     REPORT_COMMAND_KEY,
+    CommandTrace,
     read_command_trace,
     reported_commands,
 )
 from ptc_agent.agent.provenance import sources_from_trace
+from ptc_agent.agent.provenance.trace import RelayBatch, RelayedSource, sources_from_relay
 
 _MW = "ptc_agent.agent.middleware.provenance.middleware"
 _STORE_PATH = "src.server.database.provenance_bodies.store_result_bodies"
@@ -200,7 +202,7 @@ async def _call(middleware, messages, *, thread_id="thread-1", configurable=None
 
 @pytest.mark.asyncio
 async def test_a_steered_notice_brings_its_commands_sources():
-    traces = AsyncMock(return_value=[_ENTRY])
+    traces = AsyncMock(return_value=CommandTrace([_ENTRY]))
     middleware = ProvenanceMiddleware(command_traces=traces)
 
     out, emitted, store = await _call(
@@ -228,7 +230,7 @@ async def test_a_steered_notice_brings_its_commands_sources():
 
 @pytest.mark.asyncio
 async def test_a_report_back_turn_brings_its_commands_sources():
-    traces = AsyncMock(return_value=[_ENTRY])
+    traces = AsyncMock(return_value=CommandTrace([_ENTRY]))
     middleware = ProvenanceMiddleware(command_traces=traces)
 
     _, emitted, _ = await _call(
@@ -246,7 +248,7 @@ async def test_snippets_are_redacted_and_a_forged_sha_is_dropped():
     forged = {**_ENTRY, "result_sha256": "f" * 64, "result_snippet": "key=SECRETVALUE1"}
     middleware = ProvenanceMiddleware(
         redactor=lambda s: s.replace("SECRETVALUE1", "[REDACTED]") if s else s,
-        command_traces=AsyncMock(return_value=[forged]),
+        command_traces=AsyncMock(return_value=CommandTrace([forged])),
     )
 
     _, emitted, store = await _call(
@@ -260,7 +262,7 @@ async def test_snippets_are_redacted_and_a_forged_sha_is_dropped():
 
 @pytest.mark.asyncio
 async def test_a_subagent_never_emits_a_commands_sources():
-    traces = AsyncMock(return_value=[_ENTRY])
+    traces = AsyncMock(return_value=CommandTrace([_ENTRY]))
     middleware = ProvenanceMiddleware(command_traces=traces)
     token = current_background_agent_id.set("research:abc")
     try:
@@ -292,7 +294,7 @@ async def test_a_failed_read_never_blocks_the_model_call():
 
 @pytest.mark.asyncio
 async def test_a_call_with_no_notice_reads_nothing():
-    traces = AsyncMock(return_value=[_ENTRY])
+    traces = AsyncMock(return_value=CommandTrace([_ENTRY]))
     middleware = ProvenanceMiddleware(command_traces=traces)
 
     _, emitted, _ = await _call(middleware, _answered())
@@ -306,9 +308,13 @@ async def test_a_call_with_no_notice_reads_nothing():
 
 @pytest.mark.asyncio
 async def test_the_trace_is_read_only_for_the_commands_own_thread():
-    read = AsyncMock(return_value={"mcp_trace": [_ENTRY]})
+    read = AsyncMock(
+        return_value={"mcp_trace": [_ENTRY], "job_ref": {"call_id": "call-1"}}
+    )
     with patch("src.server.database.runs.command_runs.get_thread_command", read):
-        assert await read_command_trace("thread-1", "bg-x") == [_ENTRY]
+        assert await read_command_trace("thread-1", "bg-x") == CommandTrace(
+            [_ENTRY], "call-1"
+        )
     read.assert_awaited_once_with("thread-1", "bg-x", with_trace=True)
 
 
@@ -318,12 +324,196 @@ async def test_a_missing_row_or_failed_read_has_no_trace():
         "src.server.database.runs.command_runs.get_thread_command",
         AsyncMock(return_value=None),
     ):
-        assert await read_command_trace("t", "bg-x") == []
+        assert await read_command_trace("t", "bg-x") == CommandTrace()
     with patch(
         "src.server.database.runs.command_runs.get_thread_command",
         AsyncMock(side_effect=RuntimeError("pool closed")),
     ):
-        assert await read_command_trace("t", "bg-x") == []
+        assert await read_command_trace("t", "bg-x") == CommandTrace()
+
+
+@pytest.mark.asyncio
+async def test_a_handed_off_commands_paid_calls_bring_the_relays_sources():
+    """Its call id rides its job ref, so the sources the relay held for its
+    paid calls replace those tools' trace entries, under seeded ids."""
+    firecrawl_entry = {**_ENTRY, "server": "firecrawl", "tool": "firecrawl_scrape"}
+    held = RelayedSource(
+        source_type="web_fetch", identifier="https://example.com/a", cost_credits=4.0
+    )
+    relay = AsyncMock(
+        return_value=RelayBatch((held,), frozenset({"firecrawl:firecrawl_scrape"}))
+    )
+    middleware = ProvenanceMiddleware(
+        command_traces=AsyncMock(
+            return_value=CommandTrace([_ENTRY, firecrawl_entry], "call-1")
+        ),
+        relay_sources=relay,
+    )
+
+    _, emitted, _ = await _call(
+        middleware, [*_answered(), _notice("bg-aaaaaaaaaaaa")]
+    )
+
+    relay.assert_awaited_once_with("call-1")
+    assert [e["identifier"] for e in emitted] == [
+        "https://example.com/a",
+        "price_data:get_stock_data",
+    ]
+    assert emitted[0]["cost_credits"] == 4.0
+    assert emitted[0]["record_id"] == sources_from_relay(
+        [held], record_seed="bg-aaaaaaaaaaaa"
+    )[0].record_id
+
+
+@pytest.mark.asyncio
+async def test_a_free_call_to_a_paid_server_keeps_its_trace_source():
+    """Dropped by server, a run that called a free tool and a paid one of the
+    same server lost the free call's source: the relay holds none for it."""
+    free_entry = {**_ENTRY, "server": "firecrawl", "tool": "firecrawl_find_tools"}
+    paid_entry = {**_ENTRY, "server": "firecrawl", "tool": "firecrawl_scrape"}
+    held = RelayedSource(source_type="web_fetch", identifier="https://example.com/a")
+    middleware = ProvenanceMiddleware(
+        command_traces=AsyncMock(
+            return_value=CommandTrace([free_entry, paid_entry], "call-1")
+        ),
+        relay_sources=AsyncMock(
+            return_value=RelayBatch((held,), frozenset({"firecrawl:firecrawl_scrape"}))
+        ),
+    )
+
+    _, emitted, _ = await _call(
+        middleware, [*_answered(), _notice("bg-aaaaaaaaaaaa")]
+    )
+
+    assert [e["identifier"] for e in emitted] == [
+        "https://example.com/a",
+        "firecrawl:firecrawl_find_tools",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_handed_off_commands_sources_are_taken_after_its_calls_settle():
+    """A call's sources are held just before it settles, so a collection made
+    as the command ended missed the last call's while its trace entry, named
+    by server, was dropped all the same."""
+    order: list[str] = []
+
+    async def settled(call_ids):
+        order.append(f"settled:{','.join(call_ids)}")
+
+    async def relay(call_id):
+        order.append(f"collect:{call_id}")
+        return RelayBatch()
+
+    middleware = ProvenanceMiddleware(
+        command_traces=AsyncMock(return_value=CommandTrace([_ENTRY], "call-1")),
+        relay_sources=relay,
+        relay_settled=settled,
+    )
+
+    await _call(middleware, [*_answered(), _notice("bg-aaaaaaaaaaaa")])
+
+    assert order == ["settled:call-1", "collect:call-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_notices_commands_share_one_settle_wait():
+    """Waited one command at a time, a notice naming N commands with calls
+    still held held the model call up for N full waits."""
+    traces = {
+        "bg-aaaaaaaaaaaa": CommandTrace([_ENTRY], "call-a"),
+        "bg-bbbbbbbbbbbb": CommandTrace([_ENTRY]),
+        "bg-cccccccccccc": CommandTrace([_ENTRY], "call-c"),
+    }
+    settled = AsyncMock()
+    relay = AsyncMock(return_value=RelayBatch())
+    middleware = ProvenanceMiddleware(
+        command_traces=AsyncMock(side_effect=lambda _t, cid: traces[cid]),
+        relay_sources=relay,
+        relay_settled=settled,
+    )
+
+    _, emitted, _ = await _call(
+        middleware, [*_answered(), _notice(*traces)]
+    )
+
+    settled.assert_awaited_once_with(["call-a", "call-c"])
+    assert [c.args for c in relay.await_args_list] == [("call-a",), ("call-c",)]
+    assert len(emitted) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_settle_wait_polls_only_calls_that_can_still_settle_and_is_bounded():
+    from ptc_agent.agent.middleware.provenance import command_trace
+    from src.server.services.egress.relay import WALL_CLOCK_S
+
+    settling = AsyncMock(side_effect=[{"call-a", "call-c"}, {"call-c"}, set()])
+    with (
+        patch("src.server.database.relayed_sources.settling", settling),
+        patch(
+            "src.server.services.egress.platform_accounts.platform_accounts_configured",
+            return_value=True,
+        ),
+        patch.object(command_trace, "_SETTLE_POLL_S", 0),
+    ):
+        await command_trace.await_relay_settled("u1", ["call-a", "call-b", "call-c"])
+        assert [c.args for c in settling.await_args_list] == [
+            ("u1", ["call-a", "call-b", "call-c"], WALL_CLOCK_S),
+            ("u1", ["call-a", "call-c"], WALL_CLOCK_S),
+            ("u1", ["call-c"], WALL_CLOCK_S),
+        ]
+
+        settling = AsyncMock(return_value={"call-a"})
+        with (
+            patch("src.server.database.relayed_sources.settling", settling),
+            patch.object(command_trace, "_SETTLE_WAIT_S", 0),
+        ):
+            await command_trace.await_relay_settled("u1", ["call-a"])
+        assert settling.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_settle_wait_bounds_a_stalled_read():
+    import asyncio
+
+    from ptc_agent.agent.middleware.provenance import command_trace
+
+    async def stalled(*_args):
+        await asyncio.sleep(30)
+
+    with (
+        patch("src.server.database.relayed_sources.settling", stalled),
+        patch(
+            "src.server.services.egress.platform_accounts.platform_accounts_configured",
+            return_value=True,
+        ),
+        patch.object(command_trace, "_SETTLE_WAIT_S", 0.05),
+        patch.object(command_trace.logger, "warning") as warning,
+    ):
+        await asyncio.wait_for(command_trace.await_relay_settled("u1", ["call-a"]), 1)
+
+    # A wait that runs out was silent, so a slow settle went unseen.
+    warning.assert_called_once()
+    assert ["call-a"] in warning.call_args.args
+
+
+def test_a_later_collections_relay_sources_take_new_ids():
+    """Ids seeded by place in a batch restarted at 0 on a second collection,
+    so the late sources it took reused the first batch's ids."""
+    first = [
+        RelayedSource(source_type="web_fetch", identifier=f"https://example.com/{n}", held_id=n)
+        for n in (11, 12)
+    ]
+    later = [RelayedSource(source_type="web_fetch", identifier="https://example.com/c", held_id=13)]
+
+    first_ids = {s.record_id for s in sources_from_relay(first, record_seed="bg-aaaaaaaaaaaa")}
+    later_ids = {s.record_id for s in sources_from_relay(later, record_seed="bg-aaaaaaaaaaaa")}
+
+    assert len(first_ids) == 2
+    assert not first_ids & later_ids
+    assert later_ids == {
+        s.record_id for s in sources_from_relay(later, record_seed="bg-aaaaaaaaaaaa")
+    }
 
 
 # ----- a ThreadStatus look that showed the end first --------------------------
@@ -346,7 +536,7 @@ async def _status_call(middleware, artifact):
 @pytest.mark.asyncio
 async def test_a_status_look_that_stamped_a_command_brings_its_sources_with_the_notices_ids():
     """The stamp dropped the notice, so the look brings what it would have."""
-    traces = AsyncMock(return_value=[_ENTRY])
+    traces = AsyncMock(return_value=CommandTrace([_ENTRY]))
     middleware = ProvenanceMiddleware(command_traces=traces)
 
     out, emitted = await _status_call(
@@ -363,7 +553,7 @@ async def test_a_status_look_that_stamped_a_command_brings_its_sources_with_the_
 
 @pytest.mark.asyncio
 async def test_a_status_look_that_stamped_nothing_reads_no_trace():
-    traces = AsyncMock(return_value=[_ENTRY])
+    traces = AsyncMock(return_value=CommandTrace([_ENTRY]))
     middleware = ProvenanceMiddleware(command_traces=traces)
 
     _, emitted = await _status_call(middleware, None)
@@ -374,7 +564,7 @@ async def test_a_status_look_that_stamped_nothing_reads_no_trace():
 
 @pytest.mark.asyncio
 async def test_a_subagents_status_look_emits_nothing():
-    traces = AsyncMock(return_value=[_ENTRY])
+    traces = AsyncMock(return_value=CommandTrace([_ENTRY]))
     middleware = ProvenanceMiddleware(command_traces=traces)
     token = current_background_agent_id.set("research:abc")
     try:
