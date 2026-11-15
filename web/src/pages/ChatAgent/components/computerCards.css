@@ -208,16 +208,16 @@
 
 /* One machine's details, in the rail's place: the drawing filling its column
    beside groups of what can be read and changed, and every action on one line
-   under both. As tall as the rail it replaced, so the dialog keeps its size
-   both ways and as the storage list loads in; what does not fit scrolls in
-   its column. */
+   under both. At least as tall as the rail it replaced, so the dialog keeps
+   its size both ways and as the storage list loads in, and never shorter than
+   the drawing's column, which does not scroll: held to a height of its own
+   (440px when the dialog opened straight onto a machine, with no rail to
+   measure), it ran out of the dialog and cut its actions off. The groups beside
+   it scroll in what that leaves. */
 .computer-details {
   display: flex;
   flex-direction: column;
-  height: var(--computer-view-h, 440px);
-}
-@media (max-width: 600px) {
-  .computer-details { height: auto; }
+  min-height: var(--computer-view-h, 0px);
 }
 .computer-details-head {
   display: flex;
@@ -246,7 +246,10 @@
   gap: 22px;
 }
 .computer-details-main {
-  max-height: 100%;
+  /* No height of its own in the row, which the drawing's column sizes; it
+     fills that and scrolls in it. */
+  height: 0;
+  min-height: 100%;
   overflow-y: auto;
   /* The scrollbar's room is kept, so the column does not narrow under the
      reader when the storage list arrives and makes it scroll. */
@@ -255,7 +258,7 @@
 }
 @media (max-width: 600px) {
   .computer-details-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; gap: 16px; }
-  .computer-details-main { max-height: none; overflow: visible; }
+  .computer-details-main { height: auto; min-height: 0; overflow: visible; }
 }
 /* The card's own drawing, at the card's height, so the machine stays put
    between the rail and its details; what it is and what can be done to it
