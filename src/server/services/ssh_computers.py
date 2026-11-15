@@ -26,6 +26,7 @@ from ptc_agent.core.sandbox.providers._ssh_authorized_key import authorized_key_
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError, SSHFolderMarked
 from src.server.database.computer import (
     count_live_computers_of_kind,
+    get_computer_for_workspace,
     get_computers_for_user,
 )
 from src.server.database.encryption import encryption_configured
@@ -749,6 +750,38 @@ def tunnel_of(computer: Dict[str, Any]) -> str:
     if computer.get("kind") != SSH_KIND:
         return ""
     return (computer.get("provider_config") or {}).get("tunnel") or ""
+
+
+async def computer_unreachable(computer: Optional[Mapping[str, Any]], *, conn=None) -> bool:
+    """Whether *computer* is a machine the user brings that connects out
+    through a tunnel, and that tunnel is not up.
+
+    A machine the server dials directly has no tunnel record and is never
+    judged unreachable here, nor is a cloud computer. A tunnel row that is
+    gone is one the machine cannot connect through. Read from Postgres, where
+    the gateway records each tunnel's liveness, so every worker agrees.
+    """
+    if not computer or computer.get("status") == "deleted":
+        return False
+    tunnel_id = tunnel_of(dict(computer))
+    if not tunnel_id:
+        return False
+    tunnels = await get_tunnels([tunnel_id], conn=conn)
+    return not bool((tunnels.get(tunnel_id) or {}).get("live"))
+
+
+async def computer_away(workspace_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
+    """The computer *workspace_id* runs on, while it cannot be reached; None
+    when a turn there could reach it now.
+
+    For work nobody is watching (an automation's firing, a wake, a
+    report-back), which waits for the machine rather than fail at its
+    connect. A read: nothing is started or placed.
+    """
+    computer = await get_computer_for_workspace(workspace_id, conn=conn)
+    if not await computer_unreachable(computer, conn=conn):
+        return None
+    return dict(computer)
 
 
 async def tunnels_for(

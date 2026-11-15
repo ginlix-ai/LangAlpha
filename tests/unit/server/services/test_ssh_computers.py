@@ -642,3 +642,55 @@ def test_a_take_over_names_only_a_machine_id(take_over):
 
     with pytest.raises(ValidationError):
         _marked_spec(take_over=take_over)
+
+
+_TUNNEL = "00000000-0000-0000-0000-0000000000aa"
+
+
+@pytest.mark.parametrize(
+    ("computer", "tunnels", "unreachable"),
+    [
+        (None, {}, False),
+        ({"kind": "daytona", "provider_config": {}}, {}, False),
+        ({"kind": "ssh", "provider_config": {"host": "h"}}, {}, False),
+        ({"kind": "ssh", "provider_config": {"tunnel": _TUNNEL}}, {_TUNNEL: {"live": True}}, False),
+        ({"kind": "ssh", "provider_config": {"tunnel": _TUNNEL}}, {_TUNNEL: {"live": False}}, True),
+        ({"kind": "ssh", "provider_config": {"tunnel": _TUNNEL}}, {}, True),
+        (
+            {"kind": "ssh", "status": "deleted", "provider_config": {"tunnel": _TUNNEL}},
+            {},
+            False,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_only_a_tunneled_machine_whose_tunnel_is_down_is_unreachable(
+    monkeypatch, computer, tunnels, unreachable
+):
+    import src.server.services.ssh_computers as module
+
+    async def get_tunnels(ids, *, conn=None):
+        return {i: tunnels[i] for i in ids if i in tunnels}
+
+    monkeypatch.setattr(module, "get_tunnels", get_tunnels)
+    assert await module.computer_unreachable(computer) is unreachable
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_is_away_only_while_its_computer_cannot_be_reached(monkeypatch):
+    import src.server.services.ssh_computers as module
+
+    computer = {"computer_id": "c1", "kind": "ssh", "provider_config": {"tunnel": _TUNNEL}}
+    live = {"value": False}
+
+    async def get_computer_for_workspace(workspace_id, *, conn=None):
+        return computer
+
+    async def get_tunnels(ids, *, conn=None):
+        return {_TUNNEL: {"live": live["value"]}}
+
+    monkeypatch.setattr(module, "get_computer_for_workspace", get_computer_for_workspace)
+    monkeypatch.setattr(module, "get_tunnels", get_tunnels)
+    assert (await module.computer_away("w1"))["computer_id"] == "c1"
+    live["value"] = True
+    assert await module.computer_away("w1") is None
