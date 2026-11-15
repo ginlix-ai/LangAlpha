@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -647,11 +648,32 @@ def test_frame_constants_are_frozen():
     assert p.PACKAGE_NAME == "supervisor"
 
 
-def test_the_sandbox_client_carries_the_same_wire_constants():
+_ICLOUD = "/Users/someone/Library/Mobile Documents/com~apple~CloudDocs"
+# A root whose socket path is exactly as long as a socket's address holds.
+_AT_LIMIT = "/srv/" + "a" * (p.SUN_PATH_MAX - len(p.SOCKET_REL_PATH) - 6)
+
+
+@pytest.mark.parametrize(
+    "root",
+    [
+        "/home/daytona",
+        "/Users/someone/langalpha",
+        f"{_ICLOUD}/langalpha",
+        "/Users/someone/文稿/研究资料/二〇二六年/季度报告/计算机",
+        _AT_LIMIT,
+        # Configured with a slash at its end, which every side strips.
+        f"{_AT_LIMIT}/",
+        f"{_AT_LIMIT}b",
+    ],
+)
+def test_the_sandbox_client_carries_the_same_wire_constants(root, monkeypatch):
     """The client hand-builds its frames so a wrapper never imports the daemon.
 
     That duplication is the point, and this is what keeps it honest: the two
-    copies are asserted equal here rather than at runtime in the sandbox.
+    copies are asserted equal here rather than at runtime in the sandbox. The
+    socket's path is among them, and a root too long for a socket's address
+    once kept the daemon from ever binding on a Mac, so the daemon, its
+    starter and the client must still meet at one path a socket can hold.
     """
     from ptc_agent.core.sandbox import mcp_client_runtime as client
 
@@ -660,6 +682,29 @@ def test_the_sandbox_client_carries_the_same_wire_constants():
     assert p.SOCKET_REL_PATH.endswith("/" + client._SUPERVISOR_SOCKET_REL)
     assert p.LOG_REL_PATH.endswith("/" + client._SUPERVISOR_LOG_REL)
     assert set(client._SUPERVISOR_ERR_FATAL) == set(p.FATAL_CODES)
+
+    home = "/Users/someone"
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setattr(client, "_WORK_DIR", root)
+    monkeypatch.setattr(
+        client, "_INTERNAL_ROOT", f"{root}/{client._LAYOUT['INTERNAL_DIR']}"
+    )
+    path = p.socket_path(root)
+    starter = subprocess.run(
+        ["sh", "-c", f"printf %s {p.socket_path_sh(root)}"],
+        env={"HOME": home, "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert client._supervisor_socket_path() == path == starter
+    assert len(os.fsencode(path)) <= p.SUN_PATH_MAX
+    stripped = root.rstrip("/")
+    if len(os.fsencode(f"{stripped}/{p.SOCKET_REL_PATH}")) <= p.SUN_PATH_MAX:
+        assert path == f"{stripped}/{p.SOCKET_REL_PATH}"
+    else:
+        assert path.startswith(f"{home}/{p.SHORT_SOCKET_DIR}/")
 
 
 # ---------------------------------------------------------------------------
