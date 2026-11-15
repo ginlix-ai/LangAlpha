@@ -503,3 +503,88 @@ async def test_a_file_the_backup_lacks_answers_as_the_away_machine_not_as_missin
 
     assert refused.value.status_code == 503
     assert refused.value.headers == {"X-Computer-Unreachable": "not_connected"}
+
+
+def _live_sandbox_for_write(on_machine: bytes | None):
+    """A running workspace whose file holds *on_machine* (None: no such file)."""
+    from contextlib import asynccontextmanager
+
+    sandbox = MagicMock()
+    sandbox.awrite_file_text = AsyncMock(return_value=True)
+    row = {**_workspace("ws-live", "user-1", status="running")}
+
+    @asynccontextmanager
+    async def acquire(*_args, **_kwargs):
+        yield sandbox, row
+
+    crud = "src.server.app.workspace_files.crud"
+    patches = (
+        patch(f"{crud}.owned_workspace_on_computer", AsyncMock(return_value=row)),
+        patch(f"{crud}.owner_work_dir", return_value="/home/workspace"),
+        patch(f"{crud}.acquire_sandbox_to_change", acquire),
+        patch(
+            f"{crud}.contained_target",
+            AsyncMock(return_value="/home/workspace/notes.md"),
+        ),
+        patch(
+            f"{crud}.read_contained_sandbox_file",
+            AsyncMock(
+                return_value=None
+                if on_machine is None
+                else ("/home/workspace/notes.md", on_machine)
+            ),
+        ),
+        patch(f"{crud}.to_client_path", return_value="notes.md"),
+        patch(f"{crud}.keep_updated_after_change"),
+    )
+    return sandbox, patches
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("on_machine", "lands"),
+    [(b"# Notes", True), (b"# Notes, written by the agent", False), (None, False)],
+    ids=["unchanged", "changed-since", "gone-since"],
+)
+async def test_a_save_names_the_version_it_edited_and_never_overwrites_a_newer_file(
+    on_machine, lands
+):
+    """A save made from text read earlier (a backup shown while the machine
+    slept, or a live read the agent has since written over) would replace
+    what the file now holds unseen. Naming the version it began from, it
+    lands only on the bytes it was read from."""
+    from contextlib import ExitStack
+
+    from fastapi import HTTPException
+
+    from src.server.app.workspace_files.crud import (
+        WriteFileRequest,
+        file_text_version,
+        write_workspace_file,
+    )
+
+    sandbox, patches = _live_sandbox_for_write(on_machine)
+    body = WriteFileRequest(
+        content="# Notes, edited", base_version=file_text_version(b"# Notes")
+    )
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        call = write_workspace_file(
+            workspace_id="ws-live", x_user_id="user-1", path="notes.md", body=body
+        )
+        if lands:
+            result = await call
+        else:
+            with pytest.raises(HTTPException) as refused:
+                await call
+
+    if lands:
+        sandbox.awrite_file_text.assert_awaited_once_with(
+            "/home/workspace/notes.md", "# Notes, edited"
+        )
+        assert result["version"] == file_text_version(b"# Notes, edited")
+    else:
+        sandbox.awrite_file_text.assert_not_awaited()
+        assert refused.value.status_code == 409
+        assert refused.value.detail["code"] == "file_changed"

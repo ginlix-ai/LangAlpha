@@ -301,11 +301,19 @@ function FilePanel({
 
   const downloads = useFileDownloads({ workspaceId, triggerDownloadFn, workspaceStatus: wsData?.status });
   const rawFileError = downloads.errorFor(selectedFile) ?? readError;
+  // A file opened while the listing was still live can come back from the
+  // backup all the same: the machine went away between the two reads. Its
+  // body says so, and stands for the listing's word until that catches up.
+  const bodyBackup = body?.unreachable;
+  const away = useMemo<FilesAway | null>(
+    () => filesAway ?? (bodyBackup ? { code: bodyBackup, backup: true } : null),
+    [filesAway, bodyBackup],
+  );
   // The machine is looked up only once it is what is down, so a panel that
   // never meets that pays no read of the computer list for it.
   const queryClient = useQueryClient();
   const computerId = wsData?.computer_id ?? null;
-  const machineDown = !!filesAway || rawFileError?.category === 'computer_unreachable';
+  const machineDown = !!away || rawFileError?.category === 'computer_unreachable';
   const { data: downComputer } = useComputer(machineDown ? computerId : null);
   const machine = useMemo(() => awayMachineOf(downComputer), [downComputer]);
   const fileError = useMemo(
@@ -315,19 +323,19 @@ function FilePanel({
     [rawFileError, machine, t],
   );
   // The backup stands in for reading only: a change made to it would be lost.
-  const backupNotice = filesAway?.backup ? backupShownText(t, filesAway.code, machine) : null;
-  const changeBlocked = filesAway ? awayRetryText(t, filesAway.code, machine) : null;
+  const backupNotice = away?.backup ? backupShownText(t, away.code, machine) : null;
+  const changeBlocked = away ? awayRetryText(t, away.code, machine) : null;
   const shownFilesError = filesAway && !filesAway.backup ? changeBlocked : filesError;
   // A change the machine refused as it went away names it from the lists
   // already read: no fetch for a failure.
-  const awayMessage = useCallback(
-    (err: unknown) => awayRetryMessage(
-      err, t, downComputer ? machine : awayMachineOf(cachedComputer(queryClient, computerId)),
-    ),
-    [t, downComputer, machine, queryClient, computerId],
+  const machineNow = useCallback(
+    () => (downComputer ? machine : awayMachineOf(cachedComputer(queryClient, computerId))),
+    [downComputer, machine, queryClient, computerId],
   );
+  const awayMessage = useCallback((err: unknown) => awayRetryMessage(err, t, machineNow()), [t, machineNow]);
+  const awayText = useCallback((code: string) => awayRetryText(t, code, machineNow()), [t, machineNow]);
   // What was read from the backup is read again live once the machine answers.
-  const backupCode = filesAway?.backup ? filesAway.code : null;
+  const backupCode = away?.backup ? away.code : null;
   const shownBackup = useRef(backupCode);
   useEffect(() => {
     if (shownBackup.current && !backupCode) cache.invalidate();
@@ -357,7 +365,7 @@ function FilePanel({
 
   const edit = useFileEdit({
     tabId: activeTab.id, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled,
-    blockedReason: changeBlocked, awayMessage,
+    blockedReason: changeBlocked, awayMessage, awayText, onBackupRead: cache.invalidate,
   });
   // Taken apart here: the hook hands back a new object every render, so a
   // callback that closed over `edit` would be new every render too.

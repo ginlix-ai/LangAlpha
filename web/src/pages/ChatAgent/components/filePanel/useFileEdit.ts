@@ -6,6 +6,8 @@ import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { useLatestRef } from '@/hooks/useLatestRef';
 import { holdReload } from '@/lib/reloadHolds';
+import { apiErrorCoded } from '@/api/errors';
+import { backupUnreachable } from '../../utils/computerAway';
 import { disposeEditorModel, newEditorModelPath } from '../viewers/editorModels';
 import type { AskConfirm } from './usePanelConfirm';
 
@@ -15,6 +17,18 @@ interface EditDraft {
   editContent: string | null;
   originalContent: string | null;
   modelPath: string | null;
+  /** The version of the file the edit started from, which a save names so a
+   *  file changed since is not written over; null where the read gave none. */
+  baseVersion: string | null;
+}
+
+/** What a full read answers: the text, the version of the bytes it came from,
+ *  and, read from the backup while the computer was away, its connect code. */
+interface FullRead {
+  content?: string;
+  version?: string;
+  source?: string;
+  unreachable?: string;
 }
 
 /** Whether a draft differs from the text its edit started from. The one
@@ -32,14 +46,14 @@ const isDirty = (d: Pick<EditDraft, 'isEditing' | 'editContent' | 'originalConte
  * editor and switching back hands it straight back. Without that a tab strip
  * would silently throw away an edit for the price of looking at another file,
  * which is worse than the single-file panel it replaced. */
-export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, blockedReason = null, awayMessage }: {
+export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, blockedReason = null, awayMessage, awayText, onBackupRead }: {
   /** Which tab the editor currently belongs to. */
   tabId: string;
   workspaceId: string;
   selectedFile: string | null;
   setFileContent: Dispatch<SetStateAction<string | null>>;
-  readFileFullFn: (workspaceId: string, path: string) => Promise<{ content?: string }>;
-  writeFileFn: (workspaceId: string, path: string, content: string) => Promise<unknown>;
+  readFileFullFn: (workspaceId: string, path: string) => Promise<FullRead>;
+  writeFileFn: (workspaceId: string, path: string, content: string, baseVersion?: string | null) => Promise<unknown>;
   /** The panel's confirmation, asked before a save or a discard. */
   ask: AskConfirm;
   /** A write to `path` has answered, landed or not. */
@@ -48,6 +62,11 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   blockedReason?: string | null;
   /** Words a refusal from a computer that did not answer; null for any other failure. */
   awayMessage?: (err: unknown) => string | null;
+  /** Words for a computer that did not answer, by its connect code. */
+  awayText?: (code: string) => string;
+  /** The edit's read of `path` was answered from the backup: the body on
+   *  screen is read again, so it carries the same notice and edit block. */
+  onBackupRead?: (path: string) => void;
 }) {
   const { t } = useTranslation();
   // Edit mode state
@@ -62,6 +81,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
   const [originalContent, setOriginalContent] = useState<string | null>(null);
+  const [baseVersion, setBaseVersion] = useState<string | null>(null);
   // The Monaco model this edit session types into, one per session.
   const [modelPath, setModelPath] = useState<string | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
@@ -83,13 +103,14 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   const [ownerTab, setOwnerTab] = useState(tabId);
   if (ownerTab !== tabId) {
     if (dropped.current === ownerTab) dropped.current = null;
-    else drafts.current.set(ownerTab, { isEditing, editContent, originalContent, modelPath });
+    else drafts.current.set(ownerTab, { isEditing, editContent, originalContent, modelPath, baseVersion });
     const parked = drafts.current.get(tabId);
     setOwnerTab(tabId);
     setIsEditing(parked?.isEditing ?? false);
     setEditContent(parked?.editContent ?? null);
     setOriginalContent(parked?.originalContent ?? null);
     setModelPath(parked?.modelPath ?? null);
+    setBaseVersion(parked?.baseVersion ?? null);
     setShowDiff(false);
     setSaveError(null);
   }
@@ -173,6 +194,16 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       const data = await readFileFullFn(workspaceId, selectedFile);
       // Another file opened while the full read was in flight.
       if (selectedFileRef.current !== selectedFile) return;
+      // The backup may be older than the file on the machine, so an edit
+      // started from it would write that older text over the newer one.
+      const away = backupUnreachable(data);
+      if (away) {
+        // Edit mode, where the header shows a save error, never opened, so
+        // this is said where the reader is looking.
+        toast({ description: awayText?.(away) ?? t('filePanel.loadEditFailed'), variant: 'destructive' });
+        onBackupRead?.(selectedFile);
+        return;
+      }
       const fullContent = data.content || '';
       if (fullContent.length > 500 * 1024) {
         setSaveError(t('filePanel.fileTooLarge'));
@@ -183,6 +214,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       setModelPath(path);
       setEditContent(fullContent);
       setOriginalContent(fullContent);
+      setBaseVersion(data.version ?? null);
       setFileContent(fullContent);
       setIsEditing(true);
     } catch (err: unknown) {
@@ -193,7 +225,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       if (selectedFileRef.current !== selectedFile) return;
       setSaveError(e?.response?.data?.detail || e?.message || t('filePanel.loadEditFailed'));
     }
-  }, [selectedFile, workspaceId, readFileFullFn, setFileContent, t]);
+  }, [selectedFile, workspaceId, readFileFullFn, setFileContent, awayText, onBackupRead, t]);
 
   const handleEditorChange = useCallback((value: string) => {
     typedRef.current = { session: sessionRef.current, text: value };
@@ -202,7 +234,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
 
   // Takes the file and text as they were when the question was asked: the
   // answer arrives on a later render.
-  const save = useCallback(async (tab: string, file: string, content: string) => {
+  const save = useCallback(async (tab: string, file: string, content: string, base: string | null) => {
     const seq = ++saveSeqRef.current;
     setSavingFile(file);
     setSaveError(null);
@@ -210,7 +242,10 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
     // reload a section switch takes waits for it.
     const release = holdReload();
     try {
-      await writeFileFn(workspaceId, file, content);
+      const written = await writeFileFn(workspaceId, file, content, base);
+      // What the file holds now, which the next save from this draft names.
+      const landed = (written as { version?: unknown } | null)?.version;
+      const nextBase = typeof landed === 'string' ? landed : null;
       // Another file opened while the write was in flight, the same guard the
       // full read takes above. Without it this file's text lands in the panel
       // under the other one's name, and feeds its line and heading lookup.
@@ -220,7 +255,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         // file already holds. Keystrokes typed after the save are kept.
         const parked = drafts.current.get(tab);
         if (parked?.editContent === content) drafts.current.delete(tab);
-        else if (parked) drafts.current.set(tab, { ...parked, originalContent: content });
+        else if (parked) drafts.current.set(tab, { ...parked, originalContent: content, baseVersion: nextBase });
         return;
       }
       setFileContent(content);
@@ -229,12 +264,14 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       const typed = typedRef.current;
       if (typed && typed.session === sessionRef.current && typed.text !== content) {
         setOriginalContent(content);
+        setBaseVersion(nextBase);
         return;
       }
       setIsEditing(false);
       setEditContent(null);
       setShowDiff(false);
       setOriginalContent(null);
+      setBaseVersion(null);
     } catch (err: unknown) {
       const e = err as { response?: { data?: { detail?: string } }; message?: string };
       console.error('[FilePanel] Save failed:', err);
@@ -247,6 +284,12 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
           description: t('filePanel.saveFailedFile', { name: file.split('/').pop() }),
           variant: 'destructive',
         });
+        return;
+      }
+      if (apiErrorCoded(err, 'file_changed')) {
+        // The draft stays, so nothing typed is lost; Cancel and Edit again
+        // read the file as it now is.
+        setSaveError(t('filePanel.fileChangedSinceEdit'));
         return;
       }
       setSaveError(awayMessage?.(err) || e?.response?.data?.detail || e?.message || t('filePanel.saveFailed'));
@@ -272,15 +315,16 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
     }
     ask(
       { title: t('filePanel.saveTitle'), message: t('filePanel.confirmSave'), confirmLabel: t('common.save') },
-      () => { void save(tabId, selectedFile, draft); },
+      () => { void save(tabId, selectedFile, draft, baseVersion); },
     );
-  }, [tabId, selectedFile, savingFile, workspaceId, typedDraft, ask, save, blockedReason, t]);
+  }, [tabId, selectedFile, savingFile, workspaceId, typedDraft, ask, save, blockedReason, baseVersion, t]);
 
   const discardEdit = useCallback(() => {
     setIsEditing(false);
     setEditContent(null);
     setShowDiff(false);
     setOriginalContent(null);
+    setBaseVersion(null);
     setSaveError(null);
   }, []);
 

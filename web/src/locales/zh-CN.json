@@ -3071,6 +3071,7 @@
     "portInUseHint": "电脑上的另一个程序占用了端口 {{port}}。请让 Agent 换一个端口运行这个应用。",
     "saveFailed": "保存失败",
     "saveFailedFile": "无法保存 {{name}}",
+    "fileChangedSinceEdit": "你开始编辑后，这个文件已有改动，现在保存会覆盖那些改动。请先复制你的修改，再取消并重新编辑，从最新版本开始。",
     "deleteFailed": "删除失败",
     "deletePartialFail": "{{count}} 个文件删除失败",
     "backToFileList": "返回文件列表",

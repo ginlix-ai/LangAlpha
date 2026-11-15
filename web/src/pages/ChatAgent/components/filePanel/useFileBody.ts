@@ -104,8 +104,11 @@ export function useFileBody({ cache, path, workspaceStatus }: UseFileBodyArgs) {
     ...cache.options(path ?? ''),
     enabled: !!path && mode !== 'none',
     // A file its computer could not serve, with no backup to stand in, opens
-    // by itself once the machine answers again.
-    refetchInterval: (q) => (isMachineCode(unreachableCode(q.state.error)) ? AWAY_REFETCH_MS : false),
+    // by itself once the machine answers again; one shown from the backup is
+    // read live again then, so the copy on screen is never the older one.
+    refetchInterval: (q) => (
+      isMachineCode(unreachableCode(q.state.error)) || q.state.data?.unreachable ? AWAY_REFETCH_MS : false
+    ),
   });
 
   const error: FileError | null = useMemo(() => {

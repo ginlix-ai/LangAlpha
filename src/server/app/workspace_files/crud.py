@@ -584,7 +584,15 @@ async def read_workspace_file(
         "content": content,
         "mime": mime,
         "truncated": truncated,
+        "version": file_text_version(raw_bytes),
     }
+
+
+def file_text_version(raw: bytes) -> str:
+    """The version a save names as the file it was based on: a hash of the
+    bytes on the machine, before redaction, so a file that changed under the
+    editor is told apart from one that did not."""
+    return hashlib.sha256(raw).hexdigest()
 
 
 async def _read_from_backup(
@@ -646,6 +654,20 @@ MAX_WRITE_BYTES = 10 * 1024 * 1024  # 10MB text write limit
 
 class WriteFileRequest(BaseModel):
     content: str = Field(..., description="File content to write.")
+    base_version: str | None = Field(
+        None,
+        description=(
+            "The `version` /files/read returned for the text this save edits. "
+            "Given, the write is refused with 409 `file_changed` when the file "
+            "no longer holds those bytes."
+        ),
+    )
+
+
+FILE_CHANGED_DETAIL = {
+    "code": "file_changed",
+    "message": "The file changed since it was read. Read it again before saving.",
+}
 
 
 @router.put("/{workspace_id}/files/write")
@@ -685,6 +707,8 @@ async def write_workspace_file(
         previous_dirs = previous_dir_names_of(workspace)
 
         normalized = await contained_target(sandbox, path, work_dir, previous_dirs)
+        if body.base_version is not None:
+            await _require_base_version(sandbox, normalized, work_dir, body.base_version)
 
         # ``awrite_file_text`` takes this path's write lock for the write itself.
         ok = await sandbox.awrite_file_text(normalized, body.content)
@@ -721,7 +745,23 @@ async def write_workspace_file(
         "workspace_id": workspace_id,
         "path": client_path,
         "size": len(content_bytes),
+        "version": file_text_version(content_bytes),
     }
+
+
+async def _require_base_version(
+    sandbox: Any, normalized: str, work_dir: str, base_version: str
+) -> None:
+    """Refuse a save whose edit began from bytes the file no longer holds: the
+    agent, or the machine's owner, wrote it since, and the save would overwrite
+    that unseen. The check and the write are two requests, so a write landing
+    between them still wins; the window is the gap between them, not the edit."""
+    try:
+        current = await read_contained_sandbox_file(sandbox, normalized, work_dir=work_dir)
+    except FileTooLargeToServe:
+        current = None
+    if current is None or file_text_version(current[1]) != base_version:
+        raise HTTPException(status_code=409, detail=FILE_CHANGED_DETAIL)
 
 
 # How long a large download waits for a stream slot before answering 503.

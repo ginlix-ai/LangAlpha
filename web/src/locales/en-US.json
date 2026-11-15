@@ -3043,6 +3043,7 @@
     "portInUseHint": "Another program on the computer holds port {{port}}. Ask the agent to run the app on another port.",
     "saveFailed": "Save failed",
     "saveFailedFile": "Couldn't save {{name}}",
+    "fileChangedSinceEdit": "This file changed after you started editing, so your save would overwrite those changes. Copy your edit, then cancel and edit again to start from the latest version.",
     "deleteFailed": "Delete failed",
     "deletePartialFail": "{{count}} file(s) failed to delete",
     "backToFileList": "Back to file list",

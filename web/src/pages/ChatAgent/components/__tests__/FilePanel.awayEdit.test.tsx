@@ -1,0 +1,106 @@
+/**
+ * A file read from the backup while its computer is away is shown, never
+ * edited: the backup may be older than the file on the machine, and a save
+ * made from it would write that older text over the newer one once the
+ * machine is back. A save also names the version its edit began from, so a
+ * file changed since is refused rather than overwritten.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { screen, fireEvent, act, within, waitFor } from '@testing-library/react';
+import { renderWithProviders } from '@/test/utils';
+import { readWorkspaceFile, readWorkspaceFileFull, writeWorkspaceFile } from '@/pages/ChatAgent/utils/api';
+import { toast } from '@/components/ui/use-toast';
+
+vi.mock('@/components/ui/use-toast', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  toast: vi.fn(),
+}));
+
+vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => {
+  const orig = await importOriginal<Record<string, unknown>>();
+  return {
+    ...orig,
+    readWorkspaceFile: vi.fn(),
+    readWorkspaceFileFull: vi.fn(),
+    writeWorkspaceFile: vi.fn(),
+    downloadWorkspaceFileAsArrayBuffer: vi.fn(),
+    triggerFileDownload: vi.fn(),
+    resolveWorkspaceFile: vi.fn(),
+    getPreviewUrl: vi.fn(),
+  };
+});
+vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { status: 'running', name: 'ws' } }) }));
+vi.mock('@/contexts/ThemeContext', () => ({ useTheme: () => ({ theme: 'dark' }) }));
+vi.mock('@/pages/ChatAgent/components/FilePanelMemo', () => ({
+  memoMimeForName: () => null,
+  useAddToMemo: () => vi.fn(),
+  useWorkspaceMemoIndex: () => new Map(),
+  useMemoStaleCheck: () => ({ status: null, sandboxText: null, refresh: () => {} }),
+  MemoStaleBanner: () => null,
+  MemoDiffModal: () => null,
+}));
+vi.mock('@/pages/ChatAgent/components/SandboxSettingsPanel', () => ({ SandboxSettingsContent: () => null }));
+vi.mock('@/pages/ChatAgent/components/viewers/CodeEditor', () => ({
+  default: ({ value, onChange }: { value?: string; onChange?: (v: string) => void }) => (
+    <textarea data-testid="editor" value={value ?? ''} onChange={(e) => onChange?.(e.target.value)} />
+  ),
+}));
+
+import FilePanel from '@/pages/ChatAgent/components/FilePanel';
+
+const LIVE = { content: '# Notes', mime: 'text/markdown', truncated: false, version: 'v1' };
+const FROM_BACKUP = { ...LIVE, version: undefined, source: 'database', unreachable: 'not_connected' };
+const AWAY_RETRY = "Can't reach this workspace's computer right now. Try again once it's on and online.";
+const AWAY_BACKUP = "Can't reach this workspace's computer, so these are its backed-up files. They go live again once it's back.";
+
+const panel = () => (
+  <FilePanel workspaceId="ws" onClose={() => {}} files={['notes.md']} target={{ kind: 'file', path: 'notes.md', seq: 1 }} />
+);
+
+beforeEach(() => { localStorage.clear(); });
+afterEach(() => { vi.resetAllMocks(); vi.restoreAllMocks(); });
+
+describe('FilePanel editing while the computer is away', () => {
+  it('marks a body read from the backup and offers no edit, though the listing was live', async () => {
+    vi.mocked(readWorkspaceFile).mockResolvedValue(FROM_BACKUP);
+    renderWithProviders(panel());
+
+    expect(await screen.findByText(AWAY_BACKUP)).toBeTruthy();
+    expect(screen.queryByTitle('Edit file')).toBeNull();
+  });
+
+  it('refuses to open the editor on a full read the backup answered', async () => {
+    vi.mocked(readWorkspaceFile).mockResolvedValue(LIVE);
+    vi.mocked(readWorkspaceFileFull).mockResolvedValue(FROM_BACKUP);
+    renderWithProviders(panel());
+    fireEvent.click(await screen.findByTitle('Edit file'));
+    // The machine went away before the edit's read: the body is read again,
+    // and that read finds the backup too.
+    vi.mocked(readWorkspaceFile).mockResolvedValue(FROM_BACKUP);
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({ description: AWAY_RETRY, variant: 'destructive' }));
+    expect(screen.queryByTestId('editor')).toBeNull();
+    expect(await screen.findByText(AWAY_BACKUP)).toBeTruthy();
+    expect(screen.queryByTitle('Edit file')).toBeNull();
+  });
+
+  it('saves against the version it read, and keeps the draft when the file changed since', async () => {
+    vi.mocked(readWorkspaceFile).mockResolvedValue(LIVE);
+    vi.mocked(readWorkspaceFileFull).mockResolvedValue(LIVE);
+    vi.mocked(writeWorkspaceFile).mockRejectedValue({
+      response: { status: 409, data: { detail: { code: 'file_changed', message: 'changed' } } },
+    });
+    renderWithProviders(panel());
+
+    fireEvent.click(await screen.findByTitle('Edit file'));
+    const editor = await screen.findByTestId('editor');
+    await act(async () => { fireEvent.change(editor, { target: { value: '# Notes, revised' } }); });
+    fireEvent.click(screen.getByTitle('Save (Cmd+S)'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(writeWorkspaceFile).toHaveBeenCalledWith('ws', 'notes.md', '# Notes, revised', 'v1'));
+    expect(await screen.findByText(/This file changed after you started editing/)).toBeTruthy();
+    expect((screen.getByTestId('editor') as HTMLTextAreaElement).value).toBe('# Notes, revised');
+  });
+});

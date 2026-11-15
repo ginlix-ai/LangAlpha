@@ -10,6 +10,32 @@ import type { BackupResponse, BackupStatusResponse } from '@/types/api';
 import type { SignedUploadPart } from '../partUpload';
 
 /**
+ * Sent with every read, listing, resolve and download: this app shows a
+ * backup answered for a computer that is away as one, and never edits it, so
+ * the server may answer from it. A client without it gets the machine's 503.
+ */
+export const BACKUP_OK = { backup_ok: true } as const;
+
+/** Bytes the server answered from the backup, by the computer's connect code. */
+const fromBackup = new WeakMap<object, string>();
+
+/** Bytes carry no field for it, so the download said by header that they are the backup's. */
+function markFromBackup<T extends object>(body: T, headers: Record<string, string> | undefined): T {
+  const code = headers?.['x-computer-unreachable'];
+  if (typeof code === 'string' && code) fromBackup.set(body, code);
+  return body;
+}
+
+/**
+ * The connect code when a binary file's bytes (an ArrayBuffer, or a ranged
+ * file opened from its first slice) were answered from the backup because the
+ * computer was away; null for live bytes.
+ */
+export function backupCodeOf(body: object): string | null {
+  return fromBackup.get(body) ?? null;
+}
+
+/**
  * Resolve a file reference to one workspace path in a single server lookup.
  * @param candidates - readings of the reference, most likely first
  * @param recentWrites - this thread's Write/Edit paths, newest first
@@ -22,7 +48,7 @@ export async function resolveWorkspaceFile(
   const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/files/resolve`, {
     candidates,
     recent_writes: recentWrites,
-  });
+  }, { params: BACKUP_OK });
   return data as FileRefResolution;
 }
 
@@ -33,7 +59,7 @@ export async function resolveWorkspaceFile(
  */
 export async function readWorkspaceFile(workspaceId: string, filePath: string) {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files/read`, {
-    params: { path: filePath },
+    params: { path: filePath, ...BACKUP_OK },
   });
   return data; // { workspace_id, path, content, mime, truncated }
 }
@@ -50,7 +76,7 @@ export async function downloadWorkspaceFile(
   onProgress?: DownloadProgressReport,
 ) {
   const response = await api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
-    params: { path: filePath },
+    params: { path: filePath, ...BACKUP_OK },
     responseType: 'blob',
     onDownloadProgress: onProgress
       ? (event) => { if (event.total) onProgress(event.loaded / event.total); }
@@ -67,10 +93,10 @@ export async function downloadWorkspaceFile(
  */
 export async function downloadWorkspaceFileAsArrayBuffer(workspaceId: string, filePath: string) {
   const response = await api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
-    params: { path: filePath },
+    params: { path: filePath, ...BACKUP_OK },
     responseType: 'arraybuffer',
   });
-  return response.data as ArrayBuffer;
+  return markFromBackup(response.data as ArrayBuffer, response.headers);
 }
 
 /** The opening request's size. A file that fits arrives whole, in the one request it always took. */
@@ -129,7 +155,7 @@ export async function openWorkspaceFileRanged(
   const slice = (first: number, last: number, config: RequestConfig = {}) =>
     api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
       ...config,
-      params: { path: filePath },
+      params: { path: filePath, ...BACKUP_OK },
       headers: { Range: `bytes=${first}-${last}` },
       responseType: 'arraybuffer',
       // A browser holding the whole file from a plain download would make
@@ -151,14 +177,14 @@ export async function openWorkspaceFileRanged(
     if ((err instanceof ApiError && err.status === 416) || isFileChangedRefusal(err)) return whole();
     throw err;
   }
-  if (head.status !== 206) return head.data as ArrayBuffer;
+  if (head.status !== 206) return markFromBackup(head.data as ArrayBuffer, head.headers);
   const bytes = head.data as ArrayBuffer;
   const opened = parseContentRange(head.headers['content-range']);
   // Answered by range but not described (a header the deploy does not
   // expose), or described as other bytes than arrived, so there is no length
   // to read on from: read it again whole.
   if (!opened || opened.first !== 0 || bytes.byteLength !== opened.last + 1) return whole();
-  if (opened.last + 1 === opened.total) return bytes;
+  if (opened.last + 1 === opened.total) return markFromBackup(bytes, head.headers);
   // With no version to hold the slices to, a change between two would go unseen.
   const etag = head.headers.etag;
   if (!etag) return whole();
@@ -200,7 +226,7 @@ export async function openWorkspaceFileRanged(
       throw err;
     }),
   };
-  return file;
+  return markFromBackup(file, head.headers);
 }
 
 /**
@@ -227,7 +253,7 @@ async function saveWorkspaceFile(
   // in tab memory. A null url means the file is small enough to fetch here.
   const { data } = await api.get<{ url: string | null }>(
     `/api/v1/workspaces/${workspaceId}/files/download-url`,
-    { params: { path: filePath } },
+    { params: { path: filePath, ...BACKUP_OK } },
   );
   // Without a bearer token the download route itself is a plain GET, so the
   // browser can stream it to disk too; with one, only a blob can carry it.
@@ -250,7 +276,7 @@ async function saveWorkspaceFile(
 function directDownloadUrl(workspaceId: string, filePath: string): string {
   return api.getUri({
     url: `/api/v1/workspaces/${workspaceId}/files/download`,
-    params: { path: filePath, attachment: true },
+    params: { path: filePath, attachment: true, ...BACKUP_OK },
   });
 }
 
@@ -267,18 +293,43 @@ export async function getBackupStatus(workspaceId: string): Promise<BackupStatus
 }
 
 /**
- * Write full file content to a sandbox file
- * @param {string} workspaceId
- * @param {string} filePath - e.g. "results/report.py"
- * @param {string} content - File content to write
- * @returns {Promise<Object>} { workspace_id, path, size }
+ * Write full file content to a sandbox file. Given `baseVersion` (the
+ * `version` the edit's read returned), the server refuses with 409
+ * `file_changed` when the file no longer holds the text the edit began from.
+ * `baseSha256` (`textSha256` of that text) lets the save through a version
+ * that moved while the text did not.
+ * @returns {Promise<Object>} { workspace_id, path, size, version }
  */
-export async function writeWorkspaceFile(workspaceId: string, filePath: string, content: string) {
+export async function writeWorkspaceFile(
+  workspaceId: string,
+  filePath: string,
+  content: string,
+  baseVersion: string | null = null,
+  baseSha256: string | null = null,
+) {
   const { data } = await api.put(`/api/v1/workspaces/${workspaceId}/files/write`,
-    { content },
+    {
+      content,
+      ...(baseVersion ? { base_version: baseVersion } : {}),
+      ...(baseSha256 ? { base_sha256: baseSha256 } : {}),
+    },
     { params: { path: filePath } }
   );
   return data;
+}
+
+/**
+ * The SHA-256 of `text` as UTF-8, lowercase hex, as a save names the text its
+ * edit began from. Null where the page has no WebCrypto (a plain-HTTP origin
+ * other than localhost); the save then stands on its version alone.
+ */
+export async function textSha256(text: string): Promise<string | null> {
+  try {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -289,7 +340,7 @@ export async function writeWorkspaceFile(workspaceId: string, filePath: string, 
  */
 export async function readWorkspaceFileFull(workspaceId: string, filePath: string) {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files/read`, {
-    params: { path: filePath, unlimited: true },
+    params: { path: filePath, unlimited: true, ...BACKUP_OK },
   });
   return data;
 }
