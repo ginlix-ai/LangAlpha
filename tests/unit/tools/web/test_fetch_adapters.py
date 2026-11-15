@@ -86,6 +86,9 @@ class TestWebToolOutcome:
                 id="unsupported-url",
             ),
             pytest.param(http_status_error(403, "refused"), "unavailable", "forbidden", id="site-403"),
+            pytest.param(
+                _web_error(WebErrorType.REFUSED), "unavailable", "refused", id="provider-policy"
+            ),
             pytest.param(_web_error(WebErrorType.TIMEOUT), "unavailable", "timeout", id="timeout"),
             pytest.param(
                 _web_error(WebErrorType.PROVIDER_ERROR, provider_fault=False, native_kind="dns_error"),
@@ -174,6 +177,21 @@ class TestExaFetchAdapter:
         assert not bad.ok
         assert bad.error.type == WebErrorType.NOT_FOUND
         assert not bad.error.retryable
+
+    @pytest.mark.parametrize(
+        ("tag", "refused"), [("SOURCE_NOT_AVAILABLE", True), ("CRAWL_NOT_FOUND", False)]
+    )
+    async def test_only_an_unreachable_source_is_exas_refusal(self, monkeypatch, tag, refused):
+        """What Exa returned for reddit and facebook; in-house fetched both."""
+        payload = {
+            "results": [],
+            "statuses": [{"id": URL_BAD, "status": "error", "error": {"tag": tag}}],
+        }
+        resp = await self._run(monkeypatch, payload)
+        error = resp.results[1].error
+        assert (error.type is WebErrorType.REFUSED) is refused
+        assert error.retryable is refused
+        assert error.native_kind == tag.lower()
 
     async def test_empty_content_is_empty_error_not_billed_ok(self, monkeypatch):
         """A 200 result with no text/highlights/summary must not count as ok."""
@@ -400,6 +418,27 @@ class TestFirecrawlFetchAdapter:
         assert error.type == expected
         assert error.provider_fault is fault
         assert error.retryable
+
+    async def test_a_403_is_firecrawl_refusing_the_site(self, monkeypatch):
+        """The body prod saw for nytimes.com, investopedia.com and reddit.com."""
+        from src.tools.web.providers import firecrawl
+
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "test-key")
+        body = {"success": False, "error": "We apologize for the inconvenience but we do not support this site."}
+        response = httpx.Response(403, json=body, request=httpx.Request("POST", URL_OK))
+
+        async def refusing(self, url, proxy=None, max_age_seconds=None):
+            raise httpx.HTTPStatusError("forbidden", request=response.request, response=response)
+
+        monkeypatch.setattr(firecrawl.FirecrawlAPI, "scrape", refusing)
+        resp = await firecrawl.FirecrawlFetchAdapter().fetch(FetchRequest(urls=[URL_OK]), {})
+        result = resp.results[0]
+
+        assert result.error.type is WebErrorType.REFUSED
+        assert result.error.retryable
+        assert result.error.native_kind == "unsupported_site"  # this body carries no code
+        assert result.error.provider_fault is False
+        assert not result.billed
 
 
 # Every outcome SafeCrawlerWrapper can emit, with both routing axes.

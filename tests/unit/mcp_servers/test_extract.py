@@ -108,6 +108,27 @@ class TestHtmlToMarkdownDecision:
 
     # --- stub guard (figure-poor listing pages) ---
 
+    def test_inline_images_neither_bloat_nor_flip_the_choice(self):
+        """An inline SVG sprite once made a 7k-char article read as a stub of
+        a 140k-char page, which then went to the agent whole."""
+        shapes = "%3Cg transform='rotate(45)'%3E%3Cpath d='M0 0h24v24H0z'/%3E%3C/g%3E"
+        sprite = "<svg>" + '<g transform="rotate(45)"><path d="M0 0h24v24H0z"/></g>' * 1500
+        para = "<p>" + "Traders expect a sizeable move after the report. " * 12 + "</p>"
+        html = (
+            f"<html><body><header>{sprite}</svg>"
+            f'<img alt="icon" src="data:image/svg+xml,%3Csvg%3E{shapes * 1500}"></header>'
+            f"<article><h1>Nvidia earnings preview</h1>{para * 10}</article>"
+            "<footer>Footer.</footer></body></html>"
+        )
+        notes: list[str] = []
+
+        md = to_markdown(html, trace=notes.append)
+
+        assert "Nvidia earnings preview" in md and "sizeable move" in md
+        assert "data:image" not in md
+        assert notes == []  # trafilatura's article, not the full page
+        assert "data:image" not in _try_full_page(html, _silent)
+
     def test_listing_stub_falls_back_to_full(self):
         """Tiny extraction of a large figure-poor page => listing stub => full."""
         full = "# Press Releases\n" + "\n".join(

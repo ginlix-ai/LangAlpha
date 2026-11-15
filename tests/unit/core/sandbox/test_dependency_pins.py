@@ -113,7 +113,38 @@ def test_no_install_path_overrides_curl_cffi(path: Path):
     assert "--override" not in path.read_text()
 
 
-def test_no_range_specifiers_in_default_dependencies():
-    """The list is joined into a shell command, where ``<`` becomes a redirect."""
-    offenders = [d for d in DEFAULT_DEPENDENCIES if "<" in d or ">" in d]
-    assert offenders == []
+def _install_args(command: str) -> list[str]:
+    """The installer's arguments as the shell splits them, operators apart."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    start = tokens.index("install") + 1
+    end = tokens.index("&&", start) if "&&" in tokens[start:] else len(tokens)
+    return [token for token in tokens[start:end] if not token.startswith("-")]
+
+
+@pytest.mark.asyncio
+async def test_every_install_command_quotes_the_list():
+    """Each path joins the list into a shell command, where an unquoted
+    ``html-to-markdown>=3.5`` is a redirect to a file named ``=3.5`` and the
+    floor never reaches the installer."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ptc_agent.core.sandbox import mcp_setup
+    from ptc_agent.core.sandbox.providers._image_recipe import Run, image_steps
+
+    assert any(">" in d for d in DEFAULT_DEPENDENCIES)
+    recipe = next(
+        command
+        for step in image_steps(working_dir="/home/workspace", mcp_packages=None, cpu=2)
+        if isinstance(step, Run)
+        for command in step.commands
+        if "uv pip install --system" in command
+    )
+    assert _install_args(recipe) == list(DEFAULT_DEPENDENCIES)
+
+    sandbox = MagicMock()
+    sandbox._runtime_call = AsyncMock(return_value=MagicMock(exit_code=0, stdout=""))
+    await mcp_setup._install_dependencies(sandbox)
+    no_snapshot = sandbox._runtime_call.await_args_list[0].args[1]
+    assert _install_args(no_snapshot) == list(DEFAULT_DEPENDENCIES)
