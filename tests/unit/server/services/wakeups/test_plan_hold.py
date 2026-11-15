@@ -71,6 +71,9 @@ def refused(monkeypatch):
     monkeypatch.setattr(
         notify_turn, "park_while_thread_busy", AsyncMock(return_value=False)
     )
+    monkeypatch.setattr(
+        notify_turn, "park_while_computer_away", AsyncMock(return_value=False)
+    )
     monkeypatch.setattr(riders_db, "gather_wakeup_riders", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         delivery, "render_wake", AsyncMock(return_value=("<wakeup/>", [{"seq": 1}]))

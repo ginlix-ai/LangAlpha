@@ -311,6 +311,15 @@ async def run_report_back(job: dict, p: ReportPipeline) -> Optional[NotOwed]:
             job_id, attempts, thread_id, log_prefix=log, subject=subject
         ):
             return None
+        if await park_while_computer_away(
+            job_id,
+            attempts,
+            thread_id,
+            workspace_id=verdict.workspace_id,
+            log_prefix=log,
+            subject=subject,
+        ):
+            return None
 
         route, body = p.turn(verdict, p.request_key(job_id))
 
@@ -458,6 +467,51 @@ async def park_while_thread_busy(
         latest = await tl_db.get_latest_attempt(thread_id, wait_for_finalize=True)
         if not await holds_notifications(thread_id, latest):
             await release_parked_notifications(thread_id)
+    return True
+
+
+async def park_while_computer_away(
+    job_id: str,
+    attempts: int,
+    thread_id: str,
+    *,
+    workspace_id: Optional[str],
+    log_prefix: str,
+    subject: str,
+) -> bool:
+    """Park a claimed notification while the computer its turn would run on
+    cannot be reached, until that computer connects again; True when the
+    caller must stop.
+
+    A wake or report-back is nobody's request now: posted while the user's
+    machine sleeps, its turn would fail at the connect after its notice was
+    read as delivered, and nothing would deliver it again. Held instead, a
+    wakeup's notice stays unread, so the slots its series reaches meanwhile
+    are skipped and the machine's return brings one wake, not a burst. The
+    drainer releases it once the computer's tunnel is live again
+    (``outbox.release_for_reachable_computers``).
+    """
+    from src.server.database.runs import outbox as outbox_db
+    from src.server.services.ssh_computers import computer_away
+
+    if not workspace_id:
+        from src.server.database import conversation as conv_db
+
+        thread = await conv_db.get_thread_by_id(thread_id)
+        workspace_id = str((thread or {}).get("workspace_id") or "") or None
+    if not workspace_id:
+        return False
+    away = await computer_away(str(workspace_id))
+    if away is None:
+        return False
+    parked = await outbox_db.park_for_computer(
+        job_id, attempts=attempts, computer_id=str(away["computer_id"])
+    )
+    logger.info(
+        f"{log_prefix} Parked job {job_id} for {subject} on thread {thread_id} "
+        f"until computer {away['computer_id']} can be reached again "
+        f"(parked={parked})"
+    )
     return True
 
 

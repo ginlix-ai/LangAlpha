@@ -61,6 +61,7 @@ class _ExecHarness:
     ):
         self.cache = cache
         self.park = AsyncMock(return_value=thread_busy)
+        self.away = AsyncMock(return_value=False)
         self.post = AsyncMock(return_value=post_result)
         self.get_run = AsyncMock(side_effect=[_run_row(s) if s else None for s in run_statuses])
         self.extend_lease = AsyncMock(return_value=lease_ok)
@@ -85,6 +86,8 @@ class _ExecHarness:
             patch("src.server.database.runs.lifecycle.get_run", self.get_run),
             # Idle unless a test says otherwise, so the job is not parked.
             patch.object(notify_turn, "park_while_thread_busy", self.park),
+            # Its computer answers unless a test says otherwise.
+            patch.object(notify_turn, "park_while_computer_away", self.away),
             patch("src.server.database.runs.outbox.extend_job_lease", self.extend_lease),
             patch("src.server.database.runs.outbox.merge_job_payload", self.merge_payload),
             patch("src.server.database.runs.outbox.requeue_job_with_key", self.requeue),
@@ -575,6 +578,26 @@ async def test_execute_parks_while_the_watcher_thread_is_busy():
     assert h.park.await_args.args == ("job-42", 1, dispatcher)
     h.post.assert_not_awaited()
     h.merge_payload.assert_not_awaited()
+    assert ptc in cache.client.sets[keys.watch_key(dispatcher)]
+
+
+@pytest.mark.asyncio
+async def test_execute_parks_while_homes_computer_is_away():
+    """Posted now, the summary turn would fail at the connect of Home's
+    computer and the report would be lost: it waits, still owed, for that
+    computer to connect."""
+    cache = _FakeCache()
+    dispatcher, ptc = "cos-1", "ptc-1"
+    _seed_dispatched(cache, dispatcher, [ptc])
+
+    h = _ExecHarness(cache)
+    h.away.return_value = True
+    await h.run(_job(ptc, job_id="job-42"))
+
+    h.away.assert_awaited_once()
+    assert h.away.await_args.args == ("job-42", 1, dispatcher)
+    assert h.away.await_args.kwargs["workspace_id"] == "fws-1"
+    h.post.assert_not_awaited()
     assert ptc in cache.client.sets[keys.watch_key(dispatcher)]
 
 

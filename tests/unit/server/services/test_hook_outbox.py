@@ -1092,6 +1092,7 @@ class TestAlertSweeps:
             "revive_dead_cleanup_jobs": AsyncMock(return_value=[]),
             "revive_dead_alerts": AsyncMock(return_value=[]),
             "close_unowed_waiting_alerts": AsyncMock(return_value=[]),
+            "release_for_reachable_computers": AsyncMock(return_value=[]),
             "purge_terminal_jobs": AsyncMock(return_value=0),
             "claim_outbox_jobs": AsyncMock(return_value=[]),
             **overrides,
@@ -1132,6 +1133,31 @@ class TestAlertSweeps:
         mocks["revive_dead_alerts"].assert_awaited_once()
         mocks["close_unowed_waiting_alerts"].assert_awaited_once()
         assert any("a-1" in str(c.args[0]) for c in warning.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_notifications_parked_for_a_computer_are_released_on_their_own_clock(self):
+        """A machine connecting again is read off its tunnel's row on every
+        worker, every COMPUTER_RELEASE_INTERVAL, and what it releases is
+        claimed on the same pass."""
+        import contextlib
+
+        drainer = HookOutboxDrainer()
+        calls = []
+        mocks, patches = self._sweeps(
+            release_for_reachable_computers=AsyncMock(
+                side_effect=lambda: calls.append("release")
+                or [{"hook_outbox_id": "w-1", "hook_type": "wakeup"}]
+            ),
+            claim_outbox_jobs=AsyncMock(
+                side_effect=lambda **_: calls.append("claim") or []
+            ),
+        )
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            await self._passes(drainer, 3)
+        mocks["release_for_reachable_computers"].assert_awaited_once()
+        assert calls[:2] == ["release", "claim"]
 
     @pytest.mark.asyncio
     async def test_the_close_runs_on_a_shorter_clock_than_the_revive(self):

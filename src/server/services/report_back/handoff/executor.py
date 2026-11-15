@@ -192,6 +192,7 @@ async def execute_report_back(job: dict) -> None:
         # next model call (``report_back.steer``), as a task's report-back
         # does.
         from src.server.services.report_back.notify_turn import (
+            park_while_computer_away,
             park_while_thread_busy,
         )
 
@@ -199,6 +200,16 @@ async def execute_report_back(job: dict) -> None:
             job_id,
             attempts,
             dispatcher_thread_id,
+            log_prefix="[HANDOFF_REPORT_BACK]",
+            subject=f"PTC thread {ptc_thread_id}",
+        ):
+            return
+        # The summary turn runs in Home, on Home's computer.
+        if await park_while_computer_away(
+            job_id,
+            attempts,
+            dispatcher_thread_id,
+            workspace_id=origin.get(ORIGIN_WORKSPACE_FIELD),
             log_prefix="[HANDOFF_REPORT_BACK]",
             subject=f"PTC thread {ptc_thread_id}",
         ):

@@ -73,6 +73,23 @@ def _params(**kw: Any) -> Dict[str, Any]:
     return {"live_within": LIVE_WITHIN, **kw}
 
 
+def computer_tunnel_down_sql(computer_id: str) -> str:
+    """SQL true while the computer ``computer_id`` (an SQL text expression)
+    connects out through a tunnel that is not live, as
+    ``services.ssh_computers.computer_unreachable`` judges it, for a statement
+    every worker may run. A computer reached directly or deleted is never
+    down. Needs the ``live_within`` parameter."""
+    return f"""EXISTS (
+        SELECT 1 FROM computers c
+        WHERE c.computer_id::text = {computer_id}
+          AND c.kind = 'ssh' AND c.{FENCE_NOT_DELETED}
+          AND COALESCE(c.provider_config->>'tunnel', '') <> ''
+          AND NOT EXISTS (
+              SELECT 1 FROM ssh_tunnels
+              WHERE ssh_tunnels.tunnel_id::text = c.provider_config->>'tunnel'
+                AND {_LIVE}))"""
+
+
 class TunnelKeyTaken(Exception):
     """Another user's tunnel has this key."""
 

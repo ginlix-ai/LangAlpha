@@ -80,6 +80,10 @@ PURGE_BATCH = 5000
 # cool-down anyway (``outbox.revive_dead_alerts``), and reads terminal rows.
 ALERT_CLOSE_INTERVAL = 60.0
 ALERT_REVIVE_INTERVAL = 600.0
+# How often the drainer makes due the notifications parked while their
+# computer could not be reached, once it connects again: a wake or a
+# report-back arrives within this of the machine coming back.
+COMPUTER_RELEASE_INTERVAL = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +186,7 @@ class HookOutboxDrainer:
         self._next_purge = 0.0
         self._next_alert_revive = 0.0
         self._next_alert_close = 0.0
+        self._next_computer_release = 0.0
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -309,6 +314,30 @@ class HookOutboxDrainer:
                 except Exception:
                     logger.error(
                         "[HookOutbox] alert close sweep failed",
+                        exc_info=True,
+                    )
+
+            # A notification parked while its computer was away is due again
+            # once the computer connects: the gateway writes that to the
+            # tunnel's row, which this reads, so it holds across workers. The
+            # claim below takes what it releases on the same pass.
+            if time.monotonic() >= self._next_computer_release:
+                self._next_computer_release = (
+                    time.monotonic() + COMPUTER_RELEASE_INTERVAL
+                )
+                try:
+                    for job in await outbox_db.release_for_reachable_computers():
+                        logger.info(
+                            f"[HookOutbox] released job="
+                            f"{job.get('hook_outbox_id')} "
+                            f"type={job.get('hook_type')}: its computer can be "
+                            f"reached again"
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error(
+                        "[HookOutbox] computer release sweep failed",
                         exc_info=True,
                     )
 

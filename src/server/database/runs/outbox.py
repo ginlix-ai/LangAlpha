@@ -46,6 +46,7 @@ from src.server.database.runs.command_runs import (
     notice_ordering_key as command_notice_key,
 )
 from src.server.database.market_targets import ordering_key as market_target_key
+from src.server.database.ssh_tunnels import LIVE_WITHIN, computer_tunnel_down_sql
 from src.server.database.wakeups.contract import WAKEUP_OWED_SQL
 from src.server.database.wakeups.contract import ordering_key as wakeup_key
 from src.server.utils.pg_sanitize import SafeJson
@@ -403,11 +404,14 @@ async def claim_outbox_jobs(
                                 THEN NULL
                             ELSE h.next_retry_at
                         END,
+                        -- A claimed job no longer waits for its computer
+                        -- (``park_for_computer``): a park of another kind
+                        -- must not be released when that computer connects.
                         payload = CASE
                             WHEN h.hook_type = 'steer'
                                 THEN h.payload - 'due_at'
                             ELSE h.payload
-                        END
+                        END - '{AWAITS_COMPUTER}'
                     FROM due
                     WHERE h.hook_outbox_id = due.hook_outbox_id
                     RETURNING h.*
@@ -900,8 +904,9 @@ def _spent_sql(a: str = "") -> str:
     """The attempts a job has spent toward the ceiling: its claims, less those
     that do not count (``waited``): a park that found its thread waiting on
     the user (``defer_claimed_job``), a claim the user's Claude Code turn cap
-    refused (``wait_for_room``), and the claims before a Claude plan hold
-    ended (``end_plan_hold``). ``attempts`` itself only grows, the fence
+    refused (``wait_for_room``), the claims before a Claude plan hold ended
+    (``end_plan_hold``), and a park while its computer could not be reached
+    (``park_for_computer``). ``attempts`` itself only grows, the fence
     token. ``a`` is the hook_outbox alias, if any."""
     c = f"{a}." if a else ""
     return f"({c}attempts - COALESCE(({c}payload->>'waited')::int, 0))"
@@ -1297,6 +1302,99 @@ async def defer_claimed_job(
                 )
                 row = await cur.fetchone()
                 return row["status"] if row else None
+
+
+# The computer a parked notification waits for (``park_for_computer``).
+AWAITS_COMPUTER = "awaits_computer"
+
+
+async def park_for_computer(job_id: str, *, attempts: int, computer_id: str) -> bool:
+    """Park a CLAIMED notification (``next_retry_at='infinity'``) while the
+    computer its turn would run on cannot be reached; False when the fence
+    was lost.
+
+    A turn posted now would fail at its connect, with its notice already
+    read as delivered. The job stays pending at the head of its chain, so
+    the thread's later notifications keep their order behind it, and names
+    the computer it waits for, which ``release_for_reachable_computers``
+    makes it due again on once it connects. A turn's ending on the thread
+    releases it as any parked notification, for its executor to look again.
+    The park does not count (``waited``): a night of looks must not run the
+    job dead.
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE hook_outbox
+                SET status = 'pending',
+                    lease_expires_at = NULL,
+                    next_retry_at = 'infinity'::timestamptz,
+                    payload = (payload - 'steered_run_id' - 'due_at')
+                        || jsonb_build_object(
+                            '{AWAITS_COMPUTER}', %(computer)s::text,
+                            'waited', COALESCE((payload->>'waited')::int, 0) + 1)
+                WHERE hook_outbox_id = %(job_id)s::uuid AND status = 'claimed'
+                  AND attempts = %(attempts)s
+                """,
+                {"job_id": job_id, "attempts": attempts, "computer": computer_id},
+            )
+            return cur.rowcount == 1
+
+
+# The thread a notification's turn runs on: an analyst's report-back
+# (``report_back``) is keyed on the thread it reports to, every other type is
+# its own thread's.
+_TURN_THREAD_SQL = (
+    "(CASE WHEN o.hook_type = 'report_back' THEN o.ordering_key"
+    " ELSE o.conversation_thread_id::text END)"
+)
+
+# The turn's workspace is on another computer now than the one ``o`` waits
+# for (moved, or its computer removed): its executor looks at the computer it
+# is on now, and parks it again naming that one if it is away too.
+_MOVED_SQL = f"""EXISTS (
+    SELECT 1 FROM conversation_threads t
+    JOIN workspaces ws ON ws.workspace_id = t.workspace_id
+    WHERE t.conversation_thread_id::text = {_TURN_THREAD_SQL}
+      AND ws.computer_id IS NOT NULL
+      AND ws.computer_id::text IS DISTINCT FROM o.payload->>'{AWAITS_COMPUTER}')"""
+
+
+async def release_for_reachable_computers() -> List[Dict[str, Any]]:
+    """Make due the notifications parked for a computer that can be reached
+    again (``park_for_computer``), or that their turn no longer runs on; the
+    rows released.
+
+    The tunnel's liveness, which the gateway writes, is read in the same
+    statement, so every worker may run it at once and a row is released
+    once. A computer deleted meanwhile releases its jobs too: their
+    executors decide what is owed now. One a live turn holds is left to that
+    turn's confirm or ending. A steer is due by its ``due_at``, as every
+    pending steer is (``_STEER_DUE_SQL``).
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"""
+                UPDATE hook_outbox o
+                SET next_retry_at = CASE WHEN o.hook_type = 'steer'
+                                         THEN o.next_retry_at ELSE NOW() END,
+                    payload = CASE WHEN o.hook_type = 'steer'
+                                   THEN {_steer_due_at_sql("o.payload", "NOW()")}
+                                   ELSE o.payload END - '{AWAITS_COMPUTER}'
+                WHERE o.status = 'pending'
+                  AND o.next_retry_at = 'infinity'::timestamptz
+                  AND o.payload ? '{AWAITS_COMPUTER}'
+                  AND NOT (o.payload ? 'steered_run_id')
+                  AND (NOT {computer_tunnel_down_sql(f"o.payload->>'{AWAITS_COMPUTER}'")}
+                       OR {_MOVED_SQL})
+                RETURNING o.hook_outbox_id, o.hook_type, o.conversation_thread_id,
+                          o.ordering_key
+                """,
+                {"live_within": LIVE_WITHIN},
+            )
+            return [dict(r) for r in await cur.fetchall()]
 
 
 async def list_open_notification_jobs(
