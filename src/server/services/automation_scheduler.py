@@ -20,10 +20,14 @@ from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.services.automation_executor import (
     ABANDONED_AFTER_SECONDS,
+    COMPUTER_WAIT_CAP_SECONDS,
     AutomationExecutor,
+    stopped_meanwhile,
 )
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
+    Outcome,
+    settle,
     settle_abandoned,
 )
 from src.utils.timezone_utils import zone_or_none
@@ -131,16 +135,16 @@ class AutomationScheduler:
                     return
                 await asyncio.sleep(0.5)
 
+    async def _sweep(self) -> None:
+        await self._sweep_abandoned_firings()
+        await self._sweep_parked_firings()
+
     async def _sweep_abandoned_firings(self) -> None:
-        """Settle firings whose process stopped holding them, and resume the
-        waits for a computer among them.
+        """Settle firings whose process stopped holding them.
 
         Every worker sweeps. Each settle is conditional on the row still being
         unsettled and quiet, so of the workers that reach a row one settles it
-        and runs its aftermath. A firing left waiting for its computer, which
-        a server stopping leaves to the next process, is adopted the same
-        way, by one worker, and waits on there: a deploy during the night
-        must not cost a run whose machine is asleep.
+        and runs its aftermath.
         """
         try:
             closed = await exec_db.settle_legacy_executions(INTERRUPTED_ERROR)
@@ -161,12 +165,6 @@ class AutomationScheduler:
                 )
                 if automation is None:
                     continue
-                if (
-                    row["status"] == "waiting"
-                    and row.get("wait_reason") == "computer_unreachable"
-                ):
-                    await self._resume_wait(automation, execution_id)
-                    continue
                 outcome = await settle_abandoned(
                     automation, row, ABANDONED_AFTER_SECONDS
                 )
@@ -182,24 +180,58 @@ class AutomationScheduler:
                     f"execution_id={execution_id}"
                 )
 
-    async def _resume_wait(self, automation: Dict[str, Any], execution_id: str) -> None:
-        if self._shutdown_event.is_set():
+    async def _sweep_parked_firings(self) -> None:
+        """Start the firings parked for a computer that is back, through the
+        ordinary start, and skip those a later firing took the wait over from
+        or that waited the cap with the computer still away.
+
+        A machine asleep for the night is not the automation failing: no
+        strike either way. A release is one guarded statement, so of the
+        workers whose sweeps reach a row exactly one starts it.
+        """
+        try:
+            rows = await exec_db.list_parked_executions(COMPUTER_WAIT_CAP_SECONDS)
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Parked-firing sweep failed: {e}")
             return
-        adopted = await exec_db.adopt_waiting_execution(
-            execution_id, ABANDONED_AFTER_SECONDS
+        for row in rows:
+            execution_id = str(row["automation_execution_id"])
+            try:
+                await self._sweep_parked(row, execution_id)
+            except Exception as e:
+                logger.error(
+                    f"[SCHEDULER] Sweeping a parked firing failed: "
+                    f"execution_id={execution_id} error={e}"
+                )
+
+    async def _sweep_parked(self, row: Dict[str, Any], execution_id: str) -> None:
+        automation = await auto_db.get_automation(
+            str(row["automation_id"]), row["user_id"]
         )
-        if adopted is None:
+        if automation is None:
+            return
+        if row["superseded"] or (row["expired"] and not row["reachable"]):
+            await settle(
+                automation, execution_id, Outcome.SKIPPED,
+                skip_reason="computer_unreachable",
+            )
+            return
+        if not row["reachable"] or self._shutdown_event.is_set():
+            return
+        if stopped_meanwhile(automation, row["parked_status"] or automation["status"]):
+            await settle(automation, execution_id, Outcome.SKIPPED, skip_reason="user")
+            return
+        if not await exec_db.release_parked_execution(execution_id):
             return
         logger.info(
-            f"[SCHEDULER] Resuming a firing left waiting for its computer: "
+            f"[SCHEDULER] Starting a firing whose computer is back: "
             f"execution_id={execution_id}"
         )
         self.dispatch(
             automation,
             execution_id,
-            name=f"automation_resume_{str(automation['automation_id'])[:8]}",
-            checked_computer_id=adopted["checked_computer_id"],
-            waiting_since=adopted["since"],
+            name=f"automation_exec_{str(automation['automation_id'])[:8]}",
+            checked_computer_id=row["checked_computer_id"],
         )
 
     def dispatch(
@@ -209,7 +241,6 @@ class AutomationScheduler:
         *,
         name: str,
         checked_computer_id: str | None = None,
-        waiting_since: Optional[datetime] = None,
     ) -> None:
         """Run a firing in the background, whatever triggered it.
 
@@ -222,9 +253,7 @@ class AutomationScheduler:
         that triggered it.
         """
         task = asyncio.create_task(
-            self._run_execution(
-                automation, execution_id, checked_computer_id, waiting_since
-            ),
+            self._run_execution(automation, execution_id, checked_computer_id),
             name=name,
             context=self._context.copy(),
         )
@@ -273,7 +302,7 @@ class AutomationScheduler:
             )
         if self._sweep_task is None or self._sweep_task.done():
             self._sweep_task = asyncio.create_task(
-                self._sweep_abandoned_firings(), name="automation_sweep"
+                self._sweep(), name="automation_sweep"
             )
 
     async def _run_execution(
@@ -281,15 +310,11 @@ class AutomationScheduler:
         automation: Dict[str, Any],
         execution_id: str,
         checked_computer_id: str | None = None,
-        waiting_since: Optional[datetime] = None,
     ) -> None:
         """Wrapper that catches exceptions from executor."""
         try:
             await self._executor.execute(
-                automation,
-                execution_id,
-                checked_computer_id=checked_computer_id,
-                waiting_since=waiting_since,
+                automation, execution_id, checked_computer_id=checked_computer_id
             )
         except Exception as e:
             logger.error(

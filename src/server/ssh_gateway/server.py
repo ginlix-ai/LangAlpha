@@ -22,6 +22,7 @@ from ptc_agent.core.sandbox.providers._ssh_connect import (
     GATEWAY_NO_ANSWER,
     GATEWAY_NOT_CONNECTED,
     GATEWAY_PAIRED_ELSEWHERE,
+    GATEWAY_STARTING,
 )
 from src.config.logging_config import configure_logging
 from src.config.settings import get_conversation_pool_max
@@ -462,7 +463,9 @@ class Gateway:
 
     async def _unanswered(self, tunnel_id: str) -> NoReturn:
         """Fail a dial to a tunnel with no connection open: paired elsewhere
-        when a newer pairing of its machine superseded it, else not connected.
+        when a newer pairing of its machine superseded it, starting while
+        this gateway is too new to judge a tunnel (its machine may still be
+        connecting back), else not connected.
 
         The row is read in a small share of the pool of its own and briefly,
         since a worker may dial a machine that is away every second: a read
@@ -483,6 +486,8 @@ class Gateway:
             row = None
         if row is not None and row["paired_elsewhere"]:
             reason = GATEWAY_PAIRED_ELSEWHERE
+        elif row is not None and not row["judged"]:
+            reason = GATEWAY_STARTING
         raise asyncssh.ChannelOpenError(asyncssh.OPEN_CONNECT_FAILED, reason)
 
     async def supersede(self, tunnel_id: str) -> bool:
@@ -634,7 +639,8 @@ class Gateway:
     # -- Heartbeat --------------------------------------------------------------
 
     async def _heartbeat(self, lock_conn: AsyncConnection, stop: asyncio.Event) -> None:
-        """Keep the open tunnels' rows fresh, and close any whose row is gone.
+        """Keep the gateway's own row and the open tunnels' rows fresh, and
+        close any tunnel whose row is gone.
 
         A deleted row is how a removed computer's tunnel ends: the workers
         delete it, and the gateway is the one holding the connection.
@@ -655,13 +661,13 @@ class Gateway:
                 stop.set()
                 return
             tunnel_ids = list(self._forwards)
-            if not tunnel_ids:
-                continue
             try:
-                existing = await tunnels_db.mark_seen(tunnel_ids)
+                existing = await tunnels_db.gateway_beat(tunnel_ids)
             except Exception as e:
                 logger.warning(
-                    "Could not refresh %d open tunnels: %s", len(tunnel_ids), e
+                    "Could not refresh the gateway and %d open tunnels: %s",
+                    len(tunnel_ids),
+                    e,
                 )
                 continue
             for tunnel_id in tunnel_ids:
@@ -749,13 +755,14 @@ class Gateway:
     ) -> bool:
         """Serve what *acceptors* take until *stop* is set, then close it all.
 
-        Marks the previous run's tunnels down first, only now that this run
-        holds the address: a gateway that cannot bind writes nothing. False
-        when the gateway stopped for losing the lock held on *lock_conn*.
+        Marks the previous run's tunnels down first, with this run's start,
+        only now that this run holds the address: a gateway that cannot bind
+        writes nothing. False when the gateway stopped for losing the lock
+        held on *lock_conn*.
         """
         heartbeat: asyncio.Task[None] | None = None
         try:
-            closed = await tunnels_db.mark_all_disconnected()
+            closed = await tunnels_db.gateway_started()
             _tunnel_event("gateway_start")
             if closed:
                 logger.info("Marked %d tunnels down from the previous run", closed)
@@ -787,7 +794,7 @@ class Gateway:
             # lock; whichever gateway holds it next marks this run's down.
             return
         try:
-            await tunnels_db.mark_all_disconnected()
+            await tunnels_db.gateway_stopped()
             _tunnel_event("gateway_stop")
         except Exception as e:
             logger.warning("Could not mark the tunnels down at shutdown: %s", e)

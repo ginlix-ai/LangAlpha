@@ -895,8 +895,11 @@ def ssh_info(
     paired_elsewhere = False
     if tunnel_id and tunnels is not None:
         # A tunnel no longer there is one the machine cannot connect through.
+        # One the gateway holds no connection for is not known while the
+        # gateway is not settled (``judged``), as it is not down then.
         row = tunnels.get(tunnel_id) or {}
-        connected = bool(row.get("live"))
+        if row.get("live") or row.get("judged", True):
+            connected = bool(row.get("live"))
         paired_elsewhere = bool(row.get("paired_elsewhere"))
     return ComputerSSHInfo(
         host=config.get("host") or "",

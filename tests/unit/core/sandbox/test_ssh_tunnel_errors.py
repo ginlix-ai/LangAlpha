@@ -11,6 +11,7 @@ import pytest
 from ptc_agent.core.sandbox.providers._ssh_connect import (
     GATEWAY_NOT_CONNECTED,
     GATEWAY_PAIRED_ELSEWHERE,
+    GATEWAY_STARTING,
     SSHTarget,
     _tunnel_error,
 )
@@ -34,6 +35,13 @@ _TARGET = SSHTarget(host="mac", port=22, username="alex", host_key=None, key_own
             False,
             "mac is not connected. It connects by itself whenever it is on and "
             "online, so check that it is awake and has internet.",
+        ),
+        (
+            GATEWAY_STARTING,
+            "gateway_unreachable",
+            False,
+            "The tunnel that machines connect through is not answering right "
+            "now. Try again in a moment.",
         ),
         (
             "Connection refused",

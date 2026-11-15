@@ -51,10 +51,8 @@ _WAIT_POLL_SECONDS = 5
 
 # A machine of the user's own that can't be reached may be asleep for the
 # night, which is not the automation failing: a firing waits for it, until
-# the automation's next firing comes along and at most this long, looking
-# this often.
-_COMPUTER_WAIT_CAP_SECONDS = 24 * 60 * 60
-_COMPUTER_POLL_SECONDS = 15
+# the automation's next firing comes along and at most this long.
+COMPUTER_WAIT_CAP_SECONDS = 24 * 60 * 60
 
 # The process holding a firing touches its row this often, and the sweep
 # settles one quiet for ABANDONED_AFTER_SECONDS. The margin is for event-loop
@@ -69,6 +67,16 @@ _OUR_429_TYPES = frozenset({"burst_limit", "service_unavailable"})
 # unless the firing started under it (a manual run of a paused automation),
 # means it was paused, disabled or finished meanwhile.
 _RUNNABLE = frozenset({"active", "executing"})
+
+
+def stopped_meanwhile(fresh: Optional[Dict[str, Any]], status_then: Optional[str]) -> bool:
+    """Whether the automation was paused, disabled, finished or removed while
+    a firing of it waited, ``fresh`` being it now (None: removed) and
+    ``status_then`` its status when the wait began."""
+    return fresh is None or (
+        fresh["status"] not in _RUNNABLE and fresh["status"] != status_then
+    )
+
 
 # ``_look_again``'s answer while the thread is still busy.
 _STILL_WAITING = object()
@@ -580,114 +588,60 @@ class AutomationExecutor:
                 f"execution_id={execution_id} error={e}"
             )
 
-    async def _wait_for_computer(
+    async def _park_for_computer(
         self,
         automation: Dict[str, Any],
         execution_id: str,
         workspace_id: str,
         *,
         checked_computer_id: str | None = None,
-        waiting_since: Optional[datetime] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Hold the firing as ``waiting`` while the computer its turn runs on
-        can't be reached (``computer_away``), and the automation as it stands
-        once it can.
+    ) -> bool:
+        """Park the firing as ``waiting`` while the computer its turn runs on
+        can't be reached (``computer_away``); True when it parked, or was
+        settled meanwhile, and nothing more runs here.
 
-        None when the firing ended instead: missed (``computer_unreachable``)
-        once a later firing of the automation comes along, or at the cap,
-        with the computer still away; skipped by the user; or left
-        ``waiting`` by the server stopping. A computer that answers costs one
-        read and no wait.
-
-        The wait lives in Postgres, not in this coroutine: a stop leaves the
-        row ``waiting``, and once its heartbeat goes quiet the sweep hands it
-        to a worker that resumes it here through ``execute``,
-        ``waiting_since`` being when it began. ``checked_computer_id`` is kept
-        on the row, so the resumed turn is held to it as this one would be.
+        The wait lives in Postgres, not in this coroutine: the row names the
+        computer, and the scheduler's sweep starts the firing again once that
+        computer is back, or skips it (``computer_unreachable``) once a later
+        firing of the automation comes along or at the cap. A computer that
+        answers costs one read and no wait. ``checked_computer_id`` is kept on
+        the row, so the started turn is held to it as this one would be.
         """
         from src.server.services.ssh_computers import computer_away
 
-        user_id = automation["user_id"]
-        if waiting_since is None:
-            try:
-                away = await computer_away(workspace_id)
-            except Exception as e:
-                # No verdict: the turn finds out at its connect, which skips
-                # it all the same (``_computer_unreachable``).
-                logger.warning(
-                    f"[AUTOMATION_EXEC] Looking at the computer failed, running: "
-                    f"execution_id={execution_id} error={e}"
-                )
-                return automation
-            if away is None:
-                return automation
-            waiting_since = datetime.now(timezone.utc)
-            if not await exec_db.transition_execution(
-                execution_id,
-                from_statuses=("pending", "running"),
-                to="waiting",
-                started_at=waiting_since,
-                wait_reason="computer_unreachable",
-                checked_computer_id=checked_computer_id,
-            ):
-                return None
-        deadline = waiting_since.timestamp() + _COMPUTER_WAIT_CAP_SECONDS
-        logger.info(
-            f"[AUTOMATION_EXEC] Waiting for the computer: "
-            f"execution_id={execution_id} workspace_id={workspace_id}"
-        )
-        automation_id = str(automation["automation_id"])
-        while True:
-            try:
-                if await exec_db.get_execution_status(execution_id) != "waiting":
-                    return None
-                if await computer_away(workspace_id) is None:
-                    fresh = await auto_db.get_automation(automation_id, user_id)
-                    if fresh is None or (
-                        fresh["status"] not in _RUNNABLE
-                        and fresh["status"] != automation["status"]
-                    ):
-                        await settle(
-                            automation, execution_id, Outcome.SKIPPED, skip_reason="user"
-                        )
-                        return None
-                    if not await exec_db.transition_execution(
-                        execution_id,
-                        from_statuses=("waiting",),
-                        to="running",
-                        started_at=datetime.now(timezone.utc),
-                    ):
-                        return None
-                    return fresh
-                # One firing in line is enough: the next one takes over the
-                # wait, so a schedule's missed runs come back as one run.
-                if time.time() >= deadline or await exec_db.has_later_execution(
-                    automation_id, execution_id
-                ):
-                    await settle(
-                        automation,
-                        execution_id,
-                        Outcome.SKIPPED,
-                        skip_reason="computer_unreachable",
-                    )
-                    return None
-            except Exception as e:
-                # A failed look is no verdict; the next one decides.
-                logger.warning(
-                    f"[AUTOMATION_EXEC] Waiting on the computer failed, still "
-                    f"waiting: execution_id={execution_id} error={e}"
-                )
-            try:
-                await asyncio.wait_for(
-                    self._stopping.wait(), timeout=_COMPUTER_POLL_SECONDS
-                )
-            except asyncio.TimeoutError:
-                continue
-            logger.info(
-                f"[AUTOMATION_EXEC] Leaving the wait for the computer to the "
-                f"next process: execution_id={execution_id}"
+        try:
+            away = await computer_away(workspace_id)
+        except Exception as e:
+            # No verdict: the turn finds out at its connect, which skips it
+            # all the same (``_computer_unreachable``).
+            logger.warning(
+                f"[AUTOMATION_EXEC] Looking at the computer failed, running: "
+                f"execution_id={execution_id} error={e}"
             )
-            return None
+            return False
+        if away is None:
+            return False
+        now = datetime.now(timezone.utc)
+        parked = await exec_db.transition_execution(
+            execution_id,
+            from_statuses=("pending", "running"),
+            to="waiting",
+            started_at=now,
+            # Nothing touches it while parked. Dated past the cap, so a build
+            # that predates parking (the other color through a cutover) does
+            # not take the quiet heartbeat for a dead process and fail it.
+            heartbeat_at=now + timedelta(seconds=COMPUTER_WAIT_CAP_SECONDS),
+            wait_reason="computer_unreachable",
+            awaits_computer=str(away["computer_id"]),
+            parked_status=automation["status"],
+            checked_computer_id=checked_computer_id,
+        )
+        if parked:
+            logger.info(
+                f"[AUTOMATION_EXEC] Waiting for the computer: "
+                f"execution_id={execution_id} computer_id={away['computer_id']}"
+            )
+        return True
 
     async def _look_again(
         self,
@@ -711,10 +665,7 @@ class AutomationExecutor:
             return None
         if not await _thread_busy(thread_id):
             fresh = await auto_db.get_automation(automation_id, automation["user_id"])
-            if fresh is None or (
-                fresh["status"] not in _RUNNABLE
-                and fresh["status"] != automation["status"]
-            ):
+            if stopped_meanwhile(fresh, automation["status"]):
                 await settle(
                     automation, execution_id, Outcome.SKIPPED, skip_reason="user"
                 )
@@ -1021,7 +972,6 @@ class AutomationExecutor:
         execution_id: str,
         *,
         checked_computer_id: str | None = None,
-        waiting_since: Optional[datetime] = None,
     ) -> None:
         """Run one firing of ``automation`` until it settles or its run does.
 
@@ -1030,33 +980,30 @@ class AutomationExecutor:
         finalize settles it. Every other exit goes through ``settle`` here,
         which refuses when a skip or the sweep ended the firing first; the
         firing then stays as they recorded it. A firing a draining process
-        handed over (``hand_off``) runs on the thread it had there.
-
-        ``waiting_since`` resumes a firing an earlier process left waiting
-        for its computer (``_wait_for_computer``), which the sweep adopted.
+        handed over (``hand_off``) runs on the thread it had there, and one
+        parked for its computer (``_park_for_computer``) starts here again
+        once the sweep releases it.
         """
         automation_id = str(automation["automation_id"])
         user_id = automation["user_id"]
 
         logger.info(
-            f"[AUTOMATION_EXEC] {'Resuming' if waiting_since else 'Starting'} "
-            f"execution: automation_id={automation_id} execution_id={execution_id}"
+            f"[AUTOMATION_EXEC] Starting execution: "
+            f"automation_id={automation_id} execution_id={execution_id}"
         )
-        handed_thread = None
-        if waiting_since is None:
-            started = await exec_db.transition_execution(
-                execution_id,
-                from_statuses=("pending",),
-                to="running",
-                started_at=datetime.now(timezone.utc),
+        started = await exec_db.transition_execution(
+            execution_id,
+            from_statuses=("pending",),
+            to="running",
+            started_at=datetime.now(timezone.utc),
+        )
+        if not started:
+            logger.warning(
+                f"[AUTOMATION_EXEC] Not starting: execution_id={execution_id} "
+                f"was settled before it began"
             )
-            if not started:
-                logger.warning(
-                    f"[AUTOMATION_EXEC] Not starting: execution_id={execution_id} "
-                    f"was settled before it began"
-                )
-                return
-            handed_thread = started.get("conversation_thread_id")
+            return
+        handed_thread = started.get("conversation_thread_id")
 
         _trigger = automation.get("trigger_type") or "unknown"
         _exec_span = _otel_tracer.start_span(
@@ -1078,9 +1025,7 @@ class AutomationExecutor:
             # A run on a pinned thread is a turn of its own, so it waits for
             # the reader's turn to end rather than steering into it. It waits
             # before the credit gate, whose verdict a long wait would outlive.
-            # A resumed wait is already in line for its computer; its turn
-            # waits for a busy thread at admission instead.
-            pinned = _pinned_thread(automation) if waiting_since is None else None
+            pinned = _pinned_thread(automation)
             if pinned and await _thread_busy(pinned):
                 fresh = await self._wait_for_thread(
                     automation,
@@ -1097,25 +1042,20 @@ class AutomationExecutor:
                 firing.automation = fresh
 
             # ─── Wait for the computer ────────────────────────────
-            # Also before the credit gate: the wait can last the night.
+            # Also before the credit gate: the wait can last the night. A
+            # firing parked here starts over once the computer is back, so
+            # its wait for a busy thread is counted from the computer's
+            # return, not spent by the night.
             place = await _turn_place(firing.automation)
             route = turn_route(user_id, place.workspace)
-            fresh = await self._wait_for_computer(
-                firing.automation, execution_id, route.workspace_id,
+            if await self._park_for_computer(
+                firing.automation,
+                execution_id,
+                route.workspace_id,
                 checked_computer_id=firing.checked_computer_id,
-                waiting_since=waiting_since,
-            )
-            if fresh is None:
-                _exec_span.set_attribute("status", "skipped")
+            ):
+                _exec_span.set_attribute("status", "waiting_for_computer")
                 return
-            if fresh is not firing.automation:
-                # It waited (a firing that did not gets its automation back
-                # as passed): the thread's wait is counted from the computer's
-                # return, or a night's wait would leave a busy thread no time.
-                wait_deadline = time.monotonic() + _WAIT_CAP_SECONDS
-                firing.automation = fresh
-                place = await _turn_place(fresh)
-                route = turn_route(user_id, place.workspace)
 
             # ─── Credential check + credit gate ───────────────────
             has_byok, has_cred = await _credentials(user_id)

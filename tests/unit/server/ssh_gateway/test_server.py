@@ -49,9 +49,13 @@ class _Tunnels:
         if self.lock_session == "hung":
             await asyncio.Event().wait()
 
-    async def mark_all_disconnected(self) -> int:
+    async def gateway_started(self) -> int:
         if self.sweep_gate is not None:
             await self.sweep_gate.wait()
+        self.writes.append(("all down",))
+        return 0
+
+    async def gateway_stopped(self) -> int:
         self.writes.append(("all down",))
         return 0
 
@@ -64,7 +68,7 @@ class _Tunnels:
             await self.disconnect_gate.wait()
         self.writes.append(("down", tunnel_id))
 
-    async def mark_seen(self, tunnel_ids) -> set[str]:
+    async def gateway_beat(self, tunnel_ids) -> set[str]:
         return set(tunnel_ids)
 
     async def mark_superseded(self, tunnel_id: str) -> None:
@@ -1078,11 +1082,12 @@ class TestSupersede:
     @pytest.mark.parametrize(
         "row,reason",
         [
-            ({"paired_elsewhere": True}, "paired elsewhere"),
-            ({"paired_elsewhere": False}, "not connected"),
+            ({"paired_elsewhere": True, "judged": True}, "paired elsewhere"),
+            ({"paired_elsewhere": False, "judged": True}, "not connected"),
+            ({"paired_elsewhere": False, "judged": False}, "starting"),
             (None, "not connected"),
         ],
-        ids=["superseded", "down", "gone"],
+        ids=["superseded", "down", "gateway-settling", "gone"],
     )
     async def test_a_dial_to_a_tunnel_with_none_up_says_why(self, tunnels, row, reason):
         if row is not None:

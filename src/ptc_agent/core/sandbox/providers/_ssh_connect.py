@@ -191,6 +191,10 @@ GATEWAY_NOT_CONNECTED = "not connected"
 GATEWAY_PAIRED_ELSEWHERE = "paired elsewhere"
 # And for one connected that did not answer the dial in time.
 GATEWAY_NO_ANSWER = "no answer"
+# And for one with no tunnel open while the gateway is too new to tell a
+# machine that is away from one still connecting back to it: the gateway's
+# own restart, not the machine's absence.
+GATEWAY_STARTING = "starting"
 # How long the gateway waits for a machine to answer a channel open before it
 # answers GATEWAY_NO_ANSWER.
 GATEWAY_CHANNEL_OPEN_TIMEOUT_S = 15
@@ -349,6 +353,8 @@ def _tunnel_error(target: SSHTarget, exc: asyncssh.ChannelOpenError) -> SSHConne
         )
     if exc.reason == GATEWAY_NO_ANSWER:
         return _busy(target)
+    if exc.reason == GATEWAY_STARTING:
+        return SSHConnectError("gateway_unreachable", _GATEWAY_DOWN)
     # The machine's own end refused the open: its sshd is off or turned the
     # connection away. It answered, so it is not away, and its owner fixes it.
     return SSHConnectError(

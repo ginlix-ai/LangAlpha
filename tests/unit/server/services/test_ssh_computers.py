@@ -336,22 +336,28 @@ def test_a_listing_says_whether_the_helper_answers_for_the_machine(stored, helpe
 
 
 @pytest.mark.parametrize(
-    ("live", "paired_elsewhere", "connected", "elsewhere"),
+    ("live", "paired_elsewhere", "judged", "connected", "elsewhere"),
     [
-        (True, False, True, False),
-        (False, False, False, False),
-        (False, True, False, True),
+        (True, False, True, True, False),
+        (False, False, True, False, False),
+        (False, True, True, False, True),
+        # The gateway restarting or down: not known, rather than every
+        # machine shown disconnected.
+        (False, False, False, None, False),
+        (True, False, False, True, False),
     ],
 )
 def test_a_listing_says_when_the_machine_paired_elsewhere(
-    live, paired_elsewhere, connected, elsewhere
+    live, paired_elsewhere, judged, connected, elsewhere
 ):
     from src.server.services.ssh_computers import ssh_info
 
     tunnel_id = "0f8fad5b-d9cb-469f-a165-70867728950e"
     computer = _ssh("/Users/alex/langalpha", host="mac")
     computer["provider_config"]["tunnel"] = tunnel_id
-    tunnels = {tunnel_id: {"live": live, "paired_elsewhere": paired_elsewhere}}
+    tunnels = {
+        tunnel_id: {"live": live, "paired_elsewhere": paired_elsewhere, "judged": judged}
+    }
 
     info = ssh_info(computer, tunnels)
     assert info.tunnel_connected is connected

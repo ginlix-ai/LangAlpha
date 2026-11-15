@@ -1,7 +1,7 @@
 """Execution history queries for automations: transitions, settlement, delivery and the run feed."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Sequence
 from uuid import uuid4
 
@@ -15,6 +15,7 @@ from src.server.database.automation import (
 )
 from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_RESUME_TTL
 from src.server.database.pool import get_db_connection
+from src.server.database.ssh_tunnels import LIVE_WITHIN, computer_tunnel_down_sql
 from src.server.utils.db import UpdateQueryBuilder
 
 logger = logging.getLogger(__name__)
@@ -381,39 +382,24 @@ async def has_earlier_waiting_execution(
     automation_id: str, execution_id: str
 ) -> bool:
     """Whether a firing of this automation that came before this one is
-    waiting too.
+    waiting for the thread too.
 
     Strictly earlier, by creation then id, so of two firings that start
-    waiting together exactly one gives way.
+    waiting together exactly one gives way. A firing parked for its computer
+    is not in this line: this one takes its wait over (``_SUPERSEDED``), so
+    giving way to it would skip both.
     """
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("""
+            await cur.execute(f"""
                 SELECT 1
                 FROM automation_executions w
                 JOIN automation_executions me
                   ON me.automation_execution_id = %s
                 WHERE w.automation_id = %s AND w.status = 'waiting'
+                  AND NOT {_PARKED.format(e="w")}
                   AND (w.created_at, w.automation_execution_id)
                       < (me.created_at, me.automation_execution_id)
-                LIMIT 1
-            """, (execution_id, automation_id))
-            return await cur.fetchone() is not None
-
-
-async def has_later_execution(automation_id: str, execution_id: str) -> bool:
-    """Whether a firing of this automation came after this one, by creation
-    then id, whatever became of it."""
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("""
-                SELECT 1
-                FROM automation_executions w
-                JOIN automation_executions me
-                  ON me.automation_execution_id = %s
-                WHERE w.automation_id = %s
-                  AND (w.created_at, w.automation_execution_id)
-                      > (me.created_at, me.automation_execution_id)
                 LIMIT 1
             """, (execution_id, automation_id))
             return await cur.fetchone() is not None
@@ -505,6 +491,7 @@ async def list_abandoned_executions(
                     ON t.conversation_thread_id = e.conversation_thread_id
                 WHERE e.status IN {UNSETTLED_STATUSES}
                   AND e.heartbeat_at < NOW() - make_interval(secs => %s)
+                  AND NOT {_PARKED.format(e="e")}
                   AND NOT EXISTS (
                       SELECT 1 FROM conversation_responses r
                       WHERE r.conversation_response_id = e.conversation_response_id
@@ -518,34 +505,105 @@ async def list_abandoned_executions(
             return [dict(row) for row in await cur.fetchall()]
 
 
-async def adopt_waiting_execution(
-    execution_id: str, quiet_seconds: int
-) -> Optional[Dict[str, Any]]:
-    """Take over a firing an earlier process left waiting for its computer:
-    ``since``, when that wait began, and ``checked_computer_id``, the computer
-    a computer token's run was checked to run on; None when another worker
-    took it first or it moved on.
+# =============================================================================
+# Waiting for a computer
+# =============================================================================
+#
+# A firing whose computer cannot be reached is parked as ``waiting`` naming
+# that computer (``awaits_computer``), and no process holds it: the
+# scheduler's sweep starts it again once the computer's tunnel is live, or
+# gives it up. Its heartbeat is quiet meanwhile, so the abandoned-firing sweep
+# passes it over.
 
-    A guarded touch of the heartbeat, so of the workers whose sweeps reach
-    the row exactly one resumes it.
+# Never NULL, so ``NOT`` of it holds for a row with no ``wait_reason``.
+_PARKED = (
+    "({e}.status = 'waiting'"
+    " AND {e}.wait_reason IS NOT DISTINCT FROM 'computer_unreachable')"
+)
+
+# A firing of the same automation came after ``e``, whatever became of it: it
+# takes the wait over, so a schedule's missed runs come back as one run.
+_SUPERSEDED = """EXISTS (
+    SELECT 1 FROM automation_executions w
+    WHERE w.automation_id = e.automation_id
+      AND (w.created_at, w.automation_execution_id)
+          > (e.created_at, e.automation_execution_id))"""
+
+# The automation's workspace is on another computer now than the one ``e``
+# waits for (moved, or its computer removed): the ordinary start looks at the
+# computer it is on now, and parks it again naming that one if it is away too.
+_MOVED = """EXISTS (
+    SELECT 1 FROM automations m
+    JOIN workspaces ws ON ws.workspace_id = m.workspace_id
+    WHERE m.automation_id = e.automation_id
+      AND ws.computer_id IS NOT NULL
+      AND ws.computer_id IS DISTINCT FROM e.awaits_computer)"""
+
+_REACHABLE = (
+    f"(NOT {computer_tunnel_down_sql('e.awaits_computer::text')} OR {_MOVED})"
+)
+_EXPIRED = (
+    "COALESCE(e.started_at, e.created_at) < NOW() - make_interval(secs => %(cap)s)"
+)
+
+
+async def list_parked_executions(
+    cap_seconds: int, limit: int = 50
+) -> List[Dict[str, Any]]:
+    """Firings parked for a computer that the sweep has something to do with,
+    oldest first, with their owner, the automation's status when each
+    parked, the computer a computer token's run was checked to run on, and
+    the sweep's verdict on each: ``superseded`` by a later firing,
+    ``reachable`` (its computer's tunnel is live, it names none, or its
+    workspace is on another computer now) or ``expired`` (parked
+    ``cap_seconds``).
+
+    Rows with none of those are left out before the limit: a page of
+    machines asleep for the night must not starve one that is back.
     """
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute("""
-                UPDATE automation_executions SET heartbeat_at = NOW()
-                WHERE automation_execution_id = %s AND status = 'waiting'
-                  AND wait_reason = 'computer_unreachable'
-                  AND heartbeat_at < NOW() - make_interval(secs => %s)
-                RETURNING started_at, checked_computer_id
-            """, (execution_id, quiet_seconds))
-            row = await cur.fetchone()
-            if row is None:
-                return None
-            checked = row["checked_computer_id"]
-            return {
-                "since": row["started_at"] or datetime.now(timezone.utc),
-                "checked_computer_id": str(checked) if checked else None,
-            }
+            await cur.execute(f"""
+                SELECT e.automation_execution_id, e.automation_id, e.parked_status,
+                       e.checked_computer_id::text AS checked_computer_id, a.user_id,
+                       {_SUPERSEDED} AS superseded,
+                       {_REACHABLE} AS reachable,
+                       {_EXPIRED} AS expired
+                FROM automation_executions e
+                JOIN automations a ON a.automation_id = e.automation_id
+                WHERE {_PARKED.format(e="e")}
+                  AND ({_SUPERSEDED} OR {_REACHABLE} OR {_EXPIRED})
+                ORDER BY COALESCE(e.started_at, e.created_at)
+                LIMIT %(limit)s
+            """, {"cap": cap_seconds, "limit": limit, "live_within": LIVE_WITHIN})
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def release_parked_execution(execution_id: str) -> bool:
+    """Put a parked firing back in line as ``pending`` for the ordinary start,
+    once its computer is reachable or its workspace is on another one now;
+    False when another worker took it, it moved on, a later firing took its
+    wait over, its deadline passed since the sweep read it (the next sweep
+    skips it), or the computer is away again.
+
+    One guarded statement, so of the workers whose sweeps reach the row
+    exactly one starts it. The heartbeat starts again with it, and the thread
+    is let go: the run takes the automation's thread as it stands after the
+    wait, as it would had it waited in process.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(f"""
+                UPDATE automation_executions e
+                SET status = 'pending', heartbeat_at = NOW(),
+                    conversation_thread_id = NULL
+                WHERE e.automation_execution_id = %(execution_id)s
+                  AND {_PARKED.format(e="e")}
+                  AND NOT {_SUPERSEDED}
+                  AND NOT COALESCE({_EXPIRED}, false)
+                  AND {_REACHABLE}
+            """, {"execution_id": execution_id, "live_within": LIVE_WITHIN})
+            return cur.rowcount == 1
 
 
 async def hand_off_execution(

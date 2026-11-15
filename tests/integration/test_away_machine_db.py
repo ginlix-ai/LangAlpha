@@ -4,8 +4,10 @@ A command whose machine is away records since when (``away_since``), and any
 read of the machine clears it, so the watcher can give up a week on. A
 notification parked for a computer (``park_for_computer``) is given up once
 the computer's tunnel has gone unseen as long: a report-back closed, an alert
-held for the thread's next turn. Both are guarded statements every worker may
-run at once, so only a real database shows what they match.
+held for the thread's next turn. An automation's firing parked for a computer
+is released for one worker to start once the tunnel is live. All are guarded
+statements every worker may run at once, so only a real database shows what
+they match.
 """
 
 from __future__ import annotations
@@ -18,14 +20,39 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
+from src.server.database import automation_executions as ex
+from src.server.database import ssh_tunnels as tunnels_db
 from src.server.database.runs import command_runs as cr
 from src.server.database.runs import outbox as ob
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
+async def _gateway(pool, *, started: timedelta, seen: timedelta | None) -> None:
+    """The gateway's own row: started and last seen that long ago."""
+    now = datetime.now(timezone.utc)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO ssh_gateway_state (singleton, started_at, seen_at)"
+            " VALUES (TRUE, %(started)s, %(seen)s) ON CONFLICT (singleton)"
+            " DO UPDATE SET started_at = %(started)s, seen_at = %(seen)s",
+            {"started": now - started, "seen": None if seen is None else now - seen},
+        )
+
+
 @pytest_asyncio.fixture(loop_scope="session")
-async def machine(patched_get_db_connection, test_db_pool):
+async def settled_gateway(test_db_pool):
+    """A gateway that has run long enough to judge its tunnels."""
+    await _gateway(test_db_pool, started=timedelta(hours=1), seen=timedelta(seconds=10))
+    try:
+        yield
+    finally:
+        async with test_db_pool.connection() as conn:
+            await conn.execute("DELETE FROM ssh_gateway_state")
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def machine(patched_get_db_connection, test_db_pool, settled_gateway):
     """A thread whose workspace runs on a machine that connects out through a
     tunnel; ``seen`` sets how long ago the gateway last saw it."""
     from src.server.database.computer import create_computer
@@ -76,6 +103,7 @@ async def machine(patched_get_db_connection, test_db_pool):
             await conn.execute(
                 "DELETE FROM conversation_threads WHERE workspace_id = %s", (workspace_id,)
             )
+            await conn.execute("DELETE FROM automations WHERE user_id = %s", (user_id,))
             await conn.execute("DELETE FROM computers WHERE user_id = %s", (user_id,))
             await conn.execute("DELETE FROM ssh_tunnels WHERE user_id = %s", (user_id,))
             await conn.execute("DELETE FROM workspaces WHERE workspace_id = %s", (workspace_id,))
@@ -350,3 +378,191 @@ async def test_a_commands_away_since_is_kept_while_away_and_cleared_by_a_read(ma
     assert again["away_since"] == first["away_since"]
     read = await look(cr.schedule_next_check)
     assert read["away_since"] is None
+
+
+async def _parked_firing(pool, machine, *, waited: timedelta = timedelta(minutes=10)) -> tuple[str, str]:
+    """An automation and a firing of it parked for the machine's computer, as
+    the executor leaves one; their ids."""
+    from src.server.database.automation import create_automation
+
+    automation = await create_automation(
+        user_id=machine.user_id, name="Brief", trigger_type="cron",
+        instruction="Summarize", cron_expression="0 9 * * *",
+    )
+    automation_id = str(automation["automation_id"])
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "INSERT INTO automation_executions (automation_id, status, scheduled_at,"
+            " started_at, heartbeat_at, wait_reason, awaits_computer, parked_status,"
+            " conversation_thread_id)"
+            " VALUES (%s, 'waiting', NOW(), NOW() - %s, NOW() - interval '1 hour',"
+            " 'computer_unreachable', %s, 'active', %s)"
+            " RETURNING automation_execution_id::text AS id",
+            (automation_id, waited, machine.computer_id, machine.thread_id),
+        )
+        return automation_id, (await cur.fetchone())["id"]
+
+
+async def _parked_verdict(execution_id: str) -> dict | None:
+    """The sweep's verdict on a parked firing; None when the sweep is not
+    shown it, as nothing it could do would change it."""
+    rows = [
+        r for r in await ex.list_parked_executions(24 * 60 * 60, limit=500)
+        if str(r["automation_execution_id"]) == execution_id
+    ]
+    if not rows:
+        return None
+    (row,) = rows
+    return {k: row[k] for k in ("superseded", "reachable", "expired")}
+
+
+async def test_a_firing_parked_for_a_machine_is_released_once_and_only_once_it_is_back(
+    machine, test_db_pool
+):
+    import asyncio
+
+    _, execution_id = await _parked_firing(test_db_pool, machine)
+
+    # Nothing to do with it yet, so it takes no place in the sweep's page.
+    assert await _parked_verdict(execution_id) is None
+    # Its heartbeat is quiet, yet no process lost it.
+    abandoned = await ex.list_abandoned_executions(60, limit=500)
+    assert execution_id not in {str(r["automation_execution_id"]) for r in abandoned}
+    assert await ex.release_parked_execution(execution_id) is False
+
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET disconnected_at = NULL, seen_at = NOW() WHERE user_id = %s",
+            (machine.user_id,),
+        )
+    assert (await _parked_verdict(execution_id))["reachable"] is True
+    taken = await asyncio.gather(
+        *(ex.release_parked_execution(execution_id) for _ in range(4))
+    )
+    assert sorted(taken) == [False, False, False, True]
+    async with test_db_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT status, conversation_thread_id,"
+            " heartbeat_at > NOW() - interval '1 minute' AS beating"
+            " FROM automation_executions WHERE automation_execution_id = %s",
+            (execution_id,),
+        )
+        row = await cur.fetchone()
+    assert (row["status"], row["conversation_thread_id"], row["beating"]) == ("pending", None, True)
+
+
+async def test_a_parked_firing_a_later_one_took_over_is_never_released(machine, test_db_pool):
+    automation_id, execution_id = await _parked_firing(
+        test_db_pool, machine, waited=timedelta(hours=25)
+    )
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET disconnected_at = NULL, seen_at = NOW() WHERE user_id = %s",
+            (machine.user_id,),
+        )
+    assert (await _parked_verdict(execution_id))["expired"] is True
+    await ex.create_execution(
+        automation_id=automation_id, scheduled_at=datetime.now(timezone.utc), server_id="test"
+    )
+
+    assert (await _parked_verdict(execution_id))["superseded"] is True
+    assert await ex.release_parked_execution(execution_id) is False
+
+
+async def test_a_tunnel_reads_down_only_under_a_settled_gateway(machine, test_db_pool):
+    """The gateway's outage or restart is the service's, never every user's
+    machine gone at once: it fails dials as the gateway's own."""
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is True
+    assert (await tunnels_db.get_tunnel(await _tunnel_id(test_db_pool, machine)))["judged"]
+
+    # Its heartbeat stopped: it died, or lost its database.
+    await _gateway(test_db_pool, started=timedelta(hours=1), seen=timedelta(minutes=4))
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is False
+    # It just started: its machines are still connecting back.
+    await _gateway(test_db_pool, started=timedelta(minutes=1), seen=timedelta(seconds=1))
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is False
+    assert not (await tunnels_db.get_tunnel(await _tunnel_id(test_db_pool, machine)))["judged"]
+    # No gateway ever ran on this build.
+    async with test_db_pool.connection() as conn:
+        await conn.execute("DELETE FROM ssh_gateway_state")
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is False
+
+    # A parked firing is let go to dial, and fails as the gateway's outage.
+    _, execution_id = await _parked_firing(test_db_pool, machine)
+    assert (await _parked_verdict(execution_id))["reachable"] is True
+
+
+async def test_a_gateways_start_and_stop_leave_no_tunnel_judged(machine, test_db_pool):
+    tunnel_id = await _tunnel_id(test_db_pool, machine)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE ssh_tunnels SET disconnected_at = NULL WHERE tunnel_id = %s",
+            (tunnel_id,),
+        )
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is False
+
+    await tunnels_db.gateway_started()
+    # Marked down with the start, but not judged until machines reconnect.
+    assert not (await tunnels_db.get_tunnel(tunnel_id))["live"]
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is False
+
+    await _gateway(test_db_pool, started=timedelta(hours=1), seen=timedelta(minutes=2))
+    assert await tunnels_db.gateway_beat([tunnel_id, str(uuid.uuid4())]) == {tunnel_id}
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is True
+
+    await tunnels_db.gateway_stopped()
+    assert await tunnels_db.computer_tunnel_down(machine.computer_id) is False
+
+
+async def _tunnel_id(pool, machine) -> str:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT tunnel_id::text AS tunnel_id FROM ssh_tunnels WHERE user_id = %s",
+            (machine.user_id,),
+        )
+        return (await cur.fetchone())["tunnel_id"]
+
+
+async def test_a_firing_parked_for_a_machine_its_workspace_left_is_released(
+    machine, test_db_pool
+):
+    from src.server.database.computer import create_computer
+
+    automation_id, execution_id = await _parked_firing(test_db_pool, machine)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automations SET workspace_id = %s WHERE automation_id = %s",
+            (machine.workspace_id, automation_id),
+        )
+        await conn.execute(
+            "UPDATE workspaces SET computer_id = %s WHERE workspace_id = %s",
+            (machine.computer_id, machine.workspace_id),
+        )
+    assert await _parked_verdict(execution_id) is None
+
+    cloud = await create_computer(machine.user_id, kind="daytona", name="cloud", status="running")
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE workspaces SET computer_id = %s WHERE workspace_id = %s",
+            (cloud["computer_id"], machine.workspace_id),
+        )
+    assert (await _parked_verdict(execution_id))["reachable"] is True
+    assert await ex.release_parked_execution(execution_id) is True
+
+
+async def test_a_firing_parked_for_its_machine_is_not_ahead_in_the_thread_line(
+    machine, test_db_pool
+):
+    automation_id, parked_id = await _parked_firing(test_db_pool, machine)
+    later = await ex.create_execution(
+        automation_id=automation_id, scheduled_at=datetime.now(timezone.utc), server_id="test"
+    )
+    later_id = str(later)
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE automation_executions SET status = 'waiting', wait_reason = 'thread_busy'"
+            " WHERE automation_execution_id = %s",
+            (later_id,),
+        )
+    assert await ex.has_earlier_waiting_execution(automation_id, later_id) is False
+    assert (await _parked_verdict(parked_id))["superseded"] is True
