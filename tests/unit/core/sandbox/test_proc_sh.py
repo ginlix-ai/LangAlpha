@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from ptc_agent.core.sandbox.providers._proc_sh import PROC_SH
+from ptc_agent.core.sandbox.providers._proc_sh import PROC_SH, ps_start_sh
 
 _PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -122,3 +122,63 @@ def test_the_grace_kills_only_a_group_still_led_by_the_process_it_found(
     finally:
         group.kill()
         group.wait()
+
+
+@pytest.mark.parametrize("shell", _shells(), ids=os.path.basename)
+def test_a_time_zone_change_leaves_a_recorded_process_its_own(shell, tmp_path):
+    """With no /proc the start is ps's, which prints local time: a Mac that
+    travels must not read every process it recorded as gone."""
+    no_proc = f"{tmp_path}/no-proc/"
+    victim = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        record = tmp_path / "pid"
+
+        def run(script: str, tz: str) -> str:
+            return subprocess.run(
+                [shell, "-c", '[ -z "${ZSH_VERSION-}" ] || emulate sh\n' + script],
+                capture_output=True,
+                text=True,
+                env={"PATH": _PATH, "TZ": tz},
+                timeout=30,
+            ).stdout.strip()
+
+        start = run(ps_start_sh(str(victim.pid)), "America/New_York")
+        record.write_text(f"{victim.pid} {start}\n")
+        check = PROC_SH.replace("/proc/", no_proc) + f"plive {record} && echo live"
+
+        assert run(check, "Europe/Berlin") == "live"
+    finally:
+        victim.kill()
+        victim.wait()
+
+
+@pytest.mark.parametrize("shell", _shells(), ids=os.path.basename)
+def test_an_older_local_time_record_is_never_matched_in_utc(shell, tmp_path):
+    """A record from before starts were kept in UTC is compared in local time
+    alone: a reused pid whose UTC start reads as that local time is not the
+    process recorded."""
+    no_proc = f"{tmp_path}/no-proc/"
+    victim = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+
+        def run(script: str, tz: str) -> str:
+            return subprocess.run(
+                [shell, "-c", '[ -z "${ZSH_VERSION-}" ] || emulate sh\n' + script],
+                capture_output=True,
+                text=True,
+                env={"PATH": _PATH, "TZ": tz},
+                timeout=30,
+            ).stdout.strip()
+
+        utc = run(ps_start_sh(str(victim.pid)), "Asia/Tokyo")
+        record = tmp_path / "pid"
+        # Untagged, as a local-time record is, but reading as the UTC start.
+        record.write_text(f"{victim.pid} {utc.removesuffix('Z')}\n")
+        check = PROC_SH.replace("/proc/", no_proc) + f"plive {record} && echo live"
+
+        assert run(check, "Asia/Tokyo") == ""
+        record.write_text(f"{victim.pid} {utc}\n")
+        assert run(check, "Asia/Tokyo") == "live"
+    finally:
+        victim.kill()
+        victim.wait()

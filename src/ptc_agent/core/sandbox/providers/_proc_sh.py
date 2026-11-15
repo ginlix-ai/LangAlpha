@@ -23,7 +23,23 @@ EXEC_MARK = "LANGALPHA_EXEC"
 def ps_start_sh(pid: str) -> str:
     """Shell printing ``pid``'s start time as one word, where there is no
     /proc (macOS): ps's, its words run together so a record stays two fields.
-    To the second, which tells a reused pid apart."""
+    To the second, which tells a reused pid apart. In UTC, since ps prints
+    local time and a Mac that changes time zone would otherwise read every
+    process it recorded as gone, and ending in ``Z``, so ``pis`` never takes
+    one for an older local-time record. Nothing for a pid that is gone."""
+    return (
+        f"set -- $(LC_ALL=C TZ=UTC0 ps -o lstart= -p {pid} 2>/dev/null); "
+        '[ -z "$1" ] || echo "$1$2$3$4$5Z"'
+    )
+
+
+def _ps_local_start_sh(pid: str) -> str:
+    """The local-time start records held before ``ps_start_sh`` took UTC, so
+    a job still running across the deploy that changed it stays its own.
+
+    A job's record is the longest any wrapper keeps, so this can go once no
+    ``command_runs`` row with ``status = 'running'`` has a ``started_at``
+    before the first release that recorded starts in UTC."""
     return f'set -- $(LC_ALL=C ps -o lstart= -p {pid} 2>/dev/null); echo "$1$2$3$4$5"'
 
 
@@ -34,6 +50,12 @@ def ps_start_sh(pid: str) -> str:
 # otherwise read as running forever. A zombie still holds its pid and its
 # group's id, though, so its start can still prove the group it leads
 # (``psig`` with ``z``).
+#
+# ``pis PID START [z]`` succeeds while PID is the process started at START,
+# the one comparison every reader of a record makes. With no /proc, a START
+# without the ``Z`` of a UTC one is an older wrapper's local-time record and
+# is compared in local time alone (``_ps_local_start_sh``), so a reused pid
+# whose UTC start reads the same as it never passes.
 #
 # ``plive FILE`` succeeds while the process FILE records (``PID START``) is
 # still the one recorded.
@@ -63,9 +85,14 @@ PROC_SH = (
     + '); [ -n "$s" ] && echo "$s"; return; fi; '
     '{ read -r s < "/proc/$1/stat"; } 2>/dev/null || return 1; '
     's=${s##*) }; set -- $s; [ "$1" != Z ] || [ -n "$z" ] || return 1; echo "${20}"; }\n'
+    'pis() { local s; [ -n "$2" ] || return 1; s=$(pstart "$1" "$3") || return 1; '
+    '[ "$s" = "$2" ] && return 0; case $2 in *Z) return 1;; esac; '
+    '[ ! -d /proc/1 ] && [ "$('
+    + _ps_local_start_sh('"$1"')
+    + ')" = "$2" ]; }\n'
     'plive() { local p t; { read -r p t < "$1"; } 2>/dev/null; '
     'case $p in ""|*[!0-9]*) return 1;; esac; '
-    '[ -n "$t" ] && [ "$(pstart "$p")" = "$t" ]; }\n'
+    '[ -n "$t" ] && pis "$p" "$t"; }\n'
     f'ours() {{ local g="$1" m="{EXEC_MARK}=$2" f l; '
     "if [ -d /proc/1 ]; then for f in /proc/[0-9]*/stat; do "
     '{ read -r l < "$f"; } 2>/dev/null || continue; l=${l##*) }; set -- $l; '
@@ -75,7 +102,7 @@ PROC_SH = (
     "LC_ALL=C ps -axwwE -o pgid=,command= 2>/dev/null | "
     """G="$g" M="$m" awk '$1 == ENVIRON["G"] { for (i = 2; i <= NF; i++) """
     """if ($i == ENVIRON["M"]) { f = 1; exit } } END { exit !f }'; }\n"""
-    'psig() { if [ -n "$3" ] && [ "$(pstart "$2" "$4")" = "$3" ]; then '
+    'psig() { if [ -n "$3" ] && pis "$2" "$3" "$4"; then '
     'kill -"$1" "-$2" 2>/dev/null; kill -"$1" "$2" 2>/dev/null; return 0; fi; '
     'ours "$2" "$2-$3" || return 1; kill -"$1" "-$2" 2>/dev/null; return 0; }\n'
     'pgrace() { local n=$1 i=0 G L p s S=; shift; G=$*; '
