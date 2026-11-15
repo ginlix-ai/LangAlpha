@@ -415,3 +415,22 @@ async def test_a_newer_run_settles_the_thread_itself(mock_db_connection, mock_cu
     with patch.object(rr_db, "release_deferred_notifications", release):
         assert await rr_db.settle_declined("thread-1", "run-1") is False
     release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unwatched", [False, True], ids=["watched", "unwatched"])
+async def test_a_resume_is_as_watched_as_the_turn_it_carries_on(unwatched):
+    """A person's own turn cut short by a restart is still theirs: its resume
+    must not be ended as a turn nobody sees when their machine stops
+    answering. One nobody watched (a wake, a report-back) stays unwatched."""
+    from src.server.contracts.turn_kinds import UNWATCHED_RUN_META
+    from src.server.handlers.chat.request_prep import is_unwatched_turn
+    from src.server.models.chat import ChatRequest
+
+    meta = {UNWATCHED_RUN_META: True} if unwatched else {}
+    verdict = await _verdict(_state(**meta))
+    route, body = restart.resume_turn(verdict, "00000000-0000-4000-8000-000000000001")
+
+    assert route == "messages"
+    assert body["query_type"] == "system"
+    assert is_unwatched_turn(ChatRequest(**body)) is unwatched

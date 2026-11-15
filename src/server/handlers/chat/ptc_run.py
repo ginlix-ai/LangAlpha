@@ -104,7 +104,7 @@ from .request_prep import (
     turn_surface,
     user_skill_commands,
 )
-from src.server.contracts.turn_kinds import announced
+from src.server.contracts.turn_kinds import UNWATCHED_RUN_META, announced
 from src.server.services import automation_delivery, automation_settlement
 from src.server.services.credit_gate_port import build_run_credit_gate
 from src.server.services.report_back.handoff import carry
@@ -564,6 +564,9 @@ async def astream_ptc_workflow(
                         inherits_rules=turn_context.inherits_rules,
                     ),
                     **automation_delivery.turn_metadata(extra_configurable),
+                    # A restart's resume reads it off the run, to keep one
+                    # of a watched turn watched.
+                    **({UNWATCHED_RUN_META: True} if turn_context.unwatched else {}),
                     **run_stamp(config),
                     **firing,
                     **(run_metadata or {}),

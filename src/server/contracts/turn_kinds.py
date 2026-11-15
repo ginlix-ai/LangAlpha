@@ -21,6 +21,11 @@ WAKE_QUERY_TYPE = "wakeup"
 
 ANNOUNCED_KEYS = ("report_source", "market_target", "wakeup")
 
+# The run metadata key a turn nobody is there to see is stamped with, so a
+# turn the server later posts to carry it on (a restart's resume) knows
+# whether a person was watching it.
+UNWATCHED_RUN_META = "unwatched"
+
 
 def announced(metadata: Mapping[str, Any]) -> dict[str, Any]:
     """What a turn's query metadata says it announces, in key order."""

@@ -143,3 +143,21 @@ async def test_a_retry_of_a_notification_runs_under_the_last_rules_stated():
     assert context.platform == "slack"
     assert context.inherits_rules is True
     assert stamped["surface"] == {"platform": "slack", "inherits_rules": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query_type", [None, "wakeup"], ids=["person", "wake"])
+async def test_a_turn_nobody_watches_says_so_on_its_run(query_type):
+    """A restart's resume reads it back, so a person's own turn cut short
+    resumes as theirs, and a wake as a turn nobody watches."""
+    from src.server.contracts.turn_kinds import UNWATCHED_RUN_META
+
+    request = ChatRequest(
+        workspace_id="ws-1",
+        messages=[{"role": "user", "content": "hi"}],
+        query_type=query_type,
+    )
+
+    stamped, _, _ = await _start(request, PriorThread(), failed_run={})
+
+    assert stamped.get(UNWATCHED_RUN_META, False) is (query_type is not None)

@@ -669,8 +669,11 @@ def is_unwatched_turn(request: ChatRequest) -> bool:
     Staff hand-off, a computer's agent through the ``la`` CLI). ``query_type``
     and the announced keys are stripped from a client's body
     (``threads/messaging.py``), and only a session or the server states an
-    origin (``principal.stamp_origin``).
+    origin (``principal.stamp_origin``). A restart's resume of a turn a
+    person was watching is still theirs (``continues_watched_turn``).
     """
+    if request.continues_watched_turn:
+        return False
     return (
         request.query_type in NOTIFICATION_QUERY_TYPES
         or bool(request.wakeup or request.market_target)
