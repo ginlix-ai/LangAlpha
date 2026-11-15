@@ -537,10 +537,11 @@ class WorkspaceManager(ComputerManager):
     ) -> Optional[Retirement]:
         """What would refuse removing ``computer`` with the workspaces
         ``named``, before anything is deleted or anyone asked to approve it:
-        the primary, a transition, a workspace not named, Home, and a
-        workspace a move holds or a run is working in. ``workspace_ids`` are
-        the ones on it as the caller read them, read here when not given."""
-        held = self.removal_held(computer)
+        the primary or the user's only computer (``removal_refused``), a
+        transition, a workspace not named, Home, and a workspace a move holds
+        or a run is working in. ``workspace_ids`` are the ones on it as the
+        caller read them, read here when not given."""
+        held = await self.removal_refused(computer)
         if held is not None:
             return held
         if workspace_ids is None:

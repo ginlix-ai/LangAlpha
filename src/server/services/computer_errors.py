@@ -25,6 +25,7 @@ class Retirement(StrEnum):
     RETIRED = "retired"
     GONE = "gone"
     PRIMARY = "primary"
+    ONLY_COMPUTER = "only_computer"
     OWNERS_MACHINE = "owners_machine"
     HAS_WORKSPACES = "has_workspaces"
     BUSY = "busy"
@@ -33,7 +34,14 @@ class Retirement(StrEnum):
 
 
 _REMOVAL_REFUSALS: dict[Retirement, str] = {
-    Retirement.PRIMARY: "Your primary computer can't be removed.",
+    Retirement.PRIMARY: (
+        "Your primary computer can't be removed. Make another computer "
+        "primary first, and Home moves there."
+    ),
+    Retirement.ONLY_COMPUTER: (
+        "This is your only computer, so it can't be removed. Add another "
+        "computer first."
+    ),
     Retirement.HAS_WORKSPACES: "Delete the workspaces on this computer first.",
     Retirement.BUSY: "This computer is busy. Try again in a moment.",
 }

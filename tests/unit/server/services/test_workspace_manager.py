@@ -2133,10 +2133,15 @@ class TestRemoveComputerWithWorkspaces:
         self, named, *, primary=False, moving=(), working=(), on=("ws-a", "ws-b")
     ):
         computer = _make_computer(computer_id=_STUB_COMPUTER_ID, is_primary=primary)
+        other = _make_computer(computer_id="22222222-2222-2222-2222-222222222222")
         with (
             patch(
                 f"{_WORKSPACE_MANAGER}.get_computer",
                 AsyncMock(side_effect=lambda _id: None if self.retired else computer),
+            ),
+            patch(
+                f"{_RETIREMENT}.get_computers_for_user",
+                AsyncMock(return_value=[computer, other]),
             ),
             patch(
                 f"{_WORKSPACE_MANAGER}.get_live_workspace_ids_for_computer",

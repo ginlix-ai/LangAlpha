@@ -12,6 +12,7 @@ from src.server.database.computer import (
     clear_computer_retirement_pending,
     defer_computer_retirement,
     get_computer,
+    get_computers_for_user,
     get_retirement_pending_computers,
     mark_computer_retirement_pending,
     update_computer_status,
@@ -113,6 +114,22 @@ class RetirementMixin:
         if computer.get("is_primary"):
             return Retirement.PRIMARY
         return Retirement.BUSY if _mid_transition(computer) else None
+
+    @staticmethod
+    async def removal_refused(computer: Dict[str, Any]) -> Optional[Retirement]:
+        """``removal_held``, with the primary told apart from the user's only
+        computer: the first is removed once another is made primary, which
+        moves Home; the second only once another is added."""
+        held = RetirementMixin.removal_held(computer)
+        if held is not Retirement.PRIMARY:
+            return held
+        computer_id = str(computer["computer_id"])
+        others = [
+            c
+            for c in await get_computers_for_user(str(computer["user_id"]))
+            if str(c["computer_id"]) != computer_id
+        ]
+        return Retirement.PRIMARY if others else Retirement.ONLY_COMPUTER
 
     async def remove_computer(self, computer_id: str) -> None:
         """Retire an empty computer its owner no longer wants.
@@ -267,8 +284,8 @@ class RetirementMixin:
     ) -> Optional[Retirement]:
         """None when the owner's remove may go ahead; decisive only under the key.
 
-        ``removal_held``, then the workspaces still on it."""
-        held = self.removal_held(computer)
+        ``removal_refused``, then the workspaces still on it."""
+        held = await self.removal_refused(computer)
         if held is None:
             return await self._why_machine_is_kept(computer_id, computer)
         if held is Retirement.BUSY:

@@ -1709,13 +1709,36 @@ class TestRemovingAComputer(_Base):
         manager = self._removing_manager()
         mock_get.return_value = self._spare(is_primary=True)
         mock_live.return_value = ["ws-a"]
+        others = [mock_get.return_value, _make_computer(computer_id="comp-other")]
 
-        await self._refused(manager, "primary")
+        with patch(f"{_RETIREMENT}.get_computers_for_user", AsyncMock(return_value=others)):
+            await self._refused(manager, "primary")
 
         mock_mark.assert_not_awaited()
         mock_live.assert_not_awaited()
         mock_status.assert_not_awaited()
         manager._teardown_machine.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_RETIREMENT}.update_computer_status")
+    @patch(f"{_RETIREMENT}.get_computer")
+    @patch(f"{_RETIREMENT}.get_live_workspace_ids_for_computer")
+    @patch(f"{_RETIREMENT}.mark_computer_retirement_pending")
+    async def test_the_only_computer_is_refused_as_such(
+        self, mock_mark, mock_live, mock_get, mock_status
+    ):
+        """Making another primary cannot free it, so the client offers to add one."""
+        manager = self._removing_manager()
+        mock_get.return_value = self._spare(is_primary=True)
+
+        with patch(
+            f"{_RETIREMENT}.get_computers_for_user",
+            AsyncMock(return_value=[mock_get.return_value]),
+        ):
+            await self._refused(manager, "only_computer")
+
+        mock_mark.assert_not_awaited()
+        mock_status.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch(f"{_RETIREMENT}.update_computer_status")
