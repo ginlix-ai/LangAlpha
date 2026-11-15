@@ -36,6 +36,12 @@ _CHANNEL_OPEN_TIMEOUT_S = GATEWAY_CHANNEL_OPEN_TIMEOUT_S
 # which lets go of them all.
 _ABANDONED_OPEN_LIMIT_S = 300
 _MAX_ABANDONED_OPENS = 64
+# What the machine's end holds for a worker's end not yet open: an sshd's
+# banner is a line, so more is not a login, and one gateway serves every user.
+_MAX_HELD_BYTES = 64 * 1024
+# The worker's end opens a few loop turns after the machine's; one that has
+# not joined by now never will, and the machine's channel is let go.
+_JOIN_TIMEOUT_S = 10
 
 
 class Forward(Protocol):
@@ -49,47 +55,92 @@ class Forward(Protocol):
 
 class _MachineSide(asyncssh.SSHForwarder):
     """The machine's end of a relay. Its sshd speaks first, and the banner can
-    land before the worker's end is joined to this one or has its channel
-    open: the open is awaited (shielded, past a timeout) before the worker's
-    end exists. asyncssh's own forwarder holds such bytes but never passes
-    them on, and a worker that never sees the banner waits out its login. So
-    what arrives early is held here and handed over once that end can take
-    it. Reads ``SSHForwarder``'s own fields, as a subclass of it."""
+    land before the worker's end has its channel open: the open is awaited
+    (shielded, past a timeout) before the worker's end exists. asyncssh's own
+    forwarder holds such bytes but never passes them on, and a worker that
+    never sees the banner waits out its login. So what arrives early is held
+    here and handed over once that end is open.
 
-    def _joined(self) -> bool:
-        return self._peer is not None and self._peer._transport is not None
+    Held in fields of its own, through ``SSHForwarder``'s public methods
+    alone, so an asyncssh that changes its forwarder's internals cannot drop
+    the banner or send it twice. Its channel's ``pause_reading`` would hold
+    the bytes too, but an EOF with nothing before it still reaches a paused
+    session, and a close behind held bytes waits for a reader that may never
+    come.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._worker: _WorkerSide | None = None  # once its channel is open
+        self._held = b""
+        self._held_eof = False
+        self._released = False
+        self._join_due: asyncio.TimerHandle | None = None
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        super().connection_made(transport)
+        self._join_due = asyncio.get_running_loop().call_later(
+            _JOIN_TIMEOUT_S, self._join_overdue
+        )
+
+    def _join_overdue(self) -> None:
+        if self._worker is None:
+            self.close()
 
     def data_received(self, data: bytes, datatype: int | None = None) -> None:
-        if self._joined():
-            self._peer.write(data)
-        else:
-            self._inpbuf += data
+        if self._worker is not None:
+            super().data_received(data, datatype)
+        elif not self._released:
+            if len(self._held) + len(data) > _MAX_HELD_BYTES:
+                self.close()
+            else:
+                self._held += data
 
     def eof_received(self) -> bool:
-        self._eof_received = True
-        if self._joined():
-            self._peer.write_eof()
-            return not self._peer.was_eof_received()
-        return True
+        if self._worker is None:
+            self._held_eof = True
+            return True
+        return super().eof_received()
 
-    def hand_over(self) -> None:
-        if not self._joined():
-            return
-        if self._inpbuf:
-            held, self._inpbuf = self._inpbuf, b""
-            self._peer.write(held)
-        if self._eof_received:
-            self._peer.write_eof()
+    def was_eof_received(self) -> bool:
+        return self._held_eof or super().was_eof_received()
+
+    def close(self) -> None:
+        self._released = True
+        if self._join_due is not None:
+            self._join_due.cancel()
+            self._join_due = None
+        super().close()
+
+    def join(self, worker: _WorkerSide) -> None:
+        """Pass on to the worker's end, its channel now open, what arrived
+        before it, and close that end when this one closed meanwhile: its
+        peer was not yet set to close with it, and a worker left open would
+        wait out its login for a machine that is gone."""
+        if self._join_due is not None:
+            self._join_due.cancel()
+            self._join_due = None
+        self._worker = worker
+        held, self._held = self._held, b""
+        if held:
+            worker.write(held)
+        if self._held_eof:
+            worker.write_eof()
+        if self._released:
+            worker.close()
 
 
 class _WorkerSide(asyncssh.SSHForwarder):
     """The worker's end, which takes what the machine's end held for it as
     soon as its channel is open."""
 
+    def __init__(self, machine: _MachineSide) -> None:
+        super().__init__(machine)
+        self._machine = machine
+
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         super().connection_made(transport)
-        if isinstance(self._peer, _MachineSide):
-            self._peer.hand_over()
+        self._machine.join(self)
 
 
 class AbandonedOpens(Mapping[asyncssh.SSHServerConnection, set[asyncio.Future]]):

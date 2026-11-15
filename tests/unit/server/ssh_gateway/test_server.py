@@ -948,6 +948,7 @@ class _Channel:
 
     def __init__(self) -> None:
         self.data = b""
+        self.closed = False
 
     def get_extra_info(self, name, default=None):
         return default
@@ -959,7 +960,7 @@ class _Channel:
         pass
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
 class TestTheMachineSpeaksFirst:
@@ -983,6 +984,183 @@ class TestTheMachineSpeaksFirst:
             await asyncio.wait_for(
                 _until(lambda: channel.data == b"SSH-2.0-machine\r\n"), 2
             )
+
+
+class _Sshd(asyncssh.SSHTCPSession):
+    """A machine's sshd: its banner goes out the moment its channel opens,
+    with ``then_eof`` its end of file right behind it, and with
+    ``then_close`` its channel closed after that."""
+
+    def __init__(self, then_eof: bool = False, then_close: bool = False) -> None:
+        self.then_eof = then_eof
+        self.then_close = then_close
+        self.spoke = asyncio.Event()
+        self.lost = asyncio.Event()
+
+    def connection_made(self, chan) -> None:
+        chan.write(b"SSH-2.0-machine\r\n")
+        if self.then_eof:
+            chan.write_eof()
+        if self.then_close:
+            chan.close()
+        self.spoke.set()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self.lost.set()
+
+
+class TestARelayEndToEnd:
+    """A worker's dial over real connections on loopback: the worker logs in
+    as the dialer and opens a channel to the tunnel, the machine answers it
+    through its ``-R`` forward. Pins the relay to asyncssh's real channel
+    order, so an upgrade that changes it fails here rather than in a login."""
+
+    @pytest.fixture
+    def keys(self, tunnels: _Tunnels):
+        dialer, machine = (generate_client_key(c) for c in ("dialer", "machine"))
+        tunnels.tunnel_rows = {
+            TUNNEL: {"tunnel_id": TUNNEL, "public_key": machine.public_key}
+        }
+        return dialer, machine
+
+    @asynccontextmanager
+    async def _relay(self, keys, session_factory):
+        dialer, machine = keys
+        gateway = Gateway(asyncssh.import_public_key(dialer.public_key))
+        host_key = asyncssh.generate_private_key("ssh-ed25519")
+        options = {"known_hosts": None, "agent_path": None, "config": None}
+        async with _serving(gateway):
+            acceptor = await gateway._listen(host_key, GatewayAddress("127.0.0.1", 0))
+            port = acceptor.get_port()
+            try:
+                async with (
+                    asyncssh.connect(
+                        "127.0.0.1",
+                        port,
+                        username=TUNNEL,
+                        client_keys=[asyncssh.import_private_key(machine.private_key)],
+                        **options,
+                    ) as machine_conn,
+                    asyncssh.connect(
+                        "127.0.0.1",
+                        port,
+                        username="dial",
+                        client_keys=[asyncssh.import_private_key(dialer.private_key)],
+                        **options,
+                    ) as worker,
+                ):
+                    await machine_conn.create_server(session_factory, "langalpha", 22)
+                    await asyncio.wait_for(
+                        _until(
+                            lambda: any(
+                                f.ready for f in gateway._forwards.get(TUNNEL, ())
+                            )
+                        ),
+                        2,
+                    )
+                    yield gateway, machine_conn, worker
+            finally:
+                acceptor.close()
+
+    def _join_late(self, monkeypatch, sshds: list[_Sshd]) -> None:
+        """Hand asyncssh the worker's side only once the machine has spoken
+        and its bytes have had time to land: they reach the machine's side
+        with nobody joined to it yet."""
+        opened = server.open_relay
+
+        async def open_late(*args):
+            worker_side = await opened(*args)
+            await sshds[-1].spoke.wait()
+            await asyncio.sleep(0.2)
+            return worker_side
+
+        monkeypatch.setattr(server, "open_relay", open_late)
+
+    @pytest.mark.enable_socket
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("then_eof", "then_close"),
+        [(False, False), (True, False), (True, True)],
+        ids=["banner", "banner-eof", "banner-eof-close"],
+    )
+    async def test_what_the_machine_sends_before_the_join_reaches_the_worker(
+        self, keys, monkeypatch, then_eof, then_close
+    ):
+        """Its close too: the worker's channel closes behind the banner
+        rather than waiting out its login for a machine already gone."""
+        sshds: list[_Sshd] = []
+
+        def accept(orig_host: str, orig_port: int) -> _Sshd:
+            sshds.append(_Sshd(then_eof, then_close))
+            return sshds[-1]
+
+        self._join_late(monkeypatch, sshds)
+        async with self._relay(keys, accept) as (_gateway, _machine, worker):
+            reader, writer = await worker.open_connection(TUNNEL, 22)
+            if then_eof:
+                got = await asyncio.wait_for(reader.read(), 2)
+            else:
+                got = await asyncio.wait_for(reader.readline(), 2)
+            assert got == b"SSH-2.0-machine\r\n"
+            if then_close:
+                await asyncio.wait_for(writer.channel.wait_closed(), 2)
+            writer.close()
+
+    @pytest.mark.enable_socket
+    @pytest.mark.asyncio
+    async def test_a_machine_end_nobody_joins_is_let_go(self, keys, monkeypatch):
+        """One gateway serves every user, so neither what a machine sends
+        nor its channel is held for a worker's end that never opens."""
+        monkeypatch.setattr(relay, "_JOIN_TIMEOUT_S", 0.1)
+        sshds: list[_Sshd] = []
+
+        def accept(orig_host: str, orig_port: int) -> _Sshd:
+            sshds.append(_Sshd())
+            return sshds[-1]
+
+        opened = server.open_relay
+
+        async def never_joined(*args):
+            await opened(*args)
+            raise asyncssh.ChannelOpenError(asyncssh.OPEN_CONNECT_FAILED, "gone")
+
+        monkeypatch.setattr(server, "open_relay", never_joined)
+        async with self._relay(keys, accept) as (_gateway, _machine, worker):
+            with pytest.raises(asyncssh.ChannelOpenError):
+                await worker.open_connection(TUNNEL, 22)
+            await asyncio.wait_for(sshds[-1].lost.wait(), 2)
+
+    @pytest.mark.enable_socket
+    @pytest.mark.asyncio
+    async def test_an_abandoned_open_is_closed_when_it_opens(self, keys, monkeypatch):
+        """The worker's dial fails on the timeout, the machine's late answer
+        opens a channel that is closed at once, and both connections stay up
+        for the next dial."""
+        monkeypatch.setattr(relay, "_CHANNEL_OPEN_TIMEOUT_S", 0.1)
+        answer, sshds = asyncio.Event(), []
+
+        async def accept(orig_host: str, orig_port: int) -> _Sshd:
+            await answer.wait()
+            sshds.append(_Sshd())
+            return sshds[-1]
+
+        async with self._relay(keys, accept) as (gateway, machine, worker):
+            with pytest.raises(asyncssh.ChannelOpenError) as raised:
+                await worker.open_connection(TUNNEL, 22)
+            assert raised.value.reason == relay.GATEWAY_NO_ANSWER
+            assert gateway._abandoned
+
+            answer.set()
+            await asyncio.wait_for(_until(lambda: sshds), 2)
+            await asyncio.wait_for(sshds[0].lost.wait(), 2)
+            assert not gateway._abandoned
+            assert not machine.is_closed() and not worker.is_closed()
+
+            reader, writer = await worker.open_connection(TUNNEL, 22)
+            assert await asyncio.wait_for(reader.readline(), 2) == (
+                b"SSH-2.0-machine\r\n"
+            )
+            writer.close()
 
 
 class TestSupersede:
@@ -1143,3 +1321,17 @@ async def sessions_lost(sessions: list[_Session]) -> None:
 async def _until(condition) -> None:
     while not condition():
         await asyncio.sleep(0.01)
+
+
+class TestTheHeldBytesAreCapped:
+    def test_a_machine_end_that_sends_past_the_cap_is_closed(self, monkeypatch):
+        monkeypatch.setattr(relay, "_MAX_HELD_BYTES", 8)
+        machine = relay._MachineSide()
+        machine.data_received(b"SSH-2.0")
+        machine.data_received(b"-machine\r\n")
+
+        channel = _Channel()
+        worker = relay._WorkerSide(machine)
+        worker.connection_made(channel)  # type: ignore[arg-type]
+        assert channel.data == b"SSH-2.0"
+        assert channel.closed
