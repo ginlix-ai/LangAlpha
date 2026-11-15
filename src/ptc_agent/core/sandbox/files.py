@@ -55,7 +55,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-_INLINE_TEXT_WRITE_LIMIT = 256 * 1024
+# The inline write carries the file as base64 inside one shell script, and a
+# runtime that runs it as `bash -c <script>` (Docker) passes the script as a
+# single argument, which Linux caps at 128 KiB (MAX_ARG_STRLEN): past it the
+# exec fails E2BIG, exit 255 with no stderr. Base64 grows the file by 4/3, so
+# 64 KiB of text stays well under the cap; larger files take the upload path.
+_INLINE_TEXT_WRITE_LIMIT = 64 * 1024
 _INLINE_TEXT_MARKER = "__LANGALPHA_TEXT_PAYLOAD__"
 # Outside sed's own exit codes (0, 1, 2, 4); EISDIR's number, for the reader.
 _IS_DIRECTORY_EXIT = errno.EISDIR
