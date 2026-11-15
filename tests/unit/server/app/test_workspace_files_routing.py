@@ -369,6 +369,28 @@ async def test_backup_status_falls_back_when_the_folder_is_moving(moving):
     }
 
 
+def _mac_row(ws_id: str, *, tunnel: str | None = "tun-1") -> dict:
+    """A running workspace on the owner's own machine, as ``get_workspace``
+    reads it: the computer's id, kind and provider config joined in. With a
+    ``tunnel`` the machine connects out through the gateway; without one the
+    server dials it directly."""
+    config = {"host": "mac-mini.local", "user": "me"}
+    if tunnel:
+        config["tunnel"] = tunnel
+    return {
+        **_workspace(ws_id, "user-1", status="running"),
+        "computer_id": "comp-mac",
+        "computer_root_dir": "/Users/me/langalpha",
+        "computer_kind": "ssh",
+        "computer_provider_config": config,
+    }
+
+
+def _tunnel_down() -> AsyncMock:
+    """The one Postgres read that finds a machine's tunnel down."""
+    return AsyncMock(return_value=True)
+
+
 def _away_machine_manager() -> MagicMock:
     """A workspace manager whose acquisition finds the owner's machine's tunnel down."""
     from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
@@ -386,20 +408,22 @@ def _away_machine_manager() -> MagicMock:
     [(True, True), (False, True), (True, False)],
     ids=["backup-kept", "backups-off", "no-backup"],
 )
+@pytest.mark.parametrize("tunnel", ["tun-1", None], ids=["tunneled", "dialed"])
 async def test_a_running_workspace_whose_machine_is_away_lists_its_backup(
-    backs_up, has_backup
+    backs_up, has_backup, tunnel
 ):
     """A sleeping machine's workspace still reads as running, so the stopped
     check never routes it to the backup. The machine not answering does,
     read-only and marked, where a backup is kept; with none, the 503 and its
-    code stand."""
+    code stand. A tunnel that is down is known from Postgres before any dial;
+    a machine the server dials is known not to answer only by trying."""
     from fastapi import HTTPException
 
-    row = {
-        **_workspace("ws-away", "user-1", status="running"),
-        "computer_root_dir": "/Users/me/langalpha",
-    }
+    row = _mac_row("ws-away", tunnel=tunnel)
+    tunnel_down = _tunnel_down()
+    manager = _away_machine_manager()
     with (
+        patch("src.server.services.ssh_computers.computer_tunnel_down", tunnel_down),
         patch(_DATA_FILES, new=AsyncMock(return_value=[])),
         patch(
             "src.server.app.workspace_files.crud.db_get_workspace",
@@ -409,10 +433,7 @@ async def test_a_running_workspace_whose_machine_is_away_lists_its_backup(
             "src.server.app.workspace_files.crud.owner_work_dir",
             return_value="/Users/me/langalpha/ws",
         ),
-        patch(
-            "src.server.services.workspace_files.WorkspaceManager",
-            _away_machine_manager(),
-        ),
+        patch("src.server.services.workspace_files.WorkspaceManager", manager),
         patch(
             "src.server.services.workspace_files.computer_backs_up_files",
             AsyncMock(return_value=backs_up),
@@ -442,9 +463,16 @@ async def test_a_running_workspace_whose_machine_is_away_lists_its_backup(
             with pytest.raises(HTTPException) as refused:
                 await call
 
+    if tunnel:
+        tunnel_down.assert_awaited_once_with("comp-mac", conn=None)
+    else:
+        tunnel_down.assert_not_awaited()
+    dialed = manager.get_instance.return_value.get_session_for_workspace
     if backs_up and has_backup:
         assert result["files"] == ["notes.md"]
         assert (result["source"], result["unreachable"]) == ("database", "not_connected")
+        # A tunnel known down sends the read to the backup without a dial.
+        assert dialed.await_count == (0 if tunnel else 1)
     else:
         assert refused.value.status_code == 503
         assert refused.value.headers == {"X-Computer-Unreachable": "not_connected"}
@@ -561,11 +589,9 @@ async def test_a_file_the_backup_lacks_answers_as_the_away_machine_not_as_missin
 
     from src.server.app.workspace_files.crud import read_workspace_file
 
-    row = {
-        **_workspace("ws-away", "user-1", status="running"),
-        "computer_root_dir": "/Users/me/langalpha",
-    }
+    row = _mac_row("ws-away")
     with (
+        patch("src.server.services.ssh_computers.computer_tunnel_down", _tunnel_down()),
         patch(
             "src.server.services.workspace_files.db_get_workspace",
             AsyncMock(return_value=row),

@@ -227,6 +227,7 @@ async def _backup_up_front(
     if not away_ok:
         return None
     machine = {
+        "computer_id": workspace.get("computer_id"),
         "kind": workspace.get("computer_kind"),
         "provider_config": workspace.get("computer_provider_config"),
     }
