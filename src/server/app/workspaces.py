@@ -58,6 +58,7 @@ from src.server.database.workspace_names import (
 )
 from src.server.database.home_workspace import (
     is_home_row,
+    is_home_stand_in_row,
     is_unbound,
 )
 from src.server.database.workspace_move import (
@@ -503,7 +504,7 @@ async def update_workspace(
         workspace = await db_get_workspace(workspace_id)
         require_workspace_owner(workspace, user_id=x_user_id)
         if (
-            is_home_row(workspace)
+            (is_home_row(workspace) or is_home_stand_in_row(workspace))
             and request.name is not None
             and request.name != workspace.get("name")
         ):
@@ -1072,7 +1073,7 @@ async def delete_workspace(
     """
     try:
         workspace = await db_get_workspace(workspace_id)
-        if is_home_row(workspace):
+        if is_home_row(workspace) or is_home_stand_in_row(workspace):
             raise HTTPException(status_code=400, detail="Cannot delete Home")
         require_workspace_owner(workspace, user_id=principal.user_id)
         await cli_approval.workspace_delete(

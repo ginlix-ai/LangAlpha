@@ -25,7 +25,7 @@ from psycopg.types.json import Json
 
 from ptc_agent.core.paths import SandboxLayout
 from src.server.database import pool
-from src.server.database.home_workspace import is_home_row
+from src.server.database.home_workspace import HOME_STAND_IN_KEY, is_home_row
 from src.server.database.pool import get_db_connection
 from src.server.database.session_lock import (
     SharedLockBusy,
@@ -35,6 +35,7 @@ from src.server.database.session_lock import (
 from src.server.database.sql_fences import MOVE_SET_ASIDE_PHASES, workspace_move_fences
 from src.server.database.workspace_names import (
     HOME_FOLDER,
+    HOME_STAND_IN_FOLDER,
     WorkspaceNameInvalid,
     placeholder_dir_name,
     workspace_folder_name,
@@ -175,6 +176,8 @@ class FolderRow:
     blocked: Optional[str] = None
     # A deleted workspace whose folder its owner kept on their machine.
     kept: bool = False
+    # Home's stand-in, whose folder is fixed whatever its row is called.
+    stand_in: bool = False
 
     @property
     def folder_label(self) -> Optional[str]:
@@ -196,6 +199,8 @@ class FolderRow:
     def target(self) -> Optional[str]:
         if self.deleted:
             return None
+        if self.stand_in:
+            return HOME_STAND_IN_FOLDER
         try:
             return workspace_folder_name(self.folder_label)
         except WorkspaceNameInvalid:
@@ -358,6 +363,7 @@ def _row(record: Mapping[str, Any]) -> FolderRow:
         home=is_home_row(record),
         blocked=record.get("move_blocked"),
         kept=bool(record.get("folder_kept")),
+        stand_in=bool(record.get("stand_in")),
     )
 
 
@@ -385,10 +391,13 @@ _FOLDER_KEPT = """
     COALESCE(w.config, '{}'::jsonb) @> '{"folder_kept": true}' AS folder_kept
 """
 
+_STAND_IN = f"COALESCE(w.config, '{{}}'::jsonb) ? '{HOME_STAND_IN_KEY}' AS stand_in"
+
 _ROWS_SQL = f"""
     SELECT w.workspace_id, w.name, w.dir_name, w.status = 'deleted' AS deleted,
            w.previous_dir_names, w.config->'folder_landings' AS landings,
-           w.user_id, w.status, {_MOVE_BLOCKED}, {_FOLDER_KEPT}
+           w.user_id, w.status, {_MOVE_BLOCKED}, {_FOLDER_KEPT},
+           {_STAND_IN}
     FROM workspaces w
     WHERE w.computer_id = %s AND {_HOLDS_FOLDER}
     ORDER BY w.created_at, w.workspace_id
@@ -427,7 +436,8 @@ async def read_folder_rows(computer_id: str) -> tuple[Optional[int], list[Folder
             SELECT c.layout_version, w.workspace_id, w.name, w.dir_name,
                    w.status = 'deleted' AS deleted, w.previous_dir_names,
                    w.config->'folder_landings' AS landings,
-                   w.user_id, w.status, {_MOVE_BLOCKED}, {_FOLDER_KEPT}
+                   w.user_id, w.status, {_MOVE_BLOCKED}, {_FOLDER_KEPT},
+                   {_STAND_IN}
             FROM computers c
             LEFT JOIN workspaces w
               ON w.computer_id = c.computer_id AND {_HOLDS_FOLDER}

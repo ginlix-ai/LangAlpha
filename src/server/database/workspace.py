@@ -24,10 +24,16 @@ from src.server.database.home_fold import fold_former_homes
 from src.server.database.livefs_links import drop_workspace_links
 from src.server.database.mcp_servers import start_new_workspace_selection
 from src.server.database.pool import get_db_connection
-from src.server.database.home_workspace import UNBOUND, get_home_workspace_id
+from src.server.database.home_workspace import (
+    HOME_STAND_IN_KEY,
+    UNBOUND,
+    get_home_stand_in_id,
+    get_home_workspace_id,
+)
 from src.server.database.runs.lifecycle import workspace_has_live_runs
 from src.server.database.sql_fences import (
     EXCLUDE_HOME,
+    EXCLUDE_STAND_IN,
     FENCE_LIVE_WORKSPACE,
     FENCE_NOT_DELETED,
     FENCE_TAKES_WORKSPACES,
@@ -46,6 +52,7 @@ from src.server.database.workspace_folders import (
 )
 from src.server.database.workspace_names import (
     HOME_FOLDER,
+    HOME_STAND_IN_FOLDER,
     WorkspaceNameInvalid,
     WorkspaceNameTaken,
     candidate_dir_name,
@@ -208,6 +215,114 @@ async def get_or_create_home_workspace(user_id: str, conn=None) -> Dict[str, Any
         # Home itself resolved; the fold retries on the next resolve.
         logger.exception(f"[home_fold] fold into {workspace_id} failed")
     return dict(result)
+
+
+async def place_home_stand_in(
+    user_id: str, computer_id: str
+) -> Optional[Dict[str, Any]]:
+    """Home's stand-in on ``computer_id``, placed there unless it already
+    stands on a live computer.
+
+    Inserted already bound, as a workspace created on a computer is, never
+    ``unbound``: an unbound row at another id is what the Home fold takes in.
+    A stand-in on a live computer stays where it is and is returned
+    unchanged, so its files are where the next turn on the cloud looks; one
+    whose row or computer is gone is placed again here, in a folder no
+    workspace can take (``HOME_STAND_IN_FOLDER``). Its tool selection is
+    Home's, read through (``home_workspace.selection_scope``), never a copy.
+    Two workers placing it at once converge on the fixed id: the loser reads
+    the winner's row. None when ``computer_id`` is gone or being retired.
+    """
+    from psycopg.types.json import Json
+
+    from src.server.database.computer import get_computer_for_workspace
+
+    computer_id = normalize_uuid(computer_id)
+    if computer_id is None:
+        return None
+    workspace_id = get_home_stand_in_id(user_id)
+
+    async def placed() -> Optional[Dict[str, Any]]:
+        if await get_computer_for_workspace(workspace_id) is None:
+            return None
+        row = await get_workspace(workspace_id)
+        return row if row is not None and row.get("status") != "deleted" else None
+
+    if (existing := await placed()) is not None:
+        return existing
+    async with folder_allocation(computer_id) as owned, _ws_cursor(owned) as cur:
+        await lock_user_writes(cur, user_id)
+        computer = await get_computer(computer_id, conn=owned)
+        # No workspace's folder starts with a dot and no other user's stand-in
+        # is on this computer, so the folder is free. On a computer not on the
+        # folder layout yet, a placeholder, which the first settle after the
+        # move renames (``FolderRow.target``).
+        dir_name = HOME_STAND_IN_FOLDER
+        if computer is not None and not takes_name_folders(computer):
+            dir_name = f"{HOME_STAND_IN_FOLDER}-{workspace_id[:8]}"
+        await cur.execute(
+            f"""
+            WITH comp AS (
+                SELECT computer_id, status, resource_tier, is_always_on,
+                       provider_ref, platform_secret_version
+                FROM computers
+                WHERE computer_id = %(computer_id)s AND {FENCE_NOT_DELETED}
+                  AND {FENCE_TAKES_WORKSPACES}
+                  AND user_id = %(user_id)s
+                FOR SHARE
+            )
+            INSERT INTO workspaces (
+                workspace_id, user_id, name, config, computer_id, dir_name,
+                status, resource_tier, is_always_on, sandbox_id,
+                platform_secret_version
+            )
+            SELECT %(workspace_id)s::uuid, %(user_id)s, %(name)s, %(config)s,
+                   comp.computer_id, %(dir_name)s, comp.status,
+                   comp.resource_tier, comp.is_always_on, comp.provider_ref,
+                   comp.platform_secret_version
+            FROM comp
+            ON CONFLICT (workspace_id) DO UPDATE SET
+                computer_id = EXCLUDED.computer_id,
+                dir_name = EXCLUDED.dir_name,
+                status = EXCLUDED.status,
+                resource_tier = EXCLUDED.resource_tier,
+                is_always_on = EXCLUDED.is_always_on,
+                sandbox_id = EXCLUDED.sandbox_id,
+                platform_secret_version = EXCLUDED.platform_secret_version,
+                config = EXCLUDED.config,
+                previous_dir_names = '{{}}',
+                updated_at = NOW()
+            WHERE workspaces.user_id = EXCLUDED.user_id
+              AND (workspaces.status = 'deleted' OR NOT EXISTS (
+                  SELECT 1 FROM computers c
+                  WHERE c.computer_id = workspaces.computer_id
+                    AND c.{FENCE_NOT_DELETED}
+              ))
+            RETURNING {_WS_COLS}
+            """,
+            {
+                "computer_id": computer_id,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "name": HOME_FOLDER,
+                "config": Json({HOME_STAND_IN_KEY: True}),
+                "dir_name": dir_name,
+            },
+        )
+        row = await cur.fetchone()
+        if row is not None:
+            row = dict(row)
+            await release_former_folder(
+                cur, computer_id=computer_id, workspace_id=workspace_id, folder=dir_name
+            )
+    if row is None:
+        # Another worker placed it first, or the computer is gone.
+        return await placed()
+    logger.info(
+        f"Placed Home's stand-in {workspace_id} for user {user_id} on computer "
+        f"{computer_id} as {row['dir_name']}"
+    )
+    return row
 
 
 async def create_workspace(
@@ -551,18 +666,23 @@ async def bind_workspace_to_computer(
 async def get_live_workspace_ids_for_computer(
     computer_id: str,
     *,
+    exclude_stand_in: bool = False,
     conn=None,
 ) -> List[str]:
+    """``exclude_stand_in`` leaves Home's stand-in out, for a caller asking
+    what the user keeps on the computer: the stand-in is placed again on the
+    next need, so it alone keeps no computer."""
     computer_id = normalize_uuid(computer_id)
     if computer_id is None:
         return []
+    stand_in = f"AND {EXCLUDE_STAND_IN}" if exclude_stand_in else ""
 
     async with _ws_cursor(conn) as cur:
         await cur.execute(
-            """
+            f"""
             SELECT workspace_id
             FROM workspaces
-            WHERE computer_id = %s AND status <> 'deleted'
+            WHERE computer_id = %s AND status <> 'deleted' {stand_in}
             ORDER BY created_at
             """,
             (computer_id,),
@@ -581,6 +701,7 @@ SERVER_OWNED_CONFIG_KEYS = (
     "folder_move_blocked",
     "folder_cleanup_pending",
     "folder_kept",
+    HOME_STAND_IN_KEY,
     *SANDBOX_STAMP_KEYS,
 )
 
@@ -741,6 +862,7 @@ async def count_live_workspaces_by_computer(
     """How many live projects sit on each of these machines, in one query.
 
     A machine with none is absent from the result, so callers default to zero.
+    Home's stand-in is not one of the user's workspaces, so it is not counted.
     """
     ids = [i for i in (normalize_uuid(c) for c in computer_ids) if i is not None]
     if not ids:
@@ -748,10 +870,11 @@ async def count_live_workspaces_by_computer(
 
     async with _ws_cursor(conn) as cur:
         await cur.execute(
-            """
+            f"""
             SELECT computer_id, count(*) AS live
             FROM workspaces
             WHERE computer_id = ANY(%s::uuid[]) AND status <> 'deleted'
+              AND {EXCLUDE_STAND_IN}
             GROUP BY computer_id
             """,
             (ids,),
@@ -1077,7 +1200,9 @@ async def get_workspaces_for_user(
 ) -> Tuple[List[Dict[str, Any]], int]:
     try:
         status_filter = "" if include_deleted else "AND status != 'deleted'"
-        home_filter = "" if include_home else f"AND {EXCLUDE_HOME}"
+        # Home's stand-in is never one of the user's workspaces, Home
+        # included or not.
+        home_filter = f"AND {EXCLUDE_STAND_IN}" if include_home else f"AND {EXCLUDE_HOME}"
         params = {
             "user_id": user_id,
             "home_id": get_home_workspace_id(user_id),

@@ -27,7 +27,7 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.conversation import forget_workspace_exists
-from src.server.database.home_workspace import is_home_row
+from src.server.database.home_workspace import is_home_row, is_home_stand_in_row
 from src.server.database.workspace import (
     ACTIVE_WORK_DELETE_REFUSAL,
     MOVING_DELETE_REFUSAL,
@@ -551,6 +551,10 @@ class WorkspaceManager(ComputerManager):
         shown = {str(i) for i in named}
         for workspace_id in workspace_ids:
             row = await self.workspace_row(workspace_id)
+            if row and is_home_stand_in_row(row):
+                # Not one the owner was shown: it goes with its computer and
+                # is placed again on the next need.
+                continue
             if str(workspace_id) not in shown or (row and is_home_row(row)):
                 return Retirement.HAS_WORKSPACES
             if await workspace_is_moving(workspace_id) or await workspace_has_active_work(

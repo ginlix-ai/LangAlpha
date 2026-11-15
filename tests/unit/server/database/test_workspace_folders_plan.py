@@ -53,6 +53,16 @@ def test_home_waits_on_a_placeholder_while_a_workspace_holds_its_folder():
     assert not plan_folder_moves([home("Home-7d59"), row(B, "Home", "Home")])
 
 
+def test_homes_stand_in_keeps_a_folder_home_can_never_meet():
+    """A cloud computer holding the stand-in can become primary; Home then
+    takes ``Home`` there, and a stand-in placed under that name moves aside."""
+    stand_in = FolderRow(B, "Home", "Home", False, stand_in=True)
+
+    assert not plan_folder_moves([replace(stand_in, dir_name=".home-stand-in")])
+    plan = plan_folder_moves([home("Home-7d59"), stand_in])
+    assert moves(plan) == {B: ("Home", ".home-stand-in"), A: ("Home-7d59", "Home")}
+
+
 def test_home_moves_in_once_the_workspace_holding_its_folder_is_renamed():
     plan = plan_folder_moves([home("Home-7d59"), row(B, "Research", "Home")])
     assert moves(plan) == {A: ("Home-7d59", "Home"), B: ("Home", "Research")}

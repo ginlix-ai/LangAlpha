@@ -311,7 +311,11 @@ class RetirementMixin:
                 "the next workspace joins this machine"
             )
             return Retirement.PRIMARY
-        remaining = await get_live_workspace_ids_for_computer(computer_id)
+        # Home's stand-in alone keeps no computer: it is placed again on the
+        # next need.
+        remaining = await get_live_workspace_ids_for_computer(
+            computer_id, exclude_stand_in=True
+        )
         if remaining:
             logger.info(
                 f"Computer {computer_id} still carries {len(remaining)} "

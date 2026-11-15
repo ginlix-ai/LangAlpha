@@ -46,6 +46,7 @@ from src.server.services.workspace_layout import (
     resolve_workspace_layout,
 )
 from src.server.database.workspace import files_restore_incomplete
+from src.server.database.home_workspace import selection_scope
 from src.server.database.user_skills import (
     SkillSyncLockBusy,
     create_user_skill,
@@ -368,7 +369,9 @@ async def _link_shared(ctx: _Pass) -> None:
     if ctx.base.rstrip("/") == user_base.rstrip("/"):
         return
     try:
-        disabled = await list_workspace_skill_disables(ctx.workspace_id)
+        disabled = await list_workspace_skill_disables(
+            selection_scope(ctx.user_id, ctx.workspace_id)
+        )
         result = await skill_sync.link_shared_skills(
             ctx.sandbox,
             base=ctx.base,

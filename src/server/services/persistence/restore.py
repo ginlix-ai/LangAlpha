@@ -39,6 +39,7 @@ from src.server.database.workspace import (
     workspace_owner,
 )
 from src.server.database.blob_keys import RELAY_MAX_BYTES, blob_key
+from src.server.database.home_workspace import selection_scope
 from src.server.database.user_skills import (
     SkillSyncLockBusy,
     hold_workspace_skill_sync,
@@ -468,7 +469,7 @@ async def _without_shared_skill_copies(
             )
         elif linked := unledgered & delivered:
             shared |= linked - await list_workspace_skill_disables(
-                workspace_id, conn=conn
+                selection_scope(user_id, workspace_id), conn=conn
             )
     if shared:
         shared -= {

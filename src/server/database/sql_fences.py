@@ -33,10 +33,14 @@ FENCE_TAKES_WORKSPACES = (
 )
 
 # A listing of the user's workspaces leaves Home out by its id, since bound it
-# reads its computer's status, and leaves out by status an unbound former Home
-# at another id, which an account merge leaves until the fold. The caller binds
+# reads its computer's status, leaves out by status an unbound former Home at
+# another id, which an account merge leaves until the fold, and by its mark
+# Home's stand-in (``home_workspace.HOME_STAND_IN_KEY``). The caller binds
 # ``home_id``.
-EXCLUDE_HOME = "status <> 'unbound' AND workspace_id <> %(home_id)s"
+EXCLUDE_STAND_IN = "NOT COALESCE(config, '{}'::jsonb) ? 'home_stand_in'"
+EXCLUDE_HOME = (
+    f"status <> 'unbound' AND workspace_id <> %(home_id)s AND {EXCLUDE_STAND_IN}"
+)
 
 # The worker running a spec change stamps heartbeat_at on its record every
 # SPEC_CHANGE_HEARTBEAT_SECONDS. A record still in progress with no stamp for

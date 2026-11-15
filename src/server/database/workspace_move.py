@@ -26,7 +26,11 @@ from src.server.database.egress_grants import (
     lock_user_egress_state,
     retire_workspace_grants,
 )
-from src.server.database.home_workspace import get_home_workspace_id, is_home_row
+from src.server.database.home_workspace import (
+    get_home_workspace_id,
+    is_home_row,
+    is_home_stand_in_id,
+)
 from src.server.database.mcp_config_version import bump_workspace_version
 from src.server.database.pool import get_db_connection
 from src.server.database.runs.lifecycle import workspace_has_live_runs
@@ -180,6 +184,10 @@ async def claim_workspace_move(
             ):
                 raise MoveRefused("not_found")
             if workspace["computer_id"] is None or workspace["status"] == "unbound":
+                raise MoveRefused("not_movable")
+            if is_home_stand_in_id(user_id, workspace_id):
+                # Placed once and never moved: its files are what Home's next
+                # hand-back reads, where Home's turns on the cloud left them.
                 raise MoveRefused("not_movable")
             # Home lives on the primary, so it moves only as the primary changes,
             # and making a computer primary moves nothing but Home.

@@ -617,6 +617,8 @@ async def list_scope_markers_for_user(user_id: str) -> list[dict[str, Any]]:
 
 async def get_workspace_servers_and_version(
     workspace_id: str,
+    *,
+    rows_of: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Read a workspace's mcp_config_version then its MCP rows. Order matters.
 
@@ -627,6 +629,9 @@ async def get_workspace_servers_and_version(
     caller caches, so its next acquire re-resolves and self-corrects. The reverse
     order would cache stale rows under the new version, and the matching version
     would short-circuit re-resolve, making the drift stick.
+
+    ``rows_of`` reads another workspace's rows under this one's version: Home's
+    stand-in runs with Home's selection, whose writes bump both.
     """
     async with get_db_connection() as conn:
         async with conn.transaction():
@@ -644,7 +649,7 @@ async def get_workspace_servers_and_version(
                     WHERE workspace_id = %s
                     ORDER BY name
                     """,
-                    (workspace_id,),
+                    (rows_of or workspace_id,),
                 )
                 rows = [_workspace_row_to_dict(r) for r in await cur.fetchall()]
     version = int((ws or {}).get("mcp_config_version") or 0)

@@ -177,15 +177,16 @@ async def _workspaces_delete(
             "workspace_id is required for delete action", tool_call_id
         )
 
-    from src.server.database.home_workspace import is_home_row
+    from src.server.database.home_workspace import is_home_row, is_home_stand_in_row
     from src.server.database.workspace import get_workspace
 
     workspace = await get_workspace(workspace_id)
     if not workspace or str(workspace.get("user_id")) != user_id:
         return error_command("workspace not found", tool_call_id)
     # Refused before the card, so the user is never asked to approve a delete
-    # that cannot happen.
-    if is_home_row(workspace):
+    # that cannot happen. Home's stand-in is where a Home turn runs while
+    # Home's machine is away, so to the agent it is Home.
+    if is_home_row(workspace) or is_home_stand_in_row(workspace):
         return error_command("Home cannot be deleted.", tool_call_id)
 
     # The card shows the name: an id alone cannot tell the user which

@@ -88,14 +88,29 @@ def _delete_call(workspace_id: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_deleting_home_is_refused_before_the_user_is_asked():
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"user_id": USER_ID, "workspace_id": HOME_ID, "status": "unbound", "name": "Home"},
+        # Home's stand-in, where a Home turn runs while Home's machine is away.
+        {
+            "user_id": USER_ID,
+            "workspace_id": "stand-in",
+            "status": "running",
+            "name": "Home",
+            "config": {"home_stand_in": True},
+        },
+    ],
+    ids=["home", "stand-in"],
+)
+async def test_deleting_home_is_refused_before_the_user_is_asked(row):
     confirm = MagicMock(side_effect=AssertionError("the user must not be asked"))
     with patch(
         "src.server.database.workspace.get_workspace",
-        AsyncMock(return_value={"user_id": USER_ID, "workspace_id": HOME_ID, "status": "unbound", "name": "Home"}),
+        AsyncMock(return_value=row),
     ), patch("src.tools.secretary.tools.hitl_confirm", confirm):
         result = await chief_of_staff_workspaces.ainvoke(
-            _delete_call(HOME_ID),
+            _delete_call(row["workspace_id"]),
             config={"configurable": {"user_id": USER_ID, "workspace_id": HOME_ID}},
         )
 
