@@ -467,8 +467,10 @@ class ComputerSSHPairingTarget(BaseModel):
 class ComputerSSHPairingError(BaseModel):
     code: str = Field(
         description=(
-            "unreachable, timeout, auth_failed, host_key_mismatch (something "
-            "else answered there), private_address, not_connected (the "
+            "unreachable, refused (the machine's tunnel is up but its SSH "
+            "server turned the connection away), timeout, auth_failed, "
+            "host_key_mismatch (something else answered there), "
+            "private_address, not_connected (the "
             "machine's tunnel did not come up), gateway_unreachable (the "
             "tunnel gateway did not answer), no_host_key (the machine named "
             "no SSH host keys, so it was not dialed) or script_failed (the "
@@ -800,7 +802,7 @@ class StartFailure(BaseModel):
         description=(
             "folder_marked (another computer's mark is on the root), an SSH "
             "connect code (root_dir, not_connected, paired_elsewhere, auth_failed, "
-            "host_key_mismatch, unreachable, timeout, gateway_unreachable, "
+            "host_key_mismatch, unreachable, refused, timeout, gateway_unreachable, "
             "unsupported, private_address, host_key_invalid), or start_failed "
             "for anything else"
         )

@@ -11,6 +11,7 @@ from typing import Literal
 ConnectErrorCode = Literal[
     "auth_failed",
     "unreachable",
+    "refused",
     "timeout",
     "not_connected",
     "paired_elsewhere",
@@ -23,7 +24,9 @@ ConnectErrorCode = Literal[
 ]
 # The codes of a machine that did not answer, as against one that answered and
 # refused. ``not_connected`` is a tunneled machine with no tunnel up, and
-# ``gateway_unreachable`` the tunnel gateway itself not answering.
+# ``gateway_unreachable`` the tunnel gateway itself not answering. ``refused``
+# is a tunneled machine whose own end turned the connection away (its SSH
+# server off), which answered.
 UNANSWERED_CODES: frozenset[ConnectErrorCode] = frozenset(
     {"unreachable", "timeout", "not_connected", "gateway_unreachable"}
 )
@@ -55,6 +58,13 @@ class SSHConnectError(RuntimeError):
         """The machine answered and refused, which is its owner's to fix; one
         that did not answer may on retry."""
         return self.code not in UNANSWERED_CODES
+
+    @property
+    def machine_silent(self) -> bool:
+        """The machine itself did not answer: asleep, offline or its tunnel
+        down. Not the tunnel gateway failing, which is the service's outage,
+        retried as one, and nothing the machine's owner can fix."""
+        return not self.answered and self.code != "gateway_unreachable"
 
     @property
     def for_owner(self) -> str:

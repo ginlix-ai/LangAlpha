@@ -1043,6 +1043,24 @@ async def test_a_turn_whose_computer_did_not_answer_is_skipped_not_struck():
 
 
 @pytest.mark.asyncio
+async def test_the_tunnel_gateway_down_is_not_the_users_computer_unreachable():
+    """Our gateway's outage says nothing of the machine: the firing does not
+    record that the user's computer could not be reached."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    try:
+        raise RuntimeError("could not start") from SSHConnectError(
+            "gateway_unreachable", "The tunnel is not answering."
+        )
+    except RuntimeError as e:
+        refused = e
+    with _firing([_loses(refused)], runs={0: None}) as fx:
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _settled(fx).get("skip_reason") != "computer_unreachable"
+
+
+@pytest.mark.asyncio
 async def test_a_machine_that_answered_and_refused_is_the_automations_failure():
     from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 

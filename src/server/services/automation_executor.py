@@ -301,11 +301,11 @@ def _limit_message(e: BaseException) -> Optional[str]:
 def _computer_unreachable(e: BaseException) -> bool:
     """The turn's computer did not answer its connect: a machine of the
     user's own asleep, offline or disconnected, which the firing is skipped
-    for, not failed. One that answered and refused is the automation's."""
-    from ptc_agent.core.sandbox.providers.ssh_errors import connect_failure
+    for, not failed. One that answered and refused is the automation's, and
+    the tunnel gateway down is ours (``unreachable_code``)."""
+    from ptc_agent.core.sandbox.unreachable import unreachable_code
 
-    failure = connect_failure(e)
-    return failure is not None and not failure.answered
+    return unreachable_code(e) is not None
 
 
 def _our_failure(e: BaseException) -> bool:

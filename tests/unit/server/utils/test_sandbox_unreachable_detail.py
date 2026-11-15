@@ -300,11 +300,12 @@ def test_a_listed_machine_that_did_not_answer_may_be_asleep_or_slow():
     assert "Check that the machine is on" not in answer.detail
 
 
-def test_a_tunneled_dial_that_runs_out_the_clock_is_a_busy_machine(monkeypatch):
-    """A machine its tunnel still lists that did not finish the handshake in
-    time: asleep since its keepalives last answered, or slow."""
+def test_a_tunneled_dial_that_runs_out_the_clock_is_the_gateways_fault(monkeypatch):
+    """The gateway answers a machine that does not answer itself, sooner, so
+    a dial that ran out the clock was held up on the service's side and is
+    never counted as the machine away."""
     from ptc_agent.core.sandbox.providers import _ssh_connect
-    from ptc_agent.core.sandbox.providers.ssh_errors import SSHMachineBusy
+    from ptc_agent.core.sandbox.unreachable import unreachable_code
 
     class _GatewayConn:
         def is_closed(self) -> bool:
@@ -319,8 +320,10 @@ def test_a_tunneled_dial_that_runs_out_the_clock_is_a_busy_machine(monkeypatch):
 
     monkeypatch.setattr(_ssh_connect, "_gateway", lambda: _Gateway())
     monkeypatch.setattr(_ssh_connect.asyncssh, "connect", connect)
-    with pytest.raises(SSHMachineBusy):
+    with pytest.raises(_ssh_connect.SSHConnectError) as raised:
         asyncio.run(_ssh_connect._through_gateway(_tunneled_target(), {}))
+    assert raised.value.code == "gateway_unreachable"
+    assert unreachable_code(raised.value) is None
 
 
 def test_a_tunneled_connect_outwaits_the_gateways_channel_open(monkeypatch):

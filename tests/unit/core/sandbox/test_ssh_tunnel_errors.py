@@ -35,6 +35,14 @@ _TARGET = SSHTarget(host="mac", port=22, username="alex", host_key=None, key_own
             "mac is not connected. It connects by itself whenever it is on and "
             "online, so check that it is awake and has internet.",
         ),
+        (
+            "Connection refused",
+            "refused",
+            True,
+            "mac is connected, but its SSH server did not take the connection "
+            "(Connection refused). On a Mac, check that Remote Login is on in "
+            "System Settings, General, Sharing.",
+        ),
     ],
 )
 def test_the_gateways_reason_picks_the_code_and_the_words(reason, code, answered, says):
@@ -45,3 +53,17 @@ def test_the_gateways_reason_picks_the_code_and_the_words(reason, code, answered
     assert exc.code == code
     assert exc.answered is answered
     assert exc.for_owner == says
+
+
+def test_a_machine_whose_own_end_refused_is_not_away():
+    """Its tunnel is up and it answered, so its owner fixes it: an automation
+    run on it fails and strikes rather than waiting for it to wake."""
+    from ptc_agent.core.sandbox.unreachable import unreachable_code
+
+    exc = _tunnel_error(
+        _TARGET,
+        asyncssh.ChannelOpenError(asyncssh.OPEN_CONNECT_FAILED, "Connection refused"),
+    )
+
+    assert not exc.machine_silent
+    assert unreachable_code(exc) is None

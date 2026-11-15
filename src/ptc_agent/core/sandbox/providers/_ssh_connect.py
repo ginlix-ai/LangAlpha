@@ -349,8 +349,10 @@ def _tunnel_error(target: SSHTarget, exc: asyncssh.ChannelOpenError) -> SSHConne
         )
     if exc.reason == GATEWAY_NO_ANSWER:
         return _busy(target)
+    # The machine's own end refused the open: its sshd is off or turned the
+    # connection away. It answered, so it is not away, and its owner fixes it.
     return SSHConnectError(
-        "unreachable",
+        "refused",
         f"{name} is connected, but its SSH server did not take the connection "
         f"({exc.reason or 'refused'}). On a Mac, check that Remote Login is on "
         "in System Settings, General, Sharing.",
@@ -386,11 +388,13 @@ async def _through_gateway(
             if isinstance(e, asyncssh.ChannelOpenError):
                 raise _tunnel_error(target, e) from e
             if isinstance(e, TimeoutError):
-                # The gateway fails a dial to a machine with no tunnel at once,
-                # so one that ran out the clock went to a machine its tunnel
-                # still lists: asleep since its keepalives last answered, or
-                # slow to finish the handshake.
-                raise _busy(target) from e
+                # The gateway answers every open itself within
+                # GATEWAY_CHANNEL_OPEN_TIMEOUT_S, a machine that does not
+                # answer included (GATEWAY_NO_ANSWER), so a dial that ran out
+                # the clock was held up between this process and the gateway,
+                # or in a handshake the machine did answer. Neither says the
+                # machine is away.
+                raise SSHConnectError("gateway_unreachable", _GATEWAY_DOWN) from e
             raise _connect_error(target, e) from e
     raise AssertionError("unreachable")  # pragma: no cover
 

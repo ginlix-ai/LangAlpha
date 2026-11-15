@@ -672,3 +672,26 @@ async def test_a_machine_that_answered_and_refused_carries_no_unreachable_kind(c
 
     ((_, data),) = frames
     assert "error_kind" not in data
+
+
+@pytest.mark.asyncio
+async def test_the_tunnel_gateway_down_is_a_service_error_retried_as_before(coordinator):
+    """Our gateway not answering is no word on the user's machine: the turn
+    is retried like any blip of ours, never ended as their computer."""
+    try:
+        raise SSHConnectError("gateway_unreachable", "The tunnel is not answering.")
+    except SSHConnectError as e:
+        try:
+            raise SandboxTransientError(str(e)) from e
+        except SandboxTransientError as wrapped:
+            gateway_down = wrapped
+
+    frames = await _fail(
+        gateway_down, scope=_scope(_run_handle()), request=_make_request(**_SEND)
+    )
+
+    ((name, data),) = frames
+    assert name == "retry"
+    assert "error_kind" not in data
+    _, outcome = coordinator.finalize_run.await_args.args
+    assert "error_kind" not in outcome.metadata

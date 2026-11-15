@@ -22,12 +22,13 @@ def unreachable_code(exc: BaseException) -> str | None:
     """The connect code when *exc* comes from a machine that did not answer
     (asleep, offline, its tunnel down), else None.
 
-    Only an unanswered SSH connect counts: a machine that answered and
-    refused is its owner's to fix, and a cloud host's outage carries no code
-    a client could word the failure from.
+    Only the machine's own silence counts: a machine that answered and
+    refused is its owner's to fix, the tunnel gateway down is the service's
+    outage and recovers as one, and a cloud host's outage carries no code a
+    client could word the failure from.
     """
     failure = connect_failure(exc)
-    if failure is None or failure.answered:
+    if failure is None or not failure.machine_silent:
         return None
     return failure.code
 
