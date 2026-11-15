@@ -11,6 +11,10 @@ import { parseErrorMessage, type ParsedError } from '../utils/parseErrorMessage'
 import type { OpenFileHandler } from '../utils/fileLocation';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { ErrorLink, NoticeLine } from '@/components/ui/error-banner';
+import { useWorkspace } from '@/hooks/useWorkspace';
+import { useWorkspaceId } from '../contexts/WorkspaceContext';
+import { useComputer } from '../hooks/useComputers';
+import { awayMachineOf, unreachableTurnCopy } from '../utils/computerAway';
 import {
   planStopCopy, planStopOf, UPSTREAM_HINT_I18N_KEY, upstreamFailureCopy, type PlanStop,
 } from '@/lib/upstreamFailure';
@@ -90,6 +94,7 @@ function TurnErrorCard({ err }: { err: StructuredError }): React.ReactElement {
   if (stop) return <PlanStopCard stop={stop} />;
   if (err.kind === 'notice') return <NoticeLine message={err.message} className="py-1.5" />;
   if (err.kind === 'upstream') return <StructuredErrorDisplay err={err} />;
+  if (err.kind === 'computer_unreachable') return <ComputerUnreachableCard code={err.errorCode} />;
   if (err.kind === 'internal') {
     return <ErrorDisplay parsed={{ title: t('chat.errorInternalHeadline'), detail: err.message || null, model: null, statusCode: null }} />;
   }
@@ -102,6 +107,16 @@ function PlanStopCard({ stop }: { stop: PlanStop }): React.ReactElement {
   const { t } = useTranslation();
   const { title, text } = planStopCopy(t, stop, usePlanClock());
   return <ErrorDisplay parsed={{ title, detail: text, model: null, statusCode: null }} />;
+}
+
+/** A turn its own machine did not answer, worded for the workspace's computer.
+ *  A shared view has no workspace, so its card names no machine. */
+function ComputerUnreachableCard({ code }: { code?: string }): React.ReactElement {
+  const { t } = useTranslation();
+  const { data: workspace } = useWorkspace(useWorkspaceId());
+  const { data: computer } = useComputer(workspace?.computer_id ?? null);
+  const { title, detail } = unreachableTurnCopy(t, code, awayMachineOf(computer));
+  return <ErrorDisplay parsed={{ title, detail, model: null, statusCode: null }} />;
 }
 
 interface ErrorDisplayProps {

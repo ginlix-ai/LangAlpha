@@ -23,6 +23,8 @@ interface PanelNoticesProps {
   filesError?: string | null;
   /** The restore is short and the tree that would say so is not on screen. */
   filesRestoreIncomplete?: boolean;
+  /** The files shown are the backup, the workspace's computer being away: says so. */
+  backupNotice?: string | null;
   onRefreshFiles?: () => void;
   /** A delete, a backup, or the last step of an upload is running; none reports a percentage. */
   busy: boolean;
@@ -44,7 +46,7 @@ interface PanelNoticesProps {
  * report that action ever makes.
  */
 export function PanelNotices({
-  uploadProgress, error, onDismissError, filesError = null, filesRestoreIncomplete = false, onRefreshFiles, busy, backupResult, onDismissBackupResult, editing,
+  uploadProgress, error, onDismissError, filesError = null, filesRestoreIncomplete = false, backupNotice = null, onRefreshFiles, busy, backupResult, onDismissBackupResult, editing,
   restoreOffer = null,
 }: PanelNoticesProps): React.ReactElement {
   const { t } = useTranslation();
@@ -55,6 +57,11 @@ export function PanelNotices({
         <div className="file-panel-upload-progress">
           <div className="file-panel-upload-progress-bar" style={{ width: `${uploadProgress}%` }} />
         </div>
+      )}
+      {backupNotice && (
+        <p className="px-3 pt-2 pb-1.5 text-xs" role="status" style={{ color: 'var(--color-text-secondary)' }}>
+          {backupNotice}
+        </p>
       )}
       {!filesError && filesRestoreIncomplete && (
         <p className="px-3 pt-2 pb-1.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>

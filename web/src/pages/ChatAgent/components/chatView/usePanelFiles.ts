@@ -42,10 +42,12 @@ export function usePanelFiles({ isHome, workspaceId, workspaceName = null, inclu
       ? {
           readOnly: true, singleFileMode: true, isHome: false,
           onReturnHome: () => setOverride(null), returnLabel: isHome ? null : workspaceName,
+          filesAway: shown.away,
         }
       : {
           readOnly: false, singleFileMode: false, isHome,
           onReturnHome: null, returnLabel: null,
+          filesAway: shown.away,
         },
   };
 }

@@ -4,13 +4,15 @@ import { deleteWorkspaceFiles } from '../../utils/api';
 
 /** Multi-select mode + two-step delete for FilePanel (authenticated mode only —
  * delete has no ApiAdapter override; readOnly panels hide the affordances). */
-export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirectory, onRefreshFiles, onDeleted }: {
+export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirectory, onRefreshFiles, onDeleted, awayMessage }: {
   workspaceId: string;
   filteredSortedFiles: string[];
   targetDirectory?: string | null;
   onRefreshFiles?: () => void;
   /** The paths the server confirmed gone, so open state on them can follow. */
   onDeleted?: (paths: string[]) => void;
+  /** Words a refusal from a computer that did not answer; null for any other failure. */
+  awayMessage?: (err: unknown) => string | null;
 }) {
   const { t } = useTranslation();
   // Selection / delete state
@@ -99,13 +101,13 @@ export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirec
       })
       .catch((err: unknown) => {
         const e = err as { response?: { data?: { detail?: string } }; message?: string };
-        setDeleteError(e?.response?.data?.detail || e?.message || t('filePanel.deleteFailed'));
+        setDeleteError(awayMessage?.(err) || e?.response?.data?.detail || e?.message || t('filePanel.deleteFailed'));
       })
       .finally(() => {
         setDeleteLoading(false);
         onRefreshFiles?.();
       });
-  }, [selectedPaths, workspaceId, deleteConfirm, exitSelectMode, onRefreshFiles, onDeleted, t]);
+  }, [selectedPaths, workspaceId, deleteConfirm, exitSelectMode, onRefreshFiles, onDeleted, awayMessage, t]);
 
   useEffect(() => {
     if (!deleteConfirm) return;

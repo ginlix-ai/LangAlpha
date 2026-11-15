@@ -58,8 +58,11 @@ export interface StructuredError {
   links?: ErrorLinkSpec[];
   /** ``upstream`` = LLM provider's fault (their 5xx/401/429). ``internal`` =
    *  our pipeline. Undefined for rate-limit errors built on the client.
-   *  ``notice`` = nothing failed, so it reads as information, not an error. */
-  kind?: 'upstream' | 'internal' | 'notice';
+   *  ``notice`` = nothing failed, so it reads as information, not an error.
+   *  ``computer_unreachable`` = the turn's own machine did not answer. */
+  kind?: 'upstream' | 'internal' | 'notice' | 'computer_unreachable';
+  /** The connect code of a machine that did not answer, which words its card. */
+  errorCode?: string;
   /** A turn a Claude plan's limit ended, worded where it is drawn, in the
    *  reader's zone and language, under its own headline. */
   planRefusal?: PlanRefusal;

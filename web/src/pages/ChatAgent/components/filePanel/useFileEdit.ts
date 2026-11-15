@@ -32,7 +32,7 @@ const isDirty = (d: Pick<EditDraft, 'isEditing' | 'editContent' | 'originalConte
  * editor and switching back hands it straight back. Without that a tab strip
  * would silently throw away an edit for the price of looking at another file,
  * which is worse than the single-file panel it replaced. */
-export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled }: {
+export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, blockedReason = null, awayMessage }: {
   /** Which tab the editor currently belongs to. */
   tabId: string;
   workspaceId: string;
@@ -44,6 +44,10 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   ask: AskConfirm;
   /** A write to `path` has answered, landed or not. */
   onSaveSettled: (path: string) => void;
+  /** Why no change can be made now (the computer is away); null when one can. */
+  blockedReason?: string | null;
+  /** Words a refusal from a computer that did not answer; null for any other failure. */
+  awayMessage?: (err: unknown) => string | null;
 }) {
   const { t } = useTranslation();
   // Edit mode state
@@ -245,7 +249,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
         });
         return;
       }
-      setSaveError(e?.response?.data?.detail || e?.message || t('filePanel.saveFailed'));
+      setSaveError(awayMessage?.(err) || e?.response?.data?.detail || e?.message || t('filePanel.saveFailed'));
     } finally {
       release();
       // A save that is no longer the current one must not report the panel idle:
@@ -253,7 +257,7 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
       if (seq === saveSeqRef.current) setSavingFile(null);
       onSaveSettled(file);
     }
-  }, [workspaceId, writeFileFn, setFileContent, onSaveSettled, sessionRef, t]);
+  }, [workspaceId, writeFileFn, setFileContent, onSaveSettled, sessionRef, awayMessage, t]);
 
   const handleSave = useCallback(() => {
     const draft = typedDraft();
@@ -261,11 +265,16 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
     // The button carries the only other re-entry guard and the key handler
     // below does not read it, so this one belongs where every caller passes.
     if (savingFile === selectedFile) return;
+    // The draft stays in the editor, to be saved once the computer is back.
+    if (blockedReason) {
+      setSaveError(blockedReason);
+      return;
+    }
     ask(
       { title: t('filePanel.saveTitle'), message: t('filePanel.confirmSave'), confirmLabel: t('common.save') },
       () => { void save(tabId, selectedFile, draft); },
     );
-  }, [tabId, selectedFile, savingFile, workspaceId, typedDraft, ask, save, t]);
+  }, [tabId, selectedFile, savingFile, workspaceId, typedDraft, ask, save, blockedReason, t]);
 
   const discardEdit = useCallback(() => {
     setIsEditing(false);

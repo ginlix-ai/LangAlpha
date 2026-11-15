@@ -100,3 +100,12 @@ describe("readStreamFailure: what the provider said and a subscription's limit",
     expect(failure?.planLimit).toBeUndefined();
   });
 });
+
+describe('readStreamFailure: a machine that did not answer', () => {
+  it('carries the connect code for the card to word, live or replayed', () => {
+    const frame = { event: 'error', error: 'studio is not connected.', error_kind: 'computer_unreachable', error_code: 'not_connected', response_id: 'run-1' };
+    expect(readStreamFailure(frame, 'studio is not connected.', 'ws-1', t)).toEqual({
+      message: 'studio is not connected.', kind: 'computer_unreachable', errorCode: 'not_connected', runId: 'run-1',
+    });
+  });
+});

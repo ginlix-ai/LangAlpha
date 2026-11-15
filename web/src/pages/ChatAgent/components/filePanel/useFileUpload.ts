@@ -23,9 +23,13 @@ function uploadErrorMessage(err: unknown, file: globalThis.File, t: TFunction): 
 
 /** Upload + drag-and-drop state for FilePanel (authenticated mode only —
  * upload has no ApiAdapter override; readOnly panels hide the affordances). */
-export function useFileUpload({ workspaceId, onRefreshFiles }: {
+export function useFileUpload({ workspaceId, onRefreshFiles, blockedReason = null, awayMessage }: {
   workspaceId: string;
   onRefreshFiles?: () => void;
+  /** Why no change can be made now (the computer is away); null when one can. */
+  blockedReason?: string | null;
+  /** Words a refusal from a computer that did not answer; null for any other failure. */
+  awayMessage?: (err: unknown) => string | null;
 }) {
   const { t } = useTranslation();
   // Upload state: a percentage while the bytes go up, then `uploadSaving`
@@ -43,6 +47,10 @@ export function useFileUpload({ workspaceId, onRefreshFiles }: {
 
   const handleUpload = useCallback(async (file: globalThis.File) => {
     if (!file || !workspaceId || uploadRef.current) return;
+    if (blockedReason) {
+      setUploadError(blockedReason);
+      return;
+    }
     const ctrl = new AbortController();
     uploadRef.current = ctrl;
     setUploadError(null);
@@ -67,7 +75,7 @@ export function useFileUpload({ workspaceId, onRefreshFiles }: {
     } catch (err: unknown) {
       if (!ctrl.signal.aborted) {
         console.error('[FilePanel] Upload failed:', err);
-        setUploadError(uploadErrorMessage(err, file, t));
+        setUploadError(awayMessage?.(err) || uploadErrorMessage(err, file, t));
       }
     } finally {
       release();
@@ -75,7 +83,7 @@ export function useFileUpload({ workspaceId, onRefreshFiles }: {
       setUploadProgress(null);
       setUploadSaving(false);
     }
-  }, [workspaceId, onRefreshFiles, t]);
+  }, [workspaceId, onRefreshFiles, blockedReason, awayMessage, t]);
 
   /** Ends an upload still sending; once the workspace is taking the file it runs to the end. */
   const cancelUpload = useCallback(() => uploadRef.current?.abort(), []);

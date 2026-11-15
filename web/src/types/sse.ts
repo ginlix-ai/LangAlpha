@@ -212,7 +212,11 @@ export interface ErrorEvent extends BaseSSEEvent {
   /** Enriched fields from ``stream_errors.error_event_data``. */
   error?: string;
   message?: string;
-  error_kind?: 'upstream' | 'internal';
+  /** ``computer_unreachable``: the turn's own machine did not answer, with
+   *  the connect code in ``error_code``. */
+  error_kind?: 'upstream' | 'internal' | 'computer_unreachable';
+  /** ``timeout``, ``unreachable`` or ``not_connected``. */
+  error_code?: string;
   status_code?: number | null;
   hints?: string[];
   /** User-configured (primary) model name, when the failure is model-attributable. */
