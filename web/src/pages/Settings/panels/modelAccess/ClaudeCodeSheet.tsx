@@ -22,7 +22,7 @@ import { UsageTableContext, VIEW_WIDTHS, useUsageSteps } from '@/components/mode
 import { usePlanCheck, type CheckTarget } from '@/components/modelAccess/usePlanCheck';
 import { usePlanClock } from '@/hooks/useClaudeCodePlan';
 import { credentialKey, planWindows } from '@/lib/claudeCodePlan';
-import { QuietNote, ROW_BUTTON, StatusLabel, type RowStatus } from '@/components/modelAccess/parts';
+import { Group, QuietNote, ROW_BUTTON, StatusLabel, type RowStatus } from '@/components/modelAccess/parts';
 import type { TokenAction, TokenRow } from '@/components/modelAccess/tokenLine';
 import { SAVED_TOKEN, computerTokenTarget, type SheetAction, type TokenTarget } from '@/components/modelAccess/tokenTarget';
 import { canRemoteControl } from '@/lib/desktop';
@@ -36,7 +36,6 @@ import { MediumActionButton } from '@/pages/ChatAgent/components/MediumActionLin
 import { openComputersPanel, useComputersPanel } from '@/pages/ChatAgent/hooks/computerPanelStore';
 import { useMediumAction, type MediumAction } from '@/pages/ChatAgent/hooks/useMediumAction';
 import { useSaveFailedToast } from '../usePreferenceWrite';
-import { Group } from './AccessRows';
 import { ClaudeCodeHostedChoice } from './ClaudeCodeHostedChoice';
 import { ClaudeCodePlanOutChoice } from './ClaudeCodePlanOutChoice';
 import { ComputerClis } from './ComputerClis';

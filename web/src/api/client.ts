@@ -11,6 +11,7 @@
  * `response`. The error readers across the app were written against that
  * shape, so it is the contract here rather than an accident of the old client.
  */
+import { authSessionCheck } from '../lib/authResets';
 import { authGeneration, bearerTokenOf, getAccessToken, refreshAccessToken } from '../lib/authToken';
 import { trackRequest } from '../lib/reloadHolds';
 import { noteIfSuspended } from '../lib/accountSuspension';
@@ -285,6 +286,11 @@ async function request<T>(method: string, url: string, data: unknown, config: Re
   }
   const target = buildUrl(url, config.params);
   let retried = false;
+  // The account the request was built for. A sign-out or an account switch
+  // during the token lookup leaves it nobody to go out as, and one during the
+  // send leaves a request that went out bare with no `sentAs` to compare, so
+  // this keeps it from going out, or being replayed, as the next account.
+  const sameSession = authSessionCheck();
 
   const attempt = async (): Promise<ApiResponse<T>> => {
     // Which user the request goes out as, so the 401 replay below can tell
@@ -299,6 +305,7 @@ async function request<T>(method: string, url: string, data: unknown, config: Re
     } catch {
       /* proceed without auth */
     }
+    if (!sameSession()) throw new ApiError('canceled', 'ERR_CANCELED');
 
     try {
       return await send(method, target, headers, body, config);
@@ -317,7 +324,7 @@ async function request<T>(method: string, url: string, data: unknown, config: Re
       // trip and the switch can land inside it. The request still carries the
       // previous user's URL and body, so a replay stamped with the new user's
       // token is their mutation written to the new account.
-      const sameAccount = () => sentAs === undefined || sentAs === authGeneration();
+      const sameAccount = () => sameSession() && (sentAs === undefined || sentAs === authGeneration());
       if (!sameAccount()) throw e;
       retried = true;
       let token: string | null = null;

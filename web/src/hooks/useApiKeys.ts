@@ -6,10 +6,11 @@ import { getUserApiKeys, updateUserApiKeys, deleteUserApiKey } from '../api/mode
  * Shared hook for the current user's BYOK API keys.
  * All consumers share a single cached entry keyed by queryKeys.user.apiKeys().
  */
-export function useApiKeys() {
+export function useApiKeys({ enabled = true }: { enabled?: boolean } = {}) {
   const { data, ...rest } = useQuery({
     queryKey: queryKeys.user.apiKeys(),
     queryFn: getUserApiKeys,
+    enabled,
     staleTime: 5 * 60_000,
     retry: false,
   });

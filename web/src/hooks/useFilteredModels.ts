@@ -17,6 +17,9 @@ export interface ModelMetadataEntry {
   access_type?: string;
   /** "true" when variant needs its own API key (different env_key from parent). */
   requires_own_key?: string;
+  /** The manifest's 1 to 5 ratings, highest best. Absent = not rated. */
+  intelligence?: number;
+  speed?: number;
   /** Numeric tier for platform-served access. Absent = 0. */
   tier?: number;
   /** OAuth-plan allowlist — the connected subscription's plan_type must be
@@ -452,6 +455,10 @@ export interface BuildVisibleModelsResult {
   rawModels: Record<string, ProviderModelsData>;
   /** Flat set of all model names in the filtered result. */
   validModelNames: Set<string>;
+  /** Model names some group still lists after the drops that are confirmed
+   *  (shadowing, a plan read as excluding it, a credential's own list) and
+   *  before the access filter, which also drops a connection not read yet. */
+  listedModelNames: Set<string>;
   /** (group, name) pairs the user explicitly added via custom_models. Used by
    *  the badge map to render "byok" instead of "platform" for custom-pair
    *  entries that shadow a built-in name. */
@@ -555,6 +562,7 @@ export function buildVisibleModels(
 
   // 3c. What the connected credentials' own lists say they cannot run.
   const listed = dropMissingModels(normalized, metadata, missingByProvider, customPairs, routedPairs);
+  const listedModelNames = new Set(Object.values(listed).flatMap((g) => g.models ?? []));
 
   // 4. Filter
   let filtered: Record<string, ProviderModelsData>;
@@ -574,6 +582,6 @@ export function buildVisibleModels(
     }
   }
 
-  return { models: filtered, metadata, rawModels, validModelNames, customPairs };
+  return { models: filtered, metadata, rawModels, validModelNames, listedModelNames, customPairs };
 }
 

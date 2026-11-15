@@ -33,6 +33,16 @@
 .welcome-chat__rise {
   animation: welcome-chat-rise var(--motion-enter) var(--ease-out) backwards;
 }
+/* Setup handing over: the page fades in over the setup's, on the curve that
+   does not pop, and its first line writes itself once it is up. */
+@keyframes welcome-chat-arrive {
+  from {
+    opacity: 0;
+  }
+}
+.welcome-chat--arrive {
+  animation: welcome-chat-arrive var(--motion-reveal) var(--ease-reveal) backwards;
+}
 /* The composer opens on the last turn, where what is written in it goes to
    the agent with the answers. Its edge comes up in the accent, short of the
    full edge focus gives it, so it reads as on offer rather than in use; the

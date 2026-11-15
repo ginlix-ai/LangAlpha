@@ -28,6 +28,8 @@ interface ConversationShellProps {
    *  so until it is used. */
   composerCue?: boolean;
   scrollerRef?: Ref<HTMLDivElement>;
+  /** Setup has just handed over: the page fades in over the one it left. */
+  arriving?: boolean;
   children: ReactNode;
   testId?: string;
 }
@@ -44,6 +46,7 @@ export function ConversationShell({
   composer,
   composerCue = false,
   scrollerRef,
+  arriving = false,
   children,
   testId,
 }: ConversationShellProps) {
@@ -51,7 +54,7 @@ export function ConversationShell({
     <div
       data-testid={testId}
       data-handoff-scope=""
-      className="welcome-chat fixed inset-0 flex flex-col bg-(--color-bg-page)"
+      className={cn('welcome-chat fixed inset-0 flex flex-col bg-(--color-bg-page)', arriving && 'welcome-chat--arrive')}
     >
       <WizardTopBar exit={exit} />
       <div

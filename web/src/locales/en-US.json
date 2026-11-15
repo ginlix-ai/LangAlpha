@@ -4470,7 +4470,6 @@
     "removeProvider": "Remove",
     "addAnotherProviderHeading": "Add another provider",
     "addMoreProviders": "Connect an additional provider for more model options.",
-    "invitationRedeemed": "Invitation redeemed. You can configure models now or add a provider.",
     "invitationCodeLabel": "Invitation code",
     "redeeming": "Redeeming...",
     "redeem": "Redeem",
@@ -4550,7 +4549,200 @@
     "apiFormatTipBest": "We're tuned most for the Anthropic Messages and OpenAI Responses APIs, so pick one of those when your provider offers it. A provider that works with Claude Code serves the Messages API. One that works with Codex usually serves the Responses API, but some serve Chat Completions instead, so check its docs.",
     "customUnverifiedTitle": "Not verified by us.",
     "customUnverifiedBody": "How well a custom endpoint works depends on how fully it implements the API, which we can't test for each one. If the endpoint doesn't support prompt caching, long conversations get slower and costlier; if it sends requests to a different model, or ignores thinking or effort settings, you won't get what you picked; and if it's unreliable, requests fail more often.",
-    "proxyUnverifiedBody": "This address isn't {{provider}}'s own API or a cloud we recognize (AWS Bedrock, Azure, Google Vertex AI), so it's most likely a proxy, which we can't test. If the proxy doesn't pass prompt caching through, long conversations get slower and costlier; if it sends requests to a different model, or drops thinking or effort settings, you won't get what you picked; and if it's unreliable, requests fail more often."
+    "proxyUnverifiedBody": "This address isn't {{provider}}'s own API or a cloud we recognize (AWS Bedrock, Azure, Google Vertex AI), so it's most likely a proxy, which we can't test. If the proxy doesn't pass prompt caching through, long conversations get slower and costlier; if it sends requests to a different model, or drops thinking or effort settings, you won't get what you picked; and if it's unreliable, requests fail more often.",
+    "answers": {
+      "fromYourAnswers": "From your answers",
+      "change": "Change",
+      "tag": {
+        "claude_code": "Claude Code",
+        "subscription_or_key": "Subscription or key",
+        "langalpha_models": "LangAlpha's models",
+        "serverModels": "This server's models",
+        "cloud": "Cloud computer",
+        "serverComputer": "This server's computer",
+        "own_computer": "Your computer"
+      },
+      "rail": {
+        "use": "Your use",
+        "computer": "Computer",
+        "model": "Model",
+        "default": "Default"
+      },
+      "use": {
+        "title": "How will you use LangAlpha?",
+        "lead": "Two questions. Your answers pick the setup steps that follow, and you can change both later.",
+        "modelsLabel": "Which models do you want to use?",
+        "claudeCode": "Your Claude plan, with Claude Code",
+        "claudeCodeDesc": "Pro or Max. Claude Code runs on your plan, with LangAlpha's tools.",
+        "subscription": "Another subscription or an API key",
+        "subscriptionDesc": "ChatGPT, Grok, a coding plan, or a key from any provider.",
+        "serverModels": "Models this server provides",
+        "serverModelsDesc": "The models your administrator set up.",
+        "whereLabel": "Where should your tasks run?",
+        "serverComputer": "On a computer this server runs",
+        "serverComputerDesc": "Keeps working when your computer is off.",
+        "homeStays": "Home stays on this Mac. Move it in Settings.",
+        "own": "On your own computer",
+        "ownDesc": "Your Mac, or any Mac or Linux computer over SSH.",
+        "saveFailed": "Your answers couldn't be saved. Try again."
+      },
+      "computer": {
+        "title": "Connect your computer",
+        "leadClaudeCode": "Claude Code and your tasks run here. LangAlpha signs in as the account you choose.",
+        "lead": "Your tasks run here. LangAlpha signs in as the account you choose.",
+        "macDesktop": "Pair this Mac, and Home and new workspaces go on it.",
+        "continueOnMac": "Continue on your Mac",
+        "pairThisMac": "Pair this Mac",
+        "accountNote": "The agent can do anything the account you connect can do, so connect an account made for it rather than your own.",
+        "onlineNote": "Home lives on the computer you connect, and your turns run there, so it needs to be on and online while they run.",
+        "onlineNoteNamed": "Home lives on {{name}}, and your turns run there, so it needs to be on and online while they run.",
+        "noBackupNote": "Without backup, this computer can't be your primary computer, so Home and new workspaces go on a cloud computer.",
+        "macUpdateApp": "Update the LangAlpha app to pair this Mac."
+      },
+      "ssh": {
+        "title": "Add a computer over SSH",
+        "lead": "The script lets LangAlpha sign in, and reports where to reach the computer. This page ticks off each step."
+      },
+      "model": {
+        "tokenTitle": "Add your Claude setup token",
+        "tokenForComputer": "For {{name}}. The token stays on that computer, and LangAlpha doesn't keep it.",
+        "tokenForCloud": "For your cloud computer. LangAlpha keeps it encrypted and uses it only to run Claude Code for your threads.",
+        "tokenForServer": "For the computers this server runs. LangAlpha keeps it encrypted and uses it only to run Claude Code for your threads.",
+        "replaceToken": "Replace token",
+        "planOutNote": "When your Claude plan runs out, Claude Code turns wait for it to reset, unless you choose otherwise in Settings. Nothing runs on another model.",
+        "subTitle": "Connect your subscription or key",
+        "subLead": "Pick one now. You can add more in Settings.",
+        "saveDefaultFailed": "It's connected, but it couldn't be made your default. You can pick it on the next step.",
+        "claudeCodeUnavailableTitle": "Claude Code isn't available to you",
+        "claudeCodeUnavailableLead": "Your account can't use Claude Code here, so there's no setup token to add. Change your answers to use other models.",
+        "withApiKey": "Continue with an API key"
+      },
+      "default": {
+        "title": "Choose your models",
+        "lead": "One model runs your conversations and another handles the work around them. You can change both anytime in Settings.",
+        "recommended": "Recommended",
+        "startChat": "Start a chat",
+        "claudeCodeOn": "Claude Code on {{name}}",
+        "claudeCodeOnCloud": "Claude Code on your cloud computer",
+        "none": "No models are available to you yet. You can choose a default later in Settings.",
+        "saveFailed": "Your default couldn't be saved. Try again.",
+        "recommendedSetup": "Recommended setup",
+        "useRecommended": "Use recommended",
+        "customize": "Customize",
+        "intelligence": "Intelligence",
+        "speed": "Speed",
+        "rating": "{{label}}: {{value}} of 5",
+        "why": {
+          "strongest": "Highest intelligence rating of your models.",
+          "strongestFastest": "Highest intelligence rating of your models, and the fastest of those.",
+          "deployment": "The default for LangAlpha's models.",
+          "claudeCode": "A good fit for any Claude plan.",
+          "fastestBackground": "Fastest of your other models, which is what background work needs.",
+          "onlyBackground": "Your only model that can run background work.",
+          "deploymentBackground": "The background default for LangAlpha's models.",
+          "claudeCodeBackground": "Claude Code runs conversations only, so background work runs on {{model}}.",
+          "claudeCodeCreditsBackground": "Claude Code runs conversations only, so background work runs on {{model}}, a LangAlpha model that uses your credits."
+        },
+        "settingUp": {
+          "title": "Setting you up",
+          "models": "Saving your models",
+          "home": "Getting Home ready",
+          "finish": "Finishing setup",
+          "done": "You're all set"
+        }
+      },
+      "saveFailed": "This step couldn't be saved. Try again.",
+      "changeAnswers": "Change my answers",
+      "loadFailed": "This step couldn't load.",
+      "tryAgain": "Try again"
+    },
+    "mac": {
+      "kicker": "Your Mac",
+      "get": {
+        "title": "Continue on your Mac",
+        "lead": "The Mac app pairs your Mac in one step, and the rest of setup carries on there.",
+        "step1": "Get the LangAlpha app for Mac",
+        "download": "Get the Mac app",
+        "step2": "Open it and sign in as {{email}}",
+        "step2Unnamed": "Open it and sign in with the same account",
+        "step3": "Pair this Mac and finish setup there, in a few clicks"
+      },
+      "waiting": {
+        "title": "Finish setup in the LangAlpha app on your Mac",
+        "lead": "Sign in with the same account. The app picks up from here.",
+        "artOs": "macOS",
+        "artStatus": "Waiting for the app",
+        "artLabel": "Your Mac, waiting for the LangAlpha app",
+        "live": "Waiting for you to sign in to the app on your Mac…"
+      },
+      "moved": {
+        "title": "Setup moved to your Mac",
+        "lead": "You're finishing setup in the LangAlpha app on {{name}}.",
+        "leadUnnamed": "You're finishing setup in the LangAlpha app on your Mac.",
+        "yourMac": "Your Mac",
+        "open": "Setup is open in the LangAlpha app",
+        "note": "This tab moves to your first chat when you finish on the Mac. You can also close it."
+      },
+      "continueHere": "Continue here instead"
+    },
+    "thisMac": {
+      "kicker": "After sign-in",
+      "ask": {
+        "title": "Use this Mac with LangAlpha?",
+        "lead": "Pair it, and LangAlpha can run your tasks here.",
+        "leadHome": "Pair it, and Home and new workspaces go on this Mac."
+      },
+      "art": {
+        "thisMac": "This Mac",
+        "notPaired": "Not paired"
+      },
+      "point": {
+        "run": "Your tasks and Claude Code can run on this Mac, with no size limit.",
+        "closed": "It works whether or not the app is open, while the Mac is awake and online.",
+        "off": "Turn it off any time from the LangAlpha menu."
+      },
+      "account": "The agent can run commands and change files as {{account}}, the macOS account you're using now.",
+      "accountUnnamed": "The agent can run commands and change files as the macOS account you're using now.",
+      "notNow": "Not now",
+      "pairing": {
+        "title": "Pairing this Mac",
+        "lead": "The app does each step itself. You only answer macOS."
+      },
+      "step": {
+        "on": "Remote control turned on",
+        "loginItems": "Allow LangAlpha in Login Items",
+        "loginItemsDetail": "macOS held back the part of LangAlpha that keeps your Mac reachable. Allow it once.",
+        "loginItemsPath": "System Settings → General → Login Items",
+        "pairing": "Pairing",
+        "pairingDetail": "Pairing… {{elapsed}}. If it doesn't finish in 80 seconds, we'll say so here and you can try again."
+      },
+      "openLoginItems": "Open Login Items",
+      "timeout": "Pairing didn't finish in 80 seconds. Try again.",
+      "paired": {
+        "title": "This Mac is paired",
+        "home": "Home and new workspaces go on this Mac.",
+        "homeMoving": "Home is moving to this Mac. Your cloud computer stays, and steps in while the Mac is asleep.",
+        "homeMovingFromMachine": "Home is moving to this Mac from {{name}}."
+      }
+    },
+    "continueMac": {
+      "kickerNotPaired": "This Mac isn't paired",
+      "title": "Continue setup on this Mac?",
+      "leadPaired": "Pick up where you left off in the browser. Here's what's left:",
+      "leadNotPaired": "You can pair it later from Computers. Pick up where you left off in the browser. Here's what's left:",
+      "left": {
+        "computer": "A computer for your tasks",
+        "tokenThisMac": "Your Claude setup token for this Mac",
+        "token": "Your Claude setup token",
+        "subscription": "Your subscription or key",
+        "default": "Your default model",
+        "invest": "A few questions about how you invest",
+        "firstChat": "Your first chat"
+      },
+      "note": "Either way, the browser tab and this app show the same progress.",
+      "inBrowser": "I'll finish in the browser",
+      "here": "Continue here"
+    }
   },
   "marketView": {
     "pageHeading": "{{symbol}} market view",
@@ -5162,6 +5354,12 @@
         "unreadable": "{{name}} couldn't be read.",
         "uploadFailed": "{{name}} couldn't be uploaded. Try adding it again."
       }
+    },
+    "chatApps": {
+      "title": "Ask from your chat apps too",
+      "body": "Slack, Telegram, Discord, iMessage, Feishu or email. Same Chief of Staff, same threads.",
+      "notNow": "Not now",
+      "connect": "Connect a chat app"
     }
   },
   "mcp": {
@@ -7061,7 +7259,8 @@
       "offline": "Offline",
       "off": "Off",
       "needsComputer": "No computer",
-      "notAllowed": "Not allowed"
+      "notAllowed": "Not allowed",
+      "paired": "Paired"
     },
     "before": {
       "need": "What you need",
@@ -7221,6 +7420,7 @@
         "terms": "Anthropic's terms for your Claude plan apply to this use, and you're responsible for following them. Anthropic may limit or suspend accounts that it finds break them.",
         "undo": "You can switch back at any time, and LangAlpha deletes the token right away.",
         "confirm": "Store my token",
+        "agree": "I agree to let LangAlpha store my setup token",
         "termsLink": "Read Anthropic's terms"
       },
       "leaveStored": {

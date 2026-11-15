@@ -13,7 +13,7 @@ import { SetupFooter } from '../../SetupFooter';
 export function SubscriptionConnect({ state }: { state: LocationState }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const connected = useProviderConnected();
+  const connected = useProviderConnected(state.answering === true);
   const headingId = useId();
   const provider = state.provider && isSubscriptionProvider(state.provider) ? state.provider : 'codex-oauth';
   const key = subscriptionKey(provider);
@@ -33,7 +33,7 @@ export function SubscriptionConnect({ state }: { state: LocationState }) {
         ? <ClaudeConnect onConnected={done} />
         : <DeviceConnect key={provider} provider={provider} onConnected={done} />}
       <SetupFooter
-        back={{ label: t('setup.back'), onClick: () => navigate('/setup/provider', { state: { list: 'oauth' } }) }}
+        back={{ label: t('setup.back'), onClick: () => navigate('/setup/provider', { state: { list: 'oauth', answering: state.answering } }) }}
         primary={null}
       />
     </div>

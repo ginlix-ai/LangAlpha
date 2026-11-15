@@ -102,14 +102,22 @@ export function useSetComputerClis(computerId: string) {
 }
 
 /** `whenOff`: read even while the user's flag is off, for a token left in
- *  place when they opted out, which Settings still offers to remove. */
+ *  place when they opted out, which Settings still offers to remove.
+ *  `enabled` false reads nothing, for a caller that needs no answer yet. */
 interface ReadOptions {
   whenOff?: boolean;
+  enabled?: boolean;
 }
 
+/** `featuresUnread`: the flags were never read, so whether Claude Code is on is unknown, not off. */
 function useClaudeCodeFlag() {
-  const { data: features, isLoading } = useFeatures();
-  return { flagged: isFeatureEnabled(features, 'claude_code_runtime'), featuresLoading: isLoading };
+  const { data: features, isLoading, isError, refetch } = useFeatures();
+  return {
+    flagged: isFeatureEnabled(features, 'claude_code_runtime'),
+    featuresLoading: isLoading,
+    featuresUnread: isError && features === undefined,
+    retryFeatures: () => void refetch(),
+  };
 }
 
 /**
@@ -124,12 +132,12 @@ function useClaudeCodeFlag() {
  * ordinary read, since each recheck spends a request on the user's plan. A
  * token that works is read again as it expires.
  */
-export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
-  const { flagged, featuresLoading } = useClaudeCodeFlag();
-  const { data, dataUpdatedAt, isLoading } = useQuery({
+export function useClaudeCodeStatus({ whenOff = false, enabled: wanted = true }: ReadOptions = {}) {
+  const { flagged, featuresLoading, featuresUnread, retryFeatures } = useClaudeCodeFlag();
+  const { data, dataUpdatedAt, isLoading, isError, refetch } = useQuery({
     queryKey: queryKeys.features.claudeCodeStatus(),
     queryFn: () => getClaudeCodeStatus(),
-    enabled: flagged || whenOff,
+    enabled: wanted && (flagged || whenOff),
     staleTime: 60_000,
     retry: false,
     refetchInterval: (query) => (query.state.data?.state === 'checking'
@@ -149,6 +157,9 @@ export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
     checkAfter: holdUntil(data?.check_in, dataUpdatedAt),
     checkBills: data?.check_bills === true,
     isLoading: featuresLoading || isLoading,
+    /** The read failed with nothing read before, so whether Claude Code is on for them is unknown. */
+    unread: (wanted && featuresUnread) || (isError && data === undefined),
+    retry: () => (featuresUnread ? retryFeatures() : void refetch()),
   };
 }
 
@@ -161,13 +172,13 @@ export function useClaudeCodeStatus({ whenOff = false }: ReadOptions = {}) {
  * the expiry timer then never fires. With the flag off the server says
  * `off` for each, still naming a token left on one.
  */
-export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
-  const { flagged, featuresLoading } = useClaudeCodeFlag();
-  const saved = useClaudeCodeStatus({ whenOff });
+export function useClaudeCodeComputers({ whenOff = false, enabled: wanted = true }: ReadOptions = {}) {
+  const { flagged, featuresLoading, featuresUnread } = useClaudeCodeFlag();
+  const saved = useClaudeCodeStatus({ whenOff, enabled: wanted });
   const { data, dataUpdatedAt, isLoading, isError } = useQuery({
     queryKey: queryKeys.features.claudeCodeComputers(),
     queryFn: () => getClaudeCodeComputers(),
-    enabled: flagged || whenOff,
+    enabled: wanted && (flagged || whenOff),
     staleTime: 60_000,
     retry: 1,
     refetchInterval: (query) => {
@@ -189,7 +200,7 @@ export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
     computers: data?.computers ?? [], cloudRefusals: data?.cloud_refusals ?? {}, cliComputer: data?.cli_computer ?? null,
     clisMax: data?.clis_max ?? null,
     isLoading: featuresLoading || isLoading,
-    unread: isError && !data,
+    unread: (wanted && featuresUnread) || (isError && !data),
     /** When the list arrived, by this clock: the time a token's expiry is judged at. */
     readAt: dataUpdatedAt,
     checkAfterOf: (entry: ClaudeCodeComputer) => holdUntil(entry.check_in, dataUpdatedAt),
@@ -209,7 +220,7 @@ export function useClaudeCodeComputers({ whenOff = false }: ReadOptions = {}) {
  */
 export function useClaudeCodeSetup({ enabled = true }: { enabled?: boolean } = {}) {
   const saved = useClaudeCodeStatus();
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: queryKeys.features.claudeCodeSetup(),
     queryFn: () => getClaudeCodeSetup(),
     enabled,
@@ -228,5 +239,5 @@ export function useClaudeCodeSetup({ enabled = true }: { enabled?: boolean } = {
     },
   });
   // A failed read is not "not offered": the entry stays, its status unknown.
-  return { setup: data ?? null, isLoading, unread: isError && data === undefined };
+  return { setup: data ?? null, isLoading, unread: isError && data === undefined, retry: () => void refetch() };
 }

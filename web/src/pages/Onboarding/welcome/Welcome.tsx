@@ -9,7 +9,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { preloadRouteChunk } from '@/components/Main/Main';
@@ -47,6 +47,7 @@ import { kickoffSend } from './kickoff';
 import { marketBriefQuery } from './marketBrief';
 import {
   WELCOME_EDIT_PARAM,
+  cameFromSetup,
   WELCOME_STEP_PARAM,
   isWelcomeStep,
   openingStep,
@@ -89,6 +90,7 @@ const PLACEHOLDER_NAME = 'Local User';
 export default function Welcome() {
   useSyncUserLocale();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const { user } = useUser();
   // Read again on every visit rather than taken from the cache: the agent
   // writes the same profile and the save sends what differs from this row,
@@ -100,13 +102,16 @@ export default function Welcome() {
     retry: false,
   });
   const { skipWelcome } = useOnboarding();
-  if (!row.isFetchedAfterMount) return <PageLoading />;
+  const mode: WelcomeMode = searchParams.get(WELCOME_EDIT_PARAM) === '1' ? 'edit' : 'new';
+  const arriving = mode === 'new' && cameFromSetup(location.state);
+  // From setup, the page it left is the one this fades in over, so the wait
+  // is that page's ground rather than the loading wall.
+  if (!row.isFetchedAfterMount) return arriving ? <div className="fixed inset-0 bg-(--color-bg-page)" /> : <PageLoading />;
   // Not opened on a blank profile: a save is measured against the row read
   // here, so it would replace what the server holds with the few answers
   // changed on top of nothing.
   if (row.isError) return <LoadFailed retrying={row.isFetching} onRetry={() => void row.refetch()} />;
 
-  const mode: WelcomeMode = searchParams.get(WELCOME_EDIT_PARAM) === '1' ? 'edit' : 'new';
   const steps = welcomeSteps(mode);
   const userId = user?.user_id ?? null;
   const saved = readProfile(row.data);
@@ -130,6 +135,7 @@ export default function Welcome() {
       userId={userId}
       userName={user?.name ?? null}
       onSkip={skipWelcome}
+      arriving={arriving}
     />
   );
 }
@@ -173,6 +179,9 @@ interface WelcomeFlowProps {
   onSkip: () => void;
   /** The brokerage step's own answers, from a draft being resumed. */
   resumedElsewhere?: WelcomeDraft['elsewhere'];
+  /** Opened by setup finishing: the page fades in and its first turn writes
+   *  itself, as one just arrived at does. */
+  arriving?: boolean;
 }
 
 /** A turn of the conversation: a step, or the brokerage step's second half
@@ -217,6 +226,7 @@ export function WelcomeFlow({
   userName = null,
   onSkip,
   resumedElsewhere,
+  arriving = false,
 }: WelcomeFlowProps) {
   const { t, i18n } = useTranslation();
   const locale = useLocale();
@@ -287,7 +297,17 @@ export function WelcomeFlow({
   const [handoff, setHandoff] = useState<Handoff>(null);
   // The turn just arrived at, which writes itself in. One opened on, or gone
   // back to, is there at once.
-  const [fresh, setFresh] = useState<TurnId | null>(null);
+  const [fresh, setFresh] = useState<TurnId | null>(arriving ? initialStep : null);
+  // Kept for the visit: the arrival is spent once the page is up, so a reload
+  // opens on the flow standing.
+  const [arrived] = useState(arriving);
+  const location = useLocation();
+  const spendArrival = useEffectEvent(() => {
+    navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null });
+  });
+  useEffect(() => {
+    if (arrived) spendArrival();
+  }, [arrived]);
   // The hand-off's waits, called off when the flow is left. A ref rather than
   // part of `handoff`: leaving unmounts the flow, and the cleanup that calls
   // them off then needs the one running, not the one of the render it was
@@ -743,6 +763,7 @@ export function WelcomeFlow({
   return (
     <ConversationShell
       testId="welcome-flow"
+      arriving={arrived}
       exit={
         <WizardExit
           label={mode === 'edit' ? t('onboarding.welcome.cancel') : t('onboarding.welcome.skip')}

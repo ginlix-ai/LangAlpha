@@ -4454,7 +4454,6 @@
     "removeProvider": "移除",
     "addAnotherProviderHeading": "添加其他提供商",
     "addMoreProviders": "连接其他提供商以获取更多模型选择。",
-    "invitationRedeemed": "邀请码已兑换。你可以配置模型或添加提供商。",
     "invitationCodeLabel": "邀请码",
     "redeeming": "兑换中...",
     "redeem": "兑换",
@@ -4534,7 +4533,200 @@
     "apiFormatTipBest": "我们针对 Anthropic Messages API 和 OpenAI Responses API 做了最多调优，提供商支持时请优先选择。支持 Claude Code 的提供商会提供 Messages API；支持 Codex 的提供商通常提供 Responses API，但也有的提供 Chat Completions API，请以其文档为准。",
     "customUnverifiedTitle": "未经我们验证。",
     "customUnverifiedBody": "自定义端点的效果取决于它对该 API 的实现是否完整，我们无法逐一测试。端点若不支持提示词缓存，长对话会更慢、费用更高；若把请求转给其他模型，或忽略思考、推理强度设置，实际生效的就不是你所选的模型或设置；若端点本身不稳定，请求失败也会更多。",
-    "proxyUnverifiedBody": "该地址不是 {{provider}} 的官方 API，也不是我们认可的云平台（AWS Bedrock、Azure、Google Vertex AI），很可能是代理，我们无法对其测试。代理若未透传提示词缓存，长对话会更慢、费用更高；若把请求转给其他模型，或丢掉思考、推理强度设置，实际生效的就不是你所选的模型或设置；若代理本身不稳定，请求失败也会更多。"
+    "proxyUnverifiedBody": "该地址不是 {{provider}} 的官方 API，也不是我们认可的云平台（AWS Bedrock、Azure、Google Vertex AI），很可能是代理，我们无法对其测试。代理若未透传提示词缓存，长对话会更慢、费用更高；若把请求转给其他模型，或丢掉思考、推理强度设置，实际生效的就不是你所选的模型或设置；若代理本身不稳定，请求失败也会更多。",
+    "answers": {
+      "fromYourAnswers": "根据你的回答",
+      "change": "修改",
+      "tag": {
+        "claude_code": "Claude Code",
+        "subscription_or_key": "订阅或 API key",
+        "langalpha_models": "LangAlpha 的模型",
+        "serverModels": "此服务器提供的模型",
+        "cloud": "云端计算机",
+        "serverComputer": "此服务器运行的计算机",
+        "own_computer": "你的计算机"
+      },
+      "rail": {
+        "use": "你的用途",
+        "computer": "计算机",
+        "model": "模型",
+        "default": "默认模型"
+      },
+      "use": {
+        "title": "你打算怎么使用 LangAlpha？",
+        "lead": "两个问题。后面的设置步骤按你的回答来定，之后也可以随时修改。",
+        "modelsLabel": "你想用哪些模型？",
+        "claudeCode": "你的 Claude 套餐，配合 Claude Code",
+        "claudeCodeDesc": "Pro 或 Max。Claude Code 用你的套餐运行，并使用 LangAlpha 的工具。",
+        "subscription": "其他订阅或 API key",
+        "subscriptionDesc": "ChatGPT、Grok、编程套餐，或任意服务商的 API key。",
+        "serverModels": "此服务器提供的模型",
+        "serverModelsDesc": "由你的管理员配置的模型。",
+        "whereLabel": "你的任务在哪里运行？",
+        "serverComputer": "在此服务器运行的计算机上",
+        "serverComputerDesc": "你的电脑关机时也能继续工作。",
+        "homeStays": "Home 会留在这台 Mac 上。可在设置中迁移。",
+        "own": "在你自己的计算机上",
+        "ownDesc": "你的 Mac，或任意可通过 SSH 连接的 Mac 或 Linux 计算机。",
+        "saveFailed": "你的回答没能保存，请重试。"
+      },
+      "computer": {
+        "title": "连接你的计算机",
+        "leadClaudeCode": "Claude Code 和你的任务都在这台计算机上运行。LangAlpha 以你选定的账户登录。",
+        "lead": "你的任务在这台计算机上运行。LangAlpha 以你选定的账户登录。",
+        "macDesktop": "配对这台 Mac 后，Home 和新工作区都会放在它上面。",
+        "continueOnMac": "在你的 Mac 上继续",
+        "pairThisMac": "配对这台 Mac",
+        "accountNote": "Agent 能做你所连接账户能做的任何事，所以请连接一个专门为它创建的账户，而不是你自己的。",
+        "onlineNote": "Home 会放在你连接的计算机上，你的对话也在那里运行，所以运行期间它需要保持开机并联网。",
+        "onlineNoteNamed": "Home 会放在 {{name}} 上，你的对话也在那里运行，所以运行期间它需要保持开机并联网。",
+        "noBackupNote": "不开启备份，这台计算机就不能设为你的默认计算机，所以 Home 和新工作区会放在云端计算机上。",
+        "macUpdateApp": "更新 LangAlpha 应用后即可配对这台 Mac。"
+      },
+      "ssh": {
+        "title": "通过 SSH 添加计算机",
+        "lead": "脚本让 LangAlpha 能够登录，并告知如何连接到这台计算机。本页会逐步显示进度。"
+      },
+      "model": {
+        "tokenTitle": "添加你的 Claude setup token",
+        "tokenForComputer": "用于 {{name}}。token 保存在那台计算机上，LangAlpha 不会保留。",
+        "tokenForCloud": "用于你的云端计算机。LangAlpha 会加密保存它，只用于为你的对话运行 Claude Code。",
+        "tokenForServer": "用于此服务器运行的计算机。LangAlpha 会加密保存它，只用于为你的对话运行 Claude Code。",
+        "replaceToken": "更换 token",
+        "planOutNote": "Claude 套餐用完后，Claude Code 的对话会等额度重置后再继续，除非你在设置中另行选择。不会改用其他模型。",
+        "subTitle": "连接你的订阅或 API key",
+        "subLead": "先选一个，之后可以在设置中添加更多。",
+        "saveDefaultFailed": "已连接，但没能设为默认模型。你可以在下一步选择它。",
+        "claudeCodeUnavailableTitle": "你暂时无法使用 Claude Code",
+        "claudeCodeUnavailableLead": "你的账户在这里无法使用 Claude Code，所以不需要添加 setup token。修改回答，改用其他模型。",
+        "withApiKey": "改用 API key 继续"
+      },
+      "default": {
+        "title": "选择你的模型",
+        "lead": "一个模型负责对话，另一个处理对话周边的工作。两者之后都可以在设置中随时更改。",
+        "recommended": "推荐",
+        "startChat": "开始对话",
+        "claudeCodeOn": "在 {{name}} 上运行的 Claude Code",
+        "claudeCodeOnCloud": "在你的云端计算机上运行的 Claude Code",
+        "none": "你目前还没有可用的模型，之后可以在设置中选择默认模型。",
+        "saveFailed": "默认模型没能保存，请重试。",
+        "recommendedSetup": "推荐配置",
+        "useRecommended": "使用推荐配置",
+        "customize": "自定义",
+        "intelligence": "智能",
+        "speed": "速度",
+        "rating": "{{label}}：{{value}}/5",
+        "why": {
+          "strongest": "在你的模型中智能评分最高。",
+          "strongestFastest": "在你的模型中智能评分最高，且是其中速度最快的。",
+          "deployment": "LangAlpha 模型的默认选择。",
+          "claudeCode": "适合任何 Claude 套餐。",
+          "fastestBackground": "你其他模型中速度最快的，正适合后台任务。",
+          "onlyBackground": "你唯一能运行后台任务的模型。",
+          "deploymentBackground": "LangAlpha 模型的后台默认选择。",
+          "claudeCodeBackground": "Claude Code 只运行对话，因此后台任务在 {{model}} 上运行。",
+          "claudeCodeCreditsBackground": "Claude Code 只运行对话，因此后台任务在 LangAlpha 的 {{model}} 上运行，会消耗你的 credits。"
+        },
+        "settingUp": {
+          "title": "正在为你完成设置",
+          "models": "保存你的模型",
+          "home": "准备 Home",
+          "finish": "完成设置",
+          "done": "设置已完成"
+        }
+      },
+      "saveFailed": "这一步没能保存，请重试。",
+      "changeAnswers": "修改我的回答",
+      "loadFailed": "这一步没能加载。",
+      "tryAgain": "重试"
+    },
+    "mac": {
+      "kicker": "你的 Mac",
+      "get": {
+        "title": "在你的 Mac 上继续",
+        "lead": "Mac 应用一步就能配对你的 Mac，剩下的设置也在那里继续。",
+        "step1": "下载 LangAlpha Mac 应用",
+        "download": "下载 Mac 应用",
+        "step2": "打开它，并以 {{email}} 登录",
+        "step2Unnamed": "打开它，并用同一个账户登录",
+        "step3": "配对这台 Mac，并在那里点几下完成设置"
+      },
+      "waiting": {
+        "title": "在 Mac 上的 LangAlpha 应用中完成设置",
+        "lead": "用同一个账户登录，应用会从这里接着进行。",
+        "artOs": "macOS",
+        "artStatus": "等待应用",
+        "artLabel": "你的 Mac，正在等待 LangAlpha 应用",
+        "live": "等待你在 Mac 上登录应用…"
+      },
+      "moved": {
+        "title": "设置已转到你的 Mac 上",
+        "lead": "你正在 {{name}} 上的 LangAlpha 应用中完成设置。",
+        "leadUnnamed": "你正在 Mac 上的 LangAlpha 应用中完成设置。",
+        "yourMac": "你的 Mac",
+        "open": "设置正在 LangAlpha 应用中进行",
+        "note": "你在 Mac 上完成后，这个标签页会跳到你的第一段对话。你也可以直接关闭它。"
+      },
+      "continueHere": "改为在这里继续"
+    },
+    "thisMac": {
+      "kicker": "登录之后",
+      "ask": {
+        "title": "要在 LangAlpha 中使用这台 Mac 吗？",
+        "lead": "配对后，LangAlpha 就能在这里运行你的任务。",
+        "leadHome": "配对后，Home 和新工作区都会放在这台 Mac 上。"
+      },
+      "art": {
+        "thisMac": "这台 Mac",
+        "notPaired": "未配对"
+      },
+      "point": {
+        "run": "你的任务和 Claude Code 可以在这台 Mac 上运行，没有规格限制。",
+        "closed": "无论应用是否打开都能工作，只要 Mac 处于唤醒并联网状态。",
+        "off": "随时可以在 LangAlpha 菜单中关闭。"
+      },
+      "account": "Agent 可以以 {{account}}（你当前使用的 macOS 账户）的身份运行命令并修改文件。",
+      "accountUnnamed": "Agent 可以以你当前使用的 macOS 账户的身份运行命令并修改文件。",
+      "notNow": "暂不",
+      "pairing": {
+        "title": "正在配对这台 Mac",
+        "lead": "应用会自己完成每一步，你只需回应 macOS 的提示。"
+      },
+      "step": {
+        "on": "远程控制已开启",
+        "loginItems": "在登录项中允许 LangAlpha",
+        "loginItemsDetail": "macOS 拦下了让你的 Mac 保持可连接的 LangAlpha 组件，允许一次即可。",
+        "loginItemsPath": "系统设置 → 通用 → 登录项",
+        "pairing": "配对",
+        "pairingDetail": "正在配对… {{elapsed}}。如果 80 秒内没有完成，我们会在这里提示，你可以再试一次。"
+      },
+      "openLoginItems": "打开登录项",
+      "timeout": "配对没有在 80 秒内完成，请再试一次。",
+      "paired": {
+        "title": "这台 Mac 已配对",
+        "home": "Home 和新工作区都会放在这台 Mac 上。",
+        "homeMoving": "Home 正在迁移到这台 Mac。云端计算机会保留，在 Mac 睡眠时接替工作。",
+        "homeMovingFromMachine": "Home 正在从 {{name}} 迁移到这台 Mac。"
+      }
+    },
+    "continueMac": {
+      "kickerNotPaired": "这台 Mac 尚未配对",
+      "title": "要在这台 Mac 上继续设置吗？",
+      "leadPaired": "从你在浏览器中停下的地方继续。还剩这些：",
+      "leadNotPaired": "你可以稍后在“计算机”中配对。从你在浏览器中停下的地方继续。还剩这些：",
+      "left": {
+        "computer": "一台运行任务的计算机",
+        "tokenThisMac": "这台 Mac 的 Claude setup token",
+        "token": "你的 Claude setup token",
+        "subscription": "你的订阅或 API key",
+        "default": "你的默认模型",
+        "invest": "几个关于你投资方式的问题",
+        "firstChat": "你的第一段对话"
+      },
+      "note": "无论选哪种，浏览器标签页和这个应用都会显示相同的进度。",
+      "inBrowser": "我在浏览器中完成",
+      "here": "在这里继续"
+    }
   },
   "marketView": {
     "pageHeading": "{{symbol}} 行情",
@@ -5145,6 +5337,12 @@
         "unreadable": "无法读取 {{name}}。",
         "uploadFailed": "{{name}} 上传失败，请重新添加。"
       }
+    },
+    "chatApps": {
+      "title": "也可以在聊天应用里提问",
+      "body": "Slack、Telegram、Discord、iMessage、飞书或电子邮件。同一个 Chief of Staff Agent，同样的对话。",
+      "notNow": "以后再说",
+      "connect": "连接聊天应用"
     }
   },
   "mcp": {
@@ -6973,7 +7171,8 @@
       "offline": "离线",
       "off": "已关闭",
       "needsComputer": "没有电脑",
-      "notAllowed": "不允许"
+      "notAllowed": "不允许",
+      "paired": "已配对"
     },
     "before": {
       "need": "您需要",
@@ -7133,6 +7332,7 @@
         "terms": "这种使用方式适用 Anthropic 为你的 Claude 套餐制定的条款，你需要自行确保遵守。Anthropic 可能会限制或停用它认定违反条款的账户。",
         "undo": "你可以随时切换回来，LangAlpha 会立即删除此 token。",
         "confirm": "保存我的 token",
+        "agree": "我同意让 LangAlpha 保存我的 setup token",
         "termsLink": "阅读 Anthropic 条款"
       },
       "leaveStored": {

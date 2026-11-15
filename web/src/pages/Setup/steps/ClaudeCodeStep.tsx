@@ -25,7 +25,7 @@ const noCover = () => {};
 export default function ClaudeCodeStep() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const connected = useProviderConnected();
+  const connected = useProviderConnected(false);
   const headingId = useId();
   const { setup, isLoading } = useClaudeCodeSetup();
   const tokenRows = useClaudeCodeTokenRows();

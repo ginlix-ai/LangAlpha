@@ -429,6 +429,7 @@ export function WizardSection({
 interface FooterAction {
   label: string;
   onClick: () => void;
+  disabled?: boolean;
 }
 
 export interface WizardFooterProps {
@@ -461,14 +462,14 @@ export function WizardFooter({ back, skip, primary }: WizardFooterProps) {
           step has no Back), so the primary button over it does not drop. */}
       <div className="flex min-h-10 items-center justify-between sm:contents">
         {back ? (
-          <button type="button" onClick={back.onClick} {...buttonSlot('ghost')} className={cn(ghost, '-ml-3 sm:mr-auto')}>
+          <button type="button" onClick={back.onClick} disabled={back.disabled} {...buttonSlot('ghost')} className={cn(ghost, '-ml-3 sm:mr-auto')}>
             {back.label}
           </button>
         ) : (
           <span className="sm:mr-auto" />
         )}
         {skip && (
-          <button type="button" onClick={skip.onClick} {...buttonSlot('ghost')} className={cn(ghost, '-mr-3 sm:mr-0')}>
+          <button type="button" onClick={skip.onClick} disabled={skip.disabled} {...buttonSlot('ghost')} className={cn(ghost, '-mr-3 sm:mr-0')}>
             {skip.label}
           </button>
         )}

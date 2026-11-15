@@ -269,7 +269,9 @@ def subscription_route(model_name: str, mc, *, custom_entry: dict | None) -> Sub
 
 def plan_includes(model_info: dict, plan_type: str | None) -> bool:
     """Whether a subscription on ``plan_type`` may run the model (manifest
-    ``oauth_plans``). An unknown plan passes: the upstream stays the authority."""
+    ``oauth_plans``). A model that lists no plans takes any, and a plan not
+    read (None or empty) passes, since the upstream stays the authority; a
+    plan that was read must be on the list."""
     allowed = model_info.get("oauth_plans")
     plan = (plan_type or "").lower()
     return not (allowed and plan and plan not in {p.lower() for p in allowed})

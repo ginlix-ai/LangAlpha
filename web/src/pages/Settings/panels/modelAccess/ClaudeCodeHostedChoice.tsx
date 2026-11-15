@@ -13,14 +13,12 @@ import { MediumActionButton } from '@/pages/ChatAgent/components/MediumActionLin
 import { useMediumAction } from '@/pages/ChatAgent/hooks/useMediumAction';
 import { useSaveFailedToast } from '../usePreferenceWrite';
 import { ModeCard } from './ModeCard';
+import { ConsentDialog } from '@/components/modelAccess/ClaudeCodeConsentDialog';
 
 const MODES: readonly { mode: ClaudeCodeCustodyMode; label: string; detail: string }[] = [
   { mode: 'local', label: CLAUDE_CODE_MODE_LABELS.local, detail: 'modelAccess.claudeCode.hosted.localDetail' },
   { mode: 'stored', label: CLAUDE_CODE_MODE_LABELS.stored, detail: 'modelAccess.claudeCode.hosted.storedDetail' },
 ];
-
-/** Anthropic's consumer terms, which apply to a Claude plan used this way. */
-const ANTHROPIC_TERMS_URL = 'https://www.anthropic.com/legal/consumer-terms';
 
 /** What the choice is asking before it switches: consent to store the token,
  *  or leaving the stored token for running only on their own computers. */
@@ -157,44 +155,6 @@ function TooSmallNote({ computerId, name }: { computerId: string; name: string }
 
 function Note({ children }: { children: string }) {
   return <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>{children}</p>;
-}
-
-/** What storing the token means, accepted before the server stores one. */
-function ConsentDialog({ onConfirm, onClose }: { onConfirm: () => void; onClose: () => void }) {
-  const { t } = useTranslation();
-  const titleId = useId();
-  return (
-    <ModalShell
-      labelId={titleId}
-      title={t('modelAccess.claudeCode.consent.title')}
-      onClose={onClose}
-      stacked
-      footer={
-        <div className="flex items-center justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-          <Button type="button" onClick={onConfirm}>{t('modelAccess.claudeCode.consent.confirm')}</Button>
-        </div>
-      }
-    >
-      <div className="flex flex-col gap-3 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-        <p>{t('modelAccess.claudeCode.consent.encrypted')}</p>
-        <p>{t('modelAccess.claudeCode.consent.unattended')}</p>
-        <p>
-          {t('modelAccess.claudeCode.consent.terms')}{' '}
-          <a
-            href={ANTHROPIC_TERMS_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 underline underline-offset-2 hover:opacity-80"
-          >
-            {t('modelAccess.claudeCode.consent.termsLink')}
-            <ExternalLink aria-hidden="true" className="h-3 w-3" />
-          </a>
-        </p>
-        <p>{t('modelAccess.claudeCode.consent.undo')}</p>
-      </div>
-    </ModalShell>
-  );
 }
 
 /** Leaving the stored token deletes it, and stops the turns running on it. */

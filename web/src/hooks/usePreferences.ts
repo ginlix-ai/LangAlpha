@@ -13,7 +13,7 @@ export function usePreferences() {
   // Named fields, never a spread of the result: react-query re-renders a reader
   // only when a field it read changes, and a spread reads all of them, so every
   // background refetch re-rendered every reader, each one paying for the spread.
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: queryKeys.user.preferences(),
     queryFn: getPreferences as () => Promise<UserPreferences>,
     staleTime: PREFS_STALE_TIME_MS,
@@ -21,5 +21,12 @@ export function usePreferences() {
   });
   // `preferences` is null both for a user with no row yet and for a read that
   // failed; `isLoaded` tells them apart, for a writer that replaces a value whole.
-  return { preferences: data ?? null, isLoading, isLoaded: data !== undefined };
+  return {
+    preferences: data ?? null,
+    isLoading,
+    isLoaded: data !== undefined,
+    /** The first read failed, which is not tried again on its own. */
+    unread: isError && data === undefined,
+    retry: () => void refetch(),
+  };
 }

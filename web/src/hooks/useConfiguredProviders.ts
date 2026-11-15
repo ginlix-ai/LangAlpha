@@ -61,16 +61,17 @@ const combineStatuses = (results: UseQueryResult<OAuthStatus>[]) => ({
   statuses: results.map((r) => r.data),
   isLoading: results.some((r) => r.isLoading),
   isError: results.some((r) => r.isError),
+  unread: results.some((r) => r.isError && r.data === undefined),
 });
 
 /**
  * Returns a unified list of all configured providers (BYOK keys + OAuth connections).
  * Used by the wizard to show what's already connected and to mark provider cards.
  */
-export function useConfiguredProviders() {
-  const { apiKeys, isLoading: keysLoading } = useApiKeys();
+export function useConfiguredProviders({ enabled = true }: { enabled?: boolean } = {}) {
+  const { apiKeys, isLoading: keysLoading, isError: keysError } = useApiKeys({ enabled });
   const oauth = useQueries({
-    queries: SUBSCRIPTIONS.map((s) => statusQuery(s.provider)),
+    queries: SUBSCRIPTIONS.map((s) => ({ ...statusQuery(s.provider), enabled })),
     combine: combineStatuses,
   });
   const { statuses } = oauth;
@@ -129,5 +130,7 @@ export function useConfiguredProviders() {
     statusLoading: oauth.isLoading,
     /** A status that could not be read; its row shows unknown, not disconnected. */
     statusError: oauth.isError,
+    /** The keys, or a subscription's status, never read: what is connected is unknown. */
+    unread: (keysError && !apiKeys) || oauth.unread,
   };
 }
