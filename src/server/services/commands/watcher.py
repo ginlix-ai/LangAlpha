@@ -22,7 +22,8 @@ settles each row by ``settle.decide`` and ``settle.settle``:
 While a command is covered (``settle``'s module says what covers it), its
 computer is kept up past the idle sweep. Once not, on a computer the sweep
 would stop, it is stopped here and fails ``after_turn_limit``. An always-on
-computer has no hour.
+computer has no hour, nor a machine of the user's own, which the sweep never
+stops.
 
 Nothing is kept between passes. Every step either commits on the row or
 leaves it running for the next claim, so a worker that dies mid-pass only

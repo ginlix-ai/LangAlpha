@@ -2313,6 +2313,52 @@ class TestCleanupIdle:
         "src.server.services.workspace_manager.get_computers_by_status",
         new_callable=AsyncMock,
     )
+    @pytest.mark.parametrize(
+        ("active", "command", "retired"),
+        [(False, False, True), (False, True, False), (True, False, False)],
+        ids=["quiet", "command-running", "turn-running"],
+    )
+    async def test_an_idle_own_machine_is_never_stopped_only_its_session_goes(
+        self, mock_computers, active, command, retired
+    ):
+        """Stopping a machine of the user's own saves the deployment nothing
+        and ends the user's own work there; the sweep drops only this worker's
+        session, and keeps even that while a turn or a command runs."""
+        computer_id = str(uuid.uuid4())
+        row = _make_computer(
+            computer_id=computer_id,
+            kind="ssh",
+            last_activity_at=datetime.now(timezone.utc) - timedelta(hours=3),
+        )
+        mock_computers.return_value = [row]
+        config = _make_config()
+        config.to_core_config.return_value.sandbox.ssh.auto_stop_interval = 7200
+        wm = WorkspaceManager(config)
+        wm._machine(computer_id).session = MagicMock()
+        with (
+            patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop,
+            patch.object(
+                wm, "retire_computer_session_if_present", new_callable=AsyncMock
+            ) as retire,
+            patch.object(
+                wm, "_machine_has_active_tasks", new=AsyncMock(return_value=active)
+            ),
+            patch(
+                "src.server.database.runs.command_runs.computer_has_running_command",
+                new=AsyncMock(return_value=command),
+            ),
+        ):
+            assert await wm.cleanup_idle_workspaces() == 0
+
+        mock_stop.assert_not_awaited()
+        assert retire.await_count == (1 if retired else 0)
+        assert wm.idle_stop_window(row) is None
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
     async def test_always_on_first_page_cannot_starve_later_idle_machines(
         self, mock_computers
     ):

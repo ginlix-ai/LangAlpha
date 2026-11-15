@@ -707,6 +707,27 @@ async def statuses_on(computer_id: str, command_ids: Sequence[str]) -> Dict[str,
             return {str(r["command_id"]): str(r["status"]) for r in await cur.fetchall()}
 
 
+async def computer_has_running_command(computer_id: str) -> bool:
+    """Whether a command handed off on this computer is still running there,
+    whichever worker follows it."""
+    computer_id = normalize_uuid(computer_id)
+    if computer_id is None:
+        return False
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM command_runs
+                    WHERE computer_id = %s AND status = 'running'
+                )
+                """,
+                (computer_id,),
+            )
+            row = await cur.fetchone()
+            return bool(row and row[0])
+
+
 async def list_for_thread(
     thread_id: str,
     *,

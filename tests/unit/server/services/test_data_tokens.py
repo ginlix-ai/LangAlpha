@@ -760,8 +760,11 @@ class TestSweepSparesIdleComputers:
         return patch("src.server.services.runs.executor.LocalRunExecutor", executor)
 
     @classmethod
-    def _manager(cls):
-        manager = SimpleNamespace(_idle_timeout_for=lambda row: cls.IDLE_LIMIT_S)
+    def _manager(cls, *, own_machine: bool = False):
+        manager = SimpleNamespace(
+            _idle_timeout_for=lambda row: cls.IDLE_LIMIT_S,
+            stops_when_idle=lambda row: not own_machine,
+        )
         return patch(
             "src.server.services.computer_manager.ComputerManager.get_instance",
             return_value=manager,
@@ -781,6 +784,23 @@ class TestSweepSparesIdleComputers:
     ):
         with self._manager(), self._executor(False):
             assert await data_token_sweep.keeps_running(self._idle_row(idle_s)) is kept
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("own_machine", "kept"), [(True, True), (False, False)])
+    async def test_a_command_left_running_keeps_an_own_machines_token_fresh(
+        self, own_machine, kept
+    ):
+        """No sweep stops a machine of the user's own, so a command there may
+        call the data servers hours after the last turn stamped it."""
+        with (
+            self._manager(own_machine=own_machine),
+            self._executor(False),
+            patch(
+                "src.server.database.runs.command_runs.computer_has_running_command",
+                AsyncMock(return_value=True),
+            ),
+        ):
+            assert await data_token_sweep.keeps_running(self._idle_row(4 * 3600)) is kept
 
     @pytest.mark.asyncio
     async def test_an_idle_computer_with_nothing_running_is_not_written(self):

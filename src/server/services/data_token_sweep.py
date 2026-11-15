@@ -88,16 +88,24 @@ async def keeps_running(row: dict[str, Any]) -> bool:
     """Whether the idle reaper would leave the computer running: always-on,
     used within the idle limit of its own provider, or with work in
     flight, failing toward active as the reaper does. Settings no
-    provider can be built from rule out a write as well."""
+    provider can be built from rule out a write as well.
+
+    A machine of the user's own is never stopped for being idle, so a
+    command left running there counts as work in flight: it may still call
+    the data servers hours after the last turn, with nothing else stamping
+    the machine active."""
     if row.get("is_always_on"):
         return True
+    from src.server.database.runs.command_runs import computer_has_running_command
     from src.server.services.computer_manager import ComputerManager
     from src.server.services.runs.executor import LocalRunExecutor
 
+    manager = ComputerManager.get_instance()
     try:
+        own_machine = not manager.stops_when_idle(row)
         # The reaper's own limit, so a computer it is about to stop for
         # being idle is not the one thing keeping it awake at the provider.
-        idle_timeout = ComputerManager.get_instance()._idle_timeout_for(row)
+        idle_timeout = manager._idle_timeout_for(row)
     except ValueError:
         return False
     last_activity = row.get("last_activity")
@@ -108,9 +116,10 @@ async def keeps_running(row: dict[str, Any]) -> bool:
         if idle_seconds <= idle_timeout:
             return True
 
-    return await LocalRunExecutor.get_instance().has_active_tasks_for_computer(
-        str(row["computer_id"])
-    )
+    computer_id = str(row["computer_id"])
+    if own_machine and await computer_has_running_command(computer_id):
+        return True
+    return await LocalRunExecutor.get_instance().has_active_tasks_for_computer(computer_id)
 
 
 class DataTokenSweeper:

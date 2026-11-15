@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, NamedTuple, Optional
 
-from ptc_agent.core.sandbox.providers import SELF_STOPPING_KINDS
+from ptc_agent.core.sandbox.providers import SELF_STOPPING_KINDS, provider_class
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxTransientError
 from ptc_agent.core.session import Session
 
@@ -621,6 +621,9 @@ class WorkspaceManager(ComputerManager):
         times. Activity is the computer's own stamp, which any project's turn
         refreshes.
 
+        A machine of the user's own is never stopped here
+        (``stops_when_idle``): only this worker's session for a quiet one goes.
+
         Returns:
             Number of computers stopped.
         """
@@ -654,6 +657,7 @@ class WorkspaceManager(ComputerManager):
 
             try:
                 window = self._idle_window(computer)
+                stops = self.stops_when_idle(computer)
             except ValueError as e:
                 # Settings the stop could not build a provider from either.
                 self._note_idle_reap_failure(computer_id, e)
@@ -662,6 +666,9 @@ class WorkspaceManager(ComputerManager):
                 continue
             idle_seconds = window.timeout_s + (now - window.stop_at).total_seconds()
             if now <= window.stop_at:
+                continue
+            if not stops:
+                await self._retire_idle_session(computer)
                 continue
 
             # Skip machines that still have an active agent workflow. The gate
@@ -745,14 +752,54 @@ class WorkspaceManager(ComputerManager):
         An always-on flag exempts it. The sweep exempts exactly the flagged
         machines once it has reconciled them, since it clears the flag of one
         whose owner lost the entitlement before it reaps; a machine whose
-        settings no provider can be built from is never stopped either.
+        settings no provider can be built from is never stopped either, nor
+        one of the user's own (``stops_when_idle``).
         """
         if computer.get("is_always_on"):
             return None
         try:
+            if not self.stops_when_idle(computer):
+                return None
             return self._idle_window(computer)
         except ValueError:
             return None
+
+    @staticmethod
+    def stops_when_idle(computer: Dict[str, Any]) -> bool:
+        """Whether the idle sweep stops this computer once it goes quiet.
+
+        The stop exists to end what a sandbox costs while nobody uses it. A
+        machine of the user's own (one the server cannot rebuild,
+        ``recreatable`` False) costs the deployment nothing running, and a
+        stop ends the user's own work there, such as a command left running
+        that nobody has checked on in an hour, so only its owner stops it.
+
+        Raises:
+            ValueError: The computer's kind names no known provider.
+        """
+        return provider_class(computer["kind"]).recreatable
+
+    async def _retire_idle_session(self, computer: Dict[str, Any]) -> None:
+        """Drop this worker's session for a quiet machine the sweep does not
+        stop, so a worker does not hold one for every machine it ever served.
+        Nothing on the machine is touched and the row stays running: the next
+        turn attaches again. Kept while a turn or a background command there
+        is still followed, since those read the machine through it."""
+        from src.server.database.runs.command_runs import computer_has_running_command
+
+        computer_id = str(computer["computer_id"])
+        if self._cached_session(computer_id) is None:
+            return
+        try:
+            if await self._machine_has_active_tasks(computer_id):
+                return
+            if await computer_has_running_command(computer_id):
+                return
+            await self.retire_computer_session_if_present(
+                computer_id, reason="its machine has been quiet past its idle limit"
+            )
+        except Exception as e:  # noqa: BLE001 - the next sweep tries again
+            logger.warning(f"Could not retire the idle session of computer {computer_id}: {e}")
 
     def _idle_timeout_for(self, computer: Dict[str, Any]) -> int:
         """Seconds idle before the sweep stops this computer.

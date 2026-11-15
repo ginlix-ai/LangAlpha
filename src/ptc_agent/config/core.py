@@ -500,9 +500,10 @@ class SSHConfig(ResourceTieredConfig):
     # only the server sets, from the probe. Nothing connects by it: it tells
     # the agent a Mac's command line tools are not GNU's.
     os: str = ""
-    # The machine never stops on idle, so the server's idle reaper stops a
-    # quiet one by this interval. Stopping only ends this computer's own
-    # processes there; the machine keeps running.
+    # How long a quiet computer keeps each worker's session for it. The
+    # server never stops the computer for being quiet: the machine is its
+    # owner's, costs the deployment nothing running, and a stop would end the
+    # owner's own work there. Only the server's own state for it goes.
     auto_stop_interval: int = Field(default=7200, ge=60)
     # The server dials each machine itself, so by default it connects only to
     # public addresses: a user's machine is never a way into the network the
