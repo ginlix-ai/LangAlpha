@@ -129,7 +129,7 @@ RUN uv pip install --system --compile-bytecode \
     openpyxl xlrd python-docx pypdf \
     beautifulsoup4 lxml pyyaml \
     defusedxml pdfplumber reportlab python-pptx ironcalc firecrawl-anydoc "markitdown[docx,pptx,xlsx]" \
-    "scrapling[all]==0.4.15" html-to-markdown trafilatura youtube-transcript-api \
+    "scrapling[all]==0.4.15" "html-to-markdown>=3.5,<4" trafilatura youtube-transcript-api \
     "playwright==${PLAYWRIGHT_VERSION}" \
     tqdm tabulate \
     && uv cache clean \

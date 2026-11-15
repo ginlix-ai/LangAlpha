@@ -43,6 +43,13 @@ _FIGURE_KEEP_RATIO = 0.65     # retaining fewer than this fraction => body dropp
 # context. The clean trafilatura extraction is small and never hits this.
 _MAX_FULL_PAGE_CHARS = 400_000
 
+# Images that carry no text yet run to tens of KB once converted: an inline
+# <svg> (icon sprites), which html-to-markdown re-encodes as a base64 data: URI
+# image, and an <img> already inlined as one. Left in, they bloat the page and
+# skew the stub comparison below toward the noisy full page. trafilatura drops
+# both on its own.
+_TEXTLESS_IMAGES = ("svg", 'img[src^="data:"]')
+
 _PCT_RE = re.compile(r"\d+(?:\.\d+)?\s?%")
 _DOLLAR_RE = re.compile(
     r"\$\s?\d[\d,]*(?:\.\d+)?\s?(?:billion|million|trillion|bn|b|m)?", re.IGNORECASE
@@ -96,7 +103,10 @@ def _try_full_page(html: str, trace: Trace) -> Optional[str]:
 
     try:
         return html_to_markdown.convert(
-            html, html_to_markdown.ConversionOptions(extract_metadata=False)
+            html,
+            html_to_markdown.ConversionOptions(
+                extract_metadata=False, exclude_selectors=list(_TEXTLESS_IMAGES)
+            ),
         ).content
     except Exception as e:
         trace(f"html-to-markdown conversion failed: {e}")
