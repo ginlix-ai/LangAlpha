@@ -461,10 +461,10 @@ async def _start_internal_mcp_servers(
     assert sandbox.runtime is not None
     work_dir = sandbox._work_dir
     layout = SandboxLayout(work_dir)
-    socket_path = f"{work_dir}/{supervisor_protocol.SOCKET_REL_PATH}"
+    # A long root binds under the login's home, so this may name $HOME.
+    socket = supervisor_protocol.socket_path_sh(work_dir)
     log_path = f"{work_dir}/{supervisor_protocol.LOG_REL_PATH}"
     src_root = layout.internal_src
-    quoted_socket = shlex.quote(socket_path)
     # A machine that never mounts has no mount to lose, so it is not asked.
     probe = sandbox.mounts_livefs
     pythonpath = f"PYTHONPATH={shlex.quote(src_root)}"
@@ -472,7 +472,7 @@ async def _start_internal_mcp_servers(
     to_log = f">> {shlex.quote(log_path)} 2>&1"
     command = (
         (f"{livefs_mount.PROBE} ; " if probe else "")
-        + f"mkdir -p {shlex.quote(posixpath.dirname(socket_path))} && "
+        + f"mkdir -p {shlex.quote(posixpath.dirname(log_path))} && "
         f"cd {shlex.quote(src_root)} && "
         # A daemon that would not retire leaves this start the loser of the
         # lock, which is no worse than not replacing it.
@@ -480,12 +480,10 @@ async def _start_internal_mcp_servers(
         + f"{{ {pythonpath} nohup {daemon} {to_log} < /dev/null & }} ; "
         # Poll rather than sleep a fixed amount: a warm start binds in
         # milliseconds and only a genuinely failing one pays the full wait.
-        f"for _ in $(seq 30); do [ -S {quoted_socket} ] && break; sleep 0.1; done; "
-        f"[ -S {quoted_socket} ]"
+        f"for _ in $(seq 30); do [ -S {socket} ] && break; sleep 0.1; done; "
+        f"[ -S {socket} ]"
     )
-    sandbox.mcp_server_sessions = {
-        "supervisor": {"socket": socket_path, "log": log_path, "started": False}
-    }
+    sandbox.mcp_server_sessions = {"supervisor": {"log": log_path, "started": False}}
     try:
         result = await sandbox._runtime_call(
             sandbox.runtime.exec,
@@ -507,7 +505,7 @@ async def _start_internal_mcp_servers(
         )
         return mount_answers
     sandbox.mcp_server_sessions["supervisor"]["started"] = True
-    logger.info("MCP supervisor listening", socket=socket_path)
+    logger.info("MCP supervisor listening", socket=socket)
     return mount_answers
 
 

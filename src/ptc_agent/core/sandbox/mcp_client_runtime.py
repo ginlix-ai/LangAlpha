@@ -2176,6 +2176,9 @@ def _http_tools_call(
 # Relative to ``_INTERNAL_ROOT``. The daemon's own artifacts; nothing outside
 # the supervisor addresses them, so they are not layout ClassVars.
 _SUPERVISOR_SOCKET_REL = "system/mcp-supervisor.sock"
+# For a root too long for a socket's address (``supervisor.protocol``).
+_SUPERVISOR_SUN_PATH_MAX = 103
+_SUPERVISOR_SHORT_SOCKET_DIR = ".langalpha/s"
 _SUPERVISOR_LOG_REL = "system/mcp-supervisor.log"
 _SUPERVISOR_PACKAGE = "supervisor"
 _SUPERVISOR_PROTOCOL_VERSION = 1
@@ -2393,7 +2396,17 @@ def server_secret_dependencies(server_name: str) -> list[str] | None:
 
 
 def _supervisor_socket_path() -> str:
-    return _internal_join(_SUPERVISOR_SOCKET_REL)
+    """``supervisor.protocol.socket_path`` for this computer: the daemon
+    binds where that says, and a wrapper never imports the daemon's package.
+    Built from the root as the daemon strips it: a configured root ending in
+    a slash would otherwise run one byte longer and pick the other path."""
+    root = _WORK_DIR.rstrip("/") or "/"
+    path = f"{root}/{_LAYOUT['INTERNAL_DIR']}/{_SUPERVISOR_SOCKET_REL}"
+    if len(os.fsencode(path)) <= _SUPERVISOR_SUN_PATH_MAX:
+        return path
+    digest = hashlib.sha256(os.fsencode(root)).hexdigest()[:16]
+    home = os.path.expanduser("~").rstrip("/")
+    return f"{home}/{_SUPERVISOR_SHORT_SOCKET_DIR}/{digest}.sock"
 
 
 def _supervisor_connect(path: str):

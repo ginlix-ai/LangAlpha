@@ -1031,8 +1031,15 @@ def main(argv: list[str] | None = None) -> int:
     if not root:
         _stderr_log("usage: python -m supervisor <computer_root> [--retire]")
         return 2
-    socket_path = os.path.join(root, p.SOCKET_REL_PATH)
-    os.makedirs(os.path.dirname(socket_path), exist_ok=True)
+    socket_path = p.socket_path(root)
+    socket_dir = os.path.dirname(socket_path)
+    os.makedirs(socket_dir, mode=0o700, exist_ok=True)
+    # makedirs leaves a folder that already exists as it was, and an account
+    # that can write in it can take the socket's name first.
+    try:
+        os.chmod(socket_dir, 0o700)
+    except OSError:
+        pass
     lock_path = socket_path + ".lock"
     if retiring:
         return retire(socket_path, lock_path)

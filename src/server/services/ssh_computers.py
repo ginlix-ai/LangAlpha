@@ -39,6 +39,7 @@ from src.server.models.computer import (
     ComputerSSHInfo,
     ComputerSSHProbeResponse,
     ComputerSSHSpec,
+    ROOT_DIR_MAX,
 )
 from src.server.services.ssh_dial_budget import spend_dials
 from src.server.services.ssh_tunnels import tunnels_enabled
@@ -618,6 +619,13 @@ async def plan_create(
             )
         await _unshared_root_dir(user_id, spec, root_dir)
         found = await dial(root_dir)
+        # As the disk spells it, which the commit checks for a sibling again.
+        root_dir = found.root_dir
+        if len(root_dir) > ROOT_DIR_MAX:
+            raise SSHConnectError(
+                "root_dir",
+                f"Choose a folder whose path is at most {ROOT_DIR_MAX} characters.",
+            )
     if not found.supported:
         raise SSHConnectError(
             "unsupported",

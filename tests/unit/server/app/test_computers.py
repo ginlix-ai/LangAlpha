@@ -750,6 +750,17 @@ def _found(**overrides):
     return SSHProbe(**{**fields, **overrides})
 
 
+def _dial_answering(found):
+    """A probe answering as the machine does, the folder asked about coming
+    back as its disk spells it (here, as asked)."""
+    from dataclasses import replace
+
+    async def dial(*_args, root_dir=None, **_kwargs):
+        return replace(found, root_dir=root_dir or "")
+
+    return AsyncMock(side_effect=dial)
+
+
 @pytest.mark.asyncio
 async def test_an_ssh_create_where_ssh_is_not_offered_dials_nothing(
     client, computer, entitled
@@ -888,7 +899,7 @@ async def test_a_folder_taken_while_the_probe_ran_is_refused_under_the_lock(
         patch("src.server.app.computers._computer_manager", return_value=manager),
         patch(f"{_SSH}.has_client_key", AsyncMock(return_value=True)),
         patch(f"{_SSH}.client_key", AsyncMock(return_value="private key")),
-        patch(f"{_SSH}.probe", AsyncMock(return_value=_found())),
+        patch(f"{_SSH}.probe", _dial_answering(_found())),
         patch(f"{_SSH}.get_computers_for_user", _computers),
         patch("src.server.app.computers.computer_capacity_lock", _lock),
     ):
@@ -914,7 +925,7 @@ async def test_an_ssh_create_without_a_folder_works_in_langalpha_in_the_home(
 
     sandbox_config.offered_providers = ("ssh",)
     manager = _creating_manager({**computer, "kind": "ssh"})
-    probe = AsyncMock(return_value=_found())
+    probe = _dial_answering(_found())
     body = {**_SSH_CREATE, "ssh": {**_SSH_CREATE["ssh"], "root_dir": None}}
     with (
         patch("src.server.app.computers._computer_manager", return_value=manager),

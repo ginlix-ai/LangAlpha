@@ -8,6 +8,7 @@ only a computer the owner named once they were shown it.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -99,6 +100,12 @@ def machine(monkeypatch):
     """The dials and reads the repairs make, each answerable per test."""
     # The machine a reconnect reaches holds the computer unless a test says not.
     probe = AsyncMock(return_value=_found(knows_computer=True))
+
+    # As the machine answers: the folder asked about, as its disk spells it.
+    async def answer(*_args, root_dir=None, **_kwargs):
+        return replace(probe.return_value, root_dir=root_dir or "")
+
+    probe.side_effect = answer
     take_over = AsyncMock()
     computers = AsyncMock(return_value=[_computer(), _sibling()])
     monkeypatch.setattr(repair, "probe", probe)
@@ -232,17 +239,60 @@ async def test_a_new_folder_inside_or_around_the_old_one_is_refused(machine, req
     machine.probe.assert_not_awaited()
 
 
+def _disk_spells(machine, spelled: str) -> None:
+    """The machine answers with *spelled*, as a Mac's disk names the folder."""
+
+    async def answer(*_args, root_dir=None, **_kwargs):
+        return replace(machine.probe.return_value, root_dir=spelled)
+
+    machine.probe.side_effect = answer
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "requested,disk",
+    [
+        ("/Users/dev/langalpha-2/sub", "/Users/dev/langalpha-2/sub"),
+        # Typed in other letter case: refused once the disk names the folder.
+        ("/Users/dev/LANGALPHA-2/sub", "/Users/dev/langalpha-2/sub"),
+        ("/Users/DEV/Langalpha-2", "/Users/dev/langalpha-2"),
+    ],
+)
 async def test_a_new_folder_another_of_the_owners_computers_works_in_is_refused(
-    machine,
+    machine, requested, disk
 ):
+    _disk_spells(machine, disk)
+
     with pytest.raises(ComputerRepairRefused) as refused:
-        await repair.check_new_root(
-            _computer(), "/Users/dev/langalpha-2/sub", settings=SETTINGS
-        )
+        await repair.check_new_root(_computer(), requested, settings=SETTINGS)
 
     assert refused.value.code == "folder_owned"
     assert refused.value.detail()["computer_id"] == SIBLING_ID
+
+
+@pytest.mark.asyncio
+async def test_a_folder_renamed_in_other_letter_case_can_be_taken_again(machine):
+    """Renamed in Finder from the spelling the computer keeps, the folder is
+    taken again under its new one rather than refused as the old folder."""
+    _disk_spells(machine, "/Users/dev/LangAlpha")
+
+    checked = await repair.check_new_root(
+        _computer(), "/Users/dev/LangAlpha", settings=SETTINGS
+    )
+
+    assert checked.root_dir == "/Users/dev/LangAlpha"
+
+
+@pytest.mark.asyncio
+async def test_a_folder_the_disk_spells_too_long_to_keep_is_refused(machine):
+    # Each accented letter, decomposed on the disk, takes two characters.
+    typed = "/Users/dev/" + "\u00e9" * 200
+    _disk_spells(machine, "/Users/dev/" + "e\u0301" * 200)
+
+    with pytest.raises(ComputerRepairRefused) as refused:
+        await repair.check_new_root(_computer(), typed, settings=SETTINGS)
+
+    assert (refused.value.code, refused.value.status) == ("root_dir", 422)
 
 
 @pytest.mark.asyncio
@@ -277,7 +327,7 @@ async def test_a_new_folder_another_computer_marked_names_it(machine):
 
 @pytest.mark.asyncio
 async def test_a_new_folder_named_for_take_over_is_answered_for_clearing(machine):
-    machine.probe.side_effect = [_marked(FOREIGN), _found()]
+    machine.probe.side_effect = [_marked(FOREIGN), _found(root_dir="/srv/la")]
 
     checked = await repair.check_new_root(
         _computer(), "/srv/la", settings=SETTINGS, take_over=FOREIGN

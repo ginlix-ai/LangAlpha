@@ -24,7 +24,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, NamedTuple
 
 import asyncssh
 
@@ -40,21 +40,29 @@ from ptc_agent.core.sandbox.providers._ssh_connect import (
     is_public_address,
     set_gateway_loader,
 )
+from ptc_agent.core.sandbox.providers._ssh_root import (
+    adopted_root,
+    claim_root_script,
+    folder_marked_message,
+    root_dir_error,
+    root_dir_script,
+)
 from ptc_agent.core.sandbox.providers._ssh_shell import (
     SUDO_CHECK,
-    claim_root_script,
     computer_dir,
     knows_computer_script,
     computers_dir,
     delete_script,
-    folder_marked_message,
     home_problem,
-    root_dir_error,
-    root_dir_script,
     stop_script,
 )
 from ptc_agent.core.sandbox.providers._ssh_pool import pool
-from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Link, Machine
+from ptc_agent.core.sandbox.providers._ssh_transport import (
+    TRANSPORT_ERRORS,
+    Link,
+    Machine,
+    ScriptResult,
+)
 from ptc_agent.core.sandbox.providers.ssh_errors import (
     MACHINE_ID_PATTERN,
     SSHConnectError,
@@ -244,6 +252,11 @@ class SSHProbe:
     # Whether an organization's managed Claude Code settings there keep
     # Claude Code from running on the computer.
     claude_code_blocked: bool = False
+    # The folder asked about, as the disk spells it once checked: a
+    # case-insensitive disk takes a name typed in another letter case for the
+    # same folder, and the computer must be kept under the spelling its
+    # commands print. Empty when none was asked about.
+    root_dir: str = ""
 
     def machine(self) -> dict[str, Any]:
         """The facts kept on the computer for its details, only those read."""
@@ -325,23 +338,25 @@ async def probe_ssh_target(
                         link, result.home, known_as, root_dir, connect_timeout
                     ),
                 )
+            result = replace(result, root_dir=root_dir or "")
             if root_dir and result.supported:
                 # Checked, never made: the create makes it, by the same rule.
-                exit_code, owner = await _check_root(
+                checked = await _check_root(
                     link,
                     root_dir,
                     home=result.home,
                     reclaim=reclaim,
                     timeout=connect_timeout + 20,
                 )
-                if exit_code == 10 and taking_over and owner == taking_over:
+                result = replace(result, root_dir=checked.root_dir)
+                if taking_over and checked.owner == taking_over:
                     return result
-                if exit_code == 10 and re.match(MACHINE_ID_PATTERN, owner):
+                if re.match(MACHINE_ID_PATTERN, checked.owner):
                     raise SSHFolderMarked(
-                        folder_marked_message(root_dir, host), owner
+                        folder_marked_message(checked.root_dir, host), checked.owner
                     )
                 error = root_dir_error(
-                    exit_code, path=root_dir, user=username, host=host
+                    checked.exit_code, path=checked.root_dir, user=username, host=host
                 )
                 if error is not None:
                     raise error
@@ -417,12 +432,24 @@ async def take_over_root(
                 timeout=connect_timeout,
             )
             home = found.stdout.decode(errors="replace").strip()
-            exit_code, marked = await _check_root(
-                link, root_dir, home=home, reclaim=(owner,), timeout=connect_timeout + 20
+            # Not adopted: the caller keeps *root_dir* as its probe found it, so
+            # one spelled otherwise now was renamed since, and is refused
+            # before the computer named is stopped.
+            checked = await _check_root(
+                link,
+                root_dir,
+                home=home,
+                reclaim=(owner,),
+                timeout=connect_timeout + 20,
+                adopt=False,
             )
-            if exit_code == 10 and re.match(MACHINE_ID_PATTERN, marked):
-                raise SSHFolderMarked(folder_marked_message(root_dir, host), marked)
-            error = root_dir_error(exit_code, path=root_dir, user=username, host=host)
+            if re.match(MACHINE_ID_PATTERN, checked.owner):
+                raise SSHFolderMarked(
+                    folder_marked_message(root_dir, host), checked.owner
+                )
+            error = root_dir_error(
+                checked.exit_code, path=root_dir, user=username, host=host
+            )
             if error is not None:
                 raise error
             if claim_as or forget:
@@ -457,6 +484,16 @@ async def take_over_root(
             ) from e
 
 
+class RootCheck(NamedTuple):
+    """What ``_check_root`` found of a folder."""
+
+    exit_code: int | None
+    # The computer whose mark refused the folder (exit 10), else "".
+    owner: str
+    # The folder checked, as the disk spells it.
+    root_dir: str
+
+
 async def _check_root(
     link: Link,
     root_dir: str,
@@ -464,9 +501,12 @@ async def _check_root(
     home: str,
     reclaim: Collection[str],
     timeout: float,
-) -> tuple[int | None, str]:
-    """``root_dir_script``'s exit for *root_dir*, which it checks, and the id
-    of the computer whose mark refused it ("" for any other exit).
+    adopt: bool = True,
+) -> RootCheck:
+    """``root_dir_script``'s answer for *root_dir*, checked as the disk
+    spells it when the two differ only in case or Unicode normalization
+    (``adopted_root``). Without *adopt* another spelling stays exit 12, so
+    nothing is reclaimed for a folder the caller would then refuse.
 
     A folder marked by one of *reclaim*, a computer whose removal could not
     reach the machine, holds what that removal would have taken: the
@@ -474,11 +514,18 @@ async def _check_root(
     the root. Those go, as its delete would have taken them, and the folder
     is checked again. A mark naming any other computer is refused as before.
     """
-    script = root_dir_script(root_dir, computers=computers_dir(home), computer_id=None)
+    computers = computers_dir(home)
+    script = root_dir_script(root_dir, computers=computers, computer_id=None)
     check = await link.run(script, timeout=timeout)
-    owner = check.stdout.decode(errors="replace").strip()
-    if check.exit_code != 10 or owner not in reclaim:
-        return check.exit_code, owner if check.exit_code == 10 else ""
+    if check.exit_code == 12 and adopt:
+        adopted = adopted_root(root_dir, check.stdout.decode(errors="replace"))
+        if adopted is not None:
+            root_dir = adopted
+            script = root_dir_script(root_dir, computers=computers, computer_id=None)
+            check = await link.run(script, timeout=timeout)
+    owner = _marked_by(check)
+    if owner not in reclaim:
+        return RootCheck(check.exit_code, owner, root_dir)
     cdir = computer_dir(home, owner)
     stop = await link.run(
         stop_script(cdir, root=False, computer_root=root_dir), timeout=timeout
@@ -489,7 +536,14 @@ async def _check_root(
             await link.run(stop_script(cdir, root=True), timeout=timeout, root=True)
     await link.run(delete_script(cdir, root=root_dir), timeout=timeout)
     again = await link.run(script, timeout=timeout)
-    return again.exit_code, again.stdout.decode(errors="replace").strip()
+    return RootCheck(again.exit_code, _marked_by(again), root_dir)
+
+
+def _marked_by(check: ScriptResult) -> str:
+    """The computer whose mark ``root_dir_script`` refused the folder for."""
+    if check.exit_code != 10:
+        return ""
+    return check.stdout.decode(errors="replace").strip()
 
 
 async def run_script(

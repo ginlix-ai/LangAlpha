@@ -9,11 +9,14 @@ root, its allow list, and the turn's workspace folder.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import structlog
 
 from ptc_agent.core.paths import (
     lexical_path,
     machine_path,
+    name_fold,
     resolve_agent_path,
     virtual_agent_path,
 )
@@ -125,6 +128,15 @@ def rg_excluded(held: tuple[str, ...], cwd: str) -> list[str]:
     return args
 
 
+def _under_any(folded: str, folders: Iterable[str]) -> bool:
+    """Whether *folded*, a path through ``name_fold``, is one of *folders* or
+    inside one, compared under the same fold."""
+    return any(
+        folded == held or folded.startswith(held + "/")
+        for held in map(name_fold, folders)
+    )
+
+
 def validate_path(
     sandbox: "PTCSandbox", filepath: str, project: ProjectContext | None = None
 ) -> bool:
@@ -141,12 +153,11 @@ def validate_path(
     # Normalize the path first (handles virtual paths like /work/task/...)
     normalized_path = sandbox.normalize_path(filepath, project)
 
-    # Denylist takes priority over allowlist
-    for denied_dir in _denied_directories(sandbox, project):
-        if normalized_path == denied_dir or normalized_path.startswith(
-            denied_dir + "/"
-        ):
-            return False
+    # Denylist takes priority over allowlist. Matched as a Mac's disk matches
+    # names, or a sibling's tools folder spelled in another case slips past.
+    folded = name_fold(normalized_path)
+    if _under_any(folded, _denied_directories(sandbox, project)):
+        return False
 
     # A computer reached from Home whose file calls run as its commands do:
     # the whole machine, as a command there reaches it. An unexpanded
@@ -157,11 +168,7 @@ def validate_path(
         # Except what the machine lists as denied, matched as a Mac's disk
         # matches names. Best effort: a command runs as the same login and
         # can read it, so this only keeps the file tools' reach off it.
-        path = normalized_path.casefold()
-        return not any(
-            path == held or path.startswith(held + "/")
-            for held in (d.casefold() for d in machine.denied)
-        )
+        return not _under_any(folded, machine.denied)
 
     # Check against allowed directories
     for allowed_dir in sandbox.config.filesystem.allowed_directories:

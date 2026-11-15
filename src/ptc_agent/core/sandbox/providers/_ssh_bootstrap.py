@@ -210,6 +210,25 @@ def paths(home: str) -> RuntimePaths:
     return RuntimePaths.under(f"{home}/{STATE_DIR}")
 
 
+def _mac_exclusions_sh(base: str) -> str:
+    """Shell keeping the runtime and caches under *base*, which a reinstall
+    rebuilds, out of Time Machine and Spotlight on a Mac.
+
+    Run at every stamp check as well as at an install, so a machine whose
+    install is already current gets it too. Best effort, never failing either.
+    The exclusion is marked done only once tmutil takes it, since over SSH it
+    may need Full Disk Access the login gets later.
+    """
+    return (
+        f'if [ -d "{base}" ] && [ "$(uname -s)" = Darwin ]; then\n'
+        f'  [ -e "{base}/.metadata_never_index" ] || '
+        f'touch "{base}/.metadata_never_index" 2>/dev/null || true\n'
+        f'  [ -e "{base}/.tm-excluded" ] || {{ tmutil addexclusion "{base}" '
+        f'>/dev/null 2>&1 && touch "{base}/.tm-excluded"; }} || true\n'
+        "fi\n"
+    )
+
+
 def bootstrap_script(*, lock_wait_s: int) -> str:
     """Bash that installs the runtime once, safe to run again at any time.
 
@@ -229,7 +248,7 @@ now() {{ if [ -n "${{EPOCHREALTIME:-}}" ]; then echo "${{EPOCHREALTIME/,/.}}"; e
 phase() {{ echo "{PHASE_MARK}$1 $(now)"; }}
 mkdir -p "{p.bin}" "{p.cache}"
 chmod 700 "$L"
-exec 9>"$L/{LOCK_FILE}"
+{_mac_exclusions_sh("$L")}exec 9>"$L/{LOCK_FILE}"
 {LOCK_SH}phase lock
 lock {int(lock_wait_s)} || {{ echo "Another install of the runtime is still running." >&2; exit 75; }}
 # Again, under the lock: a removal that held it may have taken them.
@@ -359,6 +378,7 @@ echo "Runtime ready"
 def stamp_check_script() -> str:
     """Prints ``current`` when the installed runtime matches this recipe."""
     return (
-        f'[ "$(cat "$HOME/{STAMP}" 2>/dev/null)" = {recipe_hash()} ] '
+        _mac_exclusions_sh(paths("$HOME").base)
+        + f'[ "$(cat "$HOME/{STAMP}" 2>/dev/null)" = {recipe_hash()} ] '
         "&& echo current || echo stale\n"
     )

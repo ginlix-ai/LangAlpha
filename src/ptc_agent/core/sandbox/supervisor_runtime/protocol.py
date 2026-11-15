@@ -13,7 +13,10 @@ why the framing lives here rather than inside the daemon.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import shlex
 from typing import Any
 
 #: Bumped only when a frame's meaning changes. A daemon that does not
@@ -24,6 +27,53 @@ VERSION = 1
 #: is the daemon's own artifact and nothing outside this package addresses it.
 SOCKET_REL_PATH = "_internal/system/mcp-supervisor.sock"
 LOG_REL_PATH = "_internal/system/mcp-supervisor.log"
+
+#: A Unix socket's address holds 103 bytes on macOS (104 with the NUL; Linux
+#: allows 107), and a computer root in iCloud Drive or deep under non-ASCII
+#: names leaves too few for ``SOCKET_REL_PATH``.
+SUN_PATH_MAX = 103
+#: Under the login's home, for a root too long: only its own user can write
+#: there, so nothing else can take the name first.
+SHORT_SOCKET_DIR = ".langalpha/s"
+
+
+def socket_path(root: str, home: str | None = None) -> str:
+    """Where the daemon of the computer rooted at ``root`` listens.
+
+    Beside the computer's other internal files when that fits a socket's
+    address, else a name hashed from the root under the login's home, so the
+    daemon, its starter and every client derive the same path from the root
+    alone. The sandbox client carries a copy (``mcp_client_runtime``).
+    """
+    root = _root(root)
+    short = _short_name(root)
+    if short is None:
+        return f"{root}/{SOCKET_REL_PATH}"
+    home = (os.path.expanduser("~") if home is None else home).rstrip("/")
+    return f"{home}/{short}"
+
+
+def socket_path_sh(root: str) -> str:
+    """``socket_path`` as one shell word for the starter, which runs on the
+    computer: only the machine knows the login's home, so it is ``$HOME``."""
+    root = _root(root)
+    short = _short_name(root)
+    if short is None:
+        return shlex.quote(f"{root}/{SOCKET_REL_PATH}")
+    return f'"$HOME"/{shlex.quote(short)}'
+
+
+def _root(root: str) -> str:
+    return root.rstrip("/") or "/"
+
+
+def _short_name(root: str) -> str | None:
+    """The socket's name under the home, None when the root's own fits."""
+    if len(os.fsencode(f"{root}/{SOCKET_REL_PATH}")) <= SUN_PATH_MAX:
+        return None
+    digest = hashlib.sha256(os.fsencode(root)).hexdigest()[:16]
+    return f"{SHORT_SOCKET_DIR}/{digest}.sock"
+
 
 #: Sandbox-side import name of the package this module ships as.
 PACKAGE_NAME = "supervisor"

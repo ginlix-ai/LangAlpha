@@ -20,9 +20,9 @@ import pytest
 
 from ptc_agent.config.core import SSHConfig
 from ptc_agent.core.sandbox.providers._ssh_authorized_key import remove_script
+from ptc_agent.core.sandbox.providers._ssh_root import root_dir_script
 from ptc_agent.core.sandbox.providers._ssh_shell import (
     home_shared_script,
-    root_dir_script,
     uninstall_script,
 )
 from ptc_agent.core.sandbox.providers._ssh_transport import ScriptResult

@@ -34,6 +34,9 @@ REFUSED = [
     "../../../etc/passwd",
     f"../{SIBLING}/.agents/tools/mcp_client_config.json",
     "../_internal/.manifest",
+    # A Mac's disk takes a name in any case, so the deny list does too.
+    f"../{SIBLING.upper()}/.agents/Tools/mcp_client_config.json",
+    "../_Internal/.manifest",
 ]
 
 

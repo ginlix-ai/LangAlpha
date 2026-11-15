@@ -20,6 +20,7 @@ from ptc_agent.core.paths import (
 )
 from ptc_agent.core.sandbox.providers import _ssh_bootstrap as bootstrap
 from ptc_agent.core.sandbox.providers._proc_sh import EXEC_MARK, PROC_SH, ps_start_sh
+from ptc_agent.core.sandbox.providers._ssh_root import CLAIM_HOLD, ROOT_MARKER
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
 
 # The login shell parses only this line. Its quoted part holds no ' or \, which
@@ -216,7 +217,7 @@ def uninstall_script(root: str, sandbox_id: str) -> str:
         '  [ -n "$t" ] && nohup rm -rf -- "$t" >/dev/null 2>&1 &\n'
         "}\n"
         f"{bootstrap.LOCK_SH}"
-        f"{_CLAIM_HOLD}"
+        f"{CLAIM_HOLD}"
         'o=; { read -r o < "$m"; } 2>/dev/null\n'
         'if [ -d "$r" ] && [ ! -L "$r" ] && [ -n "$o" ] && [ "$o" = "$me" ]; then\n'
         # A root that is a disk of its own empties into a trash on that disk,
@@ -398,30 +399,7 @@ def env_file(env: Mapping[str, str], home: str, root: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-# -- The root folder ------------------------------------------------------------
-
-# A file, not ``.langalpha``: that is the runtime's folder in the home, and a
-# home holding it must not read as some computer's root.
-ROOT_MARKER = ".langalpha-root"
-
-
-# One claim of a root at a time on the login, from the look at the folder to
-# the mark: two starts that both found it free would each mark it, and an
-# uninstall taking a root's folders out holds it too, so no claim lands
-# between its look at the mark and what it deletes. Held in ``$c``, the
-# computers folder. A claim takes moments, so a hold older than that was cut
-# off; one still held after the wait is exit 15, inside the command's timeout.
-# The hold is a file the shell creates exclusively (noclobber), since a uutils
-# mkdir reports success for a folder another run made at the same moment; an
-# older script's hold is a folder.
-_CLAIM_HOLD = (
-    'h="$c/.claiming"; n=0; mkdir -p -- "$c" || exit 9\n'
-    'until (set -C && : > "$h") 2>/dev/null; do\n'
-    '  n=$((n + 1)); [ "$n" -le 20 ] || exit 15\n'
-    '  if [ -n "$(find "$h" -prune -mmin +2 2>/dev/null)" ]; then rm -f -- "$h" 2>/dev/null || rmdir -- "$h" 2>/dev/null; else sleep 1; fi\n'
-    "done\n"
-    "trap 'rm -f -- \"$h\"' EXIT; trap 'exit 1' HUP INT TERM\n"
-)
+# -- The root folder (claimed and checked in ``_ssh_root``) --------------------
 
 
 def knows_computer_script(home: str, computer_id: str, root: str | None) -> str:
@@ -441,192 +419,6 @@ def knows_computer_script(home: str, computer_id: str, root: str | None) -> str:
         )
     return "\n".join(lines) + "\nexit 0\n"
 
-
-def claim_root_script(
-    path: str,
-    computer_id: str | None,
-    *,
-    computers: str,
-    cleared: str,
-    forget: Iterable[str] = (),
-) -> str:
-    """Mark *path* as *computer_id*'s root, once *cleared*, the computer that
-    marked it, was cleared from it.
-
-    The cleared computer's mark would otherwise stay until a start marks the
-    folder, and that computer's own uninstall empties a folder its mark names.
-    *forget* are paths under each folder in the root that only vouch for what
-    the cleared computer laid there, such as a restore's marker, removed so
-    they cannot stand for this computer's files.
-
-    Under the claim hold starts take in *computers*, and only over the cleared
-    computer's mark (or none, or the taker's own): a start that took the
-    folder since it was cleared is refused with exit 10 and its id printed,
-    not overwritten. Any other exit is one ``root_dir_error`` words.
-    *computer_id* None, a computer with no id on the machine yet, forgets
-    without marking: its first start marks the folder, which the cleared
-    computer's mark no longer keeps from it.
-    """
-    q = shlex.quote
-    lines = [
-        f"r={q(path.rstrip('/'))}; c={q(computers)}",
-        '[ -d "$r" ] && [ ! -L "$r" ] || exit 0',
-        _CLAIM_HOLD.rstrip("\n"),
-        f'm="$r"/{q(ROOT_MARKER)}; o=; {{ read -r o < "$m"; }} 2>/dev/null',
-        f'[ -z "$o" ] || [ "$o" = {q(cleared)} ] || [ "$o" = {q(computer_id or "")} ] '
-        '|| { printf \'%s\\n\' "$o"; exit 10; }',
-    ]
-    names = [n for n in forget if n]
-    if names:
-        targets = " ".join(f'"$d"/{q(n)}' for n in names)
-        lines.append(
-            'for d in "$r"/*; do [ -d "$d" ] && [ ! -L "$d" ] || continue; '
-            f"rm -f -- {targets}; done"
-        )
-    if computer_id:
-        lines.append(f'printf %s {q(computer_id)} > "$m" || exit 9')
-    return "\n".join(lines) + "\n"
-
-
-def root_dir_script(path: str, *, computers: str, computer_id: str | None) -> str:
-    """Exit 0 when *path* is, or can become, this computer's own root folder.
-
-    A computer deletes and moves folders by name under its root, so it takes
-    only a root no one else's files are in: a missing folder, which it makes
-    (with passwordless sudo where the user cannot), an empty one, or one a
-    computer marked as its root, and never one every account may write in,
-    such as ``/tmp``, where anyone can plant entries the computer would then
-    treat as its own, or one named through a symbolic link (or, on a Mac, in
-    other letter case), whose files the server would read as outside it.
-    The folder must be the login's own, and taking it leaves only the login
-    able to write in it and in the workspace folders at its top: another
-    account that could would swap in a folder of its own, whose
-    ``.agents/tools`` the agent imports. Nothing deeper is touched, since
-    the folders below are the owner's. ``computer_id`` None checks, as the
-    probe does; given, the folder is made and marked, and ``_internal``,
-    which holds the computer's credentials, kept to the user. A start also
-    keeps a root without the mark when the computer's own folder under
-    *computers* exists, so a lost mark does not lock a computer out of its
-    files. A root marked by another computer that still exists is refused
-    with exit 10, and the id the mark holds printed. Claims on one login run
-    one at a time and make the claiming computer's folder under *computers*,
-    so two starts at once cannot both take a folder; exit 15 is one that
-    waited too long for its turn. Any other exit is one ``root_dir_error``
-    words.
-    """
-    i = SandboxLayout.INTERNAL_DIR
-    if computer_id is None:
-        make, sudo, claim, hold = "exit 0", "sudo -n true", "exit 0", ""
-    else:
-        make = 'mkdir -p -- "$w" 2>/dev/null && claim'
-        sudo = 'sudo -n install -d -o "$(id -un)" -g "$(id -gn)" -- "$w"'
-        claim = "claim"
-        hold = _CLAIM_HOLD
-    return (
-        f"w={shlex.quote(path)}; c={shlex.quote(computers)}; "
-        f'me={shlex.quote(computer_id or "")}; m="$w/{ROOT_MARKER}"; o=\n'
-        # What it makes, the folder's parents included, only the login writes.
-        "umask go-w\n"
-        f"{hold}"
-        "claim() {\n"
-        '  [ -n "$o" ] && [ "$o" = "$me" ] || printf \'%s\\n\' "$me" > "$m" || exit 9\n'
-        '  chmod go-w "$w" 2>/dev/null\n'
-        '  [ -z "$(find "$w" -prune \\( -perm -0020 -o -perm -0002 \\) 2>/dev/null)" ] || exit 14\n'
-        '  for x in "$w"/* "$w"/.[!.]* "$w"/..?*; do\n'
-        '    [ -d "$x" ] && [ ! -L "$x" ] || continue\n'
-        '    if [ -O "$x" ]; then chmod go-w "$x" 2>/dev/null\n'
-        '    elif [ -z "$(find "$x" -prune -user 0 2>/dev/null)" ]; then exit 13; fi\n'
-        "  done\n"
-        f'  mkdir -p -- "$w/{i}" && chmod 700 "$w/{i}" || exit 9\n'
-        # The mark keeps another computer out only once this one's folder
-        # exists, so it is made before the next claim may look, and last, so
-        # a claim refused above leaves none to lock the retry out.
-        '  mkdir -p -- "$c/$me" && chmod 700 "$c/$me" || exit 9\n'
-        "  exit 0\n"
-        "}\n"
-        'real() { [ "$(cd -P -- "$1" 2>/dev/null && env pwd -P)" = "$1" ] || exit 12; }\n'
-        'if [ -d "$w" ]; then\n'
-        '  real "$w"\n'
-        '  [ -r "$w" ] && [ -w "$w" ] && [ -x "$w" ] || exit 4\n'
-        '  [ -z "$(find "$w" -prune -perm -0002 2>/dev/null)" ] || exit 11\n'
-        '  [ -O "$w" ] || exit 13\n'
-        '  if [ -e "$m" ]; then\n'
-        '    { read -r o < "$m"; } 2>/dev/null\n'
-        '    if [ -n "$o" ] && [ "$o" != "$me" ] && [ -d "$c/$o" ]; then\n'
-        "      printf '%s\\n' \"$o\"; exit 10\n"
-        "    fi\n"
-        '  elif [ -n "$(ls -A -- "$w" | head -n 1)" ]; then\n'
-        '    [ -n "$me" ] && [ -d "$c/$me" ] || exit 8\n'
-        "  fi\n"
-        f"  {claim}\n"
-        "fi\n"
-        '[ -e "$w" ] && exit 6\n'
-        'p=$w; while [ ! -e "$p" ]; do p=$(dirname -- "$p"); done\n'
-        '[ -d "$p" ] || exit 7\n'
-        'real "$p"\n'
-        f'if [ -w "$p" ] && [ -x "$p" ]; then {make}; fi\n'
-        f"e=$(LC_ALL=C {sudo} </dev/null 2>&1 >/dev/null) && {claim}\n"
-        'case "$e" in *tty*) exit 5 ;; esac\n'
-        "exit 3\n"
-    )
-
-
-def root_dir_error(
-    exit_code: int | None, *, path: str, user: str, host: str
-) -> SSHConnectError | None:
-    """What ``root_dir_script``'s exit says about the folder, None when it will do."""
-    if exit_code == 0:
-        return None
-    choose = f"Choose a folder {user} owns."
-    if exit_code == 4:
-        message = f"{path} exists on {host}, but {user} cannot read and write in it."
-    elif exit_code == 5:
-        message = (
-            f"Could not create {path} on {host}: {user} cannot write to its "
-            f"parent, and sudo for {user} requires a terminal (requiretty in "
-            "sudoers)."
-        )
-    elif exit_code == 6:
-        message = f"{path} on {host} is a file, not a folder."
-    elif exit_code == 7:
-        message = f"Could not create {path} on {host}: part of that path is a file."
-    elif exit_code == 8:
-        message = f"{path} on {host} already holds files."
-        choose = "Choose a new or empty folder."
-    elif exit_code == 9:
-        message = f"Could not set up {path} on {host} for {user}."
-    elif exit_code == 10:
-        message = f"{path} on {host} is already another computer's folder."
-        choose = "Choose a new or empty folder."
-    elif exit_code == 11:
-        message = f"{path} on {host} is open to every account on the machine."
-    elif exit_code == 12:
-        message = f"{path} on {host} is reached through a symbolic link."
-        choose = "Enter the folder by its real path."
-    elif exit_code == 13:
-        message = (
-            f"{path} on {host}, or a folder at its top, belongs to another account."
-        )
-    elif exit_code == 14:
-        message = f"Could not make {path} on {host} writable by {user} alone."
-        choose = "Choose a folder on a disk that keeps file permissions."
-    else:
-        message = (
-            f"Could not create {path} on {host}: {user} cannot write to its "
-            "parent and has no passwordless sudo."
-        )
-    return SSHConnectError("root_dir", f"{message} {choose}")
-
-
-
-def folder_marked_message(path: str, host: str) -> str:
-    """The refusal of a folder another computer marked. The client offers the
-    take-over itself, so a build without the offer reads it as whole."""
-    return (
-        f"{path} on {host} is the folder of a LangAlpha computer this account "
-        "does not have, perhaps one from another account or an earlier "
-        "install. Choose a new or empty folder."
-    )
 
 # -- Process groups and sessions ------------------------------------------------
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar
@@ -19,6 +20,17 @@ DEFAULT_SANDBOX_ROOT: str = "/home/workspace"
 LEGACY_SANDBOX_ROOTS: tuple[str, ...] = ("/home/daytona",)
 
 SANDBOX_ROOTS: tuple[str, ...] = (DEFAULT_SANDBOX_ROOT, *LEGACY_SANDBOX_ROOTS)
+
+
+def name_fold(path: str) -> str:
+    """*path* as a Mac's disk compares names, ignoring letter case and Unicode
+    normalization, so two spellings of one folder compare equal.
+
+    A Linux disk tells them apart, but a computer never holds two folders of
+    its own that differ only so (``workspace_layout``), so a check folded this
+    way refuses no folder it would otherwise allow there.
+    """
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", path).casefold())
 
 
 def computer_roots(own: str | None) -> tuple[str, ...]:
