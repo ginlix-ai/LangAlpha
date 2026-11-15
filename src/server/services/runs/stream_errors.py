@@ -379,6 +379,7 @@ def error_event_data(
     exc: Optional[BaseException] = None,
     model: Optional[str] = None,
     config: Any = None,
+    machine: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """The ``error`` frame's data.
 
@@ -412,7 +413,8 @@ def error_event_data(
         "message": "An error occurred during processing",
     }
     if exc is not None and (unreachable := unreachable_kind(exc)):
-        return {**data, **unreachable}
+        # ``machine``: the computer that did not answer (``unreachable_machine``).
+        return {**data, **unreachable, **(machine or {})}
     if exc is not None:
         info = failure_kind(exc)
         trace = find_resilience_trace(exc)

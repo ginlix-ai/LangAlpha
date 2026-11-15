@@ -586,7 +586,11 @@ class PTCAgent:
                 # Outside the error handler below, which would turn its stop
                 # back into a tool result. Only on a turn nobody watches.
                 *(
-                    [ComputerUnreachableStopMiddleware(sandbox)]
+                    [
+                        ComputerUnreachableStopMiddleware(
+                            sandbox, computer_id=getattr(session, "computer_id", None)
+                        )
+                    ]
                     if turn_context is not None and turn_context.unwatched
                     else []
                 ),

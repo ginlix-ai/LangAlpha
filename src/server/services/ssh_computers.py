@@ -770,6 +770,46 @@ async def computer_unreachable(computer: Optional[Mapping[str, Any]], *, conn=No
     return not bool((tunnels.get(tunnel_id) or {}).get("live"))
 
 
+async def unreachable_machine(
+    exc: BaseException, *, workspace_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """``computer_id`` and ``computer_name`` of the machine a failure says did
+    not answer, for its ``computer_unreachable`` frame; ``{}`` for any other
+    failure, or when neither is known.
+
+    The computer a raise recorded (``unreachable_computer_id``), else the
+    workspace's: a turn's own computer is the one its workspace runs on. Named
+    in the frame so the card says which machine to wake, which for a Chief of
+    Staff is not always the computer its page shows. Best effort: a failed
+    read names nothing, and the card falls back to the workspace's computer.
+    """
+    from ptc_agent.core.sandbox.unreachable import (
+        unreachable_code,
+        unreachable_computer_id,
+    )
+    from src.server.database.computer import get_computer
+
+    if unreachable_code(exc) is None:
+        return {}
+    computer_id = unreachable_computer_id(exc)
+    try:
+        if computer_id:
+            row = await get_computer(computer_id)
+        elif workspace_id:
+            row = await get_computer_for_workspace(workspace_id)
+        else:
+            row = None
+    except Exception as e:  # noqa: BLE001 - the frame goes out without a name
+        logger.warning(f"Could not read the computer a failure names: {e}")
+        row = None
+    if not row:
+        return {"computer_id": computer_id} if computer_id else {}
+    named: Dict[str, Any] = {"computer_id": str(row["computer_id"])}
+    if row.get("name"):
+        named["computer_name"] = str(row["name"])
+    return named
+
+
 async def computer_away(workspace_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
     """The computer *workspace_id* runs on, while it cannot be reached; None
     when a turn there could reach it now.

@@ -108,4 +108,14 @@ describe('readStreamFailure: a machine that did not answer', () => {
       message: 'mini is not connected.', kind: 'computer_unreachable', errorCode: 'not_connected', runId: 'run-1',
     });
   });
+
+  it('carries which computer did not answer, when the frame names one', () => {
+    const frame = {
+      event: 'error', error_kind: 'computer_unreachable', error_code: 'timeout',
+      computer_id: 'comp-mac', computer_name: 'mini', run_id: 'run-2',
+    };
+    expect(readStreamFailure(frame, '', 'ws-1', t)).toMatchObject({
+      kind: 'computer_unreachable', errorCode: 'timeout', computerId: 'comp-mac', computerName: 'mini', runId: 'run-2',
+    });
+  });
 });

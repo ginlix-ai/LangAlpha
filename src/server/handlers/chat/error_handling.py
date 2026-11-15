@@ -674,6 +674,15 @@ async def handle_workflow_error(
         # user's terms, so it carries its own kind and the connect code, as a
         # turn whose machine went mid-run does (``unreachable_kind``).
         machine_kind = unreachable_kind(e)
+        if machine_kind:
+            # Which machine, so the card names the one to wake: the turn's
+            # own computer is its workspace's.
+            from src.server.services.ssh_computers import unreachable_machine
+
+            machine_kind = {
+                **machine_kind,
+                **await unreachable_machine(e, workspace_id=workspace_id),
+            }
         # error_type/error_class ride the row so replay can reconstruct the
         # terminal error event (the yield below happens after this finalize).
         if await _finalize_error(

@@ -14,8 +14,12 @@ let computer: Partial<Computer> | null = null;
 vi.mock('@/hooks/useWorkspace', () => ({
   useWorkspace: (id: string | null) => ({ data: id ? { workspace_id: id, computer_id: 'comp-1' } : undefined }),
 }));
+let computers: Record<string, Partial<Computer>> | null = null;
+
 vi.mock('../../hooks/useComputers', () => ({
-  useComputer: (id: string | null) => ({ data: id ? computer : undefined }),
+  useComputer: (id: string | null) => ({
+    data: !id ? undefined : computers ? computers[id] ?? null : computer,
+  }),
 }));
 vi.mock('../Markdown', () => ({ default: () => null }));
 
@@ -35,7 +39,7 @@ function renderCard(code = 'not_connected') {
 }
 
 describe('TurnErrorCard: a computer that did not answer', () => {
-  beforeEach(() => { computer = null; });
+  beforeEach(() => { computer = null; computers = null; });
 
   it('tells a Mac under Remote control to open the desktop app', () => {
     computer = { kind: 'ssh', name: 'work-mac', ssh: ssh({ helper: true }) as Computer['ssh'] };
@@ -65,6 +69,30 @@ describe('TurnErrorCard: a computer that did not answer', () => {
     renderCard('gateway_unreachable');
     expect(screen.getByText("Couldn't reach the computer")).toBeInTheDocument();
     expect(screen.queryByText(/your Mac/)).not.toBeInTheDocument();
+  });
+
+  it('names the computer the failure names, not the workspace\'s', () => {
+    // A Chief of Staff's page shows Home's computer; the turn failed on another.
+    computers = {
+      'comp-1': { kind: 'daytona', name: 'cloud' },
+      'comp-mac': { kind: 'ssh', name: 'work-mac', ssh: ssh({ helper: true }) as Computer['ssh'] },
+    };
+    renderWithProviders(
+      <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
+        <TurnErrorCard err={{ message: '', kind: 'computer_unreachable', errorCode: 'not_connected', computerId: 'comp-mac' }} />
+      </WorkspaceProvider>,
+    );
+    expect(screen.getByText("Couldn't reach your Mac")).toBeInTheDocument();
+  });
+
+  it('names a computer the list no longer holds as the failure named it', () => {
+    computers = {};
+    renderWithProviders(
+      <WorkspaceProvider workspaceId="ws-1" downloadFile={null}>
+        <TurnErrorCard err={{ message: '', kind: 'computer_unreachable', errorCode: 'timeout', computerId: 'gone', computerName: 'lab-box' }} />
+      </WorkspaceProvider>,
+    );
+    expect(screen.getByText("Couldn't reach lab-box")).toBeInTheDocument();
   });
 
   it('names no machine where the view has no workspace', () => {

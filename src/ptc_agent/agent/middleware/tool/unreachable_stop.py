@@ -30,11 +30,14 @@ class ComputerUnreachableError(RuntimeError):
     Raised from the connect failure, which the run's failure classifiers find
     on the cause chain for its code. The message is the sentence its owner can
     act on, the one a turn that failed at its start shows.
+    ``unreachable_computer_id`` names the computer that did not answer, when
+    the caller knows it (``unreachable.unreachable_computer_id``).
     """
 
-    def __init__(self, failure: BaseException) -> None:
+    def __init__(self, failure: BaseException, *, computer_id: str | None = None) -> None:
         connect = connect_failure(failure)
         super().__init__(connect.for_owner if connect is not None else str(failure))
+        self.unreachable_computer_id = computer_id
 
 
 class ComputerUnreachableStopMiddleware(AgentMiddleware):
@@ -47,9 +50,10 @@ class ComputerUnreachableStopMiddleware(AgentMiddleware):
     then ends the turn.
     """
 
-    def __init__(self, sandbox: Any) -> None:
+    def __init__(self, sandbox: Any, *, computer_id: str | None = None) -> None:
         super().__init__()
         self._sandbox = sandbox
+        self._computer_id = computer_id
 
     def wrap_tool_call(
         self,
@@ -67,5 +71,7 @@ class ComputerUnreachableStopMiddleware(AgentMiddleware):
         with watch_unreachable(self._sandbox) as watch:
             result = await handler(request)
         if watch.failure is not None:
-            raise ComputerUnreachableError(watch.failure) from watch.failure
+            raise ComputerUnreachableError(
+                watch.failure, computer_id=self._computer_id
+            ) from watch.failure
         return result

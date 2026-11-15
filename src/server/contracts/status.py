@@ -235,3 +235,9 @@ def classify_interrupts(interrupts: Any) -> tuple[Optional[str], Optional[str]]:
         ):
             message = request["message"]
     return min(reasons, key=INTERRUPT_REASONS.index, default=None), message
+
+
+#: What a ``computer_unreachable`` error frame says of the machine beside its
+#: kind, and its run row keeps for a reload: the connect code, and which
+#: computer did not answer.
+UNREACHABLE_FRAME_KEYS = ("error_code", "computer_id", "computer_name")

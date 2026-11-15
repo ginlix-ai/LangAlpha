@@ -27,6 +27,7 @@ from src.server.database.runs.lifecycle import (
     get_run_replay_facts,
 )
 from src.server.services.runs.stream_errors import (
+    COMPUTER_UNREACHABLE,
     failure_kind_metadata,
     model_call_failure,
     plan_stop_metadata,
@@ -170,6 +171,14 @@ async def assemble_finalize_artifacts(
         if status == "error":
             kind = failure_kind_metadata(exc)
             persist_metadata.update(kind)
+            if kind.get("error_kind") == COMPUTER_UNREACHABLE:
+                # Which machine did not answer, as the live frame named it,
+                # so a reload of a run that went mid-turn names it too.
+                from src.server.services.ssh_computers import unreachable_machine
+
+                persist_metadata.update(
+                    await unreachable_machine(exc, workspace_id=workspace_id)
+                )
             if kind.get("error_kind") == "upstream":
                 # Who pays decides the card, so a reload of a run that sent
                 # no frame words it as the live one would have.

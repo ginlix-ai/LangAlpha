@@ -33,6 +33,21 @@ def unreachable_code(exc: BaseException) -> str | None:
     return failure.code
 
 
+def unreachable_computer_id(exc: BaseException) -> str | None:
+    """The computer a failure names as the one that did not answer, when a
+    raise on its way up recorded it (``unreachable_computer_id``), else None:
+    the caller then knows it as the turn's own."""
+    seen: BaseException | None = exc
+    for _ in range(32):
+        if seen is None:
+            return None
+        computer_id = getattr(seen, "unreachable_computer_id", None)
+        if isinstance(computer_id, str) and computer_id:
+            return computer_id
+        seen = seen.__cause__ or (None if seen.__suppress_context__ else seen.__context__)
+    return None
+
+
 class UnreachableWatch:
     """One tool call's view of one sandbox: the last unanswered failure its
     calls ended on, cleared by a later call the machine served, so a blip the

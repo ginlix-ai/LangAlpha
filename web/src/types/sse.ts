@@ -217,6 +217,9 @@ export interface ErrorEvent extends BaseSSEEvent {
   error_kind?: 'upstream' | 'internal' | 'computer_unreachable';
   /** ``timeout``, ``unreachable`` or ``not_connected``. */
   error_code?: string;
+  /** With ``computer_unreachable``: the computer that did not answer, when known. */
+  computer_id?: string;
+  computer_name?: string;
   status_code?: number | null;
   hints?: string[];
   /** User-configured (primary) model name, when the failure is model-attributable. */

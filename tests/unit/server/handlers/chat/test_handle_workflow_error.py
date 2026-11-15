@@ -663,6 +663,29 @@ async def test_a_machine_that_did_not_answer_ends_the_turn_with_its_code(coordin
 
 
 @pytest.mark.asyncio
+async def test_a_machine_that_did_not_answer_names_its_computer(coordinator):
+    """The card names the machine to wake from these, on the live frame and
+    on the row a reload words it by."""
+    computer = {"computer_id": "c-mac", "name": "Work Mac"}
+    with patch(
+        "src.server.services.ssh_computers.get_computer_for_workspace",
+        new=AsyncMock(return_value=computer),
+    ) as looked_up:
+        frames = await _fail(
+            _machine_asleep(lambda e: SandboxHostUnavailableError("sb-1", e.for_owner)),
+            scope=_scope(_run_handle()),
+            request=_make_request(**_SEND),
+        )
+
+    looked_up.assert_awaited_once_with("ws-1")
+    ((_, data),) = frames
+    assert (data["computer_id"], data["computer_name"]) == ("c-mac", "Work Mac")
+    _, outcome = coordinator.finalize_run.await_args.args
+    assert outcome.metadata["computer_id"] == "c-mac"
+    assert outcome.metadata["computer_name"] == "Work Mac"
+
+
+@pytest.mark.asyncio
 async def test_a_machine_that_answered_and_refused_carries_no_unreachable_kind(coordinator):
     frames = await _fail(
         SSHConnectError("auth_failed", "Work Mac refused the key."),

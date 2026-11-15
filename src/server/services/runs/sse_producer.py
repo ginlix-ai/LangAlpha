@@ -921,7 +921,11 @@ class RunSSEProducer:
             _stream_span.record_exception(e)
             _stream_span.set_status(Status(StatusCode.ERROR))
             if not isinstance(e, TurnTimeLimitError):
-                yield self._build_error_event(str(e), exc=e)
+                from src.server.services.ssh_computers import unreachable_machine
+
+                yield self._build_error_event(
+                    str(e), exc=e, machine=await unreachable_machine(e)
+                )
             raise  # Re-raise so the run executor finalizes as failed
         finally:
             # Safety net: if the stream ends (timeout / error / CancelledError /
@@ -1784,9 +1788,11 @@ class RunSSEProducer:
         error_message: str,
         *,
         exc: Optional[BaseException] = None,
+        machine: Optional[Dict[str, Any]] = None,
     ) -> StreamFrame:
         """Build an error frame; ``exc`` enables the classification
-        ``error_event_data`` describes."""
+        ``error_event_data`` describes, and ``machine`` names the computer
+        that did not answer."""
         frame = self._build_sse_event(
             "error",
             error_event_data(
@@ -1795,6 +1801,7 @@ class RunSSEProducer:
                 exc=exc,
                 model=getattr(getattr(self.agent_config, "llm", None), "name", None),
                 config=self.agent_config,
+                machine=machine,
             ),
         )
         self._error_frame = kept_error_frame(frame.data)

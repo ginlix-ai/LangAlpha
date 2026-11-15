@@ -63,6 +63,10 @@ export interface StructuredError {
   kind?: 'upstream' | 'internal' | 'notice' | 'computer_unreachable';
   /** The connect code of a machine that did not answer, which words its card. */
   errorCode?: string;
+  /** The computer that did not answer, and its name, when the server knows
+   *  which: a Chief of Staff reaches computers other than its page's. */
+  computerId?: string;
+  computerName?: string;
   /** A turn a Claude plan's limit ended, worded where it is drawn, in the
    *  reader's zone and language, under its own headline. */
   planRefusal?: PlanRefusal;

@@ -28,9 +28,18 @@ export function readStreamFailure(
   // A replayed frame names its run as `response_id`.
   const runId = typeof event.run_id === 'string' ? event.run_id
     : typeof event.response_id === 'string' ? event.response_id : undefined;
-  // Worded where it is drawn, from the code and the workspace's computer.
+  // Worded where it is drawn, from the code and the computer that did not
+  // answer: the one the frame names, else the workspace's.
   if (kind === 'computer_unreachable') {
-    return { message, kind, errorCode: typeof event.error_code === 'string' ? event.error_code : undefined, runId };
+    const text = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
+    return {
+      message,
+      kind,
+      errorCode: text(event.error_code),
+      computerId: text(event.computer_id),
+      computerName: text(event.computer_name),
+      runId,
+    };
   }
   if (kind !== 'upstream' && kind !== 'internal') return undefined;
   // Models the resilience middleware tried this turn (primary + fallbacks).

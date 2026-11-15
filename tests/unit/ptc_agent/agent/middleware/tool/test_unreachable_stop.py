@@ -122,6 +122,26 @@ async def test_a_call_whose_machine_did_not_answer_ends_the_turn():
 
 
 @pytest.mark.asyncio
+async def test_the_stop_names_the_computer_that_did_not_answer():
+    """Its error frame names that computer, so the card says which machine
+    to wake rather than the one the thread's page shows."""
+    from ptc_agent.core.sandbox.unreachable import unreachable_computer_id
+
+    sandbox = _sandbox()
+    middleware = ComputerUnreachableStopMiddleware(sandbox, computer_id="c-mac")
+
+    with pytest.raises(ComputerUnreachableError) as raised:
+        await middleware.awrap_tool_call(
+            _request(), _swallowing_tool((sandbox, _asleep()))
+        )
+
+    try:
+        raise RuntimeError("the run failed") from raised.value
+    except RuntimeError as wrapped:
+        assert unreachable_computer_id(wrapped) == "c-mac"
+
+
+@pytest.mark.asyncio
 async def test_a_blip_the_call_rode_out_does_not():
     sandbox = _sandbox()
     middleware = ComputerUnreachableStopMiddleware(sandbox)
