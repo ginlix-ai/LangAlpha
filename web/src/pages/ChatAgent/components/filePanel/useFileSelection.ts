@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { deleteWorkspaceFiles } from '../../utils/api';
+import type { ComputerAway } from './useComputerAway';
 
 /** Multi-select mode + two-step delete for FilePanel (authenticated mode only —
  * delete has no ApiAdapter override; readOnly panels hide the affordances). */
-export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirectory, onRefreshFiles, onDeleted, awayMessage }: {
+export function useFileSelection({ workspaceId, filteredSortedFiles, targetDirectory, onRefreshFiles, onDeleted, away }: {
   workspaceId: string;
   filteredSortedFiles: string[];
   targetDirectory?: string | null;
   onRefreshFiles?: () => void;
   /** The paths the server confirmed gone, so open state on them can follow. */
   onDeleted?: (paths: string[]) => void;
-  /** Words a refusal from a computer that did not answer; null for any other failure. */
-  awayMessage?: (err: unknown) => string | null;
+  /** The workspace's computer, while it may be away. */
+  away?: ComputerAway;
 }) {
+  const awayMessage = away?.message;
   const { t } = useTranslation();
   // Selection / delete state
   const [selectMode, setSelectMode] = useState(false);

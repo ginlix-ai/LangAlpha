@@ -4,6 +4,7 @@ import type { TFunction } from 'i18next';
 import { holdReload } from '@/lib/reloadHolds';
 import { classifyUploadError } from '../../utils/partUpload';
 import { uploadToWorkspace } from '../../utils/workspaceUpload';
+import type { ComputerAway } from './useComputerAway';
 
 function uploadErrorMessage(err: unknown, file: globalThis.File, t: TFunction): string {
   const failure = classifyUploadError(err);
@@ -23,14 +24,14 @@ function uploadErrorMessage(err: unknown, file: globalThis.File, t: TFunction): 
 
 /** Upload + drag-and-drop state for FilePanel (authenticated mode only —
  * upload has no ApiAdapter override; readOnly panels hide the affordances). */
-export function useFileUpload({ workspaceId, onRefreshFiles, blockedReason = null, awayMessage }: {
+export function useFileUpload({ workspaceId, onRefreshFiles, away }: {
   workspaceId: string;
   onRefreshFiles?: () => void;
-  /** Why no change can be made now (the computer is away); null when one can. */
-  blockedReason?: string | null;
-  /** Words a refusal from a computer that did not answer; null for any other failure. */
-  awayMessage?: (err: unknown) => string | null;
+  /** The workspace's computer, while it may be away. */
+  away?: ComputerAway;
 }) {
+  const blockedReason = away?.blockedReason ?? null;
+  const awayMessage = away?.message;
   const { t } = useTranslation();
   // Upload state: a percentage while the bytes go up, then `uploadSaving`
   // while the workspace takes the file.

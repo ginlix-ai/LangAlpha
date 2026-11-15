@@ -10,6 +10,7 @@ import { apiErrorCoded } from '@/api/errors';
 import { backupUnreachable } from '../../utils/computerAway';
 import { disposeEditorModel, newEditorModelPath } from '../viewers/editorModels';
 import type { AskConfirm } from './usePanelConfirm';
+import type { ComputerAway } from './useComputerAway';
 
 /** One tab's editor, parked while another tab is on screen. */
 interface EditDraft {
@@ -46,7 +47,7 @@ const isDirty = (d: Pick<EditDraft, 'isEditing' | 'editContent' | 'originalConte
  * editor and switching back hands it straight back. Without that a tab strip
  * would silently throw away an edit for the price of looking at another file,
  * which is worse than the single-file panel it replaced. */
-export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, blockedReason = null, awayMessage, awayText, onBackupRead }: {
+export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, readFileFullFn, writeFileFn, ask, onSaveSettled, away }: {
   /** Which tab the editor currently belongs to. */
   tabId: string;
   workspaceId: string;
@@ -58,17 +59,14 @@ export function useFileEdit({ tabId, workspaceId, selectedFile, setFileContent, 
   ask: AskConfirm;
   /** A write to `path` has answered, landed or not. */
   onSaveSettled: (path: string) => void;
-  /** Why no change can be made now (the computer is away); null when one can. */
-  blockedReason?: string | null;
-  /** Words a refusal from a computer that did not answer; null for any other failure. */
-  awayMessage?: (err: unknown) => string | null;
-  /** Words for a computer that did not answer, by its connect code. */
-  awayText?: (code: string) => string;
-  /** The edit's read of `path` was answered from the backup: the body on
-   *  screen is read again, so it carries the same notice and edit block. */
-  onBackupRead?: (path: string) => void;
+  /** The workspace's computer, while it may be away. */
+  away?: ComputerAway;
 }) {
   const { t } = useTranslation();
+  const blockedReason = away?.blockedReason ?? null;
+  const awayMessage = away?.message;
+  const awayText = away?.text;
+  const onBackupRead = away?.onBackupRead;
   // Edit mode state
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState<string | null>(null);
