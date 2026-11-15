@@ -456,12 +456,32 @@ async def test_a_turn_waits_out_commands_holding_every_command_slot_past_its_sta
     await first.close()
 
 
-@pytest.mark.parametrize("named", ["cli", "other"])
-def test_the_cli_is_signalled_only_while_its_pid_still_runs_it(tmp_path, named):
+def _running_cli(tmp_path) -> tuple[Path, subprocess.Popen]:
+    """A process whose command line starts with a path named ``claude``.
+
+    A copy of ``sleep`` would not do: a multi-call coreutils (uutils) picks
+    its program from that name and exits, and macOS kills a copied system
+    binary as it starts. Nor would a link to a framework Python (Homebrew's),
+    which execs its app bundle and is listed by that name. A link to bash
+    runs under the link's name, and waits in a builtin ``read`` with no child
+    to exec into; the line it prints says it got that far."""
     cli = tmp_path / "bin dir" / "claude"
     cli.parent.mkdir()
-    shutil.copy(shutil.which("sleep"), cli)
-    proc = subprocess.Popen([str(cli), "30"])
+    cli.symlink_to(shutil.which("bash"))
+    proc = subprocess.Popen(
+        [str(cli), "-c", "echo; read -r x"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        # A startup file it names would run before the command.
+        env={k: v for k, v in os.environ.items() if k != "BASH_ENV"},
+    )
+    assert proc.stdout.readline() == b"\n"
+    return cli, proc
+
+
+@pytest.mark.parametrize("named", ["cli", "other"])
+def test_the_cli_is_signalled_only_while_its_pid_still_runs_it(tmp_path, named):
+    cli, proc = _running_cli(tmp_path)
     try:
         asked = str(cli) if named == "cli" else str(tmp_path / "claude")
         subprocess.run(["sh", "-c", kill_if_cli(proc.pid, asked, "KILL")], check=True, timeout=10)
@@ -472,7 +492,7 @@ def test_the_cli_is_signalled_only_while_its_pid_still_runs_it(tmp_path, named):
                 proc.wait(timeout=0.5)
     finally:
         proc.kill()
-        proc.wait()
+        proc.communicate()
 
 
 @on_linux
@@ -496,10 +516,7 @@ async def test_a_turns_layout_and_its_release_run_on_a_macs_userland(tmp_path, m
 @pytest.mark.parametrize("named", ["cli", "other"])
 def test_the_cli_is_signalled_by_ps_where_there_is_no_proc(tmp_path, named):
     """A Mac has no /proc, so the pid's command line comes from its ps."""
-    cli = tmp_path / "bin dir" / "claude"
-    cli.parent.mkdir()
-    shutil.copy(shutil.which("sleep"), cli)
-    proc = subprocess.Popen([str(cli), "30"])
+    cli, proc = _running_cli(tmp_path)
     try:
         asked = str(cli) if named == "cli" else str(tmp_path / "claude")
         script = kill_if_cli(proc.pid, asked, "KILL").replace("/proc/", "/no-such-proc/")
@@ -511,7 +528,7 @@ def test_the_cli_is_signalled_by_ps_where_there_is_no_proc(tmp_path, named):
                 proc.wait(timeout=0.5)
     finally:
         proc.kill()
-        proc.wait()
+        proc.communicate()
 
 
 @pytest.mark.asyncio
