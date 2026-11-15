@@ -26,6 +26,7 @@ from ptc_agent.core.sandbox.runtime import (
 
 from src.config.settings import get_max_workflow_retries
 from src.server.database import conversation as qr_db
+from src.server.services.runs.stream_errors import unreachable_kind
 from src.server.services.runs.pending_input import (
     can_retry,
     needs_resend,
@@ -50,9 +51,10 @@ def _classify_non_recoverable_error_type(e: Exception) -> str:
     of opaque tracebacks. Defaults to ``"workflow_error"`` for unrecognized
     cases so existing consumers keep working.
     """
-    if isinstance(e, SandboxHostUnavailableError):
+    if isinstance(e, SandboxHostUnavailableError) or unreachable_kind(e):
         # Gateways answer this label with "try again", which is the whole
-        # remedy until the host is back or the computer is rebuilt.
+        # remedy until the host or the user's own machine is back, or the
+        # computer is rebuilt.
         return "workspace_unavailable"
     if isinstance(e, (ValueError, RuntimeError)):
         msg = str(e)
@@ -76,8 +78,10 @@ def classify_error(e: Exception) -> dict:
     """
     # A recovering host refuses starts for minutes, longer than the immediate
     # retry offered here, so the turn ends on the provider's own words asking
-    # the person to retry in a few moments.
-    if isinstance(e, SandboxHostUnavailableError):
+    # the person to retry in a few moments. A user's own machine that did not
+    # answer (asleep, offline, its tunnel down) is no likelier to answer an
+    # immediate resend, whatever its connect error's words say.
+    if isinstance(e, SandboxHostUnavailableError) or unreachable_kind(e):
         return {
             "is_recoverable": False,
             "is_non_recoverable": False,
@@ -666,6 +670,10 @@ async def handle_workflow_error(
         logger.exception(f"[PTC_ERROR] thread_id={thread_id}: {e}")
 
         error_type_label = _classify_non_recoverable_error_type(e)
+        # The user's own machine not answering is worded by the client in the
+        # user's terms, so it carries its own kind and the connect code, as a
+        # turn whose machine went mid-run does (``unreachable_kind``).
+        machine_kind = unreachable_kind(e)
         # error_type/error_class ride the row so replay can reconstruct the
         # terminal error event (the yield below happens after this finalize).
         if await _finalize_error(
@@ -673,6 +681,7 @@ async def handle_workflow_error(
             {
                 "error_type": error_type_label,
                 "error_class": type(e).__name__,
+                **machine_kind,
             },
         ):
             return  # durable cancel won — no failure surface
@@ -684,6 +693,7 @@ async def handle_workflow_error(
             "error_type": error_type_label,
             "error_class": type(e).__name__,
             "recovery": recovery,
+            **machine_kind,
             **run_named,
         }
         yield _emit_sse_error(handler, error_payload)

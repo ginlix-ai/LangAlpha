@@ -45,6 +45,10 @@ class TurnContext:
     # under the last rules stated, the way a resumed interrupt does, rather
     # than taking back the rules of the conversation it reports into.
     inherits_rules: bool = False
+    # Nobody is watching the turn as it runs (an automation's, a wake, a
+    # report-back the server posts, a hand-off), so nobody can wake a machine
+    # that stops answering: it ends on the first tool call that finds so.
+    unwatched: bool = False
     # Set only once the shared disk is low enough to change what the agent
     # should do; None states nothing. A subagent's stack never carries it.
     disk_free_mb: int | None = None

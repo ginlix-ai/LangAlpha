@@ -15,6 +15,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+from ptc_agent.core.sandbox.runtime import (
+    SandboxHostUnavailableError,
+    SandboxTransientError,
+)
 
 from src.server.handlers.chat import error_handling
 from src.server.models.additional_context import SkillContext
@@ -616,3 +621,54 @@ async def test_http_body_still_aborts_on_a_failure_with_no_frame():
 
     with pytest.raises(ConnectionError):
         await _consume(error_handling.end_after_failure_frame(stream))
+
+
+def _machine_asleep(wrap):
+    """A setup failure whose cause is the user's own machine not answering."""
+    try:
+        raise SSHConnectError("timeout", "Work Mac did not answer in time.")
+    except SSHConnectError as e:
+        try:
+            raise wrap(e) from e
+        except Exception as wrapped:
+            return wrapped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda e: SandboxHostUnavailableError("sb-1", e.for_owner),
+        # Its words would read as a connection blip the client resends at once.
+        lambda e: SandboxTransientError(f"connection lost: {e}"),
+    ],
+    ids=["host_unavailable", "transient"],
+)
+async def test_a_machine_that_did_not_answer_ends_the_turn_with_its_code(coordinator, wrap):
+    """No immediate resend: a sleeping machine is no likelier to answer it.
+    The frame and the row both name the kind and the connect code, which an
+    automation's settlement reads off the row."""
+    frames = await _fail(
+        _machine_asleep(wrap), scope=_scope(_run_handle()), request=_make_request(**_SEND)
+    )
+
+    ((name, data),) = frames
+    assert name == "error"
+    assert data["recovery"] == "retry"
+    assert (data["error_kind"], data["error_code"]) == ("computer_unreachable", "timeout")
+    assert data["error_type"] == "workspace_unavailable"
+    _, outcome = coordinator.finalize_run.await_args.args
+    assert outcome.metadata["error_kind"] == "computer_unreachable"
+    assert outcome.metadata["error_code"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_a_machine_that_answered_and_refused_carries_no_unreachable_kind(coordinator):
+    frames = await _fail(
+        SSHConnectError("auth_failed", "Work Mac refused the key."),
+        scope=_scope(_run_handle()),
+        request=_make_request(**_SEND),
+    )
+
+    ((_, data),) = frames
+    assert "error_kind" not in data

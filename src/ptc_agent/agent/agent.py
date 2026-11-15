@@ -32,6 +32,7 @@ from ptc_agent.agent.middleware import (
     MultimodalStripMiddleware,
     CodeValidationMiddleware,
     ComputerArgumentGuardMiddleware,
+    ComputerUnreachableStopMiddleware,
     CreditGateMiddleware,
     EmptyToolCallRetryMiddleware,
     LeakDetectionMiddleware,
@@ -582,6 +583,13 @@ class PTCAgent:
                 # Ahead of every tool wrapper below, so a call it refuses as
                 # a repeat reaches none of them.
                 RepeatCallGuardMiddleware(),
+                # Outside the error handler below, which would turn its stop
+                # back into a tool result. Only on a turn nobody watches.
+                *(
+                    [ComputerUnreachableStopMiddleware(sandbox)]
+                    if turn_context is not None and turn_context.unwatched
+                    else []
+                ),
                 ToolArgumentParsingMiddleware(),
                 ComputerArgumentGuardMiddleware(),
                 ProtectedPathMiddleware(

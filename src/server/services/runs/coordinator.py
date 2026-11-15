@@ -164,6 +164,9 @@ def _with_detached_failure_kind(outcome: RunOutcome) -> RunOutcome:
     kind = sent.get("error_kind") if sent else "internal"
     if kind:
         outcome.metadata = {**(outcome.metadata or {}), "error_kind": kind}
+        # An unreachable machine's code, which the row's own replay words it by.
+        if kind == "computer_unreachable" and sent and sent.get("error_code"):
+            outcome.metadata["error_code"] = sent["error_code"]
     return outcome
 
 

@@ -17,10 +17,16 @@ from .error_handling import (
 from .leak_detection import LeakDetectionMiddleware
 from .protected_path import ProtectedPathMiddleware
 from .result_normalization import ToolResultNormalizationMiddleware
+from .unreachable_stop import (
+    ComputerUnreachableError,
+    ComputerUnreachableStopMiddleware,
+)
 
 __all__ = [
     "CodeValidationMiddleware",
     "ComputerArgumentGuardMiddleware",
+    "ComputerUnreachableError",
+    "ComputerUnreachableStopMiddleware",
     "EmptyToolCallRetryMiddleware",
     "LeakDetectionMiddleware",
     "ProtectedPathMiddleware",

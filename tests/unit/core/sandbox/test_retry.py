@@ -150,6 +150,25 @@ class TestAsyncRetryWithBackoff:
             )
 
     @pytest.mark.asyncio
+    async def test_a_deadline_reached_between_attempts_keeps_the_last_error(self):
+        """The budget ran out while waiting to try again: the timeout raised
+        there carried no cause, so a machine that did not answer read as a
+        plain transport failure."""
+        async def always_fail():
+            raise ConnectionError("machine silent")
+
+        with pytest.raises(SandboxTransientError, match="timed out") as raised:
+            await async_retry_with_backoff(
+                always_fail,
+                retry_policy=RetryPolicy.SAFE,
+                is_transient=lambda e: isinstance(e, ConnectionError),
+                initial_delay_s=1.0,
+                total_timeout=0.05,
+                retries=5,
+            )
+        assert isinstance(raised.value.__cause__, ConnectionError)
+
+    @pytest.mark.asyncio
     async def test_max_retries_exceeded(self):
         """Should raise SandboxTransientError after exhausting retries."""
         call_count = 0

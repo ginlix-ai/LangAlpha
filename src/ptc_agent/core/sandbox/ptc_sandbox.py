@@ -72,6 +72,7 @@ from ptc_agent.core.sandbox import mcp_setup as _mcp_setup
 from ptc_agent.core.sandbox import reconnect as _reconnect
 from ptc_agent.core.sandbox import tool_overlay as _tool_overlay
 from ptc_agent.core.sandbox import sessions as _sessions
+from ptc_agent.core.sandbox import unreachable as _unreachable
 
 logger = structlog.get_logger(__name__)
 
@@ -301,6 +302,7 @@ class PTCSandbox:
             )
 
         if self._init_error:
+            _unreachable.note_call(self, self._init_error)
             raise self._init_error
 
     def is_ready(self) -> bool:
@@ -966,19 +968,27 @@ class PTCSandbox:
         **kwargs: Any,
     ) -> Any:
         on_transient = self._ensure_sandbox_connected if allow_reconnect else None
-        result = await async_retry_with_backoff(
-            func,
-            *args,
-            retry_policy=retry_policy,
-            is_transient=self.provider.is_transient_error,
-            on_transient=on_transient,
-            rebind=self._make_rebinder(self.runtime) if allow_reconnect else None,
-            retries=retries,
-            initial_delay_s=initial_delay_s,
-            total_timeout=total_timeout,
-            **kwargs,
-        )
+        try:
+            result = await async_retry_with_backoff(
+                func,
+                *args,
+                retry_policy=retry_policy,
+                is_transient=self.provider.is_transient_error,
+                on_transient=on_transient,
+                rebind=self._make_rebinder(self.runtime) if allow_reconnect else None,
+                retries=retries,
+                initial_delay_s=initial_delay_s,
+                total_timeout=total_timeout,
+                **kwargs,
+            )
+        except Exception as e:
+            # After every retry and the reconnect: the call's last word on
+            # whether the machine answers, which a tool would otherwise
+            # swallow into text.
+            _unreachable.note_call(self, e)
+            raise
         _reconnect.call_served(self)
+        _unreachable.note_call(self, None)
         return result
 
     def _make_rebinder(

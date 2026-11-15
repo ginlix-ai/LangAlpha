@@ -69,16 +69,20 @@ async def async_retry_with_backoff(
     deadline = time.monotonic() + total_timeout
     delay_s = initial_delay_s
     on_transient_called = False
+    # Chained into a deadline reached between attempts, so the caller still
+    # reads why the last attempt failed (a machine that did not answer).
+    last_error: Exception | None = None
 
     for attempt in range(1, retries + 1):
         if time.monotonic() > deadline:
             raise SandboxTransientError(
                 f"Operation timed out after {total_timeout}s"
-            )
+            ) from last_error
 
         try:
             return await func(*args, **kwargs)
         except Exception as e:
+            last_error = e
             # Gone is a verdict, whatever words its reason carries; the
             # transient check scans messages for "timed out" and the like.
             if isinstance(e, SandboxGoneError) or not is_transient(e):

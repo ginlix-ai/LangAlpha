@@ -347,6 +347,38 @@ class TestTheTurnContextFlagsANotification:
         )
 
 
+class TestTheTurnContextFlagsATurnNobodyWatches:
+    """Such a turn ends on a tool call whose machine did not answer, since
+    nobody is there to wake it."""
+
+    @pytest.mark.parametrize(
+        "request_",
+        [
+            ChatRequest(query_type="system"),
+            ChatRequest(query_type="system", platform="slack"),
+            ChatRequest(query_type="wakeup", wakeup={"v": 1, "notices": []}),
+            ChatRequest(origin=ThreadOrigin(type="automation", id="a-1")),
+            ChatRequest(origin=ThreadOrigin(type="agent", id="home-t")),
+            ChatRequest(origin=ThreadOrigin(type="agent", agent="cli", id="t-1")),
+        ],
+    )
+    def test_a_turn_the_server_posted_or_nobody_started(self, request_):
+        ctx = build_turn_context(request_, SLACK_THREAD, user_profile=None)
+        assert ctx.unwatched is True
+
+    @pytest.mark.parametrize(
+        "request_",
+        [
+            ChatRequest(),
+            ChatRequest(platform="slack"),
+            ChatRequest(hitl_response=RESUME),
+        ],
+    )
+    def test_a_turn_someone_sent(self, request_):
+        ctx = build_turn_context(request_, SLACK_THREAD, user_profile=None)
+        assert ctx.unwatched is False
+
+
 class TestTheGraphConfigCarriesRunAndSurface:
     def _configurable(self, **kwargs):
         with (

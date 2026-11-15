@@ -29,6 +29,7 @@ from .repeat_guard import RepeatCallGuardMiddleware
 from .tool import (
     CodeValidationMiddleware,
     ComputerArgumentGuardMiddleware,
+    ComputerUnreachableStopMiddleware,
     EmptyToolCallRetryMiddleware,
     LeakDetectionMiddleware,
     ProtectedPathMiddleware,
@@ -140,6 +141,7 @@ __all__ = [
     # Tool middleware
     "CodeValidationMiddleware",
     "ComputerArgumentGuardMiddleware",
+    "ComputerUnreachableStopMiddleware",
     "EmptyToolCallRetryMiddleware",
     "LeakDetectionMiddleware",
     "ProtectedPathMiddleware",

@@ -202,6 +202,51 @@ def test_a_reload_keeps_the_time_limits_live_words():
     assert "error_kind" not in item["data"]
 
 
+def _machine_went_to_sleep() -> Exception:
+    """What a turn nobody watches raises when its Mac stops answering mid-turn."""
+    from ptc_agent.agent.middleware.tool.unreachable_stop import ComputerUnreachableError
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+
+    try:
+        raise SSHConnectError("not_connected", "Work Mac is not connected.")
+    except SSHConnectError as e:
+        try:
+            raise ComputerUnreachableError(e) from e
+        except ComputerUnreachableError as stopped:
+            return stopped
+
+
+@pytest.mark.asyncio
+async def test_a_machine_gone_mid_turn_reads_live_and_on_reload_as_at_the_start():
+    """Stamped with the kind and code a turn whose machine was gone at its
+    start gets, and the frame carries them too, so the card the user sees
+    names the machine either way."""
+    exc = _machine_went_to_sleep()
+    unreachable = {"error_kind": "computer_unreachable", "error_code": "not_connected"}
+
+    metadata = await _failed_metadata(exc)
+    assert {k: metadata[k] for k in unreachable} == unreachable
+
+    frame = await _kept_frame(exc)
+    assert {k: frame[k] for k in unreachable} == unreachable
+    assert "hints" not in frame
+
+    row = _failed_row([str(exc)], metadata, frame)
+    (item,) = replay_items.terminal_items(_KEY[0], row, [])
+    assert {k: item["data"][k] for k in unreachable} == unreachable
+    assert item["data"]["error"] == "Work Mac is not connected."
+
+
+def test_a_row_alone_replays_an_unreachable_machine_with_its_code():
+    data = _replayed_error(
+        ["Work Mac is not connected."],
+        {"error_kind": "computer_unreachable", "error_code": "not_connected"},
+    )
+    assert data["error_kind"] == "computer_unreachable"
+    assert data["error_code"] == "not_connected"
+    assert data["error"] == "Work Mac is not connected."
+
+
 def test_a_kept_frame_of_our_own_fault_drops_its_diagnostic():
     frame = {"error": _QUOTA, "error_kind": "internal"}
     row = _failed_row([_QUOTA], {"error_kind": "internal"}, frame)
@@ -262,6 +307,17 @@ _WORKER_LOST = "worker_lost: no live executor holds this run's writer fence"
             None,
             id="its_own_time_limit",
         ),
+        pytest.param(
+            ProducerRecord(
+                error_frame={
+                    "error": "Work Mac is not connected.",
+                    "error_kind": "computer_unreachable",
+                    "error_code": "not_connected",
+                }
+            ),
+            "computer_unreachable",
+            id="its_own_machine_asleep",
+        ),
     ],
 )
 async def test_a_recovered_failure_is_ours_unless_the_run_framed_its_own(record, kind):
@@ -287,6 +343,8 @@ async def test_a_recovered_failure_is_ours_unless_the_run_framed_its_own(record,
 
     (metadata,) = written
     assert metadata.get("error_kind") == kind
+    if kind == "computer_unreachable":
+        assert metadata["error_code"] == "not_connected"
     if kind == "internal":
         assert _replayed_error([_WORKER_LOST], metadata)["error"] == ""
 

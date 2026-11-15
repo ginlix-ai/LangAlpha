@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from ptc_agent.config.agent import CredentialPayer, Payer
+from ptc_agent.core.sandbox.unreachable import unreachable_code
 from src.llms.claude_code import ClaudeTurnFailed
 from src.llms.provider_errors import ProviderRefusal, Reason, read_refusal
 from src.server.services.llm.claude_code import claude_code_refusal
@@ -68,6 +69,20 @@ _UPSTREAM_MODULE_PREFIXES: tuple[str, ...] = (
 )
 
 _STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
+
+#: The kind of a run that failed because the user's own machine did not
+#: answer. A client words it from the connect code (``error_code``) in the
+#: user's terms, so it is neither party's fault the two kinds above name.
+COMPUTER_UNREACHABLE = "computer_unreachable"
+
+
+def unreachable_kind(exc: BaseException) -> Dict[str, Any]:
+    """``error_kind`` and ``error_code`` for a failure whose cause is a
+    machine that did not answer, else ``{}``. The setup funnel stamps the
+    same pair, so a turn reads alike whether its machine was gone at the
+    start or went mid-turn."""
+    code = unreachable_code(exc)
+    return {"error_kind": COMPUTER_UNREACHABLE, "error_code": code} if code else {}
 
 
 def _parse_status_from_message(text: str) -> Optional[int]:
@@ -259,7 +274,7 @@ def failure_kind_metadata(exc: BaseException) -> Dict[str, Any]:
 
     if isinstance(exc, TurnTimeLimitError) or claude_code_refusal(exc, None) is not None:
         return {}
-    return {"error_kind": failure_kind(exc)["kind"]}
+    return unreachable_kind(exc) or {"error_kind": failure_kind(exc)["kind"]}
 
 
 def plan_stop_metadata(exc: BaseException) -> Dict[str, Any]:
@@ -368,7 +383,8 @@ def error_event_data(
     """The ``error`` frame's data.
 
     With ``exc`` the frame carries ``error_kind`` (``upstream`` or
-    ``internal``), ``status_code`` when available, and ``hints`` for the
+    ``internal``, or ``computer_unreachable`` with only its ``error_code``),
+    ``status_code`` when available, and ``hints`` for the
     frontend to render user-actionable guidance; the legacy ``error`` and
     ``message`` fields stay so older clients keep working.
 
@@ -395,6 +411,8 @@ def error_event_data(
         "error": sanitize_error_text(error_message),
         "message": "An error occurred during processing",
     }
+    if exc is not None and (unreachable := unreachable_kind(exc)):
+        return {**data, **unreachable}
     if exc is not None:
         info = failure_kind(exc)
         trace = find_resilience_trace(exc)
