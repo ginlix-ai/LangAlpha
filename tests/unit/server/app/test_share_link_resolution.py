@@ -56,7 +56,7 @@ _SHARE_FILES_FP = "src.server.app.share_files.FilePersistenceService.get_file_co
 _SHARE_FILES_VAULT = "src.server.app.share_files.get_vault_secrets_for_redaction"
 _ARTIFACTS_DB = "src.server.app.public.artifacts_db"
 _LEGACY = "src.server.app.public.legacy_snapshot"
-_PUBLIC_BASE = "src.server.app.public.preview_base"
+_PUBLIC_BASE = "src.server.app.public.artifact_base"
 
 
 @pytest.fixture(autouse=True)

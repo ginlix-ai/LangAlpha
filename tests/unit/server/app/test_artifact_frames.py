@@ -26,7 +26,7 @@ JSON = b'{"rows": [1, 2, 3]}'
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(grants._OWNER, "_key", b"o" * 32)
-    monkeypatch.setattr(artifact_frames, "preview_base", lambda: None)
+    monkeypatch.setattr(artifact_frames, "artifact_base", lambda: None)
     app = FastAPI()
     app.include_router(artifact_frames.frame_router)
     return TestClient(app)

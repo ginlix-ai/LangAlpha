@@ -12,6 +12,7 @@ import pytest
 from ptc_agent.config.core import E2BConfig, SandboxConfig
 from src.config import env
 from src.server.services.preview_base import (
+    artifact_base,
     PreviewBase,
     PreviewProxyConfigurationError,
     check_preview_proxy_config,
@@ -134,6 +135,27 @@ class TestArtifactHost:
     def test_an_artifact_host_is_no_capability(self):
         host = f"artifact-{_ARTIFACT}.preview.example.com"
         assert PreviewBase("https", "preview.example.com").parse(host) is None
+
+
+class TestArtifactBase:
+    @pytest.mark.parametrize(
+        ("base", "app", "own_hosts"),
+        [
+            ("https://preview.example.net", "https://app.example.com", True),
+            ("http://preview.localhost:8000", "http://localhost:5173", True),
+            # A local placeholder beside a real app opens for no visitor, so
+            # versions are served sandboxed on the API origin instead.
+            ("http://preview.localhost", "https://app.example.com", False),
+            ("", "https://app.example.com", False),
+        ],
+    )
+    def test_versions_get_hosts_only_where_a_visitor_can_reach_them(
+        self, monkeypatch, base, app, own_hosts
+    ):
+        monkeypatch.setattr(env, "PREVIEW_PROXY_BASE_URL", base)
+        monkeypatch.setattr(env, "PUBLIC_APP_URL", app)
+
+        assert (artifact_base() is not None) is own_hosts
 
 
 class TestBootCheck:

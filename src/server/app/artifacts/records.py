@@ -38,7 +38,7 @@ from src.server.services.artifacts import snapshot
 from src.server.services.artifacts.events import publish_artifact_change
 from src.server.services.artifacts.grants import grant_prefix, mint_artifact_grant
 from src.server.services.file_grants import seconds_left
-from src.server.services.preview_base import preview_base
+from src.server.services.preview_base import artifact_base
 from src.server.services.served_paths import may_be_artifact
 from src.server.services.workspace_file_containment import contained_relative_path
 from src.server.services.workspace_files import (
@@ -456,7 +456,7 @@ async def mint_grant(
     see ``services/artifacts/grants``."""
     artifact = await owned(artifact_id, x_user_id)
     grant = await mint_artifact_grant(artifact.artifact_id)
-    base = preview_base()
+    base = artifact_base()
     return ArtifactGrantResponse(
         base=base.artifact_url(grant.artifact_id, grant.token)
         if base
