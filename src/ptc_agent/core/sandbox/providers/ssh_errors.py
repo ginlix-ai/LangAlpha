@@ -65,6 +65,24 @@ class SSHConnectError(RuntimeError):
         return f"{self} {CHECK_MACHINE}"
 
 
+class SSHMachineBusy(SSHConnectError):
+    """A tunneled machine its tunnel still lists that did not answer a dial in
+    time.
+
+    It went to sleep since its tunnel's keepalives last answered, or its
+    answer queued behind what it is sending or crawled over a slow link. The
+    code stays ``timeout``, which clients word as a machine not answering,
+    and the sentence names both causes rather than asking whether it is on.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__("timeout", message)
+
+    @property
+    def for_owner(self) -> str:
+        return str(self)
+
+
 # A computer's id on its machine, as its folder's mark holds it. Only an id
 # of this shape is ever named back to the machine as a path.
 MACHINE_ID_PATTERN = r"^[0-9a-f]{32}$"

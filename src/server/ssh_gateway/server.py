@@ -17,7 +17,9 @@ from asyncssh.kex import get_kex_algs
 from psycopg import AsyncConnection
 
 from ptc_agent.core.sandbox.providers._ssh_connect import (
+    GATEWAY_CHANNEL_OPEN_TIMEOUT_S,
     GATEWAY_DIALER,
+    GATEWAY_NO_ANSWER,
     GATEWAY_NOT_CONNECTED,
     GATEWAY_PAIRED_ELSEWHERE,
 )
@@ -58,10 +60,14 @@ MAX_KEY_OFFERS = 6
 # after it completed is closed rather than kept alive on keepalives.
 FORWARD_TIMEOUT_S = 30
 # A machine that went away without closing its connection (asleep, unplugged,
-# off the network) is given up on after interval x count seconds of silence,
-# so its tunnel reads as down and a dial to it fails at once.
-KEEPALIVE_INTERVAL_S = 30
-KEEPALIVE_COUNT_MAX = 3
+# off the network) is given up on after about interval x (count + 1) seconds
+# of silence, so its tunnel reads as down and a dial to it fails at once
+# rather than wait out the channel-open timeout. Silence is literal: asyncssh
+# restarts the interval on every byte received, so a machine busy sending,
+# whose keepalive replies queue behind its data, stays up. A live machine
+# answers a keepalive within a round trip.
+KEEPALIVE_INTERVAL_S = 15
+KEEPALIVE_COUNT_MAX = 2
 # A machine that reconnected before its old connection timed out holds both
 # for a while, and dials go to the newest. Past this many logins the oldest is
 # closed, so a machine stuck reconnecting, or a tunnel's key used to open
@@ -88,8 +94,17 @@ _ENCRYPTION_ALGS = (
 )
 _MAC_ALGS = ("hmac-sha2-256-etm@openssh.com", "hmac-sha2-512-etm@openssh.com")
 # A machine's client answers a channel open as soon as its own sshd takes the
-# connection. One that leaves it unanswered this long is wedged or hostile.
-_CHANNEL_OPEN_TIMEOUT_S = 15
+# connection, but the answer travels behind whatever the machine is already
+# sending: an uplink full of a backup or a large upload holds it back far
+# longer than a worker should wait. Past this the worker's dial fails and the
+# machine's connection stays up, its liveness the keepalives' to judge.
+_CHANNEL_OPEN_TIMEOUT_S = GATEWAY_CHANNEL_OPEN_TIMEOUT_S
+# SSH cannot withdraw an open, so one a worker gave up on is still waited for
+# and closed once it opens. A machine that leaves one unanswered this long, or
+# this many at once, is wedged rather than busy, and its connection is closed,
+# which lets go of them all.
+_ABANDONED_OPEN_LIMIT_S = 300
+_MAX_ABANDONED_OPENS = 64
 # How long a shutdown waits for connections to close and writes to land.
 _SHUTDOWN_GRACE_S = 5
 # A lock session that does not answer in this long is taken as gone: Postgres
@@ -143,6 +158,51 @@ def _kex_algs() -> list[str]:
     return [alg for alg in _KEX_ALGS if alg.encode() in available]
 
 
+class _MachineSide(asyncssh.SSHForwarder):
+    """The machine's end of a relay. Its sshd speaks first, and the banner can
+    land before the worker's end is joined to this one or has its channel
+    open: the open is awaited (shielded, past a timeout) before the worker's
+    end exists. asyncssh's own forwarder holds such bytes but never passes
+    them on, and a worker that never sees the banner waits out its login. So
+    what arrives early is held here and handed over once that end can take
+    it. Reads ``SSHForwarder``'s own fields, as a subclass of it."""
+
+    def _joined(self) -> bool:
+        return self._peer is not None and self._peer._transport is not None
+
+    def data_received(self, data: bytes, datatype: int | None = None) -> None:
+        if self._joined():
+            self._peer.write(data)
+        else:
+            self._inpbuf += data
+
+    def eof_received(self) -> bool:
+        self._eof_received = True
+        if self._joined():
+            self._peer.write_eof()
+            return not self._peer.was_eof_received()
+        return True
+
+    def hand_over(self) -> None:
+        if not self._joined():
+            return
+        if self._inpbuf:
+            held, self._inpbuf = self._inpbuf, b""
+            self._peer.write(held)
+        if self._eof_received:
+            self._peer.write_eof()
+
+
+class _WorkerSide(asyncssh.SSHForwarder):
+    """The worker's end, which takes what the machine's end held for it as
+    soon as its channel is open."""
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        super().connection_made(transport)
+        if isinstance(self._peer, _MachineSide):
+            self._peer.hand_over()
+
+
 class _Forward(asyncssh.SSHListener):
     """A machine's ``-R`` forward, recorded rather than bound.
 
@@ -187,6 +247,9 @@ class Gateway:
         self._forwards: dict[str, list[_Forward]] = {}
         self._logins: dict[str, list[asyncssh.SSHServerConnection]] = {}
         self._connections: set[asyncssh.SSHServerConnection] = set()
+        # Per machine connection, the channel opens a worker gave up on that
+        # are still unanswered.
+        self._abandoned: dict[asyncssh.SSHServerConnection, set[asyncio.Future]] = {}
         # Connections on the machines' address not logged in yet.
         self._admission = Admission()
         self._refused_logins = Tally(logger, logging.INFO, "Refused %d logins")
@@ -452,37 +515,47 @@ class Gateway:
 
         As asyncssh's own ``forward_tunneled_connection``: the two forwarders
         are peers, and asyncssh moves the bytes between the channels with flow
-        control on both. Nothing may be awaited between the open and the
-        return, or the machine's first bytes (its sshd's banner) would reach a
-        forwarder with no peer yet and be lost.
+        control on both. What the machine sends before the worker's side is
+        open (its sshd's banner) is held by the machine's side and handed
+        over (see ``_MachineSide``).
 
         Every failure leaves as a ``ChannelOpenError``: asyncssh answers the
         worker's open only for that one, and treats anything else as a fault
         that closes the worker's whole connection, every other dial on it with
-        it.
+        it. A machine that does not answer in time fails only this dial: its
+        tunnel stays up, since a busy uplink is slow rather than gone.
+
+        The open runs shielded: a cancelled one would still open on the
+        machine, as a channel nothing reads or closes, so one given up on is
+        handed to ``_abandon`` instead.
         """
+        asked = asyncio.get_running_loop().time()
+        opening = asyncio.ensure_future(
+            fwd.conn.create_connection(
+                _MachineSide,
+                fwd.listen_host,
+                fwd.listen_port,
+                orig_host,
+                orig_port,
+            )
+        )
         try:
             async with asyncio.timeout(_CHANNEL_OPEN_TIMEOUT_S):
-                _, peer = await fwd.conn.create_connection(
-                    asyncssh.SSHForwarder,
-                    fwd.listen_host,
-                    fwd.listen_port,
-                    orig_host,
-                    orig_port,
-                )
+                _, peer = await asyncio.shield(opening)
         except TimeoutError:
-            # SSH cannot withdraw an open the peer has not answered: the
-            # channel would stay pending as long as the machine stays
-            # connected, and closing its connection is what lets go of it.
             logger.warning(
-                "Tunnel %s left a channel open unanswered for %ds; closing it",
+                "Tunnel %s left a channel open unanswered for %ds; failing the "
+                "dial and keeping the tunnel",
                 fwd.tunnel_id,
                 _CHANNEL_OPEN_TIMEOUT_S,
             )
-            self.close_login(fwd.tunnel_id, fwd.conn)
+            self._abandon(fwd, opening, asked)
             raise asyncssh.ChannelOpenError(
-                asyncssh.OPEN_CONNECT_FAILED, GATEWAY_NOT_CONNECTED
+                asyncssh.OPEN_CONNECT_FAILED, GATEWAY_NO_ANSWER
             ) from None
+        except asyncio.CancelledError:
+            self._abandon(fwd, opening, asked)
+            raise
         except asyncssh.ChannelOpenError:
             # A connection that is closing refuses new channels a loop turn
             # before it reads as closed, and that is a machine gone, not a
@@ -511,7 +584,52 @@ class Gateway:
             raise asyncssh.ChannelOpenError(
                 asyncssh.OPEN_CONNECT_FAILED, "SSH connection closed"
             )
-        return asyncssh.SSHForwarder(peer)
+        return _WorkerSide(peer)
+
+    def _abandon(self, fwd: _Forward, opening: asyncio.Future, asked: float) -> None:
+        """Wait out an open no worker waits for: close its channel if it
+        opens, and close the machine's connection if it stays unanswered."""
+        conn = fwd.conn
+        pending = self._abandoned.setdefault(conn, set())
+        pending.add(opening)
+        loop = asyncio.get_running_loop()
+        overdue = loop.call_later(
+            _ABANDONED_OPEN_LIMIT_S, self._open_overdue, fwd, opening
+        )
+
+        def landed(task: asyncio.Future) -> None:
+            overdue.cancel()
+            pending.discard(task)
+            if not pending and self._abandoned.get(conn) is pending:
+                del self._abandoned[conn]
+            if task.cancelled() or task.exception() is not None:
+                return  # refused, or let go with its connection
+            _, peer = task.result()
+            logger.info(
+                "Tunnel %s answered a channel open after %ds; closing the channel",
+                fwd.tunnel_id,
+                loop.time() - asked,
+            )
+            peer.close()
+
+        opening.add_done_callback(landed)
+        if len(pending) > _MAX_ABANDONED_OPENS:
+            logger.warning(
+                "Tunnel %s has %d channel opens unanswered; closing it",
+                fwd.tunnel_id,
+                len(pending),
+            )
+            self.close_login(fwd.tunnel_id, conn)
+
+    def _open_overdue(self, fwd: _Forward, opening: asyncio.Future) -> None:
+        if opening.done():
+            return
+        logger.warning(
+            "Tunnel %s left a channel open unanswered for %ds; closing it",
+            fwd.tunnel_id,
+            _ABANDONED_OPEN_LIMIT_S,
+        )
+        self.close_login(fwd.tunnel_id, fwd.conn)
 
     # -- Heartbeat --------------------------------------------------------------
 

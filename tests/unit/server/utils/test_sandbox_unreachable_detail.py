@@ -221,3 +221,121 @@ def test_the_app_handler_answers_a_refusal_as_the_computer_routes_do(code, statu
         assert json.loads(response.body) == {"detail": expected.detail}
         assert "sbx-9f3c" not in response.body.decode()
     assert setup.app.exception_handlers[SSHConnectError] is setup._sandbox_failure_handler
+
+
+@pytest.mark.parametrize("code", ["not_connected", "unreachable", "gateway_unreachable"])
+def test_an_unanswered_machine_names_its_code_in_a_header(code):
+    """A client tells an owner's machine that is away apart by this header,
+    not by the English detail, which stays as older clients read it."""
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+    from src.server.app import setup
+    from src.server.utils.error_sanitization import (
+        COMPUTER_UNREACHABLE_HEADER,
+        sandbox_failure_http,
+    )
+
+    failure = SSHConnectError(code, "mac-mini is not connected.")
+    try:
+        raise SandboxTransientError("Could not reach sandbox sbx-9f3c") from failure
+    except SandboxTransientError as e:
+        wrapped = e
+
+    answer = sandbox_failure_http(wrapped)
+    assert answer.status_code == 503
+    assert answer.headers == {COMPUTER_UNREACHABLE_HEADER: code}
+    assert answer.detail.startswith(SANDBOX_UNREACHABLE_PREFIX)
+
+    class _Request:
+        url = type("U", (), {"path": "/api/v1/workspaces/ws-1/files"})()
+
+    response = asyncio.run(setup._sandbox_failure_handler(_Request(), wrapped))
+    assert response.headers[COMPUTER_UNREACHABLE_HEADER] == code
+
+
+def test_a_cloud_sandbox_503_carries_no_unreachable_header():
+    from src.server.utils.error_sanitization import sandbox_failure_http
+
+    answer = sandbox_failure_http(SandboxTransientError("sandbox is starting"))
+    assert answer.status_code == 503
+    assert not answer.headers
+
+
+def _tunneled_target():
+    from ptc_agent.core.sandbox.providers._ssh_connect import SSHTarget
+
+    return SSHTarget(
+        host="mac-mini",
+        port=22,
+        username="dev",
+        host_key=None,
+        key_owner="u-1",
+        tunnel="0f8fad5b-d9cb-469f-a165-70867728950e",
+    )
+
+
+def test_a_listed_machine_that_did_not_answer_may_be_asleep_or_slow():
+    """Its tunnel still reads up, so it slept since its keepalives last
+    answered or its answer is slow: the sentence names both, not a check that
+    it is on, and the header still marks it the owner's."""
+    import asyncssh
+
+    from ptc_agent.core.sandbox.providers import _ssh_connect
+    from src.server.utils.error_sanitization import (
+        COMPUTER_UNREACHABLE_HEADER,
+        sandbox_failure_http,
+    )
+
+    failure = _ssh_connect._tunnel_error(
+        _tunneled_target(),
+        asyncssh.ChannelOpenError(
+            asyncssh.OPEN_CONNECT_FAILED, _ssh_connect.GATEWAY_NO_ANSWER
+        ),
+    )
+    assert failure.code == "timeout"
+    answer = sandbox_failure_http(failure)
+    assert answer.status_code == 503
+    assert answer.headers == {COMPUTER_UNREACHABLE_HEADER: "timeout"}
+    assert answer.detail == SANDBOX_UNREACHABLE_PREFIX + str(failure)
+    assert "mac-mini did not answer in time. It may be asleep" in answer.detail
+    assert "Check that the machine is on" not in answer.detail
+
+
+def test_a_tunneled_dial_that_runs_out_the_clock_is_a_busy_machine(monkeypatch):
+    """A machine its tunnel still lists that did not finish the handshake in
+    time: asleep since its keepalives last answered, or slow."""
+    from ptc_agent.core.sandbox.providers import _ssh_connect
+    from ptc_agent.core.sandbox.providers.ssh_errors import SSHMachineBusy
+
+    class _GatewayConn:
+        def is_closed(self) -> bool:
+            return False
+
+    class _Gateway:
+        async def connection(self) -> _GatewayConn:
+            return _GatewayConn()
+
+    async def connect(*args, **kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr(_ssh_connect, "_gateway", lambda: _Gateway())
+    monkeypatch.setattr(_ssh_connect.asyncssh, "connect", connect)
+    with pytest.raises(SSHMachineBusy):
+        asyncio.run(_ssh_connect._through_gateway(_tunneled_target(), {}))
+
+
+def test_a_tunneled_connect_outwaits_the_gateways_channel_open(monkeypatch):
+    """Else the worker always gives up first, and a machine the gateway would
+    have reported as not answering reads as one that timed out on its own."""
+    from ptc_agent.core.sandbox.providers import _ssh_connect
+
+    seen = {}
+
+    async def through(target, options):
+        seen.update(options)
+        raise _ssh_connect.SSHConnectError("not_connected", "asleep")
+
+    monkeypatch.setattr(_ssh_connect, "_through_gateway", through)
+    monkeypatch.setattr(_ssh_connect.asyncssh, "import_private_key", lambda _: object())
+    with pytest.raises(_ssh_connect.SSHConnectError):
+        asyncio.run(_ssh_connect.connect(_tunneled_target(), "key"))
+    assert seen["connect_timeout"] > _ssh_connect.GATEWAY_CHANNEL_OPEN_TIMEOUT_S

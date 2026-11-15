@@ -65,6 +65,11 @@ def single_line(text: str) -> str:
 # The file panel categorizes a 503 by matching this prefix, so every producer
 # must spell it identically or the same condition renders a different card.
 SANDBOX_UNREACHABLE_PREFIX = "Sandbox is not reachable: "
+# The connect-failure code of an owner's SSH machine that did not answer, on
+# that 503, so a client tells the owner's own machine being away apart from a
+# cloud sandbox without reading the English detail, which stays as it was for
+# older clients.
+COMPUTER_UNREACHABLE_HEADER = "X-Computer-Unreachable"
 
 
 def sandbox_unreachable_detail(exc: BaseException) -> str:
@@ -104,4 +109,9 @@ def sandbox_failure_http(exc: BaseException) -> HTTPException:
     failure = connect_failure(exc)
     if failure is not None and failure.answered:
         return HTTPException(status_code=422, detail=str(failure))
-    return HTTPException(status_code=503, detail=sandbox_unreachable_detail(exc))
+    headers = (
+        {COMPUTER_UNREACHABLE_HEADER: failure.code} if failure is not None else None
+    )
+    return HTTPException(
+        status_code=503, detail=sandbox_unreachable_detail(exc), headers=headers
+    )

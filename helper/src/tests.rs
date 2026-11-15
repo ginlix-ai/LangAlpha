@@ -400,3 +400,64 @@ async fn an_sftp_session_does_not_hold_off_a_restart() -> Result<()> {
     assert_eq!(rig.busy.in_flight(), 0);
     Ok(())
 }
+
+// The tunnel's session to a gateway that has stopped reading with its socket
+// still open, as one does whose FIN never arrives, while a login is sending.
+// russh's keepalives cannot end it: its loop is waiting on that write.
+#[tokio::test]
+async fn a_write_the_gateway_never_takes_ends_the_session() -> Result<()> {
+    use tokio::io::{AsyncRead, AsyncWrite, split};
+    use tokio::sync::watch;
+
+    async fn pipe<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+        mut from: R,
+        mut to: W,
+        mut frozen: watch::Receiver<bool>,
+    ) -> (R, W) {
+        let mut buf = vec![0; 1 << 14];
+        loop {
+            tokio::select! {
+                () = async { let _ = frozen.wait_for(|f| *f).await; } => return (from, to),
+                n = from.read(&mut buf) => match n {
+                    Ok(n) if n > 0 && to.write_all(&buf[..n]).await.is_ok() => {}
+                    _ => return (from, to),
+                },
+            }
+        }
+    }
+
+    let rig = Rig::new()?;
+    let (ours, near) = tokio::io::duplex(1 << 16);
+    let (far, gateway) = tokio::io::duplex(1 << 16);
+    tokio::spawn(rig.machine.clone().serve(gateway, 50022));
+    let (freeze, frozen) = watch::channel(false);
+    let (near_r, near_w) = split(near);
+    let (far_r, far_w) = split(far);
+    let up = tokio::spawn(pipe(near_r, far_w, frozen.clone()));
+    let down = tokio::spawn(pipe(far_r, near_w, frozen));
+
+    let config = Arc::new(client::Config {
+        keepalive_interval: Some(Duration::from_millis(500)),
+        keepalive_max: 3,
+        ..Default::default()
+    });
+    let stream = crate::tunnel::WriteWatch::new(ours, Duration::from_secs(1));
+    let mut handle = client::connect_stream(config, stream, Trusting).await?;
+    let key = PrivateKeyWithHashAlg::new(rig.key.clone(), None);
+    let user = &rig.machine.account.name;
+    assert!(handle.authenticate_publickey(user, key).await?.success());
+    let channel = handle.channel_open_session().await?;
+
+    freeze.send_replace(true);
+    let _held = (up.await?, down.await?);
+    tokio::spawn(async move {
+        let _ = channel.data(&[0u8; 1 << 20][..]).await;
+        std::future::pending::<()>().await;
+    });
+    let ended = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    assert!(
+        ended.is_ok_and(|r| r.is_err()),
+        "the session outlived the stall"
+    );
+    Ok(())
+}

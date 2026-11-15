@@ -65,6 +65,7 @@ from src.server.services.preview_base import (
     preview_proxy_requirements,
 )
 from src.server.utils.error_sanitization import (
+    COMPUTER_UNREACHABLE_HEADER,
     sandbox_failure_http,
     single_line,
 )
@@ -1401,8 +1402,14 @@ app.add_middleware(
     ],  # Use the configured list of methods
     allow_headers=["*"],  # Now allow all headers, but can be restricted further
     # A ranged file download is read by script, which sees only these past the
-    # safelisted few when the app is served from another origin.
-    expose_headers=["Content-Range", "Accept-Ranges", "ETag"],
+    # safelisted few when the app is served from another origin; the file panel
+    # words an unreachable computer's 503 from the last.
+    expose_headers=[
+        "Content-Range",
+        "Accept-Ranges",
+        "ETag",
+        COMPUTER_UNREACHABLE_HEADER,
+    ],
 )
 
 # Previews of private sandboxes, picked out by Host before any middleware
@@ -1432,7 +1439,11 @@ async def _sandbox_failure_handler(request: Request, exc: Exception) -> JSONResp
         f"Sandbox unreachable for {single_line(request.url.path)}: {single_line(str(exc))}"
     )
     answer = sandbox_failure_http(exc)
-    return JSONResponse(status_code=answer.status_code, content={"detail": answer.detail})
+    return JSONResponse(
+        status_code=answer.status_code,
+        content={"detail": answer.detail},
+        headers=answer.headers,
+    )
 
 
 app.add_exception_handler(SandboxGoneError, _sandbox_failure_handler)
