@@ -221,18 +221,16 @@ async def get_thread_output(
     from src.server.services.wakeups.message import user_timezone
     from src.server.services.thread_output import extract_text_from_thread
 
-    result = await extract_text_from_thread(
+    output = await extract_text_from_thread(
         thread_id, turns=turns, timezone=await user_timezone(x_user_id)
     )
+    if output is None:
+        # Deleted after the owner check.
+        raise HTTPException(status_code=404, detail="Thread not found")
     # The read is by id alone, and a deleted thread's id can be taken again,
     # so it is the caller's only if the thread still is.
     await auth_api.require_thread_owner(thread_id, x_user_id)
-    return ThreadOutputResponse(
-        thread_id=thread_id,
-        workspace_id=result["workspace_id"] or None,
-        status=result["status"],
-        text=result["text"],
-    )
+    return ThreadOutputResponse(thread_id=thread_id, **output._asdict())
 
 
 class ThreadSeenRequest(BaseModel):

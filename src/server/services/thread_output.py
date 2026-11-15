@@ -385,13 +385,21 @@ async def _placement(workspace_id: str) -> _Placement:
     )
 
 
+class ThreadOutput(NamedTuple):
+    workspace_id: str | None
+    #: ``running`` while a turn streams, else the thread's stored status.
+    status: str
+    text: str
+
+
 async def extract_text_from_thread(
     thread_id: str, turns: int = 1, timezone: str = "UTC"
-) -> dict[str, Any]:
+) -> ThreadOutput | None:
     """Extract the text each run of a thread committed, one labeled block per run.
 
     Reads from Redis if the thread is actively running, otherwise reads
     from the database: each settled run's text comes from its turn slice.
+    None when the thread is gone.
 
     Args:
         thread_id: The conversation thread ID
@@ -400,21 +408,12 @@ async def extract_text_from_thread(
             thread history. The window applies to the persisted record; while
             a turn is actively streaming, only that live turn is returned.
         timezone: The user's IANA zone, which the run labels state times in.
-
-    Returns:
-        Dict with keys: text, status, thread_id, workspace_id
     """
-    # Look up thread
     thread = await get_thread_by_id(thread_id)
     if not thread:
-        return {
-            "text": "",
-            "status": "not_found",
-            "thread_id": thread_id,
-            "workspace_id": "",
-        }
+        return None
 
-    workspace_id = str(thread.get("workspace_id", ""))
+    workspace_id = str(thread["workspace_id"]) if thread.get("workspace_id") else ""
     zone = user_zone_of(timezone)
     where = await _placement(workspace_id)
 
@@ -455,12 +454,7 @@ async def extract_text_from_thread(
             for run in runs
         ])
 
-    return {
-        "text": text,
-        "status": status,
-        "thread_id": thread_id,
-        "workspace_id": workspace_id,
-    }
+    return ThreadOutput(workspace_id=workspace_id or None, status=status, text=text)
 
 
 def _run_block(run: dict[str, Any], text: str, zone: Zone) -> str:
