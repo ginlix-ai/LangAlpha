@@ -322,6 +322,31 @@ async def get_home_placement(x_user_id: ReadUserId):
     return view
 
 
+@router.get("/home/handbacks")
+async def list_home_handbacks(x_user_id: ReadUserId):
+    """Where each file a Home turn wrote in the stand-in went in Home.
+
+    A turn's file card names the path in the stand-in's folder; the first
+    hand-back after that turn whose ``files`` hold it put the copy under its
+    ``folder`` in Home. Oldest first.
+    """
+    from src.server.database.home_away import list_handbacks
+    from src.server.database.home_workspace import get_home_stand_in_id
+
+    rows = await list_handbacks(x_user_id)
+    return {
+        "stand_in_workspace_id": get_home_stand_in_id(x_user_id),
+        "handbacks": [
+            {
+                "through": row["through"].isoformat(),
+                "folder": row["folder"],
+                "files": list(row["files"] or []),
+            }
+            for row in rows
+        ],
+    }
+
+
 class HomeHandbackSeen(BaseModel):
     handback_id: Optional[str] = None
 

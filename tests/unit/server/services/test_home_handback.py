@@ -1,0 +1,398 @@
+"""Handing Home's stand-in files back into Home.
+
+Pins what is carried (a diff against what went before, no hidden files, size
+caps, nothing the cloud packed beyond the regular files asked for), that the
+folder they land in appears whole and is always a new one, and when a worker
+hands back at all: Home's computer answering, nothing of Home's running, the
+per-user lock held, and a failure retried later rather than at once.
+"""
+
+import io
+import subprocess
+import tarfile
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.server.services import home_handback, home_handback_transfer
+from src.server.services.home_handback_transfer import Moved
+
+USER = "user-1"
+_P = "src.server.services.home_handback"
+_DB = "src.server.database.home_away"
+MAC = {"computer_id": "mac-1", "name": "MacBook Pro", "kind": "ssh"}
+CLOUD = {"computer_id": "cloud-1", "name": "Cloud computer", "kind": "daytona"}
+AT = datetime(2026, 11, 15, 9, 0, tzinfo=timezone.utc)
+THROUGH = datetime(2026, 11, 15, 10, 0, tzinfo=timezone.utc)
+
+
+def test_the_listing_splits_on_nul_so_any_name_survives():
+    names = ["a\nb.md", "line sep.txt", "tab\there.csv", "sub/report.md"]
+    data = b"".join(
+        f"{i}\t17000000{i}.5\t{name}\0".encode() for i, name in enumerate(names)
+    )
+    data += b"3\t1.0\t.agents/threads/x.log\0" + b"3\t1.0\twork/.cache/blob\0"
+    data += b"3\t1.0\tbad-\xff.bin\0"
+
+    listed, unreadable = home_handback_transfer.parse_listing(data)
+
+    assert sorted(listed) == sorted(names)
+    assert listed["tab\there.csv"] == (2, "170000002.5")
+    assert unreadable == ["bad-�.bin"]
+
+
+def test_what_went_before_unchanged_stays_and_the_rest_goes_within_the_caps():
+    mb = 1024 * 1024
+    listed = {
+        "same.md": (3, "100.5"),
+        "touched.md": (3, "200.0"),
+        "grown.md": (9, "100.0"),
+        "new.csv": (5, "300.0"),
+        "huge.bin": (201 * mb, "1.0"),
+        "a.parquet": (150 * mb, "1.0"),
+        "b.parquet": (150 * mb, "1.0"),
+        "c.parquet": (150 * mb, "1.0"),
+        "d.parquet": (150 * mb, "1.0"),
+    }
+    before = {
+        "same.md": [3, "100.5"],
+        "touched.md": [3, "150.0"],
+        "grown.md": [3, "100.0"],
+    }
+
+    pick = home_handback_transfer.pick_files(listed, before)
+
+    assert sorted(pick.chosen) == [
+        "a.parquet",
+        "b.parquet",
+        "c.parquet",
+        "grown.md",
+        "new.csv",
+        "touched.md",
+    ]
+    assert pick.too_large == ["huge.bin"]
+    assert pick.deferred == ["d.parquet"]
+
+
+def _member(tar, name, data=b"", **attrs):
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    for key, value in attrs.items():
+        setattr(info, key, value)
+    tar.addfile(info, io.BytesIO(data) if data else None)
+
+
+def test_the_archive_is_rebuilt_from_the_regular_files_asked_for_alone(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(home_handback_transfer, "MAX_FILE_BYTES", 10)
+    raw, clean = tmp_path / "raw.tar", tmp_path / "clean.tgz"
+    with tarfile.open(raw, "w", format=tarfile.GNU_FORMAT) as tar:
+        _member(tar, "report.md", b"report", mode=0o4755, uid=0, uname="root")
+        _member(tar, "report.md", b"second copy")
+        _member(tar, "link.md", type=tarfile.SYMTYPE, linkname="/etc/passwd")
+        _member(tar, "hard.md", type=tarfile.LNKTYPE, linkname="report.md")
+        _member(tar, "dev.bin", type=tarfile.CHRTYPE, devmajor=1, devminor=3)
+        _member(tar, "../escape.md", b"out")
+        _member(tar, "/etc/cron.d/x", b"abs")
+        _member(tar, "not-asked.md", b"x")
+        _member(tar, "big.bin", b"x" * 11)
+        _member(tar, "sub/chart.png", b"png")
+    chosen = {
+        name: (1, "1.0")
+        for name in [
+            "report.md",
+            "link.md",
+            "hard.md",
+            "dev.bin",
+            "big.bin",
+            "sub/chart.png",
+            "gone.md",
+        ]
+    }
+
+    moved = home_handback_transfer.rebuild_archive(raw, clean, chosen)
+
+    with tarfile.open(clean, "r:gz") as tar:
+        members = {m.name: m for m in tar.getmembers()}
+        assert set(members) == {"report.md", "sub/chart.png"}
+        assert tar.extractfile("report.md").read() == b"report"
+        assert all(
+            m.isreg() and m.mode == 0o644 and m.uid == 0 and not m.uname
+            for m in members.values()
+        )
+    assert sorted(moved.carried) == ["report.md", "sub/chart.png"]
+    assert moved.too_large == ["big.bin"]
+    assert moved.unreadable == ["dev.bin", "gone.md", "hard.md", "link.md"]
+
+
+def _parts(tmp_path, stage, files):
+    """A gzipped archive of ``files`` cut into parts, as the server uploads it."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        for name, data in files.items():
+            _member(tar, name, data, mode=0o644)
+    data = buf.getvalue()
+    parts = stage / "parts"
+    parts.mkdir(parents=True)
+    for index, start in enumerate(range(0, len(data), 7)):
+        (parts / f"{index:06d}").write_bytes(data[start : start + 7])
+
+
+def _unpack(home, stage):
+    script = home_handback_transfer.unpack_script(
+        str(home), str(stage), "From the cloud", "2026-11-15"
+    )
+    return subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+
+
+def test_each_hand_back_lands_whole_in_a_folder_nothing_holds_yet(tmp_path):
+    home = tmp_path / "Home"
+    made = []
+    for i in range(3):
+        stage = home / f".handback-{i}"
+        _parts(tmp_path, stage, {"report.md": b"hi", "sub/a\nb.csv": b"1,2"})
+        out = _unpack(home, stage)
+        assert out.returncode == 0, out.stdout + out.stderr
+        made.append(out.stdout.rpartition("HANDBACK_DEST=")[2])
+
+    base = home / "From the cloud"
+    assert made == [
+        str(base / "2026-11-15"),
+        str(base / "2026-11-15 2"),
+        str(base / "2026-11-15 3"),
+    ]
+    assert (base / "2026-11-15" / "sub" / "a\nb.csv").read_bytes() == b"1,2"
+
+
+def test_an_archive_that_does_not_unpack_leaves_no_folder(tmp_path):
+    home = tmp_path / "Home"
+    stage = home / ".handback-x"
+    (stage / "parts").mkdir(parents=True)
+    (stage / "parts" / "000000").write_bytes(b"not an archive")
+
+    out = _unpack(home, stage)
+
+    assert out.returncode != 0
+    assert not (home / "From the cloud").exists()
+
+
+@pytest.mark.parametrize(
+    ("locale", "folder"),
+    [
+        ("zh-CN", "来自云端"),
+        ("zh", "来自云端"),
+        ("en-US", "From the cloud"),
+        (None, "From the cloud"),
+    ],
+)
+def test_the_folder_is_named_in_the_account_language(locale, folder):
+    assert home_handback.handback_folder(locale) == folder
+
+
+@pytest.fixture
+def owed():
+    """A user owed a hand-back, with Home on a machine that answers again."""
+    order = []
+    state = {
+        "held": True,
+        "busy": False,
+        "live_run": False,
+        "unreachable": False,
+        "stand_in_computer": CLOUD,
+        "order": order,
+    }
+
+    async def computer_for(workspace_id, conn=None):
+        from src.server.database.home_workspace import get_home_stand_in_id
+
+        return (
+            state["stand_in_computer"]
+            if workspace_id == get_home_stand_in_id(USER)
+            else MAC
+        )
+
+    @asynccontextmanager
+    async def lock(key):
+        yield state["held"]
+
+    row = {
+        "user_id": USER,
+        "last_away_at": AT,
+        "away_since": AT,
+        "handed_back_through": None,
+        "last_handback": None,
+    }
+
+    async def begin(user_id):
+        return None if state["live_run"] else (dict(row), THROUGH)
+
+    moved = Moved(folder="From the cloud/2026-11-15", carried={"a.md": [3, "1.0"]})
+    moved.clean_up = AsyncMock(side_effect=lambda: order.append("clean_up"))
+    finish = AsyncMock(side_effect=lambda *a, **k: order.append("finish") or True)
+    with (
+        patch(f"{_P}.get_computer_for_workspace", side_effect=computer_for),
+        patch(
+            f"{_P}.computer_unreachable",
+            AsyncMock(side_effect=lambda c, **_: state["unreachable"]),
+        ),
+        patch(f"{_P}._home_busy", AsyncMock(side_effect=lambda _: state["busy"])),
+        patch(f"{_P}._user_locale", AsyncMock(return_value="en-US")),
+        patch("src.server.database.session_lock.try_own_session_lock", lock),
+        patch(f"{_DB}.get_home_away", AsyncMock(return_value=row)),
+        patch(f"{_DB}.begin_handback", side_effect=begin),
+        patch(f"{_DB}.handed_back", AsyncMock(return_value={"old.md": [1, "0.5"]})),
+        patch(f"{_DB}.finish_handback", finish),
+        patch(f"{_DB}.fail_handback", AsyncMock(return_value=False)) as fail,
+        patch(f"{_DB}.defer_handback", AsyncMock()) as defer,
+        patch(
+            "src.server.services.home_handback_transfer.move_into_home",
+            AsyncMock(return_value=moved),
+        ) as copy,
+    ):
+        state.update(finish=finish, fail=fail, defer=defer, copy=copy, moved=moved)
+        yield state
+
+
+@pytest.mark.asyncio
+async def test_a_hand_back_records_what_it_copied_before_cleaning_up(owed):
+    assert await home_handback.hand_back_owed(USER) is True
+
+    owed["copy"].assert_awaited_once()
+    assert owed["copy"].await_args.args == (USER, {"old.md": [1, "0.5"]})
+    kwargs = owed["finish"].await_args.kwargs
+    assert kwargs["previous"] is None and kwargs["through"] == THROUGH
+    assert kwargs["carried"] == {"a.md": [3, "1.0"]} and kwargs["done"] is True
+    assert kwargs["record"]["folder"] == "From the cloud/2026-11-15"
+    assert kwargs["record"]["files"] == 1
+    assert owed["order"] == ["finish", "clean_up"]
+
+
+@pytest.mark.asyncio
+async def test_files_with_no_room_this_time_stay_owed(owed):
+    owed["moved"].deferred = ["d.parquet"]
+
+    await home_handback.hand_back_owed(USER)
+
+    assert owed["finish"].await_args.kwargs["done"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["unreachable", "not_held"])
+async def test_nothing_is_copied_while_home_cannot_take_it(owed, why):
+    if why == "not_held":
+        owed["held"] = False
+    else:
+        owed[why] = True
+
+    assert await home_handback.hand_back_owed(USER) is False
+
+    owed["copy"].assert_not_awaited()
+    owed["finish"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["busy", "live_run"])
+async def test_a_busy_home_steps_aside_without_counting_a_failure(owed, why):
+    owed[why] = True
+
+    assert await home_handback.hand_back_owed(USER) is False
+
+    owed["copy"].assert_not_awaited()
+    owed["defer"].assert_awaited_once()
+    owed["fail"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_copy_is_counted_and_retried_later(owed):
+    owed["copy"].side_effect = RuntimeError("tar failed")
+
+    assert await home_handback.hand_back_owed(USER) is False
+
+    owed["finish"].assert_not_awaited()
+    kwargs = owed["fail"].await_args.kwargs
+    assert kwargs["max_attempts"] == home_handback.MAX_ATTEMPTS
+    assert kwargs["given_up"]["failed"] is True
+    assert kwargs["given_up"]["cloud_name"] == "Cloud computer"
+
+
+@pytest.mark.asyncio
+async def test_with_the_stand_ins_computer_gone_nothing_stays_owed(owed):
+    owed["stand_in_computer"] = None
+
+    assert await home_handback.hand_back_owed(USER) is False
+
+    owed["copy"].assert_not_awaited()
+    owed["finish"].assert_awaited_once_with(
+        USER, previous=None, through=AT, record=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_files_left_on_the_cloud_are_named_once():
+    left = Moved(too_large=["huge.bin"])
+    names = AsyncMock(return_value={"computer_name": "Mac", "cloud_name": "Cloud"})
+    with patch(f"{_P}._names", names):
+        first = await home_handback._record(USER, left, None)
+        again = await home_handback._record(USER, left, first)
+        nothing = await home_handback._record(USER, Moved(), first)
+
+    assert first["folder"] is None and first["left_on_cloud"] == ["huge.bin"]
+    assert again is None and nothing is None
+
+
+@pytest.mark.asyncio
+async def test_a_computer_holding_owed_stand_in_files_is_kept():
+    from src.server.services.computer_errors import Retirement
+    from src.server.services.computer_manager._retirement import RetirementMixin
+
+    cloud = {**CLOUD, "user_id": USER, "is_primary": False}
+    with (
+        patch(
+            "src.server.services.computer_manager._retirement.get_live_workspace_ids_for_computer",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "src.server.database.computer.get_computer_for_workspace",
+            AsyncMock(return_value=cloud),
+        ),
+        patch(
+            "src.server.database.home_away.handback_owed",
+            AsyncMock(side_effect=[True, False]),
+        ),
+    ):
+        owed = await RetirementMixin._why_machine_is_kept("cloud-1", cloud)
+        handed_back = await RetirementMixin._why_machine_is_kept("cloud-1", cloud)
+
+    assert owed is Retirement.HANDBACK_OWED
+    assert handed_back is None
+
+
+@pytest.mark.asyncio
+async def test_files_a_hand_back_left_keep_their_computer_from_retiring_itself():
+    from src.server.services.computer_manager._retirement import handback_left_on
+
+    cloud = {**CLOUD, "user_id": USER}
+    gave_up = {"last_handback": {"failed": True}}
+    with (
+        patch(
+            "src.server.database.computer.get_computer_for_workspace",
+            AsyncMock(return_value=cloud),
+        ),
+        patch(
+            "src.server.database.home_away.get_home_away",
+            AsyncMock(side_effect=[gave_up, {"last_handback": {"folder": "x"}}]),
+        ),
+    ):
+        assert await handback_left_on(cloud) is True
+        assert await handback_left_on(cloud) is False
+
+
+@pytest.mark.asyncio
+async def test_a_cleanup_that_fails_after_the_copy_is_recorded_raises_nothing():
+    runtime = MagicMock()
+    runtime.exec = AsyncMock(side_effect=ConnectionError("tunnel dropped"))
+
+    await Moved(stage=(runtime, "/home/.handback-x")).clean_up()

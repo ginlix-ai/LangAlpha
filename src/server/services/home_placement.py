@@ -213,7 +213,11 @@ async def home_placement_view(user_id: str) -> Dict[str, Any]:
     A read: nothing is placed or marked, so a page asking every few seconds
     never places a stand-in or starts a computer.
     """
-    from src.server.database.home_away import get_home_away, is_owed
+    from src.server.database.home_away import (
+        get_home_away,
+        is_owed,
+        left_on_stand_in,
+    )
     from src.server.database.workspace_move import get_latest_workspace_move
     from src.server.services.workspace_move import move_from_row
 
@@ -238,5 +242,8 @@ async def home_placement_view(user_id: str) -> Dict[str, Any]:
         ),
         "handback_owed": is_owed(row),
         "handback": last if last and row.get("handback_seen_at") is None else None,
+        # Kept after the notice is dismissed: removing the stand-in's computer
+        # takes these files with it.
+        "left_on_stand_in": left_on_stand_in(row),
         "move": move_from_row(await get_latest_workspace_move(home_id)),
     }

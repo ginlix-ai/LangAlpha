@@ -163,6 +163,9 @@ _REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
     # Indexes for conversation search the turns their settle missed, and
     # backfills older ones; an advisory lock keeps it to one worker a pass.
     ("ThreadSearchSweeper", "src.server.services.search.sweep"),
+    # Copies what Home's stand-in wrote into Home once Home's computer is
+    # back; a per-user advisory lock and a guarded watermark dedup it.
+    ("HomeHandbackSweeper", "src.server.services.home_handback"),
 )
 
 

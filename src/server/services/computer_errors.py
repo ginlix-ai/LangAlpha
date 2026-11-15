@@ -28,6 +28,7 @@ class Retirement(StrEnum):
     ONLY_COMPUTER = "only_computer"
     OWNERS_MACHINE = "owners_machine"
     HAS_WORKSPACES = "has_workspaces"
+    HANDBACK_OWED = "handback_owed"
     BUSY = "busy"
     DEFERRED = "deferred"
     WITHDRAWN = "withdrawn"
@@ -43,6 +44,11 @@ _REMOVAL_REFUSALS: dict[Retirement, str] = {
         "computer first."
     ),
     Retirement.HAS_WORKSPACES: "Delete the workspaces on this computer first.",
+    Retirement.HANDBACK_OWED: (
+        "What Home's Chief of Staff wrote here while your own computer was away "
+        "isn't in Home yet. It is copied there once that computer is back; "
+        "remove this one after that."
+    ),
     Retirement.BUSY: "This computer is busy. Try again in a moment.",
 }
 

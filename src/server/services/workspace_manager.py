@@ -27,7 +27,11 @@ from src.server.database.computer import (
     update_computer_status,
 )
 from src.server.database.conversation import forget_workspace_exists
-from src.server.database.home_workspace import is_home_row, is_home_stand_in_row
+from src.server.database.home_workspace import (
+    is_home_row,
+    is_home_stand_in_id,
+    is_home_stand_in_row,
+)
 from src.server.database.workspace import (
     ACTIVE_WORK_DELETE_REFUSAL,
     MOVING_DELETE_REFUSAL,
@@ -60,6 +64,7 @@ from src.server.services.computer_errors import (
     Retirement,
 )
 from src.server.services.computer_manager import ComputerManager
+from src.server.services.computer_manager._retirement import handback_owed_on
 from src.server.services.computer_manager._types import (
     MachineTarget,
     WorkspaceNotFound,
@@ -408,6 +413,7 @@ class WorkspaceManager(ComputerManager):
         *,
         delete_files: bool = False,
         on_computer: Optional[str] = None,
+        stand_in: bool = False,
     ) -> bool:
         """
         Delete a workspace: the project only, never its machine by itself.
@@ -428,6 +434,9 @@ class WorkspaceManager(ComputerManager):
             delete_files: The owner asked for the folder on their machine to go too.
             on_computer: Only from this computer; a workspace a move has
                 taken elsewhere is left alone.
+            stand_in: Home's stand-in may go too. Only its computer's removal
+                deletes it, holding it against new Home turns
+                (``remove_computer_with_workspaces``).
 
         Returns:
             True if deleted successfully
@@ -435,7 +444,8 @@ class WorkspaceManager(ComputerManager):
         Raises:
             WorkspaceNotFound: It is deleted already, or not on ``on_computer``.
             WorkspaceBusyError: A move or a turn holds it.
-            ValueError: It is Home, or has no computer.
+            ValueError: It is Home or, unless ``stand_in``, Home's stand-in,
+                or has no computer.
         """
         binding = await self.resolve_binding(workspace_id)
         computer_id = binding.computer_id
@@ -451,7 +461,9 @@ class WorkspaceManager(ComputerManager):
             workspace = await self.workspace_row(workspace_id)
             if not workspace:
                 raise WorkspaceNotFound(workspace_id)
-            if is_home_row(workspace):
+            if is_home_row(workspace) or (
+                is_home_stand_in_row(workspace) and not stand_in
+            ):
                 # Here rather than only at the route: an agent's tool deletes
                 # through this method too.
                 raise ValueError("Cannot delete Home")
@@ -553,7 +565,10 @@ class WorkspaceManager(ComputerManager):
             row = await self.workspace_row(workspace_id)
             if row and is_home_stand_in_row(row):
                 # Not one the owner was shown: it goes with its computer and
-                # is placed again on the next need.
+                # is placed again on the next need, unless what it holds is
+                # not in Home yet.
+                if await handback_owed_on(computer):
+                    return Retirement.HANDBACK_OWED
                 continue
             if str(workspace_id) not in shown or (row and is_home_row(row)):
                 return Retirement.HAS_WORKSPACES
@@ -596,11 +611,15 @@ class WorkspaceManager(ComputerManager):
         if held is not None:
             raise ComputerRemovalRefused(held)
         deleted: list[str] = []
+        user_id = str(computer.get("user_id") or "")
         for workspace_id in workspace_ids:
             try:
-                await self.delete_workspace(
-                    workspace_id, delete_files=delete_files, on_computer=computer_id
-                )
+                if is_home_stand_in_id(user_id, workspace_id):
+                    await self._delete_stand_in(computer, workspace_id, deleted)
+                else:
+                    await self.delete_workspace(
+                        workspace_id, delete_files=delete_files, on_computer=computer_id
+                    )
             except WorkspaceBusyError:
                 # A move or a run that started since the check above.
                 raise ComputerRemovalRefused(Retirement.BUSY, deleted=deleted) from None
@@ -617,6 +636,24 @@ class WorkspaceManager(ComputerManager):
             # A workspace landed on it meanwhile; the ones deleted stay so.
             raise ComputerRemovalRefused(e.code, deleted=deleted) from None
         return deleted
+
+    async def _delete_stand_in(
+        self, computer: Dict[str, Any], workspace_id: str, deleted: list[str]
+    ) -> None:
+        """Delete Home's stand-in with the computer it is on, unless files Home
+        is owed are in it. Asked again here, against new Home turns: one
+        admitted since ``removal_refusal`` read it owes them, and its files
+        would go with the folder."""
+        from src.server.services.home_placement import stand_in_held
+
+        async with stand_in_held(str(computer["user_id"])) as held:
+            if not held:
+                raise ComputerRemovalRefused(Retirement.BUSY, deleted=deleted)
+            if await handback_owed_on(computer):
+                raise ComputerRemovalRefused(Retirement.HANDBACK_OWED, deleted=deleted)
+            await self.delete_workspace(
+                workspace_id, on_computer=str(computer["computer_id"]), stand_in=True
+            )
 
     async def cleanup_idle_workspaces(self) -> int:
         """Stop computers that have gone quiet, and reconcile always-on.
