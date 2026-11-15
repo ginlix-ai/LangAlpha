@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { appendPathSuffix, getPreviewUrl } from '../../utils/api';
+import { appendPathSuffix, getPreviewUrl, previewFailure } from '../../utils/api';
+import type { PreviewFailure } from '../../utils/api/sandbox';
 import type { PreviewSpec } from './types';
 
 /**
@@ -22,7 +23,8 @@ export interface PreviewEntry {
   /** When `url` was minted (ms since epoch); a reopen past `URL_FRESH_MS` mints again. */
   mintedAt?: number;
   loading: boolean;
-  error: boolean;
+  /** Set when the last mint failed, saying why. */
+  error?: PreviewFailure;
   /** Bumped when the iframe must reload although the URL is unchanged. */
   reloadToken: number;
 }
@@ -38,7 +40,7 @@ export const URL_FRESH_MS = 10 * 60_000;
  *  reopens an app by port alone and must not blank the agent's own labels. */
 function merge(spec: PreviewSpec, prev?: PreviewEntry): PreviewEntry {
   return {
-    url: '', loading: false, error: false, reloadToken: 0,
+    url: '', loading: false, reloadToken: 0,
     ...prev,
     port: spec.port,
     ...(spec.title !== undefined && { title: spec.title }),
@@ -96,7 +98,7 @@ export function usePreviews(workspaceId: string) {
     const { port } = spec;
     const ticket = (seqRef.current.get(port) ?? 0) + 1;
     seqRef.current.set(port, ticket);
-    patch(port, () => ({ loading: true, error: false }));
+    patch(port, () => ({ loading: true, error: undefined }));
     const ask = () => getPreviewUrl(ws, port, spec.command, force);
     // A workspace switch resets the counters, so a ticket alone could pass
     // again in the next workspace on the same port.
@@ -118,15 +120,15 @@ export function usePreviews(workspaceId: string) {
         commandKey: result.command_key ?? null,
         mintedAt: Date.now(),
         loading: false,
-        error: false,
+        error: undefined,
         // The token exists to reload a frame the URL alone would leave alone.
         // A first URL mounts the frame by itself, and bumping here would tear
         // that frame down and load the app a second time.
         reloadToken: entry.url ? entry.reloadToken + 1 : entry.reloadToken,
       }));
-    } catch {
+    } catch (err: unknown) {
       if (stale()) return;
-      patch(port, () => ({ url: '', commandKey: null, loading: false, error: true }));
+      patch(port, () => ({ url: '', commandKey: null, loading: false, error: previewFailure(err) }));
     }
   }, [workspaceId, patch]);
 

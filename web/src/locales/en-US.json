@@ -3028,6 +3028,8 @@
     "startingServer": "Starting app…",
     "serverOffline": "App not running",
     "serverOfflineHint": "Reload app to start it again.",
+    "portInUse": "Port in use",
+    "portInUseHint": "Another program on the computer holds port {{port}}. Ask the agent to run the app on another port.",
     "saveFailed": "Save failed",
     "saveFailedFile": "Couldn't save {{name}}",
     "deleteFailed": "Delete failed",

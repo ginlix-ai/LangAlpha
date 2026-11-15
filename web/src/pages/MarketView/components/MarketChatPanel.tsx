@@ -34,7 +34,7 @@ import { DispatchStatusProvider } from '../../ChatAgent/hooks/usePTCDispatchStat
 import { useStreamFollow } from '../../ChatAgent/components/chatView/transcriptFollow';
 import { useTranscriptFollow } from '../../ChatAgent/components/chatView/useTranscriptFollow';
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
-import { appendPathSuffix, getPreviewUrl, summarizeThread, offloadThread, type NextSummary } from '../../ChatAgent/utils/api';
+import { appendPathSuffix, getPreviewUrl, previewFailure, summarizeThread, offloadThread, type NextSummary } from '../../ChatAgent/utils/api';
 import { attachmentSendParts, type AttachmentMeta } from '../../ChatAgent/utils/fileUpload';
 import type { SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
 import { useToolCallLookup } from '../../ChatAgent/components/chatView/toolCallLookup';
@@ -350,11 +350,11 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         const url = appendPathSuffix(result.url, preview.path);
         setDialogPayload({ type: 'preview', preview: { ...preview, url, loading: false } });
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (previewPortRef.current !== preview.port) return;
         setDialogPayload({
           type: 'preview',
-          preview: { ...preview, url: '', loading: false, error: true },
+          preview: { ...preview, url: '', loading: false, error: previewFailure(err) },
         });
       });
   }, [activeWorkspaceId]);

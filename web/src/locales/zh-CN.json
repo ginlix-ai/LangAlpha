@@ -3056,6 +3056,8 @@
     "startingServer": "正在启动应用…",
     "serverOffline": "应用未运行",
     "serverOfflineHint": "点击“重新加载应用”重新启动。",
+    "portInUse": "端口已被占用",
+    "portInUseHint": "电脑上的另一个程序占用了端口 {{port}}。请让 Agent 换一个端口运行这个应用。",
     "saveFailed": "保存失败",
     "saveFailedFile": "无法保存 {{name}}",
     "deleteFailed": "删除失败",

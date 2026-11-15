@@ -789,7 +789,7 @@ function FilePanel({
 
       {activeTab.kind === 'preview' && (
         <PreviewCrumbs
-          entry={previews.byPort.get(activeTab.port) ?? { port: activeTab.port, url: '', loading: true, error: false, reloadToken: 0 }}
+          entry={previews.byPort.get(activeTab.port) ?? { port: activeTab.port, url: '', loading: true, reloadToken: 0 }}
           onRefresh={() => previews.refresh(activeTab.port)}
           workspaceId={workspaceId}
           threadId={threadId}

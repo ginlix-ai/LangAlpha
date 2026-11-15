@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { appendPathSuffix, getPreviewUrl } from '../../utils/api';
+import { appendPathSuffix, getPreviewUrl, previewFailure } from '../../utils/api';
 import { getShareLink, parseShareLinkHref } from '../../utils/api/shareLinks';
 import { desktop } from '@/lib/desktop';
 import { opensShareLinksInPanel } from '@/lib/shareLinkOpen';
@@ -441,10 +441,10 @@ export function useRightPanel({
         previewMapRef.current.set(port, updated);
         if (activePreviewPortRef.current === port) setPreviewData(updated);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         const entry = previewMapRef.current.get(port);
         if (entry?.workspaceId !== wid) return;
-        const updated = { ...entry, url: '', loading: false, error: true };
+        const updated = { ...entry, url: '', loading: false, error: previewFailure(err) };
         previewMapRef.current.set(port, updated);
         if (activePreviewPortRef.current === port) setPreviewData(updated);
       });
@@ -727,7 +727,7 @@ export function useRightPanel({
       console.error('Failed to refresh preview:', e);
       const entry = previewMapRef.current.get(port);
       if (entry && entry.workspaceId !== wid) return;
-      const updated = { ...(entry ?? previewData), loading: false, error: true };
+      const updated = { ...(entry ?? previewData), loading: false, error: previewFailure(e) };
       previewMapRef.current.set(port, updated);
       if (activePreviewPortRef.current === port) setPreviewData(updated);
     }
