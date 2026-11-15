@@ -106,6 +106,29 @@ export async function seedWorkspaceMove(queryClient: QueryClient, move: Workspac
   noticeEnding(queryClient, before, move);
 }
 
+/**
+ * Resolves once `move` has ended, read afresh every {@link WORKSPACE_MOVE_POLL_MS}
+ * whoever else is following it, so a step that has to wait for the move
+ * (removing the computer Home just left) does not depend on a mounted reader.
+ * Null when the workspace's latest move is another one by then. Still running
+ * after `timeoutMs`, it resolves with the move as it stands, so the caller
+ * says so rather than wait on with nothing to show for it.
+ */
+export async function waitForMoveEnd(
+  queryClient: QueryClient,
+  move: WorkspaceMove,
+  { timeoutMs }: { timeoutMs: number },
+): Promise<WorkspaceMove | null> {
+  const query = workspaceMoveQuery(queryClient, move.workspace_id);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const current = await queryClient.fetchQuery(query);
+    if (current?.move_id !== move.move_id) return null;
+    if (!isMoveActive(current) || Date.now() >= deadline) return current;
+    await new Promise((resolve) => setTimeout(resolve, WORKSPACE_MOVE_POLL_MS));
+  }
+}
+
 // --- Moves whose ending is still to be told ---
 
 /** A move this tab asked for. `label` is what its outcome names. */

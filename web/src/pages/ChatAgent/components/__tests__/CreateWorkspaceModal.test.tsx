@@ -6,11 +6,16 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { renderWithProviders } from '@/test/utils';
 import { queryKeys } from '@/lib/queryKeys';
+
+vi.mock('../../hooks/computerPanelStore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../hooks/computerPanelStore')>()),
+  openComputersPanel: vi.fn(),
+}));
 
 vi.mock('../../utils/api', () => ({
   getComputers: vi.fn(),
@@ -22,6 +27,7 @@ vi.mock('../../utils/api', () => ({
 }));
 
 import { getComputerProviders, getComputers, startWorkspace, uploadWorkspaceFile } from '../../utils/api';
+import { openComputersPanel } from '../../hooks/computerPanelStore';
 import CreateWorkspaceModal from '../CreateWorkspaceModal';
 
 const mockUpload = uploadWorkspaceFile as Mock;
@@ -400,5 +406,29 @@ describe('CreateWorkspaceModal, a computer still being prepared', () => {
       await screen.findByText("This computer is still being prepared. Try again once it's ready."),
     ).toBeInTheDocument();
     expect(screen.queryByText('Computer is still being prepared')).not.toBeInTheDocument();
+  });
+
+  it('offers to add a computer when the user has none and none is built for them', async () => {
+    const user = userEvent.setup();
+    mockGetComputers.mockResolvedValue({ computers: [], total: 0 });
+    const onCreate = vi.fn().mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 409'), {
+        response: {
+          status: 409,
+          data: { detail: { code: 'needs_computer', message: 'Add a computer first.' } },
+        },
+      }),
+    );
+    const { onClose } = setup(onCreate);
+
+    await user.type(screen.getByPlaceholderText(/name/i), 'First');
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
+
+    const card = await screen.findByRole('alert');
+    expect(card).toHaveTextContent("Workspaces live on a computer, and you don't have one yet.");
+    expect(screen.queryByText('Add a computer first.')).not.toBeInTheDocument();
+    await user.click(within(card).getByRole('button', { name: 'Add a computer' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(openComputersPanel).toHaveBeenCalledWith({ view: 'create' });
   });
 });

@@ -858,7 +858,7 @@ describe('ComputersDialog: removing a computer', () => {
   it.each([
     ['busy', 'This computer is busy. Try again in a moment.'],
     ['has_workspaces', 'A workspace not listed here is on it now. Check the list and try again.'],
-    ['primary', "Your primary computer can't be removed."],
+    ['primary', 'This is your primary computer. Make another computer primary first, and Home moves there.'],
   ])('keeps the confirm open and words a %s refusal itself', async (code, copy) => {
     const user = userEvent.setup();
     mockDelete.mockRejectedValue(conflict(code, 'Computer cannot be removed right now'));

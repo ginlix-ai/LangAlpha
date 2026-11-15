@@ -144,6 +144,14 @@ export function takesWorkspaces(computer: Pick<Computer, 'status' | 'provider_re
   return computer.status !== 'deleted' && computer.status !== 'error' && !isComputerPreparing(computer);
 }
 
+/**
+ * A machine the user brought whose tunnel is down: asleep or offline, so
+ * nothing can be laid on it, Home included, until it connects again.
+ */
+export function tunnelDown(computer: Pick<Computer, 'ssh'>): boolean {
+  return computer.ssh?.tunnel_connected === false;
+}
+
 export const PREPARING_UI: ComputerStatusUi = {
   labelKey: 'computer.statusPreparing',
   fallback: 'Preparing',

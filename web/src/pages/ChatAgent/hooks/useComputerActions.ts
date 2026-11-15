@@ -21,6 +21,7 @@ import type {
   ComputerRemoveResponse,
   ComputersResponse,
   ResourceTier,
+  WorkspaceMove,
 } from '@/types/api';
 
 import {
@@ -52,10 +53,33 @@ import {
   RECONNECT_COMPUTER_MUTATION_KEY,
   removeComputerRow,
 } from './useComputers';
-import { seedWorkspaceMove, watchMove } from './useWorkspaceMove';
+import { isMoveActive, seedWorkspaceMove, waitForMoveEnd, watchMove } from './useWorkspaceMove';
 import { forgetDeletedWorkspace, invalidateWorkspaceMembership } from './workspaceRowActions';
 
 export type PowerAction = 'start' | 'stop';
+
+/** Home's move to the new primary ended other than done: failed, cancelled, or replaced. */
+export class HomeMoveFailed extends Error {
+  constructor(readonly move: WorkspaceMove | null) {
+    super(move?.error?.message ?? 'Home did not move');
+    this.name = 'HomeMoveFailed';
+  }
+}
+
+/** Home's move to the new primary was still running when the removal stopped waiting for it. */
+export class HomeStillMoving extends Error {
+  constructor(readonly move: WorkspaceMove) {
+    super('Home is still moving');
+    this.name = 'HomeStillMoving';
+  }
+}
+
+/**
+ * How long a removal waits for Home to land on the computer picked. A Home
+ * still moving by then keeps moving; the removal stops, says so, and the
+ * move's ending is told as any other's.
+ */
+export const HOME_HANDOFF_WAIT_MS = 10 * 60_000;
 
 export interface RemoveComputerVariables {
   computerId: string;
@@ -251,6 +275,26 @@ export function useComputerActions() {
     onError: () => invalidateMachine(queryClient),
   });
 
+  // Home leaves a primary that is being removed: the computer picked becomes
+  // primary, and this settles once Home's move to it has landed, so the
+  // removal that follows finds the machine no longer primary. Its ending is
+  // told by the removal, so the move is not watched for a toast, unless the
+  // wait gives up while it still runs. The name is for that toast.
+  const handOffHome = useMutation({
+    mutationFn: async ({ computerId, name, fromBackup }: { computerId: string; name: string; fromBackup: boolean }) => {
+      const res = await makeComputerPrimary(computerId, { fromBackup });
+      if (!res.move) return;
+      await seedWorkspaceMove(queryClient, res.move);
+      const ended = await waitForMoveEnd(queryClient, res.move, { timeoutMs: HOME_HANDOFF_WAIT_MS });
+      if (isMoveActive(ended)) {
+        watchMove(ended, name);
+        throw new HomeStillMoving(ended);
+      }
+      if (ended?.phase !== 'done') throw new HomeMoveFailed(ended);
+    },
+    onSettled: () => invalidateMachine(queryClient),
+  });
+
   // Always-on is no longer offered, so turning it off is all that is left.
   const turnOffAlwaysOn = useMutation({
     mutationFn: ({ computerId }: { computerId: string }) => setComputerAlwaysOn(computerId, false),
@@ -412,6 +456,7 @@ export function useComputerActions() {
     renameComputerTo,
     spec,
     makePrimary,
+    handOffHome,
     turnOffAlwaysOn,
     setFilesBackup,
     create,

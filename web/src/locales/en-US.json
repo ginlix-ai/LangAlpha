@@ -1613,7 +1613,8 @@
       "movingHome": "Moving Home…",
       "done": "{{name}} is now your primary computer",
       "failedTitle": "Couldn't make {{name}} primary",
-      "failed": "Couldn't make this computer primary. Try again."
+      "failed": "Couldn't make this computer primary. Try again.",
+      "unreachable": "You can make it primary once it's connected."
     },
     "workspaceCount_one": "{{count}} workspace",
     "workspaceCount_other": "{{count}} workspaces",
@@ -1667,15 +1668,18 @@
     "tokenRemoveFailed": "We could not remove its Claude Code token from the machine. To remove it yourself, delete {{path}} on it.",
     "removed": "{{name}} removed",
     "removeFailed": "Couldn't remove this computer. Try again.",
+    "removeFailedNamed": "Couldn't remove {{name}}",
     "removeBlocked": {
       "specChange": "You can remove it once the spec change finishes.",
       "starting": "You can remove it once it has started.",
       "stopping": "You can remove it once it has stopped."
     },
     "removeRefused": {
-      "primary": "Your primary computer can't be removed.",
+      "primary": "This is your primary computer. Make another computer primary first, and Home moves there.",
       "hasWorkspaces": "A workspace not listed here is on it now. Check the list and try again.",
-      "busy": "This computer is busy. Try again in a moment."
+      "busy": "This computer is busy. Try again in a moment.",
+      "onlyComputer": "This is your only computer, so it can't be removed. Add another computer first.",
+      "handbackOwed": "Files written on this computer while {{mac}} was away haven't been copied back into Home yet. Try again once {{mac}} is back."
     },
     "manageComputer": "Manage {{name}}",
     "alwaysOn": "Always-on",
@@ -1955,6 +1959,18 @@
       "keepBothNote": "To keep both, add this machine as a computer of its own, and reconnect {{name}} to the machine it was on.",
       "addThisMac": "Add this Mac as a new computer",
       "addThisMachine": "Add this machine as a new computer"
+    },
+    "removeHome": {
+      "label": "Home moves to",
+      "becomesPrimary": "The computer you pick becomes your primary computer.",
+      "backupOff": "Backup off",
+      "unreachable": "Can't be reached",
+      "failed": "Couldn't move Home, so nothing was removed. Try again.",
+      "stillMoving": "Home is still moving, so nothing was removed. Remove this computer again once Home has moved.",
+      "movedNotRemoved": "Home moved to {{home}}, but {{name}} wasn't removed."
+    },
+    "needsComputer": {
+      "body": "Workspaces live on a computer, and you don't have one yet. Add a computer, then create the workspace."
     }
   },
   "thread": {

@@ -1655,7 +1655,8 @@
       "movingHome": "正在迁移 Home…",
       "done": "{{name}} 已设为默认计算机",
       "failedTitle": "无法将 {{name}} 设为默认",
-      "failed": "无法将这台计算机设为默认，请重试。"
+      "failed": "无法将这台计算机设为默认，请重试。",
+      "unreachable": "连接恢复后即可设为默认。"
     },
     "workspaceCount_one": "{{count}} 个工作区",
     "workspaceCount_other": "{{count}} 个工作区",
@@ -1709,15 +1710,18 @@
     "tokenRemoveFailed": "我们无法从这台机器上移除它的 Claude Code token。如需自行移除，请在这台机器上删除 {{path}}。",
     "removed": "已移除 {{name}}",
     "removeFailed": "无法移除这台计算机，请重试。",
+    "removeFailedNamed": "无法移除 {{name}}",
     "removeBlocked": {
       "specChange": "规格更改完成后即可移除。",
       "starting": "启动完成后即可移除。",
       "stopping": "停止后即可移除。"
     },
     "removeRefused": {
-      "primary": "默认计算机无法移除。",
+      "primary": "这是你的默认计算机。请先将另一台计算机设为默认，Home 会随之迁移过去。",
       "hasWorkspaces": "它上面有一个未列出的工作区。请查看列表后重试。",
-      "busy": "这台计算机正忙，请稍后再试。"
+      "busy": "这台计算机正忙，请稍后再试。",
+      "onlyComputer": "这是你唯一的计算机，无法移除。请先添加另一台计算机。",
+      "handbackOwed": "{{mac}} 离线期间在这台计算机上写的文件还没复制回 Home。请等 {{mac}} 恢复连接后再试。"
     },
     "manageComputer": "管理 {{name}}",
     "alwaysOn": "常驻",
@@ -1996,6 +2000,18 @@
       "keepBothNote": "如要两台都保留，可将这台机器添加为一台独立的计算机，再将 {{name}} 重新连接到原来的机器。",
       "addThisMac": "将这台 Mac 添加为新计算机",
       "addThisMachine": "将这台机器添加为新计算机"
+    },
+    "removeHome": {
+      "label": "Home 迁移到",
+      "becomesPrimary": "你选的计算机将成为默认计算机。",
+      "backupOff": "备份已关闭",
+      "unreachable": "无法连接",
+      "failed": "无法迁移 Home，因此没有移除任何内容。请重试。",
+      "stillMoving": "Home 仍在迁移中，因此没有移除任何内容。请等 Home 迁移完成后再移除这台计算机。",
+      "movedNotRemoved": "Home 已迁移到 {{home}}，但 {{name}} 没有被移除。"
+    },
+    "needsComputer": {
+      "body": "工作区需要放在一台计算机上，而你还没有计算机。请先添加一台计算机，再创建工作区。"
     }
   },
   "thread": {

@@ -22,12 +22,12 @@ import type { Computer } from '@/types/api';
 
 import { useComputerProviders, useComputerStorage } from '../hooks/useComputers';
 import type { ThisMac } from '../hooks/useRemoteControl';
-import { isComputerPreparing, isComputerStatusTransitional, takesWorkspaces } from '../utils/computerStatus';
+import { isComputerPreparing, isComputerStatusTransitional, takesWorkspaces, tunnelDown } from '../utils/computerStatus';
 import { DiskBar, DiskUsageText } from './computerDiskUi';
 import { activeSpecChange, effectiveTier } from './specChangeUi';
 import { COMPUTER_NAME_MAX, computerNameTakenMessage } from '../utils/computerName';
 import { MakePrimaryButton } from './MakePrimaryDialog';
-import { providerManagesSpec } from './providerUi';
+import { providerManagesSpec, providerRemovableWhilePrimary } from './providerUi';
 import { ComputerFacts } from './computerFacts';
 import { ComputerClaudeCode } from './ComputerClaudeCode';
 import {
@@ -66,11 +66,16 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
   const disk = computer.disk ?? null;
   const specChange = activeSpecChange(computer);
   const managesSpec = providerManagesSpec(computer.kind);
-  // The primary is kept, so it offers no Remove at all. Every other computer
-  // offers it, held while the server would refuse, with the reason under it.
-  // Workspaces on it do not hold it: the confirmation offers to delete them.
-  const removeHeld = computer.is_primary ? null : removeBlock(computer, actions.powerBusy);
+  // A hosted primary is kept, so it offers no Remove at all. Every other
+  // computer offers it, held while the server would refuse, with the reason
+  // under it; on a primary the user brings the confirmation asks where Home
+  // goes. Workspaces on it do not hold it: the confirmation offers to delete them.
+  const removable = !computer.is_primary || providerRemovableWhilePrimary(computer.kind);
+  const removeHeld = removable ? removeBlock(computer, actions.powerBusy) : null;
   const removeHint = removeHeld ? removeBlockHint(t, removeHeld) : null;
+  // Home's files would have nowhere to land on a machine that can't be reached.
+  const primaryUnreachable = !computer.is_primary && tunnelDown(computer);
+  const primaryHintId = useId();
   const hasSettings = (managesSpec && computer.is_always_on) || computer.kind === 'ssh';
 
   // The view replaced the button that opened it, so focus starts on the way back.
@@ -99,13 +104,16 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
           <div className="computer-details-actions">
             <StartFailureAction computer={computer} actions={actions} />
             <PowerButton computer={computer} actions={actions} />
-            {!computer.is_primary && (
+            {removable && (
               <div className="computer-details-rarer">
-                <MakePrimaryButton
-                  movingHome={actions.movingHome}
-                  disabled={actions.makePrimaryHeld || !!specChange || !takesWorkspaces(computer)}
-                  onClick={actions.makePrimary}
-                />
+                {!computer.is_primary && (
+                  <MakePrimaryButton
+                    movingHome={actions.movingHome}
+                    disabled={actions.makePrimaryHeld || !!specChange || !takesWorkspaces(computer) || primaryUnreachable}
+                    onClick={actions.makePrimary}
+                    describedBy={primaryUnreachable && !actions.movingHome ? primaryHintId : undefined}
+                  />
+                )}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -120,6 +128,11 @@ function ComputerDetails({ computer, index, total, height, onBack, thisMac, show
               </div>
             )}
             {/* Under the buttons, so its arriving moves none of them. */}
+            {removable && primaryUnreachable && !actions.movingHome && (
+              <p id={primaryHintId} className="computer-details-hint">
+                {t('computer.makePrimary.unreachable', "You can make it primary once it's connected.")}
+              </p>
+            )}
             {removeHint && (
               <p id={removeHintId} className="computer-details-hint">
                 {removeHint}

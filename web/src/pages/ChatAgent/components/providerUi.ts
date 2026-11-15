@@ -47,6 +47,14 @@ export function providerIsOwnMachine(kind: string): boolean {
 }
 
 /**
+ * A primary the user brings can be removed, Home moving to another computer
+ * first; a hosted primary is kept, so nothing is offered on it.
+ */
+export function providerRemovableWhilePrimary(kind: string): boolean {
+  return !!providerUi(kind)?.ownMachine;
+}
+
+/**
  * Removing a machine the user brings stops using it and leaves their files
  * there, and deleting a workspace on one leaves its folder unless the user
  * asks for it to go; on every other provider the disk goes with the computer.

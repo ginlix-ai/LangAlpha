@@ -107,6 +107,18 @@ beforeEach(() => {
 });
 
 describe('ComputersDialog: making a machine the user brings primary', () => {
+  it("holds Make primary on a machine that can't be reached, and says why", async () => {
+    mockGetComputers.mockResolvedValue(ownMachine({
+      ssh: { host: 'office', port: 22, username: 'dev', fingerprint: 'SHA256:x', tunnel: true, tunnel_connected: false, helper: true },
+    }));
+    const user = userEvent.setup();
+    open();
+    await openDetails(user, 'Office Mac');
+    const button = screen.getByRole('button', { name: 'Make primary' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription("You can make it primary once it's connected.");
+  });
+
   it('names the cloud computer that stands in while the machine is away', async () => {
     const { user, dialog } = await openMakePrimary();
     expect(await within(dialog).findByText(/the Chief of Staff works on Alpha Research, starting it if it's stopped/)).toBeInTheDocument();

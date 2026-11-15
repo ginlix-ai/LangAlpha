@@ -197,9 +197,12 @@ export async function setComputerSpec(computerId: string, tier: ResourceTier, pl
  * answers which went: one moved off it meanwhile still exists.
  * `deleteFiles`, on an SSH computer, also deletes LangAlpha's files from its
  * machine, the named workspaces' folders among them. It refuses
- * with a 409 whose `detail.code` says why: `primary`, `has_workspaces`, or
- * `busy` (moving between states, being prepared, changing spec, a workspace
- * moving, or held by another action).
+ * with a 409 whose `detail.code` says why: `primary` (make another computer
+ * primary first, which moves Home there), `only_computer` (the user's only
+ * computer; another has to be added first), `has_workspaces`, `handback_owed`
+ * (files written here while Home's own machine was away are still to be
+ * copied back into Home), or `busy` (moving between states, being prepared,
+ * changing spec, a workspace moving, or held by another action).
  */
 /** As many ids as a request line keeps well under the 8 KB proxies allow. */
 const QUERY_WORKSPACES_MAX = 30;

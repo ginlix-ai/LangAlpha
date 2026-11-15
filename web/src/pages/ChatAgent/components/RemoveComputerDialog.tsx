@@ -5,6 +5,11 @@
  * named here, so the user empties and removes it in one step rather than
  * leaving to delete them one by one; only the ones named are sent.
  *
+ * A primary the user brought takes Home with it, so removing one first asks
+ * which computer Home moves to; that computer becomes primary, and the
+ * removal follows once Home is there. The user's only computer can't be
+ * removed, so the dialog offers to add another instead.
+ *
  * Opened over the Computers dialog, which owns the request and the refusal;
  * mounted only while open.
  */
@@ -16,6 +21,13 @@ import { CheckboxChoice } from '@/components/ui/choice';
 import { Loader } from '@/components/ui/loader';
 import { ModalShell } from '@/components/ui/ModalShell';
 import { useAllWorkspaces } from '@/hooks/useAllWorkspaces';
+import type { Computer } from '@/types/api';
+
+import { PREPARING_UI, computerStatusUi, isComputerPreparing, takesWorkspaces } from '../utils/computerStatus';
+import { providerIsOwnMachine, providerLabel } from './providerUi';
+import { RadioCardGroup, type RadioCardOption } from './radioCardGroup';
+
+type Translate = ReturnType<typeof useTranslation>['t'];
 
 /** Workspaces named one per line before the rest are counted. */
 const LISTED_WORKSPACES = 5;
@@ -31,17 +43,31 @@ interface RemoveComputerDialogProps {
   holdsOurKey: boolean;
   /** The computer is this Mac, whose remote control goes off with it. */
   turnsOffRemoteControl?: boolean;
+  /**
+   * The user's other computers, when this one is the primary and Home has to
+   * move off it first; null otherwise. Empty: it is their only computer.
+   */
+  homeTargets?: readonly Computer[] | null;
+  /** This computer can't be reached, so Home is restored from its backup. */
+  homeFromBackup?: boolean;
+  /** Home is moving to the computer picked, ahead of the removal. */
+  movingHome?: boolean;
+  /** Opens New computer, for a user whose only computer this is. */
+  onAddComputer: () => void;
   onClose: () => void;
   /**
    * `removeKey` is the box's state, and false where the box is not shown.
    * `workspaceIds` are the workspaces the dialog named, to delete first.
    * `deleteFiles` takes LangAlpha's files off a machine the user brought.
+   * `homeTo` is the computer Home moves to first, for a primary.
    */
-  onConfirm: (removeKey: boolean, workspaceIds: string[], deleteFiles: boolean) => void;
+  onConfirm: (removeKey: boolean, workspaceIds: string[], deleteFiles: boolean, homeTo: string | null) => void;
   /** The request is in flight. */
   busy: boolean;
   /** The last refusal, already worded for the user. */
   error: string | null;
+  /** The refusal was for its being the user's only computer. */
+  onlyComputer?: boolean;
 }
 
 function RemoveComputerDialog({
@@ -51,10 +77,15 @@ function RemoveComputerDialog({
   filesKeptIn,
   holdsOurKey,
   turnsOffRemoteControl = false,
+  homeTargets = null,
+  homeFromBackup = false,
+  movingHome = false,
+  onAddComputer,
   onClose,
   onConfirm,
   busy,
   error,
+  onlyComputer = false,
 }: RemoveComputerDialogProps) {
   const { t } = useTranslation();
   const titleId = useId();
@@ -79,6 +110,15 @@ function RemoveComputerDialog({
   const listed = workspaces.map((w) => w.workspace_id).join(',');
   const [acknowledgedList, setAcknowledgedList] = useState<string | null>(null);
   const acknowledged = acknowledgedList === listed;
+  // Where Home goes: the first computer that can take it, until one is picked.
+  const homeOptions = (homeTargets ?? []).map((c) => homeTargetOption(t, c));
+  const [pickedHome, setPickedHome] = useState<string | null>(null);
+  const homeTo = homeOptions.find((o) => o.value === pickedHome && !o.disabled)?.value
+    ?? homeOptions.find((o) => !o.disabled)?.value
+    ?? null;
+  const homeName = homeTargets?.find((c) => c.computer_id === homeTo)?.name ?? '';
+  const isOnly = onlyComputer || homeTargets?.length === 0;
+  const homeHeld = !!homeTargets && !homeTo;
 
   const footer = (
     <div className="flex items-center justify-end gap-2">
@@ -88,15 +128,17 @@ function RemoveComputerDialog({
       <Button
         type="button"
         variant="destructive"
-        onClick={() => onConfirm(holdsOurKey && removeKey, workspaces.map((w) => w.workspace_id), !!filesKeptIn && deleteFiles)}
-        disabled={busy || listWaiting || (hasWorkspaces && isError) || (count > 0 && !acknowledged)}
+        onClick={() => onConfirm(holdsOurKey && removeKey, workspaces.map((w) => w.workspace_id), !!filesKeptIn && deleteFiles, homeTargets ? homeTo : null)}
+        disabled={busy || isOnly || homeHeld || listWaiting || (hasWorkspaces && isError) || (count > 0 && !acknowledged)}
         aria-busy={busy}
       >
-        {busy
-          ? t('computer.removing', 'Removing...')
-          : count > 0
-            ? t('computer.removeWithWorkspaces', { count })
-            : t('computer.removeConfirm', 'Remove computer')}
+        {movingHome
+          ? t('computer.makePrimary.movingHome', 'Moving Home…')
+          : busy
+            ? t('computer.removing', 'Removing...')
+            : count > 0
+              ? t('computer.removeWithWorkspaces', { count })
+              : t('computer.removeConfirm', 'Remove computer')}
       </Button>
     </div>
   );
@@ -123,6 +165,37 @@ function RemoveComputerDialog({
               )
           : t('computer.removeBody', "Its sandbox and everything on its disk are deleted. This can't be undone.")}
       </p>
+      {homeTargets && homeTargets.length > 0 && (
+        <div className="flex flex-col gap-1.5" data-testid="remove-computer-home">
+          <RadioCardGroup
+            options={homeOptions}
+            value={homeTo}
+            onChange={setPickedHome}
+            label={t('computer.removeHome.label', 'Home moves to')}
+          />
+          <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            {homeFromBackup && homeName
+              ? t(
+                'computer.makePrimary.fromBackup',
+                "{{from}} can't be reached, so Home is restored on {{name}} from its last backup.",
+                { from: name, name: homeName },
+              )
+              : t('computer.removeHome.becomesPrimary', 'The computer you pick becomes your primary computer.')}
+          </p>
+        </div>
+      )}
+      {isOnly && (
+        <div
+          role={onlyComputer ? 'alert' : undefined}
+          className="flex flex-col items-start gap-2 rounded-md px-3 py-2.5 text-sm"
+          style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-primary)' }}
+        >
+          <p>{t('computer.removeRefused.onlyComputer', "This is your only computer, so it can't be removed. Add another computer first.")}</p>
+          <Button type="button" variant="outline" size="sm" onClick={onAddComputer} disabled={busy}>
+            {t('computer.card.add', 'Add a computer')}
+          </Button>
+        </div>
+      )}
       {listWaiting && (
         <p className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
           <Loader size={12} style={{ color: 'var(--color-accent-primary)' }} />
@@ -208,13 +281,34 @@ function RemoveComputerDialog({
           </span>
         </CheckboxChoice>
       )}
-      {error && !busy && (
+      {error && !busy && !onlyComputer && (
         <p className="text-sm" role="alert" style={{ color: 'var(--color-icon-danger)' }}>
           {error}
         </p>
       )}
     </ModalShell>
   );
+}
+
+/**
+ * A computer Home could move to. Held where it can't take workspaces now,
+ * where it is a machine the user brings that can't be reached (Home's files
+ * would have nowhere to land), or one with its file backup off, which can't
+ * hold Home.
+ */
+function homeTargetOption(t: Translate, computer: Computer): RadioCardOption<string> {
+  const status = isComputerPreparing(computer) ? PREPARING_UI : computerStatusUi(computer.status);
+  const unreachable = computer.ssh?.tunnel_connected === false;
+  const backupOff = providerIsOwnMachine(computer.kind) && computer.files_backup === false;
+  return {
+    value: computer.computer_id,
+    title: computer.name,
+    facts: [t(status.labelKey, status.fallback), providerLabel(computer.kind, t)],
+    note: unreachable
+      ? t('computer.removeHome.unreachable', "Can't be reached")
+      : backupOff ? t('computer.removeHome.backupOff', 'Backup off') : null,
+    disabled: !takesWorkspaces(computer) || unreachable || backupOff,
+  };
 }
 
 export default RemoveComputerDialog;

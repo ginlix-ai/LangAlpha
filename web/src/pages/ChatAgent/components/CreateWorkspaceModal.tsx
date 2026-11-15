@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useEffect, useId } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { X, Upload, FileText, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { Loader } from '@/components/ui/loader';
 import { buttonSlot } from '@/components/ui/button-class';
 import { Input } from '../../../components/ui/input';
@@ -9,7 +10,9 @@ import { Select } from '@/components/ui/select';
 import { useLocale } from '@/hooks/useLocale';
 import { formatBytes } from '@/lib/format';
 import type { Computer, Workspace } from '@/types/api';
+import { apiErrorCoded } from '@/api/errors';
 import { startWorkspace, uploadWorkspaceFile } from '../utils/api';
+import { openComputersPanel } from '../hooks/computerPanelStore';
 import { createWorkspaceDenialMessage, denialMessage } from '../utils/denialMessage';
 import { clampWorkspaceName } from '../utils/workspaceName';
 import type { NewWorkspace } from '../hooks/useCreateWorkspace';
@@ -57,6 +60,8 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
   const [description, setDescription] = useState('');
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // The user has no computer for the workspace, and none is built for them.
+  const [needsComputer, setNeedsComputer] = useState(false);
   const [pickedComputerId, setPickedComputerId] = useState<string | null>(null);
   const computerFieldId = useId();
 
@@ -198,6 +203,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
     setSubmitting(true);
     setError(null);
+    setNeedsComputer(false);
 
     let workspace: Workspace;
     try {
@@ -210,7 +216,8 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
       // A refusal keeps the user on the form with their input intact. On a 429
       // the sentence is the quota service's, relayed as it arrived.
       setSubmitting(false);
-      setError(createWorkspaceDenialMessage(err, t));
+      if (apiErrorCoded(err, 'needs_computer')) setNeedsComputer(true);
+      else setError(createWorkspaceDenialMessage(err, t));
       return;
     }
 
@@ -242,6 +249,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
     setDescription('');
     setQueuedFiles([]);
     setError(null);
+    setNeedsComputer(false);
     setPickedComputerId(null);
     setPhase('form');
     setCreationStep('uploading');
@@ -505,6 +513,31 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
           {/* Error */}
           {error && <div className="cwm-error">{error}</div>}
+          {needsComputer && (
+            <div
+              role="alert"
+              className="mb-2 flex flex-col items-start gap-2 rounded-md px-3 py-2.5 text-sm"
+              style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-primary)' }}
+            >
+              <p>
+                {t(
+                  'computer.needsComputer.body',
+                  "Workspaces live on a computer, and you don't have one yet. Add a computer, then create the workspace.",
+                )}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  resetAndClose();
+                  openComputersPanel({ view: 'create' });
+                }}
+              >
+                {t('computer.card.add', 'Add a computer')}
+              </Button>
+            </div>
+          )}
 
           {/* Actions */}
           <div className="cwm-actions">
