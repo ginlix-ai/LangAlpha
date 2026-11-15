@@ -233,6 +233,25 @@ class TestSweepClaim:
         push.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_an_own_machine_whose_tunnel_is_down_is_not_dialed(self):
+        sweeper = DataTokenSweeper()
+        manager = MagicMock(_detached_runtime=MagicMock(side_effect=AssertionError("dialed")))
+        row = {**_row(), "kind": "ssh", "provider_config": {"tunnel": "tun-1"}}
+
+        with (
+            patch.object(db, "load", AsyncMock(return_value=db.DataTokenRow())),
+            patch(
+                "src.server.services.computer_manager.ComputerManager.get_instance",
+                return_value=manager,
+            ),
+            patch(
+                "src.server.services.ssh_computers.get_tunnels",
+                AsyncMock(return_value={"tun-1": {"live": False}}),
+            ),
+        ):
+            assert await sweeper._write_locked(COMPUTER_ID, row) is False
+
+    @pytest.mark.asyncio
     async def test_a_sandbox_paused_during_the_mint_is_not_written(self):
         # Attaching resumes a paused E2B sandbox, which would undo the stop.
         from ptc_agent.core.sandbox.runtime import RuntimeState

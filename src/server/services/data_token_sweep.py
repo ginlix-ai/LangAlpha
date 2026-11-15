@@ -295,12 +295,18 @@ class DataTokenSweeper:
         from ptc_agent.core.paths import SandboxLayout
         from src.server.database import computer_data_tokens as db
         from src.server.services import data_tokens
+        from src.server.services.ssh_computers import computer_unreachable
 
         sandbox_id = str(row["provider_ref"])
         # Read again under the lock: a turn's start or a sibling's pass since
         # the listing may have written one already.
         current = await db.load(computer_id)
         if not data_tokens.due(current, sandbox_id):
+            return False
+        if await computer_unreachable(row):
+            # A machine of the user's own that is asleep or offline has
+            # nothing that could use a token until it is back, and dialing it
+            # only fails. Its claim brings it round again next pass.
             return False
 
         async with running_sandbox(row) as runtime:

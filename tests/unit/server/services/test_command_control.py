@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ptc_agent.core.sandbox.jobs import JobState, Outbox
+from ptc_agent.core.sandbox.runtime import RuntimeState
 from src.server.database.runs.command_runs import Outcome
 from src.server.services.commands import control, settle
 
@@ -502,3 +503,67 @@ async def test_a_computer_between_states_keeps_the_stop_marked_for_the_watcher(s
         assert (await _stop()).outcome == "stopping"
     e.calls.finalize.assert_not_called()
     assert "end_jobs" not in e.order()
+
+
+def _own_machine(state: RuntimeState):
+    """A manager whose runtime on an SSH computer reads ``state``."""
+    runtime = MagicMock()
+    runtime.get_state = AsyncMock(return_value=state)
+    manager = MagicMock()
+
+    @asynccontextmanager
+    async def computer_runtime(computer, sandbox_id):
+        yield runtime
+
+    manager.computer_runtime = computer_runtime
+    return manager, runtime
+
+
+@pytest.mark.parametrize(
+    ("status", "state", "reached"),
+    [
+        ("stopped", RuntimeState.RUNNING, True),
+        ("stopped", RuntimeState.STOPPED, False),
+        ("running", RuntimeState.STOPPED, True),
+    ],
+    ids=["stop-never-reached-it", "stop-or-reboot-ended-it", "running"],
+)
+@pytest.mark.asyncio
+async def test_a_stopped_computer_on_an_own_machine_is_read_from_the_machine(
+    status, state, reached
+):
+    manager, runtime = _own_machine(state)
+    computer = {**RUNNING, "kind": "ssh", "status": status}
+    with (
+        patch(
+            "src.server.services.workspace_manager.WorkspaceManager.current",
+            return_value=manager,
+        ),
+        patch(
+            "src.server.services.ssh_computers.computer_unreachable",
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        async with control.computer_jobs_runtime(computer) as got:
+            assert (got is runtime) is reached
+
+
+@pytest.mark.parametrize("status", ["running", "stopped"])
+@pytest.mark.asyncio
+async def test_an_own_machine_that_is_away_is_never_dialed(status):
+    manager, _ = _own_machine(RuntimeState.RUNNING)
+    manager.computer_runtime = MagicMock(side_effect=AssertionError("dialed"))
+    computer = {**RUNNING, "kind": "ssh", "status": status}
+    with (
+        patch(
+            "src.server.services.workspace_manager.WorkspaceManager.current",
+            return_value=manager,
+        ),
+        patch(
+            "src.server.services.ssh_computers.computer_unreachable",
+            new=AsyncMock(return_value=True),
+        ),
+        pytest.raises(control.ComputerAway),
+    ):
+        async with control.computer_jobs_runtime(computer):
+            pass

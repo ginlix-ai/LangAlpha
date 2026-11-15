@@ -18,6 +18,12 @@ settles each row by ``settle.decide`` and ``settle.settle``:
 - A stop under way is left to its stopper for ``STOP_GRACE_S`` and then
   finished here, with the stops the hour makes, in one exec a computer
   (``control.stop_marked``).
+- A computer on a machine of the user's own is read from the machine, stopped
+  or not, since a stop the machine did not answer (asleep, offline) ended
+  nothing there: a job still running is watched, one that ended reports at
+  the thread's next turn, and only a machine that says the computer stopped,
+  or rebooted, ends them as lost. While its tunnel is down nothing is dialed
+  or settled: its commands are looked at again every ``AWAY_RECHECK_S``.
 
 While a command is covered (``settle``'s module says what covers it), its
 computer is kept up past the idle sweep. Once not, on a computer the sweep
@@ -37,13 +43,16 @@ import asyncio
 import logging
 import random
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from ptc_agent.core.sandbox import jobs
 
 from src.server.database.runs import command_runs as cr_db
+from src.server.database.runs.command_runs import Outcome
 from src.server.services.commands.control import (
+    ComputerAway,
     computer_jobs_runtime,
     computer_reach,
     still_up,
@@ -72,6 +81,10 @@ _LOG = "[CommandWatcher]"
 
 #: How often a running command's computer is read.
 CHECK_INTERVAL_S = 15.0
+#: How often the commands of a machine whose tunnel is down are looked at
+#: again: one read of the tunnel's record, so a machine back from sleep has
+#: them judged within a minute without anything dialing it meanwhile.
+AWAY_RECHECK_S = 60.0
 # How long a claim's computers have, counted from the claim: a computer still
 # waiting for a slot or still answering when it runs out is left to its
 # lease, so a dark machine holds up nobody else's commands, and a claim with
@@ -246,12 +259,18 @@ class CommandWatcher:
         gate = asyncio.Semaphore(_COMPUTER_CONCURRENCY)
 
         checked: List[Dict[str, Any]] = []
+        away: List[Dict[str, Any]] = []
 
         async def one(computer_id: str, group: List[Dict[str, Any]]) -> int:
             try:
                 # The wait for a slot counts: the claim's lease does not wait.
                 async with asyncio.timeout_at(deadline), gate:
                     ended = await self._check_computer(computer_id, group, coverage, now)
+            except ComputerAway:
+                # Asleep or offline, which is how a user's own machine spends
+                # much of its time: nothing to warn about.
+                away.extend(group)
+                return 0
             except Exception as e:  # noqa: BLE001 - the rows come due again
                 logger.warning(
                     f"{_LOG} computer {computer_id} not checked "
@@ -271,8 +290,15 @@ class CommandWatcher:
                 [(str(r["command_id"]), r["next_check_at"]) for r in checked],
                 self._interval,
             )
+            if away:
+                await cr_db.schedule_next_check(
+                    [(str(r["command_id"]), r["next_check_at"]) for r in away],
+                    AWAY_RECHECK_S,
+                )
         except Exception as e:  # noqa: BLE001 - the lease brings them back
-            logger.warning(f"{_LOG} rescheduling {len(checked)} commands failed: {e}")
+            logger.warning(
+                f"{_LOG} rescheduling {len(checked) + len(away)} commands failed: {e}"
+            )
         return sum(counts)
 
     async def _check_computer(
@@ -315,6 +341,11 @@ class CommandWatcher:
             # Once for all its rows: an end read on a computer a stop has
             # taken since reports at the thread's next turn.
             up = await still_up(computer)
+            # A stopped computer whose machine still runs it: the stop never
+            # reached the machine, so its jobs are judged as on a computer
+            # that is up, and their ends report at the thread's next turn
+            # rather than starting the computer its owner stopped.
+            left = reach == "own_stopped"
             ended = 0
             stops: List[Mapping[str, Any]] = []
             watched: List[Mapping[str, Any]] = []
@@ -329,12 +360,14 @@ class CommandWatcher:
                 verdict = decide(
                     row,
                     state,
-                    up=up,
+                    up=up or left,
                     hour_applies=hour_applies,
                     cov=coverage[str(row["conversation_thread_id"])],
                     now=now,
-                    computer_stopped_at=computer.get("stopped_at"),
+                    computer_stopped_at=None if left else computer.get("stopped_at"),
                 )
+                if left and isinstance(verdict, Outcome):
+                    verdict = replace(verdict, up=False)
                 if verdict is WATCH:
                     watched.append(row)
                     continue
