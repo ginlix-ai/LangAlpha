@@ -44,6 +44,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from ptc_agent.core.sandbox.livefs_runtime.protocol import PREFIX as LIVEFS_PREFIX
 from ptc_agent.core.sandbox.platform_secrets import PlatformSecretError
 from ptc_agent.core.sandbox.providers.ssh_errors import SSHConnectError
+from src.server.services.computer_errors import NeedsComputer
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.server.app.logos import LOGOS_PREFIX, router as logos_router
 from src.server.preview_proxy import install_preview_proxy
@@ -1467,6 +1468,16 @@ app.add_exception_handler(SandboxGoneError, _sandbox_failure_handler)
 app.add_exception_handler(SandboxTransientError, _sandbox_failure_handler)
 # A refusal a caller let through unwrapped, which would otherwise answer 500.
 app.add_exception_handler(SSHConnectError, _sandbox_failure_handler)
+
+
+async def _needs_computer_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A user with no computer and none built for them, wherever a route let
+    the refusal through: the client offers to add one."""
+    detail = exc.detail if isinstance(exc, NeedsComputer) else str(exc)
+    return JSONResponse(status_code=409, content={"detail": detail})
+
+
+app.add_exception_handler(NeedsComputer, _needs_computer_handler)
 
 
 

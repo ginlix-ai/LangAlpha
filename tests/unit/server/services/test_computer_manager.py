@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import uuid
 from contextlib import ExitStack, asynccontextmanager, contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -19,7 +20,12 @@ import pytest
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxTransientError
 from src.server.database.workspace_folders import WorkspaceFolderMoving
-from src.server.services.computer_errors import ProviderNotOffered, UnknownResourceTier
+from src.server.services.computer_errors import (
+    NeedsComputer,
+    ProviderNotOffered,
+    UnknownResourceTier,
+)
+from src.server.services.computer_manager._machines import _backup_off_candidate
 from src.server.services.computer_manager import (
     ComputerBinding,
     ComputerManager,
@@ -373,17 +379,22 @@ class TestMintingAComputer(_Base):
         assert mock_create.await_args.kwargs["name"] == name
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind, primary", [("e2b", True), ("ssh", False)])
+    @pytest.mark.parametrize(
+        "kind, files_backup, primary",
+        [("e2b", True, True), ("ssh", True, True), ("ssh", False, False)],
+    )
     @patch("src.server.services.computer_manager._machines.create_computer")
-    async def test_only_a_machine_the_server_can_rebuild_becomes_primary(
-        self, mock_create, kind, primary
+    async def test_a_machine_becomes_primary_only_with_its_files_backed_up(
+        self, mock_create, kind, files_backup, primary
     ):
-        """A primary is never removed and Home lands on it, so an owner's
-        machine as primary would hold Home there after it is lost."""
+        """Home lands on the primary, and a machine the user brought is
+        restored from its backup if lost, so one with backup off never takes it."""
         manager = _make_manager()
         mock_create.return_value = _make_computer(kind=kind, status="stopped")
 
-        await manager.create_computer_for_user("user-1", kind=kind, is_primary=True)
+        await manager.create_computer_for_user(
+            "user-1", kind=kind, is_primary=True, files_backup=files_backup
+        )
 
         assert mock_create.await_args.kwargs["is_primary"] is primary
 
@@ -563,6 +574,105 @@ class TestMintingAComputer(_Base):
 
         assert computer["computer_id"] == "comp-1"
         assert mock_create.await_args.kwargs["is_primary"] is True
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.computer_manager._machines.create_computer")
+    @patch("src.server.services.computer_manager._machines.get_primary_computer")
+    async def test_a_user_with_only_their_own_machine_gets_it_promoted(
+        self, mock_primary, mock_create
+    ):
+        """No cloud computer is built for a user who works on their own machine."""
+        manager = _make_manager()
+        mock_primary.return_value = None
+        own = _make_computer(kind="ssh", status="running")
+        with patch(f"{_MACHINES}.promote_primary_computer", AsyncMock(return_value=own)):
+            computer = await manager.ensure_primary_computer("user-1")
+
+        assert computer is own
+        mock_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("choice", "kinds"),
+        [("own_machine", ("daytona",)), (None, ("ssh",)), ("cloud", ("ssh",))],
+        ids=["chose-own-machine", "builds-none", "builds-none-chose-cloud"],
+    )
+    @patch("src.server.services.computer_manager._machines.create_computer")
+    @patch("src.server.services.computer_manager._machines.get_primary_computer")
+    async def test_a_user_with_none_who_works_on_their_own_needs_one(
+        self, mock_primary, mock_create, choice, kinds
+    ):
+        """Nothing is built for a user who chose their own machine, or where
+        the deployment builds none: they are told to add one."""
+        from src.server.services.computer_errors import NeedsComputer
+
+        manager = _make_manager()
+        manager.config.sandbox.creatable_providers = lambda: kinds
+        mock_primary.return_value = None
+        with (
+            patch(f"{_MACHINES}.get_computer_choice", AsyncMock(return_value=choice)),
+            pytest.raises(NeedsComputer) as refused,
+        ):
+            await manager.ensure_primary_computer("user-1")
+
+        assert refused.value.detail["code"] == "needs_computer"
+        mock_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.computer_manager._machines.create_computer")
+    @patch("src.server.services.computer_manager._machines.get_primary_computer")
+    async def test_a_user_whose_machine_has_backup_off_is_told_so(
+        self, mock_primary, mock_create
+    ):
+        """Not "you have no computer": they have one, and turning its backup
+        on lets it be primary. The answer is ``needs_computer``'s shape with
+        its own code and the computer named."""
+        manager = _make_manager()
+        mock_primary.return_value = None
+        mac = _make_computer(
+            computer_id="mac-1",
+            kind="ssh",
+            name="MacBook Pro",
+            files_backup=False,
+            created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        with (
+            patch(f"{_MACHINES}.get_computer_choice", AsyncMock(return_value="own_machine")),
+            patch(f"{_MACHINES}._backup_off_candidate", AsyncMock(return_value=mac)),
+            pytest.raises(NeedsComputer) as refused,
+        ):
+            await manager.ensure_primary_computer("user-1")
+
+        assert refused.value.detail == {
+            "code": "needs_backup",
+            "message": refused.value.detail["message"],
+            "computer_id": str(mac["computer_id"]),
+            "computer_name": "MacBook Pro",
+        }
+        assert "MacBook Pro" in refused.value.detail["message"]
+        mock_create.assert_not_awaited()
+
+        older = _make_computer(
+            computer_id="mac-0",
+            kind="ssh",
+            files_backup=False,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        backed_up = _make_computer(computer_id="mac-2", kind="ssh", files_backup=True)
+        failed = _make_computer(
+            computer_id="mac-3", kind="ssh", status="error", files_backup=False
+        )
+        with (
+            patch(
+                f"{_MACHINES}.get_computers_for_user",
+                AsyncMock(return_value=[backed_up, failed, mac, older]),
+            ),
+        ):
+            # Home's computer first, as the promotion would take it, then the oldest.
+            with patch(f"{_MACHINES}.get_computer_for_workspace", AsyncMock(return_value=mac)):
+                assert await _backup_off_candidate("user-1") is mac
+            with patch(f"{_MACHINES}.get_computer_for_workspace", AsyncMock(return_value=None)):
+                assert await _backup_off_candidate("user-1") is older
 
     @pytest.mark.asyncio
     @patch("src.server.services.computer_manager._machines.update_computer_status")
@@ -4669,6 +4779,18 @@ async def test_overlay_repair_does_not_hide_a_layout_failure():
     manager._sync_sandbox_assets = AsyncMock(side_effect=LayoutMigrationError("partial move"))
     with pytest.raises(LayoutMigrationError, match="partial move"):
         await manager._ensure_project_tool_overlay(binding, session, user_id="user-1")
+
+
+@pytest.fixture(autouse=True)
+def _no_computer_to_promote():
+    """A user with no primary here has no other computer to promote and made
+    no choice, so the deployment's machine is built as before."""
+    with (
+        patch(f"{_MACHINES}.promote_primary_computer", AsyncMock(return_value=None)),
+        patch(f"{_MACHINES}.get_computer_choice", AsyncMock(return_value=None)),
+        patch(f"{_MACHINES}._backup_off_candidate", AsyncMock(return_value=None)),
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

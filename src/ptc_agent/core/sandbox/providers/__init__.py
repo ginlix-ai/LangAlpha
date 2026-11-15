@@ -9,6 +9,7 @@ from ptc_agent.config.core import (
     DockerConfig,
     E2BConfig,
     PlatformSecretDefinition,
+    SandboxConfig,
     SSHConfig,
 )
 from ptc_agent.core.sandbox.runtime import SandboxProvider
@@ -73,15 +74,32 @@ def is_own_machine(kind: str) -> bool:
 
 
 def may_be_primary(kind: str) -> bool:
-    """Whether a computer of ``kind`` may be the user's primary. Home lives on
-    the primary, which is never removed, so only a machine the deployment can
-    build again may hold it: one the user brought could be wiped or gone for
-    good with Home on it.
+    """Whether a computer of ``kind`` may be the user's primary, where Home
+    and new workspaces land. Every kind may: a machine the user brings holds
+    Home as well as one the deployment builds, its backup being what Home is
+    restored from if the machine is lost, which is why making one primary
+    asks for its backup on (``database.workspace_move``).
 
     Raises:
         ValueError: If ``kind`` names no known provider.
     """
-    return not is_own_machine(kind)
+    provider_class(kind)
+    return True
+
+
+def builds_computers(sandbox: SandboxConfig) -> bool:
+    """Whether the deployment can make a user a computer on its own: some kind
+    a new computer may be created on is one it can build again. Without one, a
+    user's computers are only the machines they bring.
+    """
+    for kind in sandbox.creatable_providers():
+        try:
+            if not is_own_machine(kind):
+                return True
+        except ValueError:
+            # A kind with no provider here (the test double) builds nothing.
+            continue
+    return False
 
 
 def build_provider(

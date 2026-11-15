@@ -73,7 +73,11 @@ from src.server.models.computer import (
     ComputerSpecRequest,
     ComputerStorageResponse,
 )
-from src.server.models.workspace_move import MakePrimaryResponse, WorkspaceMoveOut
+from src.server.models.workspace_move import (
+    MakePrimaryRequest,
+    MakePrimaryResponse,
+    WorkspaceMoveOut,
+)
 from src.server.services.computer_disk import (
     STORAGE_BREAKDOWN_MAX_AGE_SECONDS,
     disk_from_row,
@@ -142,6 +146,10 @@ router = APIRouter(prefix="/api/v1/computers", tags=["Computers"])
 # rebuilds one, so only a machine its owner brought may go without.
 _FILES_BACKUP_REQUIRED = (
     "File backup can only be turned off on a computer you brought yourself."
+)
+_PRIMARY_BACKUP_REQUIRED = (
+    "File backup stays on for your primary computer, since Home lives on it. "
+    "Make another computer primary first."
 )
 
 
@@ -500,8 +508,9 @@ async def create_computer(
                 # The insert squashes this to FALSE when a live primary already
                 # exists, so it reads as "primary if they have none". Without it a
                 # user's first, named machine is not primary and their first project
-                # mints a second one. The manager declines it for a machine it
-                # cannot rebuild, such as an owner's SSH machine.
+                # mints a second one. A machine of the user's own is taken too,
+                # so one who works only on it gets no cloud computer; the manager
+                # declines it for a machine whose files are not backed up.
                 is_primary=True,
                 prepare=True,
                 files_backup=request.files_backup,
@@ -1012,14 +1021,19 @@ async def make_primary_computer(
     computer_id: str,
     response: Response,
     x_user_id: CurrentUserId,
+    request: Optional[MakePrimaryRequest] = None,
 ):
     """Make this the computer new workspaces and Home land on.
 
     Home lives on the primary. With Home on no computer yet, or already on
     this one, the flip lands now (200). Otherwise Home's files move first,
     which outlasts a request: the move is accepted (202), the flip lands
-    when it commits, and both are read back from Home's move.
+    when it commits, and both are read back from Home's move. ``from_backup``
+    lays Home from its last backup, for a machine of the user's own that
+    can't be reached. A computer whose files are not backed up is refused
+    (409 ``not_backed_up``): Home would live only on its disk.
     """
+    from_backup = bool(request and request.from_backup)
     async with _computer_action_errors("make primary", computer_id):
         await _owned_computer(computer_id, x_user_id)
         with move_refusals():
@@ -1028,7 +1042,11 @@ async def make_primary_computer(
             logger.info("Made computer %s primary for user %s", computer_id, x_user_id)
             return MakePrimaryResponse(computer_id=computer_id, is_primary=True)
         move = await accept_workspace_move(
-            x_user_id, get_home_workspace_id(x_user_id), computer_id, make_primary=True
+            x_user_id,
+            get_home_workspace_id(x_user_id),
+            computer_id,
+            make_primary=True,
+            from_backup=from_backup,
         )
         response.status_code = 202
         return MakePrimaryResponse(computer_id=computer_id, is_primary=False, move=move)
@@ -1051,6 +1069,15 @@ async def set_computer_files_backup_route(
         computer = await _owned_computer(computer_id, x_user_id)
         if not request.enabled and provider_class(computer["kind"]).recreatable:
             raise HTTPException(status_code=409, detail=_FILES_BACKUP_REQUIRED)
+        if not request.enabled and computer.get("is_primary"):
+            # Home lives on the primary, and its backup is what restores it.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "primary_backup_required",
+                    "message": _PRIMARY_BACKUP_REQUIRED,
+                },
+            )
         updated = await set_computer_files_backup(computer_id, request.enabled)
         if updated is None:
             raise HTTPException(status_code=404, detail="Computer not found")

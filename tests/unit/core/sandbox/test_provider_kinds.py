@@ -63,3 +63,31 @@ def test_the_ledgers_kinds_load_no_provider_module():
     )
     (line,) = [ln for ln in done.stdout.splitlines() if ln.startswith("LOADED=")]
     assert line == "LOADED=", line
+
+
+@pytest.mark.parametrize("kind", PROVIDER_KINDS)
+def test_every_kind_may_be_primary(kind):
+    """A machine the user brings holds Home as well as a cloud one."""
+    from ptc_agent.core.sandbox.providers import may_be_primary
+
+    assert may_be_primary(kind) is True
+
+
+def test_an_unknown_kind_may_not_be_asked_about():
+    from ptc_agent.core.sandbox.providers import may_be_primary
+
+    with pytest.raises(ValueError):
+        may_be_primary("nope")
+
+
+@pytest.mark.parametrize(
+    ("kinds", "builds"),
+    [(("daytona",), True), (("ssh",), False), (("ssh", "docker"), True), ((), False)],
+)
+def test_a_deployment_builds_computers_only_on_a_kind_it_can_rebuild(kinds, builds):
+    from types import SimpleNamespace
+
+    from ptc_agent.core.sandbox.providers import builds_computers
+
+    sandbox = SimpleNamespace(creatable_providers=lambda: kinds)
+    assert builds_computers(sandbox) is builds

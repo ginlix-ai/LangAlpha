@@ -156,7 +156,7 @@ async def claim_workspace_move(
             )
             await cur.execute(
                 f"""
-                SELECT computer_id, kind FROM computers
+                SELECT computer_id, kind, files_backup FROM computers
                 WHERE computer_id = %(target)s AND user_id = %(user_id)s
                   AND {_TAKES_A_WORKSPACE}
                 FOR SHARE
@@ -191,6 +191,9 @@ async def claim_workspace_move(
                 raise MoveRefused("target_unavailable")
             if make_primary and not may_be_primary(computer["kind"]):
                 raise MoveRefused("not_primary")
+            if make_primary and not computer["files_backup"]:
+                # Home would live only on that machine's disk.
+                raise MoveRefused("not_backed_up")
             if from_backup:
                 await _check_left_for_backup(cur, workspace, may_be_left)
             if await workspace_has_live_runs(cur, workspace_id):
@@ -703,7 +706,7 @@ async def set_primary_computer(
     ) as cur:
         await cur.execute(
             f"""
-            SELECT computer_id, kind,
+            SELECT computer_id, kind, files_backup,
                    ({_TAKES_A_WORKSPACE}) AS takes_workspaces
             FROM computers
             WHERE user_id = %(user_id)s AND (computer_id = %(target)s OR is_primary)
@@ -721,6 +724,9 @@ async def set_primary_computer(
             raise MoveRefused("target_unavailable")
         if not may_be_primary(target["kind"]):
             raise MoveRefused("not_primary")
+        if not target["files_backup"]:
+            # Home lives on the primary, and would live only on that disk.
+            raise MoveRefused("not_backed_up")
         await cur.execute(
             "SELECT computer_id FROM workspaces WHERE workspace_id = %s FOR UPDATE",
             (get_home_workspace_id(user_id),),

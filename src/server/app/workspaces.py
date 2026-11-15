@@ -90,6 +90,7 @@ from src.server.services.workspace_move import move_error_detail, move_from_row
 from src.server.services.computer_errors import (
     ComputerNotFoundError,
     ComputerPreparingError,
+    NeedsComputer,
     UnknownResourceTier,
 )
 from ptc_agent.core.sandbox.providers.ssh_errors import connect_failure
@@ -149,6 +150,9 @@ async def _workspace_action_errors(action: str, workspace_id: str):
     except (WorkspaceNameTaken, WorkspaceNameInvalid) as e:
         # Before the ValueError arm: an unusable name is not a missing workspace.
         raise _name_error(e) from None
+    except NeedsComputer as e:
+        # Before the RuntimeError arm, which it subclasses.
+        raise HTTPException(status_code=409, detail=e.detail) from None
     except UnknownResourceTier as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     except ValueError as e:
@@ -268,6 +272,8 @@ async def create_workspace(
         raise HTTPException(
             status_code=409, detail={"code": "computer_preparing", "message": str(e)}
         ) from None
+    except NeedsComputer as e:
+        raise HTTPException(status_code=409, detail=e.detail) from None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -401,6 +401,55 @@ async def get_home_computer(user_id: str, *, conn=None) -> Optional[Dict[str, An
     ) or await get_primary_computer(user_id, conn=conn)
 
 
+async def promote_primary_computer(user_id: str) -> Optional[Dict[str, Any]]:
+    """Make one of the user's computers their primary, while they have none.
+
+    The computer Home is on comes first, since Home lives on the primary, then
+    the oldest. Only a computer that takes workspaces and backs up its files
+    qualifies: Home lands on it, and a machine the user brought is restored
+    from its backup if lost. None when no computer qualifies. A primary that
+    appeared meanwhile, or wins the one-primary index, is returned instead.
+    """
+    try:
+        async with _computer_cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE computers
+                SET is_primary = TRUE, updated_at = NOW()
+                WHERE computer_id = (
+                    SELECT c.computer_id
+                    FROM computers c
+                    LEFT JOIN workspaces home
+                        ON home.workspace_id = %(home)s
+                        AND home.computer_id = c.computer_id
+                    WHERE c.user_id = %(user)s AND c.{FENCE_NOT_DELETED}
+                      AND c.status <> 'error' AND c.files_backup
+                      AND NOT COALESCE(c.config, '{{}}'::jsonb)
+                          @> '{{"retire_when_empty": true}}'::jsonb
+                    ORDER BY (home.workspace_id IS NOT NULL) DESC,
+                             c.created_at, c.computer_id
+                    LIMIT 1
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM computers
+                    WHERE user_id = %(user)s AND is_primary AND {FENCE_NOT_DELETED}
+                )
+                RETURNING {_COMPUTER_COLS}
+                """,
+                {"user": user_id, "home": get_home_workspace_id(user_id)},
+            )
+            row = await cur.fetchone()
+    except UniqueViolation:
+        row = None
+    if row is not None:
+        logger.info(
+            f"Made computer {row['computer_id']} (kind={row['kind']}) the "
+            f"primary of user {user_id}, who had none"
+        )
+        return dict(row)
+    return await get_primary_computer(user_id)
+
+
 async def get_computers_by_status(
     status: str,
     limit: int = 100,

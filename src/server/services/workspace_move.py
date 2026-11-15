@@ -25,9 +25,10 @@ MOVE_MESSAGES: Dict[str, str] = {
     "not_movable": "This workspace can't be moved.",
     "same_computer": "This workspace is already on that computer.",
     "target_unavailable": "That computer can't take workspaces right now.",
-    "not_primary": (
-        "A computer you added yourself can't be primary, since Home lives on "
-        "the primary."
+    "not_primary": "That computer can't be primary.",
+    "not_backed_up": (
+        "Turn on file backup for that computer first. Home lives on the "
+        "primary, and its backup is what restores Home if the computer is lost."
     ),
     "turn_active": (
         "This workspace has work running. Wait for it to finish or stop it, "
@@ -107,8 +108,9 @@ async def claim_workspace_move(
     from_backup: bool = False,
 ) -> Dict[str, Any]:
     """Record a move (``database.workspace_move.claim_workspace_move``), only
-    a computer the providers let hold Home taking it as the primary, and only
-    one the server cannot rebuild left behind by a move from the backup."""
+    a computer the providers let hold Home taking it as the primary (its
+    backup on, which the claim checks), and only one the server cannot
+    rebuild left behind by a move from the backup."""
     return await db.claim_workspace_move(
         user_id=user_id,
         workspace_id=workspace_id,

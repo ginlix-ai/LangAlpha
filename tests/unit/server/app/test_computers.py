@@ -2710,7 +2710,7 @@ async def test_the_file_backup_switch_answers_with_the_machine(
     client, sample_computer_dict, kind, enabled
 ):
     """Nothing on the machine changes, so the write is the whole answer."""
-    before = sample_computer_dict(computer_id=COMPUTER_ID, kind=kind)
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind=kind, is_primary=False)
     write = AsyncMock(return_value={**before, "files_backup": enabled})
     with (
         patch("src.server.app.computers.get_computer", AsyncMock(return_value=before)),
@@ -2728,6 +2728,26 @@ async def test_the_file_backup_switch_answers_with_the_machine(
     assert resp.json()["files_backup"] is enabled
     assert resp.json()["workspace_count"] == 2
     write.assert_awaited_once_with(COMPUTER_ID, enabled)
+
+
+@pytest.mark.asyncio
+async def test_file_backup_stays_on_for_a_primary_machine_of_the_users_own(
+    client, sample_computer_dict
+):
+    """Home lives on the primary, and its backup is what restores Home if the
+    machine is lost."""
+    before = sample_computer_dict(computer_id=COMPUTER_ID, kind="ssh", is_primary=True)
+    write = AsyncMock()
+    with (
+        patch("src.server.app.computers.get_computer", AsyncMock(return_value=before)),
+        patch("src.server.app.computers.set_computer_files_backup", write),
+    ):
+        resp = await client.post(
+            f"/api/v1/computers/{COMPUTER_ID}/files-backup", json={"enabled": False}
+        )
+
+    assert resp.status_code == 409
+    write.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -3262,6 +3282,37 @@ async def test_make_primary_refusals_answer_in_the_move_outcome_shape(
     assert isinstance(detail["message"], str) and detail["message"]
     assert detail["files"] == []
     make_primary_patches.schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_make_primary_from_the_backup_moves_home_from_it(
+    client, make_primary_patches
+):
+    """Home's computer is a machine that can't be reached, so Home is laid on
+    the new primary from its last backup."""
+    make_primary_patches.flip.return_value = False
+
+    resp = await client.post(
+        f"/api/v1/computers/{COMPUTER_ID}/make-primary", json={"from_backup": True}
+    )
+
+    assert resp.status_code == 202
+    assert make_primary_patches.claim.await_args.kwargs["from_backup"] is True
+
+
+@pytest.mark.asyncio
+async def test_make_primary_refuses_a_computer_whose_files_are_not_backed_up(
+    client, make_primary_patches
+):
+    from src.server.database.workspace_move import MoveRefused
+
+    make_primary_patches.flip.side_effect = MoveRefused("not_backed_up")
+
+    resp = await client.post(f"/api/v1/computers/{COMPUTER_ID}/make-primary")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "not_backed_up"
+    make_primary_patches.claim.assert_not_awaited()
 
 
 @pytest.mark.asyncio

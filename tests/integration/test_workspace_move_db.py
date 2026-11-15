@@ -370,23 +370,41 @@ async def test_make_primary_refuses_a_computer_that_is_gone_broken_or_building(
         assert refused.value.code == "target_unavailable"
 
 
-async def test_a_machine_its_owner_brought_never_becomes_primary(seed_user):
+async def test_a_machine_its_owner_brought_becomes_primary_with_its_backup_on(
+    seed_user, test_db_pool
+):
     user_id = seed_user["user_id"]
     primary, _ = await _machines(user_id)
     owned = await _computer(user_id, "Owned", kind="ssh")
     home = await _home_on(user_id, primary)
+    await _execute(
+        test_db_pool,
+        "UPDATE computers SET files_backup = FALSE WHERE computer_id = %s",
+        (owned,),
+    )
 
     with pytest.raises(MoveRefused) as refused:
         await set_primary_computer(user_id, owned)
-    assert refused.value.code == "not_primary"
+    assert refused.value.code == "not_backed_up"
     await _refused(
-        "not_primary",
+        "not_backed_up",
         user_id=user_id,
         workspace_id=home,
         target_computer_id=owned,
         make_primary=True,
     )
     assert await _is_primary(primary)
+
+    await _execute(
+        test_db_pool,
+        "UPDATE computers SET files_backup = TRUE WHERE computer_id = %s",
+        (owned,),
+    )
+    assert await set_primary_computer(user_id, owned) is False
+    move = await claim_workspace_move(
+        user_id=user_id, workspace_id=home, target_computer_id=owned, make_primary=True
+    )
+    assert move["make_primary"] is True
 
 
 # ---------------------------------------------------------------------------

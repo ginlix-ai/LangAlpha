@@ -109,6 +109,7 @@ async def ensure_home(
         HomeWorkspaceTaken,
         get_or_create_home_workspace,
     )
+    from src.server.services.computer_errors import NeedsComputer
     from src.server.services.workspace_manager import WorkspaceManager
 
     home_id = get_home_workspace_id(user_id)
@@ -120,5 +121,9 @@ async def ensure_home(
             # for any row another account holds, and no retry can make this
             # one the caller's.
             raise HTTPException(status_code=403, detail="Forbidden") from None
-    await WorkspaceManager.get_instance().ensure_home_bound(user_id)
+    try:
+        await WorkspaceManager.get_instance().ensure_home_bound(user_id)
+    except NeedsComputer as e:
+        # A user who works only on machines of their own, with none connected.
+        raise HTTPException(status_code=409, detail=e.detail) from None
     return home_id

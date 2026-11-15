@@ -23,6 +23,7 @@ MoveRefusalCode = Literal[
     "same_computer",
     "target_unavailable",
     "not_primary",
+    "not_backed_up",
     "turn_active",
     "command_running",
     "move_in_progress",
@@ -78,6 +79,17 @@ class WorkspaceMoveOut(BaseModel):
     created_at: datetime
     committed_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+
+
+class MakePrimaryRequest(BaseModel):
+    from_backup: bool = Field(
+        False,
+        description=(
+            "Lay Home on the new primary from its last backup without reaching "
+            "the computer it is on, a machine of the user's own that can't be "
+            "reached. The folder there is left as it is"
+        ),
+    )
 
 
 class MakePrimaryResponse(BaseModel):
