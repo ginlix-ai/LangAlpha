@@ -35,7 +35,12 @@ from src.server.database.ssh_keys import (
     get_user_ssh_public_key,
     insert_user_ssh_key,
 )
-from src.server.database.ssh_tunnels import get_tunnels, get_user_tunnel, renew_tunnel
+from src.server.database.ssh_tunnels import (
+    computer_tunnel_down,
+    get_tunnels,
+    get_user_tunnel,
+    renew_tunnel,
+)
 from src.server.models.computer import (
     ComputerSSHInfo,
     ComputerSSHProbeResponse,
@@ -758,16 +763,16 @@ async def computer_unreachable(computer: Optional[Mapping[str, Any]], *, conn=No
 
     A machine the server dials directly has no tunnel record and is never
     judged unreachable here, nor is a cloud computer. A tunnel row that is
-    gone is one the machine cannot connect through. Read from Postgres, where
-    the gateway records each tunnel's liveness, so every worker agrees.
+    gone is one the machine cannot connect through. Judged in Postgres by the
+    predicate every worker's statements use (``computer_tunnel_down``), where
+    the gateway records each tunnel's liveness, so every worker agrees; a
+    computer that predicate could never find down costs no query.
     """
     if not computer or computer.get("status") == "deleted":
         return False
-    tunnel_id = tunnel_of(dict(computer))
-    if not tunnel_id:
+    if not tunnel_of(dict(computer)):
         return False
-    tunnels = await get_tunnels([tunnel_id], conn=conn)
-    return not bool((tunnels.get(tunnel_id) or {}).get("live"))
+    return await computer_tunnel_down(str(computer["computer_id"]), conn=conn)
 
 
 async def unreachable_machine(

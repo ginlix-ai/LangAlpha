@@ -41,6 +41,7 @@ from typing import (
 )
 
 from ptc_agent.core.sandbox import jobs
+from ptc_agent.core.sandbox.providers import is_own_machine
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxGoneError, SandboxRuntime
 
 from src.server.database.runs import command_runs as cr_db
@@ -76,29 +77,18 @@ _BETWEEN_STATUSES = frozenset(
 )
 
 
-def on_own_machine(computer: Optional[Mapping[str, Any]]) -> bool:
-    """Whether the computer is on a machine of the user's own, which the
-    server neither rebuilds nor can always reach (asleep, offline)."""
-    from ptc_agent.core.sandbox.providers import provider_class
-
-    try:
-        return not provider_class((computer or {}).get("kind")).recreatable
-    except ValueError:
-        return False
-
-
 def computer_reach(computer: Optional[Mapping[str, Any]]) -> Reach:
     status = (computer or {}).get("status")
     if status == ComputerStatus.RUNNING and computer.get("provider_ref"):
         return "running"
     if status in _BETWEEN_STATUSES:
         return "between"
-    if (
-        status == ComputerStatus.STOPPED
-        and computer.get("provider_ref")
-        and on_own_machine(computer)
-    ):
-        return "own_stopped"
+    if status == ComputerStatus.STOPPED and computer.get("provider_ref"):
+        try:
+            if is_own_machine(computer.get("kind")):
+                return "own_stopped"
+        except ValueError:
+            pass  # no provider knows its kind, so none could still run its jobs
     return "gone"
 
 
@@ -111,14 +101,6 @@ class ComputerAway(ComputerBetweenStates):
     """The computer's machine is the user's own and its tunnel is down
     (asleep, offline): its jobs may still be running, and are read once it is
     back. Known from the tunnel's record, so nothing dials it meanwhile."""
-
-
-async def machine_away(computer: Mapping[str, Any]) -> bool:
-    """Whether the computer's machine connects out through a tunnel that is
-    down: one Postgres read, so a sweep asks this before it dials."""
-    from src.server.services.ssh_computers import computer_unreachable
-
-    return await computer_unreachable(computer)
 
 
 @asynccontextmanager
@@ -139,6 +121,7 @@ async def computer_jobs_runtime(
     Raises ``ComputerBetweenStates`` for a computer between states, and
     ``ComputerAway`` for one whose machine's tunnel is down: their jobs may
     still run, so a stop must not take them as ended."""
+    from src.server.services.ssh_computers import computer_unreachable
     from src.server.services.workspace_manager import WorkspaceManager
 
     reach = computer_reach(computer)
@@ -147,7 +130,8 @@ async def computer_jobs_runtime(
     if reach == "gone":
         yield None
         return
-    if await machine_away(computer):
+    # One Postgres read, so a sweep asks this before it dials.
+    if await computer_unreachable(computer):
         raise ComputerAway("its machine is not connected")
     manager = WorkspaceManager.current()
     if manager is None:

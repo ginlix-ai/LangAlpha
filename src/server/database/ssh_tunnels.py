@@ -75,9 +75,9 @@ def _params(**kw: Any) -> Dict[str, Any]:
 
 def computer_tunnel_down_sql(computer_id: str) -> str:
     """SQL true while the computer ``computer_id`` (an SQL text expression)
-    connects out through a tunnel that is not live, as
-    ``services.ssh_computers.computer_unreachable`` judges it, for a statement
-    every worker may run. A computer reached directly or deleted is never
+    connects out through a tunnel that is not live, for a statement every
+    worker may run, and the one judgment of it (:func:`computer_tunnel_down`
+    evaluates it alone). A computer reached directly or deleted is never
     down. Needs the ``live_within`` parameter."""
     return f"""EXISTS (
         SELECT 1 FROM computers c
@@ -88,6 +88,19 @@ def computer_tunnel_down_sql(computer_id: str) -> str:
               SELECT 1 FROM ssh_tunnels
               WHERE ssh_tunnels.tunnel_id::text = c.provider_config->>'tunnel'
                 AND {_LIVE}))"""
+
+
+async def computer_tunnel_down(computer_id: str, *, conn=None) -> bool:
+    """Whether the computer connects out through a tunnel that is not live
+    (:func:`computer_tunnel_down_sql`), on ``conn`` where a caller passes one."""
+    async with get_db_connection(conn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {computer_tunnel_down_sql('%(computer_id)s')} AS down",
+                _params(computer_id=str(computer_id)),
+            )
+            row = await cur.fetchone()
+            return bool(row and row["down"])
 
 
 def computer_tunnel_lost_sql(computer_id: str, days: int) -> str:

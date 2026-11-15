@@ -669,10 +669,13 @@ async def test_only_a_tunneled_machine_whose_tunnel_is_down_is_unreachable(
 ):
     import src.server.services.ssh_computers as module
 
-    async def get_tunnels(ids, *, conn=None):
-        return {i: tunnels[i] for i in ids if i in tunnels}
+    async def computer_tunnel_down(computer_id, *, conn=None):
+        assert computer_id == "c1"
+        return not (tunnels.get(_TUNNEL) or {}).get("live")
 
-    monkeypatch.setattr(module, "get_tunnels", get_tunnels)
+    monkeypatch.setattr(module, "computer_tunnel_down", computer_tunnel_down)
+    if computer is not None:
+        computer = {"computer_id": "c1", **computer}
     assert await module.computer_unreachable(computer) is unreachable
 
 
@@ -686,11 +689,11 @@ async def test_a_workspace_is_away_only_while_its_computer_cannot_be_reached(mon
     async def get_computer_for_workspace(workspace_id, *, conn=None):
         return computer
 
-    async def get_tunnels(ids, *, conn=None):
-        return {_TUNNEL: {"live": live["value"]}}
+    async def computer_tunnel_down(computer_id, *, conn=None):
+        return not live["value"]
 
     monkeypatch.setattr(module, "get_computer_for_workspace", get_computer_for_workspace)
-    monkeypatch.setattr(module, "get_tunnels", get_tunnels)
+    monkeypatch.setattr(module, "computer_tunnel_down", computer_tunnel_down)
     assert (await module.computer_away("w1"))["computer_id"] == "c1"
     live["value"] = True
     assert await module.computer_away("w1") is None

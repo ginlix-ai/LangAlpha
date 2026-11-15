@@ -98,12 +98,14 @@ async def keeps_running(row: dict[str, Any]) -> bool:
     is down is passed over at the write (``computer_unreachable``)."""
     if row.get("is_always_on"):
         return True
+    from ptc_agent.core.sandbox.providers import is_own_machine
+
     from src.server.services.computer_manager import ComputerManager
     from src.server.services.runs.executor import LocalRunExecutor
 
     manager = ComputerManager.get_instance()
     try:
-        if not manager.stops_when_idle(row):
+        if is_own_machine(row["kind"]):
             return True
         # The reaper's own limit, so a computer it is about to stop for
         # being idle is not the one thing keeping it awake at the provider.

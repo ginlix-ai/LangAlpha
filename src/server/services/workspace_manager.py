@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, NamedTuple, Optional
 
-from ptc_agent.core.sandbox.providers import SELF_STOPPING_KINDS, provider_class
+from ptc_agent.core.sandbox.providers import SELF_STOPPING_KINDS, is_own_machine
 from ptc_agent.core.sandbox.runtime import RuntimeState, SandboxTransientError
 from ptc_agent.core.session import Session
 
@@ -621,8 +621,12 @@ class WorkspaceManager(ComputerManager):
         times. Activity is the computer's own stamp, which any project's turn
         refreshes.
 
-        A machine of the user's own is never stopped here
-        (``stops_when_idle``): only this worker's session for a quiet one goes.
+        A machine of the user's own is never stopped here (``is_own_machine``):
+        only this worker's session for a quiet one goes. The stop exists to
+        end what a sandbox costs while nobody uses it; the user's own machine
+        costs the deployment nothing running, and a stop ends the user's own
+        work there, such as a command left running that nobody has checked on
+        in an hour, so only its owner stops it.
 
         Returns:
             Number of computers stopped.
@@ -657,7 +661,7 @@ class WorkspaceManager(ComputerManager):
 
             try:
                 window = self._idle_window(computer)
-                stops = self.stops_when_idle(computer)
+                own = is_own_machine(computer["kind"])
             except ValueError as e:
                 # Settings the stop could not build a provider from either.
                 self._note_idle_reap_failure(computer_id, e)
@@ -667,7 +671,7 @@ class WorkspaceManager(ComputerManager):
             idle_seconds = window.timeout_s + (now - window.stop_at).total_seconds()
             if now <= window.stop_at:
                 continue
-            if not stops:
+            if own:
                 await self._retire_idle_session(computer)
                 continue
 
@@ -753,31 +757,16 @@ class WorkspaceManager(ComputerManager):
         machines once it has reconciled them, since it clears the flag of one
         whose owner lost the entitlement before it reaps; a machine whose
         settings no provider can be built from is never stopped either, nor
-        one of the user's own (``stops_when_idle``).
+        one of the user's own (``is_own_machine``).
         """
         if computer.get("is_always_on"):
             return None
         try:
-            if not self.stops_when_idle(computer):
+            if is_own_machine(computer["kind"]):
                 return None
             return self._idle_window(computer)
         except ValueError:
             return None
-
-    @staticmethod
-    def stops_when_idle(computer: Dict[str, Any]) -> bool:
-        """Whether the idle sweep stops this computer once it goes quiet.
-
-        The stop exists to end what a sandbox costs while nobody uses it. A
-        machine of the user's own (one the server cannot rebuild,
-        ``recreatable`` False) costs the deployment nothing running, and a
-        stop ends the user's own work there, such as a command left running
-        that nobody has checked on in an hour, so only its owner stops it.
-
-        Raises:
-            ValueError: The computer's kind names no known provider.
-        """
-        return provider_class(computer["kind"]).recreatable
 
     async def _retire_idle_session(self, computer: Dict[str, Any]) -> None:
         """Drop this worker's session for a quiet machine the sweep does not

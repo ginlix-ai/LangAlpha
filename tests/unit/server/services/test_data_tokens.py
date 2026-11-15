@@ -245,8 +245,8 @@ class TestSweepClaim:
                 return_value=manager,
             ),
             patch(
-                "src.server.services.ssh_computers.get_tunnels",
-                AsyncMock(return_value={"tun-1": {"live": False}}),
+                "src.server.services.ssh_computers.computer_tunnel_down",
+                AsyncMock(return_value=True),
             ),
         ):
             assert await sweeper._write_locked(COMPUTER_ID, row) is False
@@ -779,11 +779,8 @@ class TestSweepSparesIdleComputers:
         return patch("src.server.services.runs.executor.LocalRunExecutor", executor)
 
     @classmethod
-    def _manager(cls, *, own_machine: bool = False):
-        manager = SimpleNamespace(
-            _idle_timeout_for=lambda row: cls.IDLE_LIMIT_S,
-            stops_when_idle=lambda row: not own_machine,
-        )
+    def _manager(cls):
+        manager = SimpleNamespace(_idle_timeout_for=lambda row: cls.IDLE_LIMIT_S)
         return patch(
             "src.server.services.computer_manager.ComputerManager.get_instance",
             return_value=manager,
@@ -812,8 +809,9 @@ class TestSweepSparesIdleComputers:
         """No sweep stops a machine of the user's own, so a server or an app
         the agent left running there may call the data servers hours after
         the last turn stamped it, with no command of the agent's in flight."""
-        with self._manager(own_machine=own_machine), self._executor(False):
-            assert await data_token_sweep.keeps_running(self._idle_row(4 * 3600)) is kept
+        row = {**self._idle_row(4 * 3600), "kind": "ssh" if own_machine else "daytona"}
+        with self._manager(), self._executor(False):
+            assert await data_token_sweep.keeps_running(row) is kept
 
     @pytest.mark.asyncio
     async def test_an_idle_computer_with_nothing_running_is_not_written(self):
