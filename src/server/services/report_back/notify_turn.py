@@ -307,17 +307,14 @@ async def run_report_back(job: dict, p: ReportPipeline) -> Optional[NotOwed]:
 
         # A live turn takes the report in as a steer before its next model
         # call (``report_back.steer``).
-        if p.parks and await park_while_thread_busy(
-            job_id, attempts, thread_id, log_prefix=log, subject=subject
-        ):
-            return None
-        if await park_while_computer_away(
+        if await park_unless_ready(
             job_id,
             attempts,
             thread_id,
             workspace_id=verdict.workspace_id,
             log_prefix=log,
             subject=subject,
+            wait_for_thread=p.parks,
         ):
             return None
 
@@ -416,6 +413,48 @@ async def run_report_back(job: dict, p: ReportPipeline) -> Optional[NotOwed]:
     # completed_at) is the ledger, which the status slice derives its
     # recents from.
     return None
+
+
+async def park_unless_ready(
+    job_id: str,
+    attempts: int,
+    thread_id: str,
+    *,
+    workspace_id: Optional[str],
+    log_prefix: str,
+    subject: str,
+    wait_for_thread: bool = True,
+    wait_for_computer: bool = True,
+    parks_at_ceiling: bool = False,
+) -> bool:
+    """Park a claimed notification until the turn it posts can run: while its
+    thread holds notifications (``park_while_thread_busy``), then while the
+    computer that turn runs on cannot be reached
+    (``park_while_computer_away``). True when it parked and the caller must
+    stop; False when the turn may be posted now.
+
+    ``wait_for_thread`` is False for a notification a live turn takes in some
+    other way, ``wait_for_computer`` False for a turn someone watches (the
+    user's own steer, theirs to see fail and retry). ``parks_at_ceiling`` is
+    as for ``park_while_thread_busy``.
+    """
+    if wait_for_thread and await park_while_thread_busy(
+        job_id,
+        attempts,
+        thread_id,
+        log_prefix=log_prefix,
+        subject=subject,
+        parks_at_ceiling=parks_at_ceiling,
+    ):
+        return True
+    return wait_for_computer and await park_while_computer_away(
+        job_id,
+        attempts,
+        thread_id,
+        workspace_id=workspace_id,
+        log_prefix=log_prefix,
+        subject=subject,
+    )
 
 
 async def park_while_thread_busy(

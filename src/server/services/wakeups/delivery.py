@@ -280,8 +280,7 @@ async def _deliver(wake: _Wake) -> _Exit:
     from src.server.services.hook_outbox import LEASE_SECONDS, MAX_ATTEMPTS
     from src.server.services.report_back.notify_turn import (
         TURN_ROOM_WAIT_S,
-        park_while_computer_away,
-        park_while_thread_busy,
+        park_unless_ready,
         post_notification_turn,
         release_if_a_turn_ended,
         run_marker,
@@ -396,22 +395,14 @@ async def _deliver(wake: _Wake) -> _Exit:
             logger.info(f"{_LOG} {subject} was delivered or settled meanwhile")
             return "release"
 
-        if await park_while_thread_busy(
-            job_id,
-            attempts,
-            thread_id,
-            log_prefix=_LOG,
-            subject=subject,
-            parks_at_ceiling=True,
-        ):
-            return "parked"
-        if await park_while_computer_away(
+        if await park_unless_ready(
             job_id,
             attempts,
             thread_id,
             workspace_id=str(thread["workspace_id"]),
             log_prefix=_LOG,
             subject=subject,
+            parks_at_ceiling=True,
         ):
             return "parked"
 
