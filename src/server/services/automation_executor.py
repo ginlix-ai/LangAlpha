@@ -1109,6 +1109,10 @@ class AutomationExecutor:
                 _exec_span.set_attribute("status", "skipped")
                 return
             if fresh is not firing.automation:
+                # It waited (a firing that did not gets its automation back
+                # as passed): the thread's wait is counted from the computer's
+                # return, or a night's wait would leave a busy thread no time.
+                wait_deadline = time.monotonic() + _WAIT_CAP_SECONDS
                 firing.automation = fresh
                 place = await _turn_place(fresh)
                 route = turn_route(user_id, place.workspace)

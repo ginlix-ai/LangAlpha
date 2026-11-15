@@ -10,6 +10,7 @@ here ends.
 """
 
 import asyncio
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -1050,3 +1051,28 @@ async def test_a_machine_that_answered_and_refused_is_the_automations_failure():
 
     assert _settled(fx)["to"] == "failed"
     assert _settled(fx)["strike"] == "count"
+
+
+@pytest.mark.asyncio
+async def test_a_firing_that_waited_the_night_for_its_computer_still_waits_out_a_busy_thread():
+    """The thread's wait is counted from the computer's return: one counted
+    from the firing would be spent by the night, and the first look at a busy
+    thread would skip the run."""
+    clock = [0.0]
+
+    async def away_then_back(*_args, **_kwargs):
+        clock[0] += 8 * 60 * 60
+        return _MAC if clock[0] <= 8 * 60 * 60 else None
+
+    with (
+        _firing([_loses(_LOST), _streams], fresh=_automation(), busy=(True,)) as fx,
+        patch("src.server.services.ssh_computers.computer_away", new=away_then_back),
+        # The module's clock only: the event loop keeps the real one.
+        patch(f"{_MOD}.time", new=SimpleNamespace(monotonic=lambda: clock[0], time=time.time)),
+        patch(f"{_MOD}._COMPUTER_POLL_SECONDS", new=0),
+    ):
+        await AutomationExecutor().execute(_automation(), _EXEC)
+
+    assert _wait_reasons(fx) == ["computer_unreachable", "thread_busy"]
+    assert fx.astream.call_count == 2
+    assert _left_to_run(fx) == fx.run_ids[1]
