@@ -1,10 +1,10 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { decideCliApproval, type CliApproval } from '@/api/cliApprovals';
 import { apiErrorStatus } from '@/api/errors';
 import { toast } from '@/components/ui/use-toast';
-import { usePendingCliApprovals } from '@/hooks/useCliApprovals';
+import { usePendingCliApprovalsQuery } from '@/hooks/useCliApprovals';
 import { useNow } from '@/hooks/useNow';
 import { queryKeys } from '@/lib/queryKeys';
 
@@ -22,11 +22,17 @@ const EMPTY: ReadonlySet<string> = new Set();
  * a failed one brings it back with a toast, and one answered elsewhere or
  * run out (409) just reads the list again. Closed without an answer, a
  * request stays waiting on the server but is not shown here again.
+ *
+ * `fallback` is another prompt that opens unasked (a vendor's terms). It is
+ * held while a request shows or before the list has been read, so it takes
+ * its turn after these, never beside or ahead of them. It stays mounted while
+ * held, since an answer it sent may still be in flight and must not be asked
+ * again.
  */
-export function CliApprovalHost() {
+export function CliApprovalHost({ fallback }: { fallback?: (held: boolean) => ReactNode } = {}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const pending = usePendingCliApprovals();
+  const { approvals: pending, read } = usePendingCliApprovalsQuery();
   // Answered here (until the list catches up) or closed without an answer.
   // Each change keeps only the ids still waiting, so it never outgrows the list.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(EMPTY);
@@ -67,18 +73,22 @@ export function CliApprovalHost() {
     if (lapsed) void queryClient.invalidateQueries({ queryKey: queryKeys.cliApprovals.pending() });
   }, [lapsed, queryClient]);
   const current = waiting[0];
-  if (!current) return null;
 
   return (
-    <Suspense fallback={null}>
-      <CliApprovalDialog
-        key={current.approval_id}
-        approval={current}
-        more={waiting.length - 1}
-        now={now}
-        onAnswer={(approval, approve) => decide.mutate({ approval, approve })}
-        onDismiss={(approval) => hide(approval.approval_id, true)}
-      />
-    </Suspense>
+    <>
+      {fallback?.(!read || current !== undefined)}
+      {current && (
+        <Suspense fallback={null}>
+          <CliApprovalDialog
+            key={current.approval_id}
+            approval={current}
+            more={waiting.length - 1}
+            now={now}
+            onAnswer={(approval, approve) => decide.mutate({ approval, approve })}
+            onDismiss={(approval) => hide(approval.approval_id, true)}
+          />
+        </Suspense>
+      )}
+    </>
   );
 }

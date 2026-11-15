@@ -7933,5 +7933,15 @@
     "decline": "Decline",
     "alwaysApprove": "Always allow",
     "alwaysApproveHint": "Create this and later workspaces without asking. Turn it off in Settings."
+  },
+  "vendorTerms": {
+    "title": "Accept {{name}}'s terms",
+    "body": "Your agent wants to use {{name}} to read the web and its data catalog for you. LangAlpha sets up a {{name}} account for you to do this, and {{name}} asks you to accept its Terms of Service first.",
+    "link": "Read {{name}}'s Terms of Service",
+    "accept": "Accept",
+    "notNow": "Not now",
+    "accepted": "Accepted. Your agent can use {{name}} now.",
+    "failed": "Couldn't set up your {{name}} account. Try again later.",
+    "notification": "Your agent needs you to accept {{name}}'s terms"
   }
 }

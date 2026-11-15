@@ -8,9 +8,12 @@ const FALLBACK_REFETCH_MS = 30_000;
 
 const NONE: CliApproval[] = [];
 
-/** The requests waiting on the user, oldest first; empty until read. */
-export function usePendingCliApprovals(): CliApproval[] {
-  const { data } = useQuery({
+/**
+ * The requests waiting on the user, oldest first (empty until read), and
+ * whether the list has been read at all, answered or failed.
+ */
+export function usePendingCliApprovalsQuery(): { approvals: CliApproval[]; read: boolean } {
+  const { data, isFetched } = useQuery({
     queryKey: queryKeys.cliApprovals.pending(),
     queryFn: getPendingCliApprovals,
     // The user feed invalidates this as requests arrive and are answered; the
@@ -21,5 +24,10 @@ export function usePendingCliApprovals(): CliApproval[] {
     refetchOnWindowFocus: 'always',
     retry: (count, err) => count < 1 && apiErrorStatus(err) === null,
   });
-  return data ?? NONE;
+  return { approvals: data ?? NONE, read: isFetched };
+}
+
+/** The requests waiting on the user, oldest first; empty until read. */
+export function usePendingCliApprovals(): CliApproval[] {
+  return usePendingCliApprovalsQuery().approvals;
 }

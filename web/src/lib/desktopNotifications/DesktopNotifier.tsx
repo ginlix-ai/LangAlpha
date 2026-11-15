@@ -13,7 +13,7 @@
  * - The dock badge and attention list follow the store, debounced.
  * - "Mark as read" on a notification stamps the thread seen.
  * - A request the agent made from a command posts until it is answered
- *   (`ApprovalNotifier`).
+ *   (`ApprovalNotifier`), and so do a vendor's terms (`VendorTermsNotifier`).
  */
 import { useEffect, type ReactElement } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
@@ -39,6 +39,7 @@ import {
 import { threadDetailQuery } from '@/pages/ChatAgent/utils/threadQueries';
 import type { Thread } from '@/types/api';
 import { ApprovalNotifier } from './ApprovalNotifier';
+import { VendorTermsNotifier } from './VendorTermsNotifier';
 import {
   ATTENTION_LIST_MAX,
   buildAttention,
@@ -233,6 +234,7 @@ export function DesktopNotifier(): ReactElement | null {
     <>
       <ActiveNotifier />
       <ApprovalNotifier />
+      <VendorTermsNotifier />
     </>
   );
 }

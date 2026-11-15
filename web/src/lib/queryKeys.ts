@@ -390,6 +390,12 @@ export const queryKeys = {
     all:     ['cliApprovals'],
     pending: () => [...queryKeys.cliApprovals.all, 'pending'],
   },
+  // Vendor Terms of Service waiting on the user. The user feed invalidates the
+  // pending list whenever it changes.
+  vendorTerms: {
+    all:     ['vendorTerms'],
+    pending: () => [...queryKeys.vendorTerms.all, 'pending'],
+  },
   // Per-symbol quote cache — the unified snapshot layer (see lib/quotes/).
   // Key = uppercase legacy symbol spelling (indexes stripped of a leading '^').
   // Interim keying until Phase 4 re-keys on the canonical instrument_key.

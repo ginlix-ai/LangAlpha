@@ -27,6 +27,7 @@ import { ConnectConsentHost } from './pages/Plugins/components/ConnectConsentHos
 import { ConnectLandingHost } from './pages/Plugins/components/ConnectLandingHost';
 import { ThreadLifecycleFeed } from './lib/threadLifecycle/ThreadLifecycleFeed';
 import { CliApprovalHost } from './components/CliApproval/CliApprovalHost';
+import { VendorTermsHost } from './components/VendorTerms/VendorTermsHost';
 import { WarmHome } from './components/WarmHome';
 import { HostedSignInGate } from './components/HostedSignInGate';
 import { forgetHostedSignIn, hostedSignInReturn, landAfterSignIn } from './lib/hostedSignIn';
@@ -362,7 +363,8 @@ function AuthenticatedShell() {
   return (
     <OnboardingProvider>
       <ThreadLifecycleFeed />
-      <CliApprovalHost />
+      {/* One prompt at a time: the agent's command requests first, then vendor terms. */}
+      <CliApprovalHost fallback={(held) => <VendorTermsHost held={held} />} />
       <WarmHome />
       {onWelcome ? (
         // Full screen and none of the app's chrome: the flow is the page.
