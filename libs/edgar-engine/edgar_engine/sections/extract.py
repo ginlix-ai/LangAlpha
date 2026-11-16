@@ -40,10 +40,6 @@ def extract_sections(submission: bytes | str, *, form: str | None = None, filing
     rendering = render_documents(main_documents(split(text), form))
     lines, full = rendering.lines, rendering.text
     layout = find_items(rendering, spec)
-    for sp in layout.spans.values():
-        nxt = next((o for o in layout.spans.values() if o is not sp and o.heading_line == sp.end), None)
-        if nxt is not None:
-            sp.end = _lead_in(lines, nxt.item, sp.start, sp.end)
     pages = Pagination(rendering)
     resolver = Resolver(rendering, pages, layout.spans, spec, layout.toc)
 
@@ -122,22 +118,6 @@ def _cross_referenced(index, rendering, pages, items) -> None:
             text = rendering.text_of(spans)
             items[iid] = Section(item=iid, status="xref", text=text, start=spans[0].start, end=spans[-1].end,
                                  target=Target(kind="in_document", description=desc, spans=spans, text=text))
-
-
-def _lead_in(lines: list[str], item: str, start: int, end: int) -> int:
-    """Where an item ends when the next item's heading follows an amendment's lead-in ("Item 11 of the Annual
-    Report ... is hereby amended in full as follows:"): at the lead-in, which belongs to the next item."""
-    number = item.rsplit("-", 1)[-1]
-    k, seen = end, 0
-    while k - 1 > start and seen < 4:
-        k -= 1
-        if not lines[k].strip():
-            continue
-        seen += 1
-        if re.match(rf"\W*items?\s+{re.escape(number)}\b", lines[k].strip(), re.I):
-            lead = " ".join(lines[k:end])
-            return k if len(lead) <= 400 and re.search(r"\b(?:amend|restat|replac|supersed)\w*", lead, re.I) else end
-    return end
 
 
 def _shared(line: int, starts: list[int], breaks: list[int]) -> bool:

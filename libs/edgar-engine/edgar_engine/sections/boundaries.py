@@ -378,10 +378,41 @@ class Layout:
 def find_items(rendering: Rendering, spec: FormSpec) -> Layout:
     if spec.titled:
         from .fortyf import fortyf
-        return fortyf(rendering)
-    heads = find_headings(rendering.lines, spec)
-    doc = _Doc(rendering, heads, spec)
-    return Layout(_spans(doc, spec), doc.toc, heads)
+        layout = fortyf(rendering)
+    else:
+        heads = find_headings(rendering.lines, spec)
+        doc = _Doc(rendering, heads, spec)
+        layout = Layout(_spans(doc, spec), doc.toc, heads)
+    _trim_lead_ins(layout.spans, rendering.lines)
+    return layout
+
+
+def _trim_lead_ins(spans: dict[str, ItemSpan], lines: list[str]) -> None:
+    """Each item that runs up to the next item's heading ends at that item's lead-in, when it has one."""
+    at: dict[int, list[ItemSpan]] = {}
+    for o in spans.values():
+        at.setdefault(o.heading_line, []).append(o)
+    for sp in spans.values():
+        nxt = next((o for o in at.get(sp.end, []) if o is not sp), None)
+        if nxt is not None:
+            sp.end = _lead_in(lines, nxt.item, sp.start, sp.end)
+
+
+def _lead_in(lines: list[str], item: str, start: int, end: int) -> int:
+    """Where an item ends when the next item's heading follows an amendment's lead-in ("Item 11 of the Annual
+    Report ... is hereby amended in full as follows:"): at the lead-in, which is explanatory text and belongs to
+    neither item, so the next item still starts at its heading."""
+    number = item.rsplit("-", 1)[-1]
+    k, seen = end, 0
+    while k - 1 > start and seen < 4:
+        k -= 1
+        if not lines[k].strip():
+            continue
+        seen += 1
+        if re.match(rf"\W*items?\s+{re.escape(number)}\b", lines[k].strip(), re.I):
+            lead = " ".join(lines[k:end])
+            return k if len(lead) <= 400 and re.search(r"\b(?:amend|restat|replac|supersed)\w*", lead, re.I) else end
+    return end
 
 
 _ADDRESS = re.compile(r"(?:The )?(?:information|disclosures?|responses?) (?:required|called for|requested) (?:by|under|in|pursuant to) "
