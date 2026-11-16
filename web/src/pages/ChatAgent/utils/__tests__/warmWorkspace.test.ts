@@ -113,6 +113,25 @@ describe('warmWorkspace', () => {
     expect(mockPost).not.toHaveBeenCalled();
   });
 
+  it('warms a machine whose tunnel came back after a warm left it alone', async () => {
+    const qc = makeClient();
+    qc.setQueryData(queryKeys.workspaces.detail('ws-1'), {
+      workspace_id: 'ws-1',
+      status: 'stopped',
+      computer_id: 'comp-1',
+    });
+    const tunnel = (connected: boolean) => qc.setQueryData(queryKeys.computers.lists(), {
+      computers: [{ computer_id: 'comp-1', status: 'stopped', ssh: { tunnel: true, tunnel_connected: connected } }],
+    });
+    tunnel(false);
+    await warmWorkspace('ws-1', qc);
+
+    tunnel(true);
+    await warmWorkspace('ws-1', qc);
+
+    expect(mockPost).toHaveBeenCalledTimes(1);
+  });
+
   it('writes response status into detail cache', async () => {
     const qc = makeClient();
     qc.setQueryData(queryKeys.workspaces.detail('ws-1'), {

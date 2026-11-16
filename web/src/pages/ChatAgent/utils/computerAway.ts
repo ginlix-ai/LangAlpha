@@ -9,11 +9,9 @@
  * and the machine is called what its owner calls it: "your Mac" for a Mac,
  * its name for any other.
  */
-import type { QueryClient } from '@tanstack/react-query';
 import type { useTranslation } from 'react-i18next';
 
-import { queryKeys } from '@/lib/queryKeys';
-import type { Computer, ComputersResponse } from '@/types/api';
+import type { Computer } from '@/types/api';
 
 import { machineArtOf } from '../components/machineArt/machine';
 import type { ReadFrom } from './api/readFrom';
@@ -103,18 +101,4 @@ export function unreachableTurnCopy(
   const title = t(`chat.computerUnreachable.title${variant(machine)}`, { name: machine.name });
   if (machine.remoteControl) return { title, detail: t('chat.computerUnreachable.remoteControl') };
   return { title, detail: t(`chat.computerUnreachable.check${variant(machine)}`, { name: machine.name }) };
-}
-
-/**
- * The computer as the lists already read hold it, or null. Read from the
- * cache when a request fails rather than subscribed to: a surface that never
- * fails pays no read of the computer list for it.
- */
-export function cachedComputer(queryClient: QueryClient, computerId: string | null | undefined): Computer | null {
-  if (!computerId) return null;
-  for (const [, data] of queryClient.getQueriesData<ComputersResponse>({ queryKey: queryKeys.computers.lists() })) {
-    const row = data?.computers?.find((c) => c.computer_id === computerId);
-    if (row) return row;
-  }
-  return null;
 }
