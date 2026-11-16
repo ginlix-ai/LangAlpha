@@ -507,7 +507,10 @@ async def _flip_primary(cur, user_id: str, computer_id: str) -> None:
     """Make ``computer_id`` the user's primary; the old one is cleared first.
 
     The one-primary index is not deferrable, so the order is what lets both
-    writes land in one transaction.
+    writes land in one transaction. Home lives on the primary, so a computer
+    whose files are not backed up is refused here, under the write: turning
+    backup off refuses a primary in its own update, and whichever lands
+    second sees the other.
     """
     await cur.execute(
         """
@@ -520,11 +523,15 @@ async def _flip_primary(cur, user_id: str, computer_id: str) -> None:
         f"""
         UPDATE computers SET is_primary = TRUE
         WHERE computer_id = %s AND user_id = %s AND {FENCE_NOT_DELETED}
+        RETURNING files_backup
         """,
         (computer_id, user_id),
     )
-    if cur.rowcount == 0:
+    row = await cur.fetchone()
+    if row is None:
         raise MoveRefused("target_unavailable")
+    if not row["files_backup"]:
+        raise MoveRefused("not_backed_up")
 
 
 # The computer that becomes the user's primary while they have none: one that
@@ -790,8 +797,7 @@ async def set_primary_computer(user_id: str, computer_id: str) -> bool:
     ) as cur:
         await cur.execute(
             f"""
-            SELECT computer_id, files_backup,
-                   ({_TAKES_A_WORKSPACE}) AS takes_workspaces
+            SELECT computer_id, ({_TAKES_A_WORKSPACE}) AS takes_workspaces
             FROM computers
             WHERE user_id = %(user_id)s AND (computer_id = %(target)s OR is_primary)
             ORDER BY computer_id
@@ -806,9 +812,6 @@ async def set_primary_computer(user_id: str, computer_id: str) -> bool:
         )
         if target is None or not target["takes_workspaces"]:
             raise MoveRefused("target_unavailable")
-        if not target["files_backup"]:
-            # Home lives on the primary, and would live only on that disk.
-            raise MoveRefused("not_backed_up")
         await cur.execute(
             "SELECT computer_id FROM workspaces WHERE workspace_id = %s FOR UPDATE",
             (get_home_workspace_id(user_id),),

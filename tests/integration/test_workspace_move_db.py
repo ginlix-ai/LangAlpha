@@ -22,6 +22,7 @@ from src.server.database.runs.lifecycle import start_run
 from src.server.database.runs.subagent_runs import start_task_run
 from src.server.database.sql_fences import MOVE_STALE_SECONDS
 from src.server.database.user import create_user
+from src.server.database.computer import set_computer_files_backup
 from src.server.database.workspace_move import (
     LEFTOVERS_KEEP_DAYS,
     MoveRefused,
@@ -386,9 +387,8 @@ async def test_a_machine_its_owner_brought_becomes_primary_with_its_backup_on(
         (owned,),
     )
 
-    with pytest.raises(MoveRefused) as refused:
-        await set_primary_computer(user_id, owned)
-    assert refused.value.code == "not_backed_up"
+    # Home has to move first, and the move refuses it.
+    assert await set_primary_computer(user_id, owned) is False
     await _refused(
         "not_backed_up",
         user_id=user_id,
@@ -396,7 +396,21 @@ async def test_a_machine_its_owner_brought_becomes_primary_with_its_backup_on(
         target_computer_id=owned,
         make_primary=True,
     )
+    # With Home on it already, the flip itself refuses.
+    await _execute(
+        test_db_pool,
+        "UPDATE workspaces SET computer_id = %s WHERE workspace_id = %s",
+        (owned, home),
+    )
+    with pytest.raises(MoveRefused) as refused:
+        await set_primary_computer(user_id, owned)
+    assert refused.value.code == "not_backed_up"
     assert await _is_primary(primary)
+    await _execute(
+        test_db_pool,
+        "UPDATE workspaces SET computer_id = %s WHERE workspace_id = %s",
+        (primary, home),
+    )
 
     await _execute(
         test_db_pool,
@@ -408,6 +422,52 @@ async def test_a_machine_its_owner_brought_becomes_primary_with_its_backup_on(
         user_id=user_id, workspace_id=home, target_computer_id=owned, make_primary=True
     )
     assert move["make_primary"] is True
+
+
+async def _home_move_staged(user_id, home, target):
+    move = await claim_workspace_move(
+        user_id=user_id, workspace_id=home, target_computer_id=target, make_primary=True
+    )
+    move_id, runner = str(move["move_id"]), str(move["runner_id"])
+    assert await advance_workspace_move(move_id, runner, "backing_up")
+    assert await stage_workspace_move(
+        move_id, runner, source_folder=HOME_FOLDER, leftovers_path="away"
+    )
+    return move_id, runner
+
+
+async def test_backup_turned_off_during_make_primary_s_move_refuses_its_commit(seed_user):
+    """The move claimed while the machine was backed up; turned off before
+    the commit, the flip refuses, so Home never lives on an unbacked disk."""
+    user_id = seed_user["user_id"]
+    primary, _ = await _machines(user_id)
+    mac = await _computer(user_id, "Mac", kind="ssh")
+    home = await _home_on(user_id, primary)
+    move_id, runner = await _home_move_staged(user_id, home, mac)
+
+    assert await set_computer_files_backup(mac, False) is not None
+    with pytest.raises(MoveRefused) as refused:
+        await commit_workspace_move(move_id, runner)
+
+    assert refused.value.code == "not_backed_up"
+    assert await _is_primary(primary)
+    assert not await _is_primary(mac)
+    assert str((await workspaces.get_workspace(home))["computer_id"]) == primary
+
+
+async def test_backup_cannot_be_turned_off_once_make_primary_s_move_commits(seed_user):
+    user_id = seed_user["user_id"]
+    primary, _ = await _machines(user_id)
+    mac = await _computer(user_id, "Mac", kind="ssh")
+    home = await _home_on(user_id, primary)
+    move_id, runner = await _home_move_staged(user_id, home, mac)
+    await commit_workspace_move(move_id, runner)
+
+    assert await set_computer_files_backup(mac, False) is None
+
+    assert (await get_computer(mac))["files_backup"] is True
+    assert await _is_primary(mac)
+    assert await set_computer_files_backup(primary, False) is not None
 
 
 async def test_a_new_computer_with_backup_off_is_never_made_primary(seed_user):

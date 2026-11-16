@@ -2737,7 +2737,9 @@ async def test_file_backup_stays_on_for_a_primary_machine_of_the_users_own(
     """Home lives on the primary, and its backup is what restores Home if the
     machine is lost."""
     before = sample_computer_dict(computer_id=COMPUTER_ID, kind="ssh", is_primary=True)
-    write = AsyncMock()
+    # The write refuses a primary itself, so a flip that lands between a
+    # read and the write cannot slip past it.
+    write = AsyncMock(return_value=None)
     with (
         patch("src.server.app.computers.get_computer", AsyncMock(return_value=before)),
         patch("src.server.app.computers.set_computer_files_backup", write),
@@ -2747,7 +2749,8 @@ async def test_file_backup_stays_on_for_a_primary_machine_of_the_users_own(
         )
 
     assert resp.status_code == 409
-    write.assert_not_awaited()
+    assert resp.json()["detail"]["code"] == "primary_backup_required"
+    write.assert_awaited_once_with(COMPUTER_ID, False)
 
 
 @pytest.mark.asyncio

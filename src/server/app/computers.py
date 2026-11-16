@@ -1069,8 +1069,11 @@ async def set_computer_files_backup_route(
         computer = await _owned_computer(computer_id, x_user_id)
         if not request.enabled and provider_class(computer["kind"]).recreatable:
             raise HTTPException(status_code=409, detail=_FILES_BACKUP_REQUIRED)
-        if not request.enabled and computer.get("is_primary"):
-            # Home lives on the primary, and its backup is what restores it.
+        updated = await set_computer_files_backup(computer_id, request.enabled)
+        if updated is None:
+            # The write refuses a primary; this read only words the refusal.
+            if await get_computer(computer_id) is None:
+                raise HTTPException(status_code=404, detail="Computer not found")
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -1078,9 +1081,6 @@ async def set_computer_files_backup_route(
                     "message": _PRIMARY_BACKUP_REQUIRED,
                 },
             )
-        updated = await set_computer_files_backup(computer_id, request.enabled)
-        if updated is None:
-            raise HTTPException(status_code=404, detail="Computer not found")
         logger.info(
             f"Set computer {computer_id} file backup to {request.enabled} "
             f"for user {x_user_id}"

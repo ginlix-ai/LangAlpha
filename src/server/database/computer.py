@@ -1038,15 +1038,22 @@ async def set_computer_always_on(
 async def set_computer_files_backup(
     computer_id: str, enabled: bool, *, conn=None
 ) -> Optional[Dict[str, Any]]:
-    """No workspace shadow, unlike the scalars below: no platform count reads it."""
+    """None when the computer is gone, or is the primary and ``enabled`` is
+    off: Home lives there and is restored from its backup. Guarded in the
+    write, so a flip of the primary (``workspace_move._flip_primary``) and
+    this land in either order and never leave a primary unbacked.
+
+    No workspace shadow, unlike the scalars below: no platform count reads it.
+    """
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             f"""
-            UPDATE computers SET files_backup = %s, updated_at = NOW()
-            WHERE computer_id = %s AND {FENCE_NOT_DELETED}
+            UPDATE computers SET files_backup = %(enabled)s, updated_at = NOW()
+            WHERE computer_id = %(computer_id)s AND {FENCE_NOT_DELETED}
+              AND (%(enabled)s OR NOT is_primary)
             RETURNING {_COMPUTER_COLS}
             """,
-            (enabled, normalize_uuid(computer_id)),
+            {"enabled": enabled, "computer_id": normalize_uuid(computer_id)},
         )
         row = await cur.fetchone()
     return dict(row) if row else None
