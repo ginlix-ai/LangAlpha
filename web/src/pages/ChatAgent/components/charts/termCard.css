@@ -258,7 +258,9 @@ button.term-card-title {
 /* [EOD], [LAST CLOSE]: a word in brackets. */
 .term-tag {
   display: inline-flex;
-  align-items: center;
+  /* The word sets the baseline the line aligns on; a leading dot has none of
+     its own, and its box's foot would drop the tag half a line. */
+  align-items: baseline;
   gap: 0.3125rem;
   font-family: var(--term-words);
   font-size: 0.6875rem;
@@ -274,6 +276,7 @@ button.term-card-title {
   height: 5px;
   border-radius: 50%;
   flex-shrink: 0;
+  align-self: center;
   background: var(--color-term-text-tertiary);
 }
 .term-dot[data-tone='live'],
