@@ -117,6 +117,12 @@ _LOGGED_NAME_MAX = 64
 _SUPERSEDE = "supersede"
 # How long a failed dial waits to learn why before saying not connected.
 _DIAL_LOOKUP_TIMEOUT_S = 3
+# Why a dial to a tunnel with no connection open fails, by the tunnel's
+# ``state``; any other is not connected.
+_UNANSWERED_REASONS = {
+    "paired_elsewhere": GATEWAY_PAIRED_ELSEWHERE,
+    "unsettled": GATEWAY_STARTING,
+}
 
 
 def _login_lookup_slots() -> int:
@@ -424,10 +430,8 @@ class Gateway:
                 "Could not read tunnel %s for a failed dial: %r", tunnel_id, e
             )
             row = None
-        if row is not None and row["paired_elsewhere"]:
-            reason = GATEWAY_PAIRED_ELSEWHERE
-        elif row is not None and not row["judged"]:
-            reason = GATEWAY_STARTING
+        if row is not None:
+            reason = _UNANSWERED_REASONS.get(row["state"], reason)
         raise asyncssh.ChannelOpenError(asyncssh.OPEN_CONNECT_FAILED, reason)
 
     async def supersede(self, tunnel_id: str) -> bool:

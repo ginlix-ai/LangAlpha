@@ -182,7 +182,7 @@ def world():
         patch("src.server.services.claude_code.hosted.backend_available", side_effect=lambda: w.backend),
         patch(f"{MACHINES}.get_computer", new_callable=AsyncMock, side_effect=lambda _, **__: w.computer),
         patch(f"{MACHINES}.get_computer_roster", new_callable=AsyncMock, side_effect=lambda *_, **__: [_roster_row(w.computer)]),
-        patch(f"{MACHINES}.tunnels_for", new_callable=AsyncMock, side_effect=lambda *_, **__: {"tun-1": {"live": w.tunnel_live}}),
+        patch(f"{MACHINES}.tunnels_for", new_callable=AsyncMock, side_effect=lambda *_, **__: {"tun-1": {"state": "live" if w.tunnel_live else "down"}}),
         patch(f"{MACHINES}.stored_row", new_callable=AsyncMock, side_effect=lambda _, **__: {"access_token": w.saved} if w.saved else None),
         patch(f"{MACHINES}.machine_of", new=w.dial),
         patch(f"{TOKENS}.stage_machine_token", new=m.stage),

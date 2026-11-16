@@ -1260,9 +1260,9 @@ class TestSupersede:
     @pytest.mark.parametrize(
         "row,reason",
         [
-            ({"paired_elsewhere": True, "judged": True}, "paired elsewhere"),
-            ({"paired_elsewhere": False, "judged": True}, "not connected"),
-            ({"paired_elsewhere": False, "judged": False}, "starting"),
+            ({"state": "paired_elsewhere"}, "paired elsewhere"),
+            ({"state": "down"}, "not connected"),
+            ({"state": "unsettled"}, "starting"),
             (None, "not connected"),
         ],
         ids=["superseded", "down", "gateway-settling", "gone"],
@@ -1282,7 +1282,7 @@ class TestSupersede:
         self, tunnels, monkeypatch
     ):
         monkeypatch.setattr(server, "_DIAL_LOOKUP_TIMEOUT_S", 0.5)
-        tunnels.tunnel_rows = {TUNNEL: {"tunnel_id": TUNNEL, "paired_elsewhere": True}}
+        tunnels.tunnel_rows = {TUNNEL: {"tunnel_id": TUNNEL, "state": "paired_elsewhere"}}
         gateway = Gateway(object())  # type: ignore[arg-type]
         for _ in range(server._login_lookup_slots()):
             await gateway.login_lookups.acquire()

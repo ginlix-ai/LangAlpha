@@ -18,7 +18,19 @@ import logging
 import posixpath
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Mapping, Optional
+from typing import (
+    Any,
+    AsyncIterator,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+)
+
+from psycopg.rows import dict_row
 
 from ptc_agent.config.core import SSHConfig
 from ptc_agent.core.sandbox.providers import ssh as ssh_provider
@@ -36,7 +48,9 @@ from src.server.database.ssh_keys import (
     get_user_ssh_public_key,
     insert_user_ssh_key,
 )
+from src.server.database.pool import get_db_connection
 from src.server.database.ssh_tunnels import (
+    _GATEWAY_SETTLED,
     computer_tunnel_down,
     get_tunnels,
     get_user_tunnel,
@@ -813,28 +827,50 @@ async def computer_away(workspace_id: str, *, conn=None) -> Optional[Dict[str, A
     return dict(computer)
 
 
+#: A tunnel row's ``state``, as ``ssh_tunnels`` selects it: not judged while
+#: the gateway is not settled, since its dials then fail as its own outage.
+TunnelState = Literal["live", "paired_elsewhere", "unsettled", "down"]
+
+
 async def tunnels_for(
     user_id: str, computers: Iterable[Dict[str, Any]], *, conn=None
 ) -> Optional[Dict[str, Dict[str, Any]]]:
     """The tunnels *computers* name, by id, for :func:`ssh_info` to tell which are up.
 
-    None when none of *computers* has a tunnel, so a listing without one costs
-    no query, and when they cannot be read: whether a tunnel is up is not worth
-    failing a listing over. Read on ``conn`` where a caller holding locks on
-    it passes one, inside a savepoint, so a read that fails leaves the
-    caller's transaction as it was.
+    A tunnel no longer there is one the machine cannot connect through, and
+    stands in as a row whose ``state`` is down, or unsettled while the
+    gateway is. None when none of *computers* has a tunnel, so a listing
+    without one costs no query, and when they cannot be read: whether a
+    tunnel is up is not worth failing a listing over. Read on ``conn`` where
+    a caller holding locks on it passes one, inside a savepoint, so a read
+    that fails leaves the caller's transaction as it was.
     """
     tunnel_ids = {tunnel_of(computer) for computer in computers} - {""}
     if not tunnel_ids:
         return None
     try:
         if conn is None:
-            return await get_tunnels(tunnel_ids)
+            return await _tunnels_with_gone(tunnel_ids)
         async with conn.transaction():
-            return await get_tunnels(tunnel_ids, conn=conn)
+            return await _tunnels_with_gone(tunnel_ids, conn=conn)
     except Exception:  # noqa: BLE001 - shown as not known instead
         logger.warning("Could not read the tunnels of user %s", user_id, exc_info=True)
         return None
+
+
+async def _tunnels_with_gone(
+    tunnel_ids: set[str], *, conn=None
+) -> Dict[str, Dict[str, Any]]:
+    tunnels = await get_tunnels(tunnel_ids, conn=conn)
+    gone = tunnel_ids - tunnels.keys()
+    if gone:
+        async with get_db_connection(conn) as db:
+            async with db.cursor(row_factory=dict_row) as cur:
+                await cur.execute(f"SELECT {_GATEWAY_SETTLED} AS settled")
+                settled = (await cur.fetchone())["settled"]
+        state: TunnelState = "down" if settled else "unsettled"
+        tunnels.update({tunnel_id: {"state": state} for tunnel_id in gone})
+    return tunnels
 
 
 def host_key_fingerprint(host_key: str) -> Optional[str]:
@@ -878,13 +914,10 @@ def ssh_info(
     connected = None
     paired_elsewhere = False
     if tunnel_id and tunnels is not None:
-        # A tunnel no longer there is one the machine cannot connect through.
-        # One the gateway holds no connection for is not known while the
-        # gateway is not settled (``judged``), as it is not down then.
-        row = tunnels.get(tunnel_id) or {}
-        if row.get("live") or row.get("judged", True):
-            connected = bool(row.get("live"))
-        paired_elsewhere = bool(row.get("paired_elsewhere"))
+        state: TunnelState = (tunnels.get(tunnel_id) or {}).get("state", "down")
+        # Not known while the gateway is not settled, as it is not down then.
+        connected = None if state == "unsettled" else state == "live"
+        paired_elsewhere = state == "paired_elsewhere"
     return ComputerSSHInfo(
         host=config.get("host") or "",
         port=int(config.get("port") or 22),

@@ -481,7 +481,7 @@ async def test_a_tunnel_reads_down_only_under_a_settled_gateway(machine, test_db
     """The gateway's outage or restart is the service's, never every user's
     machine gone at once: it fails dials as the gateway's own."""
     assert await tunnels_db.computer_tunnel_down(machine.computer_id) is True
-    assert (await tunnels_db.get_tunnel(await _tunnel_id(test_db_pool, machine)))["judged"]
+    assert (await tunnels_db.get_tunnel(await _tunnel_id(test_db_pool, machine)))["state"] == "down"
 
     # Its heartbeat stopped: it died, or lost its database.
     await _gateway(test_db_pool, started=timedelta(hours=1), seen=timedelta(minutes=4))
@@ -489,7 +489,8 @@ async def test_a_tunnel_reads_down_only_under_a_settled_gateway(machine, test_db
     # It just started: its machines are still connecting back.
     await _gateway(test_db_pool, started=timedelta(minutes=1), seen=timedelta(seconds=1))
     assert await tunnels_db.computer_tunnel_down(machine.computer_id) is False
-    assert not (await tunnels_db.get_tunnel(await _tunnel_id(test_db_pool, machine)))["judged"]
+    tunnel = await tunnels_db.get_tunnel(await _tunnel_id(test_db_pool, machine))
+    assert tunnel["state"] == "unsettled"
     # No gateway ever ran on this build.
     async with test_db_pool.connection() as conn:
         await conn.execute("DELETE FROM ssh_gateway_state")

@@ -336,32 +336,65 @@ def test_a_listing_says_whether_the_helper_answers_for_the_machine(stored, helpe
 
 
 @pytest.mark.parametrize(
-    ("live", "paired_elsewhere", "judged", "connected", "elsewhere"),
+    ("state", "connected", "elsewhere"),
     [
-        (True, False, True, True, False),
-        (False, False, True, False, False),
-        (False, True, True, False, True),
+        ("live", True, False),
+        ("down", False, False),
+        ("paired_elsewhere", False, True),
         # The gateway restarting or down: not known, rather than every
         # machine shown disconnected.
-        (False, False, False, None, False),
-        (True, False, False, True, False),
+        ("unsettled", None, False),
     ],
 )
-def test_a_listing_says_when_the_machine_paired_elsewhere(
-    live, paired_elsewhere, judged, connected, elsewhere
-):
+def test_a_listing_says_when_the_machine_paired_elsewhere(state, connected, elsewhere):
     from src.server.services.ssh_computers import ssh_info
 
     tunnel_id = "0f8fad5b-d9cb-469f-a165-70867728950e"
     computer = _ssh("/Users/alex/langalpha", host="mac")
     computer["provider_config"]["tunnel"] = tunnel_id
-    tunnels = {
-        tunnel_id: {"live": live, "paired_elsewhere": paired_elsewhere, "judged": judged}
-    }
 
-    info = ssh_info(computer, tunnels)
+    info = ssh_info(computer, {tunnel_id: {"state": state}})
     assert info.tunnel_connected is connected
     assert info.paired_elsewhere is elsewhere
+
+
+@pytest.mark.parametrize(("settled", "connected"), [(True, False), (False, None)])
+@pytest.mark.asyncio
+async def test_a_tunnel_no_longer_there_is_down_only_once_the_gateway_settled(
+    monkeypatch, settled, connected
+):
+    """As the shared down predicate judges it: a gateway still taking its
+    machines back has not found any of them gone."""
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    import src.server.services.ssh_computers as module
+
+    class _Cursor:
+        async def execute(self, sql):
+            assert "ssh_gateway_state" in sql
+
+        async def fetchone(self):
+            return {"settled": settled}
+
+    class _Conn:
+        @asynccontextmanager
+        async def cursor(self, row_factory=None):
+            yield _Cursor()
+
+    @asynccontextmanager
+    async def connection(conn=None):
+        yield _Conn()
+
+    tunnel_id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    computer = _ssh("/Users/alex/langalpha", host="mac")
+    computer["provider_config"]["tunnel"] = tunnel_id
+    monkeypatch.setattr(module, "get_tunnels", AsyncMock(return_value={}))
+    monkeypatch.setattr(module, "get_db_connection", connection)
+
+    tunnels = await module.tunnels_for("user-1", [computer])
+
+    assert module.ssh_info(computer, tunnels).tunnel_connected is connected
 
 
 @pytest.mark.parametrize(("os", "stored"), [("Darwin", "Darwin"), ("", None)])

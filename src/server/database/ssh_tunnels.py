@@ -70,11 +70,16 @@ _GATEWAY_SETTLED = (
     f" WHERE g.seen_at > NOW() - {_WITHIN_LIVE}"
     f" AND g.started_at <= NOW() - {_WITHIN_LIVE})"
 )
+# A row's ``state``: live, superseded, not judged while the gateway is not
+# settled, else down. ``live`` stays a column of its own for the take-off
+# sweep.
 _COLUMNS = (
     "tunnel_id::text AS tunnel_id, user_id, public_key, fingerprint, hostname, "
     "username, host_key, port, created_at, paired_at, "
     f"connected_at, disconnected_at, seen_at, {_LIVE} AS live, "
-    f"{_PAIRED_ELSEWHERE} AS paired_elsewhere, {_GATEWAY_SETTLED} AS judged"
+    f"CASE WHEN {_LIVE} THEN 'live' "
+    f"WHEN {_PAIRED_ELSEWHERE} THEN 'paired_elsewhere' "
+    f"WHEN NOT {_GATEWAY_SETTLED} THEN 'unsettled' ELSE 'down' END AS state"
 )
 
 # No computer that is not deleted names the tunnel ``t``, whoever owns it: a
